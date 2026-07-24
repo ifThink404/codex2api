@@ -77,7 +77,11 @@ var defaultPatternConfigs = []PatternConfig{
 	{Name: "remote_shell", Pattern: `(?i)\b(reverse\s+shell|bind\s+shell|meterpreter|web\s+shell)\b|反弹\s*shell`, Weight: 45, Category: "remote_access", SignalOnly: true},
 	{Name: "operational_remote_access_request", Pattern: `(?i)\b(write|generate|create|give|build|craft|make)\b.{0,80}\b(reverse\s+shell|bind\s+shell|meterpreter|web\s+shell)\b|(?:写|生成|给我|构造|制作).{0,40}反弹\s*shell`, Weight: 100, Category: "remote_access", Strict: true},
 	{Name: "exploit_payload", Pattern: `(?i)\b(exploit\s+payload|payload\s+for\s+exploiting|weaponiz(?:e|ed|ation))\b`, Weight: 45, Category: "exploit"},
-	{Name: "operational_exploit_request", Pattern: `(?i)\b(write|generate|create|give|build|craft|make)\b\s+(?:(?:me|us)\s+)?(?:(?:an?|the|working|functional|weaponized|deployable|practical|privilege|escalation)\s+){0,6}(?:exploit\s+payload|payload\s+for\s+exploiting|exploit|poc|proof[-\s]?of[-\s]?concept|0day|zero[-\s]?day)\b|\b(write|generate|create|give|build|craft|make)\b.{0,30}\b(?:working|functional|weaponized|deployable)\s+(?:exploit|payload|poc)\b|(?:写|生成|给我|构造|制作).{0,20}(漏洞利用(?:代码|载荷)?|攻击载荷|payload|poc)`, Weight: 45, Category: "exploit", Strict: true},
+	// The Chinese branch dropped bare "payload"/"poc": unqualified they match
+	// ordinary dev text (a git/API request payload, or the "poc" substring in
+	// identifiers such as "mattpocock"). Exploit-qualified载荷 and word-bounded poc
+	// still fire; the English branch is unchanged.
+	{Name: "operational_exploit_request", Pattern: `(?i)\b(write|generate|create|give|build|craft|make)\b\s+(?:(?:me|us)\s+)?(?:(?:an?|the|working|functional|weaponized|deployable|practical|privilege|escalation)\s+){0,6}(?:exploit\s+payload|payload\s+for\s+exploiting|exploit|poc|proof[-\s]?of[-\s]?concept|0day|zero[-\s]?day)\b|\b(write|generate|create|give|build|craft|make)\b.{0,30}\b(?:working|functional|weaponized|deployable)\s+(?:exploit|payload|poc)\b|(?:写|生成|给我|构造|制作).{0,20}(漏洞利用(?:代码|载荷)?|攻击载荷|exploit\s+payload|概念验证|\bpoc\b)`, Weight: 45, Category: "exploit", Strict: true},
 	{Name: "exploit_technique", Pattern: `(?i)\b(shellcode|rop\s+chain|heap\s+spray|buffer\s+overflow\s+exploit)\b`, Weight: 35, Category: "exploit"},
 	{Name: "privilege_escalation", Pattern: `(?i)\b(privilege\s+escalation|privesc|root\s+exploit|local\s+root)\b|提权`, Weight: 35, Category: "post_exploitation", SignalOnly: true},
 	{Name: "pentest_tooling", Pattern: `(?i)\b(metasploit|cobalt\s+strike|mimikatz|empire|sliver\s+c2)\b`, Weight: 30, Category: "tooling", SignalOnly: true},
