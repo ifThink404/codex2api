@@ -56,3 +56,37 @@ func TestPromptFilterConfigFromInvalidAdvancedSettingsUsesSafeDefaultDocument(t 
 		t.Fatalf("fallback raw document is invalid: %v", err)
 	}
 }
+
+func TestSetPromptFilterConfigQuarantinesUnsafeLegacyCustomRule(t *testing.T) {
+	store := &Store{}
+	cfg := promptfilter.DefaultConfig()
+	enabled := true
+	cfg.CustomPatterns = []promptfilter.PatternConfig{{
+		Name:     "all",
+		Pattern:  `(?i)\ball\b`,
+		Weight:   600,
+		Category: "legacy",
+		Strict:   true,
+		Enabled:  &enabled,
+	}}
+
+	store.SetPromptFilterConfig(cfg)
+	got := store.GetPromptFilterConfig().CustomPatterns
+	if len(got) != 1 {
+		t.Fatalf("custom patterns = %#v", got)
+	}
+	if got[0].Enabled == nil || *got[0].Enabled {
+		t.Fatalf("unsafe legacy rule enabled = %#v, want false", got[0].Enabled)
+	}
+	if got[0].Name != "all" || got[0].Pattern != `(?i)\ball\b` || got[0].Weight != 600 || got[0].Category != "legacy" || !got[0].Strict {
+		t.Fatalf("quarantine did not preserve rule content: %#v", got[0])
+	}
+	encoded := promptfilter.MarshalCustomPatterns(got)
+	var roundTrip []promptfilter.PatternConfig
+	if err := json.Unmarshal([]byte(encoded), &roundTrip); err != nil {
+		t.Fatalf("decode marshaled patterns: %v", err)
+	}
+	if len(roundTrip) != 1 || roundTrip[0].Enabled == nil || *roundTrip[0].Enabled {
+		t.Fatalf("marshaled quarantine = %#v", roundTrip)
+	}
+}

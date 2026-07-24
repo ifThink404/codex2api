@@ -146,7 +146,7 @@ func DefaultConfig() Config {
 
 // RecommendedConfig returns the safe production preset used for fresh
 // installations and UI fallbacks. The master switch remains off so users keep
-// explicit control over rollout; once enabled, requests are blocked only by
+// explicit control over protection; once enabled, requests are blocked only by
 // high-confidence current-user rules with normalization enabled.
 func RecommendedConfig() Config {
 	cfg := DefaultConfig()
@@ -316,9 +316,12 @@ func NewEngine(cfg Config) (*Engine, error) {
 	disabled := disabledPatternSet(cfg.DisabledPatterns)
 	merged := append([]PatternConfig{}, defaultPatternConfigs...)
 	merged = append(merged, cfg.CustomPatterns...)
+	builtinCount := len(defaultPatternConfigs)
 
 	patterns := make([]compiledPattern, 0, len(merged))
-	for _, pattern := range merged {
+patternLoop:
+	for index, pattern := range merged {
+		custom := index >= builtinCount
 		pattern.Name = strings.TrimSpace(pattern.Name)
 		pattern.Pattern = strings.TrimSpace(pattern.Pattern)
 		pattern.Category = strings.TrimSpace(pattern.Category)
@@ -331,11 +334,23 @@ func NewEngine(cfg Config) (*Engine, error) {
 		if pattern.Enabled != nil && !*pattern.Enabled {
 			continue
 		}
+		// Built-ins are trusted release artifacts: a compile failure is fatal so
+		// tests and startup validation expose the broken release. Custom rules
+		// are untrusted persisted input; quarantine one bad or over-broad rule
+		// without disabling every built-in detector for the request.
+		if custom {
+			if issue := AuditPatternConfig(pattern); issue != nil {
+				continue
+			}
+		}
 		var re *regexp.Regexp
 		var err error
 		if pattern.Pattern != "" {
 			re, err = regexp.Compile(pattern.Pattern)
 			if err != nil {
+				if custom {
+					continue
+				}
 				return nil, fmt.Errorf("compile pattern %q: %w", pattern.Name, err)
 			}
 		}
@@ -355,14 +370,23 @@ func NewEngine(cfg Config) (*Engine, error) {
 		}
 		all, err := compileList(pattern.AllPatterns)
 		if err != nil {
+			if custom {
+				continue patternLoop
+			}
 			return nil, fmt.Errorf("compile all pattern %q: %w", pattern.Name, err)
 		}
 		any, err := compileList(pattern.AnyPatterns)
 		if err != nil {
+			if custom {
+				continue patternLoop
+			}
 			return nil, fmt.Errorf("compile any pattern %q: %w", pattern.Name, err)
 		}
 		exclude, err := compileList(pattern.ExcludePatterns)
 		if err != nil {
+			if custom {
+				continue patternLoop
+			}
 			return nil, fmt.Errorf("compile exclude pattern %q: %w", pattern.Name, err)
 		}
 		compiled := compiledPattern{

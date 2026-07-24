@@ -23,15 +23,6 @@ func TestGuardConfigRoundTrip(t *testing.T) {
 				"shadow_queue_size": 128,
 				"shadow_overflow_mode": "sync"
 			},
-			"rollout": {
-				"enabled": true,
-				"percent": 25,
-				"fallback_mode": "shadow",
-				"newapi_user_allowlist": ["42"],
-				"api_key_allowlist": [7],
-				"protocols": ["responses"],
-				"providers": ["openai"]
-			},
 			"layers": {
 				"current_user":{"mode":"enforce"},
 				"history":{"mode":"shadow"},
@@ -57,9 +48,6 @@ func TestGuardConfigRoundTrip(t *testing.T) {
 	if !cfg.Guard.Performance.AsyncShadowAuxiliaryEnabled || cfg.Guard.Performance.ExactSegmentCacheEnabled || cfg.Guard.Performance.ExactSegmentCacheEntries != 1024 || cfg.Guard.Performance.MaxSegments != 48 || cfg.Guard.Performance.MaxCurrentUserBytes != 196608 || cfg.Guard.Performance.MaxAuxiliaryBytes != 24576 || cfg.Guard.Performance.ScanChunkBytes != 4096 || cfg.Guard.Performance.ScanOverlapBytes != 256 || cfg.Guard.Performance.ShadowWorkers != 4 || cfg.Guard.Performance.ShadowOverflowMode != GuardShadowOverflowDrop {
 		t.Fatalf("guard performance config was not parsed: %+v", cfg.Guard.Performance)
 	}
-	if !cfg.Guard.Rollout.Enabled || cfg.Guard.Rollout.Percent != 25 || cfg.Guard.Rollout.FallbackMode != GuardModeShadow {
-		t.Fatalf("rollout config was not parsed: %+v", cfg.Guard.Rollout)
-	}
 	if cfg.Guard.ProviderProfiles[string(ModelFamilyAnthropic)] != GuardProfileStrict {
 		t.Fatalf("anthropic profile = %q, want strict", cfg.Guard.ProviderProfiles[string(ModelFamilyAnthropic)])
 	}
@@ -79,9 +67,6 @@ func TestGuardConfigRoundTrip(t *testing.T) {
 	}
 	if !roundTripped.Guard.Performance.AsyncShadowAuxiliaryEnabled || roundTripped.Guard.Performance.ExactSegmentCacheEnabled || roundTripped.Guard.Performance.ShadowQueueSize != 128 || roundTripped.Guard.Performance.MaxSegments != 48 || roundTripped.Guard.Performance.MaxCurrentUserBytes != 196608 || roundTripped.Guard.Performance.MaxAuxiliaryBytes != 24576 || roundTripped.Guard.Performance.ScanChunkBytes != 4096 || roundTripped.Guard.Performance.ScanOverlapBytes != 256 || roundTripped.Guard.Performance.ShadowOverflowMode != GuardShadowOverflowDrop {
 		t.Fatalf("guard performance config changed after round trip: %+v", roundTripped.Guard.Performance)
-	}
-	if len(roundTripped.Guard.Rollout.NewAPIUserAllowlist) != 1 || len(roundTripped.Guard.Rollout.APIKeyAllowlist) != 1 {
-		t.Fatalf("rollout allowlists changed after round trip: %+v", roundTripped.Guard.Rollout)
 	}
 	if roundTripped.Guard.Layers.ToolArguments.Mode != GuardModeWarn {
 		t.Fatalf("tool_arguments mode = %q, want warn", roundTripped.Guard.Layers.ToolArguments.Mode)
@@ -144,13 +129,6 @@ func TestNormalizeGuardConfigRejectsUnknownModesAndProfiles(t *testing.T) {
 			"XAI": "invalid",
 		},
 		Layers: GuardLayerConfig{CurrentUser: GuardLayerModeConfig{Mode: "invalid"}},
-		Rollout: GuardRolloutConfig{
-			Percent: 140, FallbackMode: GuardModeEnforce,
-			NewAPIUserAllowlist: []string{" 42 ", "42", ""},
-			APIKeyAllowlist:     []int64{7, 7, 0, -1},
-			Protocols:           []string{" Responses ", "responses"},
-			Providers:           []string{" OPENAI ", "openai"},
-		},
 	})
 	if cfg.Mode != GuardModeInherit || cfg.DefaultProfile != GuardProfileBalanced {
 		t.Fatalf("invalid guard values were not normalized: %+v", cfg)
@@ -160,11 +138,5 @@ func TestNormalizeGuardConfigRejectsUnknownModesAndProfiles(t *testing.T) {
 	}
 	if cfg.Layers.CurrentUser.Mode != GuardModeInherit {
 		t.Fatalf("current_user mode = %q, want inherit", cfg.Layers.CurrentUser.Mode)
-	}
-	if cfg.Rollout.Percent != 100 || cfg.Rollout.FallbackMode != GuardModeWarn {
-		t.Fatalf("invalid rollout limits were not normalized: %+v", cfg.Rollout)
-	}
-	if len(cfg.Rollout.NewAPIUserAllowlist) != 1 || len(cfg.Rollout.APIKeyAllowlist) != 1 || len(cfg.Rollout.Protocols) != 1 || len(cfg.Rollout.Providers) != 1 {
-		t.Fatalf("rollout lists were not normalized: %+v", cfg.Rollout)
 	}
 }

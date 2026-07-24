@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -195,7 +194,6 @@ func (h *Handler) evaluatePromptGuard(c *gin.Context, rawBody []byte, signedBody
 
 func (h *Handler) evaluatePromptGuardWithConfig(c *gin.Context, cfg promptfilter.Config, rawBody []byte, signedBody []byte, endpoint string, model string, transport promptfilter.Transport) promptGuardEvaluation {
 	requestedModel, effectiveModel, trustedProfile, profileOverride, modeOverride, providerOverride, providerOverrideSet := h.resolvePromptGuardOverrides(c, cfg, signedBody, model)
-	rolloutIdentity := h.resolvePromptGuardRolloutIdentity(c, cfg, signedBody)
 	envelope := promptfilter.BuildEnvelopeWithModelsAndConfig(
 		rawBody,
 		endpoint,
@@ -218,7 +216,7 @@ func (h *Handler) evaluatePromptGuardWithConfig(c *gin.Context, cfg promptfilter
 			extensionErrors = append(extensionErrors, "attachment_parser: "+err.Error())
 		}
 	}
-	evaluation := h.evaluatePromptGuardEnvelope(c, cfg, envelope, trustedProfile, profileOverride, modeOverride, rolloutIdentity)
+	evaluation := h.evaluatePromptGuardEnvelope(c, cfg, envelope, trustedProfile, profileOverride, modeOverride)
 	if !adapterOnly && evaluation.Decision.ApplicationPromptKind == "" {
 		if err := h.commitPromptGuardSession(c, cfg, sessionPending, evaluation.Decision); err != nil {
 			extensionErrors = append(extensionErrors, "session_commit: "+err.Error())
@@ -236,7 +234,6 @@ func (h *Handler) evaluatePromptGuardText(c *gin.Context, text string, endpoint 
 func (h *Handler) evaluatePromptGuardTextWithConfig(c *gin.Context, cfg promptfilter.Config, text string, endpoint string, model string) promptGuardEvaluation {
 	signedBody := ingressRequestBody(c, nil)
 	requestedModel, effectiveModel, trustedProfile, profileOverride, modeOverride, providerOverride, providerOverrideSet := h.resolvePromptGuardOverrides(c, cfg, signedBody, model)
-	rolloutIdentity := h.resolvePromptGuardRolloutIdentity(c, cfg, signedBody)
 	envelope := promptfilter.BuildTextEnvelopeWithModelsAndConfig(
 		text,
 		endpoint,
@@ -256,7 +253,7 @@ func (h *Handler) evaluatePromptGuardTextWithConfig(c *gin.Context, cfg promptfi
 			extensionErrors = append(extensionErrors, "session_correlation: "+err.Error())
 		}
 	}
-	evaluation := h.evaluatePromptGuardEnvelope(c, cfg, envelope, trustedProfile, profileOverride, modeOverride, rolloutIdentity)
+	evaluation := h.evaluatePromptGuardEnvelope(c, cfg, envelope, trustedProfile, profileOverride, modeOverride)
 	if !adapterOnly && evaluation.Decision.ApplicationPromptKind == "" {
 		if err := h.commitPromptGuardSession(c, cfg, sessionPending, evaluation.Decision); err != nil {
 			extensionErrors = append(extensionErrors, "session_commit: "+err.Error())
@@ -290,18 +287,6 @@ func (h *Handler) resolvePromptGuardOverrides(c *gin.Context, cfg promptfilter.C
 	return requestedModel, effectiveModel, true, policyContext.Meta.Profile, policyContext.Meta.Mode, provider, provider != promptfilter.ModelFamilyUnknown
 }
 
-func (h *Handler) resolvePromptGuardRolloutIdentity(c *gin.Context, cfg promptfilter.Config, signedBody []byte) promptfilter.RolloutIdentity {
-	if policyContext, verified := h.verifyNewAPIPolicyContext(c, cfg.Advanced.NewAPI, signedBody); verified {
-		if userID := strings.TrimSpace(policyContext.Identity.UserID); userID != "" {
-			return promptfilter.RolloutIdentity{Source: promptfilter.RolloutIdentityNewAPIUser, Value: userID}
-		}
-	}
-	if apiKeyID := requestAPIKeyID(c); apiKeyID > 0 {
-		return promptfilter.RolloutIdentity{Source: promptfilter.RolloutIdentityAPIKey, Value: strconv.FormatInt(apiKeyID, 10)}
-	}
-	return promptfilter.RolloutIdentity{}
-}
-
 func applyPromptGuardProviderOverride(envelope *promptfilter.RequestEnvelope, cfg promptfilter.Config, trusted bool, provider promptfilter.ModelFamily, providerSet bool) {
 	if envelope == nil || !trusted || !providerSet || !cfg.Advanced.Guard.AllowTrustedOverrides {
 		return
@@ -312,7 +297,7 @@ func applyPromptGuardProviderOverride(envelope *promptfilter.RequestEnvelope, cf
 	}
 }
 
-func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.Config, envelope promptfilter.RequestEnvelope, trustedProfile bool, profileOverride string, modeOverride string, rolloutIdentity promptfilter.RolloutIdentity) promptGuardEvaluation {
+func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.Config, envelope promptfilter.RequestEnvelope, trustedProfile bool, profileOverride string, modeOverride string) promptGuardEvaluation {
 	ctx := context.Background()
 	if c != nil && c.Request != nil {
 		ctx = c.Request.Context()
@@ -323,7 +308,6 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 		TrustedProfile:  trustedProfile,
 		ProfileOverride: profileOverride,
 		ModeOverride:    modeOverride,
-		RolloutIdentity: rolloutIdentity,
 	})
 	if cfg.Enabled && decision.Mode == promptfilter.GuardModeOff && decision.ReasonCode != promptfilter.ReasonCodeAdapterUnclassified {
 		return h.evaluateLegacyPromptGuard(c, ctx, cfg, envelope, decision.Profile)
@@ -492,7 +476,7 @@ func promptGuardShadowLoggingEnabled(job promptGuardShadowAuditJob) bool {
 // Guard mode off disables the extensible pipeline, not the existing prompt
 // filter. The master prompt-filter switch remains the only way to turn all
 // input filtering off, so adopting GuardPipeline cannot accidentally create a
-// bypass during rollout or via a trusted downstream mode override.
+// bypass through a trusted downstream mode override.
 func (h *Handler) evaluateLegacyPromptGuard(c *gin.Context, ctx context.Context, cfg promptfilter.Config, envelope promptfilter.RequestEnvelope, profile string) promptGuardEvaluation {
 	text := envelopeCurrentUserText(envelope)
 	verdict := promptfilter.InspectText(text, cfg)

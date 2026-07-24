@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
 )
@@ -98,7 +99,12 @@ type promptFilterTestRequest struct {
 }
 
 type promptFilterTestResponse struct {
-	Verdict promptfilter.Verdict `json:"verdict"`
+	Verdict  promptfilter.Verdict     `json:"verdict"`
+	Decision promptfilter.Decision    `json:"decision"`
+	Protocol promptfilter.Protocol    `json:"protocol"`
+	Provider promptfilter.ModelFamily `json:"provider"`
+	Endpoint string                   `json:"endpoint"`
+	Model    string                   `json:"model"`
 }
 
 type promptFilterRulePatternTestRequest struct {
@@ -282,12 +288,19 @@ func (h *Handler) TestPromptFilter(c *gin.Context) {
 		return
 	}
 	cfg := h.store.GetPromptFilterConfig()
-	cfg.Enabled = true
-	verdict := promptfilter.InspectText(req.Text, cfg)
-	if shouldReviewPromptFilterVerdict(verdict, cfg) {
-		verdict = reviewPromptFilterVerdict(c.Request.Context(), req.Text, verdict, cfg)
+	evaluator := h.imageProxy
+	if evaluator == nil {
+		evaluator = proxy.NewHandler(nil, nil, nil, nil)
 	}
-	c.JSON(http.StatusOK, promptFilterTestResponse{Verdict: verdict})
+	result := evaluator.EvaluatePromptGuardTextForTest(c, cfg, req.Text, req.Endpoint, req.Model)
+	c.JSON(http.StatusOK, promptFilterTestResponse{
+		Verdict:  result.Verdict,
+		Decision: result.Decision,
+		Protocol: result.Protocol,
+		Provider: result.Provider,
+		Endpoint: result.Endpoint,
+		Model:    result.Model,
+	})
 }
 
 func (h *Handler) TestPromptFilterRulePattern(c *gin.Context) {

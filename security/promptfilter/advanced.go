@@ -62,7 +62,6 @@ type GuardConfig struct {
 	DefaultProfile        string                 `json:"default_profile"`
 	AllowTrustedOverrides bool                   `json:"allow_trusted_overrides"`
 	ProviderProfiles      map[string]string      `json:"provider_profiles,omitempty"`
-	Rollout               GuardRolloutConfig     `json:"rollout"`
 	Layers                GuardLayerConfig       `json:"layers"`
 	Performance           GuardPerformanceConfig `json:"performance"`
 }
@@ -105,19 +104,6 @@ const (
 	RecommendedGuardScanChunkBytes   = 8 * 1024
 	RecommendedGuardScanOverlapBytes = 512
 )
-
-// GuardRolloutConfig limits enforce mode to a stable subset of authenticated
-// users. Rollout is deliberately downgrade-only: requests outside the selected
-// cohort use FallbackMode, which is restricted to warn or shadow.
-type GuardRolloutConfig struct {
-	Enabled             bool     `json:"enabled"`
-	Percent             int      `json:"percent"`
-	FallbackMode        string   `json:"fallback_mode"`
-	NewAPIUserAllowlist []string `json:"newapi_user_allowlist"`
-	APIKeyAllowlist     []int64  `json:"api_key_allowlist"`
-	Protocols           []string `json:"protocols"`
-	Providers           []string `json:"providers"`
-}
 
 type GuardLayerConfig struct {
 	CurrentUser       GuardLayerModeConfig `json:"current_user"`
@@ -325,10 +311,6 @@ func DefaultGuardConfig() GuardConfig {
 		Mode:             GuardModeInherit,
 		DefaultProfile:   GuardProfileBalanced,
 		ProviderProfiles: map[string]string{},
-		Rollout: GuardRolloutConfig{
-			Percent:      0,
-			FallbackMode: GuardModeWarn,
-		},
 		Performance: GuardPerformanceConfig{
 			ExactSegmentCacheEnabled:    true,
 			ExactSegmentCacheEntries:    4096,
@@ -388,7 +370,16 @@ func ParseAdvancedConfigDocument(raw string) (AdvancedConfigDocument, error) {
 	if err != nil {
 		return AdvancedConfigDocument{}, err
 	}
-	effective, err := ParseAdvancedConfig(raw)
+	// Stable-cohort rollout used to be downgrade-only. Removing the field
+	// without migrating an enabled legacy document would silently turn a
+	// partial enforce deployment into full enforce. Collapse that retired
+	// state to its configured safe fallback before deriving runtime config.
+	migrateAdvancedConfigRetiredFields(root)
+	migrated, err := json.Marshal(root)
+	if err != nil {
+		return AdvancedConfigDocument{}, err
+	}
+	effective, err := ParseAdvancedConfig(string(migrated))
 	if err != nil {
 		return AdvancedConfigDocument{}, err
 	}
@@ -451,6 +442,7 @@ func parseAdvancedConfigObject(raw string) (map[string]json.RawMessage, error) {
 
 func marshalAdvancedConfigDocument(root map[string]json.RawMessage, cfg AdvancedConfig) (string, error) {
 	removeAdvancedConfigSensitiveFields(root)
+	removeAdvancedConfigRetiredFields(root)
 	knownRaw, err := json.Marshal(NormalizeAdvancedConfig(cfg))
 	if err != nil {
 		return "", err
@@ -467,6 +459,127 @@ func marshalAdvancedConfigDocument(root map[string]json.RawMessage, cfg Advanced
 		return "", err
 	}
 	return string(formatted), nil
+}
+
+// migrateAdvancedConfigRetiredFields converts an enabled legacy rollout into
+// its safe global mode before removing the retired object. Explicit off,
+// shadow and warn modes are already safe and are left untouched. Explicit
+// enforce can preserve the old warn/shadow fallback. Missing, inherit and
+// invalid modes depend on an outer legacy setting that is unavailable in this
+// document; they therefore migrate to shadow so parsing can never promote a
+// previously monitoring deployment to warn or enforce.
+func migrateAdvancedConfigRetiredFields(root map[string]json.RawMessage) {
+	for rootKey, raw := range root {
+		if !strings.EqualFold(strings.TrimSpace(rootKey), "guard") {
+			continue
+		}
+		guard, ok := decodeAdvancedConfigObject(raw)
+		if !ok {
+			continue
+		}
+		for key, rolloutRaw := range guard {
+			if !strings.EqualFold(strings.TrimSpace(key), "rollout") {
+				continue
+			}
+			rollout, rolloutOK := decodeAdvancedConfigObject(rolloutRaw)
+			if legacyRolloutCouldBeEnabled(rolloutRaw, rollout, rolloutOK) {
+				mode := strings.ToLower(strings.TrimSpace(advancedConfigObjectString(guard, "mode")))
+				switch mode {
+				case GuardModeOff, GuardModeShadow, GuardModeWarn:
+					// The explicit mode was never promoted by rollout.
+				case GuardModeEnforce:
+					fallback := strings.ToLower(strings.TrimSpace(advancedConfigObjectString(rollout, "fallback_mode")))
+					if fallback != GuardModeShadow && fallback != GuardModeWarn {
+						fallback = GuardModeWarn
+					}
+					setAdvancedConfigObjectString(guard, "mode", fallback)
+				default:
+					setAdvancedConfigObjectString(guard, "mode", GuardModeShadow)
+				}
+			}
+			delete(guard, key)
+		}
+		encoded, err := json.Marshal(guard)
+		if err == nil {
+			root[rootKey] = encoded
+		}
+	}
+}
+
+func removeAdvancedConfigRetiredFields(root map[string]json.RawMessage) {
+	for rootKey, raw := range root {
+		if !strings.EqualFold(strings.TrimSpace(rootKey), "guard") {
+			continue
+		}
+		guard, ok := decodeAdvancedConfigObject(raw)
+		if !ok {
+			continue
+		}
+		// Stable cohort rollout has been retired. Unlike unknown future fields,
+		// an old rollout object must not survive document round trips because
+		// older values could otherwise appear active even though runtime
+		// enforcement no longer consults them.
+		for key := range guard {
+			if strings.EqualFold(strings.TrimSpace(key), "rollout") {
+				delete(guard, key)
+			}
+		}
+		encoded, err := json.Marshal(guard)
+		if err == nil {
+			root[rootKey] = encoded
+		}
+	}
+}
+
+func legacyRolloutCouldBeEnabled(raw json.RawMessage, object map[string]json.RawMessage, decoded bool) bool {
+	if isJSONNull(raw) {
+		return false
+	}
+	// A malformed retired object could not have been interpreted reliably by
+	// the old runtime. Treat it as potentially active so an upgrade cannot turn
+	// ambiguous persisted state into full enforcement.
+	if !decoded {
+		return true
+	}
+	for key, raw := range object {
+		if !strings.EqualFold(strings.TrimSpace(key), "enabled") {
+			continue
+		}
+		var value bool
+		if json.Unmarshal(raw, &value) != nil {
+			return true
+		}
+		return value
+	}
+	return false
+}
+
+func advancedConfigObjectString(object map[string]json.RawMessage, wanted string) string {
+	for key, raw := range object {
+		if !strings.EqualFold(strings.TrimSpace(key), wanted) {
+			continue
+		}
+		var value string
+		if json.Unmarshal(raw, &value) == nil {
+			return value
+		}
+		return ""
+	}
+	return ""
+}
+
+func setAdvancedConfigObjectString(object map[string]json.RawMessage, wanted string, value string) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	for key := range object {
+		if strings.EqualFold(strings.TrimSpace(key), wanted) {
+			object[key] = encoded
+			return
+		}
+	}
+	object[wanted] = encoded
 }
 
 func removeAdvancedConfigSensitiveFields(root map[string]json.RawMessage) {
@@ -796,7 +909,6 @@ func NormalizeGuardConfig(cfg GuardConfig) GuardConfig {
 	d := DefaultGuardConfig()
 	cfg.Mode = normalizeGuardMode(cfg.Mode, d.Mode)
 	cfg.DefaultProfile = normalizeGuardProfileName(cfg.DefaultProfile, d.DefaultProfile)
-	cfg.Rollout = normalizeGuardRolloutConfig(cfg.Rollout, d.Rollout)
 	if cfg.Performance.MaxSegments < MinGuardMaxSegments {
 		cfg.Performance.MaxSegments = d.Performance.MaxSegments
 	} else if cfg.Performance.MaxSegments > MaxGuardMaxSegments {
@@ -895,63 +1007,6 @@ func normalizeAuxiliaryGuardMode(mode string, fallback string) string {
 		return GuardModeShadow
 	}
 	return mode
-}
-
-func normalizeGuardRolloutConfig(cfg GuardRolloutConfig, defaults GuardRolloutConfig) GuardRolloutConfig {
-	if cfg.Percent < 0 {
-		cfg.Percent = 0
-	} else if cfg.Percent > 100 {
-		cfg.Percent = 100
-	}
-	switch strings.ToLower(strings.TrimSpace(cfg.FallbackMode)) {
-	case GuardModeShadow:
-		cfg.FallbackMode = GuardModeShadow
-	case GuardModeWarn:
-		cfg.FallbackMode = GuardModeWarn
-	default:
-		cfg.FallbackMode = defaults.FallbackMode
-	}
-	cfg.NewAPIUserAllowlist = normalizeGuardRolloutStrings(cfg.NewAPIUserAllowlist, false)
-	cfg.APIKeyAllowlist = normalizeGuardRolloutAPIKeyIDs(cfg.APIKeyAllowlist)
-	cfg.Protocols = normalizeGuardRolloutStrings(cfg.Protocols, true)
-	cfg.Providers = normalizeGuardRolloutStrings(cfg.Providers, true)
-	return cfg
-}
-
-func normalizeGuardRolloutStrings(values []string, lowercase bool) []string {
-	seen := make(map[string]struct{}, len(values))
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if lowercase {
-			value = strings.ToLower(value)
-		}
-		if value == "" {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		normalized = append(normalized, value)
-	}
-	return normalized
-}
-
-func normalizeGuardRolloutAPIKeyIDs(values []int64) []int64 {
-	seen := make(map[int64]struct{}, len(values))
-	normalized := make([]int64, 0, len(values))
-	for _, value := range values {
-		if value <= 0 {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		normalized = append(normalized, value)
-	}
-	return normalized
 }
 
 func normalizeGuardMode(mode string, fallback string) string {

@@ -14,7 +14,7 @@ import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import { getPromptFilterScoreBand, normalizePromptFilterScore } from '../lib/promptFilterScore'
 import { parseAdvancedConfigDocument, patchAdvancedConfigDocument, readAdvancedConfigPath } from '../types'
-import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterVerdict, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIntelligenceCandidate, PromptIntelligenceRun, SystemSettings } from '../types'
+import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIntelligenceCandidate, PromptIntelligenceRun, SystemSettings } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -93,7 +93,7 @@ type CustomRuleDraft = {
   strict: boolean
 }
 
-type PromptGuardEditorConfig = Omit<PromptGuardConfig, 'rollout' | 'performance'>
+type PromptGuardEditorConfig = Omit<PromptGuardConfig, 'performance'>
 
 type AdvancedProtectionConfig = {
   guard: PromptGuardEditorConfig
@@ -430,7 +430,7 @@ export default function PromptFilter() {
   const [testText, setTestText] = useState('')
   const [testEndpoint, setTestEndpoint] = useState('/v1/responses')
   const [testModel, setTestModel] = useState('gpt-5.5')
-  const [testVerdict, setTestVerdict] = useState<PromptFilterVerdict | null>(null)
+  const [testResult, setTestResult] = useState<PromptFilterTestResponse | null>(null)
 
   const loadData = useCallback(async () => {
     const [settings, logsResp, rules] = await Promise.all([
@@ -527,6 +527,7 @@ export default function PromptFilter() {
       showToast(t('promptFilter.testEmpty'), 'error')
       return
     }
+    setTestResult(null)
     setTesting(true)
     try {
       const result = await api.testPromptFilter({
@@ -534,7 +535,7 @@ export default function PromptFilter() {
         endpoint: testEndpoint,
         model: testModel,
       })
-      setTestVerdict(result.verdict)
+      setTestResult(result)
       showToast(t('promptFilter.testDone'))
     } catch (err) {
       showToast(`${t('promptFilter.testFailed')}: ${getErrorMessage(err)}`, 'error')
@@ -604,13 +605,22 @@ export default function PromptFilter() {
             recentLogs={data.recentLogs}
             totalLogs={data.totalLogs}
             testText={testText}
-            setTestText={setTestText}
+            setTestText={(value) => {
+              setTestText(value)
+              setTestResult(null)
+            }}
             testEndpoint={testEndpoint}
-            setTestEndpoint={setTestEndpoint}
+            setTestEndpoint={(value) => {
+              setTestEndpoint(value)
+              setTestResult(null)
+            }}
             testModel={testModel}
-            setTestModel={setTestModel}
+            setTestModel={(value) => {
+              setTestModel(value)
+              setTestResult(null)
+            }}
             testing={testing}
-            testVerdict={testVerdict}
+            testResult={testResult}
             runTest={runTest}
             clearLogs={clearLogs}
             clearing={clearing}
@@ -2169,7 +2179,7 @@ function OverviewView({
   testModel,
   setTestModel,
   testing,
-  testVerdict,
+  testResult,
   runTest,
   clearLogs,
   clearing,
@@ -2191,7 +2201,7 @@ function OverviewView({
   testModel: string
   setTestModel: (value: string) => void
   testing: boolean
-  testVerdict: PromptFilterVerdict | null
+  testResult: PromptFilterTestResponse | null
   runTest: () => void
   clearLogs: () => Promise<void>
   clearing: boolean
@@ -2284,9 +2294,9 @@ function OverviewView({
                 <Wand2 className="size-4" />
                 {testing ? t('promptFilter.testing') : t('promptFilter.runTest')}
               </Button>
-              {testVerdict ? <VerdictBadge verdict={testVerdict} /> : null}
+              {testResult ? <TestDecisionBadge result={testResult} /> : null}
             </div>
-            {testVerdict ? <VerdictPanel verdict={testVerdict} /> : null}
+            {testResult ? <PromptFilterTestResultPanel result={testResult} /> : null}
           </CardContent>
         </Card>
       </div>
@@ -3187,9 +3197,9 @@ function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaEl
   )
 }
 
-function VerdictBadge({ verdict }: { verdict: PromptFilterVerdict }) {
+function TestDecisionBadge({ result }: { result: PromptFilterTestResponse }) {
   const { t } = useTranslation()
-  const action = verdict.action
+  const action = result.decision?.action || result.verdict.action
   if (action === 'block') {
     return (
       <Badge variant="destructive" className="gap-1.5">
@@ -3214,29 +3224,81 @@ function VerdictBadge({ verdict }: { verdict: PromptFilterVerdict }) {
   )
 }
 
-function VerdictPanel({ verdict }: { verdict: PromptFilterVerdict }) {
+function PromptFilterTestResultPanel({ result }: { result: PromptFilterTestResponse }) {
   const { t } = useTranslation()
-  const localizedMode = verdict.mode === 'block'
+  const { verdict, decision } = result
+  const mode = decision?.mode || verdict.mode
+  const action = decision?.action || verdict.action
+  const localizedAction = action === 'block'
     ? t('promptFilter.modeBlock')
-    : verdict.mode === 'warn'
+    : action === 'warn'
       ? t('promptFilter.modeWarn')
-      : verdict.mode === 'monitor'
+      : t('promptFilter.actionAllow')
+  const localizedMode = mode === 'block'
+    ? t('promptFilter.modeBlock')
+    : mode === 'warn'
+      ? t('promptFilter.modeWarn')
+      : mode === 'monitor'
         ? t('promptFilter.modeMonitor')
-        : promptGuardModes.includes(verdict.mode as PromptGuardMode)
-          ? t(`promptFilter.guard.modes.${verdict.mode}.label`)
+        : promptGuardModes.includes(mode as PromptGuardMode)
+          ? t(`promptFilter.guard.modes.${mode}.label`)
           : t('promptFilter.unknownMode')
+  const localizedProfile = decision?.profile && promptGuardProfiles.includes(decision.profile as PromptGuardProfile)
+    ? t(`promptFilter.guard.profiles.${decision.profile}.label`)
+    : t('promptFilter.guard.unknownProfile')
+  const localizedOrigin = decision?.primary_origin
+    ? t(`promptFilter.origins.${decision.primary_origin}`, { defaultValue: decision.primary_origin })
+    : '-'
+  const localizedProvider = result.provider
+    ? t(`promptFilter.guard.providers.${result.provider}.label`, { defaultValue: result.provider })
+    : '-'
+  const decisionReason = decision?.reason?.trim() || ''
+  const verdictReason = verdict.reason?.trim() || ''
   const localizedReview = verdict.reviewed
     ? (verdict.review_flagged ? t('promptFilter.testReviewFlagged') : t('promptFilter.testReviewCleared'))
     : t('promptFilter.testReviewSkipped')
   return (
     <div className="rounded-lg border border-border bg-muted/25 p-3">
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-2 text-sm">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-foreground">{t('promptFilter.testResultPipelineTitle')}</div>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            {decision ? t('promptFilter.testResultPipelineHint') : t('promptFilter.testResultLegacyFallbackHint')}
+          </p>
+        </div>
+        <TestDecisionBadge result={result} />
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(135px,1fr))] gap-2 text-sm">
+        <MiniStat label={t('promptFilter.testResultFinalAction')} value={localizedAction} />
         <MiniStat label={t('promptFilter.testResultMode')} value={localizedMode} />
-        <MiniStat label={t('promptFilter.testResultScore')} value={`${verdict.score} / ${verdict.threshold}`} />
+        <MiniStat label={t('promptFilter.testResultProfile')} value={decision ? localizedProfile : '-'} />
+        <MiniStat
+          label={t('promptFilter.testResultProtocolProvider')}
+          value={[result.protocol || '-', localizedProvider].join(' · ')}
+        />
+        <MiniStat
+          label={t('promptFilter.testResultEndpointModel')}
+          value={[result.endpoint || '-', result.model || '-'].join(' · ')}
+        />
+        <MiniStat label={t('promptFilter.testResultExecutionScore')} value={`${decision?.score ?? verdict.score} / ${verdict.threshold}`} />
+        <MiniStat label={t('promptFilter.testResultAuditScore')} value={String(decision?.audit_score ?? 0)} />
+        <MiniStat label={t('promptFilter.testResultOrigin')} value={localizedOrigin} />
+        <MiniStat label={t('promptFilter.testResultReasonCode')} value={decision?.reason_code || '-'} mono />
+        <MiniStat
+          label={t('promptFilter.testResultStrikeEligible')}
+          value={decision?.strike_eligible ? t('promptFilter.testResultYes') : t('promptFilter.testResultNo')}
+        />
         <MiniStat label={t('promptFilter.testResultMatches')} value={String(verdict.matched?.length ?? 0)} />
         <MiniStat label={t('promptFilter.testResultReview')} value={localizedReview} />
       </div>
-      {verdict.reason ? <p className="mt-3 text-sm text-muted-foreground">{verdict.reason}</p> : null}
+      {decision?.primary_detector ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>{t('promptFilter.testResultPrimaryDetector')}</span>
+          <Badge variant="outline" className="font-mono text-[11px]">{decision.primary_detector}</Badge>
+        </div>
+      ) : null}
+      {decisionReason ? <p className="mt-3 text-sm text-muted-foreground">{decisionReason}</p> : null}
+      {verdictReason && verdictReason !== decisionReason ? <p className="mt-3 text-sm text-muted-foreground">{verdictReason}</p> : null}
       {verdict.review_error ? <p className="mt-2 text-sm text-destructive">{verdict.review_error}</p> : null}
       {verdict.matched?.length ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -3348,11 +3410,11 @@ function stripHitMarkers(text: string): string {
   return text.split(HIT_START_MARKER).join('').split(HIT_END_MARKER).join('')
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
+function MiniStat({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="rounded-md border border-border bg-background px-3 py-2">
       <div className="text-[11px] font-bold uppercase text-muted-foreground">{label}</div>
-      <div className="mt-1 font-semibold text-foreground">{value}</div>
+      <div className={cn('mt-1 break-words font-semibold text-foreground', mono && 'font-mono text-xs')}>{value}</div>
     </div>
   )
 }

@@ -47,29 +47,28 @@ type currentUserPrecheck struct {
 }
 
 type Decision struct {
-	Enabled               bool             `json:"enabled"`
-	Mode                  string           `json:"mode"`
-	Profile               string           `json:"profile"`
-	ApplicationPromptKind string           `json:"application_prompt_kind,omitempty"`
-	Action                string           `json:"action"`
-	WouldAction           string           `json:"would_action"`
-	Score                 int              `json:"score"`
-	RawScore              int              `json:"raw_score"`
-	AuditScore            int              `json:"audit_score,omitempty"`
-	AuditRawScore         int              `json:"audit_raw_score,omitempty"`
-	ReasonCode            string           `json:"reason_code,omitempty"`
-	Reason                string           `json:"reason,omitempty"`
-	Terminal              bool             `json:"terminal,omitempty"`
-	StrikeEligible        bool             `json:"strike_eligible,omitempty"`
-	Truncated             bool             `json:"truncated,omitempty"`
-	CurrentUserTruncated  bool             `json:"current_user_truncated,omitempty"`
-	AuxiliaryTruncated    bool             `json:"auxiliary_truncated,omitempty"`
-	PrimaryOrigin         SegmentOrigin    `json:"primary_origin,omitempty"`
-	PrimaryDetector       string           `json:"primary_detector,omitempty"`
-	Rollout               *RolloutDecision `json:"rollout,omitempty"`
-	Signals               []Signal         `json:"signals,omitempty"`
-	Errors                []string         `json:"errors,omitempty"`
-	ReviewText            string           `json:"-"`
+	Enabled               bool          `json:"enabled"`
+	Mode                  string        `json:"mode"`
+	Profile               string        `json:"profile"`
+	ApplicationPromptKind string        `json:"application_prompt_kind,omitempty"`
+	Action                string        `json:"action"`
+	WouldAction           string        `json:"would_action"`
+	Score                 int           `json:"score"`
+	RawScore              int           `json:"raw_score"`
+	AuditScore            int           `json:"audit_score,omitempty"`
+	AuditRawScore         int           `json:"audit_raw_score,omitempty"`
+	ReasonCode            string        `json:"reason_code,omitempty"`
+	Reason                string        `json:"reason,omitempty"`
+	Terminal              bool          `json:"terminal,omitempty"`
+	StrikeEligible        bool          `json:"strike_eligible,omitempty"`
+	Truncated             bool          `json:"truncated,omitempty"`
+	CurrentUserTruncated  bool          `json:"current_user_truncated,omitempty"`
+	AuxiliaryTruncated    bool          `json:"auxiliary_truncated,omitempty"`
+	PrimaryOrigin         SegmentOrigin `json:"primary_origin,omitempty"`
+	PrimaryDetector       string        `json:"primary_detector,omitempty"`
+	Signals               []Signal      `json:"signals,omitempty"`
+	Errors                []string      `json:"errors,omitempty"`
+	ReviewText            string        `json:"-"`
 	legacyVerdict         Verdict
 	deferredAudit         *DeferredAudit
 }
@@ -136,7 +135,6 @@ type GuardRequest struct {
 	TrustedProfile  bool
 	ProfileOverride string
 	ModeOverride    string
-	RolloutIdentity RolloutIdentity
 }
 
 type DetectionContext struct {
@@ -203,7 +201,6 @@ func (p *Pipeline) Evaluate(ctx context.Context, request GuardRequest) Decision 
 			globalMode = override
 		}
 	}
-	globalMode, rolloutDecision := resolveGuardRollout(globalMode, guard.Rollout, request.RolloutIdentity, request.Envelope)
 	var applicationPromptKind string
 	request.Envelope, applicationPromptKind = classifyKnownApplicationPrompt(request.Envelope, globalMode)
 	resolver := p.ProfileResolver
@@ -224,7 +221,6 @@ func (p *Pipeline) Evaluate(ctx context.Context, request GuardRequest) Decision 
 			Profile:              profile.Name,
 			Action:               ActionAllow,
 			WouldAction:          ActionAllow,
-			Rollout:              rolloutDecision,
 			Truncated:            request.Envelope.Truncated,
 			CurrentUserTruncated: request.Envelope.CurrentUserTruncated,
 			AuxiliaryTruncated:   request.Envelope.AuxiliaryTruncated,
@@ -239,7 +235,6 @@ func (p *Pipeline) Evaluate(ctx context.Context, request GuardRequest) Decision 
 	}
 	request.Envelope = syncEnvelope
 	decision := p.evaluateResolved(ctx, request, detectionContext)
-	decision.Rollout = rolloutDecision
 	decision.ApplicationPromptKind = applicationPromptKind
 	decision.Truncated = request.Envelope.Truncated
 	decision.CurrentUserTruncated = request.Envelope.CurrentUserTruncated
@@ -298,7 +293,7 @@ func (p *Pipeline) supportsDeferredSegmentAudit() bool {
 }
 
 // EvaluateDeferred executes a previously resolved shadow-only audit snapshot.
-// It deliberately bypasses profile/rollout resolution and partitioning, so a
+// It deliberately bypasses profile resolution and partitioning, so a
 // later configuration update cannot raise or lower the request-time policy.
 func (p *Pipeline) EvaluateDeferred(ctx context.Context, audit DeferredAudit) Decision {
 	if len(audit.envelope.Segments) == 0 {

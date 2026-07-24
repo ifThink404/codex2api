@@ -985,6 +985,11 @@ export interface PromptFilterLogsResponse {
 
 export interface PromptFilterTestResponse {
   verdict: PromptFilterVerdict
+  decision?: PromptGuardDecision
+  protocol?: string
+  provider?: string
+  endpoint?: string
+  model?: string
 }
 
 export interface PromptFilterRulePatternTestResponse {
@@ -998,16 +1003,22 @@ export type PromptGuardProfile = 'balanced' | 'strict' | 'research'
 
 export type PromptGuardProvider = 'openai' | 'anthropic' | 'xai' | 'unknown'
 
-export type PromptGuardRolloutFallbackMode = 'warn' | 'shadow'
-
-export interface PromptGuardRolloutConfig {
+export interface PromptGuardDecision {
   enabled: boolean
-  percent: number
-  fallback_mode: PromptGuardRolloutFallbackMode
-  newapi_user_allowlist: string[]
-  api_key_allowlist: string[]
-  protocols: string[]
-  providers: string[]
+  mode: string
+  profile: string
+  action: string
+  would_action: string
+  score: number
+  raw_score: number
+  audit_score?: number
+  audit_raw_score?: number
+  reason_code?: string
+  reason?: string
+  terminal?: boolean
+  strike_eligible?: boolean
+  primary_origin?: string
+  primary_detector?: string
 }
 
 export interface PromptGuardPerformanceConfig {
@@ -1043,7 +1054,6 @@ export interface PromptGuardConfig {
   allow_trusted_overrides: boolean
   provider_profiles: Partial<Record<PromptGuardProvider, PromptGuardProfile>>
   layers: Record<PromptGuardLayer, { mode: PromptGuardMode }>
-  rollout: PromptGuardRolloutConfig
   performance: PromptGuardPerformanceConfig
 }
 

@@ -33,11 +33,6 @@ test('field-level advanced config patches preserve unknown nested fields and enu
     guard: {
       mode: 'future_mode',
       future_guard_option: { sample: 0.25 },
-      rollout: {
-        enabled: true,
-        percent: 17,
-        future_rollout_policy: 'keep-me',
-      },
       provider_profiles: {
         openai: 'future_profile',
         future_provider: 'strict-plus',
@@ -67,9 +62,6 @@ test('field-level advanced config patches preserve unknown nested fields and enu
   assert.equal(saved.guard.layers.current_user.future_layer_option, 'keep-me')
   assert.equal(saved.guard.layers.current_user.mode, 'warn')
   assert.equal(saved.guard.layers.future_layer.mode, 'observe-plus')
-  assert.equal(saved.guard.rollout.enabled, true)
-  assert.equal(saved.guard.rollout.percent, 17)
-  assert.equal(saved.guard.rollout.future_rollout_policy, 'keep-me')
   assert.equal(saved.guard.performance.shadow_workers, 2)
   assert.equal(saved.guard.performance.future_queue_policy, 'adaptive')
   assert.equal(saved.sidecar.mode, 'future_sidecar_mode')
@@ -108,14 +100,9 @@ test('Chinese locale labels do not expose internal policy enum values', () => {
   }
 })
 
-test('hidden release and runtime settings survive visible editor patches', () => {
+test('hidden runtime settings survive visible editor patches', () => {
   const raw = JSON.stringify({
     guard: {
-      rollout: {
-        enabled: true,
-        percent: 25,
-        fallback_mode: 'shadow',
-      },
       performance: {
         max_segments: 64,
         max_current_user_bytes: 131072,
@@ -157,8 +144,6 @@ test('hidden release and runtime settings survive visible editor patches', () =>
   assert.equal(result.ok, true)
   const saved = JSON.parse(result.serialized)
   assert.equal(saved.guard.default_profile, 'strict')
-  assert.equal(saved.guard.rollout.enabled, true)
-  assert.equal(saved.guard.rollout.percent, 25)
   assert.equal(saved.guard.performance.max_segments, 64)
   assert.equal(saved.guard.performance.max_current_user_bytes, 131072)
   assert.equal(saved.guard.performance.future_budget_strategy, 'adaptive')
@@ -176,10 +161,9 @@ test('hidden release and runtime settings survive visible editor patches', () =>
   assert.equal(saved.newapi.max_clock_skew_seconds, 240)
 })
 
-test('Prompt Filter editor does not render rollout or runtime tuning controls', () => {
+test('Prompt Filter editor does not render runtime tuning controls', () => {
   const source = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
   const forbiddenFragments = [
-    'promptFilter.guard.rollout.',
     'promptFilter.guard.performance.',
     'scan_clean_enabled',
     'sample_percent',
@@ -193,5 +177,21 @@ test('Prompt Filter editor does not render rollout or runtime tuning controls', 
   ]
   for (const fragment of forbiddenFragments) {
     assert.equal(source.includes(fragment), false, `internal control leaked into editor source: ${fragment}`)
+  }
+})
+
+test('Prompt Filter rule tester renders the final GuardPipeline decision metadata', () => {
+  const source = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
+  const requiredFragments = [
+    'result.decision?.action',
+    'decision?.audit_score',
+    'decision?.primary_origin',
+    'decision?.reason_code',
+    'decision?.strike_eligible',
+    'result.protocol',
+    'result.provider',
+  ]
+  for (const fragment of requiredFragments) {
+    assert.equal(source.includes(fragment), true, `GuardPipeline test metadata is not rendered: ${fragment}`)
   }
 })
