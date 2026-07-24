@@ -82,6 +82,10 @@ type RequestEnvelope struct {
 	ModelFamily          ModelFamily `json:"model_family"`
 	Segments             []Segment   `json:"segments"`
 	AdapterUnclassified  bool        `json:"adapter_unclassified,omitempty"`
+	// AdapterUnclassifiedTypes records the offending typed-payload names (bounded,
+	// deduped) so the non-punitive adapter audit can surface which future block or
+	// item type went unrecognized, instead of only flagging that one did.
+	AdapterUnclassifiedTypes []string `json:"adapter_unclassified_types,omitempty"`
 	Truncated            bool        `json:"truncated,omitempty"`
 	CurrentUserTruncated bool        `json:"current_user_truncated,omitempty"`
 	AuxiliaryTruncated   bool        `json:"auxiliary_truncated,omitempty"`
@@ -862,7 +866,7 @@ func (b *envelopeBuilder) appendResult(origin SegmentOrigin, role string, result
 				// A future typed block has no proven provenance contract. Do not
 				// reinterpret its generic text/content fields as the caller-provided
 				// origin; record an adapter audit marker and fail open for this block.
-				b.markAdapterUnclassified()
+				b.markAdapterUnclassified(blockType)
 				return
 			}
 			if text := result.Get("text"); text.Type == gjson.String {
@@ -1160,15 +1164,27 @@ func (b *envelopeBuilder) appendTypedInputItem(item gjson.Result, currentUser bo
 			b.appendResult(origin, "user", item)
 			return
 		}
-		b.markAdapterUnclassified()
+		b.markAdapterUnclassified(itemType)
 	}
 }
 
-func (b *envelopeBuilder) markAdapterUnclassified() {
+const maxAdapterUnclassifiedTypes = 8
+
+func (b *envelopeBuilder) markAdapterUnclassified(blockType string) {
 	if b == nil || b.envelope == nil {
 		return
 	}
 	b.envelope.AdapterUnclassified = true
+	blockType = strings.ToLower(strings.TrimSpace(blockType))
+	if blockType == "" || len(b.envelope.AdapterUnclassifiedTypes) >= maxAdapterUnclassifiedTypes {
+		return
+	}
+	for _, existing := range b.envelope.AdapterUnclassifiedTypes {
+		if existing == blockType {
+			return
+		}
+	}
+	b.envelope.AdapterUnclassifiedTypes = append(b.envelope.AdapterUnclassifiedTypes, blockType)
 }
 
 func recognizedEnvelopeContentBlockType(blockType string) bool {

@@ -114,15 +114,22 @@ func TestPromptAdapterUnclassifiedPersistsNonPunitiveAuditWithoutExtensionsOrBod
 	if got.Source != "local_filter" || got.Protocol != string(promptfilter.ProtocolResponses) || got.Provider != string(promptfilter.ModelFamilyOpenAI) {
 		t.Fatalf("persisted adapter metadata = %+v", got)
 	}
+	// User content must never be persisted; the unrecognized type name is schema,
+	// not prompt body, and may only appear in the diagnostic match_context.
 	for field, value := range map[string]string{
-		"text_preview":  got.TextPreview,
-		"match_context": got.MatchContext,
-		"full_text":     got.FullText,
-		"matches":       got.MatchedPatterns,
+		"text_preview": got.TextPreview,
+		"full_text":    got.FullText,
+		"matches":      got.MatchedPatterns,
 	} {
 		if strings.Contains(strings.ToLower(value), "reverse shell") || strings.Contains(value, "future_replay_item") {
 			t.Fatalf("%s leaked unclassified prompt body: %q", field, value)
 		}
+	}
+	if strings.Contains(strings.ToLower(got.MatchContext), "reverse shell") {
+		t.Fatalf("match_context leaked unclassified prompt body: %q", got.MatchContext)
+	}
+	if got.MatchContext != "unclassified_types: future_replay_item" {
+		t.Fatalf("match_context should surface the unrecognized type, got %q", got.MatchContext)
 	}
 }
 

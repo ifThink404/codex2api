@@ -270,6 +270,13 @@ func (h *Handler) buildPromptFilterLogInput(auditContext promptFilterAuditContex
 		input.PrimaryOrigin = string(decision.PrimaryOrigin)
 		input.StrikeEligible = decision.StrikeEligible
 	}
+	// The adapter-unclassified audit otherwise carries no evidence. Surface the
+	// unrecognized typed-payload names (schema-only, no user content) so operators
+	// can see which future block/item type needs an explicit adapter mapping.
+	if decision != nil && decision.ReasonCode == promptfilter.ReasonCodeAdapterUnclassified &&
+		input.MatchContext == "" && envelope != nil && len(envelope.AdapterUnclassifiedTypes) > 0 {
+		input.MatchContext = "unclassified_types: " + strings.Join(envelope.AdapterUnclassifiedTypes, ", ")
+	}
 	// 被拦截（block）的请求仅记录脱敏后的检查文本预览，便于排查触发原因，
 	// 同时避免把 Authorization/API Key/token 等敏感值持久化到日志。
 	if verdict.Action == promptfilter.ActionBlock {
