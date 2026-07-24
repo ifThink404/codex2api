@@ -516,6 +516,16 @@ export interface AccountUsageDayStat {
   user_billed: number
 }
 
+export interface AccountKeyStat {
+  api_key_id: number
+  api_key_name: string
+  api_key_masked: string
+  requests: number
+  tokens: number
+  account_billed: number
+  user_billed: number
+}
+
 export interface AccountUsageDetail {
   period_days: number
   active_days: number
@@ -548,6 +558,7 @@ export interface AccountUsageDetail {
   highest_request_day?: AccountUsageDayStat
   history: AccountUsageDayStat[]
   models: AccountModelStat[]
+  by_api_key: AccountKeyStat[]
 }
 
 export interface MessageResponse {
@@ -1321,6 +1332,30 @@ export interface APIKeyTokenStat {
   cached_tokens: number
   total_tokens: number
   error_count: number
+  user_billed: number
+}
+
+// APIKeyAccountGroup 是上游账号分组的精简展示项（Token 用量明细用）。
+export interface APIKeyAccountGroup {
+  id: number
+  name: string
+  color: string
+}
+
+// APIKeyAccountStat 是 /usage/api-keys/:id/accounts 端点返回项：
+// 某个下游 Key 在时间区间内按上游账号拆分的用量（账号"按 Key 分解"的转置）。
+export interface APIKeyAccountStat {
+  account_id: number
+  account_name: string
+  account_email: string
+  groups?: APIKeyAccountGroup[]
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  total_tokens: number
+  error_count: number
+  account_billed: number
   user_billed: number
 }
 
