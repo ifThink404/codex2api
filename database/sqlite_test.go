@@ -733,6 +733,55 @@ func TestSQLiteAccountsEnabledDefaultsAndCanToggle(t *testing.T) {
 	}
 }
 
+func TestSQLiteListActiveByChannel(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api-channel.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	codexID, err := db.InsertAccount(ctx, "codex-one", "rt-codex", "")
+	if err != nil {
+		t.Fatalf("InsertAccount codex 返回错误: %v", err)
+	}
+	grokID, err := db.InsertAccountWithUpstream(ctx, "grok-one", "xai", "oauth", map[string]interface{}{
+		"upstream_type":  "grok",
+		"refresh_token":  "rt-grok",
+		"access_token":   "at-grok",
+		"email":          "g@example.com",
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithUpstream grok 返回错误: %v", err)
+	}
+
+	all, err := db.ListActiveByChannel(ctx, "")
+	if err != nil {
+		t.Fatalf("ListActiveByChannel(\"\") 返回错误: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("ListActiveByChannel(\"\") len = %d, want 2", len(all))
+	}
+
+	grokRows, err := db.ListActiveByChannel(ctx, UpstreamChannelGrok)
+	if err != nil {
+		t.Fatalf("ListActiveByChannel(grok) 返回错误: %v", err)
+	}
+	if len(grokRows) != 1 || grokRows[0].ID != grokID {
+		t.Fatalf("ListActiveByChannel(grok) = %+v, want id %d", grokRows, grokID)
+	}
+
+	codexRows, err := db.ListActiveByChannel(ctx, UpstreamChannelCodex)
+	if err != nil {
+		t.Fatalf("ListActiveByChannel(codex) 返回错误: %v", err)
+	}
+	if len(codexRows) != 1 || codexRows[0].ID != codexID {
+		t.Fatalf("ListActiveByChannel(codex) = %+v, want id %d", codexRows, codexID)
+	}
+}
+
 func TestSQLiteUsageLogsHasAPIKeyColumns(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 

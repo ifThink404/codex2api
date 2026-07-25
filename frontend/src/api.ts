@@ -402,7 +402,13 @@ export const api = {
   deletePortalImageAsset: (apiKey: string, id: number) =>
     requestImageStudioPortal<MessageResponse>(`/assets/${id}`, apiKey, { method: 'DELETE' }),
   getStats: () => request<StatsResponse>('/stats'),
-  getAccounts: () => request<AccountsResponse>('/accounts'),
+  // channel: 'codex' | 'grok' — server-side filter; omit for all accounts.
+  getAccounts: (params: { channel?: 'codex' | 'grok' } = {}) => {
+    const searchParams = new URLSearchParams()
+    if (params.channel) searchParams.set('channel', params.channel)
+    const qs = searchParams.toString()
+    return request<AccountsResponse>(`/accounts${qs ? `?${qs}` : ''}`)
+  },
   addAccount: (data: AddAccountRequest) =>
     request<CreateAccountResponse>('/accounts', { method: 'POST', body: JSON.stringify(data) }),
   addATAccount: (data: AddATAccountRequest) =>

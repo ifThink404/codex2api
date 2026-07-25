@@ -4634,10 +4634,35 @@ func (db *DB) getAccountsBilledSinceChunk(ctx context.Context, ids []int64, wind
 
 // ListActive 获取所有未删除账号。
 func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
+	return db.ListActiveByChannel(ctx, "")
+}
+
+// ListActiveByChannel 返回未删除账号；channel 为空返回全部，
+// "grok" 仅 Grok 上游，"codex" 为非 Grok（含默认 Codex / OpenAI Responses 等）。
+// 过滤依据 credentials.upstream_type，与管理后台列表的 grok_api 判定一致。
+func (db *DB) ListActiveByChannel(ctx context.Context, channel string) ([]*AccountRow, error) {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	where := `status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`
+	switch channel {
+	case UpstreamChannelGrok:
+		if db.isSQLite() {
+			where += ` AND LOWER(COALESCE(json_extract(credentials, '$.upstream_type'), '')) = 'grok'`
+		} else {
+			where += ` AND LOWER(COALESCE(credentials->>'upstream_type', '')) = 'grok'`
+		}
+	case UpstreamChannelCodex:
+		// 非 grok 一律归入 codex 视图（缺省 upstream_type 的历史号也算 codex 侧）。
+		if db.isSQLite() {
+			where += ` AND LOWER(COALESCE(json_extract(credentials, '$.upstream_type'), '')) <> 'grok'`
+		} else {
+			where += ` AND LOWER(COALESCE(credentials->>'upstream_type', '')) <> 'grok'`
+		}
+	}
+
 	query := `
 		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at
 		FROM accounts
-		WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'
+		WHERE ` + where + `
 		ORDER BY id
 	`
 	rows, err := db.conn.QueryContext(ctx, query)

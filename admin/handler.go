@@ -959,7 +959,10 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 	h.store.TriggerUsageProbeAsync()
 	h.store.TriggerRecoveryProbeAsync()
 
-	rows, err := h.db.ListActive(ctx)
+	// Optional ?channel=codex|grok — server-side filter so Grok/Codex admin
+	// pages only transfer and enrich their own account set.
+	channel := parseUsageChannel(c)
+	rows, err := h.db.ListActiveByChannel(ctx, channel)
 	if err != nil {
 		writeInternalError(c, err)
 		return

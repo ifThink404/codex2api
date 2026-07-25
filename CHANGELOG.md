@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.6.4 - 2026-07-25
+
+### Features
+
+- **The account list can be scoped to one upstream server-side, so the Grok and Codex admin pages stop loading the whole pool.** `GET /accounts` takes an optional `channel=codex|grok`, filtered in SQL on `credentials.upstream_type` (both the SQLite `json_extract` and Postgres `->>` paths, with `codex` meaning "not Grok" so legacy rows that never recorded an `upstream_type` stay on the Codex side). Each page now requests only its own set — the Grok page `channel=grok`, the Codex page `channel=codex` — which cuts both the transferred payload and the per-account enrichment work on large pools; omitting the parameter keeps the previous all-accounts behavior, and the API docs page documents it. Covered by a new `ListActiveByChannel` test.
+- **The Grok accounts page gains pagination, sorting, group chips, and a confirmation before pool-wide batch tests.** Client-side pagination replaces the single unbounded list; accounts can be sorted by usage percent (7d/5h), request count, updated time, or clustered by group, each direction-toggling on a second click; rows carry group chips and there's a group filter, with search extended to match group names. Batch connectivity testing now asks first when it would fan out beyond an explicit selection — one dialog for "test the N accounts in the current filter", another for "no selection and no filter, this tests all N Grok accounts" — so a large pool isn't probed by an accidental click.
+
+### Fixes
+
+- **`react-router` bumped to 7.18.1, closing the one new advisory this admin UI can actually reach (GHSA-wrjc-x8rr-h8h6).** Four advisories landed against the pinned 7.17.0; three of them need React Server Components or SSR hydration paths the admin frontend doesn't have, but the backslash open redirect in `<Link>`/`useNavigate` — a CVE-2025-68470 bypass, patched in 7.18.0 — applies to any client-side router. The lock moves to 7.18.1 and the declared floor to `^7.18.0`, so a fresh install can't resolve below the fix.
+- **The frontend security gate stops failing on an advisory that can't trigger here, without lowering the bar for real ones.** `GHSA-qwww-vcr4-c8h2` (RSC-mode CSRF bypass) covers `react-router >=7.12.0 <8.3.0` with no patch inside the 7.x line, so every push to `main` failed the scan: npm's own remediation — downgrading to 7.11.0 — would reinstate the open redirect above, and 8.3.0 is a major migration (`react-router-dom` has no 8.x, so it means 12 rewritten import sites, React `>=19.2.7`, and the frontend build image moving from node 20 to 22). Since `npm audit` can only relax its threshold globally — which would wave through genuine high findings — the CI step's bare `npm audit --omit=dev --audit-level=high` is replaced by an equivalent gate that takes a per-advisory allowlist (`frontend/scripts/audit-gate.mjs`). Its single entry records why the RSC path is unreachable in a pure client-side SPA (`BrowserRouter`, no RSC/SSR entry, no server actions) along with a review date; everything else high or critical still fails, an unobtainable audit result fails closed, and allowlist entries that stop matching are reported so they get deleted. The react-router v8 migration is left as a separate, deliberate change.
+
 ## v2.6.3 - 2026-07-25
 
 ### Features

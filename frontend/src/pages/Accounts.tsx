@@ -1508,7 +1508,8 @@ export default function Accounts() {
       healthBars,
     ] =
       await Promise.all([
-        api.getAccounts(),
+        // Codex 页只拉非 Grok 账号，与 Grok 页 channel=grok 对称，减少大号池传输。
+        api.getAccounts({ channel: "codex" }),
         api.getAPIKeys(),
         api.getOpsOverview().catch((): OpsOverviewResponse | null => null),
         api.listAccountGroups().catch(() => ({ groups: [] })),
