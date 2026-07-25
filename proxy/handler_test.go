@@ -1668,6 +1668,37 @@ func TestResponsesEndpointsAllowCompactionInputType(t *testing.T) {
 	}
 }
 
+func TestResponsesEndpointAllowsEncryptedContentInputType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewHandler(auth.NewStore(nil, nil, nil), nil, nil, nil)
+	body := []byte(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"encrypted_content","content":"opaque-ciphertext"},
+			{"type":"input_text","text":"hello"}
+		]
+	}`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = req
+
+	handler.Responses(ginCtx)
+
+	if recorder.Code == http.StatusBadRequest && strings.Contains(recorder.Body.String(), "invalid_input_type") {
+		t.Fatalf("encrypted_content input type was rejected by local validation: %s", recorder.Body.String())
+	}
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d after validation passes; body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+	}
+	assertNoAvailableAccountResponse(t, recorder.Body.Bytes())
+}
+
 func TestResponsesCompactUsesOpenAIResponsesAPIAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
