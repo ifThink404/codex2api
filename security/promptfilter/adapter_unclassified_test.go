@@ -94,6 +94,30 @@ func TestAdapterUnclassifiedTypesAreDedupedAndBounded(t *testing.T) {
 	}
 }
 
+func TestEncryptedContentIsRecognizedNotUnclassified(t *testing.T) {
+	// gpt-5.6 store=false reasoning ships opaque encrypted_content items; they
+	// must be recognized (no adapter marker) and never scanned as plaintext.
+	bodies := [][]byte{
+		[]byte(`{"input":[{"type":"encrypted_content","content":"Z0FBQUFBQm9lbmNyeXB0ZWRvcGFxdWU="},{"type":"input_text","text":"请优化这个函数。"}]}`),
+		[]byte(`{"messages":[{"role":"user","content":[{"type":"encrypted_content","content":"Z0FBQUFBQm9lbmNyeXB0"},{"type":"text","text":"请优化这个函数。"}]}]}`),
+	}
+	for i, body := range bodies {
+		envelope := BuildEnvelope(body, "/v1/responses", "gpt-5.6", TransportHTTP, DefaultMaxTextLength)
+		if envelope.AdapterUnclassified {
+			t.Fatalf("case %d: encrypted_content wrongly flagged unclassified: %+v", i, envelope)
+		}
+		for _, seg := range envelope.Segments {
+			if strings.Contains(seg.Text, "Z0FBQUFB") {
+				t.Fatalf("case %d: encrypted payload leaked into scan segments: %+v", i, envelope.Segments)
+			}
+		}
+		current := envelope.SegmentsForOrigin(OriginCurrentUser)
+		if len(current) != 1 || !strings.Contains(current[0].Text, "请优化这个函数") {
+			t.Fatalf("case %d: co-located user text not preserved: %+v", i, envelope.Segments)
+		}
+	}
+}
+
 func evaluateAdapterUnclassified(t testing.TB, envelope RequestEnvelope, guardMode string) Decision {
 	t.Helper()
 	cfg := testConfig(ModeBlock)

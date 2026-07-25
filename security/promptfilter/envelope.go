@@ -861,6 +861,11 @@ func (b *envelopeBuilder) appendResult(origin SegmentOrigin, role string, result
 			b.appendResult(OriginToolOutput, "tool", firstExistingResult(result, "output", "content", "text"))
 		case "tool_use", "function_call", "computer_call", "mcp_call":
 			b.appendToolArguments(result, role)
+		case "encrypted_content":
+			// Opaque server-side encrypted continuation payload (gpt-5.6 store=false
+			// reasoning). It carries no scannable plaintext, so it is recognized and
+			// skipped rather than flagged as an unclassified block.
+			return
 		default:
 			if blockType != "" && !recognizedEnvelopeContentBlockType(blockType) {
 				// A future typed block has no proven provenance contract. Do not
@@ -1144,6 +1149,10 @@ func (b *envelopeBuilder) appendTypedInputItem(item gjson.Result, currentUser bo
 	case "compaction_trigger", "item_reference":
 		// Control/reference items carry no end-user prompt text.
 		b.appendAttachmentReferences(item, "context")
+	case "encrypted_content":
+		// Opaque server-side encrypted continuation payload (gpt-5.6 store=false
+		// reasoning). No end-user prompt text; recognized and skipped.
+		return
 	case "input_text", "message":
 		origin := OriginHistory
 		if currentUser {
@@ -1200,7 +1209,7 @@ func recognizedEnvelopeContentBlockType(blockType string) bool {
 		"tool_search_call", "custom_tool_call", "mcp_tool_call", "mcp_call", "mcp_list_tools",
 		"mcp_approval_request", "mcp_approval_response", "additional_tools", "code_interpreter_call",
 		"computer_call", "file_search_call", "image_generation_call", "web_search_call", "tool_use", "agent_message",
-		"compaction_trigger", "item_reference":
+		"compaction_trigger", "item_reference", "encrypted_content":
 		return true
 	default:
 		return false
