@@ -287,6 +287,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 
 	accountFilter := accountFilterForModel(effectiveModel)
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
+	defer h.ReleaseAPIKeyScopeConcurrency(c)
 
 	wsRetrySettings := CurrentRuntimeSettings()
 	hideUpstreamErrors := wsRetrySettings.CodexWSHideErrors
@@ -321,6 +324,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
 			} else if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
 				apiErr = responsesWSUpstreamAPIError(lastStatusCode, lastBody)
+			} else if msg := scopeBudgetExhaustedMessage(c); msg != "" {
+				// 候选被 scope 预算剔空（issue #439）：按限流语义回帧，而不是「无可用账号」。
+				apiErr = api.NewAPIError(api.ErrCodeRateLimitReached, msg, api.ErrorTypeRateLimit)
 			} else {
 				apiErr = api.NewAPIError(api.ErrCodeServiceUnavailable, noAvailableAccountMessage(effectiveModel), api.ErrorTypeServer)
 			}
@@ -328,6 +334,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
 		}
 
+		h.AcquireAPIKeyScopeConcurrency(c, account)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback {

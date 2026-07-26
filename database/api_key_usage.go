@@ -44,6 +44,114 @@ func (db *DB) GetAPIKeyWindowUsage(ctx context.Context, apiKeyID int64, window t
 	return usage, nil
 }
 
+// GetAPIKeyAccountWindowUsage 聚合指定 API Key 在窗口内**按账号拆分**的使用情况,
+// 供 scope 维度限额(issue #439)判定。一次查询即可覆盖该 Key 的全部 scope 条目:
+// 分组维度在调用方按账号当前所属分组折算,因此分组成员变动即时生效,无需在
+// usage_logs 里冗余 group_id。
+//
+// 复用索引 idx_usage_logs_api_key_created_at,扫描量与同窗口的 Key 级 cost 聚合同级。
+// 已从账号池删除的账号仍会出现在返回值里,但调用方无法把它折算到分组——这部分历史
+// 用量在分组维度上会被忽略(账号维度仍准确)。
+func (db *DB) GetAPIKeyAccountWindowUsage(ctx context.Context, apiKeyID int64, window time.Duration) (map[int64]APIKeyWindowUsage, error) {
+	if apiKeyID <= 0 || window <= 0 {
+		return map[int64]APIKeyWindowUsage{}, nil
+	}
+	since := time.Now().Add(-window)
+	rows, err := db.conn.QueryContext(ctx, `
+		SELECT
+			COALESCE(account_id, 0),
+			COUNT(*),
+			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(user_billed), 0)
+		FROM usage_logs
+		WHERE api_key_id = $1
+		  AND created_at >= $2
+		  AND status_code <> 499
+		GROUP BY account_id
+	`, apiKeyID, db.timeArg(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int64]APIKeyWindowUsage)
+	for rows.Next() {
+		var accountID int64
+		var usage APIKeyWindowUsage
+		if err := rows.Scan(&accountID, &usage.Requests, &usage.Tokens, &usage.UserBilled); err != nil {
+			return nil, err
+		}
+		if accountID <= 0 {
+			continue
+		}
+		out[accountID] = usage
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetAPIKeysAccountWindowUsage 是 GetAPIKeyAccountWindowUsage 的批量版本:一次查询拿到
+// 多个 API Key 在同一窗口内、按账号拆分的用量,供列表页展示 scope 预算进度(issue #439)。
+// apiKeyIDs 为空时返回空表(刻意不退化成全表聚合,避免列表页误触发大查询)。
+func (db *DB) GetAPIKeysAccountWindowUsage(ctx context.Context, apiKeyIDs []int64, window time.Duration) (map[int64]map[int64]APIKeyWindowUsage, error) {
+	out := make(map[int64]map[int64]APIKeyWindowUsage)
+	if len(apiKeyIDs) == 0 || window <= 0 {
+		return out, nil
+	}
+	placeholders := make([]string, 0, len(apiKeyIDs))
+	args := make([]interface{}, 0, len(apiKeyIDs)+1)
+	for i, id := range apiKeyIDs {
+		if db.isSQLite() {
+			placeholders = append(placeholders, "?")
+		} else {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		}
+		args = append(args, id)
+	}
+	sincePlaceholder := "?"
+	if !db.isSQLite() {
+		sincePlaceholder = fmt.Sprintf("$%d", len(apiKeyIDs)+1)
+	}
+	args = append(args, db.timeArg(time.Now().Add(-window)))
+
+	query := fmt.Sprintf(`
+		SELECT
+			api_key_id,
+			COALESCE(account_id, 0),
+			COUNT(*),
+			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(user_billed), 0)
+		FROM usage_logs
+		WHERE api_key_id IN (%s)
+		  AND created_at >= %s
+		  AND status_code <> 499
+		GROUP BY api_key_id, account_id
+	`, strings.Join(placeholders, ","), sincePlaceholder)
+
+	rows, err := db.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var apiKeyID, accountID int64
+		var usage APIKeyWindowUsage
+		if err := rows.Scan(&apiKeyID, &accountID, &usage.Requests, &usage.Tokens, &usage.UserBilled); err != nil {
+			return nil, err
+		}
+		if apiKeyID <= 0 || accountID <= 0 {
+			continue
+		}
+		if out[apiKeyID] == nil {
+			out[apiKeyID] = make(map[int64]APIKeyWindowUsage)
+		}
+		out[apiKeyID][accountID] = usage
+	}
+	return out, rows.Err()
+}
+
 // APIKeyTokenStat 是 API Key 在某时间区间内的 token 使用排行项。
 // 比 UsageAPIKeyStat 更细——分列 input / output / cached token，便于 UI 单独排序。
 type APIKeyTokenStat struct {

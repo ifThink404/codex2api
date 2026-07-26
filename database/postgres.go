@@ -215,6 +215,12 @@ type DB struct {
 	accountInsertMu       sync.Mutex
 	sqliteWriteSem        chan struct{}
 	sqliteSingleConn      bool
+
+	// 配了 scope 累计额度的 API Key 集合（issue #439 v2）。落库热路径靠它跳过
+	// 绝大多数 Key，60s 刷新一次；管理端保存后会主动失效。
+	scopeQuotaMu        sync.Mutex
+	scopeQuotaKeys      map[int64]struct{}
+	scopeQuotaExpiresAt time.Time
 }
 
 const (
@@ -862,6 +868,18 @@ func (db *DB) migrate(ctx context.Context) error {
 				recovery_probe_interval_minutes INT DEFAULT 30,
 			scheduler_mode VARCHAR(20) DEFAULT 'round_robin'
 		);
+	CREATE TABLE IF NOT EXISTS api_key_scope_counters (
+		api_key_id BIGINT NOT NULL,
+		scope_type VARCHAR(16) NOT NULL,
+		scope_id BIGINT NOT NULL,
+		used_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+		used_tokens BIGINT NOT NULL DEFAULT 0,
+		used_requests BIGINT NOT NULL DEFAULT 0,
+		reset_count INTEGER NOT NULL DEFAULT 0,
+		last_reset_at TIMESTAMPTZ,
+		updated_at TIMESTAMPTZ DEFAULT NOW(),
+		PRIMARY KEY (api_key_id, scope_type, scope_id)
+	);
 	CREATE TABLE IF NOT EXISTS account_model_cooldowns (
 		account_id BIGINT NOT NULL,
 		model VARCHAR(100) NOT NULL,
@@ -1214,6 +1232,10 @@ type APIKeyLimits struct {
 	//   - codex:   仅非 Grok 账号（Codex OAuth / OpenAI Responses 中转）
 	//   - grok:    仅 Grok 账号（此时不再要求账号声明模型，直接透传请求模型）
 	UpstreamChannel string `json:"upstream_channel,omitempty"`
+	// ScopeLimits 是「该 Key × 某账号分组 / 某账号」维度的用量上限（issue #439）。
+	// 与上面的 Cost/Token 限额不同，它只统计该 Key 打到对应 scope 的用量，超额后默认
+	// 把该 scope 的账号从候选池剔除（自动落到其它分组），详见 APIKeyScopeLimit。
+	ScopeLimits []APIKeyScopeLimit `json:"scope_limits,omitempty"`
 }
 
 // 图片工具策略取值。
@@ -1265,6 +1287,7 @@ func (l APIKeyLimits) IsZero() bool {
 		l.RPM == 0 && l.RPD == 0 && l.MaxConcurrency == 0 &&
 		l.CostLimit5h == 0 && l.CostLimit7d == 0 && l.CostLimit30d == 0 &&
 		l.TokenLimit5h == 0 && l.TokenLimit7d == 0 && l.TokenLimit30d == 0 &&
+		len(l.ScopeLimits) == 0 &&
 		!l.DisableImageGeneration &&
 		!l.AutoCompactOnOverflow &&
 		l.ResolveImageGenerationPolicy() == ImageGenerationPolicyAllow &&
@@ -2326,7 +2349,7 @@ func normalizeGrokConfig(raw string) string {
 
 // DeleteAPIKey 删除 API 密钥
 func (db *DB) DeleteAPIKey(ctx context.Context, id int64) error {
-	return db.withSQLiteWriteLock(ctx, func() error {
+	err := db.withSQLiteWriteLock(ctx, func() error {
 		tx, err := db.conn.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -2335,11 +2358,20 @@ func (db *DB) DeleteAPIKey(ctx context.Context, id int64) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM prompt_filter_newapi_bindings WHERE api_key_id = $1`, id); err != nil {
 			return err
 		}
+		// scope 累计计数器没有外键约束，删 Key 时顺带清掉，避免留下永远不会再被读到的孤行。
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_key_scope_counters WHERE api_key_id = $1`, id); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE id = $1`, id); err != nil {
 			return err
 		}
 		return tx.Commit()
 	})
+	if err != nil {
+		return err
+	}
+	db.InvalidateScopeQuotaKeyCache()
+	return nil
 }
 
 // GetAllAPIKeyValues 获取所有密钥值（用于鉴权）
@@ -2627,20 +2659,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 	}
 	storeUsageLog := db.shouldStoreUsageLog(log)
 
-	// 计算计费金额（基于 input/output tokens 和模型）
-	// 使用 EffectiveModel 作为计费模型（如果有映射则使用映射后的模型）
-	billingModel := log.EffectiveModel
-	if billingModel == "" {
-		billingModel = log.Model
-	}
-
-	billingServiceTier := log.BillingServiceTier
-	if billingServiceTier == "" {
-		billingServiceTier = log.ActualServiceTier
-	}
-	if billingServiceTier == "" {
-		billingServiceTier = log.ServiceTier
-	}
+	billingServiceTier := usageLogBillingServiceTier(log)
 
 	serviceTier := log.ServiceTier
 	if serviceTier == "" {
@@ -2651,7 +2670,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 	}
 
 	// 计算账号计费金额（基于实际计费 service tier）
-	accountBilled := calculateCost(log.InputTokens, log.OutputTokens, log.CachedTokens, billingModel, billingServiceTier)
+	accountBilled := UsageLogBilledCost(log)
 
 	// 用户计费金额与账号计费金额相同（简化版，未来可支持倍率）
 	userBilled := accountBilled
@@ -2836,6 +2855,15 @@ func stopTimer(timer *time.Timer) {
 	}
 }
 
+// FlushUsageLogs 同步刷完当前用量日志缓冲。正常运行由后台 flusher 按批/按间隔触发，
+// 这里给需要「写入后立刻可查」的调用方（测试、诊断路径）一个确定性入口。
+func (db *DB) FlushUsageLogs() {
+	if db == nil {
+		return
+	}
+	db.flushLogs()
+}
+
 // flushLogs 将缓冲中的日志批量写入 PG
 func (db *DB) flushLogs() {
 	db.logMu.Lock()
@@ -2952,6 +2980,9 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 		}
 	}
 
+	if err := db.applyAPIKeyScopeCountersWithExec(ctx, tx, batch); err != nil {
+		return fmt.Errorf("更新 scope 累计额度: %w", err)
+	}
 	if err := db.applyAPIKeyQuotaUsageWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新 API Key 额度用量: %w", err)
 	}
@@ -2988,6 +3019,9 @@ func (db *DB) batchInsertLogs(ctx context.Context, batch []usageLogEntry) error 
 		if err := db.batchInsertLogsChunk(ctx, tx, subBatch); err != nil {
 			return err
 		}
+	}
+	if err := db.applyAPIKeyScopeCountersWithExec(ctx, tx, batch); err != nil {
+		return fmt.Errorf("更新 scope 累计额度: %w", err)
 	}
 	if err := db.applyAPIKeyQuotaUsageWithExec(ctx, tx, batch); err != nil {
 		return err
@@ -3040,6 +3074,9 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 func (db *DB) applyAPIKeyQuotaUsage(ctx context.Context, batch []usageLogEntry) error {
 	if db == nil {
 		return nil
+	}
+	if err := db.applyAPIKeyScopeCountersWithExec(ctx, db.conn, batch); err != nil {
+		return err
 	}
 	return db.applyAPIKeyQuotaUsageWithExec(ctx, db.conn, batch)
 }

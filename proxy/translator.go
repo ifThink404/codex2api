@@ -3071,12 +3071,18 @@ func newToolCallDeltaChunk(id, model string, created int64, tcIndex int, argsDel
 	return b
 }
 
-// newFinalChunk 构建最终流式块（含 finish_reason 和可选 usage）
+// newFinalChunk 构建最终流式块（含 finish_reason 和可选 usage）。
+//
+// delta 必须显式带上空对象:OpenAI 官方终结块形如
+// {"index":0,"delta":{},"finish_reason":"stop"},严格反序列化的客户端
+// (Rust/serde 系)把 delta 当必填字段,缺失会直接报
+// "missing field `delta`" 并让整轮对话失败。
 func newFinalChunk(id, model string, created int64, finishReason string, usage *UsageInfo) []byte {
 	chunk := openAIStreamChunk{
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []streamChoice{{
 			Index:        0,
+			Delta:        &streamDelta{},
 			FinishReason: &finishReason,
 		}},
 		Usage: usage,

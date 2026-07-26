@@ -387,3 +387,70 @@ func TestGPT55LongContextPricing(t *testing.T) {
 	assertFloatEqual(t, longPri.OutputPricePerMToken, 112.5)
 	assertFloatEqual(t, longPri.ServiceTierCostMultiplier, 1.0)
 }
+
+func TestGrokPricingUsesXAIRates(t *testing.T) {
+	tests := []struct {
+		model      string
+		wantInput  float64
+		wantOutput float64
+		wantCache  float64
+	}{
+		{model: "grok-4.5", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.3},
+		{model: "grok-4.3", wantInput: 1.25, wantOutput: 2.5, wantCache: 0.2},
+		{model: "grok-4-fast", wantInput: 0.2, wantOutput: 0.5, wantCache: 0.05},
+		{model: "grok-4", wantInput: 3.0, wantOutput: 15.0, wantCache: 0.75},
+		{model: "grok-code-fast-1", wantInput: 0.2, wantOutput: 1.5, wantCache: 0.02},
+		{model: "grok-3-mini", wantInput: 0.3, wantOutput: 0.5, wantCache: 0.075},
+		{model: "grok-3-fast", wantInput: 5.0, wantOutput: 25.0},
+		{model: "grok-3", wantInput: 3.0, wantOutput: 15.0, wantCache: 0.75},
+		{model: "grok-2", wantInput: 2.0, wantOutput: 10.0},
+		// 日期后缀变体走同一条规则。
+		{model: "grok-4-0709", wantInput: 3.0, wantOutput: 15.0, wantCache: 0.75},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := GetModelPricing(tt.model)
+			assertPricing(t, got, tt.wantInput, tt.wantOutput)
+			assertFloatEqual(t, got.CacheReadPricePerMToken, tt.wantCache)
+		})
+	}
+}
+
+// grok-4.5 更专用的规则必须压过 grok-4，否则 $2/$6 会被当成 $3/$15。
+func TestGrokMoreSpecificRuleWinsOverShorterPrefix(t *testing.T) {
+	assertPricing(t, GetModelPricing("grok-4.5"), 2.0, 6.0)
+	assertPricing(t, GetModelPricing("grok-4"), 3.0, 15.0)
+	assertPricing(t, GetModelPricing("grok-3-fast"), 5.0, 25.0)
+	assertPricing(t, GetModelPricing("grok-3"), 3.0, 15.0)
+}
+
+// Grok 的长上下文分档线是 200K，不是 OpenAI 的 272K。
+func TestGrokLongContextThresholdIs200K(t *testing.T) {
+	std := CalculateCostBreakdown(200000, 1000, 0, "grok-4.5", "")
+	assertFloatEqual(t, std.InputPricePerMToken, 2.0)
+	assertFloatEqual(t, std.OutputPricePerMToken, 6.0)
+	if std.LongContext {
+		t.Fatal("LongContext = true at 200K for grok-4.5, want false")
+	}
+
+	long := CalculateCostBreakdown(200001, 1000, 500, "grok-4.5", "")
+	assertFloatEqual(t, long.InputPricePerMToken, 4.0)
+	assertFloatEqual(t, long.OutputPricePerMToken, 12.0)
+	assertFloatEqual(t, long.CacheReadPricePerMToken, 1.0)
+	if !long.LongContext {
+		t.Fatal("LongContext = false above 200K for grok-4.5, want true")
+	}
+	if long.LongContextThreshold != 200000 {
+		t.Fatalf("LongContextThreshold = %d, want 200000", long.LongContextThreshold)
+	}
+
+	// Codex 模型不受影响，仍是 272K。
+	codex := CalculateCostBreakdown(272000, 1000, 0, "gpt-5.4", "")
+	if codex.LongContext {
+		t.Fatal("gpt-5.4 LongContext = true at 272K, want false")
+	}
+	if codex.LongContextThreshold != longContextThreshold {
+		t.Fatalf("gpt-5.4 LongContextThreshold = %d, want %d", codex.LongContextThreshold, longContextThreshold)
+	}
+}

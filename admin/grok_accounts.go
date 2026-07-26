@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,6 +30,9 @@ type addGrokAccountReq struct {
 	Models       []string `json:"models"`
 	ModelMapping string   `json:"model_mapping"`
 	ProxyURL     string   `json:"proxy_url"`
+	// GroupIDs 让添加时就把新账号绑进指定分组（UpdateGrokAccount 复用本结构时忽略该字段，
+	// 编辑分组走账号编辑抽屉的 group_ids）。
+	GroupIDs json.RawMessage `json:"group_ids"`
 }
 
 // grokCredentialsFromRequest 校验请求并构造待入库的 credentials map。
@@ -168,6 +172,12 @@ func (h *Handler) AddGrokAccount(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
+	// 分组校验放在建号之前：分组 ID 打错时不该留下一个没绑上分组的账号。
+	groupIDs, err := h.resolveImportGroupIDsJSON(ctx, req.GroupIDs)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	id, err := h.db.InsertAccountWithUpstream(ctx, name, "xai", auth.UpstreamGrok, credentials, req.ProxyURL)
 	if err != nil {
 		writeInternalError(c, err)
@@ -187,7 +197,11 @@ func (h *Handler) AddGrokAccount(c *gin.Context) {
 	h.triggerGrokUsageProbe(id)
 
 	security.SecurityAuditLog("GROK_ACCOUNT_ADDED", fmt.Sprintf("account_id=%d auth_kind=%s models=%d ip=%s", id, acc.GrokAuthKind(), len(models), c.ClientIP()))
-	c.JSON(http.StatusOK, gin.H{"message": "成功添加 Grok 账号", "id": id})
+	message := "成功添加 Grok 账号"
+	if err := h.bindImportedAccountGroups(ctx, []int64{id}, groupIDs); err != nil {
+		message += "，但分组绑定失败: " + err.Error()
+	}
+	c.JSON(http.StatusOK, gin.H{"message": message, "id": id, "group_ids": groupIDs})
 }
 
 // UpdateGrokAccount 更新 Grok 账号的可编辑配置（PATCH /api/admin/accounts/:id/grok）。
@@ -393,6 +407,8 @@ type batchImportGrokReq struct {
 	BaseURL  string   `json:"base_url"`
 	Models   []string `json:"models"`
 	ProxyURL string   `json:"proxy_url"`
+	// GroupIDs 让导入时就把新账号绑进指定分组；跳过的重复账号不受影响。
+	GroupIDs json.RawMessage `json:"group_ids"`
 }
 
 type grokBatchImportItem struct {
@@ -454,9 +470,15 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
+	groupIDs, err := h.resolveImportGroupIDsJSON(ctx, req.GroupIDs)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	items := make([]grokBatchImportItem, 0, len(req.Files))
 	imported := 0
+	createdIDs := make([]int64, 0, len(req.Files))
 	for i, content := range req.Files {
 		item := grokBatchImportItem{}
 		fileReq := &addGrokAccountReq{
@@ -507,15 +529,21 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 		item.ID = id
 		items = append(items, item)
 		imported++
+		createdIDs = append(createdIDs, id)
 
 		h.triggerGrokUsageProbe(id)
 	}
 
 	security.SecurityAuditLog("GROK_FILE_IMPORTED", fmt.Sprintf("total=%d imported=%d ip=%s", len(req.Files), imported, c.ClientIP()))
-	c.JSON(http.StatusOK, gin.H{
-		"total":    len(req.Files),
-		"imported": imported,
-		"failed":   len(req.Files) - imported,
-		"items":    items,
-	})
+	response := gin.H{
+		"total":     len(req.Files),
+		"imported":  imported,
+		"failed":    len(req.Files) - imported,
+		"items":     items,
+		"group_ids": groupIDs,
+	}
+	if err := h.bindImportedAccountGroups(ctx, createdIDs, groupIDs); err != nil {
+		response["group_bind_error"] = err.Error()
+	}
+	c.JSON(http.StatusOK, response)
 }

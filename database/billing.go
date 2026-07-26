@@ -18,6 +18,11 @@ type ModelPricing struct {
 	LongOutputPricePerMTokenPriority    float64
 	LongCacheReadPricePerMToken         float64
 	LongCacheReadPricePerMTokenPriority float64
+
+	// LongContextThresholdTokens 是该模型进入长上下文档位的输入 token 阈值。
+	// 留空用全局 longContextThreshold（OpenAI 的 272K）；xAI Grok 的分档线是 200K，
+	// 需在规则里单独声明，否则 200K~272K 区间会按短档少算。
+	LongContextThresholdTokens int
 }
 
 type modelPricingRule struct {
@@ -151,6 +156,46 @@ var (
 			CacheReadPricePerMToken:         0.175,
 			CacheReadPricePerMTokenPriority: 0.35,
 		}},
+		// ===== xAI Grok（USD / 1M token）=====
+		// 价目取自 models.dev 的 xai provider 条目；models.dev 未收录的老型号
+		// （grok-3-fast / grok-2）按 xAI 官方公开价填，缓存价未公开的留空
+		// （留空 = 缓存 token 按输入价计）。任何一条都可在定价页覆盖。
+		// Grok 的长上下文分档线是 200K，与 OpenAI 的 272K 不同，逐条声明。
+		{model: "grok-4.5", pricing: ModelPricing{
+			InputPricePerMToken:         2.0,
+			OutputPricePerMToken:        6.0,
+			CacheReadPricePerMToken:     0.3,
+			LongInputPricePerMToken:     4.0,
+			LongOutputPricePerMToken:    12.0,
+			LongCacheReadPricePerMToken: 1.0,
+			LongContextThresholdTokens:  200000,
+		}},
+		{model: "grok-4.3", pricing: ModelPricing{
+			InputPricePerMToken:         1.25,
+			OutputPricePerMToken:        2.5,
+			CacheReadPricePerMToken:     0.2,
+			LongInputPricePerMToken:     2.5,
+			LongOutputPricePerMToken:    5.0,
+			LongCacheReadPricePerMToken: 0.4,
+			LongContextThresholdTokens:  200000,
+		}},
+		{model: "grok-4.20", pricing: ModelPricing{
+			InputPricePerMToken:         1.25,
+			OutputPricePerMToken:        2.5,
+			CacheReadPricePerMToken:     0.2,
+			LongInputPricePerMToken:     2.5,
+			LongOutputPricePerMToken:    5.0,
+			LongCacheReadPricePerMToken: 0.4,
+			LongContextThresholdTokens:  200000,
+		}},
+		{model: "grok-4-fast", pricing: ModelPricing{InputPricePerMToken: 0.2, OutputPricePerMToken: 0.5, CacheReadPricePerMToken: 0.05}},
+		{model: "grok-4", pricing: ModelPricing{InputPricePerMToken: 3.0, OutputPricePerMToken: 15.0, CacheReadPricePerMToken: 0.75}},
+		{model: "grok-code-fast-1", pricing: ModelPricing{InputPricePerMToken: 0.2, OutputPricePerMToken: 1.5, CacheReadPricePerMToken: 0.02}},
+		{model: "grok-3-mini", pricing: ModelPricing{InputPricePerMToken: 0.3, OutputPricePerMToken: 0.5, CacheReadPricePerMToken: 0.075}},
+		{model: "grok-3-fast", pricing: ModelPricing{InputPricePerMToken: 5.0, OutputPricePerMToken: 25.0}},
+		{model: "grok-3", pricing: ModelPricing{InputPricePerMToken: 3.0, OutputPricePerMToken: 15.0, CacheReadPricePerMToken: 0.75}},
+		{model: "grok-2", pricing: ModelPricing{InputPricePerMToken: 2.0, OutputPricePerMToken: 10.0}},
+
 		{model: "gpt-4o-mini", pricing: ModelPricing{InputPricePerMToken: 0.15, OutputPricePerMToken: 0.6}},
 		{model: "gpt-4o", pricing: ModelPricing{InputPricePerMToken: 2.5, OutputPricePerMToken: 10.0}},
 		{model: "gpt-4-turbo", pricing: ModelPricing{InputPricePerMToken: 10.0, OutputPricePerMToken: 30.0}},
@@ -196,9 +241,43 @@ func CalculateCost(inputTokens, outputTokens, cachedTokens int, model string, se
 	return CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens, model, serviceTier).TotalCost
 }
 
+// usageLogBillingServiceTier 解析一条待写入用量事件的计费 service tier:
+// 显式 BillingServiceTier 优先,其次上游实际 tier,最后请求 tier。
+func usageLogBillingServiceTier(log *UsageLogInput) string {
+	if log == nil {
+		return ""
+	}
+	if tier := log.BillingServiceTier; tier != "" {
+		return tier
+	}
+	if tier := log.ActualServiceTier; tier != "" {
+		return tier
+	}
+	return log.ServiceTier
+}
+
+// UsageLogBilledCost 返回一条待写入用量事件的计费金额(美元),与 InsertUsageLog 落库时
+// 写进 account_billed / user_billed 的口径完全一致。热路径上需要在日志落库前就拿到
+// 这笔消耗时(如 scope 维度限额的本地增量修正)调用它,避免两处计费逻辑漂移。
+func UsageLogBilledCost(log *UsageLogInput) float64 {
+	if log == nil {
+		return 0
+	}
+	// 使用 EffectiveModel 作为计费模型（如果有映射则使用映射后的模型）
+	billingModel := log.EffectiveModel
+	if billingModel == "" {
+		billingModel = log.Model
+	}
+	return calculateCost(log.InputTokens, log.OutputTokens, log.CachedTokens, billingModel, usageLogBillingServiceTier(log))
+}
+
 func CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens int, model string, serviceTier string) CostBreakdown {
 	pricing := GetModelPricing(model)
-	isLong := inputTokens > longContextThreshold
+	threshold := longContextThreshold
+	if pricing.LongContextThresholdTokens > 0 {
+		threshold = pricing.LongContextThresholdTokens
+	}
+	isLong := inputTokens > threshold
 	longContextApplied := false
 
 	inputPrice := pricing.InputPricePerMToken
@@ -260,7 +339,7 @@ func CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens int, model s
 		CacheReadPricePerMToken:   cacheReadPrice * tierMultiplier,
 		ServiceTierCostMultiplier: tierMultiplier,
 		LongContext:               longContextApplied,
-		LongContextThreshold:      longContextThreshold,
+		LongContextThreshold:      threshold,
 	}
 }
 

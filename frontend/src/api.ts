@@ -26,6 +26,8 @@ import type {
   APIKeysResponse,
   APIKeyTokenStat,
   APIKeyAccountStat,
+  APIKeyScopeUsageItem,
+  APIKeyScopeSummaryItem,
   AccountsResponse,
   ChartAggregation,
   CreateAccountResponse,
@@ -698,6 +700,18 @@ export const api = {
     request<MessageResponse>(`/keys/${id}`, { method: 'DELETE' }),
   updateAPIKey: (id: number, data: UpdateAPIKeyRequest) =>
     request<MessageResponse>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // 分组 / 账号维度限额的当前用量（issue #439）。
+  getAPIKeyScopeUsage: (id: number) =>
+    request<{ items: APIKeyScopeUsageItem[] }>(`/keys/${id}/scope-usage`),
+  // 列表页用的全量概览：一次拿到所有 Key 的 scope 预算占比。
+  getAPIKeysScopeSummary: () =>
+    request<{ summary: Record<string, APIKeyScopeSummaryItem[]> }>('/keys-scope-summary'),
+  // 重置某条 scope 的累计额度（累计额度不随时间回落，必须显式重置）。
+  resetAPIKeyScopeQuota: (id: number, data: { scope_type: 'group' | 'account'; scope_id: number }) =>
+    request<MessageResponse>(`/keys/${id}/scope-quota/reset`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   getImagePromptTemplates: (params: { q?: string; tag?: string } = {}) => {
     const sp = new URLSearchParams()
     if (params.q) sp.set('q', params.q)

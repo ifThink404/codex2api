@@ -163,6 +163,18 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			expires_at TIMESTAMP NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_scope_counters (
+			api_key_id INTEGER NOT NULL,
+			scope_type TEXT NOT NULL,
+			scope_id INTEGER NOT NULL,
+			used_cost REAL DEFAULT 0,
+			used_tokens INTEGER DEFAULT 0,
+			used_requests INTEGER DEFAULT 0,
+			reset_count INTEGER DEFAULT 0,
+			last_reset_at TIMESTAMP NULL,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (api_key_id, scope_type, scope_id)
+		);`,
 		`CREATE TABLE IF NOT EXISTS account_groups (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT UNIQUE NOT NULL,

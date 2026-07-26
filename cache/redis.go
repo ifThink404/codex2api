@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -488,3 +489,54 @@ func (tc *redisTokenCache) DeleteRuntime(ctx context.Context, namespace string, 
 	}
 	return tc.client.Del(ctx, runtimeValueKey(namespace, key)).Err()
 }
+
+func (tc *redisTokenCache) IncrRuntimeCounters(ctx context.Context, namespace string, key string, deltas map[string]float64, ttl time.Duration) error {
+	key = strings.TrimSpace(key)
+	if key == "" || len(deltas) == 0 {
+		return nil
+	}
+	if ttl <= 0 {
+		ttl = time.Minute
+	}
+	hashKey := runtimeValueKey(namespace, key)
+	_, err := tc.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for field, delta := range deltas {
+			if delta == 0 {
+				continue
+			}
+			pipe.HIncrByFloat(ctx, hashKey, field, delta)
+		}
+		pipe.Expire(ctx, hashKey, ttl)
+		return nil
+	})
+	return err
+}
+
+func (tc *redisTokenCache) GetRuntimeCounters(ctx context.Context, namespace string, key string) (map[string]float64, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, nil
+	}
+	raw, err := tc.client.HGetAll(ctx, runtimeValueKey(namespace, key)).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]float64, len(raw))
+	for field, value := range raw {
+		parsed, convErr := strconv.ParseFloat(value, 64)
+		if convErr != nil {
+			continue
+		}
+		out[field] = parsed
+	}
+	return out, nil
+}
+
+// SharedAcrossInstances 报告 Redis 运行态缓存跨实例共享。
+func (tc *redisTokenCache) SharedAcrossInstances() bool { return true }

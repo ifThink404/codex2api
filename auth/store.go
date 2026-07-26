@@ -1948,6 +1948,22 @@ func (a *Account) GroupIDSnapshot() []int64 {
 	return cloneInt64Slice(a.GroupIDs)
 }
 
+// InAnyGroup 判断账号是否属于给定分组集合中的任意一个。用于调度热路径上的分组匹配:
+// 与 GroupIDSnapshot 不同,它不复制切片,避免每个候选账号一次分配。
+func (a *Account) InAnyGroup(groups map[int64]struct{}) bool {
+	if a == nil || len(groups) == 0 {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, id := range a.GroupIDs {
+		if _, ok := groups[id]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // applyRefreshedPlanTypeLocked applies a plan parsed from refreshed tokens.
 // Caller must hold a.mu.
 func (a *Account) applyRefreshedPlanTypeLocked(planType string, now time.Time) (string, bool) {

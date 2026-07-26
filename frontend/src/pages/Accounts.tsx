@@ -121,6 +121,7 @@ import Sub2APIImportModal from "../components/Sub2APIImportModal";
 import AccountQuotaDistributionChart from "../components/AccountQuotaDistributionChart";
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
+import { useImportGroupIds } from "../hooks/useImportGroupIds";
 import AccountGroupFilterSelect, {
   EMPTY_ACCOUNT_GROUP_FILTER,
   accountMatchesGroupFilter,
@@ -991,6 +992,12 @@ export default function Accounts() {
     EMPTY_ACCOUNT_GROUP_FILTER,
   );
   const [allGroups, setAllGroups] = useState<AccountGroup[]>([]);
+  // 导入/添加账号时直接绑定的分组（记住上次选择，添加弹窗与导入弹窗共用，与 allowDuplicate 同风格）。
+  const {
+    groupIds: importGroupIds,
+    setGroupIds: setImportGroupIds,
+    prune: pruneImportGroupIds,
+  } = useImportGroupIds();
   const [showGroupManager, setShowGroupManager] = useState(false);
   const [groupDraft, setGroupDraft] = useState<AccountGroupDraft>({
     id: null,
@@ -1599,7 +1606,8 @@ export default function Accounts() {
 
   useEffect(() => {
     setGroupFilter((current) => pruneAccountGroupFilter(current, allGroups));
-  }, [allGroups]);
+    pruneImportGroupIds(allGroups);
+  }, [allGroups, pruneImportGroupIds]);
 
   useEffect(() => {
     const missingUsageIds = accounts
@@ -1964,12 +1972,14 @@ export default function Accounts() {
             refresh_token: "",
             allow_duplicate: allowDuplicate,
             custom_headers: parsedCustomHeaders.value,
+            group_ids: importGroupIds,
           }
         : {
             ...addForm,
             session_token: "",
             allow_duplicate: allowDuplicate,
             custom_headers: parsedCustomHeaders.value,
+            group_ids: importGroupIds,
           };
     if (
       !payload.refresh_token?.trim() &&
@@ -2027,6 +2037,7 @@ export default function Accounts() {
         ...atForm,
         allow_duplicate: allowDuplicate,
         custom_headers: parsedCustomHeaders.value,
+        group_ids: importGroupIds,
       });
       setShowAdd(false);
       await readImportSSE(res);
@@ -2586,6 +2597,9 @@ export default function Accounts() {
         );
       }
       if (allowDuplicate) formData.append("allow_duplicate", "true");
+      if (importGroupIds.length > 0) {
+        formData.append("group_ids", JSON.stringify(importGroupIds));
+      }
       for (const f of files) formData.append("file", f);
       const res = await fetch("/api/admin/accounts/import", {
         method: "POST",
@@ -6604,6 +6618,35 @@ export default function Accounts() {
                 )}
               </div>
             )}
+            {(addMethod === "rt" ||
+              addMethod === "st" ||
+              addMethod === "at") && (
+              <div className="mt-4 space-y-1.5 border-t border-border pt-4">
+                <label className="text-sm font-semibold text-muted-foreground">
+                  {t("accounts.importGroupsLabel")}
+                </label>
+                <AccountGroupMultiSelect
+                  groups={allGroups}
+                  value={importGroupIds}
+                  onChange={setImportGroupIds}
+                  allLabel={t("accounts.groupsUnbound")}
+                  selectedLabel={t("accounts.groupsSelected", {
+                    count: importGroupIds.length,
+                  })}
+                  placeholder={t("accounts.importGroupsPlaceholder")}
+                  emptyLabel={t("accounts.groupsNone")}
+                  emptyHint={t("accounts.groupsSelectHint")}
+                  onCreateGroup={handleCreateGroupInline}
+                  createLabel={t("accounts.groupCreate")}
+                  createPlaceholder={t("accounts.groupNamePlaceholder")}
+                  creatingLabel={t("accounts.groupCreating")}
+                  createEmptyHint={t("accounts.groupCreateInlineEmptyHint")}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  {t("accounts.importGroupsHint")}
+                </p>
+              </div>
+            )}
           </Modal>
 
           <Modal
@@ -6639,6 +6682,31 @@ export default function Accounts() {
                 />
                 {t("accounts.allowDuplicate")}
               </label>
+              <div className="space-y-1.5 pt-1">
+                <label className="text-xs font-medium text-foreground">
+                  {t("accounts.importGroupsLabel")}
+                </label>
+                <AccountGroupMultiSelect
+                  groups={allGroups}
+                  value={importGroupIds}
+                  onChange={setImportGroupIds}
+                  allLabel={t("accounts.groupsUnbound")}
+                  selectedLabel={t("accounts.groupsSelected", {
+                    count: importGroupIds.length,
+                  })}
+                  placeholder={t("accounts.importGroupsPlaceholder")}
+                  emptyLabel={t("accounts.groupsNone")}
+                  emptyHint={t("accounts.groupsSelectHint")}
+                  onCreateGroup={handleCreateGroupInline}
+                  createLabel={t("accounts.groupCreate")}
+                  createPlaceholder={t("accounts.groupNamePlaceholder")}
+                  creatingLabel={t("accounts.groupCreating")}
+                  createEmptyHint={t("accounts.groupCreateInlineEmptyHint")}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  {t("accounts.importGroupsHint")}
+                </p>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <button

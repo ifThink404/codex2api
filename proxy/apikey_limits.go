@@ -178,6 +178,18 @@ func (h *Handler) enforceAPIKeyLimits(c *gin.Context, model string) (int, string
 		}
 	}
 
+	// 5. 分组 / 账号维度预算 (issue #439)。reject 类超额在此短路;skip 类挂到
+	// gin context 上，由各 handler 的账号过滤链剔除对应候选。
+	if len(limits.ScopeLimits) > 0 {
+		gate, rejectMsg := h.evaluateAPIKeyScopeBudgets(ctx, row)
+		if rejectMsg != "" {
+			return http.StatusTooManyRequests, rejectMsg
+		}
+		if gate != nil {
+			c.Set(contextScopeBudgetGate, gate)
+		}
+	}
+
 	return 0, ""
 }
 

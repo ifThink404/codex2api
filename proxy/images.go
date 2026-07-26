@@ -1375,13 +1375,15 @@ func imagePreferredAccountFilter(account *auth.Account) bool {
 	return auth.IsPlusOrHigherPlan(account.GetPlanType())
 }
 
-func (h *Handler) nextImageAccount(apiKeyID int64, exclude map[int64]bool, model string) (*auth.Account, string) {
-	preferredFilter := h.withModelCooldownFilter(model, imagePreferredAccountFilter)
+// nextImageAccount 先在 plus 及以上套餐的账号里挑，挑不到再放开到全部账号。
+// 两层都要过 scope 预算闸门（issue #439），否则回退层会绕过预算限制。
+func (h *Handler) nextImageAccount(c *gin.Context, apiKeyID int64, exclude map[int64]bool, model string) (*auth.Account, string) {
+	preferredFilter := h.applyScopeBudgetFilter(c, h.withModelCooldownFilter(model, imagePreferredAccountFilter))
 	account, stickyProxyURL := h.nextAccountForSessionWithFilter("", apiKeyID, exclude, preferredFilter)
 	if account != nil {
 		return account, stickyProxyURL
 	}
-	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.withModelCooldownFilter(model, nil))
+	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.applyScopeBudgetFilter(c, h.withModelCooldownFilter(model, nil)))
 }
 
 func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestModel, logModel, logEffectiveModel string, responsesBody []byte, responseFormat, streamPrefix string, stream bool) {
@@ -1394,6 +1396,8 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	}
 
 	apiKeyID := requestAPIKeyID(c)
+	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
+	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	maxRetries := h.getMaxRetries()
 	maxRateLimitRetries := h.getMaxRateLimitRetries()
 	generalRetries := 0
@@ -1414,12 +1418,16 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		if err := c.Request.Context().Err(); err != nil {
 			return
 		}
-		account, stickyProxyURL := h.nextImageAccount(apiKeyID, excludeAccounts, requestModel)
+		account, stickyProxyURL := h.nextImageAccount(c, apiKeyID, excludeAccounts, requestModel)
 		if account == nil {
-			account, stickyProxyURL = h.store.WaitForSessionAvailableWithFilter(c.Request.Context(), "", 30*time.Second, apiKeyID, excludeAccounts, h.withModelCooldownFilter(requestModel, nil))
+			account, stickyProxyURL = h.store.WaitForSessionAvailableWithFilter(c.Request.Context(), "", 30*time.Second, apiKeyID, excludeAccounts, h.applyScopeBudgetFilter(c, h.withModelCooldownFilter(requestModel, nil)))
 			if account == nil {
 				if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
 					h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
+					return
+				}
+				if msg := scopeBudgetExhaustedMessage(c); msg != "" {
+					SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
 					return
 				}
 				c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(""))
@@ -1427,6 +1435,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			}
 		}
 
+		h.AcquireAPIKeyScopeConcurrency(c, account)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		apiKey := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
