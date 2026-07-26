@@ -1497,10 +1497,6 @@ func appendMissingResponseImageOutputs(responseJSON []byte, imageOutputs []json.
 // RegisterRoutes 注册路由
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	auth := h.authMiddleware()
-	// Legacy global-secret verifier remains unauthenticated for backwards
-	// compatibility. Key-bound platforms must use the authenticated V1 route
-	// below so requestAPIKeyID resolves the one-to-one binding.
-	r.POST("/api/prompt-filter/newapi/verify", h.VerifyNewAPIPolicyHandshake)
 
 	// /v1 前缀路由（标准路径）
 	v1 := r.Group("/v1")

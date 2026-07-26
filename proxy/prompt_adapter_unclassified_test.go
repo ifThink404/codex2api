@@ -39,7 +39,6 @@ func (c *adapterAuditCountingCache) SetRuntime(ctx context.Context, namespace st
 
 func TestPromptAdapterUnclassifiedPersistsNonPunitiveAuditWithoutExtensionsOrBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	var sidecarCalls atomic.Int32
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		sidecarCalls.Add(1)

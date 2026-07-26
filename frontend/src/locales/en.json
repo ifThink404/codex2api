@@ -2154,43 +2154,16 @@
     "batchDisable": "Batch Disable",
     "noRulesInCategory": "No rules in this category",
     "newapi": {
-      "title": "NewAPI Audit Identity Forwarding",
-      "description": "When enabled, Codex2API verifies NewAPI identity and policy metadata, then returns signed 400 policy events with decision evidence. Codex2API no longer counts or bans locally; NewAPI independently controls warnings, account bans, and optional IP restrictions.",
-      "enabled": "Verify Forwarded Audit Identity",
-      "enabledHint": "Identity-link switch on Codex2API. Prompt filtering remains active when disabled, but NewAPI identity, profile overrides, and enforceable signed decisions are not trusted.",
+      "title": "NewAPI Audit Integration",
+      "description": "NewAPI signed identities are accepted only through one-to-one Codex2API Key bindings. Bindings verify identity only; GuardPipeline remains the sole authority for enforcement mode and review profile.",
       "clockSkew": "Clock Skew (seconds)",
       "clockSkewHint": "Signatures outside this time range are rejected.",
-      "offenseWindow": "Offense Window (seconds)",
-      "offenseWindowHint": "The enforcement window is now managed by NewAPI; Codex2API no longer uses this legacy value for counting.",
-      "banAfter": "Ban on Offense Number",
-      "banAfterHint": "Ban thresholds are now managed by NewAPI; Codex2API only returns signed decision evidence.",
-      "protocolTitle": "Configuration and NewAPI Integration Protocol",
-      "codexEnv": "Codex2API Environment Variable",
-      "codexSecretExample": "PROMPT_FILTER_NEWAPI_SECRET=replace-with-at-least-32-random-bytes",
-      "secretStorageHint": "Generated secrets are stored through the admin API and later shown only as a mask. An environment variable can override the database value and always takes precedence.",
-      "generator": "Random Secret Generator",
-      "replaceSecret": "Replace Secret",
-      "generateSecret": "Generate and Save",
-      "secretConfigured": "Configured: {{masked}} (source: {{source}}). Generate a new secret to replace the database value.",
-      "secretUnconfigured": "Codex2API will generate a 32-byte (256-bit) random secret on the server and save it to the database.",
-      "environment": "environment",
-      "database": "database",
+      "protocolTitle": "Signature Protocol and NewAPI Configuration",
       "newapiEnv": "NewAPI Environment Variables",
-      "newapiEnvExample": "CODEX2API_POLICY_ENABLED=true\nCODEX2API_POLICY_TARGETS=http://127.0.0.1:18095\nCODEX2API_POLICY_SECRET=the-exact-same-secret-as-Codex2API\nCODEX2API_POLICY_BAN_AFTER=2\nCODEX2API_POLICY_WINDOW_SECONDS=86400",
+      "newapiEnvExample": "CODEX2API_POLICY_ENABLED=true\nCODEX2API_POLICY_BINDINGS=[{\"platform_id\":\"primary-newapi\",\"target\":\"http://127.0.0.1:18095\",\"codex_key_fingerprint\":\"<SHA-256 fingerprint of the Key>\",\"secret\":\"<binding secret for this Key>\",\"enabled\":true}]\nCODEX2API_POLICY_BAN_AFTER=2\nCODEX2API_POLICY_WINDOW_SECONDS=86400",
       "headersTitle": "NewAPI Identity and Policy Headers",
       "headersExample": "X-NewAPI-User-ID: <user ID>\nX-NewAPI-Client-IP: <real client IP>\nX-NewAPI-Request-ID: <unique request ID>\nX-NewAPI-Timestamp: <Unix seconds>\nX-NewAPI-Method: <HTTP method>\nX-NewAPI-Path: <actual forwarded path>\nX-NewAPI-Body-SHA256: <hex body SHA-256>\nX-NewAPI-Signature-Version: 1\nX-NewAPI-Signature: <V1 identity HMAC-SHA256>\nX-NewAPI-Policy-Meta: <Base64URL policy JSON>\nX-NewAPI-Policy-Meta-Signature: <policy HMAC-SHA256>",
-      "signatureHint": "Identity requests keep the stable V1 signature. The original client endpoint, protocol, provider, and policy profile are carried in a separate policy-meta-v1 envelope signed with the same shared secret; response decisions and events are verified independently as well.",
-      "revealTitle": "Save the NewAPI Audit Secret Now",
-      "revealDescription": "The secret has been written to the Codex2API database. Its plaintext is displayed only once in this dialog.",
-      "copied": "Copied",
-      "copySecret": "Copy Secret",
-      "revealWarning": "Synchronize the secret to NewAPI before closing. Plaintext will not be shown again; if lost, generate a replacement and invalidate the old secret.",
-      "close": "Close",
-      "copyAndConfigure": "Copy and Configure NewAPI",
-      "closeConfirmTitle": "Close the Secret Dialog?",
-      "closeConfirmDescription": "The plaintext secret will not be displayed again. If it has not been saved, generate another one and update NewAPI again.",
-      "backToCopy": "Back to Copy",
-      "confirmClose": "Close and Never Show Again"
+      "signatureHint": "Identity requests use the stable V1 signature. The caller code in policy-meta-v1 must match the current Codex2API Key binding; identity, policy metadata, response decisions, and events are all verified with that binding secret. NewAPI-supplied modes or profiles cannot override GuardPipeline."
     },
     "intelligence": {
       "title": "Online Rule Intelligence",
@@ -2231,7 +2204,7 @@
     },
     "docs": {
       "title": "Prompt Filter Guide",
-      "description": "How the Prompt Filter works, what each tab is for, recommended activation steps, and how to use advanced protection, secondary review, intelligence, and NewAPI identity forwarding.",
+      "description": "How the Prompt Filter works, what each tab is for, recommended activation steps, and how to use advanced protection, secondary review, intelligence, and NewAPI audit integration.",
       "toc": "Contents",
       "tocHint": "Jump to a section",
       "badge": "Product Docs",
@@ -2246,7 +2219,7 @@
       "what": {
         "title": "What this module does",
         "p1": "Prompt Filter inspects user prompts before they reach upstream models. It aims to catch jailbreaks, injection, malware help, credential theft, reverse engineering, and similar high-risk content while limiting false positives.",
-        "p2": "It is a gateway policy layer: deterministic local rules score the request first, then the selected mode decides monitor / warn / block. Optional layers add decoding, cumulative risk, output scanning, and identity-linked bans.",
+        "p2": "It is a gateway policy layer: deterministic local rules score the request first, then the selected mode decides monitor / warn / block. Optional layers add decoding, cumulative risk, output scanning, and NewAPI audit integration.",
         "b1": "Local rules: intent-bearing built-in/custom patterns produce the enforcement score; sensitive words and signal-only patterns remain audit evidence.",
         "b2": "Modes: monitor logs only, warn can pass through, block rejects the request.",
         "b3": "Terminal rules: strict hits and terminal categories still pass intent, effective-score, and context checks. Balanced profiles may review them; strict profiles prevent downgrade.",
@@ -2260,7 +2233,7 @@
         "s3": "Match local rules: sensitive words and signal-only topics enter audit scoring, while intent-bearing built-in/custom rules enter enforcement scoring.",
         "s4": "Evaluate score thresholds, strict threshold, terminal strict, and terminal categories.",
         "s5": "Optional: accumulate user / IP / session risk, or call secondary Moderations-compatible review.",
-        "s6": "Emit allow / warn / block; with NewAPI identity verification, violations may return 503 plus ban instructions.",
+        "s6": "Emit allow / warn / block; requests using NewAPI audit integration also receive signed policy events for the caller to handle according to its own configuration.",
         "s7": "Optional: buffer and scan SSE / WebSocket output so risky content in model replies is still caught."
       },
       "pages": {
@@ -2311,7 +2284,7 @@
         "b2": "Terminal categories: take the terminal path only after the category forms a high-confidence violation.",
         "b3": "User / IP / session risk: records confirmed high-risk events for audit and review; cumulative score alone never bans.",
         "b4": "SSE / WebSocket output scan: inspect streamed model output; can limit to terminal rules only.",
-        "b5": "NewAPI audit identity: verify HMAC identity headers and emit ban instructions on policy hits.",
+        "b5": "NewAPI audit integration: verify signed identity and policy metadata only through one-to-one Codex2API Key bindings; unbound Keys cannot accept identity.",
         "b6": "Scheduled intelligence: periodic public search and optional candidate rule generation.",
         "callout": "Use Redis-backed cache for multi-replica cumulative risk. Keep decode runs at 1–2 to control latency. Output scanning holds a small window for cross-frame detection: when combined with preflight passthrough (codex_preflight_sse_passthrough), tiny metadata frames may still be briefly buffered so first-frame speed is not guaranteed to recover; and once HTTP 200 is committed before the first content event, upstream error status-code recovery changes — grayscale the two together."
       },
@@ -2349,12 +2322,12 @@
         "callout": "auto_add writes low-weight audit-only signals and never blocks directly. Review intelligence history and hit logs before promoting a rule to enforcement."
       },
       "newapi": {
-        "title": "NewAPI identity forwarding and bans",
-        "p1": "When traffic is relayed by NewAPI into Codex2API, enable audit identity forwarding: NewAPI signs user ID, IP, request ID, and related fields with a shared secret; Codex2API verifies and may return auditable 503 plus ban instructions on violations.",
-        "p2": "Secrets are injected via env or generated once in admin UI—never sent in normal request bodies. Header and signature details are in Overview → Advanced Protection → NewAPI protocol.",
-        "b1": "Secrets on both sides must match exactly; environment variables override database secrets.",
-        "b2": "Prefer ban_after=2 (warn then ban); protect admin accounts with allowlists.",
-        "b3": "NewAPI needs custom work: sign headers, handle 503, persist audits and IP bans."
+        "title": "NewAPI audit integration",
+        "p1": "When NewAPI relays traffic to Codex2API, it signs the user ID, IP, request ID, request-body digest, and policy metadata. Codex2API verifies those signatures before associating audit identity and policy.",
+        "p2": "Every caller must use the binding for the Codex2API Key that carries its requests. Retired process-wide secret configuration no longer participates in verification. Header and signature details are available under NewAPI Audit Integration on the overview page.",
+        "b1": "Each binding has its own secret and enabled state. Unbound Keys cannot accept NewAPI signed identity.",
+        "b2": "Auditing, warnings, account restrictions, and IP restrictions remain separate NewAPI controls and must not be enabled automatically by identity verification.",
+        "b3": "NewAPI must sign request headers, verify signed Codex2API policy events, and persist audit records according to its own configuration."
       },
       "checklist": {
         "title": "Go-live checklist",

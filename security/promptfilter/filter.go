@@ -308,11 +308,10 @@ func engineCacheKey(cfg Config) string {
 
 func NewEngine(cfg Config) (*Engine, error) {
 	cfg = NormalizeConfig(cfg)
-	// The regex engine never uses remote-review or signed NewAPI secrets. Clear
-	// them before the normalized config is retained by the process-wide engine
-	// cache so operational credential rotation cannot leave old secrets reachable.
+	// The regex engine never uses remote-review credentials. Clear them before
+	// the normalized config is retained by the process-wide engine cache so
+	// operational credential rotation cannot leave old secrets reachable.
 	cfg.Review.APIKey = ""
-	cfg.Advanced.NewAPI.Secret = ""
 	disabled := disabledPatternSet(cfg.DisabledPatterns)
 	merged := append([]PatternConfig{}, defaultPatternConfigs...)
 	merged = append(merged, cfg.CustomPatterns...)

@@ -19,6 +19,12 @@ import (
 func newPromptGuardTestHandler(cfg promptfilter.Config) *Handler {
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1})
 	store.SetPromptFilterConfig(cfg)
+	if cfg.Advanced.NewAPI.Enabled {
+		store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{{
+			APIKeyID: 101, PlatformCode: "test-platform", Secret: "integration-secret", Enabled: true,
+			PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+		}})
+	}
 	handler := NewHandler(store, nil, nil, nil)
 	handler.SetRuntimeCache(cache.NewMemory(1))
 	return handler

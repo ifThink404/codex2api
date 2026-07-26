@@ -2154,43 +2154,16 @@
     "batchDisable": "批量禁用",
     "noRulesInCategory": "该分类下暂无规则",
     "newapi": {
-      "title": "NewAPI 审计身份透传",
-      "description": "开启后，Codex2API 会验证 NewAPI 透传的身份与审核档案，并以签名的 400 策略事件返回决策证据。Codex2API 不再本地累计或封禁；是否警告、封号或临时限制 IP 统一由 NewAPI 的独立开关决定。",
-      "enabled": "开启审计身份透传校验",
-      "enabledHint": "Codex2API 端身份联动开关。关闭后仍执行提示词过滤，但不会信任 NewAPI 身份、档案覆盖或返回可处罚的签名决策。",
+      "title": "NewAPI 审计接入",
+      "description": "NewAPI 签名身份只通过 Codex2API Key 一对一绑定接入。绑定只负责身份校验；拦截模式和审核档位统一由 GuardPipeline 管理。",
       "clockSkew": "时钟容差（秒）",
       "clockSkewHint": "超过该时间范围的签名会被视为无效。",
-      "offenseWindow": "违规累计窗口（秒）",
-      "offenseWindowHint": "处罚窗口已由 NewAPI 统一管理；Codex2API 不再使用此旧配置计次。",
-      "banAfter": "第几次触发封禁",
-      "banAfterHint": "封禁次数已由 NewAPI 统一管理；Codex2API 只返回签名决策证据。",
-      "protocolTitle": "查看配置方式与 NewAPI 二开协议",
-      "codexEnv": "Codex2API 环境变量",
-      "codexSecretExample": "PROMPT_FILTER_NEWAPI_SECRET=请替换为至少32字节随机密钥",
-      "secretStorageHint": "随机密钥通过管理接口保存到 Codex2API 数据库，之后仅显示掩码。环境变量可以覆盖数据库密钥，且始终优先。",
-      "generator": "随机密钥生成器",
-      "replaceSecret": "替换密钥",
-      "generateSecret": "生成并保存",
-      "secretConfigured": "已配置：{{masked}}（来源：{{source}}）。点击可生成新密钥并替换数据库中的值。",
-      "secretUnconfigured": "点击后由 Codex2API 服务端生成 32 字节（256 位）随机密钥并保存到数据库。",
-      "environment": "环境变量",
-      "database": "数据库",
+      "protocolTitle": "查看签名协议与 NewAPI 配置",
       "newapiEnv": "NewAPI 环境变量",
-      "newapiEnvExample": "CODEX2API_POLICY_ENABLED=true\nCODEX2API_POLICY_TARGETS=http://127.0.0.1:18095\nCODEX2API_POLICY_SECRET=与Codex2API完全相同的密钥\nCODEX2API_POLICY_BAN_AFTER=2\nCODEX2API_POLICY_WINDOW_SECONDS=86400",
+      "newapiEnvExample": "CODEX2API_POLICY_ENABLED=true\nCODEX2API_POLICY_BINDINGS=[{\"platform_id\":\"primary-newapi\",\"target\":\"http://127.0.0.1:18095\",\"codex_key_fingerprint\":\"<Key 的 SHA-256 指纹>\",\"secret\":\"<该 Key 的绑定密钥>\",\"enabled\":true}]\nCODEX2API_POLICY_BAN_AFTER=2\nCODEX2API_POLICY_WINDOW_SECONDS=86400",
       "headersTitle": "NewAPI 请求头与审核档案",
       "headersExample": "X-NewAPI-User-ID: <用户ID>\nX-NewAPI-Client-IP: <真实用户IP>\nX-NewAPI-Request-ID: <唯一请求ID>\nX-NewAPI-Timestamp: <Unix秒>\nX-NewAPI-Method: <HTTP方法>\nX-NewAPI-Path: <实际转发路径>\nX-NewAPI-Body-SHA256: <请求体SHA-256十六进制>\nX-NewAPI-Signature-Version: 1\nX-NewAPI-Signature: <V1身份HMAC-SHA256>\nX-NewAPI-Policy-Meta: <Base64URL审核档案JSON>\nX-NewAPI-Policy-Meta-Signature: <档案HMAC-SHA256>",
-      "signatureHint": "身份请求继续使用稳定的 V1 签名。客户端原始端点、协议、提供商和审核档位放入独立的 policy-meta-v1 档案，并使用同一共享密钥单独签名；返回决策和事件也分别验签。",
-      "revealTitle": "请立即保存 NewAPI 审计密钥",
-      "revealDescription": "密钥已写入 Codex2API 数据库。为了安全，明文只在本弹窗中展示一次。",
-      "copied": "已复制",
-      "copySecret": "复制密钥",
-      "revealWarning": "请先将密钥同步到 NewAPI。关闭后不再展示明文；如果遗失，只能重新生成，旧密钥将失效。",
-      "close": "关闭",
-      "copyAndConfigure": "复制后配置 NewAPI",
-      "closeConfirmTitle": "确认关闭密钥弹窗？",
-      "closeConfirmDescription": "关闭后不会再次显示这份密钥的明文。若尚未保存，需要重新生成并再次更新 NewAPI。",
-      "backToCopy": "返回复制",
-      "confirmClose": "确认关闭，不再展示"
+      "signatureHint": "身份请求继续使用稳定的 V1 签名。policy-meta-v1 中的调用方代码必须与当前 Codex2API Key 绑定一致；身份、审核档案、返回决策和事件都使用该绑定密钥验签。NewAPI 传入的模式或档位不会覆盖 GuardPipeline。"
     },
     "intelligence": {
       "title": "联网规则情报更新",
@@ -2231,7 +2204,7 @@
     },
     "docs": {
       "title": "Prompt 检查使用说明",
-      "description": "本页说明 Prompt 检查模块如何工作、各页面职责、推荐上线流程，以及高级防护、二次审查、规则情报与 NewAPI 联动的使用方式。",
+      "description": "本页说明 Prompt 检查模块如何工作、各页面职责、推荐上线流程，以及高级防护、二次审查、规则情报与 NewAPI 审计接入的使用方式。",
       "toc": "目录",
       "tocHint": "按章节跳转阅读",
       "badge": "产品文档",
@@ -2246,7 +2219,7 @@
       "what": {
         "title": "模块是做什么的",
         "p1": "Prompt 检查在请求进入上游模型前，对用户提示词做本地风险匹配与可选二次审查。目标是拦截越狱、注入、恶意代码、凭证窃取、逆向破解等高风险内容，同时尽量控制误报。",
-        "p2": "它是网关侧策略能力：先本地确定性规则打分，再按模式决定监控、警告或拦截；高级层可叠加解码还原、累计风险、输出扫描与身份透传。",
+        "p2": "它是网关侧策略能力：先由本地确定性规则打分，再按模式决定监控、警告或拦截；高级层可叠加解码还原、累计风险、输出扫描与 NewAPI 审计接入。",
         "b1": "本地规则：带意图的内置/自定义规则形成执行分；敏感词和 signal-only 规则只保留为审计证据。",
         "b2": "处理模式：监控只记日志，警告可透传，拦截会阻断请求。",
         "b3": "终局规则：strict 或指定分类仍需通过意图、有效分和上下文判断；均衡档案可继续二次审查，严格档案才禁止降级。",
@@ -2260,7 +2233,7 @@
         "s3": "本地规则匹配：敏感词和 signal-only 主题进入审计分，带意图的内置/自定义规则进入执行分。",
         "s4": "判断阈值 / 强规则阈值 / 终局 strict 与终局分类。",
         "s5": "可选：累计用户 / IP / 会话风险，或触发二次审查（Moderations 兼容接口）。",
-        "s6": "按模式输出 allow / warn / block；若启用 NewAPI 身份校验，违规可返回 503 与封禁指令。",
+        "s6": "按模式输出 allow / warn / block；若请求通过 NewAPI 审计接入，还会返回可验签的策略事件供调用方按自身配置处理。",
         "s7": "可选：对 SSE / WebSocket 输出流继续缓冲扫描，防止危险内容仅出现在模型回复中。"
       },
       "pages": {
@@ -2311,7 +2284,7 @@
         "b2": "终局拦截分类：指定 category 形成高可信违规判定后进入终局路径。",
         "b3": "用户/IP/会话累计风险：记录已确认的高风险事件并辅助复核，不会仅凭累计分独立封禁。",
         "b4": "SSE/WebSocket 输出扫描：检查模型流式输出；可限制为仅终局规则中断。",
-        "b5": "NewAPI 审计身份透传：校验上游 HMAC 身份头，违规可联动封禁。",
+        "b5": "NewAPI 审计接入：只按 Codex2API Key 一对一绑定校验签名身份与审核档案；未绑定 Key 不接受签名身份。",
         "b6": "规则情报定时任务：按间隔搜索公开情报并可选生成候选规则。",
         "callout": "多副本部署时累计风险建议使用 Redis 缓存；解码轮数建议 1–2，过高会增加延迟。输出扫描为跨帧检测会保留有限窗口：与预检透传（codex_preflight_sse_passthrough）同时开启时，小体积 metadata 帧仍可能被短暂缓存，首帧速度不一定能恢复；且首个内容事件前一旦提交 HTTP 200，后续上游错误的状态码恢复语义会改变，两者同开需单独验证。"
       },
@@ -2349,12 +2322,12 @@
         "callout": "auto_add 只会写入低权重审计信号，不会直接拦截；仍建议先查看情报历史和命中日志，再人工提升为执行规则。"
       },
       "newapi": {
-        "title": "NewAPI 身份透传与联动封禁",
-        "p1": "当流量经 NewAPI 转发到 Codex2API 时，可开启审计身份透传：NewAPI 用共享密钥签名用户 ID、IP、请求 ID 等，Codex2API 校验后在违规时返回可审计 503 与封禁指令。",
-        "p2": "密钥通过环境变量或管理端一次性生成保存，不会随业务请求传输。详细头字段与签名串见概览「高级防护 → NewAPI」折叠协议。",
-        "b1": "双方密钥必须完全一致；环境变量优先于数据库密钥。",
-        "b2": "建议 ban_after=2，先警告再封禁，管理员账号建议做白名单保护。",
-        "b3": "NewAPI 侧需二开：签名发头、处理 503、落审计与 IP 黑名单。"
+        "title": "NewAPI 审计接入",
+        "p1": "当流量经 NewAPI 转发到 Codex2API 时，NewAPI 对用户 ID、IP、请求 ID、请求体摘要和审核档案签名，Codex2API 验签后再关联审计身份与策略。",
+        "p2": "每个调用方必须使用实际请求对应的 Codex2API Key 绑定；旧版进程级密钥配置不再参与验签。详细字段与签名串见概览中的「NewAPI 审计接入」。",
+        "b1": "每个绑定使用自己的密钥与启用状态；未绑定 Key 不接受 NewAPI 签名身份。",
+        "b2": "审计、警告、账号限制和 IP 限制由 NewAPI 分别配置，不应因启用身份校验而自动开启处罚。",
+        "b3": "NewAPI 侧需签名请求头、校验 Codex2API 返回的签名策略事件，并按自身配置保存审计记录。"
       },
       "checklist": {
         "title": "上线检查清单",

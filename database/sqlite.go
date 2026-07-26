@@ -384,11 +384,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			review_error TEXT DEFAULT '',
 			full_text TEXT DEFAULT ''
 		);`,
-		`CREATE TABLE IF NOT EXISTS prompt_filter_secrets (
-			id INTEGER PRIMARY KEY,
-			newapi_secret TEXT NOT NULL DEFAULT '',
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);`,
+		`DROP TABLE IF EXISTS prompt_filter_secrets;`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {

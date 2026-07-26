@@ -35,7 +35,6 @@ func (h *Handler) EvaluatePromptGuardTextForTest(c *gin.Context, cfg promptfilte
 	cfg.Advanced.Session.Enabled = false
 	cfg.Advanced.Risk.Enabled = false
 	cfg.Advanced.NewAPI.Enabled = false
-	cfg.Advanced.NewAPI.Secret = ""
 	cfg.Advanced.Guard.AllowTrustedOverrides = false
 	// Administrative probes must not warm the process-wide exact-segment cache.
 	// The cache is behavior-preserving, but keeping the probe fully isolated

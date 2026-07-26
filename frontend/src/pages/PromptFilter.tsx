@@ -2,7 +2,7 @@ import type { Dispatch, ReactNode, SetStateAction, TextareaHTMLAttributes } from
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileText, Gauge, GitBranch, HelpCircle, KeyRound, Layers, ListChecks, Network, Pencil, Plus, Power, PowerOff, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Trash2, Wand2, X } from 'lucide-react'
+import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileText, Gauge, GitBranch, HelpCircle, Layers, ListChecks, Network, Pencil, Plus, Power, PowerOff, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Trash2, Wand2, X } from 'lucide-react'
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
@@ -136,7 +136,6 @@ type AdvancedProtectionConfig = {
   }
   output: { enabled: boolean; strict_only: boolean }
   intelligence: { enabled: boolean; interval_hours: number; queries: string[]; max_search_results: number; model_enabled: boolean; model: string; max_model_calls: number; auto_add: boolean }
-  newapi: { enabled: boolean }
 }
 
 const promptGuardModes: PromptGuardMode[] = ['inherit', 'off', 'shadow', 'warn', 'enforce']
@@ -228,7 +227,6 @@ const defaultAdvancedProtection: AdvancedProtectionConfig = {
   },
   output: { enabled: false, strict_only: true },
   intelligence: { enabled: false, interval_hours: 24, queries: ['LLM jailbreak prompt injection', 'ChatGPT jailbreak prompt', 'Codex prompt injection jailbreak', '大模型 破限 提示词', 'GPT 破甲 提示词', 'AI 越狱 提示词', '中文 prompt injection 绕过'], max_search_results: 20, model_enabled: false, model: 'gpt-5.4', max_model_calls: 1, auto_add: false },
-  newapi: { enabled: false },
 }
 
 function parsePromptGuardMode(value: unknown, fallback: PromptGuardMode = 'inherit'): PromptGuardMode {
@@ -301,7 +299,6 @@ function parseAdvancedProtection(value: AdvancedConfigObject): AdvancedProtectio
         ? intelligence.queries.filter((query: unknown): query is string => typeof query === 'string')
         : [...defaultAdvancedProtection.intelligence.queries],
     },
-    newapi: { ...defaultAdvancedProtection.newapi, ...(value.newapi || {}) },
   }
 }
 
@@ -703,20 +700,19 @@ function AdvancedProtectionEditor({
   onChange: (value: string) => void
 }) {
   const { t } = useTranslation()
-  const [generatedNewAPISecret, setGeneratedNewAPISecret] = useState('')
-  const [secretCopied, setSecretCopied] = useState(false)
-  const [secretStatus, setSecretStatus] = useState<{ configured: boolean; source: string; masked: string }>({ configured: false, source: 'none', masked: '' })
-  const [secretSaving, setSecretSaving] = useState(false)
-  const [secretError, setSecretError] = useState('')
-  const [secretRevealOpen, setSecretRevealOpen] = useState(false)
-  const [secretCloseConfirmOpen, setSecretCloseConfirmOpen] = useState(false)
   const document = useMemo(() => parseAdvancedConfigDocument(value), [value])
   const config = useMemo(
     () => parseAdvancedProtection(document.value ?? {}),
     [document.value],
   )
   const applyPatches = (patches: readonly AdvancedConfigPatch[]) => {
-    const result = patchAdvancedConfigDocument(value, patches)
+    const result = patchAdvancedConfigDocument(value, [
+      ...patches,
+      { path: ['newapi', 'enabled'], remove: true },
+      { path: ['newapi', 'secret'], remove: true },
+      { path: ['newapi', 'offense_window_seconds'], remove: true },
+      { path: ['newapi', 'ban_after'], remove: true },
+    ])
     if (!result.ok) return
     onChange(result.serialized)
   }
@@ -725,30 +721,6 @@ function AdvancedProtectionEditor({
   }
   const setBool = <K extends keyof AdvancedProtectionConfig>(section: K, key: string, next: boolean) => {
     update(section, { [key]: next } as never)
-  }
-  useEffect(() => { void api.getPromptFilterNewAPISecret().then(setSecretStatus).catch(() => undefined) }, [])
-  const generateNewAPISecret = async () => {
-    if (secretStatus.source === 'environment') return
-    setSecretSaving(true); setSecretError('')
-    try {
-      const result = await api.generatePromptFilterNewAPISecret()
-      setGeneratedNewAPISecret(result.secret); setSecretStatus(result); setSecretCopied(false); setSecretRevealOpen(true)
-    } catch (error) { setSecretError(getErrorMessage(error)) } finally { setSecretSaving(false) }
-  }
-  const copyNewAPISecret = async () => {
-    if (!generatedNewAPISecret) return
-    await navigator.clipboard.writeText(generatedNewAPISecret)
-    setSecretCopied(true)
-  }
-  const requestCloseSecretReveal = () => {
-    if (!generatedNewAPISecret) { setSecretRevealOpen(false); return }
-    setSecretCloseConfirmOpen(true)
-  }
-  const confirmCloseSecretReveal = () => {
-    setSecretCloseConfirmOpen(false)
-    setSecretRevealOpen(false)
-    setGeneratedNewAPISecret('')
-    setSecretCopied(false)
   }
   const terminalCategoriesText = config.enforcement.terminal_categories.join(', ')
   const queryCount = config.intelligence.queries.length
@@ -1229,8 +1201,8 @@ function AdvancedProtectionEditor({
         </div>
       </div>
 
-      {/* Integration row: NewAPI + Intelligence — matched structure & equal height */}
-      <div className="grid gap-3 xl:grid-cols-2">
+      {/* Integration services */}
+      <div className="grid gap-3">
         <AdvancedPanel
           title={t('promptFilter.newapi.title')}
           hint={t('promptFilter.newapi.description')}
@@ -1241,52 +1213,20 @@ function AdvancedProtectionEditor({
                 <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
               </summary>
               <div className="space-y-4 border-t border-foreground/8 px-3 py-3">
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <div className="space-y-2">
-                    <div className="text-xs font-semibold text-muted-foreground">{t('promptFilter.newapi.codexEnv')}</div>
-                    <SoftCodeBlock>{t('promptFilter.newapi.codexSecretExample')}</SoftCodeBlock>
-                    <p className="text-xs leading-relaxed text-muted-foreground">{t('promptFilter.newapi.secretStorageHint')}</p>
-                    <div className="rounded-lg border border-foreground/10 bg-background/80 p-3">
-                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 text-sm font-medium"><KeyRound className="size-4 text-muted-foreground" />{t('promptFilter.newapi.generator')}</div>
-                        <Button type="button" size="sm" variant="outline" disabled={secretSaving || secretStatus.source === 'environment'} onClick={() => void generateNewAPISecret()}>
-                          <RefreshCw className={`size-3.5 ${secretSaving ? 'animate-spin' : ''}`} />
-                          {secretStatus.configured ? t('promptFilter.newapi.replaceSecret') : t('promptFilter.newapi.generateSecret')}
-                        </Button>
-                      </div>
-                      {secretError ? <p className="text-xs text-destructive">{secretError}</p> : null}
-                      <p className="text-xs text-muted-foreground">
-                        {secretStatus.configured
-                          ? t('promptFilter.newapi.secretConfigured', {
-                              masked: secretStatus.masked,
-                              source: secretStatus.source === 'environment' ? t('promptFilter.newapi.environment') : t('promptFilter.newapi.database'),
-                            })
-                          : t('promptFilter.newapi.secretUnconfigured')}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="text-xs font-semibold text-muted-foreground">{t('promptFilter.newapi.newapiEnv')}</div>
-                    <SoftCodeBlock>{t('promptFilter.newapi.newapiEnvExample')}</SoftCodeBlock>
-                  </div>
-                  <div className="space-y-2 lg:col-span-2">
-                    <div className="text-xs font-semibold text-muted-foreground">{t('promptFilter.newapi.headersTitle')}</div>
-                    <SoftCodeBlock>{t('promptFilter.newapi.headersExample')}</SoftCodeBlock>
-                    <p className="text-xs leading-relaxed text-muted-foreground">{t('promptFilter.newapi.signatureHint')}</p>
-                  </div>
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground">{t('promptFilter.newapi.newapiEnv')}</div>
+                  <SoftCodeBlock>{t('promptFilter.newapi.newapiEnvExample')}</SoftCodeBlock>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground">{t('promptFilter.newapi.headersTitle')}</div>
+                  <SoftCodeBlock>{t('promptFilter.newapi.headersExample')}</SoftCodeBlock>
+                  <p className="text-xs leading-relaxed text-muted-foreground">{t('promptFilter.newapi.signatureHint')}</p>
                 </div>
               </div>
             </details>
           )}
         >
-          <div className="grid grid-cols-1 gap-x-3 gap-y-3">
-            <SwitchField
-              label={t('promptFilter.newapi.enabled')}
-              hint={t('promptFilter.newapi.enabledHint')}
-              checked={config.newapi.enabled}
-              onCheckedChange={(next) => setBool('newapi', 'enabled', next)}
-            />
-          </div>
+          <PromptFilterNewAPIBindings />
         </AdvancedPanel>
 
         <AdvancedPanel
@@ -1360,46 +1300,6 @@ function AdvancedProtectionEditor({
         </AdvancedPanel>
       </div>
 
-      <Dialog open={secretRevealOpen} onOpenChange={(open) => { if (!open) requestCloseSecretReveal() }}>
-        <DialogContent className="sm:max-w-2xl" onEscapeKeyDown={(event) => { event.preventDefault(); requestCloseSecretReveal() }} onPointerDownOutside={(event) => { event.preventDefault(); requestCloseSecretReveal() }}>
-          <DialogHeader>
-            <DialogTitle>{t('promptFilter.newapi.revealTitle')}</DialogTitle>
-            <DialogDescription>{t('promptFilter.newapi.revealDescription')}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              <Input readOnly value={generatedNewAPISecret} className="font-mono text-xs" />
-              <Button type="button" variant="outline" onClick={() => void copyNewAPISecret()}>
-                <Copy className="size-4" />
-                {secretCopied ? t('promptFilter.newapi.copied') : t('promptFilter.newapi.copySecret')}
-              </Button>
-            </div>
-            <SoftCodeBlock>{`CODEX2API_POLICY_SECRET=${generatedNewAPISecret}`}</SoftCodeBlock>
-            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-              {t('promptFilter.newapi.revealWarning')}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={requestCloseSecretReveal}>{t('promptFilter.newapi.close')}</Button>
-            <Button type="button" onClick={() => void copyNewAPISecret()}>
-              <Copy className="size-4" />
-              {secretCopied ? t('promptFilter.newapi.copied') : t('promptFilter.newapi.copyAndConfigure')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={secretCloseConfirmOpen} onOpenChange={setSecretCloseConfirmOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>{t('promptFilter.newapi.closeConfirmTitle')}</DialogTitle>
-            <DialogDescription>{t('promptFilter.newapi.closeConfirmDescription')}</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setSecretCloseConfirmOpen(false)}>{t('promptFilter.newapi.backToCopy')}</Button>
-            <Button type="button" variant="destructive" onClick={confirmCloseSecretReveal}>{t('promptFilter.newapi.confirmClose')}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
@@ -2366,8 +2266,6 @@ function OverviewView({
           </Button>
         </CardContent>
       </Card>
-
-      <PromptFilterNewAPIBindings />
 
       <Card className="mt-4">
         <CardContent>

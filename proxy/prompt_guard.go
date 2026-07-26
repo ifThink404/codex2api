@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/codex2api/database"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
 )
@@ -284,19 +283,11 @@ func (h *Handler) resolvePromptGuardOverrides(c *gin.Context, cfg promptfilter.C
 	if effectiveModel == "" && policyContext.Meta.UpstreamModel != "" {
 		effectiveModel = policyContext.Meta.UpstreamModel
 	}
-	profileOverride := policyContext.Meta.Profile
-	modeOverride := policyContext.Meta.Mode
-	if binding, bound := h.resolvePromptFilterNewAPIBinding(c); bound && binding.Enabled {
-		// Explicit administrator binding policy is authoritative. Signed metadata
-		// may specialize only fields left as inherit and cannot downgrade a bound
-		// key from enforce/strict to off/research.
-		if binding.PolicyProfile != database.PromptFilterPolicyProfileInherit {
-			profileOverride = binding.PolicyProfile
-		}
-		if binding.PolicyMode != database.PromptFilterPolicyModeInherit {
-			modeOverride = binding.PolicyMode
-		}
-	}
+	// NewAPI metadata can describe the original provider/protocol/model for
+	// audit attribution, but it is not an enforcement control plane. The global
+	// GuardPipeline is the sole authority for mode and review profile.
+	profileOverride := ""
+	modeOverride := ""
 	provider := promptfilter.ModelFamily(policyContext.Meta.Provider)
 	return requestedModel, effectiveModel, true, profileOverride, modeOverride, provider, provider != promptfilter.ModelFamilyUnknown
 }

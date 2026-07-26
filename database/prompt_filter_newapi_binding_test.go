@@ -15,11 +15,18 @@ import (
 var (
 	promptFilterBindingDDLDriverOnce sync.Once
 	promptFilterBindingDDLQueryMu    sync.Mutex
-	promptFilterBindingDDLQuery      string
+	promptFilterBindingDDLQueries    []string
+	legacySecretMigrationDriverOnce  sync.Once
+	legacySecretMigrationQueryMu     sync.Mutex
+	legacySecretMigrationQueries     []string
 )
+
+var errStopLegacySecretMigrationCapture = errors.New("stop legacy secret migration capture")
 
 type promptFilterBindingDDLDriver struct{}
 type promptFilterBindingDDLConn struct{}
+type legacySecretMigrationCaptureDriver struct{}
+type legacySecretMigrationCaptureConn struct{}
 
 func (promptFilterBindingDDLDriver) Open(string) (driver.Conn, error) {
 	return promptFilterBindingDDLConn{}, nil
@@ -31,8 +38,29 @@ func (promptFilterBindingDDLConn) Close() error              { return nil }
 func (promptFilterBindingDDLConn) Begin() (driver.Tx, error) { return nil, errors.New("not supported") }
 func (promptFilterBindingDDLConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	promptFilterBindingDDLQueryMu.Lock()
-	promptFilterBindingDDLQuery = query
+	promptFilterBindingDDLQueries = append(promptFilterBindingDDLQueries, query)
 	promptFilterBindingDDLQueryMu.Unlock()
+	return driver.RowsAffected(0), nil
+}
+
+func (legacySecretMigrationCaptureDriver) Open(string) (driver.Conn, error) {
+	return legacySecretMigrationCaptureConn{}, nil
+}
+func (legacySecretMigrationCaptureConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("not supported")
+}
+func (legacySecretMigrationCaptureConn) Close() error { return nil }
+func (legacySecretMigrationCaptureConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("not supported")
+}
+func (legacySecretMigrationCaptureConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	legacySecretMigrationQueryMu.Lock()
+	legacySecretMigrationQueries = append(legacySecretMigrationQueries, query)
+	queryCount := len(legacySecretMigrationQueries)
+	legacySecretMigrationQueryMu.Unlock()
+	if queryCount == 2 {
+		return nil, errStopLegacySecretMigrationCapture
+	}
 	return driver.RowsAffected(0), nil
 }
 
@@ -66,6 +94,9 @@ func TestPromptFilterNewAPIBindingCRUDAndSecretRotationSQLite(t *testing.T) {
 	if got.PlatformCode != "fanren" || got.Secret != binding.Secret || !got.Enabled || !got.RequireSignedIdentity {
 		t.Fatalf("binding = %#v", got)
 	}
+	if got.PolicyMode != PromptFilterPolicyModeInherit || got.PolicyProfile != PromptFilterPolicyProfileInherit {
+		t.Fatalf("create retained retired policy override: %#v", got)
+	}
 	invalid := *binding
 	invalid.APIKeyID = otherAPIKeyID
 	invalid.PlatformCode = strings.Repeat("a", 33)
@@ -87,6 +118,13 @@ func TestPromptFilterNewAPIBindingCRUDAndSecretRotationSQLite(t *testing.T) {
 	got.Enabled = false
 	if err := db.UpdatePromptFilterNewAPIBinding(ctx, got); err != nil {
 		t.Fatalf("Update binding: %v", err)
+	}
+	updated, err := db.GetPromptFilterNewAPIBinding(ctx, apiKeyID)
+	if err != nil {
+		t.Fatalf("Get updated binding: %v", err)
+	}
+	if updated.PolicyMode != PromptFilterPolicyModeInherit || updated.PolicyProfile != PromptFilterPolicyProfileInherit {
+		t.Fatalf("update retained retired policy override: %#v", updated)
 	}
 
 	newSecret := "abcdefghijklmnopqrstuvwxyzABCDEF"
@@ -153,12 +191,19 @@ func TestPromptFilterNewAPIBindingPostgresMigrationDDL(t *testing.T) {
 	}
 	defer conn.Close()
 	db := &DB{conn: conn, driver: "postgres"}
+	promptFilterBindingDDLQueryMu.Lock()
+	promptFilterBindingDDLQueries = nil
+	promptFilterBindingDDLQueryMu.Unlock()
 	if err := db.ensurePromptFilterNewAPIBindingsTable(context.Background()); err != nil {
 		t.Fatalf("ensure postgres table: %v", err)
 	}
 	promptFilterBindingDDLQueryMu.Lock()
-	query := promptFilterBindingDDLQuery
+	queries := append([]string(nil), promptFilterBindingDDLQueries...)
 	promptFilterBindingDDLQueryMu.Unlock()
+	if len(queries) != 2 {
+		t.Fatalf("ensure executed %d statements, want DDL plus override retirement", len(queries))
+	}
+	query := queries[0]
 	for _, fragment := range []string{
 		"CREATE TABLE IF NOT EXISTS prompt_filter_newapi_bindings",
 		"api_key_id INT PRIMARY KEY",
@@ -169,6 +214,126 @@ func TestPromptFilterNewAPIBindingPostgresMigrationDDL(t *testing.T) {
 		if !strings.Contains(query, fragment) {
 			t.Fatalf("postgres DDL missing %q: %s", fragment, query)
 		}
+	}
+	if !strings.Contains(queries[1], "SET policy_mode='inherit', policy_profile='inherit'") {
+		t.Fatalf("postgres migration did not retire binding policy overrides: %s", queries[1])
+	}
+}
+
+func TestPromptFilterNewAPIBindingMigrationNeutralizesLegacyPolicyOverrides(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "binding-policy-retirement.sqlite"))
+	if err != nil {
+		t.Fatalf("New sqlite: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	apiKeyID, err := db.InsertAPIKey(ctx, "legacy-policy", "sk-legacy-policy-binding-test")
+	if err != nil {
+		t.Fatalf("InsertAPIKey: %v", err)
+	}
+	if err := db.CreatePromptFilterNewAPIBinding(ctx, &PromptFilterNewAPIBinding{
+		APIKeyID: apiKeyID, PlatformCode: "legacy-policy", Secret: "01234567890123456789012345678901", Enabled: true,
+	}); err != nil {
+		t.Fatalf("Create binding: %v", err)
+	}
+	if _, err := db.conn.ExecContext(ctx, `UPDATE prompt_filter_newapi_bindings SET policy_mode='shadow', policy_profile='research' WHERE api_key_id=?`, apiKeyID); err != nil {
+		t.Fatalf("seed legacy policy override: %v", err)
+	}
+	if err := db.ensurePromptFilterNewAPIBindingsTable(ctx); err != nil {
+		t.Fatalf("rerun binding migration: %v", err)
+	}
+	got, err := db.GetPromptFilterNewAPIBinding(ctx, apiKeyID)
+	if err != nil {
+		t.Fatalf("Get migrated binding: %v", err)
+	}
+	if got.PolicyMode != PromptFilterPolicyModeInherit || got.PolicyProfile != PromptFilterPolicyProfileInherit {
+		t.Fatalf("legacy policy override survived migration: %#v", got)
+	}
+}
+
+func TestSQLiteMigrationDropsLegacyPromptFilterSecretsAndKeepsBindings(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-prompt-filter-secret.sqlite")
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New sqlite: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := db.conn.ExecContext(ctx, `
+		CREATE TABLE prompt_filter_secrets (
+			name TEXT PRIMARY KEY,
+			secret TEXT NOT NULL
+		);
+		INSERT INTO prompt_filter_secrets (name, secret)
+		VALUES ('newapi', 'legacy-global-secret');
+	`); err != nil {
+		db.Close()
+		t.Fatalf("create legacy secret table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite before migration: %v", err)
+	}
+
+	db, err = New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite for migration: %v", err)
+	}
+	defer db.Close()
+
+	var legacyTableCount int
+	if err := db.conn.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'prompt_filter_secrets'
+	`).Scan(&legacyTableCount); err != nil {
+		t.Fatalf("query legacy table: %v", err)
+	}
+	if legacyTableCount != 0 {
+		t.Fatalf("legacy prompt_filter_secrets table count = %d, want 0", legacyTableCount)
+	}
+
+	var bindingTableCount int
+	if err := db.conn.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'prompt_filter_newapi_bindings'
+	`).Scan(&bindingTableCount); err != nil {
+		t.Fatalf("query binding table: %v", err)
+	}
+	if bindingTableCount != 1 {
+		t.Fatalf("prompt_filter_newapi_bindings table count = %d, want 1", bindingTableCount)
+	}
+}
+
+func TestPostgresMigrationDropsLegacyPromptFilterSecrets(t *testing.T) {
+	legacySecretMigrationDriverOnce.Do(func() {
+		sql.Register("legacy-prompt-filter-secret-migration-capture", legacySecretMigrationCaptureDriver{})
+	})
+	legacySecretMigrationQueryMu.Lock()
+	legacySecretMigrationQueries = nil
+	legacySecretMigrationQueryMu.Unlock()
+
+	conn, err := sql.Open("legacy-prompt-filter-secret-migration-capture", "")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer conn.Close()
+	db := &DB{conn: conn, driver: "postgres"}
+	if err := db.migrate(context.Background()); !errors.Is(err, errStopLegacySecretMigrationCapture) {
+		t.Fatalf("migrate error = %v, want capture stop", err)
+	}
+
+	legacySecretMigrationQueryMu.Lock()
+	queries := append([]string(nil), legacySecretMigrationQueries...)
+	legacySecretMigrationQueryMu.Unlock()
+	if len(queries) < 1 {
+		t.Fatal("postgres migration did not execute schema SQL")
+	}
+	query := queries[0]
+	if !strings.Contains(query, "DROP TABLE IF EXISTS prompt_filter_secrets") {
+		t.Fatalf("postgres migration does not drop legacy secret table: %s", query)
+	}
+	if strings.Contains(query, "CREATE TABLE IF NOT EXISTS prompt_filter_secrets") {
+		t.Fatalf("postgres migration recreates legacy secret table: %s", query)
 	}
 }
 
