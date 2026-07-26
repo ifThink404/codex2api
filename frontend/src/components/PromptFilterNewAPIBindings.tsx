@@ -16,15 +16,12 @@ import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import type {
   APIKeyRow,
-  PromptFilterBindingPolicyMode,
-  PromptFilterBindingPolicyProfile,
   PromptFilterNewAPIBinding,
 } from '../types'
 import { getErrorMessage } from '../utils/error'
 import { formatBeijingTime } from '../utils/time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -43,8 +40,6 @@ type BindingForm = {
   platformName: string
   enabled: boolean
   requireSignedIdentity: boolean
-  policyMode: PromptFilterBindingPolicyMode
-  policyProfile: PromptFilterBindingPolicyProfile
 }
 
 const emptyBindingForm: BindingForm = {
@@ -53,27 +48,7 @@ const emptyBindingForm: BindingForm = {
   platformName: '',
   enabled: true,
   requireSignedIdentity: false,
-  policyMode: 'inherit',
-  policyProfile: 'inherit',
 }
-
-const policyModeOptions = [
-  { value: 'inherit', label: '继承全局模式' },
-  { value: 'off', label: '关闭' },
-  { value: 'shadow', label: '影子记录' },
-  { value: 'warn', label: '警告（放行并提示）' },
-  { value: 'enforce', label: '执行（命中时拦截）' },
-]
-
-const policyProfileOptions = [
-  { value: 'inherit', label: '继承全局档位' },
-  { value: 'balanced', label: '均衡' },
-  { value: 'strict', label: '严格' },
-  { value: 'research', label: '研究' },
-]
-
-const policyModeLabels = Object.fromEntries(policyModeOptions.map((option) => [option.value, option.label]))
-const policyProfileLabels = Object.fromEntries(policyProfileOptions.map((option) => [option.value, option.label]))
 
 function apiKeyLabel(apiKey: APIKeyRow): string {
   return `#${apiKey.id} ${apiKey.name || '未命名 Key'} · ${apiKey.key || '已脱敏'}`
@@ -120,19 +95,19 @@ function BindingFormFields({
           <Select
             value={form.apiKeyId}
             disabled={editing}
-            placeholder="选择需要绑定的平台专用 Key"
+            placeholder="选择用于接入的 Codex2API Key"
             onValueChange={(apiKeyId) => setForm({ ...form, apiKeyId })}
             options={apiKeys.map((apiKey) => ({ value: String(apiKey.id), label: apiKeyLabel(apiKey) }))}
           />
           <span className="block text-xs leading-5 text-muted-foreground">
-            一个 Key 只能绑定一个平台；请为每个 NewAPI 站点使用独立 Key。
+            一个 Key 只能绑定一个调用方；未绑定 Key 不接受 NewAPI 签名身份。
           </span>
         </label>
         <label className="space-y-1.5">
-          <span className="text-sm font-medium">平台代码</span>
+          <span className="text-sm font-medium">调用方代码</span>
           <Input
             value={form.platformCode}
-            placeholder="例如 fanren"
+            placeholder="输入唯一接入标识"
             maxLength={32}
             onChange={(event) => setForm({
               ...form,
@@ -142,41 +117,25 @@ function BindingFormFields({
           <span className="block text-xs leading-5 text-muted-foreground">仅支持小写字母、数字、下划线和短横线，最长 32 字符且全局唯一。</span>
         </label>
         <label className="space-y-1.5">
-          <span className="text-sm font-medium">平台名称</span>
+          <span className="text-sm font-medium">调用方名称</span>
           <Input
             value={form.platformName}
-            placeholder="例如 凡人 NewAPI"
+            placeholder="输入便于识别的名称"
             maxLength={255}
             onChange={(event) => setForm({ ...form, platformName: event.target.value })}
-          />
-        </label>
-        <label className="space-y-1.5">
-          <span className="text-sm font-medium">策略模式</span>
-          <Select
-            value={form.policyMode}
-            onValueChange={(policyMode) => setForm({ ...form, policyMode: policyMode as PromptFilterBindingPolicyMode })}
-            options={policyModeOptions}
-          />
-        </label>
-        <label className="space-y-1.5">
-          <span className="text-sm font-medium">审核档位</span>
-          <Select
-            value={form.policyProfile}
-            onValueChange={(policyProfile) => setForm({ ...form, policyProfile: policyProfile as PromptFilterBindingPolicyProfile })}
-            options={policyProfileOptions}
           />
         </label>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <BindingSwitch
           label="启用此绑定"
-          description="关闭后，该 Key 不接受此平台的签名身份；不会误用其他平台绑定。"
+          description="关闭后，该 Key 不接受此调用方的签名身份，也不会使用其他 Key 的绑定。"
           checked={form.enabled}
           onCheckedChange={(enabled) => setForm({ ...form, enabled })}
         />
         <BindingSwitch
           label="强制签名身份"
-          description="默认关闭。确认对应 NewAPI 已正确配置专属密钥后再开启，否则请求会因缺少或签名错误而被拒绝。"
+          description="默认关闭。确认对应 NewAPI 已正确配置此绑定的密钥后再开启，否则请求会因缺少或签名错误而被拒绝。"
           checked={form.requireSignedIdentity}
           onCheckedChange={(requireSignedIdentity) => setForm({ ...form, requireSignedIdentity })}
         />
@@ -242,8 +201,6 @@ export default function PromptFilterNewAPIBindings() {
       platformName: binding.platform_name,
       enabled: binding.enabled,
       requireSignedIdentity: binding.require_signed_identity,
-      policyMode: binding.policy_mode,
-      policyProfile: binding.policy_profile,
     })
     setEditing(binding)
   }
@@ -260,7 +217,7 @@ export default function PromptFilterNewAPIBindings() {
   const createBinding = async () => {
     const apiKeyId = Number(createForm.apiKeyId)
     if (!Number.isInteger(apiKeyId) || apiKeyId <= 0 || !createForm.platformCode.trim()) {
-      showToast('请选择 Codex2API Key，并填写平台代码。', 'error')
+      showToast('请选择 Codex2API Key，并填写调用方代码。', 'error')
       return
     }
     setSaving(true)
@@ -271,8 +228,6 @@ export default function PromptFilterNewAPIBindings() {
         platform_name: createForm.platformName.trim(),
         enabled: createForm.enabled,
         require_signed_identity: createForm.requireSignedIdentity,
-        policy_mode: createForm.policyMode,
-        policy_profile: createForm.policyProfile,
       })
       setCreateOpen(false)
       await load()
@@ -291,7 +246,7 @@ export default function PromptFilterNewAPIBindings() {
         title: '确认开启强制签名身份？',
         description: (
           <span>
-            必须先在“{editForm.platformName.trim() || editForm.platformCode.trim()}”对应的 NewAPI 配置该平台专属密钥；否则开启后，该 Codex2API Key 的请求会立即返回 401。签名失败属于身份校验错误，不会记为 Prompt 违规，也不会触发违规处罚。
+            必须先在“{editForm.platformName.trim() || editForm.platformCode.trim()}”对应的 NewAPI 配置此绑定的密钥；否则开启后，该 Codex2API Key 的请求会立即返回 401。签名失败属于身份校验错误，不会记为 Prompt 违规，也不会触发违规处罚。
           </span>
         ),
         confirmText: '已配置，确认开启',
@@ -306,12 +261,10 @@ export default function PromptFilterNewAPIBindings() {
         platform_name: editForm.platformName.trim(),
         enabled: editForm.enabled,
         require_signed_identity: editForm.requireSignedIdentity,
-        policy_mode: editForm.policyMode,
-        policy_profile: editForm.policyProfile,
       })
       setEditing(null)
       await load()
-      showToast('平台绑定已更新。')
+      showToast('审计身份绑定已更新。')
     } catch (updateError) {
       showToast(getErrorMessage(updateError), 'error')
     } finally {
@@ -344,7 +297,7 @@ export default function PromptFilterNewAPIBindings() {
       title: `删除“${binding.platform_name || binding.platform_code}”绑定？`,
       description: (
         <span>
-          删除后，Key #{binding.api_key_id} 将不再具备平台隔离。未绑定 Key 可能重新使用旧的全局密钥兼容路径，请先确认该平台已停止发送流量。
+          删除后，Key #{binding.api_key_id} 将不再接受 NewAPI 签名身份；请先确认该调用方已停止使用此 Key。
         </span>
       ),
       confirmText: '确认删除',
@@ -355,7 +308,7 @@ export default function PromptFilterNewAPIBindings() {
     try {
       await api.deletePromptFilterNewAPIBinding(binding.api_key_id)
       await load()
-      showToast('平台绑定已删除。')
+      showToast('审计身份绑定已删除。')
     } catch (deleteError) {
       showToast(getErrorMessage(deleteError), 'error')
     }
@@ -366,7 +319,7 @@ export default function PromptFilterNewAPIBindings() {
     try {
       await navigator.clipboard.writeText(secretReveal.secret)
       setSecretCopied(true)
-      showToast('专属密钥已复制。')
+      showToast('绑定密钥已复制。')
     } catch {
       showToast('复制失败，请手动选择并复制密钥。', 'error')
     }
@@ -385,72 +338,70 @@ export default function PromptFilterNewAPIBindings() {
 
   return (
     <>
-      <Card className="mt-4">
-        <CardContent className="space-y-4 pt-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <KeyRound className="size-5 text-primary" />
-                <h2 className="text-base font-semibold">NewAPI 平台与 Codex2API Key 绑定</h2>
-              </div>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                按实际请求使用的 Codex2API Key 进行 1 对 1 身份校验，让凡人、buycodekey 等平台分别使用独立密钥、策略和审计范围。
-              </p>
+      <section aria-labelledby="newapi-key-bindings-title" className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <KeyRound className="size-5 text-primary" />
+              <h4 id="newapi-key-bindings-title" className="text-sm font-semibold">按 Codex2API Key 绑定审计身份</h4>
             </div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-                <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
-                刷新
-              </Button>
-              <Button size="sm" onClick={openCreate} disabled={loading || availableAPIKeys.length === 0}>
-                <Plus className="size-4" />
-                新增绑定
-              </Button>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              将签名身份与实际请求使用的 Codex2API Key 对应起来。绑定只负责身份校验，拦截模式和审核档位统一由 GuardPipeline 管理。
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+              <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
+              刷新
+            </Button>
+            <Button size="sm" onClick={openCreate} disabled={loading || availableAPIKeys.length === 0}>
+              <Plus className="size-4" />
+              新增绑定
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex items-start gap-3 rounded-lg border border-sky-500/25 bg-sky-500/[0.06] p-3">
+          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-sky-600 dark:text-sky-300" />
+          <div className="text-sm leading-6">
+            <div className="font-medium">绑定后使用该 Key 的审计密钥</div>
+            <div className="text-muted-foreground">
+              签名缺失、调用方代码错误或密钥不匹配时，不会借用其他 Key 的身份，也不会把审计记录关联到错误绑定。
             </div>
           </div>
+        </div>
 
-          <div className="flex items-start gap-3 rounded-lg border border-sky-500/25 bg-sky-500/[0.06] p-3">
-            <ShieldCheck className="mt-0.5 size-5 shrink-0 text-sky-600 dark:text-sky-300" />
-            <div className="text-sm leading-6">
-              <div className="font-medium">绑定后采用平台专属密钥，不回退到全局共享密钥</div>
-              <div className="text-muted-foreground">
-                签名缺失、平台代码错误或密钥不匹配时，不会借用其他平台身份，也不会把警告、风险累计或审计记录归到错误站点。
-              </div>
-            </div>
+        {error ? (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/25 bg-destructive/[0.05] p-3 text-sm text-destructive">
+            <span>{error}</span>
+            <Button variant="outline" size="sm" onClick={() => void load()}>重试</Button>
           </div>
+        ) : null}
 
-          {error ? (
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/25 bg-destructive/[0.05] p-3 text-sm text-destructive">
-              <span>{error}</span>
-              <Button variant="outline" size="sm" onClick={() => void load()}>重试</Button>
-            </div>
-          ) : null}
-
-          {loading ? (
-            <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />正在读取平台绑定…
-            </div>
-          ) : bindings.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border p-7 text-center">
-              <div className="text-sm font-medium">还没有平台专属绑定</div>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                新建后会自动生成 256 位共享密钥，并且只展示一次。
-              </p>
-              <Button className="mt-4" size="sm" onClick={openCreate} disabled={availableAPIKeys.length === 0}>
-                <Plus className="size-4" />新增第一个绑定
-              </Button>
-              {availableAPIKeys.length === 0 ? <p className="mt-2 text-xs text-amber-600">没有可绑定的 API Key，请先新建独立 Key。</p> : null}
-            </div>
-          ) : (
+        {loading ? (
+          <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />正在读取审计身份绑定…
+          </div>
+        ) : bindings.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-7 text-center">
+            <div className="text-sm font-medium">还没有按 Key 配置的审计身份</div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              新建后会自动生成 256 位绑定密钥，并且只展示一次。
+            </p>
+            <Button className="mt-4" size="sm" onClick={openCreate} disabled={availableAPIKeys.length === 0}>
+              <Plus className="size-4" />新增第一个绑定
+            </Button>
+            {availableAPIKeys.length === 0 ? <p className="mt-2 text-xs text-amber-600">没有可绑定的 API Key，请先新建独立 Key。</p> : null}
+          </div>
+        ) : (
             <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full min-w-[980px] text-sm">
+              <table className="w-full min-w-[860px] text-sm">
                 <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">平台</th>
+                    <th className="px-3 py-2.5 font-medium">调用方</th>
                     <th className="px-3 py-2.5 font-medium">Codex2API Key</th>
                     <th className="px-3 py-2.5 font-medium">状态</th>
-                    <th className="px-3 py-2.5 font-medium">策略</th>
-                    <th className="px-3 py-2.5 font-medium">专属密钥</th>
+                    <th className="px-3 py-2.5 font-medium">绑定密钥</th>
                     <th className="px-3 py-2.5 font-medium">更新时间</th>
                     <th className="px-3 py-2.5 text-right font-medium">操作</th>
                   </tr>
@@ -475,10 +426,6 @@ export default function PromptFilterNewAPIBindings() {
                               {binding.require_signed_identity ? '强制签名' : '未强制签名'}
                             </Badge>
                           </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div>{policyModeLabels[binding.policy_mode] ?? binding.policy_mode}</div>
-                          <div className="mt-0.5 text-xs text-muted-foreground">{policyProfileLabels[binding.policy_profile] ?? binding.policy_profile}</div>
                         </td>
                         <td className="px-3 py-3">
                           <div className="font-mono text-xs">{binding.secret_configured ? binding.secret_masked : '未配置'}</div>
@@ -508,15 +455,14 @@ export default function PromptFilterNewAPIBindings() {
                 </tbody>
               </table>
             </div>
-          )}
-        </CardContent>
-      </Card>
+        )}
+      </section>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>新增平台专属绑定</DialogTitle>
-            <DialogDescription>选择该平台真实使用的 Codex2API Key。保存后系统自动生成专属密钥，并只展示一次。</DialogDescription>
+            <DialogTitle>新增 Key 审计身份绑定</DialogTitle>
+            <DialogDescription>选择请求实际使用的 Codex2API Key。保存后系统自动生成绑定密钥，并只展示一次。</DialogDescription>
           </DialogHeader>
           <BindingFormFields form={createForm} setForm={setCreateForm} apiKeys={availableAPIKeys} editing={false} />
           <DialogFooter>
@@ -532,8 +478,8 @@ export default function PromptFilterNewAPIBindings() {
       <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open && !saving) setEditing(null) }}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>编辑平台绑定</DialogTitle>
-            <DialogDescription>更改平台策略不会改变专属密钥；如需更换密钥，请使用“轮换”。</DialogDescription>
+            <DialogTitle>编辑审计身份绑定</DialogTitle>
+            <DialogDescription>此处只管理调用方身份；拦截模式和审核档位请在统一 GuardPipeline 中设置。</DialogDescription>
           </DialogHeader>
           <BindingFormFields form={editForm} setForm={setEditForm} apiKeys={apiKeys.filter((key) => key.id === editing?.api_key_id)} editing />
           <DialogFooter>
@@ -549,8 +495,8 @@ export default function PromptFilterNewAPIBindings() {
       <Dialog open={Boolean(rotating)} onOpenChange={(open) => { if (!open && !saving) setRotating(null) }}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>轮换“{rotating?.platform_name || rotating?.platform_code}”专属密钥</DialogTitle>
-            <DialogDescription>系统会生成新密钥。宽限期内新旧密钥都可验证，便于无中断更新对应 NewAPI 平台。</DialogDescription>
+            <DialogTitle>轮换“{rotating?.platform_name || rotating?.platform_code}”绑定密钥</DialogTitle>
+            <DialogDescription>系统会生成新密钥。宽限期内新旧密钥都可验证，便于无中断更新对应的 NewAPI 配置。</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <label className="space-y-1.5">
@@ -560,7 +506,7 @@ export default function PromptFilterNewAPIBindings() {
             </label>
             <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] p-3 text-sm leading-6">
               <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
-              轮换成功后，明文新密钥只展示一次。请在宽限期结束前更新对应平台，其他平台无需改动。
+              轮换成功后，明文新密钥只展示一次。请在宽限期结束前更新对应调用方，其他绑定无需改动。
             </div>
           </div>
           <DialogFooter>
@@ -580,7 +526,7 @@ export default function PromptFilterNewAPIBindings() {
           onPointerDownOutside={(event) => { event.preventDefault(); requestCloseSecretReveal() }}
         >
           <DialogHeader>
-            <DialogTitle>{secretReveal?.platformName} 专属密钥</DialogTitle>
+            <DialogTitle>{secretReveal?.platformName} 绑定密钥</DialogTitle>
             <DialogDescription>密钥已经保存到 Codex2API 数据库，但明文只在本次响应中展示。列表不会再次回显。</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

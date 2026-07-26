@@ -3033,11 +3033,6 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 		s.reasoningEffortModels.Store(settings.ReasoningEffortModels)
 	}
 	promptFilterCfg, promptFilterAdvancedRaw := promptFilterConfigFromSettings(settings)
-	if s.db != nil {
-		if secret, err := s.db.GetPromptFilterNewAPISecret(context.Background()); err == nil {
-			promptFilterCfg.Advanced.NewAPI.Secret = secret
-		}
-	}
 	if err := s.SetPromptFilterConfigWithAdvancedRaw(promptFilterCfg, promptFilterAdvancedRaw); err != nil {
 		// promptFilterAdvancedRaw is already validated by
 		// promptFilterConfigFromSettings. Keep a defensive fallback so a corrupt

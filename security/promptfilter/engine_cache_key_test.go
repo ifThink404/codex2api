@@ -47,15 +47,14 @@ func TestEngineCacheChangesWhenDetectionSemanticsChange(t *testing.T) {
 	}
 }
 
-func TestEngineCacheDoesNotRetainOperationalSecrets(t *testing.T) {
+func TestEngineCacheDoesNotRetainReviewSecret(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Review.APIKey = "sk-review-sensitive"
-	cfg.Advanced.NewAPI.Secret = "newapi-sensitive"
 	engine, err := engineForConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if engine.cfg.Review.APIKey != "" || engine.cfg.Advanced.NewAPI.Secret != "" {
-		t.Fatalf("engine retained operational secrets: review=%q newapi=%q", engine.cfg.Review.APIKey, engine.cfg.Advanced.NewAPI.Secret)
+	if engine.cfg.Review.APIKey != "" {
+		t.Fatalf("engine retained review secret %q", engine.cfg.Review.APIKey)
 	}
 }

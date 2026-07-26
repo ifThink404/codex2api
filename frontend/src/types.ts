@@ -1684,17 +1684,12 @@ export interface APIKeyRow {
 
 export type APIKeysResponse = ApiListResponse<'keys', APIKeyRow>
 
-export type PromptFilterBindingPolicyMode = 'inherit' | 'off' | 'shadow' | 'warn' | 'enforce'
-export type PromptFilterBindingPolicyProfile = 'inherit' | 'balanced' | 'strict' | 'research'
-
 export interface PromptFilterNewAPIBinding {
   api_key_id: number
   platform_code: string
   platform_name: string
   enabled: boolean
   require_signed_identity: boolean
-  policy_mode: PromptFilterBindingPolicyMode
-  policy_profile: PromptFilterBindingPolicyProfile
   secret_configured: boolean
   secret_masked: string
   previous_secret_active: boolean
@@ -1714,8 +1709,6 @@ export interface CreatePromptFilterNewAPIBindingRequest {
   platform_name: string
   enabled?: boolean
   require_signed_identity?: boolean
-  policy_mode: PromptFilterBindingPolicyMode
-  policy_profile: PromptFilterBindingPolicyProfile
 }
 
 export type UpdatePromptFilterNewAPIBindingRequest = Partial<

@@ -28,8 +28,6 @@ type promptFilterNewAPIBindingCreateRequest struct {
 	PlatformName          string `json:"platform_name"`
 	Enabled               *bool  `json:"enabled"`
 	RequireSignedIdentity *bool  `json:"require_signed_identity"`
-	PolicyMode            string `json:"policy_mode"`
-	PolicyProfile         string `json:"policy_profile"`
 }
 
 type promptFilterNewAPIBindingUpdateRequest struct {
@@ -37,8 +35,6 @@ type promptFilterNewAPIBindingUpdateRequest struct {
 	PlatformName          *string `json:"platform_name"`
 	Enabled               *bool   `json:"enabled"`
 	RequireSignedIdentity *bool   `json:"require_signed_identity"`
-	PolicyMode            *string `json:"policy_mode"`
-	PolicyProfile         *string `json:"policy_profile"`
 }
 
 type promptFilterNewAPIBindingSecretRequest struct {
@@ -52,8 +48,6 @@ type promptFilterNewAPIBindingResponse struct {
 	PlatformName            string     `json:"platform_name"`
 	Enabled                 bool       `json:"enabled"`
 	RequireSignedIdentity   bool       `json:"require_signed_identity"`
-	PolicyMode              string     `json:"policy_mode"`
-	PolicyProfile           string     `json:"policy_profile"`
 	SecretConfigured        bool       `json:"secret_configured"`
 	SecretMasked            string     `json:"secret_masked"`
 	PreviousSecretActive    bool       `json:"previous_secret_active"`
@@ -105,7 +99,7 @@ func (h *Handler) CreatePromptFilterNewAPIBinding(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	code, name, mode, profile, ok := validatePromptFilterBindingFields(c, req.PlatformCode, req.PlatformName, req.PolicyMode, req.PolicyProfile)
+	code, name, ok := validatePromptFilterBindingFields(c, req.PlatformCode, req.PlatformName)
 	if !ok {
 		return
 	}
@@ -121,7 +115,7 @@ func (h *Handler) CreatePromptFilterNewAPIBinding(c *gin.Context) {
 	if req.RequireSignedIdentity != nil {
 		requireSigned = *req.RequireSignedIdentity
 	}
-	binding := &database.PromptFilterNewAPIBinding{APIKeyID: req.APIKeyID, PlatformCode: code, PlatformName: name, Secret: secret, Enabled: enabled, RequireSignedIdentity: requireSigned, PolicyMode: mode, PolicyProfile: profile}
+	binding := &database.PromptFilterNewAPIBinding{APIKeyID: req.APIKeyID, PlatformCode: code, PlatformName: name, Secret: secret, Enabled: enabled, RequireSignedIdentity: requireSigned}
 	mutationCtx, cancelMutation := promptFilterBindingMutationContext(c)
 	defer cancelMutation()
 	h.settingsUpdateMu.Lock()
@@ -178,13 +172,7 @@ func (h *Handler) UpdatePromptFilterNewAPIBinding(c *gin.Context) {
 	if req.RequireSignedIdentity != nil {
 		binding.RequireSignedIdentity = *req.RequireSignedIdentity
 	}
-	if req.PolicyMode != nil {
-		binding.PolicyMode = *req.PolicyMode
-	}
-	if req.PolicyProfile != nil {
-		binding.PolicyProfile = *req.PolicyProfile
-	}
-	binding.PlatformCode, binding.PlatformName, binding.PolicyMode, binding.PolicyProfile, ok = validatePromptFilterBindingFields(c, binding.PlatformCode, binding.PlatformName, binding.PolicyMode, binding.PolicyProfile)
+	binding.PlatformCode, binding.PlatformName, ok = validatePromptFilterBindingFields(c, binding.PlatformCode, binding.PlatformName)
 	if !ok {
 		h.settingsUpdateMu.Unlock()
 		return
@@ -238,7 +226,7 @@ func (h *Handler) ReplacePromptFilterNewAPIBindingSecret(c *gin.Context) {
 	}
 	secret := strings.TrimSpace(req.Secret)
 	if len(secret) < 32 {
-		writeError(c, http.StatusBadRequest, "共享密钥至少需要 32 个字符")
+		writeError(c, http.StatusBadRequest, "审计绑定密钥至少需要 32 个字符")
 		return
 	}
 	h.replacePromptFilterNewAPIBindingSecret(c, secret, req.GraceSeconds)
@@ -343,12 +331,12 @@ func promptFilterBindingAPIKeyID(c *gin.Context) (int64, bool) {
 	return apiKeyID, true
 }
 
-func validatePromptFilterBindingFields(c *gin.Context, code, name, mode, profile string) (string, string, string, string, bool) {
+func validatePromptFilterBindingFields(c *gin.Context, code, name string) (string, string, bool) {
 	var codeOK bool
 	code, codeOK = database.NormalizePromptFilterPlatformCode(code)
 	if !codeOK {
 		writeError(c, http.StatusBadRequest, "platform_code 只能包含小写字母、数字、下划线或短横线，且最长 32 字符")
-		return "", "", "", "", false
+		return "", "", false
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -356,19 +344,9 @@ func validatePromptFilterBindingFields(c *gin.Context, code, name, mode, profile
 	}
 	if len([]rune(name)) > 255 {
 		writeError(c, http.StatusBadRequest, "platform_name 最长 255 字符")
-		return "", "", "", "", false
+		return "", "", false
 	}
-	mode, modeOK := database.NormalizePromptFilterPolicyMode(mode)
-	if !modeOK {
-		writeError(c, http.StatusBadRequest, "policy_mode 必须是 inherit、off、shadow、warn 或 enforce")
-		return "", "", "", "", false
-	}
-	profile, profileOK := database.NormalizePromptFilterPolicyProfile(profile)
-	if !profileOK {
-		writeError(c, http.StatusBadRequest, "policy_profile 必须是 inherit、balanced、strict 或 research")
-		return "", "", "", "", false
-	}
-	return code, name, mode, profile, true
+	return code, name, true
 }
 
 func generatePromptFilterBindingSecret() (string, error) {
@@ -379,6 +357,16 @@ func generatePromptFilterBindingSecret() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+func maskPromptFilterBindingSecret(secret string) string {
+	if secret == "" {
+		return ""
+	}
+	if len(secret) < 12 {
+		return "********"
+	}
+	return secret[:6] + "…" + secret[len(secret)-6:]
+}
+
 func newPromptFilterNewAPIBindingResponse(binding *database.PromptFilterNewAPIBinding, reveal string) promptFilterNewAPIBindingResponse {
 	if binding == nil {
 		return promptFilterNewAPIBindingResponse{}
@@ -387,8 +375,7 @@ func newPromptFilterNewAPIBindingResponse(binding *database.PromptFilterNewAPIBi
 	return promptFilterNewAPIBindingResponse{
 		APIKeyID: binding.APIKeyID, PlatformCode: binding.PlatformCode, PlatformName: binding.PlatformName,
 		Enabled: binding.Enabled, RequireSignedIdentity: binding.RequireSignedIdentity,
-		PolicyMode: binding.PolicyMode, PolicyProfile: binding.PolicyProfile,
-		SecretConfigured: binding.Secret != "", SecretMasked: maskPromptFilterSecret(binding.Secret),
+		SecretConfigured: binding.Secret != "", SecretMasked: maskPromptFilterBindingSecret(binding.Secret),
 		PreviousSecretActive: previousActive, PreviousSecretExpiresAt: binding.PreviousSecretExpiresAt,
 		UpdatedAt: binding.UpdatedAt, Secret: reveal,
 	}

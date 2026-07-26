@@ -1079,11 +1079,7 @@ func (db *DB) migrate(ctx context.Context) error {
 			ALTER TABLE prompt_filter_logs ALTER COLUMN endpoint TYPE VARCHAR(256);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_created_at ON prompt_filter_logs(created_at);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_action_created_at ON prompt_filter_logs(action, created_at);
-			CREATE TABLE IF NOT EXISTS prompt_filter_secrets (
-				id INT PRIMARY KEY,
-				newapi_secret TEXT NOT NULL DEFAULT '',
-				updated_at TIMESTAMPTZ DEFAULT NOW()
-			);
+			DROP TABLE IF EXISTS prompt_filter_secrets;
 			CREATE TABLE IF NOT EXISTS model_registry (
 				id                     VARCHAR(100) PRIMARY KEY,
 				enabled                BOOLEAN DEFAULT TRUE,

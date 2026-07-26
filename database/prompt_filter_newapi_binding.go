@@ -77,7 +77,13 @@ func (db *DB) ensurePromptFilterNewAPIBindingsTable(ctx context.Context) error {
 	if db.isSQLite() {
 		ddl = sqlitePromptFilterNewAPIBindingsDDL
 	}
-	_, err := db.conn.ExecContext(ctx, ddl)
+	if _, err := db.conn.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	// Binding-level policy overrides were retired. Keep the legacy columns for
+	// a low-risk rolling migration, but neutralize all stored values so an old
+	// shadow/off row cannot silently override the unified GuardPipeline.
+	_, err := db.conn.ExecContext(ctx, `UPDATE prompt_filter_newapi_bindings SET policy_mode='inherit', policy_profile='inherit' WHERE policy_mode<>'inherit' OR policy_profile<>'inherit'`)
 	return err
 }
 
@@ -149,14 +155,10 @@ func (db *DB) CreatePromptFilterNewAPIBinding(ctx context.Context, binding *Prom
 	if len(secret) < 32 {
 		return errors.New("secret must contain at least 32 characters")
 	}
-	mode, ok := NormalizePromptFilterPolicyMode(binding.PolicyMode)
-	if !ok {
-		return fmt.Errorf("invalid policy mode %q", binding.PolicyMode)
-	}
-	profile, ok := NormalizePromptFilterPolicyProfile(binding.PolicyProfile)
-	if !ok {
-		return fmt.Errorf("invalid policy profile %q", binding.PolicyProfile)
-	}
+	mode := PromptFilterPolicyModeInherit
+	profile := PromptFilterPolicyProfileInherit
+	binding.PolicyMode = mode
+	binding.PolicyProfile = profile
 	return db.withSQLiteWriteLock(ctx, func() error {
 		_, err := db.conn.ExecContext(ctx, `INSERT INTO prompt_filter_newapi_bindings (api_key_id, platform_code, platform_name, secret, enabled, require_signed_identity, policy_mode, policy_profile, previous_secret, previous_secret_expires_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '', NULL, CURRENT_TIMESTAMP)`, binding.APIKeyID, platformCode, strings.TrimSpace(binding.PlatformName), secret, binding.Enabled, binding.RequireSignedIdentity, mode, profile)
 		if isPromptFilterNewAPIBindingConflict(err) {
@@ -177,14 +179,10 @@ func (db *DB) UpdatePromptFilterNewAPIBinding(ctx context.Context, binding *Prom
 	if !ok {
 		return errors.New("platform_code must match ^[a-z0-9][a-z0-9_-]{0,31}$")
 	}
-	mode, ok := NormalizePromptFilterPolicyMode(binding.PolicyMode)
-	if !ok {
-		return fmt.Errorf("invalid policy mode %q", binding.PolicyMode)
-	}
-	profile, ok := NormalizePromptFilterPolicyProfile(binding.PolicyProfile)
-	if !ok {
-		return fmt.Errorf("invalid policy profile %q", binding.PolicyProfile)
-	}
+	mode := PromptFilterPolicyModeInherit
+	profile := PromptFilterPolicyProfileInherit
+	binding.PolicyMode = mode
+	binding.PolicyProfile = profile
 	return db.withSQLiteWriteLock(ctx, func() error {
 		result, err := db.conn.ExecContext(ctx, `UPDATE prompt_filter_newapi_bindings SET platform_code=$1, platform_name=$2, enabled=$3, require_signed_identity=$4, policy_mode=$5, policy_profile=$6, updated_at=CURRENT_TIMESTAMP WHERE api_key_id=$7`, platformCode, strings.TrimSpace(binding.PlatformName), binding.Enabled, binding.RequireSignedIdentity, mode, profile, binding.APIKeyID)
 		if isPromptFilterNewAPIBindingConflict(err) {

@@ -131,6 +131,9 @@ test('hidden runtime settings survive visible editor patches', () => {
     },
     newapi: {
       enabled: false,
+      secret: 'retired-global-secret',
+      offense_window_seconds: 86400,
+      ban_after: 2,
       max_clock_skew_seconds: 240,
     },
   })
@@ -139,7 +142,10 @@ test('hidden runtime settings survive visible editor patches', () => {
     { path: ['sidecar', 'enabled'], value: true },
     { path: ['attachment', 'enabled'], value: true },
     { path: ['output', 'strict_only'], value: false },
-    { path: ['newapi', 'enabled'], value: true },
+    { path: ['newapi', 'enabled'], remove: true },
+    { path: ['newapi', 'secret'], remove: true },
+    { path: ['newapi', 'offense_window_seconds'], remove: true },
+    { path: ['newapi', 'ban_after'], remove: true },
   ])
   assert.equal(result.ok, true)
   const saved = JSON.parse(result.serialized)
@@ -157,7 +163,10 @@ test('hidden runtime settings survive visible editor patches', () => {
   assert.equal(saved.output.strict_only, false)
   assert.equal(saved.output.buffer_bytes, 8192)
   assert.equal(saved.output.overlap_bytes, 1024)
-  assert.equal(saved.newapi.enabled, true)
+  assert.equal(saved.newapi.enabled, undefined)
+  assert.equal(saved.newapi.secret, undefined)
+  assert.equal(saved.newapi.offense_window_seconds, undefined)
+  assert.equal(saved.newapi.ban_after, undefined)
   assert.equal(saved.newapi.max_clock_skew_seconds, 240)
 })
 

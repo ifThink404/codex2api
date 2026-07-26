@@ -63,33 +63,14 @@ func (h *Handler) promptFilterConfigForRequest(c *gin.Context) promptfilter.Conf
 		return state.config
 	}
 	state.config = h.store.GetPromptFilterConfigSnapshot()
+	// Signed NewAPI identity is available only through an explicit API-key
+	// binding. Ignore any retired persisted enablement value.
+	state.config.Advanced.NewAPI.Enabled = false
 	if binding, bound := h.resolvePromptFilterNewAPIBinding(c); bound {
-		// A key binding is an isolation boundary.  It may enable/disable signed
-		// NewAPI identity independently from the legacy global secret, and its
-		// policy defaults apply only to this request-local snapshot.
+		// A key binding is only the identity isolation boundary. Prompt filtering
+		// mode and profile remain owned by the unified GuardPipeline configuration;
+		// an identity binding must never weaken or strengthen request enforcement.
 		state.config.Advanced.NewAPI.Enabled = binding.Enabled
-		state.config.Advanced.NewAPI.Secret = ""
-		if binding.Enabled {
-			switch strings.ToLower(strings.TrimSpace(binding.PolicyMode)) {
-			case promptfilter.GuardModeOff:
-				state.config.Enabled = false
-				state.config.Mode = promptfilter.ModeMonitor
-				state.config.Advanced.Guard.Mode = promptfilter.GuardModeOff
-			case promptfilter.GuardModeShadow:
-				state.config.Mode = promptfilter.ModeMonitor
-				state.config.Advanced.Guard.Mode = promptfilter.GuardModeShadow
-			case promptfilter.GuardModeWarn:
-				state.config.Mode = promptfilter.ModeWarn
-				state.config.Advanced.Guard.Mode = promptfilter.GuardModeWarn
-			case promptfilter.GuardModeEnforce:
-				state.config.Mode = promptfilter.ModeBlock
-				state.config.Advanced.Guard.Mode = promptfilter.GuardModeEnforce
-			}
-			switch strings.ToLower(strings.TrimSpace(binding.PolicyProfile)) {
-			case promptfilter.GuardProfileBalanced, promptfilter.GuardProfileStrict, promptfilter.GuardProfileResearch:
-				state.config.Advanced.Guard.DefaultProfile = strings.ToLower(strings.TrimSpace(binding.PolicyProfile))
-			}
-		}
 	}
 	state.configOwner = h
 	state.configReady = true

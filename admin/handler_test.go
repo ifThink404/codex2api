@@ -1272,10 +1272,6 @@ func TestPromptFilterAdvancedSettingsRoundTripPreservesUnknownFields(t *testing.
 	if err := db.UpdateSystemSettings(context.Background(), settings); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
-	newAPISecret := strings.Repeat("s", 32)
-	if err := db.SetPromptFilterNewAPISecret(context.Background(), newAPISecret); err != nil {
-		t.Fatalf("seed NewAPI secret: %v", err)
-	}
 	store := auth.NewStore(db, tc, settings)
 	t.Cleanup(store.Stop)
 	handler := NewHandler(store, db, tc, proxy.NewRateLimiter(settings.GlobalRPM), "admin-secret")
@@ -1331,13 +1327,6 @@ func TestPromptFilterAdvancedSettingsRoundTripPreservesUnknownFields(t *testing.
 	if got := store.GetPromptFilterConfig().Advanced.Guard.Mode; got != "enforce" {
 		t.Fatalf("runtime guard.mode = %q, want enforce", got)
 	}
-	if got := store.GetPromptFilterConfig().Advanced.NewAPI.Secret; got != newAPISecret {
-		t.Fatalf("runtime NewAPI secret changed during advanced update")
-	}
-	if strings.Contains(updateResponse.PromptFilterAdvancedConfig, newAPISecret) {
-		t.Fatal("NewAPI secret leaked into prompt_filter_advanced_config")
-	}
-
 	// An unrelated partial update must not reserialize the typed runtime config
 	// and erase fields unknown to this binary.
 	unrelated := httptest.NewRecorder()

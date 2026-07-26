@@ -11,7 +11,7 @@ func TestParseAdvancedConfigDocumentPreservesUnknownFields(t *testing.T) {
 	raw := `{
 		"normalization":{"enabled":true,"future_decoder":"v2"},
 		"guard":{"mode":"shadow","future_guard":{"enabled":true}},
-		"newapi":{"Secret":"must-not-leak"},
+		"newapi":{"enabled":true,"Secret":"must-not-leak"},
 		"future_root":{"large_id":9007199254740993}
 	}`
 
@@ -44,9 +44,39 @@ func TestParseAdvancedConfigDocumentPreservesUnknownFields(t *testing.T) {
 		}
 	}
 	for key := range decodeDocumentObject(t, string(root["newapi"])) {
-		if key == "secret" || key == "Secret" {
+		if strings.EqualFold(key, "secret") || strings.EqualFold(key, "enabled") {
 			t.Fatalf("newapi.%s was persisted in advanced config document", key)
 		}
+	}
+	if document.Effective.NewAPI.Enabled {
+		t.Fatal("retired global newapi.enabled became effective")
+	}
+}
+
+func TestParseAdvancedConfigDocumentRemovesCaseVariantNewAPISecrets(t *testing.T) {
+	document, err := ParseAdvancedConfigDocument(`{
+		"NewAPI":{"Enabled":true,"SECRET":"must-not-leak","future_identity_field":"keep"}
+	}`)
+	if err != nil {
+		t.Fatalf("ParseAdvancedConfigDocument: %v", err)
+	}
+	root := decodeDocumentObject(t, document.Raw)
+	for key := range root {
+		if strings.EqualFold(key, "newapi") && key != "newapi" {
+			t.Fatalf("case-variant NewAPI object remained in document: %q", key)
+		}
+	}
+	newAPI := decodeDocumentObject(t, string(root["newapi"]))
+	if got := rawMessageString(t, newAPI["future_identity_field"]); got != "keep" {
+		t.Fatalf("future_identity_field = %q, want keep", got)
+	}
+	for key := range newAPI {
+		if strings.EqualFold(key, "secret") || strings.EqualFold(key, "enabled") {
+			t.Fatalf("case-variant newapi.%s was persisted", key)
+		}
+	}
+	if strings.Contains(strings.ToLower(document.Raw), "must-not-leak") {
+		t.Fatal("case-variant NewAPI secret leaked into raw document")
 	}
 }
 

@@ -31,7 +31,9 @@ import (
 
 func TestVerifyNewAPIIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
+	cfg := promptGuardTestConfig()
+	cfg.Advanced.NewAPI.Enabled = true
+	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	req := httptest.NewRequest("POST", "/v1/responses", nil)
 	req.Header.Set("X-NewAPI-User-ID", "42")
@@ -49,7 +51,8 @@ func TestVerifyNewAPIIdentity(t *testing.T) {
 	req.Header.Set("X-NewAPI-Signature", hex.EncodeToString(mac.Sum(nil)))
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
-	h := &Handler{cache: cache.NewMemory(1)}
+	c.Set(contextAPIKeyID, int64(101))
+	h := newPromptGuardTestHandler(cfg)
 	identity, ok := h.verifyNewAPIIdentity(c, promptfilter.NewAPIConfig{Enabled: true, MaxClockSkewSeconds: 120}, nil)
 	if !ok || identity.UserID != "42" || identity.ClientIP != "203.0.113.8" {
 		t.Fatalf("verification failed: %#v %v", identity, ok)
@@ -60,6 +63,7 @@ func TestVerifyNewAPIIdentity(t *testing.T) {
 	replayRecorder := httptest.NewRecorder()
 	replayContext, _ := gin.CreateTestContext(replayRecorder)
 	replayContext.Request = req.Clone(req.Context())
+	replayContext.Set(contextAPIKeyID, int64(101))
 	if _, ok := h.verifyNewAPIIdentity(replayContext, promptfilter.NewAPIConfig{Enabled: true, MaxClockSkewSeconds: 120}, nil); ok {
 		t.Fatal("replayed request ID from a new request was accepted")
 	}
@@ -72,6 +76,7 @@ func TestVerifyNewAPIIdentity(t *testing.T) {
 	req.Header.Set("X-NewAPI-Signature", hex.EncodeToString(mac.Sum(nil)))
 	tamperedBodyContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	tamperedBodyContext.Request = req.Clone(req.Context())
+	tamperedBodyContext.Set(contextAPIKeyID, int64(101))
 	if _, ok := h.verifyNewAPIIdentity(tamperedBodyContext, promptfilter.NewAPIConfig{Enabled: true, MaxClockSkewSeconds: 120}, []byte("tampered")); ok {
 		t.Fatal("tampered body was accepted")
 	}
@@ -79,6 +84,7 @@ func TestVerifyNewAPIIdentity(t *testing.T) {
 	req.Header.Set("X-NewAPI-User-ID", "43")
 	tamperedIdentityContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	tamperedIdentityContext.Request = req.Clone(req.Context())
+	tamperedIdentityContext.Set(contextAPIKeyID, int64(101))
 	if _, ok := h.verifyNewAPIIdentity(tamperedIdentityContext, promptfilter.NewAPIConfig{Enabled: true, MaxClockSkewSeconds: 120}, nil); ok {
 		t.Fatal("tampered identity was accepted")
 	}
@@ -86,11 +92,13 @@ func TestVerifyNewAPIIdentity(t *testing.T) {
 
 func TestVerifyNewAPIIdentityRejectsUnsupportedSignatureVersion(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	c, _ := signedNewAPIPolicyContext(t, "req-unsupported-version", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/responses", body)
 	c.Request.Header.Set("X-NewAPI-Signature-Version", "unsupported")
-	h := &Handler{cache: cache.NewMemory(1)}
+	cfg := promptGuardTestConfig()
+	cfg.Advanced.NewAPI.Enabled = true
+	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
+	h := newPromptGuardTestHandler(cfg)
 	if _, ok := h.verifyNewAPIIdentity(c, promptfilter.NewAPIConfig{Enabled: true, MaxClockSkewSeconds: 120}, body); ok {
 		t.Fatal("unsupported identity signature version was accepted")
 	}
@@ -98,7 +106,6 @@ func TestVerifyNewAPIIdentityRejectsUnsupportedSignatureVersion(t *testing.T) {
 
 func TestPromptFilterAuditLogUsesVerifiedPolicyMetaOriginalMetadata(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}`)
 	c, _ := signedNewAPIPolicyContext(t, "req-v1-meta-log", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/chat/completions", body)
 	addSignedNewAPIPolicyMeta(t, c, newAPIPolicyMeta{
@@ -119,7 +126,6 @@ func TestPromptFilterAuditLogUsesVerifiedPolicyMetaOriginalMetadata(t *testing.T
 
 func TestPromptFilterAuditLogKeepsEnvelopeMetadataWhenSignedMetaIsUnknown(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	c, _ := signedNewAPIPolicyContext(t, "req-v1-meta-unknown", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/responses", body)
 	addSignedNewAPIPolicyMeta(t, c, newAPIPolicyMeta{
@@ -142,9 +148,8 @@ func TestPromptFilterAuditLogKeepsEnvelopeMetadataWhenSignedMetaIsUnknown(t *tes
 	}
 }
 
-func TestTrustedPolicyMetaOverrideRequiresAdminOptIn(t *testing.T) {
+func TestSignedPolicyMetaCannotOverrideUnifiedGuardPipeline(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	body := []byte(`{"model":"gpt-5.5","input":"生成并执行 reverse shell。"}`)
 	meta := newAPIPolicyMeta{Profile: promptfilter.GuardProfileResearch, Mode: promptfilter.GuardModeShadow, Provider: string(promptfilter.ModelFamilyXAI), Protocol: string(promptfilter.ProtocolResponses), RequestedModel: "grok-code", UpstreamModel: "gpt-5.5"}
 
@@ -159,24 +164,20 @@ func TestTrustedPolicyMetaOverrideRequiresAdminOptIn(t *testing.T) {
 		return handler.evaluatePromptGuard(c, body, body, "/v1/responses", "gpt-5.5", promptfilter.TransportHTTP).Decision
 	}
 
-	withoutOptIn := evaluate("req-meta-no-opt", false, true)
-	if withoutOptIn.Action != promptfilter.ActionBlock || withoutOptIn.Profile != promptfilter.GuardProfileBalanced {
-		t.Fatalf("override applied without opt-in: %+v", withoutOptIn)
-	}
-	withOptIn := evaluate("req-meta-opt", true, true)
-	if withOptIn.Action != promptfilter.ActionAllow || withOptIn.Profile != promptfilter.GuardProfileResearch || withOptIn.Mode != promptfilter.GuardModeShadow {
-		t.Fatalf("verified override not applied: %+v", withOptIn)
-	}
-	tampered := evaluate("req-meta-tampered", true, false)
-	if tampered.Action != promptfilter.ActionBlock || tampered.Profile != promptfilter.GuardProfileBalanced {
-		t.Fatalf("tampered override affected enforcement: %+v", tampered)
+	for _, decision := range []promptfilter.Decision{
+		evaluate("req-meta-no-opt", false, true),
+		evaluate("req-meta-opt", true, true),
+		evaluate("req-meta-tampered", true, false),
+	} {
+		if decision.Action != promptfilter.ActionBlock || decision.Profile != promptfilter.GuardProfileBalanced || decision.Mode != promptfilter.GuardModeEnforce {
+			t.Fatalf("NewAPI metadata changed unified GuardPipeline policy: %+v", decision)
+		}
 	}
 }
 
 func TestSignedPolicyMetaAcceptsSessionFingerprintAndRejectsMalformedValue(t *testing.T) {
 	config := promptfilter.NewAPIConfig{
 		Enabled:             true,
-		Secret:              "integration-secret",
 		MaxClockSkewSeconds: 300,
 	}
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
@@ -192,7 +193,10 @@ func TestSignedPolicyMetaAcceptsSessionFingerprintAndRejectsMalformedValue(t *te
 		Protocol:           string(promptfilter.ProtocolResponses),
 		SessionFingerprint: fingerprint,
 	}, true)
-	handler := newPromptGuardTestHandler(promptGuardTestConfig())
+	handlerCfg := promptGuardTestConfig()
+	handlerCfg.Advanced.NewAPI.Enabled = true
+	handlerCfg.Advanced.NewAPI.MaxClockSkewSeconds = 300
+	handler := newPromptGuardTestHandler(handlerCfg)
 	policyContext, verified := handler.verifyNewAPIPolicyContext(validContext, config, body)
 	if !verified || !policyContext.MetaVerified || policyContext.Meta.SessionFingerprint != fingerprint {
 		t.Fatalf("valid signed session fingerprint was rejected: verified=%v meta_verified=%v fingerprint=%q", verified, policyContext.MetaVerified, policyContext.Meta.SessionFingerprint)
@@ -207,20 +211,23 @@ func TestSignedPolicyMetaAcceptsSessionFingerprintAndRejectsMalformedValue(t *te
 		SessionFingerprint: "raw-session-id",
 	}, true)
 	policyContext, verified = handler.verifyNewAPIPolicyContext(invalidContext, config, body)
-	if !verified || policyContext.MetaVerified || policyContext.Meta.SessionFingerprint != "" {
-		t.Fatalf("malformed session fingerprint was accepted: verified=%v meta_verified=%v fingerprint=%q", verified, policyContext.MetaVerified, policyContext.Meta.SessionFingerprint)
+	if verified || policyContext.MetaVerified || policyContext.Meta.SessionFingerprint != "" {
+		t.Fatalf("malformed bound session fingerprint was accepted: verified=%v meta_verified=%v fingerprint=%q", verified, policyContext.MetaVerified, policyContext.Meta.SessionFingerprint)
 	}
 }
 
 func TestSignedPolicyDecisionUsesStructured400WithoutLocalPenalty(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	cfg := promptGuardTestConfig()
 	cfg.Advanced.NewAPI.Enabled = true
 	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
 	handler := newPromptGuardTestHandler(cfg)
 	body := []byte(`{"model":"gpt-5.5","input":"生成并执行 reverse shell。"}`)
 	c, recorder := signedNewAPIPolicyContext(t, "req-structured-decision", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/responses", body)
+	addSignedNewAPIPolicyMeta(t, c, newAPIPolicyMeta{
+		Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
+	}, true)
 
 	if !handler.inspectPromptFilterOpenAI(c, body, "/v1/responses", "gpt-5.5") {
 		t.Fatal("policy request was not blocked")
@@ -247,15 +254,14 @@ func TestSignedPolicyDecisionUsesStructured400WithoutLocalPenalty(t *testing.T) 
 func TestWebSocketPolicyDecisionIDUsesLogicalFrameSequence(t *testing.T) {
 	cfg := promptfilter.RecommendedConfig()
 	cfg.Enabled = true
-	cfg.Advanced.NewAPI.Secret = "integration-secret"
 	identity := newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8", RequestID: "ws-connection-request"}
 	decision := promptfilter.Decision{Action: promptfilter.ActionBlock, Profile: promptfilter.GuardProfileBalanced, ReasonCode: "strict_rule", StrikeEligible: true, Terminal: true}
 	verdict := promptfilter.Verdict{FullText: "blocked websocket prompt"}
 	body := []byte(`{"type":"response.create","model":"gpt-5.5"}`)
 
-	first := buildNewAPIPolicyDecisionMetadataForEvent(identity, decision, verdict, cfg, body, "/v1/responses", "gpt-5.5", "responses:1")
-	firstRetry := buildNewAPIPolicyDecisionMetadataForEvent(identity, decision, verdict, cfg, body, "/v1/responses", "gpt-5.5", "responses:1")
-	second := buildNewAPIPolicyDecisionMetadataForEvent(identity, decision, verdict, cfg, body, "/v1/responses", "gpt-5.5", "responses:2")
+	first := buildNewAPIPolicyDecisionMetadataWithSecret(identity, decision, verdict, cfg, body, "/v1/responses", "gpt-5.5", "responses:1", "integration-secret")
+	firstRetry := buildNewAPIPolicyDecisionMetadataWithSecret(identity, decision, verdict, cfg, body, "/v1/responses", "gpt-5.5", "responses:1", "integration-secret")
+	second := buildNewAPIPolicyDecisionMetadataWithSecret(identity, decision, verdict, cfg, body, "/v1/responses", "gpt-5.5", "responses:2", "integration-secret")
 
 	if first.DecisionID != firstRetry.DecisionID {
 		t.Fatalf("same logical websocket event lost idempotency: %q != %q", first.DecisionID, firstRetry.DecisionID)
@@ -325,7 +331,6 @@ func TestStripNewAPIPolicyWebSocketEventIDRemovesReservedField(t *testing.T) {
 
 func TestModelMappingKeepsIngressBodyForPolicySignature(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	cfg := promptGuardTestConfig()
 	cfg.Advanced.NewAPI.Enabled = true
 	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
@@ -336,14 +341,16 @@ func TestModelMappingKeepsIngressBodyForPolicySignature(t *testing.T) {
 	c, recorder := signedNewAPIPolicyContext(t, "req-model-map", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/responses", ingress)
 	addSignedNewAPIPolicyMeta(t, c, newAPIPolicyMeta{Profile: promptfilter.GuardProfileResearch, Mode: promptfilter.GuardModeShadow, Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses), RequestedModel: "coding-pro", UpstreamModel: "gpt-5.5"}, true)
 	setIngressRequestBodyIfAbsent(c, ingress)
-	if handler.inspectPromptFilterOpenAI(c, mapped, "/v1/responses", "gpt-5.5") {
-		t.Fatalf("mapped body broke ingress signature: status=%d body=%s", recorder.Code, recorder.Body.String())
+	if !handler.inspectPromptFilterOpenAI(c, mapped, "/v1/responses", "gpt-5.5") {
+		t.Fatalf("mapped body bypassed unified enforcement: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("mapped body policy status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
 func TestSignedMultipartPromptUsesPolicyMeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	cfg := promptGuardTestConfig()
 	cfg.Advanced.NewAPI.Enabled = true
 	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
@@ -372,14 +379,13 @@ func TestSignedMultipartPromptUsesPolicyMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := handler.evaluatePromptGuardText(c, c.PostForm("prompt"), "/v1/images/edits", "gpt-image-2")
-	if got.Decision.Action != promptfilter.ActionAllow || got.Decision.Profile != promptfilter.GuardProfileResearch || got.Decision.Mode != promptfilter.GuardModeShadow {
-		t.Fatalf("multipart policy override failed: %+v", got.Decision)
+	if got.Decision.Action != promptfilter.ActionBlock || got.Decision.Profile != promptfilter.GuardProfileBalanced || got.Decision.Mode != promptfilter.GuardModeEnforce {
+		t.Fatalf("multipart metadata changed unified enforcement: %+v", got.Decision)
 	}
 }
 
 func TestHandshakeRejectsInvalidProvidedPolicyMeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "integration-secret")
 	cfg := promptGuardTestConfig()
 	cfg.Advanced.NewAPI.Enabled = true
 	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
@@ -394,7 +400,6 @@ func TestHandshakeRejectsInvalidProvidedPolicyMeta(t *testing.T) {
 
 func TestBoundNewAPIIdentityIsolatedByAPIKeyPlatformAndSecret(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "legacy-global-secret")
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	fingerprint := promptSessionTestFingerprint("same-session")
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{
@@ -440,8 +445,7 @@ func TestBoundNewAPIIdentityIsolatedByAPIKeyPlatformAndSecret(t *testing.T) {
 }
 
 func TestNewAPIIdentitySecretsDoNotFallbackForUnboundKeyInBindingMode(t *testing.T) {
-	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "")
-	cfg := promptfilter.NewAPIConfig{Enabled: true, Secret: "legacy-global-secret"}
+	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "legacy-global-secret")
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
 		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
 		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
@@ -449,18 +453,43 @@ func TestNewAPIIdentitySecretsDoNotFallbackForUnboundKeyInBindingMode(t *testing
 	unbound, _ := gin.CreateTestContext(httptest.NewRecorder())
 	unbound.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	unbound.Set(contextAPIKeyID, int64(999))
-	_, platform, enabled, candidates := handler.newAPIIdentitySecrets(unbound, cfg, time.Now())
+	_, platform, enabled, candidates := handler.newAPIIdentitySecrets(unbound, time.Now())
 	if enabled || len(candidates) != 0 || platform != "bound" {
 		t.Fatalf("unbound key borrowed legacy secret: platform=%q enabled=%v candidates=%+v", platform, enabled, candidates)
 	}
 
-	legacyHandler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), nil)
-	legacy, _ := gin.CreateTestContext(httptest.NewRecorder())
-	legacy.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	legacy.Set(contextAPIKeyID, int64(999))
-	_, platform, enabled, candidates = legacyHandler.newAPIIdentitySecrets(legacy, cfg, time.Now())
-	if !enabled || len(candidates) != 1 || candidates[0].Secret != "legacy-global-secret" || platform != "legacy" {
-		t.Fatalf("zero-binding legacy fallback was lost: platform=%q enabled=%v candidates=%+v", platform, enabled, candidates)
+	zeroBindingHandler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), nil)
+	zeroBinding, _ := gin.CreateTestContext(httptest.NewRecorder())
+	zeroBinding.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	zeroBinding.Set(contextAPIKeyID, int64(999))
+	_, platform, enabled, candidates = zeroBindingHandler.newAPIIdentitySecrets(zeroBinding, time.Now())
+	if enabled || len(candidates) != 0 || platform != "bound" {
+		t.Fatalf("zero-binding unbound key trusted retired global secret: platform=%q enabled=%v candidates=%+v", platform, enabled, candidates)
+	}
+}
+
+func TestUnboundWebSocketIsNotRevokedByAnotherKeysBinding(t *testing.T) {
+	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+	}})
+	connection, _ := gin.CreateTestContext(httptest.NewRecorder())
+	connection.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	connection.Set(contextAPIKeyID, int64(999))
+	if _, bound := handler.resolvePromptFilterNewAPIBinding(connection); bound {
+		t.Fatal("test connection unexpectedly started with a binding")
+	}
+	if apiErr := handler.refreshNewAPIWebSocketBinding(connection, time.Now()); apiErr != nil {
+		t.Fatalf("another key's binding revoked an unbound websocket: %v", apiErr)
+	}
+
+	newBinding := database.PromptFilterNewAPIBinding{
+		APIKeyID: 999, PlatformCode: "later-bound", Secret: "later-bound-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+	}
+	handler.store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{&newBinding})
+	if apiErr := handler.refreshNewAPIWebSocketBinding(connection, time.Now()); apiErr == nil || apiErr.Code != api.ErrorCode("newapi_websocket_binding_changed") {
+		t.Fatalf("current key becoming bound did not require reconnect: %+v", apiErr)
 	}
 }
 
@@ -501,8 +530,8 @@ func TestBindingSnapshotRefreshesPolicyAndRevokesObsoleteWebSocketIdentity(t *te
 		t.Fatalf("connection did not refresh the current binding: %+v bound=%v", currentBinding, bound)
 	}
 	currentCfg := handler.promptFilterConfigForRequest(c)
-	if currentCfg.Advanced.Guard.Mode != promptfilter.GuardModeEnforce || currentCfg.Advanced.Guard.DefaultProfile != promptfilter.GuardProfileStrict {
-		t.Fatalf("connection did not refresh binding policy: mode=%q profile=%q", currentCfg.Advanced.Guard.Mode, currentCfg.Advanced.Guard.DefaultProfile)
+	if currentCfg.Advanced.Guard.Mode != promptfilter.GuardModeInherit || currentCfg.Advanced.Guard.DefaultProfile != promptfilter.GuardProfileBalanced {
+		t.Fatalf("binding changed unified policy: mode=%q profile=%q", currentCfg.Advanced.Guard.Mode, currentCfg.Advanced.Guard.DefaultProfile)
 	}
 
 	for _, tc := range []struct {
@@ -600,7 +629,7 @@ func TestResponsesWebSocketClosesBeforeUpstreamAfterBindingSecretRevocation(t *t
 	}
 }
 
-func TestBoundExplicitPolicyCannotBeDowngradedBySignedMeta(t *testing.T) {
+func TestBindingAndSignedMetaCannotControlGuardModeOrProfile(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	identity := newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}
 	evaluate := func(requestID, bindingMode, bindingProfile string) (string, string, bool) {
@@ -621,13 +650,14 @@ func TestBoundExplicitPolicyCannotBeDowngradedBySignedMeta(t *testing.T) {
 		return profile, mode, trusted
 	}
 
-	profile, mode, trusted := evaluate("binding-pinned", database.PromptFilterPolicyModeEnforce, database.PromptFilterPolicyProfileStrict)
-	if !trusted || profile != promptfilter.GuardProfileStrict || mode != promptfilter.GuardModeEnforce {
-		t.Fatalf("signed meta downgraded explicit binding: trusted=%v profile=%q mode=%q", trusted, profile, mode)
-	}
-	profile, mode, trusted = evaluate("binding-inherit", database.PromptFilterPolicyModeInherit, database.PromptFilterPolicyProfileInherit)
-	if !trusted || profile != promptfilter.GuardProfileResearch || mode != promptfilter.GuardModeOff {
-		t.Fatalf("inherit binding did not accept signed policy: trusted=%v profile=%q mode=%q", trusted, profile, mode)
+	for _, values := range [][2]string{
+		{database.PromptFilterPolicyModeEnforce, database.PromptFilterPolicyProfileStrict},
+		{database.PromptFilterPolicyModeInherit, database.PromptFilterPolicyProfileInherit},
+	} {
+		profile, mode, trusted := evaluate("binding-policy-ignored-"+values[0], values[0], values[1])
+		if !trusted || profile != "" || mode != "" {
+			t.Fatalf("identity metadata exposed policy override: trusted=%v profile=%q mode=%q", trusted, profile, mode)
+		}
 	}
 }
 
@@ -721,7 +751,7 @@ func TestSignedNewAPIPolicyBlockUsesAnthropicErrorEnvelopeForMessages(t *testing
 	}
 }
 
-func TestBindingPolicyCreatesConsistentRequestSnapshot(t *testing.T) {
+func TestBindingCannotChangeRequestPolicySnapshot(t *testing.T) {
 	base := promptGuardTestConfig()
 	base.Mode = promptfilter.ModeBlock
 	base.Advanced.Guard.Mode = promptfilter.GuardModeEnforce
@@ -734,8 +764,8 @@ func TestBindingPolicyCreatesConsistentRequestSnapshot(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Set(contextAPIKeyID, int64(101))
 	cfg := handler.promptFilterConfigForRequest(c)
-	if cfg.Mode != promptfilter.ModeWarn || cfg.Advanced.Guard.Mode != promptfilter.GuardModeWarn || cfg.Advanced.Guard.DefaultProfile != promptfilter.GuardProfileResearch {
-		t.Fatalf("binding request snapshot is inconsistent: mode=%q guard=%q profile=%q", cfg.Mode, cfg.Advanced.Guard.Mode, cfg.Advanced.Guard.DefaultProfile)
+	if cfg.Mode != promptfilter.ModeBlock || cfg.Advanced.Guard.Mode != promptfilter.GuardModeEnforce || cfg.Advanced.Guard.DefaultProfile != promptfilter.GuardProfileBalanced {
+		t.Fatalf("binding changed unified request policy: mode=%q guard=%q profile=%q", cfg.Mode, cfg.Advanced.Guard.Mode, cfg.Advanced.Guard.DefaultProfile)
 	}
 }
 
@@ -1025,10 +1055,14 @@ func signedNewAPIPolicyContextWithSecret(t *testing.T, requestID string, identit
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = req
+	c.Set(contextAPIKeyID, int64(101))
 	return c, recorder
 }
 
 func addSignedNewAPIPolicyMeta(t *testing.T, c *gin.Context, meta newAPIPolicyMeta, valid bool) {
+	if strings.TrimSpace(meta.PlatformID) == "" {
+		meta.PlatformID = "test-platform"
+	}
 	addSignedNewAPIPolicyMetaWithSecret(t, c, meta, valid, "integration-secret")
 }
 
