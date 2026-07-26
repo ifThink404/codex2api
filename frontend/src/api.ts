@@ -33,6 +33,7 @@ import type {
   CreateAccountResponse,
   CreateAPIKeyResponse,
   CreateAPIKeyRequest,
+  CreatePromptFilterNewAPIBindingRequest,
   FetchOpenAIResponsesModelsRequest,
   FetchOpenAIResponsesModelsResponse,
   CreateImageJobPayload,
@@ -54,6 +55,8 @@ import type {
   OpsOverviewResponse,
   PromptFilterLog,
   PromptFilterLogsResponse,
+  PromptFilterNewAPIBinding,
+  PromptFilterNewAPIBindingsResponse,
   PromptFilterRulePatternTestResponse,
   PromptFilterRulesResponse,
   PromptFilterTestResponse,
@@ -71,6 +74,7 @@ import type {
   ObservedInstructionsResponse,
   UpdateAccountSchedulerRequest,
   UpdateAPIKeyRequest,
+  UpdatePromptFilterNewAPIBindingRequest,
   UpdateOAuthAccountRequest,
   UpdateOpenAIResponsesAccountRequest,
   UsageLogsResponse,
@@ -587,6 +591,32 @@ export const api = {
   getPromptFilterNewAPISecret: () => request<{ configured: boolean; source: 'none' | 'database' | 'environment'; masked: string; secret?: string }>('/prompt-filter/newapi-secret'),
   generatePromptFilterNewAPISecret: () => request<{ configured: boolean; source: string; masked: string; secret: string }>('/prompt-filter/newapi-secret/generate', { method: 'POST' }),
   replacePromptFilterNewAPISecret: (secret: string) => request<{ configured: boolean; source: string; masked: string; secret: string }>('/prompt-filter/newapi-secret', { method: 'PUT', body: JSON.stringify({ secret }) }),
+  getPromptFilterNewAPIBindings: () =>
+    request<PromptFilterNewAPIBindingsResponse>('/prompt-filter/newapi-bindings'),
+  getPromptFilterNewAPIBinding: (apiKeyId: number) =>
+    request<PromptFilterNewAPIBinding>(`/prompt-filter/newapi-bindings/${apiKeyId}`),
+  createPromptFilterNewAPIBinding: (data: CreatePromptFilterNewAPIBindingRequest) =>
+    request<PromptFilterNewAPIBinding>('/prompt-filter/newapi-bindings', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updatePromptFilterNewAPIBinding: (apiKeyId: number, data: UpdatePromptFilterNewAPIBindingRequest) =>
+    request<PromptFilterNewAPIBinding>(`/prompt-filter/newapi-bindings/${apiKeyId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  generatePromptFilterNewAPIBindingSecret: (apiKeyId: number, graceSeconds: number) =>
+    request<PromptFilterNewAPIBinding>(`/prompt-filter/newapi-bindings/${apiKeyId}/secret/generate`, {
+      method: 'POST',
+      body: JSON.stringify({ grace_seconds: graceSeconds }),
+    }),
+  replacePromptFilterNewAPIBindingSecret: (apiKeyId: number, secret: string, graceSeconds: number) =>
+    request<PromptFilterNewAPIBinding>(`/prompt-filter/newapi-bindings/${apiKeyId}/secret`, {
+      method: 'PUT',
+      body: JSON.stringify({ secret, grace_seconds: graceSeconds }),
+    }),
+  deletePromptFilterNewAPIBinding: (apiKeyId: number) =>
+    request<MessageResponse>(`/prompt-filter/newapi-bindings/${apiKeyId}`, { method: 'DELETE' }),
   getOpsOverview: () => request<OpsOverviewResponse>('/ops/overview'),
   getRuntimeStatus: () => request<RuntimeStatusResponse>('/runtime-status'),
   getSystemUpdate: () => request<SystemUpdateInfo>('/system/update', { timeoutMs: 20_000 }),

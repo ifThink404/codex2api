@@ -58,7 +58,7 @@
       "profileTitle": "審核檔案說明",
       "profileDescription": "檔案會調整檢測深度，不會把單一安全技術名詞直接判定為終局違規。",
       "layersTitle": "請求來源層",
-      "layersDescription": "目前使用者 Prompt 是同步攔截與處罰證據；其他來源只允許關閉或影子稽核，不會直接觸發同步攔截。",
+      "layersDescription": "目前使用者 Prompt 是同步攔截與處罰證據；輔助來源預設只做影子稽核。唯一例外是同一段工具輸出中出現高可信複合操作指令時，可依全域模式警告或攔截目前請求，但永不計入使用者處罰、封鎖或終局證據。",
       "performance": {
         "title": "審核效能與首字延遲",
         "description": "重用完全相同的片段檢測結果，並可把純影子輔助層移出使用者等待路徑，在不降低執行層審核強度的前提下減少重複掃描。",
@@ -84,7 +84,7 @@
         "scanOverlapBytesError": "請輸入 64–8192 的整數。",
         "scanOverlapChunkError": "重疊大小必須小於分塊大小。",
         "asyncShadowAuxiliary": "非同步處理影子輔助層",
-        "asyncShadowAuxiliaryHint": "只把最終模式為 Shadow 的工具輸出、歷史、系統/開發者上下文、工作階段與附件等輔助內容放入背景佇列；關閉時這些影子層仍同步掃描。舊設定預設關閉。",
+        "asyncShadowAuxiliaryHint": "把普通 Shadow 輔助內容放入背景佇列；同一段工具輸出中的高可信複合操作指令一律同步確認，並依全域模式警告或攔截目前請求。關閉時普通影子層也同步掃描。舊設定預設關閉。",
         "exactSegmentCache": "精確片段快取",
         "exactSegmentCacheHint": "依完整規則設定與片段摘要重用完全相同的檢測結論，不做模糊比對，也不改變分數或攔截結果。",
         "cacheEntries": "快取項目上限",
@@ -178,7 +178,7 @@
         },
         "tool_output": {
           "label": "工具輸出",
-          "description": "將工具回傳內容視為不可信資料進行檢測，但避免直接作為使用者處罰證據。"
+          "description": "將工具回傳內容視為不可信資料進行檢測；高可信複合操作指令可攔截目前請求，但永不作為使用者處罰、封鎖或終局證據。"
         },
         "tool_arguments": {
           "label": "工具參數",

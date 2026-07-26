@@ -2,23 +2,31 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/codex2api/api"
+	"github.com/codex2api/auth"
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
 func TestVerifyNewAPIIdentity(t *testing.T) {
@@ -384,7 +392,620 @@ func TestHandshakeRejectsInvalidProvidedPolicyMeta(t *testing.T) {
 	}
 }
 
+func TestBoundNewAPIIdentityIsolatedByAPIKeyPlatformAndSecret(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "legacy-global-secret")
+	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
+	fingerprint := promptSessionTestFingerprint("same-session")
+	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{
+		{APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+		{APIKeyID: 202, PlatformCode: "buycodekey", Secret: "buy-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+	})
+	identity := newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}
+
+	fanren := signedBoundNewAPIPolicyContext(t, "same-request", identity, body, 101, "fanren", "fanren-secret", fingerprint)
+	fanrenCfg := handler.promptFilterConfigForRequest(fanren)
+	fanrenVerified, ok := handler.verifyNewAPIPolicyContext(fanren, fanrenCfg.Advanced.NewAPI, body)
+	if !ok || fanrenVerified.APIKeyID != 101 || fanrenVerified.Platform != "fanren" || fanrenVerified.VerificationSecret != "fanren-secret" {
+		t.Fatalf("fanren verification = %+v ok=%v", fanrenVerified, ok)
+	}
+
+	// The exact same request/user/session tuple is valid on another platform;
+	// replay state is scoped by Codex API key and bound platform.
+	buy := signedBoundNewAPIPolicyContext(t, "same-request", identity, body, 202, "buycodekey", "buy-secret", fingerprint)
+	buyCfg := handler.promptFilterConfigForRequest(buy)
+	buyVerified, ok := handler.verifyNewAPIPolicyContext(buy, buyCfg.Advanced.NewAPI, body)
+	if !ok || buyVerified.APIKeyID != 202 || buyVerified.Platform != "buycodekey" || buyVerified.VerificationSecret != "buy-secret" {
+		t.Fatalf("buycodekey verification = %+v ok=%v", buyVerified, ok)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		requestID  string
+		secret     string
+		platformID string
+	}{
+		{name: "other binding secret", requestID: "cross-secret", secret: "buy-secret", platformID: "fanren"},
+		{name: "legacy global fallback", requestID: "global-fallback", secret: "legacy-global-secret", platformID: "fanren"},
+		{name: "signed platform mismatch", requestID: "platform-mismatch", secret: "fanren-secret", platformID: "buycodekey"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := signedBoundNewAPIPolicyContext(t, tc.requestID, identity, body, 101, tc.platformID, tc.secret, fingerprint)
+			cfg := handler.promptFilterConfigForRequest(c)
+			if _, verified := handler.verifyNewAPIPolicyContext(c, cfg.Advanced.NewAPI, body); verified {
+				t.Fatalf("cross-platform request was accepted: secret=%q platform=%q", tc.secret, tc.platformID)
+			}
+		})
+	}
+}
+
+func TestNewAPIIdentitySecretsDoNotFallbackForUnboundKeyInBindingMode(t *testing.T) {
+	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "")
+	cfg := promptfilter.NewAPIConfig{Enabled: true, Secret: "legacy-global-secret"}
+	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+	}})
+	unbound, _ := gin.CreateTestContext(httptest.NewRecorder())
+	unbound.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	unbound.Set(contextAPIKeyID, int64(999))
+	_, platform, enabled, candidates := handler.newAPIIdentitySecrets(unbound, cfg, time.Now())
+	if enabled || len(candidates) != 0 || platform != "bound" {
+		t.Fatalf("unbound key borrowed legacy secret: platform=%q enabled=%v candidates=%+v", platform, enabled, candidates)
+	}
+
+	legacyHandler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), nil)
+	legacy, _ := gin.CreateTestContext(httptest.NewRecorder())
+	legacy.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	legacy.Set(contextAPIKeyID, int64(999))
+	_, platform, enabled, candidates = legacyHandler.newAPIIdentitySecrets(legacy, cfg, time.Now())
+	if !enabled || len(candidates) != 1 || candidates[0].Secret != "legacy-global-secret" || platform != "legacy" {
+		t.Fatalf("zero-binding legacy fallback was lost: platform=%q enabled=%v candidates=%+v", platform, enabled, candidates)
+	}
+}
+
+func TestBindingSnapshotRefreshesPolicyAndRevokesObsoleteWebSocketIdentity(t *testing.T) {
+	oldBinding := database.PromptFilterNewAPIBinding{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "old-secret", Enabled: true, RequireSignedIdentity: true,
+		PolicyMode: database.PromptFilterPolicyModeWarn, PolicyProfile: database.PromptFilterPolicyProfileResearch,
+	}
+	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{oldBinding})
+	newConnection := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+		c.Set(contextAPIKeyID, int64(101))
+		binding, bound := handler.resolvePromptFilterNewAPIBinding(c)
+		if !bound || binding.PlatformCode != "fanren" {
+			t.Fatalf("initial binding = %+v bound=%v", binding, bound)
+		}
+		c.Set(newAPIIdentityContextKey, verifiedNewAPIIdentityContext{
+			APIKeyID: 101, Platform: "fanren", VerificationSecret: "old-secret",
+		})
+		return c
+	}
+
+	c := newConnection()
+	expiresAt := time.Now().Add(time.Minute)
+	rotated := database.PromptFilterNewAPIBinding{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "new-secret", PreviousSecret: "old-secret", PreviousSecretExpiresAt: &expiresAt,
+		Enabled: true, RequireSignedIdentity: true,
+		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileStrict,
+	}
+	handler.store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{&rotated})
+	if apiErr := handler.refreshNewAPIWebSocketBinding(c, time.Now()); apiErr != nil {
+		t.Fatalf("valid grace-period websocket identity was revoked: %v", apiErr)
+	}
+	resetPromptRequestSecurityFrame(c)
+	currentBinding, bound := handler.resolvePromptFilterNewAPIBinding(c)
+	if !bound || currentBinding.Secret != "new-secret" {
+		t.Fatalf("connection did not refresh the current binding: %+v bound=%v", currentBinding, bound)
+	}
+	currentCfg := handler.promptFilterConfigForRequest(c)
+	if currentCfg.Advanced.Guard.Mode != promptfilter.GuardModeEnforce || currentCfg.Advanced.Guard.DefaultProfile != promptfilter.GuardProfileStrict {
+		t.Fatalf("connection did not refresh binding policy: mode=%q profile=%q", currentCfg.Advanced.Guard.Mode, currentCfg.Advanced.Guard.DefaultProfile)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		bindings []database.PromptFilterNewAPIBinding
+	}{
+		{name: "secret grace expired", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "fanren", Secret: "new-secret", Enabled: true, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
+		{name: "binding disabled", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "fanren", Secret: "old-secret", Enabled: false, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
+		{name: "platform rebound", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "buycodekey", Secret: "old-secret", Enabled: true, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
+		{name: "binding deleted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			connection := newConnection()
+			bindings := make([]*database.PromptFilterNewAPIBinding, 0, len(tc.bindings))
+			for index := range tc.bindings {
+				binding := tc.bindings[index]
+				bindings = append(bindings, &binding)
+			}
+			handler.store.ReplacePromptFilterNewAPIBindings(bindings)
+			if apiErr := handler.refreshNewAPIWebSocketBinding(connection, time.Now()); apiErr == nil || apiErr.Code != api.ErrorCode("newapi_websocket_binding_changed") {
+				t.Fatalf("obsolete websocket binding was not revoked: %+v", apiErr)
+			}
+			handler.store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{&oldBinding})
+		})
+	}
+}
+
+func TestResponsesWebSocketClosesBeforeUpstreamAfterBindingSecretRevocation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "ws-binding-revocation.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	apiKey := "sk-ws-binding-revocation-1234567890"
+	apiKeyID, err := db.InsertAPIKey(context.Background(), "ws binding", apiKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenCache := cache.NewMemory(8)
+	defer tokenCache.Close()
+	store := auth.NewStore(db, tokenCache, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1})
+	defer store.Stop()
+	store.SetPromptFilterConfig(promptGuardTestConfig())
+	store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{{
+		APIKeyID: apiKeyID, PlatformCode: "fanren", Secret: "fanren-old-secret", Enabled: true, RequireSignedIdentity: true,
+		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
+	}})
+	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at", PlanType: "plus", AccountID: "acct-ws-binding"})
+	handler := NewHandler(store, db, nil, nil)
+	handler.SetRuntimeCache(tokenCache)
+
+	previousExecute := WebsocketExecuteFunc
+	defer func() { WebsocketExecuteFunc = previousExecute }()
+	var upstreamCalls atomic.Int32
+	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, poolRouteKey string) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("data: [DONE]\n\n"))}, nil
+	}
+
+	router := gin.New()
+	handler.RegisterRoutes(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	signedRequest := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	signedRequest.Header.Set("Authorization", "Bearer "+apiKey)
+	setSignedNewAPIRequestHeaders(t, signedRequest, nil, "ws-binding-handshake", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "fanren", "fanren-old-secret", "")
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, signedRequest.Header)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial websocket: %v status=%d", err, response.StatusCode)
+		}
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	store.UpsertPromptFilterNewAPIBinding(database.PromptFilterNewAPIBinding{
+		APIKeyID: apiKeyID, PlatformCode: "fanren", Secret: "fanren-new-secret", Enabled: true, RequireSignedIdentity: true,
+		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
+	})
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.5","input":"hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, event, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read revocation event: %v", err)
+	}
+	if gjson.GetBytes(event, "type").String() != "error" || gjson.GetBytes(event, "error.code").String() != "newapi_websocket_binding_changed" {
+		t.Fatalf("unexpected revocation event: %s", event)
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("revoked websocket reached upstream %d times", upstreamCalls.Load())
+	}
+}
+
+func TestBoundExplicitPolicyCannotBeDowngradedBySignedMeta(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
+	identity := newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}
+	evaluate := func(requestID, bindingMode, bindingProfile string) (string, string, bool) {
+		cfg := promptGuardTestConfig()
+		cfg.Advanced.Guard.AllowTrustedOverrides = true
+		handler := newPromptFilterBindingTestHandler(t, cfg, []database.PromptFilterNewAPIBinding{{
+			APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+			PolicyMode: bindingMode, PolicyProfile: bindingProfile,
+		}})
+		c, _ := signedNewAPIPolicyContextWithSecret(t, requestID, identity, "/v1/responses", body, "fanren-secret")
+		c.Set(contextAPIKeyID, int64(101))
+		addSignedNewAPIPolicyMetaWithSecret(t, c, newAPIPolicyMeta{
+			PlatformID: "fanren", Profile: promptfilter.GuardProfileResearch, Mode: promptfilter.GuardModeOff,
+			Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
+		}, true, "fanren-secret")
+		requestCfg := handler.promptFilterConfigForRequest(c)
+		_, _, trusted, profile, mode, _, _ := handler.resolvePromptGuardOverrides(c, requestCfg, body, "gpt-5.5")
+		return profile, mode, trusted
+	}
+
+	profile, mode, trusted := evaluate("binding-pinned", database.PromptFilterPolicyModeEnforce, database.PromptFilterPolicyProfileStrict)
+	if !trusted || profile != promptfilter.GuardProfileStrict || mode != promptfilter.GuardModeEnforce {
+		t.Fatalf("signed meta downgraded explicit binding: trusted=%v profile=%q mode=%q", trusted, profile, mode)
+	}
+	profile, mode, trusted = evaluate("binding-inherit", database.PromptFilterPolicyModeInherit, database.PromptFilterPolicyProfileInherit)
+	if !trusted || profile != promptfilter.GuardProfileResearch || mode != promptfilter.GuardModeOff {
+		t.Fatalf("inherit binding did not accept signed policy: trusted=%v profile=%q mode=%q", trusted, profile, mode)
+	}
+}
+
+func TestSignedPolicyMetaRejectsInvalidPlatformCodeWithoutTruncation(t *testing.T) {
+	valid32 := "A" + strings.Repeat("b", 31)
+	meta := newAPIPolicyMeta{
+		PlatformID: valid32, Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
+	}
+	if !normalizeVerifiedNewAPIPolicyMeta(&meta) || meta.PlatformID != strings.ToLower(valid32) {
+		t.Fatalf("valid platform metadata was rejected or not normalized: %+v", meta)
+	}
+	for _, value := range []string{strings.Repeat("a", 33), "fanren.prod", "_fanren"} {
+		invalid := newAPIPolicyMeta{
+			PlatformID: value, Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+			Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
+		}
+		if normalizeVerifiedNewAPIPolicyMeta(&invalid) {
+			t.Fatalf("invalid platform metadata %q was accepted as %q", value, invalid.PlatformID)
+		}
+	}
+}
+
+func TestBoundPreviousSecretGraceSignsDecisionWithVerifiedSecret(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
+	expires := time.Now().Add(time.Minute)
+	binding := database.PromptFilterNewAPIBinding{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "current-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
+		PreviousSecret: "previous-secret", PreviousSecretExpiresAt: &expires,
+	}
+	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{binding})
+	c := signedBoundNewAPIPolicyContext(t, "previous-grace", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "fanren", "previous-secret", "")
+	cfg := handler.promptFilterConfigForRequest(c)
+	decision := promptfilter.Decision{Action: promptfilter.ActionBlock, Profile: promptfilter.GuardProfileBalanced, ReasonCode: "prompt_policy_match", StrikeEligible: true}
+	verdict := promptfilter.Verdict{Action: promptfilter.ActionBlock, FullText: "blocked evidence"}
+	if !handler.sendNewAPIPolicyDecision(c, cfg, decision, verdict, body, "/v1/responses", "gpt-5.5", body) {
+		t.Fatal("previous-secret request was not delegated")
+	}
+	metadata := policyDecisionMetadataFromHeaders(c.Writer.Header())
+	if got, want := c.Writer.Header().Get("X-Codex2API-Policy-Response-Signature"), signNewAPIPolicyDecision("previous-secret", metadata); got != want {
+		t.Fatalf("response signature = %q, want previous-secret signature %q", got, want)
+	}
+	if got := signNewAPIPolicyDecision("current-secret", metadata); got == c.Writer.Header().Get("X-Codex2API-Policy-Response-Signature") {
+		t.Fatal("response was signed with current secret instead of the secret that verified the request")
+	}
+	policyContext, verified := handler.verifyNewAPIPolicyContext(c, cfg.Advanced.NewAPI, body)
+	if !verified {
+		t.Fatal("verified previous-secret context was not cached")
+	}
+	wsMetadata := buildNewAPIPolicyDecisionMetadataWithSecret(policyContext.Identity, decision, verdict, cfg, body, "/v1/responses", "gpt-5.5", "responses:1", policyContext.VerificationSecret)
+	if wsMetadata.EventSignature != signNewAPIPolicyEvent("previous-secret", wsMetadata) || wsMetadata.EventSignature == signNewAPIPolicyEvent("current-secret", wsMetadata) {
+		t.Fatal("WebSocket decision event did not use the request verification secret")
+	}
+
+	expired := time.Now().Add(-time.Second)
+	binding.PreviousSecretExpiresAt = &expired
+	handler.store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{&binding})
+	expiredContext := signedBoundNewAPIPolicyContext(t, "previous-expired", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "fanren", "previous-secret", "")
+	expiredCfg := handler.promptFilterConfigForRequest(expiredContext)
+	if _, verified := handler.verifyNewAPIPolicyContext(expiredContext, expiredCfg.Advanced.NewAPI, body); verified {
+		t.Fatal("expired previous secret was accepted")
+	}
+}
+
+func TestSignedNewAPIPolicyBlockUsesAnthropicErrorEnvelopeForMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hello"}]}`)
+	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, RequireSignedIdentity: true,
+		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
+	}})
+	c, recorder := signedNewAPIPolicyContextWithSecret(t, "messages-policy-block", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/messages", body, "fanren-secret")
+	c.Set(contextAPIKeyID, int64(101))
+	addSignedNewAPIPolicyMetaWithSecret(t, c, newAPIPolicyMeta{
+		PlatformID: "fanren", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyAnthropic), Protocol: string(promptfilter.ProtocolMessages),
+	}, true, "fanren-secret")
+	cfg := handler.promptFilterConfigForRequest(c)
+	decision := promptfilter.Decision{Action: promptfilter.ActionBlock, Profile: promptfilter.GuardProfileBalanced, ReasonCode: "prompt_policy_match"}
+	verdict := promptfilter.Verdict{Action: promptfilter.ActionBlock, FullText: "blocked tool output"}
+	if !handler.sendNewAPIPolicyDecision(c, cfg, decision, verdict, body, "/v1/messages", "claude-sonnet-4", body) {
+		t.Fatal("signed NewAPI Messages policy decision was not returned")
+	}
+	if recorder.Code != http.StatusBadRequest || gjson.GetBytes(recorder.Body.Bytes(), "type").String() != "error" || gjson.GetBytes(recorder.Body.Bytes(), "error.type").String() != "invalid_request_error" {
+		t.Fatalf("Messages policy response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("X-Codex2API-Policy-Decision-ID") == "" || recorder.Header().Get("X-Codex2API-Policy-Response-Signature") == "" {
+		t.Fatalf("Messages policy response lost signed decision headers: %v", recorder.Header())
+	}
+}
+
+func TestBindingPolicyCreatesConsistentRequestSnapshot(t *testing.T) {
+	base := promptGuardTestConfig()
+	base.Mode = promptfilter.ModeBlock
+	base.Advanced.Guard.Mode = promptfilter.GuardModeEnforce
+	base.Advanced.Guard.DefaultProfile = promptfilter.GuardProfileBalanced
+	handler := newPromptFilterBindingTestHandler(t, base, []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeWarn, PolicyProfile: database.PromptFilterPolicyProfileResearch,
+	}})
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(contextAPIKeyID, int64(101))
+	cfg := handler.promptFilterConfigForRequest(c)
+	if cfg.Mode != promptfilter.ModeWarn || cfg.Advanced.Guard.Mode != promptfilter.GuardModeWarn || cfg.Advanced.Guard.DefaultProfile != promptfilter.GuardProfileResearch {
+		t.Fatalf("binding request snapshot is inconsistent: mode=%q guard=%q profile=%q", cfg.Mode, cfg.Advanced.Guard.Mode, cfg.Advanced.Guard.DefaultProfile)
+	}
+}
+
+func TestRequiredBoundIdentityFailsWithoutPolicyPenalty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
+	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, RequireSignedIdentity: true,
+		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
+	}})
+
+	missingRecorder := httptest.NewRecorder()
+	missing, _ := gin.CreateTestContext(missingRecorder)
+	missing.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	missing.Set(contextAPIKeyID, int64(101))
+	if !handler.rejectRequiredNewAPIIdentity(missing, handler.promptFilterConfigForRequest(missing).Advanced.NewAPI, body) {
+		t.Fatal("missing signed identity was not rejected")
+	}
+	if missingRecorder.Code != http.StatusUnauthorized || !strings.Contains(missingRecorder.Body.String(), "newapi_signed_identity_required") {
+		t.Fatalf("missing identity response = %d %s", missingRecorder.Code, missingRecorder.Body.String())
+	}
+	assertNoPromptPolicyPenaltyHeaders(t, missingRecorder.Header())
+
+	missingMeta, missingMetaRecorder := signedNewAPIPolicyContextWithSecret(t, "missing-meta", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/responses", body, "fanren-secret")
+	missingMeta.Set(contextAPIKeyID, int64(101))
+	if !handler.rejectRequiredNewAPIIdentity(missingMeta, handler.promptFilterConfigForRequest(missingMeta).Advanced.NewAPI, body) {
+		t.Fatal("missing signed platform metadata was not rejected")
+	}
+	if missingMetaRecorder.Code != http.StatusUnauthorized || !strings.Contains(missingMetaRecorder.Body.String(), "newapi_platform_identity_required") {
+		t.Fatalf("missing platform meta response = %d %s", missingMetaRecorder.Code, missingMetaRecorder.Body.String())
+	}
+	assertNoPromptPolicyPenaltyHeaders(t, missingMetaRecorder.Header())
+
+	wrongPlatform := signedBoundNewAPIPolicyContext(t, "wrong-platform-required", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "buycodekey", "fanren-secret", "")
+	if !handler.rejectRequiredNewAPIIdentity(wrongPlatform, handler.promptFilterConfigForRequest(wrongPlatform).Advanced.NewAPI, body) {
+		t.Fatal("mismatched signed platform identity was not rejected")
+	}
+	if status := wrongPlatform.Writer.Status(); status != http.StatusUnauthorized {
+		t.Fatalf("wrong platform status = %d, want 401", status)
+	}
+	assertNoPromptPolicyPenaltyHeaders(t, wrongPlatform.Writer.Header())
+}
+
+func TestAuthMiddlewareEnforcesBoundIdentityAndRestoresV1Body(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "codex2api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	apiKey := "sk-bound-platform-test-1234567890"
+	apiKeyID, err := db.InsertAPIKey(context.Background(), "bound platform", apiKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1})
+	store.SetPromptFilterConfig(promptGuardTestConfig())
+	store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{{
+		APIKeyID: apiKeyID, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, RequireSignedIdentity: true,
+		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
+	}})
+	handler := NewHandler(store, db, nil, nil)
+	handler.SetRuntimeCache(cache.NewMemory(1))
+	router := gin.New()
+	v1 := router.Group("/v1")
+	v1.Use(handler.authMiddleware())
+	v1.GET("/models", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	v1.POST("/responses", func(c *gin.Context) {
+		body, readErr := io.ReadAll(c.Request.Body)
+		if readErr != nil {
+			c.String(http.StatusInternalServerError, readErr.Error())
+			return
+		}
+		c.Data(http.StatusOK, "application/json", body)
+	})
+	v1.POST("/messages", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	v1.POST("/messages/count_tokens", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	missing := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	missing.Header.Set("Authorization", "Bearer "+apiKey)
+	missingRecorder := httptest.NewRecorder()
+	router.ServeHTTP(missingRecorder, missing)
+	if missingRecorder.Code != http.StatusUnauthorized || !strings.Contains(missingRecorder.Body.String(), "newapi_signed_identity_required") {
+		t.Fatalf("unsigned V1 GET = %d %s", missingRecorder.Code, missingRecorder.Body.String())
+	}
+	assertNoPromptPolicyPenaltyHeaders(t, missingRecorder.Header())
+
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		anthropicBody := []byte(`{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hello"}]}`)
+		unsigned := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(anthropicBody))
+		unsigned.Header.Set("Authorization", "Bearer "+apiKey)
+		unsignedRecorder := httptest.NewRecorder()
+		router.ServeHTTP(unsignedRecorder, unsigned)
+		if unsignedRecorder.Code != http.StatusUnauthorized || gjson.GetBytes(unsignedRecorder.Body.Bytes(), "type").String() != "error" || gjson.GetBytes(unsignedRecorder.Body.Bytes(), "error.type").String() != "authentication_error" || !strings.Contains(gjson.GetBytes(unsignedRecorder.Body.Bytes(), "error.message").String(), "NewAPI") {
+			t.Fatalf("unsigned Anthropic endpoint %s = %d %s", path, unsignedRecorder.Code, unsignedRecorder.Body.String())
+		}
+		assertNoPromptPolicyPenaltyHeaders(t, unsignedRecorder.Header())
+	}
+
+	wrongPlatformBody := []byte(`{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hello"}]}`)
+	wrongPlatform := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(wrongPlatformBody))
+	wrongPlatform.Header.Set("Authorization", "Bearer "+apiKey)
+	setSignedNewAPIRequestHeaders(t, wrongPlatform, wrongPlatformBody, "messages-wrong-platform", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "buycodekey", "fanren-secret", "")
+	wrongPlatformRecorder := httptest.NewRecorder()
+	router.ServeHTTP(wrongPlatformRecorder, wrongPlatform)
+	if wrongPlatformRecorder.Code != http.StatusUnauthorized || gjson.GetBytes(wrongPlatformRecorder.Body.Bytes(), "type").String() != "error" || gjson.GetBytes(wrongPlatformRecorder.Body.Bytes(), "error.type").String() != "authentication_error" {
+		t.Fatalf("wrong-platform Anthropic response = %d %s", wrongPlatformRecorder.Code, wrongPlatformRecorder.Body.String())
+	}
+	assertNoPromptPolicyPenaltyHeaders(t, wrongPlatformRecorder.Header())
+
+	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
+	valid := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	valid.Header.Set("Authorization", "Bearer "+apiKey)
+	setSignedNewAPIRequestHeaders(t, valid, body, "v1-valid", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "fanren", "fanren-secret", "")
+	validRecorder := httptest.NewRecorder()
+	router.ServeHTTP(validRecorder, valid)
+	if validRecorder.Code != http.StatusOK || !bytes.Equal(validRecorder.Body.Bytes(), body) {
+		t.Fatalf("signed V1 POST did not retain body: status=%d body=%s", validRecorder.Code, validRecorder.Body.String())
+	}
+
+	verifyRouter := gin.New()
+	handler.RegisterRoutes(verifyRouter)
+	verifyRequest := httptest.NewRequest(http.MethodPost, "/v1/prompt-filter/newapi/verify", nil)
+	verifyRequest.Header.Set("Authorization", "Bearer "+apiKey)
+	setSignedNewAPIRequestHeaders(t, verifyRequest, nil, "v1-binding-handshake", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "fanren", "fanren-secret", "")
+	verifyRecorder := httptest.NewRecorder()
+	verifyRouter.ServeHTTP(verifyRecorder, verifyRequest)
+	if verifyRecorder.Code != http.StatusOK || gjson.GetBytes(verifyRecorder.Body.Bytes(), "platform").String() != "fanren" {
+		t.Fatalf("authenticated V1 binding handshake = %d %s", verifyRecorder.Code, verifyRecorder.Body.String())
+	}
+}
+
+func TestBoundRiskAndSessionStateArePlatformScoped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := promptSessionTestConfig()
+	cfg.Advanced.Risk.Enabled = true
+	cfg.Advanced.Risk.WindowSeconds = 300
+	cfg.Advanced.Risk.UserWeightPercent = 0
+	cfg.Advanced.Risk.IPWeightPercent = 0
+	cfg.Advanced.Risk.SessionWeightPercent = 100
+	handler := newPromptFilterBindingTestHandler(t, promptfilter.NormalizeConfig(cfg), []database.PromptFilterNewAPIBinding{
+		{APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+		{APIKeyID: 202, PlatformCode: "buycodekey", Secret: "buy-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+	})
+	fingerprint := promptSessionTestFingerprint("same-session")
+	identity := newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}
+	verdict := promptfilter.Verdict{Enabled: true, Action: promptfilter.ActionBlock, Score: 50, SensitiveIntent: true, TerminalStrictHit: true}
+
+	applyRisk := func(requestID string, apiKeyID int64, platform, secret string) promptfilter.Verdict {
+		body := []byte(`{"input":"risk"}`)
+		c := signedBoundNewAPIPolicyContext(t, requestID, identity, body, apiKeyID, platform, secret, fingerprint)
+		setIngressRequestBodyIfAbsent(c, body)
+		return handler.applyPromptRisk(c, verdict, handler.promptFilterConfigForRequest(c))
+	}
+	if got := applyRisk("risk-fanren-1", 101, "fanren", "fanren-secret"); got.RiskScore > verdict.Score {
+		t.Fatalf("first fanren risk unexpectedly accumulated: %+v", got)
+	}
+	if got := applyRisk("risk-buy-1", 202, "buycodekey", "buy-secret"); got.RiskScore > verdict.Score {
+		t.Fatalf("buycodekey inherited fanren risk: %+v", got)
+	}
+	if got := applyRisk("risk-fanren-2", 101, "fanren", "fanren-secret"); got.RiskScore <= verdict.Score {
+		t.Fatalf("same-platform session risk did not accumulate: %+v", got)
+	}
+
+	seed := evaluateBoundPromptSession(t, handler, "session-fanren-seed", 101, "fanren", "fanren-secret", fingerprint, []byte(`{"input":"请记住这段平台隔离上下文。"}`))
+	if seed.Decision.Action == promptfilter.ActionBlock {
+		t.Fatalf("benign session seed blocked: %+v", seed.Decision)
+	}
+	buyContinuation := evaluateBoundPromptSession(t, handler, "session-buy-cont", 202, "buycodekey", "buy-secret", fingerprint, []byte(`{"input":"继续"}`))
+	if promptEnvelopeHasOrigin(buyContinuation.Envelope, promptfilter.OriginSessionContext) {
+		t.Fatalf("session context crossed platform boundary: %+v", buyContinuation.Envelope.Segments)
+	}
+	fanrenContinuation := evaluateBoundPromptSession(t, handler, "session-fanren-cont", 101, "fanren", "fanren-secret", fingerprint, []byte(`{"input":"继续"}`))
+	if !promptEnvelopeHasOrigin(fanrenContinuation.Envelope, promptfilter.OriginSessionContext) {
+		t.Fatalf("same-platform session context was not linked: %+v", fanrenContinuation.Envelope.Segments)
+	}
+}
+
+func newPromptFilterBindingTestHandler(t *testing.T, cfg promptfilter.Config, bindings []database.PromptFilterNewAPIBinding) *Handler {
+	t.Helper()
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1})
+	store.SetPromptFilterConfig(cfg)
+	items := make([]*database.PromptFilterNewAPIBinding, 0, len(bindings))
+	for index := range bindings {
+		binding := bindings[index]
+		items = append(items, &binding)
+	}
+	store.ReplacePromptFilterNewAPIBindings(items)
+	handler := NewHandler(store, nil, nil, nil)
+	handler.SetRuntimeCache(cache.NewMemory(1))
+	return handler
+}
+
+func signedBoundNewAPIPolicyContext(t *testing.T, requestID string, identity newAPIIdentity, body []byte, apiKeyID int64, platform, secret, fingerprint string) *gin.Context {
+	t.Helper()
+	c, _ := signedNewAPIPolicyContextWithSecret(t, requestID, identity, "/v1/responses", body, secret)
+	c.Set(contextAPIKeyID, apiKeyID)
+	addSignedNewAPIPolicyMetaWithSecret(t, c, newAPIPolicyMeta{
+		PlatformID: platform, Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses), SessionFingerprint: fingerprint,
+	}, true, secret)
+	return c
+}
+
+func evaluateBoundPromptSession(t *testing.T, handler *Handler, requestID string, apiKeyID int64, platform, secret, fingerprint string, body []byte) promptGuardEvaluation {
+	t.Helper()
+	c := signedBoundNewAPIPolicyContext(t, requestID, newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, apiKeyID, platform, secret, fingerprint)
+	setIngressRequestBodyIfAbsent(c, body)
+	return handler.evaluatePromptGuard(c, body, body, "/v1/responses", "gpt-5.5", promptfilter.TransportHTTP)
+}
+
+func policyDecisionMetadataFromHeaders(header http.Header) newAPIPolicyDecisionMetadata {
+	return newAPIPolicyDecisionMetadata{
+		RequestID: header.Get("X-Codex2API-Policy-Request-ID"), DecisionID: header.Get("X-Codex2API-Policy-Decision-ID"),
+		Action: header.Get("X-Codex2API-Policy-Action"), Profile: header.Get("X-Codex2API-Policy-Profile"),
+		ReasonCode: header.Get("X-Codex2API-Policy-Reason"), Severity: header.Get("X-Codex2API-Policy-Severity"),
+		StrikeEligible: header.Get("X-Codex2API-Policy-Strike-Eligible") == "true", RuleVersion: header.Get("X-Codex2API-Policy-Rule-Version"),
+		EvidenceSHA256: header.Get("X-Codex2API-Policy-Evidence-SHA256"),
+	}
+}
+
+func assertNoPromptPolicyPenaltyHeaders(t *testing.T, header http.Header) {
+	t.Helper()
+	for _, name := range []string{"X-Codex2API-Policy-Violation", "X-Codex2API-Policy-Strike", "X-Codex2API-Policy-Ban", "X-Codex2API-Policy-Response-Signature"} {
+		if value := header.Get(name); value != "" {
+			t.Fatalf("authentication failure emitted policy header %s=%q", name, value)
+		}
+	}
+}
+
+func setSignedNewAPIRequestHeaders(t *testing.T, req *http.Request, body []byte, requestID string, identity newAPIIdentity, platform, secret, fingerprint string) {
+	t.Helper()
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	digest := sha256.Sum256(body)
+	digestHex := hex.EncodeToString(digest[:])
+	path := req.URL.EscapedPath()
+	if path == "" {
+		path = req.URL.Path
+	}
+	req.Header.Set("X-NewAPI-User-ID", identity.UserID)
+	req.Header.Set("X-NewAPI-Client-IP", identity.ClientIP)
+	req.Header.Set("X-NewAPI-Request-ID", requestID)
+	req.Header.Set("X-NewAPI-Timestamp", timestamp)
+	req.Header.Set("X-NewAPI-Method", req.Method)
+	req.Header.Set("X-NewAPI-Path", path)
+	req.Header.Set("X-NewAPI-Body-SHA256", digestHex)
+	canonical := strings.Join([]string{"v1", timestamp, requestID, identity.UserID, identity.ClientIP, req.Method, path, digestHex}, "\n")
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(canonical))
+	req.Header.Set("X-NewAPI-Signature", hex.EncodeToString(mac.Sum(nil)))
+	metaPayload, err := json.Marshal(newAPIPolicyMeta{
+		PlatformID: platform, Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses), SessionFingerprint: fingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(metaPayload)
+	metaCanonical := strings.Join([]string{"policy-meta-v1", requestID, digestHex, encoded}, "\n")
+	metaMAC := hmac.New(sha256.New, []byte(secret))
+	_, _ = metaMAC.Write([]byte(metaCanonical))
+	req.Header.Set("X-NewAPI-Policy-Meta", encoded)
+	req.Header.Set("X-NewAPI-Policy-Meta-Signature", hex.EncodeToString(metaMAC.Sum(nil)))
+}
+
 func signedNewAPIPolicyContext(t *testing.T, requestID string, identity newAPIIdentity, path string, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
+	return signedNewAPIPolicyContextWithSecret(t, requestID, identity, path, body, "integration-secret")
+}
+
+func signedNewAPIPolicyContextWithSecret(t *testing.T, requestID string, identity newAPIIdentity, path string, body []byte, secret string) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
@@ -398,7 +1019,7 @@ func signedNewAPIPolicyContext(t *testing.T, requestID string, identity newAPIId
 	req.Header.Set("X-NewAPI-Path", path)
 	req.Header.Set("X-NewAPI-Body-SHA256", bodyDigestHex)
 	canonical := strings.Join([]string{"v1", timestamp, requestID, identity.UserID, identity.ClientIP, http.MethodPost, path, bodyDigestHex}, "\n")
-	mac := hmac.New(sha256.New, []byte("integration-secret"))
+	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(canonical))
 	req.Header.Set("X-NewAPI-Signature", hex.EncodeToString(mac.Sum(nil)))
 	recorder := httptest.NewRecorder()
@@ -408,6 +1029,10 @@ func signedNewAPIPolicyContext(t *testing.T, requestID string, identity newAPIId
 }
 
 func addSignedNewAPIPolicyMeta(t *testing.T, c *gin.Context, meta newAPIPolicyMeta, valid bool) {
+	addSignedNewAPIPolicyMetaWithSecret(t, c, meta, valid, "integration-secret")
+}
+
+func addSignedNewAPIPolicyMetaWithSecret(t *testing.T, c *gin.Context, meta newAPIPolicyMeta, valid bool, secret string) {
 	t.Helper()
 	payload, err := json.Marshal(meta)
 	if err != nil {
@@ -415,7 +1040,7 @@ func addSignedNewAPIPolicyMeta(t *testing.T, c *gin.Context, meta newAPIPolicyMe
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payload)
 	canonical := strings.Join([]string{"policy-meta-v1", c.GetHeader("X-NewAPI-Request-ID"), c.GetHeader("X-NewAPI-Body-SHA256"), encoded}, "\n")
-	mac := hmac.New(sha256.New, []byte("integration-secret"))
+	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(canonical))
 	signature := hex.EncodeToString(mac.Sum(nil))
 	if !valid {

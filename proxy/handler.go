@@ -1729,11 +1729,15 @@ func appendMissingResponseImageOutputs(responseJSON []byte, imageOutputs []json.
 // RegisterRoutes 注册路由
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	auth := h.authMiddleware()
+	// Legacy global-secret verifier remains unauthenticated for backwards
+	// compatibility. Key-bound platforms must use the authenticated V1 route
+	// below so requestAPIKeyID resolves the one-to-one binding.
 	r.POST("/api/prompt-filter/newapi/verify", h.VerifyNewAPIPolicyHandshake)
 
 	// /v1 前缀路由（标准路径）
 	v1 := r.Group("/v1")
 	v1.Use(auth)
+	v1.POST("/prompt-filter/newapi/verify", h.VerifyNewAPIPolicyHandshake)
 	v1.POST("/chat/completions", h.ChatCompletions)
 	v1.POST("/responses", h.Responses)
 	v1.GET("/responses", h.ResponsesWebSocket)
@@ -1886,6 +1890,10 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
 		c.Set("apiKey", key)
+		if h.enforceRequiredNewAPIIdentityAtIngress(c) {
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }

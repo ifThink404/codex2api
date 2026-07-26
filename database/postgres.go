@@ -422,6 +422,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	if err := db.migrate(ctx); err != nil {
 		return nil, fmt.Errorf("数据库迁移失败: %w", err)
 	}
+	if err := db.ensurePromptFilterNewAPIBindingsTable(ctx); err != nil {
+		return nil, fmt.Errorf("创建 NewAPI 平台绑定表失败: %w", err)
+	}
 
 	// 启动批量写入后台协程
 	db.startLogFlusher()
@@ -1081,7 +1084,6 @@ func (db *DB) migrate(ctx context.Context) error {
 				newapi_secret TEXT NOT NULL DEFAULT '',
 				updated_at TIMESTAMPTZ DEFAULT NOW()
 			);
-
 			CREATE TABLE IF NOT EXISTS model_registry (
 				id                     VARCHAR(100) PRIMARY KEY,
 				enabled                BOOLEAN DEFAULT TRUE,
@@ -2475,11 +2477,25 @@ func normalizeGrokConfig(raw string) string {
 
 // DeleteAPIKey 删除 API 密钥
 func (db *DB) DeleteAPIKey(ctx context.Context, id int64) error {
-	if _, err := db.conn.ExecContext(ctx, `DELETE FROM api_keys WHERE id = $1`, id); err != nil {
-		return err
-	}
-	// scope 累计计数器没有外键约束，删 Key 时顺带清掉，避免留下永远不会再被读到的孤行。
-	if _, err := db.conn.ExecContext(ctx, `DELETE FROM api_key_scope_counters WHERE api_key_id = $1`, id); err != nil {
+	err := db.withSQLiteWriteLock(ctx, func() error {
+		tx, err := db.conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM prompt_filter_newapi_bindings WHERE api_key_id = $1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE id = $1`, id); err != nil {
+			return err
+		}
+		// scope 累计计数器没有外键约束，删 Key 时顺带清掉，避免留下永远不会再被读到的孤行。
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_key_scope_counters WHERE api_key_id = $1`, id); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if err != nil {
 		return err
 	}
 	db.InvalidateScopeQuotaKeyCache()

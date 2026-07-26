@@ -1,11 +1,14 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/codex2api/api"
+	"github.com/codex2api/database"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
 )
@@ -20,6 +24,7 @@ import (
 const newAPIReplayNamespace = "prompt-filter-newapi-replay"
 const newAPIIdentityContextKey = "prompt_filter_verified_newapi_identity"
 const newAPIPolicyMetaContextKey = "prompt_filter_verified_newapi_policy_meta"
+const newAPIBindingContextKey = "prompt_filter_newapi_binding"
 
 const (
 	newAPISignatureVersionV1               = "1"
@@ -34,8 +39,11 @@ type newAPIIdentity struct {
 }
 
 type verifiedNewAPIIdentityContext struct {
-	Identity   newAPIIdentity
-	BodySHA256 string
+	Identity           newAPIIdentity
+	BodySHA256         string
+	APIKeyID           int64
+	Platform           string
+	VerificationSecret string
 }
 
 type newAPIOriginalAuditMeta struct {
@@ -45,6 +53,7 @@ type newAPIOriginalAuditMeta struct {
 }
 
 type newAPIPolicyMeta struct {
+	PlatformID         string `json:"platform_id,omitempty"`
 	Profile            string `json:"profile"`
 	Mode               string `json:"mode"`
 	Provider           string `json:"provider"`
@@ -58,30 +67,170 @@ type newAPIPolicyMeta struct {
 }
 
 type verifiedNewAPIPolicyContext struct {
-	Identity          newAPIIdentity
-	Meta              newAPIPolicyMeta
-	MetaVerified      bool
-	Audit             newAPIOriginalAuditMeta
-	AuditMetaVerified bool
-	BodySHA256        string
+	Identity           newAPIIdentity
+	APIKeyID           int64
+	Platform           string
+	VerificationSecret string
+	Meta               newAPIPolicyMeta
+	MetaVerified       bool
+	Audit              newAPIOriginalAuditMeta
+	AuditMetaVerified  bool
+	BodySHA256         string
 }
 
-func (h *Handler) verifyNewAPIIdentity(c *gin.Context, cfg promptfilter.NewAPIConfig, body []byte) (newAPIIdentity, bool) {
-	if c == nil || !cfg.Enabled {
-		return newAPIIdentity{}, false
+type resolvedPromptFilterNewAPIBinding struct {
+	APIKeyID int64
+	Binding  database.PromptFilterNewAPIBinding
+	Bound    bool
+}
+
+func (h *Handler) resolvePromptFilterNewAPIBinding(c *gin.Context) (database.PromptFilterNewAPIBinding, bool) {
+	if c == nil || h == nil || h.store == nil {
+		return database.PromptFilterNewAPIBinding{}, false
 	}
-	_, actualBodyDigest := promptRequestBodyDigest(c, body)
-	if cached, exists := c.Get(newAPIIdentityContextKey); exists {
-		if identityContext, ok := cached.(verifiedNewAPIIdentityContext); ok && identityContext.BodySHA256 == actualBodyDigest {
-			return identityContext.Identity, true
+	apiKeyID := requestAPIKeyID(c)
+	if cached, ok := c.Get(newAPIBindingContextKey); ok {
+		if resolved, valid := cached.(resolvedPromptFilterNewAPIBinding); valid && resolved.APIKeyID == apiKeyID {
+			return resolved.Binding, resolved.Bound
 		}
+	}
+	binding, bound := h.store.GetPromptFilterNewAPIBinding(apiKeyID)
+	c.Set(newAPIBindingContextKey, resolvedPromptFilterNewAPIBinding{APIKeyID: apiKeyID, Binding: binding, Bound: bound})
+	return binding, bound
+}
+
+// refreshNewAPIWebSocketBinding enforces binding revocation at every logical
+// WebSocket turn. Policy-only changes are refreshed in place, while tenant,
+// enablement, signature requirements, deletion, or expired secret grace force
+// a reconnect so an identity verified under an obsolete binding cannot live
+// indefinitely on a long-running connection.
+func (h *Handler) refreshNewAPIWebSocketBinding(c *gin.Context, now time.Time) *api.APIError {
+	if c == nil || h == nil || h.store == nil {
+		return nil
+	}
+	apiKeyID := requestAPIKeyID(c)
+	cachedValue, cached := c.Get(newAPIBindingContextKey)
+	resolved, valid := cachedValue.(resolvedPromptFilterNewAPIBinding)
+	if !cached || !valid || resolved.APIKeyID != apiKeyID {
+		return nil
+	}
+	current, currentBound := h.store.GetPromptFilterNewAPIBinding(apiKeyID)
+	revoked := func() *api.APIError {
+		return api.NewAPIError(
+			api.ErrorCode("newapi_websocket_binding_changed"),
+			"NewAPI 平台绑定或密钥已变更，请重新连接后再试",
+			api.ErrorTypeAuthentication,
+		)
+	}
+	if !resolved.Bound {
+		if currentBound || h.store.HasPromptFilterNewAPIBindings() {
+			return revoked()
+		}
+		return nil
+	}
+	if !currentBound || current.PlatformCode != resolved.Binding.PlatformCode || current.Enabled != resolved.Binding.Enabled || current.RequireSignedIdentity != resolved.Binding.RequireSignedIdentity {
+		return revoked()
+	}
+	identityValue, identityCached := c.Get(newAPIIdentityContextKey)
+	identity, identityValid := identityValue.(verifiedNewAPIIdentityContext)
+	if current.Enabled && (current.RequireSignedIdentity || identityCached) {
+		if !identityValid || identity.APIKeyID != apiKeyID || identity.Platform != normalizedNewAPIPlatform(current.PlatformCode, true) || !promptFilterBindingAcceptsSecret(current, identity.VerificationSecret, now) {
+			return revoked()
+		}
+	}
+	c.Set(newAPIBindingContextKey, resolvedPromptFilterNewAPIBinding{APIKeyID: apiKeyID, Binding: current, Bound: true})
+	return nil
+}
+
+func promptFilterBindingAcceptsSecret(binding database.PromptFilterNewAPIBinding, secret string, now time.Time) bool {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return false
+	}
+	if current := strings.TrimSpace(binding.Secret); current != "" && hmac.Equal([]byte(current), []byte(secret)) {
+		return true
+	}
+	previous := strings.TrimSpace(binding.PreviousSecret)
+	return previous != "" && binding.PreviousSecretExpiresAt != nil && binding.PreviousSecretExpiresAt.After(now) && hmac.Equal([]byte(previous), []byte(secret))
+}
+
+func normalizedNewAPIPlatform(value string, bound bool) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value != "" {
+		return value
+	}
+	if bound {
+		return "bound"
+	}
+	return "legacy"
+}
+
+func newAPIRuntimeScope(apiKeyID int64, platform string) string {
+	return fmt.Sprintf("api-key:%d:platform:%s", apiKeyID, hashRiskIdentity(normalizedNewAPIPlatform(platform, platform != "")))
+}
+
+type newAPISecretCandidate struct {
+	Secret string
+}
+
+func (h *Handler) newAPIIdentitySecrets(c *gin.Context, cfg promptfilter.NewAPIConfig, now time.Time) (apiKeyID int64, platform string, enabled bool, candidates []newAPISecretCandidate) {
+	apiKeyID = requestAPIKeyID(c)
+	if binding, bound := h.resolvePromptFilterNewAPIBinding(c); bound {
+		platform = normalizedNewAPIPlatform(binding.PlatformCode, true)
+		if !binding.Enabled {
+			return apiKeyID, platform, false, nil
+		}
+		if secret := strings.TrimSpace(binding.Secret); secret != "" {
+			candidates = append(candidates, newAPISecretCandidate{Secret: secret})
+		}
+		if previous := strings.TrimSpace(binding.PreviousSecret); previous != "" && binding.PreviousSecretExpiresAt != nil && binding.PreviousSecretExpiresAt.After(now) {
+			if len(candidates) == 0 || !hmac.Equal([]byte(candidates[0].Secret), []byte(previous)) {
+				candidates = append(candidates, newAPISecretCandidate{Secret: previous})
+			}
+		}
+		// A configured API-key binding is a hard tenant boundary.  Never fall
+		// back to the legacy global secret, even if this binding is disabled,
+		// incomplete, or its previous-secret grace period has expired.
+		return apiKeyID, platform, true, candidates
+	}
+	if h != nil && h.store != nil && h.store.HasPromptFilterNewAPIBindings() {
+		// The presence of any binding switches the runtime to explicit tenant
+		// isolation. An unbound key is not a legacy tenant and cannot borrow the
+		// process-wide secret belonging to a different calling platform.
+		return apiKeyID, normalizedNewAPIPlatform("", true), false, nil
+	}
+	platform = normalizedNewAPIPlatform("", false)
+	if !cfg.Enabled {
+		return apiKeyID, platform, false, nil
 	}
 	secret := strings.TrimSpace(os.Getenv("PROMPT_FILTER_NEWAPI_SECRET"))
 	if secret == "" {
 		secret = strings.TrimSpace(cfg.Secret)
 	}
-	if secret == "" {
-		return newAPIIdentity{}, false
+	if secret != "" {
+		candidates = append(candidates, newAPISecretCandidate{Secret: secret})
+	}
+	return apiKeyID, platform, true, candidates
+}
+
+func (h *Handler) verifyNewAPIIdentity(c *gin.Context, cfg promptfilter.NewAPIConfig, body []byte) (newAPIIdentity, bool) {
+	verified, ok := h.verifyNewAPIIdentityContext(c, cfg, body)
+	return verified.Identity, ok
+}
+
+func (h *Handler) verifyNewAPIIdentityContext(c *gin.Context, cfg promptfilter.NewAPIConfig, body []byte) (verifiedNewAPIIdentityContext, bool) {
+	if c == nil || !cfg.Enabled {
+		return verifiedNewAPIIdentityContext{}, false
+	}
+	_, actualBodyDigest := promptRequestBodyDigest(c, body)
+	if cached, exists := c.Get(newAPIIdentityContextKey); exists {
+		if identityContext, ok := cached.(verifiedNewAPIIdentityContext); ok && identityContext.BodySHA256 == actualBodyDigest {
+			return identityContext, true
+		}
+	}
+	apiKeyID, platform, enabled, secretCandidates := h.newAPIIdentitySecrets(c, cfg, time.Now())
+	if !enabled || len(secretCandidates) == 0 {
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	identity := newAPIIdentity{
 		UserID: strings.TrimSpace(c.GetHeader("X-NewAPI-User-ID")), ClientIP: strings.TrimSpace(c.GetHeader("X-NewAPI-Client-IP")),
@@ -93,51 +242,61 @@ func (h *Handler) verifyNewAPIIdentity(c *gin.Context, cfg promptfilter.NewAPICo
 	path := strings.TrimSpace(c.GetHeader("X-NewAPI-Path"))
 	bodyDigest := strings.ToLower(strings.TrimSpace(c.GetHeader("X-NewAPI-Body-SHA256")))
 	if identity.UserID == "" || identity.ClientIP == "" || identity.RequestID == "" || timestampRaw == "" || signatureRaw == "" || method == "" || path == "" || bodyDigest == "" {
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	timestamp, err := strconv.ParseInt(timestampRaw, 10, 64)
 	if err != nil || absInt64(time.Now().Unix()-timestamp) > int64(cfg.MaxClockSkewSeconds) {
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	requestPath := c.Request.URL.EscapedPath()
 	if requestPath == "" {
 		requestPath = c.Request.URL.Path
 	}
 	if method != strings.ToUpper(c.Request.Method) || path != requestPath || bodyDigest != actualBodyDigest {
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	switch strings.TrimSpace(c.GetHeader("X-NewAPI-Signature-Version")) {
 	case "", newAPISignatureVersionV1:
 	default:
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	canonical := strings.Join([]string{"v1", timestampRaw, identity.RequestID, identity.UserID, identity.ClientIP, method, path, bodyDigest}, "\n")
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(canonical))
-	expected := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(expected), []byte(strings.ToLower(signatureRaw))) {
-		return newAPIIdentity{}, false
+	verifiedSecret := ""
+	for _, candidate := range secretCandidates {
+		mac := hmac.New(sha256.New, []byte(candidate.Secret))
+		_, _ = mac.Write([]byte(canonical))
+		expected := hex.EncodeToString(mac.Sum(nil))
+		if hmac.Equal([]byte(expected), []byte(strings.ToLower(signatureRaw))) {
+			verifiedSecret = candidate.Secret
+			break
+		}
+	}
+	if verifiedSecret == "" {
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	if h == nil || h.cache == nil {
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
-	replayKey := hashRiskIdentity(identity.RequestID)
+	runtimeScope := newAPIRuntimeScope(apiKeyID, platform)
+	replayKey := runtimeScope + ":request:" + hashRiskIdentity(identity.RequestID)
 	unlock, acquired := acquirePromptRuntimeLease(c.Request.Context(), h.cache, newAPIReplayNamespace, replayKey)
 	if !acquired {
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	defer unlock()
 	if _, exists, err := h.cache.GetRuntime(c.Request.Context(), newAPIReplayNamespace, replayKey); err != nil || exists {
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
 	ttl := time.Duration(max(cfg.MaxClockSkewSeconds*2, 60)) * time.Second
 	if err := h.cache.SetRuntime(c.Request.Context(), newAPIReplayNamespace, replayKey, []byte("1"), ttl); err != nil {
-		return newAPIIdentity{}, false
+		return verifiedNewAPIIdentityContext{}, false
 	}
-	c.Set(newAPIIdentityContextKey, verifiedNewAPIIdentityContext{
-		Identity: identity, BodySHA256: actualBodyDigest,
-	})
-	return identity, true
+	verified := verifiedNewAPIIdentityContext{
+		Identity: identity, BodySHA256: actualBodyDigest, APIKeyID: apiKeyID,
+		Platform: platform, VerificationSecret: verifiedSecret,
+	}
+	c.Set(newAPIIdentityContextKey, verified)
+	return verified, true
 }
 
 func (h *Handler) verifyNewAPIPolicyContext(c *gin.Context, cfg promptfilter.NewAPIConfig, body []byte) (verifiedNewAPIPolicyContext, bool) {
@@ -150,40 +309,64 @@ func (h *Handler) verifyNewAPIPolicyContext(c *gin.Context, cfg promptfilter.New
 			return policyContext, true
 		}
 	}
-	identity, verified := h.verifyNewAPIIdentity(c, cfg, body)
+	identityContext, verified := h.verifyNewAPIIdentityContext(c, cfg, body)
 	if !verified {
 		return verifiedNewAPIPolicyContext{}, false
 	}
-	policyContext := verifiedNewAPIPolicyContext{Identity: identity, BodySHA256: actualBodyDigest}
+	identity := identityContext.Identity
+	binding, bound := h.resolvePromptFilterNewAPIBinding(c)
+	bound = bound && binding.Enabled
+	policyContext := verifiedNewAPIPolicyContext{
+		Identity: identity, BodySHA256: actualBodyDigest,
+		APIKeyID: identityContext.APIKeyID, Platform: identityContext.Platform,
+		VerificationSecret: identityContext.VerificationSecret,
+	}
 	encoded := strings.TrimSpace(c.GetHeader("X-NewAPI-Policy-Meta"))
 	signature := strings.TrimSpace(c.GetHeader("X-NewAPI-Policy-Meta-Signature"))
 	if encoded == "" && signature == "" {
+		if bound {
+			return verifiedNewAPIPolicyContext{}, false
+		}
 		c.Set(newAPIPolicyMetaContextKey, policyContext)
 		return policyContext, true
 	}
 	if encoded == "" || signature == "" || len(encoded) > 4096 {
+		if bound {
+			return verifiedNewAPIPolicyContext{}, false
+		}
 		c.Set(newAPIPolicyMetaContextKey, policyContext)
 		return policyContext, true
 	}
-	secret := newAPIPolicySecret(cfg)
 	bodyDigest := strings.ToLower(strings.TrimSpace(c.GetHeader("X-NewAPI-Body-SHA256")))
 	canonical := strings.Join([]string{"policy-meta-v1", identity.RequestID, bodyDigest, encoded}, "\n")
-	mac := hmac.New(sha256.New, []byte(secret))
+	mac := hmac.New(sha256.New, []byte(policyContext.VerificationSecret))
 	_, _ = mac.Write([]byte(canonical))
 	expected := hex.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(expected), []byte(strings.ToLower(signature))) {
+		if bound {
+			return verifiedNewAPIPolicyContext{}, false
+		}
 		c.Set(newAPIPolicyMetaContextKey, policyContext)
 		return policyContext, true
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil || len(payload) > 3072 || json.Unmarshal(payload, &policyContext.Meta) != nil {
+		if bound {
+			return verifiedNewAPIPolicyContext{}, false
+		}
 		c.Set(newAPIPolicyMetaContextKey, policyContext)
 		return policyContext, true
 	}
 	if !normalizeVerifiedNewAPIPolicyMeta(&policyContext.Meta) {
 		policyContext.Meta = newAPIPolicyMeta{}
+		if bound {
+			return verifiedNewAPIPolicyContext{}, false
+		}
 		c.Set(newAPIPolicyMetaContextKey, policyContext)
 		return policyContext, true
+	}
+	if bound && !strings.EqualFold(policyContext.Meta.PlatformID, normalizedNewAPIPlatform(binding.PlatformCode, true)) {
+		return verifiedNewAPIPolicyContext{}, false
 	}
 	policyContext.MetaVerified = true
 	auditProtocol := policyContext.Meta.OriginalProtocol
@@ -240,6 +423,13 @@ func newAPIPolicySecret(cfg promptfilter.NewAPIConfig) string {
 func normalizeVerifiedNewAPIPolicyMeta(meta *newAPIPolicyMeta) bool {
 	if meta == nil {
 		return false
+	}
+	if strings.TrimSpace(meta.PlatformID) != "" {
+		platformID, ok := database.NormalizePromptFilterPlatformCode(meta.PlatformID)
+		if !ok {
+			return false
+		}
+		meta.PlatformID = platformID
 	}
 	switch strings.ToLower(strings.TrimSpace(meta.Profile)) {
 	case promptfilter.GuardProfileBalanced, promptfilter.GuardProfileStrict, promptfilter.GuardProfileResearch:
@@ -311,10 +501,86 @@ func absInt64(value int64) int64 {
 	return value
 }
 
+func (h *Handler) requiredNewAPIIdentityError(c *gin.Context, cfg promptfilter.NewAPIConfig, body []byte) *api.APIError {
+	binding, bound := h.resolvePromptFilterNewAPIBinding(c)
+	if !bound || !binding.Enabled || !binding.RequireSignedIdentity {
+		return nil
+	}
+	if _, verified := h.verifyNewAPIPolicyContext(c, cfg, body); verified {
+		return nil
+	}
+	code := api.ErrorCode("newapi_signed_identity_invalid")
+	message := "NewAPI 身份签名校验失败，该 Codex2API Key 仅接受其绑定平台的签名请求"
+	if strings.TrimSpace(c.GetHeader("X-NewAPI-Signature")) == "" {
+		code = api.ErrorCode("newapi_signed_identity_required")
+		message = "该 Codex2API Key 要求绑定平台提供 NewAPI 身份签名"
+	} else if strings.TrimSpace(c.GetHeader("X-NewAPI-Policy-Meta")) == "" || strings.TrimSpace(c.GetHeader("X-NewAPI-Policy-Meta-Signature")) == "" {
+		code = api.ErrorCode("newapi_platform_identity_required")
+		message = "该 Codex2API Key 要求绑定平台提供已签名的平台身份元数据"
+	}
+	// This is an authentication boundary failure, not prompt-policy evidence.
+	// Do not emit violation/strike/ban headers and do not record an offense.
+	return api.NewAPIError(code, message, api.ErrorTypeAuthentication)
+}
+
+func (h *Handler) requiresNewAPISignedIdentity(c *gin.Context) bool {
+	binding, bound := h.resolvePromptFilterNewAPIBinding(c)
+	return bound && binding.Enabled && binding.RequireSignedIdentity
+}
+
+// enforceRequiredNewAPIIdentityAtIngress runs after Codex2API API-key auth, so
+// the correct one-to-one binding is known.  Body-based V1 signatures are
+// verified against the exact ingress bytes and the body is restored/cached for
+// the downstream handler.  Authentication failures never enter prompt-policy
+// strike, ban, risk, or session state.
+func (h *Handler) enforceRequiredNewAPIIdentityAtIngress(c *gin.Context) bool {
+	if !h.requiresNewAPISignedIdentity(c) {
+		return false
+	}
+	cfg := h.promptFilterConfigForRequest(c)
+	if strings.TrimSpace(c.GetHeader("X-NewAPI-Signature")) == "" {
+		return h.rejectRequiredNewAPIIdentity(c, cfg.Advanced.NewAPI, nil)
+	}
+	var body []byte
+	if c != nil && c.Request != nil && c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+		var err error
+		body, err = readRawRequestBody(c)
+		if err != nil {
+			api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest), http.StatusBadRequest)
+			return true
+		}
+		setIngressRequestBodyIfAbsent(c, body)
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		c.Request.ContentLength = int64(len(body))
+	}
+	return h.rejectRequiredNewAPIIdentity(c, cfg.Advanced.NewAPI, body)
+}
+
+func (h *Handler) rejectRequiredNewAPIIdentity(c *gin.Context, cfg promptfilter.NewAPIConfig, body []byte) bool {
+	apiErr := h.requiredNewAPIIdentityError(c, cfg, body)
+	if apiErr == nil {
+		return false
+	}
+	if requestUsesAnthropicErrorEnvelope(c) {
+		sendAnthropicError(c, http.StatusUnauthorized, string(apiErr.Type), apiErr.Message)
+		return true
+	}
+	api.SendErrorWithStatus(c, apiErr, http.StatusUnauthorized)
+	return true
+}
+
+func requestUsesAnthropicErrorEnvelope(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimSuffix(c.Request.URL.Path, "/")
+	return path == "/v1/messages" || path == "/v1/messages/count_tokens" || path == "/messages" || path == "/messages/count_tokens"
+}
+
 // VerifyNewAPIPolicyHandshake validates the exact signed identity headers used
 // by NewAPI without invoking an upstream model or recording an offense.
 func (h *Handler) VerifyNewAPIPolicyHandshake(c *gin.Context) {
-	cfg := h.store.GetPromptFilterConfig()
+	cfg := h.promptFilterConfigForRequest(c)
 	policyContext, ok := h.verifyNewAPIPolicyContext(c, cfg.Advanced.NewAPI, nil)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "NewAPI 审计签名校验失败"})
@@ -325,7 +591,7 @@ func (h *Handler) VerifyNewAPIPolicyHandshake(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"success": false, "message": "NewAPI 审核档案元数据签名或格式无效", "code": "policy_meta_invalid", "identity_verified": true})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "NewAPI 审计签名校验成功", "user_id": policyContext.Identity.UserID, "client_ip": policyContext.Identity.ClientIP, "request_id": policyContext.Identity.RequestID, "timestamp": c.GetHeader("X-NewAPI-Timestamp"), "policy_meta_verified": policyContext.MetaVerified, "policy_meta": policyContext.Meta})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "NewAPI 审计签名校验成功", "user_id": policyContext.Identity.UserID, "client_ip": policyContext.Identity.ClientIP, "request_id": policyContext.Identity.RequestID, "timestamp": c.GetHeader("X-NewAPI-Timestamp"), "platform": policyContext.Platform, "policy_meta_verified": policyContext.MetaVerified, "policy_meta": policyContext.Meta})
 }
 
 // sendNewAPIPolicyDecision returns a structured policy event to NewAPI. NewAPI
@@ -336,8 +602,12 @@ func (h *Handler) sendNewAPIPolicyDecision(c *gin.Context, cfg promptfilter.Conf
 	if !verified {
 		return false
 	}
-	metadata := buildNewAPIPolicyDecisionMetadata(policyContext.Identity, decision, verdict, cfg, body, endpoint, model)
+	metadata := buildNewAPIPolicyDecisionMetadataWithSecret(policyContext.Identity, decision, verdict, cfg, body, endpoint, model, "", policyContext.VerificationSecret)
 	writeNewAPIPolicyDecisionHeaders(c, metadata)
+	if requestUsesAnthropicErrorEnvelope(c) {
+		sendAnthropicError(c, http.StatusBadRequest, "invalid_request_error", "请求违反安全策略，本次请求已被拒绝")
+		return true
+	}
 	api.SendErrorWithStatus(c, newAPIPolicyDecisionAPIError(metadata), http.StatusBadRequest)
 	return true
 }
@@ -386,6 +656,10 @@ func buildNewAPIPolicyDecisionMetadata(identity newAPIIdentity, decision promptf
 }
 
 func buildNewAPIPolicyDecisionMetadataForEvent(identity newAPIIdentity, decision promptfilter.Decision, verdict promptfilter.Verdict, cfg promptfilter.Config, body []byte, endpoint string, model string, eventID string) newAPIPolicyDecisionMetadata {
+	return buildNewAPIPolicyDecisionMetadataWithSecret(identity, decision, verdict, cfg, body, endpoint, model, eventID, newAPIPolicySecret(cfg.Advanced.NewAPI))
+}
+
+func buildNewAPIPolicyDecisionMetadataWithSecret(identity newAPIIdentity, decision promptfilter.Decision, verdict promptfilter.Verdict, cfg promptfilter.Config, body []byte, endpoint string, model string, eventID string, verificationSecret string) newAPIPolicyDecisionMetadata {
 	evidence := strings.TrimSpace(verdict.FullText)
 	if evidence == "" {
 		evidence = string(body)
@@ -437,9 +711,9 @@ func buildNewAPIPolicyDecisionMetadataForEvent(identity newAPIIdentity, decision
 		EvidenceSHA256: hex.EncodeToString(evidenceDigest[:]),
 	}
 	if eventID != "" {
-		metadata.EventSignature = signNewAPIPolicyEvent(newAPIPolicySecret(cfg.Advanced.NewAPI), metadata)
+		metadata.EventSignature = signNewAPIPolicyEvent(verificationSecret, metadata)
 	}
-	metadata.Signature = signNewAPIPolicyDecision(newAPIPolicySecret(cfg.Advanced.NewAPI), metadata)
+	metadata.Signature = signNewAPIPolicyDecision(verificationSecret, metadata)
 	return metadata
 }
 
