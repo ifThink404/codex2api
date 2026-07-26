@@ -567,6 +567,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/prompt-filter/newapi-secret", h.GetPromptFilterNewAPISecretStatus)
 	api.POST("/prompt-filter/newapi-secret/generate", h.GeneratePromptFilterNewAPISecret)
 	api.PUT("/prompt-filter/newapi-secret", h.ReplacePromptFilterNewAPISecret)
+	api.GET("/prompt-filter/newapi-bindings", h.ListPromptFilterNewAPIBindings)
+	api.POST("/prompt-filter/newapi-bindings", h.CreatePromptFilterNewAPIBinding)
+	api.GET("/prompt-filter/newapi-bindings/:api_key_id", h.GetPromptFilterNewAPIBinding)
+	api.PATCH("/prompt-filter/newapi-bindings/:api_key_id", h.UpdatePromptFilterNewAPIBinding)
+	api.POST("/prompt-filter/newapi-bindings/:api_key_id/secret/generate", h.GeneratePromptFilterNewAPIBindingSecret)
+	api.PUT("/prompt-filter/newapi-bindings/:api_key_id/secret", h.ReplacePromptFilterNewAPIBindingSecret)
+	api.DELETE("/prompt-filter/newapi-bindings/:api_key_id", h.DeletePromptFilterNewAPIBinding)
 	api.POST("/prompt-filter/intelligence/run", h.RunPromptIntelligence)
 	api.GET("/prompt-filter/intelligence/history", h.ListPromptIntelligenceHistory)
 	api.POST("/prompt-filter/intelligence/rules", h.AddPromptIntelligenceCandidate)
@@ -6545,6 +6552,7 @@ func (h *Handler) DeleteAPIKey(c *gin.Context) {
 	if h.store != nil {
 		h.store.SetAPIKeyAllowedGroups(id, nil)
 		h.store.SetAPIKeyAllowedPlans(id, nil)
+		h.store.RemovePromptFilterNewAPIBinding(id)
 	}
 	h.invalidateAPIKeyRuntimeCaches(ctx, keyToInvalidate)
 	writeMessage(c, http.StatusOK, "已删除")

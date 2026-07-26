@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -14,22 +15,23 @@ import (
 )
 
 type Signal struct {
-	Detector          string        `json:"detector"`
-	Family            string        `json:"family"`
-	Category          string        `json:"category,omitempty"`
-	CorrelationKey    string        `json:"correlation_key,omitempty"`
-	Origin            SegmentOrigin `json:"origin"`
-	LayerMode         string        `json:"layer_mode"`
-	Score             int           `json:"score"`
-	RawScore          int           `json:"raw_score"`
-	Confidence        float64       `json:"confidence"`
-	SuggestedAction   string        `json:"suggested_action"`
-	TerminalCandidate bool          `json:"terminal_candidate,omitempty"`
-	StrikeEligible    bool          `json:"strike_eligible,omitempty"`
-	Reason            string        `json:"reason,omitempty"`
-	Matches           []Match       `json:"matches,omitempty"`
-	legacyVerdict     *Verdict
-	reviewText        string
+	Detector                 string        `json:"detector"`
+	Family                   string        `json:"family"`
+	Category                 string        `json:"category,omitempty"`
+	CorrelationKey           string        `json:"correlation_key,omitempty"`
+	Origin                   SegmentOrigin `json:"origin"`
+	LayerMode                string        `json:"layer_mode"`
+	Score                    int           `json:"score"`
+	RawScore                 int           `json:"raw_score"`
+	Confidence               float64       `json:"confidence"`
+	SuggestedAction          string        `json:"suggested_action"`
+	TerminalCandidate        bool          `json:"terminal_candidate,omitempty"`
+	StrikeEligible           bool          `json:"strike_eligible,omitempty"`
+	Reason                   string        `json:"reason,omitempty"`
+	Matches                  []Match       `json:"matches,omitempty"`
+	legacyVerdict            *Verdict
+	reviewText               string
+	highConfidenceToolOutput bool
 }
 
 const currentUserPrecheckRevision = "legacy-regex-current-user-v1"
@@ -383,6 +385,14 @@ func guardSegmentCanRunDeferred(segment Segment, detectionContext DetectionConte
 	// as session context. It is still application input and therefore remains on
 	// the synchronous path even though ordinary session fragments may be deferred.
 	if applicationPromptKind != "" && segment.Origin == OriginSessionContext {
+		return false
+	}
+	// Ordinary tool output stays on the asynchronous shadow path. A narrowly
+	// defined composite operational instruction must remain synchronous so the
+	// full detector can confirm it before the request reaches the upstream.
+	if segment.Origin == OriginToolOutput &&
+		guardModeRank(detectionContext.GlobalMode) >= guardModeRank(GuardModeWarn) &&
+		looksLikeCompositeOperationalToolOutput(segment.Text) {
 		return false
 	}
 	switch segment.Origin {
@@ -935,6 +945,16 @@ func (d LegacyRegexDetector) Detect(_ context.Context, envelope RequestEnvelope,
 			continue
 		}
 		signal := legacySignalFromVerdict(verdict, aggregate.Origin, layerMode, legacySignalCorrelation(aggregate.Text, verdict.Matched), "")
+		if aggregate.Origin == OriginToolOutput && highConfidenceOperationalToolOutput(aggregate.Text, verdict) {
+			signal.highConfidenceToolOutput = true
+			signal.LayerMode = capGuardMode(GuardModeEnforce, detectionContext.GlobalMode)
+			// This exception may stop the current upstream request, but tool output
+			// is never terminal user evidence. Keep it out of downstream critical
+			// severity and every strike/ban decision even when strict-terminal is on.
+			signal.TerminalCandidate = false
+			signal.StrikeEligible = false
+			signal.reviewText = aggregate.Text
+		}
 		if envelope.precheckIncomplete && aggregate.Origin == OriginCurrentUser {
 			// Above the hard exact-precheck ceiling, a sampled match cannot prove
 			// that distant exclusions or defensive context were absent. Preserve it
@@ -1357,7 +1377,8 @@ func (DefaultGuardPolicy) Decide(request GuardRequest, detectionContext Detectio
 	var selectedAudit *Signal
 	for index := range decision.Signals {
 		signal := &decision.Signals[index]
-		if !guardOriginCanEnforce(signal.Origin) && signal.LayerMode == GuardModeEnforce {
+		highConfidenceToolOutput := signal.Origin == OriginToolOutput && signal.highConfidenceToolOutput
+		if !guardOriginCanEnforce(signal.Origin) && signal.LayerMode == GuardModeEnforce && !highConfidenceToolOutput {
 			// Defense in depth for custom detectors/policies that construct signals
 			// directly instead of using DetectionContext.LayerMode. Auxiliary
 			// provenance may audit or warn, but can never synchronously block.
@@ -1420,6 +1441,107 @@ func (DefaultGuardPolicy) Decide(request GuardRequest, detectionContext Detectio
 		decision.ReasonCode = "prompt_policy_shadow"
 	}
 	return decision
+}
+
+var toolOutputExternalTargetPattern = regexp.MustCompile(`(?i)(?:https?://|\*\.)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}`)
+
+// looksLikeCompositeOperationalToolOutput is intentionally much narrower than
+// keyword detection. It requires an external target, an asserted arbitrary
+// execution capability, exploit-chain intent, and an active execution
+// directive in the same tool result. Isolated CVE/vulnerability/PowerShell
+// terms, scanner reports, and ordinary build output therefore stay shadow-only.
+func looksLikeCompositeOperationalToolOutput(text string) bool {
+	if !hasCompositeToolOutputExecutionAnchor(text) {
+		return false
+	}
+	normalized := normalizeForScan(text)
+	if normalized == "" {
+		return false
+	}
+	if !containsAnyGuardPhrase(normalized,
+		"执行任意命令", "执行任何命令", "运行任意命令", "运行任何命令",
+		"编写并运行任意代码", "arbitrary command", "arbitrary code", "sudo 密码", "sudo password",
+	) {
+		return false
+	}
+	if !containsAnyGuardPhrase(normalized, "目标", "靶场", "target") || !toolOutputExternalTargetPattern.MatchString(normalized) {
+		return false
+	}
+	if !containsAnyGuardPhrase(normalized, "漏洞利用链", "利用链", "漏洞利用", "exploit chain", "exploit code", "exploit") {
+		return false
+	}
+	return containsAnyGuardPhrase(normalized,
+		"请立即", "立即进行", "立即执行", "立即利用", "请主动", "开始利用", "继续攻击", "继续接管", "绕过技巧",
+		"proceed to exploit", "immediately exploit", "continue attacking", "continue the attack", "take over the target",
+	)
+}
+
+func hasCompositeToolOutputExecutionAnchor(text string) bool {
+	if (strings.Contains(text, "任意") || strings.Contains(text, "任何")) &&
+		(strings.Contains(text, "命令") || strings.Contains(text, "代码")) {
+		return true
+	}
+	return containsASCIIExecutionAnchor(text)
+}
+
+// containsASCIIExecutionAnchor scans the text once and compares fixed phrases
+// only at their possible first byte. This avoids both a lower-cased allocation
+// and repeated full-text sliding-window passes on ordinary build logs.
+func containsASCIIExecutionAnchor(text string) bool {
+	for start := 0; start < len(text); start++ {
+		switch text[start] {
+		case 'a', 'A':
+			if hasASCIIEqualFoldPrefix(text[start:], "arbitrary command") || hasASCIIEqualFoldPrefix(text[start:], "arbitrary code") {
+				return true
+			}
+		case 's', 'S':
+			if hasASCIIEqualFoldPrefix(text[start:], "sudo") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasASCIIEqualFoldPrefix(text string, prefix string) bool {
+	if len(text) < len(prefix) {
+		return false
+	}
+	for index := 0; index < len(prefix); index++ {
+		left := text[index]
+		right := prefix[index]
+		if left >= 'A' && left <= 'Z' {
+			left += 'a' - 'A'
+		}
+		if right >= 'A' && right <= 'Z' {
+			right += 'a' - 'A'
+		}
+		if left != right {
+			return false
+		}
+	}
+	return true
+}
+
+func highConfidenceOperationalToolOutput(text string, verdict Verdict) bool {
+	if !looksLikeCompositeOperationalToolOutput(text) || verdict.Action != ActionBlock || !verdict.SensitiveIntent || !verdict.StrictHit {
+		return false
+	}
+	for _, match := range verdict.Matched {
+		if match.Strict && !match.SignalOnly && match.Weight >= DefaultThreshold {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyGuardPhrase(text string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func actionForGuardProfile(action string, signal Signal, profile GuardProfile) string {

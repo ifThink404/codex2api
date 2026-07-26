@@ -1749,7 +1749,7 @@
       "profileTitle": "审核档案说明",
       "profileDescription": "档案调整检测深度，不会把单个安全技术名词直接变成终局违规。",
       "layersTitle": "请求来源层",
-      "layersDescription": "当前用户 Prompt 是同步拦截和处罚证据；其他来源只允许关闭或影子审计，不会直接触发同步拦截。",
+      "layersDescription": "当前用户 Prompt 是同步拦截和处罚证据；辅助来源默认只做影子审计。唯一例外是同一段工具输出中出现高置信复合操作指令时，可按全局模式警告或拦截当前请求，但永不计入用户处罚、封禁或终局证据。",
       "performance": {
         "title": "审核性能与首字延迟",
         "description": "复用完全相同的片段检测结果，并可把纯影子辅助层移出用户等待路径，在不降低执行层审核强度的前提下减少重复扫描。",
@@ -1775,7 +1775,7 @@
         "scanOverlapBytesError": "请输入 64–8192 的整数。",
         "scanOverlapChunkError": "重叠大小必须小于分块大小。",
         "asyncShadowAuxiliary": "异步处理影子辅助层",
-        "asyncShadowAuxiliaryHint": "仅把最终模式为 Shadow 的工具输出、历史、系统/开发者上下文、会话与附件等辅助内容放入后台队列；关闭时这些影子层仍同步扫描。旧配置默认关闭。",
+        "asyncShadowAuxiliaryHint": "把普通 Shadow 辅助内容放入后台队列；同一段工具输出中的高置信复合操作指令始终同步确认，并按全局模式警告或拦截当前请求。关闭时普通影子层也同步扫描。旧配置默认关闭。",
         "exactSegmentCache": "精确片段缓存",
         "exactSegmentCacheHint": "按完整规则配置与片段摘要复用完全相同的检测结论，不做模糊匹配，也不改变分数或拦截结果。",
         "cacheEntries": "缓存条目上限",
@@ -1869,7 +1869,7 @@
         },
         "tool_output": {
           "label": "工具输出",
-          "description": "把工具返回内容视为不可信数据进行检测，但避免直接作为用户处罚证据。"
+          "description": "把工具返回内容视为不可信数据进行检测；高置信复合操作指令可拦截当前请求，但永不作为用户处罚、封禁或终局证据。"
         },
         "tool_arguments": {
           "label": "工具参数",

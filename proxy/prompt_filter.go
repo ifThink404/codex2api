@@ -40,12 +40,15 @@ func (h *Handler) inspectPromptFilterOpenAIWithBlockWriter(c *gin.Context, rawBo
 		return false
 	}
 	cfg := h.promptFilterConfigForRequest(c)
+	signedBody := ingressRequestBody(c, rawBody)
+	if h.rejectRequiredNewAPIIdentity(c, cfg.Advanced.NewAPI, signedBody) {
+		return true
+	}
 	// Skip envelope construction and body traversal when neither the local
 	// filter nor a body-dependent extension is enabled (issue #417).
 	if !promptfilter.RequiresRequestText(cfg) {
 		return false
 	}
-	signedBody := ingressRequestBody(c, rawBody)
 	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, signedBody, endpoint, model, promptfilter.TransportHTTP)
 	verdict := evaluation.Verdict
 	h.logPromptGuardEvaluation(c, endpoint, model, "local_filter", "", evaluation)
@@ -75,6 +78,9 @@ func (h *Handler) inspectPromptFilterTextOpenAI(c *gin.Context, text string, end
 		return false
 	}
 	cfg := h.promptFilterConfigForRequest(c)
+	if h.rejectRequiredNewAPIIdentity(c, cfg.Advanced.NewAPI, ingressRequestBody(c, nil)) {
+		return true
+	}
 	if !promptfilter.RequiresRequestText(cfg) {
 		return false
 	}
@@ -103,10 +109,14 @@ func (h *Handler) inspectPromptFilterAnthropic(c *gin.Context, rawBody []byte, e
 		return false
 	}
 	cfg := h.promptFilterConfigForRequest(c)
+	signedBody := ingressRequestBody(c, rawBody)
+	if apiErr := h.requiredNewAPIIdentityError(c, cfg.Advanced.NewAPI, signedBody); apiErr != nil {
+		sendAnthropicError(c, http.StatusUnauthorized, "authentication_error", apiErr.Message)
+		return true
+	}
 	if !promptfilter.RequiresRequestText(cfg) {
 		return false
 	}
-	signedBody := ingressRequestBody(c, rawBody)
 	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, signedBody, endpoint, model, promptfilter.TransportHTTP)
 	verdict := evaluation.Verdict
 	h.logPromptGuardEvaluation(c, endpoint, model, "local_filter", "", evaluation)

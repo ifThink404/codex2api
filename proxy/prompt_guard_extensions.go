@@ -103,11 +103,13 @@ func (h *Handler) enrichPromptGuardSession(c *gin.Context, cfg promptfilter.Conf
 	identityKey := ""
 	sessionFingerprint := ""
 	requestID := ""
+	runtimeScope := ""
 	trust := promptfilter.SegmentTrustClientSupplied
 	if verified && policyContext.MetaVerified {
 		identityKey = policyContext.Identity.UserID
 		sessionFingerprint = policyContext.Meta.SessionFingerprint
 		requestID = policyContext.Identity.RequestID
+		runtimeScope = newAPIRuntimeScope(policyContext.APIKeyID, policyContext.Platform)
 		trust = promptfilter.SegmentTrustGatewaySigned
 	}
 	if identityKey == "" && !sessionCfg.RequireSignedIdentity {
@@ -122,7 +124,7 @@ func (h *Handler) enrichPromptGuardSession(c *gin.Context, cfg promptfilter.Conf
 		return nil, nil
 	}
 	currentText = truncatePromptRunes(currentText, sessionCfg.MaxTextLength)
-	key := hashRiskIdentity(identityKey + "\x00" + sessionFingerprint)
+	key := hashRiskIdentity(runtimeScope + "\x00" + identityKey + "\x00" + sessionFingerprint)
 	if eventID := promptGuardPolicyEventID(c); requestID != "" && eventID != "" {
 		requestID += "\x00" + eventID
 	}

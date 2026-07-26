@@ -1749,7 +1749,7 @@
       "profileTitle": "Profile Guidance",
       "profileDescription": "Profiles change inspection depth; a single security-related noun never becomes a terminal violation by itself.",
       "layersTitle": "Request Source Layers",
-      "layersDescription": "The current user prompt is the synchronous enforcement and penalty evidence. Other sources can only be disabled or audited in Shadow and cannot directly trigger synchronous blocking.",
+      "layersDescription": "The current user prompt is synchronous enforcement and penalty evidence. Auxiliary sources default to Shadow audit. The only exception is a high-confidence composite operational instruction in one tool-output segment: it may warn or block the current request according to the global mode, but never counts as terminal, strike, or ban evidence.",
       "performance": {
         "title": "Guard Performance and First-token Latency",
         "description": "Reuse exact segment decisions and optionally move shadow-only auxiliary scans off the client wait path, reducing repeated work without weakening enforcement-layer inspection.",
@@ -1775,7 +1775,7 @@
         "scanOverlapBytesError": "Enter an integer from 64 to 8192.",
         "scanOverlapChunkError": "Overlap must be smaller than the chunk size.",
         "asyncShadowAuxiliary": "Process Shadow Auxiliary Layers Asynchronously",
-        "asyncShadowAuxiliaryHint": "Queues only auxiliary content resolved to Shadow, such as tool output, history, system/developer context, session data, and attachments. When disabled, those shadow layers remain synchronous. Existing configurations default to disabled.",
+        "asyncShadowAuxiliaryHint": "Queues ordinary Shadow auxiliary content. A high-confidence composite operational instruction in one tool-output segment is always confirmed synchronously and may warn or block according to the global mode. When disabled, ordinary shadow layers also remain synchronous. Existing configurations default to disabled.",
         "exactSegmentCache": "Exact Segment Cache",
         "exactSegmentCacheHint": "Reuses a decision only when the complete rule configuration and segment digest match exactly. It never performs fuzzy matching or changes scores and block decisions.",
         "cacheEntries": "Maximum Cache Entries",
@@ -1869,7 +1869,7 @@
         },
         "tool_output": {
           "label": "Tool Output",
-          "description": "Treat tool-returned content as untrusted data, without automatically using it as user penalty evidence."
+          "description": "Treat tool-returned content as untrusted data. A high-confidence composite operational instruction may block the current request, but never becomes terminal, strike, or ban evidence."
         },
         "tool_arguments": {
           "label": "Tool Arguments",

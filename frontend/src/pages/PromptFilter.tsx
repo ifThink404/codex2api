@@ -6,6 +6,7 @@ import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronDown, Clipboard
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
+import PromptFilterNewAPIBindings from '../components/PromptFilterNewAPIBindings'
 import StateShell from '../components/StateShell'
 import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import { useDataLoader } from '../hooks/useDataLoader'
@@ -2365,6 +2366,8 @@ function OverviewView({
           </Button>
         </CardContent>
       </Card>
+
+      <PromptFilterNewAPIBindings />
 
       <Card className="mt-4">
         <CardContent>

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codex2api/database"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
 )
@@ -283,8 +284,21 @@ func (h *Handler) resolvePromptGuardOverrides(c *gin.Context, cfg promptfilter.C
 	if effectiveModel == "" && policyContext.Meta.UpstreamModel != "" {
 		effectiveModel = policyContext.Meta.UpstreamModel
 	}
+	profileOverride := policyContext.Meta.Profile
+	modeOverride := policyContext.Meta.Mode
+	if binding, bound := h.resolvePromptFilterNewAPIBinding(c); bound && binding.Enabled {
+		// Explicit administrator binding policy is authoritative. Signed metadata
+		// may specialize only fields left as inherit and cannot downgrade a bound
+		// key from enforce/strict to off/research.
+		if binding.PolicyProfile != database.PromptFilterPolicyProfileInherit {
+			profileOverride = binding.PolicyProfile
+		}
+		if binding.PolicyMode != database.PromptFilterPolicyModeInherit {
+			modeOverride = binding.PolicyMode
+		}
+	}
 	provider := promptfilter.ModelFamily(policyContext.Meta.Provider)
-	return requestedModel, effectiveModel, true, policyContext.Meta.Profile, policyContext.Meta.Mode, provider, provider != promptfilter.ModelFamilyUnknown
+	return requestedModel, effectiveModel, true, profileOverride, modeOverride, provider, provider != promptfilter.ModelFamilyUnknown
 }
 
 func applyPromptGuardProviderOverride(envelope *promptfilter.RequestEnvelope, cfg promptfilter.Config, trusted bool, provider promptfilter.ModelFamily, providerSet bool) {
@@ -314,10 +328,12 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 	}
 	verdict := decision.LegacyVerdict()
 	verdict.Mode = legacyModeForPromptGuard(decision.Mode)
-	// The detector selected for audit can come from history, tool output, or
-	// session context. Semantic review, persisted request evidence, and the UI
-	// preview must nevertheless describe only the direct current-user prompt.
-	text := promptGuardReviewText(decision, envelope)
+	// Normal audit evidence describes the direct current-user prompt. The narrow
+	// high-confidence tool-output enforcement exception instead records the exact
+	// triggering segment, avoiding an empty or misleading block log. Semantic
+	// review remains limited by promptGuardShouldInspect and cannot clear an
+	// auxiliary block using unrelated current-user text.
+	text := promptGuardAuditText(decision, envelope)
 	verdict.FullText = text
 	verdict.TextPreview = promptfilter.RedactedPreview(text, 500)
 	verdict.ExtractedChars = len([]rune(text))
@@ -556,6 +572,15 @@ func promptGuardReviewText(decision promptfilter.Decision, envelope promptfilter
 		}
 	}
 	return envelopeCurrentUserText(envelope)
+}
+
+func promptGuardAuditText(decision promptfilter.Decision, envelope promptfilter.RequestEnvelope) string {
+	if decision.Action == promptfilter.ActionBlock && decision.PrimaryOrigin == promptfilter.OriginToolOutput {
+		if evidence := strings.TrimSpace(decision.ReviewText); evidence != "" {
+			return evidence
+		}
+	}
+	return promptGuardReviewText(decision, envelope)
 }
 
 func envelopeCurrentUserText(envelope promptfilter.RequestEnvelope) string {
