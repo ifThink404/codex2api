@@ -752,6 +752,8 @@ export interface RuntimeStatusResponse {
     flush_interval_seconds: number
     buffer_length: number
     buffer_capacity: number
+    buffer_limit?: number
+    dropped_total?: number
   }
   probes: {
     status: RuntimeHealthStatus

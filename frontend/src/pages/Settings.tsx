@@ -2668,7 +2668,7 @@ export default function Settings() {
                 <SettingField label={t('settings.usageLogBatchSize')} description={t('settings.usageLogBatchSizeDesc')}>
                   <DraftNumberInput
                     min={1}
-                    max={10000}
+                    max={1000}
                     value={settingsForm.usage_log_batch_size}
                     onValueChange={(value) => setSettingsForm(f => ({ ...f, usage_log_batch_size: value }))}
                   />
