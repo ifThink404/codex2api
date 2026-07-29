@@ -1535,9 +1535,10 @@ export default function Settings() {
     setSavingSettings(true)
     try {
       const adminSecretChanged = settingsForm.admin_auth_source !== 'env' && settingsForm.admin_secret !== loadedAdminSecret
-      const updated = await api.updateSettings(
-        buildWritableSettingsPayload(normalized),
-      )
+		const payload: Partial<SystemSettings> = buildWritableSettingsPayload(normalized)
+		// 自定义 Prompt 规则由规则页单独保存，避免普通设置提交覆盖并发发布结果。
+		delete payload.prompt_filter_custom_patterns
+		const updated = await api.updateSettings(payload)
       commitSettingsForm(updated)
       const branding = {
         site_name: updated.site_name,

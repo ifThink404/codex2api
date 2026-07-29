@@ -148,6 +148,7 @@ func (h *Handler) logPromptFilterVerdict(c *gin.Context, endpoint string, model 
 }
 
 func (h *Handler) logPromptGuardEvaluation(c *gin.Context, endpoint string, model string, source string, errorCode string, evaluation promptGuardEvaluation) {
+	h.capturePromptRuleLearningEvidence(c, endpoint, model, evaluation)
 	h.logPromptFilterVerdictWithDecision(c, endpoint, model, source, errorCode, evaluation.Verdict, &evaluation.Decision, &evaluation.Envelope)
 	h.scheduleDeferredPromptGuardAudit(c, endpoint, model, source, errorCode, evaluation)
 }
@@ -365,6 +366,7 @@ func (h *Handler) logUpstreamCyberPolicy(c *gin.Context, endpoint string, model 
 		FullText: promptfilter.RedactSensitive(string(body)),
 	}
 	h.logPromptFilterVerdict(c, endpoint, model, "upstream_cyber_policy", errorCode, verdict)
+	h.enqueueUpstreamCyberPolicyEvidence(c, endpoint, model, errorCode)
 }
 
 func upstreamCyberPolicyCode(body []byte) string {

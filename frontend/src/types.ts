@@ -927,6 +927,7 @@ export interface SystemSettings {
   prompt_filter_max_text_length: number
   prompt_filter_sensitive_words: string
   prompt_filter_custom_patterns: string
+  prompt_filter_custom_patterns_expected?: string
   prompt_filter_disabled_patterns: string
   prompt_filter_review_enabled: boolean
   prompt_filter_review_api_key?: string
@@ -1244,7 +1245,7 @@ export interface PromptFilterRulesResponse {
   disabled_patterns: string[]
 }
 
-export interface PromptIntelligenceCandidate {
+export interface PromptIntelligenceRuleDraft {
   name: string
   pattern: string
   weight: number
@@ -1252,7 +1253,60 @@ export interface PromptIntelligenceCandidate {
   strict: boolean
   rationale?: string
   source_url?: string
+  change_type?: 'new' | 'update' | string
+}
+
+export interface PromptIntelligenceCandidate extends PromptIntelligenceRuleDraft {
+  id: number
+  fingerprint: string
+  kind: 'pattern' | 'evidence' | string
+  lifecycle_status: 'pending' | 'published' | 'dismissed' | 'superseded' | string
+  source?: string
+  evidence_count: number
+  sample_preview?: string
+  protocol?: string
+  provider?: string
+  model?: string
+  api_key_id?: number
+  api_key_name?: string
+  created_at?: string
+  updated_at?: string
+  last_seen_at?: string
+}
+
+export interface PromptIntelligenceRunCandidate extends PromptIntelligenceRuleDraft {
+  id?: number
+  fingerprint?: string
+  kind?: 'pattern' | 'evidence' | string
+  lifecycle_status?: string
   status?: 'new' | 'update' | string
+  source?: string
+  evidence_count?: number
+  sample_preview?: string
+}
+
+export interface PromptIntelligenceCandidatesResponse {
+  candidates: PromptIntelligenceCandidate[]
+  total: number
+}
+
+export interface PromptIntelligenceEvidence {
+  id: number
+  source_kind: string
+  source_ref?: string
+  sample_preview?: string
+  metadata: Record<string, unknown>
+  protocol?: string
+  provider?: string
+  model?: string
+  api_key_id?: number
+  api_key_name?: string
+  observed_at: string
+}
+
+export interface PromptIntelligenceEvidenceResponse {
+  candidate: PromptIntelligenceCandidate
+  evidence: PromptIntelligenceEvidence[]
 }
 
 export interface PromptIntelligenceHistoryResponse {
@@ -1265,9 +1319,10 @@ export interface PromptIntelligenceRun {
   finished_at: string
   queries: string[]
   sources: Array<{ provider: string; title: string; url: string; description: string; updated_at: string }>
-  candidates: PromptIntelligenceCandidate[]
+  candidates: PromptIntelligenceRunCandidate[]
   model_calls: number
-  added: number
+  staged?: number
+  added?: number
   errors: string[]
 }
 

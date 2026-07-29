@@ -2,12 +2,17 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +34,11 @@ var defaultIntelligenceQueries = []string{
 
 var githubPromptSearchBaseURL = "https://api.github.com/search/repositories"
 
+const (
+	promptRuleRuntimeSyncInterval       = 5 * time.Second
+	legacyIntelligenceMigrationInterval = time.Minute
+)
+
 type promptIntelligenceSource struct {
 	Provider    string `json:"provider"`
 	Title       string `json:"title"`
@@ -38,14 +48,29 @@ type promptIntelligenceSource struct {
 }
 
 type promptIntelligenceCandidate struct {
-	Name      string `json:"name"`
-	Pattern   string `json:"pattern"`
-	Weight    int    `json:"weight"`
-	Category  string `json:"category"`
-	Strict    bool   `json:"strict"`
-	Rationale string `json:"rationale,omitempty"`
-	SourceURL string `json:"source_url,omitempty"`
-	Status    string `json:"status,omitempty"`
+	ID              int64      `json:"id,omitempty"`
+	Fingerprint     string     `json:"fingerprint,omitempty"`
+	Kind            string     `json:"kind,omitempty"`
+	Name            string     `json:"name"`
+	Pattern         string     `json:"pattern"`
+	Weight          int        `json:"weight"`
+	Category        string     `json:"category"`
+	Strict          bool       `json:"strict"`
+	Rationale       string     `json:"rationale,omitempty"`
+	SourceURL       string     `json:"source_url,omitempty"`
+	ChangeType      string     `json:"change_type,omitempty"`
+	LifecycleStatus string     `json:"lifecycle_status,omitempty"`
+	Source          string     `json:"source,omitempty"`
+	EvidenceCount   int        `json:"evidence_count,omitempty"`
+	SamplePreview   string     `json:"sample_preview,omitempty"`
+	Protocol        string     `json:"protocol,omitempty"`
+	Provider        string     `json:"provider,omitempty"`
+	Model           string     `json:"model,omitempty"`
+	APIKeyID        int64      `json:"api_key_id,omitempty"`
+	APIKeyName      string     `json:"api_key_name,omitempty"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+	LastSeenAt      *time.Time `json:"last_seen_at,omitempty"`
 }
 
 type promptIntelligenceRun struct {
@@ -55,7 +80,7 @@ type promptIntelligenceRun struct {
 	Sources    []promptIntelligenceSource    `json:"sources"`
 	Candidates []promptIntelligenceCandidate `json:"candidates"`
 	ModelCalls int                           `json:"model_calls"`
-	Added      int                           `json:"added"`
+	Staged     int                           `json:"staged"`
 	Errors     []string                      `json:"errors"`
 }
 
@@ -64,16 +89,33 @@ type promptIntelligenceHistoryResponse struct {
 	Total int                      `json:"total"`
 }
 
+type promptIntelligenceCandidatesResponse struct {
+	Candidates []promptIntelligenceCandidate `json:"candidates"`
+	Total      int                           `json:"total"`
+}
+
 var promptIntelligenceRunMu sync.Mutex
+
+var (
+	errPromptIntelligenceCandidateNotFound = errors.New("prompt intelligence candidate not found")
+	errPromptIntelligenceCandidateInvalid  = errors.New("prompt intelligence candidate invalid")
+)
 
 func (h *Handler) StartPromptIntelligence(ctx context.Context) {
 	if h == nil || h.store == nil {
 		return
 	}
+	h.startPromptRuleRuntimeSync(ctx)
 	h.startDBBackgroundTaskWithParent(ctx, func(ctx context.Context) {
+		if err := h.migrateLegacyAutomaticIntelligenceRules(ctx); err != nil {
+			h.insertIntelligenceLog(ctx, "intel_migration", "error", "", nil, []string{err.Error()})
+		}
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
+		migrationTicker := time.NewTicker(legacyIntelligenceMigrationInterval)
+		defer migrationTicker.Stop()
 		var lastRun time.Time
+		lastMigrationError := ""
 		for {
 			cfg := h.store.GetPromptFilterConfig().Advanced.Intelligence
 			if cfg.Enabled && (lastRun.IsZero() || time.Since(lastRun) >= time.Duration(cfg.IntervalHours)*time.Hour) {
@@ -84,9 +126,75 @@ func (h *Handler) StartPromptIntelligence(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+			case <-migrationTicker.C:
+				if err := h.migrateLegacyAutomaticIntelligenceRules(ctx); err != nil {
+					if message := err.Error(); message != lastMigrationError {
+						log.Printf("legacy prompt intelligence migration sweep failed: %v", err)
+						lastMigrationError = message
+					}
+				} else {
+					lastMigrationError = ""
+				}
 			}
 		}
 	})
+}
+
+// startPromptRuleRuntimeSync keeps the one runtime rule engine consistent
+// across replicas. Candidate/evidence rows are never read here; only the
+// explicitly published custom-pattern snapshot in system_settings is synced.
+func (h *Handler) startPromptRuleRuntimeSync(ctx context.Context) {
+	if h == nil || h.db == nil || h.store == nil {
+		return
+	}
+	h.startDBBackgroundTaskWithParent(ctx, func(ctx context.Context) {
+		ticker := time.NewTicker(promptRuleRuntimeSyncInterval)
+		defer ticker.Stop()
+		lastError := ""
+		for {
+			err := h.syncPromptRuleRuntimeFromDB(ctx)
+			if err != nil {
+				if message := err.Error(); message != lastError {
+					log.Printf("prompt rule runtime sync failed: %v", err)
+					lastError = message
+				}
+			} else {
+				lastError = ""
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+}
+
+func (h *Handler) syncPromptRuleRuntimeFromDB(ctx context.Context) error {
+	h.settingsUpdateMu.Lock()
+	defer h.settingsUpdateMu.Unlock()
+	settings, err := h.db.GetSystemSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if settings == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(settings.PromptFilterCustomPatterns)
+	if raw == "" {
+		raw = "[]"
+	}
+	patterns, err := promptfilter.ParseCustomPatterns(raw)
+	if err != nil {
+		return err
+	}
+	cfg := h.store.GetPromptFilterConfig()
+	if promptfilter.MarshalCustomPatterns(cfg.CustomPatterns) == promptfilter.MarshalCustomPatterns(patterns) {
+		return nil
+	}
+	cfg.CustomPatterns = patterns
+	h.store.SetPromptFilterConfig(cfg)
+	return nil
 }
 
 func (h *Handler) RunPromptIntelligence(c *gin.Context) {
@@ -117,22 +225,115 @@ func (h *Handler) ListPromptIntelligenceHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, promptIntelligenceHistoryResponse{Runs: runs, Total: total})
 }
 
-func (h *Handler) AddPromptIntelligenceCandidate(c *gin.Context) {
-	var candidate promptIntelligenceCandidate
-	if err := c.ShouldBindJSON(&candidate); err != nil {
-		writeError(c, http.StatusBadRequest, "候选规则格式无效")
-		return
-	}
-	if err := validateIntelligenceCandidate(candidate); err != nil {
-		writeError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	added, updated, err := h.addPromptIntelligenceCandidates(c.Request.Context(), []promptIntelligenceCandidate{candidate}, false)
+func (h *Handler) ListPromptIntelligenceCandidates(c *gin.Context) {
+	page := positiveQueryInt(c, "page", 1)
+	pageSize := positiveQueryInt(c, "page_size", 50)
+	items, total, err := h.db.ListPromptRuleCandidates(c.Request.Context(), database.PromptRuleCandidateQuery{
+		Page: page, PageSize: pageSize, Status: c.Query("status"), Source: c.Query("source"), Query: c.Query("q"),
+	})
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"added": added, "updated": updated})
+	result := make([]promptIntelligenceCandidate, 0, len(items))
+	for _, item := range items {
+		result = append(result, promptIntelligenceCandidateFromDB(item, h.store.GetPromptFilterConfig()))
+	}
+	c.JSON(http.StatusOK, promptIntelligenceCandidatesResponse{Candidates: result, Total: total})
+}
+
+func (h *Handler) GetPromptIntelligenceCandidateEvidence(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, http.StatusBadRequest, "候选规则 ID 无效")
+		return
+	}
+	item, err := h.db.GetPromptRuleCandidate(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "候选规则不存在")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	evidenceRows, err := h.db.ListPromptRuleCandidateEvidence(c.Request.Context(), id, 200)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	evidence := make([]gin.H, 0, len(evidenceRows))
+	for _, row := range evidenceRows {
+		var metadata any = map[string]any{}
+		if json.Unmarshal([]byte(row.MetadataJSON), &metadata) != nil {
+			metadata = map[string]any{}
+		}
+		evidence = append(evidence, gin.H{
+			"id": row.ID, "source_kind": row.SourceKind, "source_ref": row.SourceRef,
+			"sample_preview": row.SamplePreview, "metadata": metadata, "protocol": row.Protocol,
+			"provider": row.Provider, "model": row.Model, "api_key_id": row.APIKeyID,
+			"api_key_name": row.APIKeyName, "observed_at": row.ObservedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"candidate": promptIntelligenceCandidateFromDB(item, h.store.GetPromptFilterConfig()), "evidence": evidence})
+}
+
+func (h *Handler) PublishPromptIntelligenceCandidate(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, http.StatusBadRequest, "候选规则 ID 无效")
+		return
+	}
+	item, added, updated, err := h.publishPromptIntelligenceCandidate(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, errPromptIntelligenceCandidateNotFound) {
+			writeError(c, http.StatusNotFound, "候选规则不存在")
+			return
+		}
+		if errors.Is(err, database.ErrPromptRuleCandidateConflict) {
+			writeError(c, http.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, errPromptIntelligenceCandidateInvalid) {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"candidate": promptIntelligenceCandidateFromDB(item, h.store.GetPromptFilterConfig()), "added": added, "updated": updated})
+}
+
+func (h *Handler) DismissPromptIntelligenceCandidate(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, http.StatusBadRequest, "候选规则 ID 无效")
+		return
+	}
+	item, err := h.db.GetPromptRuleCandidate(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "候选规则不存在")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	if item.Status == database.PromptRuleCandidateStatusPublished {
+		writeError(c, http.StatusConflict, "已发布规则请在规则页面停用或删除，不能从候选区忽略")
+		return
+	}
+	item, err = h.db.DismissPromptRuleCandidate(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, database.ErrPromptRuleCandidateConflict) {
+			writeError(c, http.StatusConflict, err.Error())
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	h.insertIntelligenceLog(c.Request.Context(), "intel_candidate_dismiss", "dismissed", "", item, nil)
+	c.JSON(http.StatusOK, promptIntelligenceCandidateFromDB(item, h.store.GetPromptFilterConfig()))
 }
 
 func (h *Handler) runPromptIntelligence(ctx context.Context, cfg promptfilter.IntelligenceConfig) (*promptIntelligenceRun, error) {
@@ -181,12 +382,13 @@ func (h *Handler) runPromptIntelligence(ctx context.Context, cfg promptfilter.In
 			h.insertIntelligenceLog(ctx, "intel_model", "analyzed", cfg.Model, candidates, nil)
 		}
 	}
-	if cfg.AutoAdd && len(run.Candidates) > 0 {
-		added, updated, err := h.addPromptIntelligenceCandidates(ctx, run.Candidates, true)
+	if len(run.Candidates) > 0 {
+		staged, err := h.stagePromptIntelligenceCandidates(ctx, run.Candidates, database.PromptRuleCandidateSourcePublicIntelligence, true)
 		if err != nil {
 			run.Errors = append(run.Errors, err.Error())
 		} else {
-			run.Added = added + updated
+			run.Candidates = staged
+			run.Staged = len(staged)
 		}
 	}
 	run.FinishedAt = time.Now()
@@ -212,31 +414,88 @@ func mergeIntelligenceQueries(groups ...[]string) []string {
 
 func (h *Handler) comparePromptIntelligenceCandidates(candidates []promptIntelligenceCandidate) []promptIntelligenceCandidate {
 	cfg := h.store.GetPromptFilterConfig()
-	exactPatterns := map[string]bool{}
+	builtinPatterns := map[string]bool{}
 	builtinNames := map[string]bool{}
 	customByName := map[string]promptfilter.PatternConfig{}
+	customByPattern := map[string]promptfilter.PatternConfig{}
 	for _, item := range promptfilter.BuiltinPatternConfigs() {
-		exactPatterns[item.Pattern] = true
+		builtinPatterns[item.Pattern] = true
 		builtinNames[strings.ToLower(strings.TrimSpace(item.Name))] = true
 	}
 	for _, item := range cfg.CustomPatterns {
-		exactPatterns[item.Pattern] = true
 		customByName[strings.ToLower(strings.TrimSpace(item.Name))] = item
+		customByPattern[item.Pattern] = item
 	}
 	result := make([]promptIntelligenceCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		name := strings.ToLower(strings.TrimSpace(candidate.Name))
-		if exactPatterns[candidate.Pattern] || builtinNames[name] {
+		if builtinPatterns[candidate.Pattern] || builtinNames[name] {
 			continue
 		}
-		if _, exists := customByName[name]; exists {
-			candidate.Status = "update"
+		proposal := promptfilter.PatternConfig{Name: candidate.Name, Pattern: candidate.Pattern, Weight: candidate.Weight, Category: candidate.Category, Strict: candidate.Strict}
+		if current, exists := customByName[name]; exists {
+			if promptIntelligenceProposalEquivalent(current, proposal) {
+				continue
+			}
+			candidate.ChangeType = "update"
+		} else if current, exists := customByPattern[candidate.Pattern]; exists {
+			proposal.Name = current.Name
+			candidate.Name = current.Name
+			if promptIntelligenceProposalEquivalent(current, proposal) {
+				continue
+			}
+			candidate.ChangeType = "update"
 		} else {
-			candidate.Status = "new"
+			candidate.ChangeType = "new"
 		}
 		result = append(result, candidate)
 	}
 	return result
+}
+
+// promptIntelligenceProposalEquivalent compares rule behavior while treating
+// an omitted enabled field and an explicit true value as the same active rule.
+// This keeps serialization-only differences out of the review queue without
+// hiding changes to signal-only or composite matching behavior.
+func promptIntelligenceProposalEquivalent(current, proposal promptfilter.PatternConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(current.Name), strings.TrimSpace(proposal.Name)) &&
+		current.Pattern == proposal.Pattern &&
+		current.Weight == proposal.Weight &&
+		current.Category == proposal.Category &&
+		current.Strict == proposal.Strict &&
+		current.SignalOnly == proposal.SignalOnly &&
+		current.MinMatches == proposal.MinMatches &&
+		promptIntelligenceStringSlicesEqual(current.AllPatterns, proposal.AllPatterns) &&
+		promptIntelligenceStringSlicesEqual(current.AnyPatterns, proposal.AnyPatterns) &&
+		promptIntelligenceStringSlicesEqual(current.ExcludePatterns, proposal.ExcludePatterns)
+}
+
+func promptIntelligenceStringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyAutomaticPatternEquivalent(current, automatic promptfilter.PatternConfig) bool {
+	currentEnabled := current.Enabled == nil || *current.Enabled
+	automaticEnabled := automatic.Enabled == nil || *automatic.Enabled
+	return strings.EqualFold(strings.TrimSpace(current.Name), strings.TrimSpace(automatic.Name)) &&
+		current.Pattern == automatic.Pattern &&
+		current.Weight == automatic.Weight &&
+		current.Category == automatic.Category &&
+		current.Strict == automatic.Strict &&
+		current.SignalOnly == automatic.SignalOnly &&
+		currentEnabled == automaticEnabled &&
+		current.MinMatches == automatic.MinMatches &&
+		reflect.DeepEqual(current.AllPatterns, automatic.AllPatterns) &&
+		reflect.DeepEqual(current.AnyPatterns, automatic.AnyPatterns) &&
+		reflect.DeepEqual(current.ExcludePatterns, automatic.ExcludePatterns)
 }
 
 func searchGitHubPromptIntelligence(ctx context.Context, query string, limit int) ([]promptIntelligenceSource, error) {
@@ -351,6 +610,11 @@ func validateIntelligenceCandidate(candidate promptIntelligenceCandidate) error 
 	return nil
 }
 
+func promptRuleCandidateFingerprint(pattern promptfilter.PatternConfig) string {
+	ruleJSON, _ := json.Marshal(pattern)
+	return promptfilter.StableEvidenceFingerprint("pattern-proposal", string(ruleJSON))
+}
+
 func intelligencePatternHasRiskSignal(pattern string) bool {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -385,89 +649,320 @@ func intelligencePatternHasRiskSignal(pattern string) bool {
 	return false
 }
 
-const maxAutomaticIntelligenceWeight = 20
-
-func intelligenceCandidatePatternConfig(candidate promptIntelligenceCandidate, automatic bool) promptfilter.PatternConfig {
-	item := promptfilter.PatternConfig{
-		Name:     candidate.Name,
-		Pattern:  candidate.Pattern,
-		Weight:   candidate.Weight,
-		Category: candidate.Category,
-		Strict:   candidate.Strict,
-	}
-	if automatic {
-		// Unattended external intelligence is evidence for audit and later human
-		// promotion, never immediate enforcement. This keeps a newly discovered
-		// or model-generated false positive from blocking production traffic.
-		item.Strict = false
-		item.SignalOnly = true
-		if item.Weight > maxAutomaticIntelligenceWeight {
-			item.Weight = maxAutomaticIntelligenceWeight
-		}
-	}
-	return item
-}
-
-func automaticIntelligenceMayUpdate(current promptfilter.PatternConfig) bool {
-	if current.Enabled != nil && !*current.Enabled {
-		return false
-	}
-	return current.SignalOnly && !current.Strict
-}
-
-func (h *Handler) addPromptIntelligenceCandidates(ctx context.Context, candidates []promptIntelligenceCandidate, requireRiskSignal bool) (int, int, error) {
-	h.settingsUpdateMu.Lock()
-	defer h.settingsUpdateMu.Unlock()
-	settings, err := h.db.GetSystemSettings(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	cfg := h.store.GetPromptFilterConfig()
-	existing := map[string]int{}
-	for index, item := range cfg.CustomPatterns {
-		existing[strings.ToLower(strings.TrimSpace(item.Name))] = index
-	}
-	added, updated := 0, 0
-	applied := make([]promptfilter.PatternConfig, 0, len(candidates))
+func (h *Handler) stagePromptIntelligenceCandidates(ctx context.Context, candidates []promptIntelligenceCandidate, source string, requireRiskSignal bool) ([]promptIntelligenceCandidate, error) {
+	staged := make([]promptIntelligenceCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if validateIntelligenceCandidate(candidate) != nil {
+		if err := validateIntelligenceCandidate(candidate); err != nil {
 			continue
 		}
 		if requireRiskSignal && !intelligencePatternHasRiskSignal(candidate.Pattern) {
 			continue
 		}
-		item := intelligenceCandidatePatternConfig(candidate, requireRiskSignal)
-		name := strings.ToLower(strings.TrimSpace(candidate.Name))
-		if index, exists := existing[name]; exists {
-			current := cfg.CustomPatterns[index]
-			// A scheduled intelligence job must never silently demote or replace a
-			// rule that an administrator already promoted to enforcement.
-			if requireRiskSignal && !automaticIntelligenceMayUpdate(current) {
-				continue
-			}
-			if current.Pattern == item.Pattern && current.Weight == item.Weight && current.Category == item.Category && current.Strict == item.Strict && current.SignalOnly == item.SignalOnly {
-				continue
-			}
-			cfg.CustomPatterns[index] = item
-			updated++
-			applied = append(applied, item)
-		} else {
-			cfg.CustomPatterns = append(cfg.CustomPatterns, item)
-			existing[name] = len(cfg.CustomPatterns) - 1
-			added++
-			applied = append(applied, item)
+		pattern := promptfilter.PatternConfig{
+			Name: candidate.Name, Pattern: candidate.Pattern, Weight: candidate.Weight, Category: candidate.Category, Strict: candidate.Strict,
+		}
+		ruleJSON, _ := json.Marshal(pattern)
+		metadata, _ := json.Marshal(map[string]any{
+			"rationale":   candidate.Rationale,
+			"source_url":  candidate.SourceURL,
+			"change_type": candidate.ChangeType,
+		})
+		sourceRef := strings.TrimSpace(candidate.SourceURL)
+		if sourceRef == "" {
+			sourceRef = candidate.Name + "\x00" + candidate.Pattern
+		}
+		item, evidenceAdded, err := h.db.StagePromptRuleCandidate(ctx, database.PromptRuleCandidateInput{
+			Fingerprint: promptRuleCandidateFingerprint(pattern),
+			Kind:        database.PromptRuleCandidateKindPattern, Source: source,
+			Name: candidate.Name, Category: candidate.Category, RuleJSON: string(ruleJSON),
+			Rationale: candidate.Rationale, SourceURL: candidate.SourceURL,
+		}, database.PromptRuleCandidateEvidenceInput{
+			SourceKind: source, SourceRef: sourceRef,
+			SourceRefHash: promptfilter.StableEvidenceFingerprint("evidence-ref", source+"\x00"+sourceRef),
+			MetadataJSON:  string(metadata),
+		})
+		if err != nil {
+			return staged, err
+		}
+		if !evidenceAdded {
+			continue
+		}
+		staged = append(staged, promptIntelligenceCandidateFromDB(item, h.store.GetPromptFilterConfig()))
+	}
+	if len(staged) > 0 {
+		h.insertIntelligenceLog(ctx, "intel_candidate_stage", "staged", "", staged, nil)
+	}
+	return staged, nil
+}
+
+func (h *Handler) publishPromptIntelligenceCandidate(ctx context.Context, id int64) (*database.PromptRuleCandidate, int, int, error) {
+	candidate, err := h.db.GetPromptRuleCandidate(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, 0, fmt.Errorf("%w: 候选规则不存在", errPromptIntelligenceCandidateNotFound)
+		}
+		return nil, 0, 0, err
+	}
+	if candidate.Kind != database.PromptRuleCandidateKindPattern || strings.TrimSpace(candidate.RuleJSON) == "" || candidate.RuleJSON == "{}" {
+		return nil, 0, 0, fmt.Errorf("%w: 该记录只是上游风险证据，尚未形成可发布规则", errPromptIntelligenceCandidateInvalid)
+	}
+	var pattern promptfilter.PatternConfig
+	if err := json.Unmarshal([]byte(candidate.RuleJSON), &pattern); err != nil {
+		return nil, 0, 0, fmt.Errorf("%w: 候选规则内容无效: %v", errPromptIntelligenceCandidateInvalid, err)
+	}
+	proposal := promptIntelligenceCandidate{Name: pattern.Name, Pattern: pattern.Pattern, Weight: pattern.Weight, Category: pattern.Category, Strict: pattern.Strict, Rationale: candidate.Rationale, SourceURL: candidate.SourceURL}
+	if err := validateIntelligenceCandidate(proposal); err != nil {
+		return nil, 0, 0, fmt.Errorf("%w: %v", errPromptIntelligenceCandidateInvalid, err)
+	}
+
+	h.settingsUpdateMu.Lock()
+	defer h.settingsUpdateMu.Unlock()
+	cfg := h.store.GetPromptFilterConfig()
+	added, updated := 0, 0
+	existingIndex := -1
+	expectedCurrentRuleJSON := ""
+	for index, current := range cfg.CustomPatterns {
+		if strings.EqualFold(strings.TrimSpace(current.Name), strings.TrimSpace(pattern.Name)) {
+			existingIndex = index
+			break
 		}
 	}
-	if added == 0 && updated == 0 {
-		return 0, 0, nil
+	if existingIndex >= 0 {
+		current := cfg.CustomPatterns[existingIndex]
+		expectedCurrent, _ := json.Marshal(current)
+		expectedCurrentRuleJSON = string(expectedCurrent)
+		if len(current.AllPatterns) > 0 || len(current.AnyPatterns) > 0 || len(current.ExcludePatterns) > 0 || current.MinMatches > 0 {
+			return nil, 0, 0, fmt.Errorf("%w: 同名现有规则包含组合条件，不能用简单候选覆盖；请在规则页面人工复核", database.ErrPromptRuleCandidateConflict)
+		}
+		pattern.Enabled = current.Enabled
+		if !reflect.DeepEqual(current, pattern) {
+			cfg.CustomPatterns[existingIndex] = pattern
+			updated = 1
+		}
+	} else {
+		cfg.CustomPatterns = append(cfg.CustomPatterns, pattern)
+		added = 1
 	}
-	settings.PromptFilterCustomPatterns = promptfilter.MarshalCustomPatterns(cfg.CustomPatterns)
-	if err := h.db.UpdateSystemSettings(ctx, settings); err != nil {
-		return 0, 0, err
+	if err := promptfilter.ValidateCustomPatterns(cfg.CustomPatterns); err != nil {
+		return nil, 0, 0, fmt.Errorf("%w: %v", errPromptIntelligenceCandidateInvalid, err)
 	}
+	newRuleJSON, _ := json.Marshal(pattern)
+	var publishedPatterns []promptfilter.PatternConfig
+	publishedCandidate, _, err := h.db.PublishPromptRuleCandidate(
+		ctx, id, candidate.RuleJSON, pattern.Name, expectedCurrentRuleJSON, string(newRuleJSON),
+		func(mergedJSON string) error {
+			parsed, parseErr := promptfilter.ParseCustomPatterns(mergedJSON)
+			if parseErr != nil {
+				return fmt.Errorf("%w: 当前运行规则集无法解析: %v", database.ErrPromptRuleCandidateConflict, parseErr)
+			}
+			if validateErr := promptfilter.ValidateCustomPatterns(parsed); validateErr != nil {
+				return fmt.Errorf("%w: 当前运行规则集未通过安全校验: %v", database.ErrPromptRuleCandidateConflict, validateErr)
+			}
+			publishedPatterns = parsed
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	cfg.CustomPatterns = publishedPatterns
 	h.store.SetPromptFilterConfig(cfg)
-	h.insertIntelligenceLog(ctx, "intel_rule_add", "added_or_updated", "", applied, nil)
-	return added, updated, nil
+	h.insertIntelligenceLog(ctx, "intel_rule_publish", "published", "", pattern, nil)
+	return publishedCandidate, added, updated, nil
+}
+
+func promptIntelligenceCandidateFromDB(item *database.PromptRuleCandidate, cfg promptfilter.Config) promptIntelligenceCandidate {
+	if item == nil {
+		return promptIntelligenceCandidate{}
+	}
+	var pattern promptfilter.PatternConfig
+	_ = json.Unmarshal([]byte(item.RuleJSON), &pattern)
+	changeType := "new"
+	for _, current := range cfg.CustomPatterns {
+		if strings.EqualFold(strings.TrimSpace(current.Name), strings.TrimSpace(pattern.Name)) {
+			changeType = "update"
+			break
+		}
+	}
+	created, updated, lastSeen := item.CreatedAt, item.UpdatedAt, item.LastSeenAt
+	return promptIntelligenceCandidate{
+		ID: item.ID, Fingerprint: item.Fingerprint, Kind: item.Kind, Name: pattern.Name, Pattern: pattern.Pattern,
+		Weight: pattern.Weight, Category: pattern.Category, Strict: pattern.Strict, Rationale: item.Rationale, SourceURL: item.SourceURL,
+		ChangeType: changeType, LifecycleStatus: item.Status, Source: item.LastSource, EvidenceCount: item.EvidenceCount,
+		SamplePreview: item.SamplePreview, CreatedAt: &created, UpdatedAt: &updated, LastSeenAt: &lastSeen,
+	}
+}
+
+// migrateLegacyAutomaticIntelligenceRules removes only rules that can be
+// proven to have been written by the historical unattended intelligence path.
+// Manually created signal-only rules are intentionally retained.
+func (h *Handler) migrateLegacyAutomaticIntelligenceRules(ctx context.Context) error {
+	if h == nil || h.db == nil || h.store == nil {
+		return nil
+	}
+	legacy := map[string]promptfilter.PatternConfig{}
+	legacyLogID := map[string]int64{}
+	for page := 1; ; page++ {
+		logs, total, err := h.db.ListPromptFilterLogsPage(ctx, database.PromptFilterLogQuery{Page: page, PageSize: 500, Source: "intel_rule_add"})
+		if err != nil {
+			return err
+		}
+		for _, item := range logs {
+			var patterns []promptfilter.PatternConfig
+			if json.Unmarshal([]byte(item.FullText), &patterns) != nil {
+				continue
+			}
+			for _, pattern := range patterns {
+				if pattern.SignalOnly && !pattern.Strict && pattern.Weight > 0 {
+					key := strings.ToLower(strings.TrimSpace(pattern.Name))
+					if _, exists := legacy[key]; !exists {
+						legacy[key] = pattern
+						legacyLogID[key] = item.ID
+					}
+				}
+			}
+		}
+		if page*500 >= total || len(logs) == 0 {
+			break
+		}
+	}
+	if len(legacy) == 0 {
+		return nil
+	}
+
+	h.settingsUpdateMu.Lock()
+	defer h.settingsUpdateMu.Unlock()
+	cfg := h.store.GetPromptFilterConfig()
+	migratable := make([]promptIntelligenceCandidate, 0)
+	completionRef := func(name, pattern string) (string, string) {
+		generation := legacyLogID[strings.ToLower(strings.TrimSpace(name))]
+		sourceRef := name + "\x00" + pattern + "\x00" + strconv.FormatInt(generation, 10)
+		return sourceRef, promptfilter.StableEvidenceFingerprint(
+			"evidence-ref",
+			database.PromptRuleCandidateSourceLegacyMigrationDone+"\x00"+sourceRef,
+		)
+	}
+	for _, current := range cfg.CustomPatterns {
+		automatic, exists := legacy[strings.ToLower(strings.TrimSpace(current.Name))]
+		if !exists || !legacyAutomaticPatternEquivalent(current, automatic) {
+			continue
+		}
+		candidate := promptIntelligenceCandidate{Name: current.Name, Pattern: current.Pattern, Weight: current.Weight, Category: current.Category, Strict: false, ChangeType: "new", Rationale: "从历史自动规则迁移至待审核候选"}
+		if validateIntelligenceCandidate(candidate) != nil {
+			continue
+		}
+		pattern := promptfilter.PatternConfig{Name: candidate.Name, Pattern: candidate.Pattern, Weight: candidate.Weight, Category: candidate.Category, Strict: candidate.Strict}
+		fingerprint := promptRuleCandidateFingerprint(pattern)
+		if existing, getErr := h.db.GetPromptRuleCandidateByFingerprint(ctx, fingerprint); getErr == nil {
+			_, markerHash := completionRef(candidate.Name, candidate.Pattern)
+			migrated, markerErr := h.db.HasPromptRuleCandidateEvidence(ctx, existing.ID, database.PromptRuleCandidateSourceLegacyMigrationDone, markerHash)
+			if markerErr != nil {
+				return markerErr
+			}
+			if migrated {
+				continue
+			}
+		}
+		migratable = append(migratable, candidate)
+	}
+	if len(migratable) == 0 {
+		return nil
+	}
+	if _, err := h.stagePromptIntelligenceCandidates(ctx, migratable, database.PromptRuleCandidateSourceLegacyMigration, false); err != nil {
+		return err
+	}
+
+	type legacyMigrationTarget struct {
+		fingerprint string
+		candidate   *database.PromptRuleCandidate
+		completion  database.PromptRuleCandidateMigrationCompletion
+	}
+	targets := make([]legacyMigrationTarget, 0, len(migratable))
+	targetByFingerprint := make(map[string]legacyMigrationTarget, len(migratable))
+	for _, candidate := range migratable {
+		pattern := promptfilter.PatternConfig{Name: candidate.Name, Pattern: candidate.Pattern, Weight: candidate.Weight, Category: candidate.Category, Strict: candidate.Strict}
+		fingerprint := promptRuleCandidateFingerprint(pattern)
+		item, getErr := h.db.GetPromptRuleCandidateByFingerprint(ctx, fingerprint)
+		if getErr != nil {
+			return getErr
+		}
+		sourceRef, markerHash := completionRef(candidate.Name, candidate.Pattern)
+		completionMetadata, _ := json.Marshal(map[string]any{
+			"migration":     "legacy automatic intelligence runtime removal completed",
+			"legacy_log_id": legacyLogID[strings.ToLower(strings.TrimSpace(candidate.Name))],
+		})
+		target := legacyMigrationTarget{
+			fingerprint: fingerprint,
+			candidate:   item,
+			completion: database.PromptRuleCandidateMigrationCompletion{
+				CandidateID: item.ID,
+				Evidence: database.PromptRuleCandidateEvidenceInput{
+					SourceKind:    database.PromptRuleCandidateSourceLegacyMigrationDone,
+					SourceRef:     sourceRef,
+					SourceRefHash: markerHash,
+					MetadataJSON:  string(completionMetadata),
+				},
+			},
+		}
+		targets = append(targets, target)
+		targetByFingerprint[fingerprint] = target
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	completedCandidates := make([]promptIntelligenceCandidate, 0, len(targets))
+	completions := make([]database.PromptRuleCandidateMigrationCompletion, 0, len(targets))
+	for _, target := range targets {
+		completedCandidates = append(completedCandidates, promptIntelligenceCandidateFromDB(target.candidate, cfg))
+		completions = append(completions, target.completion)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		settings, readErr := h.db.GetSystemSettings(ctx)
+		if readErr != nil {
+			return readErr
+		}
+		if settings == nil {
+			return nil
+		}
+		currentPatternsJSON := strings.TrimSpace(settings.PromptFilterCustomPatterns)
+		if currentPatternsJSON == "" {
+			currentPatternsJSON = "[]"
+		}
+		currentPatterns, parseErr := promptfilter.ParseCustomPatterns(currentPatternsJSON)
+		if parseErr != nil {
+			return parseErr
+		}
+		kept := make([]promptfilter.PatternConfig, 0, len(currentPatterns))
+		removed := false
+		for _, current := range currentPatterns {
+			fingerprint := promptRuleCandidateFingerprint(promptfilter.PatternConfig{Name: current.Name, Pattern: current.Pattern, Weight: current.Weight, Category: current.Category, Strict: false})
+			automatic, exists := legacy[strings.ToLower(strings.TrimSpace(current.Name))]
+			_, targeted := targetByFingerprint[fingerprint]
+			if !exists || !legacyAutomaticPatternEquivalent(current, automatic) || !targeted {
+				kept = append(kept, current)
+			} else {
+				removed = true
+			}
+		}
+		customPatternsJSON := promptfilter.MarshalCustomPatterns(kept)
+		swapped, swapErr := h.db.CompareAndSwapPromptFilterCustomPatternsWithMigrationCompletions(ctx, currentPatternsJSON, customPatternsJSON, completions)
+		if swapErr != nil {
+			return swapErr
+		}
+		if !swapped {
+			continue
+		}
+		cfg = h.store.GetPromptFilterConfig()
+		cfg.CustomPatterns = kept
+		h.store.SetPromptFilterConfig(cfg)
+		action := "migration_completed"
+		if removed {
+			action = "staged_and_removed_from_runtime"
+		}
+		h.insertIntelligenceLog(ctx, "intel_migration", action, "", completedCandidates, nil)
+		return nil
+	}
+	return fmt.Errorf("%w: 自动规则迁移期间运行规则已被并发修改，请稍后重试", database.ErrPromptRuleCandidateConflict)
 }
 
 func (h *Handler) insertIntelligenceLog(ctx context.Context, source, action, model string, value any, errors []string) {

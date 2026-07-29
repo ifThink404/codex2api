@@ -41,8 +41,12 @@ type PromptFilterAuditStats struct {
 }
 
 type promptFilterAuditJob struct {
-	input PromptFilterLogInput
-	bytes int64
+	input             PromptFilterLogInput
+	hasLog            bool
+	candidate         PromptRuleCandidateInput
+	candidateEvidence PromptRuleCandidateEvidenceInput
+	hasCandidate      bool
+	bytes             int64
 }
 
 type promptFilterAuditQueue struct {
@@ -128,23 +132,42 @@ func (q *promptFilterAuditQueue) enqueue(input PromptFilterLogInput, priority Pr
 	if q == nil || q.db == nil {
 		return false
 	}
-	q.enqueueMu.RLock()
-	defer q.enqueueMu.RUnlock()
-	if q.closed.Load() {
-		q.drop(priority, "closed")
-		return false
-	}
 	jobBytes := int64(promptFilterLogInputBytes(input))
 	if jobBytes > promptFilterAuditMaxJobBytes {
 		q.drop(priority, "job_too_large")
 		return false
 	}
 	input = clonePromptFilterLogInput(input)
-	if !q.reserveBytes(priority, jobBytes) {
+	return q.enqueueJob(promptFilterAuditJob{input: input, hasLog: true, bytes: jobBytes}, priority)
+}
+
+func (q *promptFilterAuditQueue) enqueueCandidate(candidate PromptRuleCandidateInput, evidence PromptRuleCandidateEvidenceInput, priority PromptFilterLogPriority) bool {
+	if q == nil || q.db == nil {
+		return false
+	}
+	jobBytes := int64(promptRuleCandidateJobBytes(candidate, evidence))
+	if jobBytes > promptFilterAuditMaxJobBytes {
+		q.drop(priority, "job_too_large")
+		return false
+	}
+	job := promptFilterAuditJob{
+		candidate: clonePromptRuleCandidateInput(candidate), candidateEvidence: clonePromptRuleCandidateEvidenceInput(evidence),
+		hasCandidate: true, bytes: jobBytes,
+	}
+	return q.enqueueJob(job, priority)
+}
+
+func (q *promptFilterAuditQueue) enqueueJob(job promptFilterAuditJob, priority PromptFilterLogPriority) bool {
+	q.enqueueMu.RLock()
+	defer q.enqueueMu.RUnlock()
+	if q.closed.Load() {
+		q.drop(priority, "closed")
+		return false
+	}
+	if !q.reserveBytes(priority, job.bytes) {
 		q.drop(priority, "queue_bytes_full")
 		return false
 	}
-	job := promptFilterAuditJob{input: input, bytes: jobBytes}
 	queue := q.low
 	if priority == PromptFilterLogPriorityHigh {
 		queue = q.high
@@ -153,7 +176,7 @@ func (q *promptFilterAuditQueue) enqueue(input PromptFilterLogInput, priority Pr
 	select {
 	case <-q.stop:
 		q.pending.Add(-1)
-		q.releaseBytes(priority, jobBytes)
+		q.releaseBytes(priority, job.bytes)
 		q.drop(priority, "closed")
 		return false
 	case queue <- job:
@@ -161,7 +184,7 @@ func (q *promptFilterAuditQueue) enqueue(input PromptFilterLogInput, priority Pr
 		return true
 	default:
 		q.pending.Add(-1)
-		q.releaseBytes(priority, jobBytes)
+		q.releaseBytes(priority, job.bytes)
 		q.drop(priority, "queue_full")
 		return false
 	}
@@ -229,7 +252,12 @@ func (q *promptFilterAuditQueue) worker() {
 			}
 			for attempt := 0; attempt < attempts; attempt++ {
 				ctx, cancel := context.WithTimeout(q.ctx, promptFilterAuditTaskTimeout)
-				err := q.db.InsertPromptFilterLog(ctx, &job.input)
+				var err error
+				if job.hasLog {
+					err = q.db.InsertPromptFilterLog(ctx, &job.input)
+				} else if job.hasCandidate {
+					_, _, err = q.db.StagePromptRuleCandidate(ctx, job.candidate, job.candidateEvidence)
+				}
 				cancel()
 				if err == nil {
 					q.completed.Add(1)
@@ -330,6 +358,39 @@ func clonePromptFilterLogInput(input PromptFilterLogInput) PromptFilterLogInput 
 	return input
 }
 
+func promptRuleCandidateJobBytes(candidate PromptRuleCandidateInput, evidence PromptRuleCandidateEvidenceInput) int {
+	return len(candidate.Fingerprint) + len(candidate.Kind) + len(candidate.Source) + len(candidate.Name) + len(candidate.Category) +
+		len(candidate.RuleJSON) + len(candidate.Rationale) + len(candidate.SourceURL) + len(candidate.SamplePreview) +
+		len(evidence.SourceKind) + len(evidence.SourceRef) + len(evidence.SourceRefHash) + len(evidence.SamplePreview) +
+		len(evidence.MetadataJSON) + len(evidence.Protocol) + len(evidence.Provider) + len(evidence.Model) + len(evidence.APIKeyName)
+}
+
+func clonePromptRuleCandidateInput(input PromptRuleCandidateInput) PromptRuleCandidateInput {
+	input.Fingerprint = strings.Clone(input.Fingerprint)
+	input.Kind = strings.Clone(input.Kind)
+	input.Source = strings.Clone(input.Source)
+	input.Name = strings.Clone(input.Name)
+	input.Category = strings.Clone(input.Category)
+	input.RuleJSON = strings.Clone(input.RuleJSON)
+	input.Rationale = strings.Clone(input.Rationale)
+	input.SourceURL = strings.Clone(input.SourceURL)
+	input.SamplePreview = strings.Clone(input.SamplePreview)
+	return input
+}
+
+func clonePromptRuleCandidateEvidenceInput(input PromptRuleCandidateEvidenceInput) PromptRuleCandidateEvidenceInput {
+	input.SourceKind = strings.Clone(input.SourceKind)
+	input.SourceRef = strings.Clone(input.SourceRef)
+	input.SourceRefHash = strings.Clone(input.SourceRefHash)
+	input.SamplePreview = strings.Clone(input.SamplePreview)
+	input.MetadataJSON = strings.Clone(input.MetadataJSON)
+	input.Protocol = strings.Clone(input.Protocol)
+	input.Provider = strings.Clone(input.Provider)
+	input.Model = strings.Clone(input.Model)
+	input.APIKeyName = strings.Clone(input.APIKeyName)
+	return input
+}
+
 // EnqueuePromptFilterLog moves an already-redacted audit record off the
 // request path. Queue saturation or storage failure never changes the policy
 // decision and never falls back to a synchronous database write.
@@ -338,6 +399,16 @@ func (db *DB) EnqueuePromptFilterLog(input *PromptFilterLogInput, priority Promp
 		return false
 	}
 	return db.promptFilterAudit.enqueue(*input, priority)
+}
+
+// EnqueuePromptRuleCandidate stages already-redacted learning evidence on the
+// same bounded, non-blocking queue used by prompt audit logs. Saturation never
+// falls back to a synchronous database write.
+func (db *DB) EnqueuePromptRuleCandidate(candidate *PromptRuleCandidateInput, evidence *PromptRuleCandidateEvidenceInput, priority PromptFilterLogPriority) bool {
+	if db == nil || candidate == nil || evidence == nil || db.promptFilterAudit == nil {
+		return false
+	}
+	return db.promptFilterAudit.enqueueCandidate(*candidate, *evidence, priority)
 }
 
 func (db *DB) PromptFilterAuditStats() PromptFilterAuditStats {

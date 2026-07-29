@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileText, Gauge, GitBranch, HelpCircle, Layers, ListChecks, Network, Pencil, Plus, Power, PowerOff, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Trash2, Wand2, X } from 'lucide-react'
-import { api } from '../api'
+import { AdminAPIError, api } from '../api'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
 import PromptFilterNewAPIBindings from '../components/PromptFilterNewAPIBindings'
@@ -15,7 +15,7 @@ import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import { getPromptFilterScoreBand, normalizePromptFilterScore } from '../lib/promptFilterScore'
 import { parseAdvancedConfigDocument, patchAdvancedConfigDocument, readAdvancedConfigPath } from '../types'
-import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIntelligenceCandidate, PromptIntelligenceRun, SystemSettings } from '../types'
+import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceRun, SystemSettings } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -135,7 +135,7 @@ type AdvancedProtectionConfig = {
     allow_remote_urls: boolean
   }
   output: { enabled: boolean; strict_only: boolean }
-  intelligence: { enabled: boolean; interval_hours: number; queries: string[]; max_search_results: number; model_enabled: boolean; model: string; max_model_calls: number; auto_add: boolean }
+  intelligence: { enabled: boolean; interval_hours: number; queries: string[]; max_search_results: number; model_enabled: boolean; model: string; max_model_calls: number }
 }
 
 const promptGuardModes: PromptGuardMode[] = ['inherit', 'off', 'shadow', 'warn', 'enforce']
@@ -226,7 +226,7 @@ const defaultAdvancedProtection: AdvancedProtectionConfig = {
     allow_remote_urls: false,
   },
   output: { enabled: false, strict_only: true },
-  intelligence: { enabled: false, interval_hours: 24, queries: ['LLM jailbreak prompt injection', 'ChatGPT jailbreak prompt', 'Codex prompt injection jailbreak', '大模型 破限 提示词', 'GPT 破甲 提示词', 'AI 越狱 提示词', '中文 prompt injection 绕过'], max_search_results: 20, model_enabled: false, model: 'gpt-5.4', max_model_calls: 1, auto_add: false },
+  intelligence: { enabled: false, interval_hours: 24, queries: ['LLM jailbreak prompt injection', 'ChatGPT jailbreak prompt', 'Codex prompt injection jailbreak', '大模型 破限 提示词', 'GPT 破甲 提示词', 'AI 越狱 提示词', '中文 prompt injection 绕过'], max_search_results: 20, model_enabled: false, model: 'gpt-5.4', max_model_calls: 1 },
 }
 
 function parsePromptGuardMode(value: unknown, fallback: PromptGuardMode = 'inherit'): PromptGuardMode {
@@ -356,6 +356,10 @@ function parseRuleWeight(raw: string): number | null {
   return weight
 }
 
+function customRuleIdentity(rule: PromptFilterRule): string {
+  return JSON.stringify(rule)
+}
+
 function customRuleDraftFromRule(rule: PromptFilterRule): CustomRuleDraft {
   return {
     name: rule.name || '',
@@ -403,6 +407,8 @@ function parseJSONList<T>(raw: string, fallback: T[] = []): T[] {
 
 function promptFilterSavePayload(form: PromptFilterForm): Partial<SystemSettings> {
   const payload: Partial<SystemSettings> = { ...form }
+  // 自定义规则使用独立的并发保护写入流程；普通设置保存不得回写旧快照。
+  delete payload.prompt_filter_custom_patterns
   // 展示用字段，不参与写入。
   delete payload.prompt_filter_review_api_key_configured
   delete payload.prompt_filter_review_api_key_count
@@ -712,6 +718,7 @@ function AdvancedProtectionEditor({
       { path: ['newapi', 'secret'], remove: true },
       { path: ['newapi', 'offense_window_seconds'], remove: true },
       { path: ['newapi', 'ban_after'], remove: true },
+      { path: ['intelligence', 'auto_add'], remove: true },
     ])
     if (!result.ok) return
     onChange(result.serialized)
@@ -1290,12 +1297,6 @@ function AdvancedProtectionEditor({
             <CompactField label={t('promptFilter.intelligence.maxModelCalls')} hint={t('promptFilter.help.maxModelCalls')}>
               <DraftNumberInput min={0} max={3} value={config.intelligence.max_model_calls} onValueChange={(v) => update('intelligence', { max_model_calls: v })} />
             </CompactField>
-            <SwitchField
-              label={t('promptFilter.intelligence.autoAdd')}
-              hint={t('promptFilter.help.autoAdd')}
-              checked={config.intelligence.auto_add}
-              onCheckedChange={(next) => setBool('intelligence', 'auto_add', next)}
-            />
           </div>
         </AdvancedPanel>
       </div>
@@ -1407,24 +1408,67 @@ function IntelligenceView() {
   const { t } = useTranslation()
   const { showToast } = useToast()
   const [running, setRunning] = useState(false)
-  const [adding, setAdding] = useState('')
   const [result, setResult] = useState<PromptIntelligenceRun | null>(null)
   const [history, setHistory] = useState<PromptIntelligenceRun[]>([])
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyPageSize, setHistoryPageSize] = useState(10)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [candidates, setCandidates] = useState<PromptIntelligenceCandidate[]>([])
+  const [candidateTotal, setCandidateTotal] = useState(0)
+  const [candidateLoading, setCandidateLoading] = useState(false)
+  const [candidateStatus, setCandidateStatus] = useState('pending')
+  const [candidateQuery, setCandidateQuery] = useState('')
+  const [candidateQueryDraft, setCandidateQueryDraft] = useState('')
+  const [candidatePage, setCandidatePage] = useState(1)
+  const [candidatePageSize, setCandidatePageSize] = useState(20)
+  const [candidateAction, setCandidateAction] = useState<number | null>(null)
+  const [publishTarget, setPublishTarget] = useState<PromptIntelligenceCandidate | null>(null)
+  const [evidenceLoading, setEvidenceLoading] = useState<number | null>(null)
+  const [evidenceDialog, setEvidenceDialog] = useState<PromptIntelligenceEvidenceResponse | null>(null)
+  const [dismissTarget, setDismissTarget] = useState<PromptIntelligenceCandidate | null>(null)
+  const candidateLoadSequence = useRef(0)
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (page = historyPage) => {
     setHistoryLoading(true)
-    try { setHistory((await api.getPromptIntelligenceHistory(1, 20)).runs) } catch (error) { showToast(getErrorMessage(error), 'error') } finally { setHistoryLoading(false) }
-  }, [showToast])
+    try {
+      const value = await api.getPromptIntelligenceHistory(page, historyPageSize)
+      setHistory(value.runs)
+      setHistoryTotal(value.total)
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [historyPage, historyPageSize, showToast])
+
+  const loadCandidates = useCallback(async () => {
+    const sequence = candidateLoadSequence.current + 1
+    candidateLoadSequence.current = sequence
+    setCandidateLoading(true)
+    try {
+      const value = await api.getPromptIntelligenceCandidates({ page: candidatePage, pageSize: candidatePageSize, status: candidateStatus, q: candidateQuery.trim() })
+      if (candidateLoadSequence.current !== sequence) return
+      setCandidates(value.candidates)
+      setCandidateTotal(value.total)
+    } catch (error) {
+      if (candidateLoadSequence.current !== sequence) return
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      if (candidateLoadSequence.current === sequence) setCandidateLoading(false)
+    }
+  }, [candidatePage, candidatePageSize, candidateQuery, candidateStatus, showToast])
 
   useEffect(() => { void loadHistory() }, [loadHistory])
+  useEffect(() => { void loadCandidates() }, [loadCandidates])
 
   const run = async () => {
     setRunning(true)
     try {
       const value = await api.runPromptIntelligence()
       setResult(value)
-      await loadHistory()
+      setHistoryPage(1)
+      await Promise.all([loadHistory(1), loadCandidates()])
       showToast(t('promptFilter.intelligence.runSuccess', { count: value.candidates.length }))
     } catch (error) {
       showToast(getErrorMessage(error), 'error')
@@ -1433,17 +1477,51 @@ function IntelligenceView() {
     }
   }
 
-  const add = async (candidate: PromptIntelligenceCandidate) => {
-    setAdding(candidate.name)
+  const publish = async (candidate: PromptIntelligenceCandidate) => {
+    setCandidateAction(candidate.id)
     try {
-      const value = await api.addPromptIntelligenceRule(candidate)
+      const value = await api.publishPromptIntelligenceCandidate(candidate.id)
       showToast(value.updated ? t('promptFilter.intelligence.updateSuccess') : value.added ? t('promptFilter.intelligence.addSuccess') : t('promptFilter.intelligence.alreadyExists'))
+      setPublishTarget(null)
+      await loadCandidates()
     } catch (error) {
       showToast(getErrorMessage(error), 'error')
     } finally {
-      setAdding('')
+      setCandidateAction(null)
     }
   }
+
+  const dismiss = async () => {
+    if (!dismissTarget) return
+    setCandidateAction(dismissTarget.id)
+    try {
+      await api.dismissPromptIntelligenceCandidate(dismissTarget.id)
+      showToast(t('promptFilter.intelligence.dismissSuccess'))
+      setDismissTarget(null)
+      await loadCandidates()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setCandidateAction(null)
+    }
+  }
+
+  const viewEvidence = async (candidate: PromptIntelligenceCandidate) => {
+    setEvidenceLoading(candidate.id)
+    try {
+      setEvidenceDialog(await api.getPromptIntelligenceCandidateEvidence(candidate.id))
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setEvidenceLoading(null)
+    }
+  }
+
+  const lifecycleLabel = (status: string) => t(`promptFilter.intelligence.lifecycle.${status}`, { defaultValue: status || '-' })
+  const sourceLabel = (source?: string) => t(`promptFilter.intelligence.source.${source || 'unknown'}`, { defaultValue: source || '-' })
+  const candidateTitle = (candidate: PromptIntelligenceCandidate) => candidate.kind === 'evidence'
+    ? t('promptFilter.intelligence.awaitingAttribution')
+    : candidate.name || t('promptFilter.intelligence.unnamedRule')
 
   return (
     <div className="space-y-5">
@@ -1472,36 +1550,243 @@ function IntelligenceView() {
               <span>{t('promptFilter.intelligence.sources')}: {result.sources.length}</span>
               <span>{t('promptFilter.intelligence.modelCalls')}: {result.model_calls}</span>
               <span>{t('promptFilter.intelligence.candidates')}: {result.candidates.length}</span>
-              <span>{t('promptFilter.intelligence.autoAdded')}: {result.added}</span>
+              <span>{t('promptFilter.intelligence.staged')}: {result.staged}</span>
             </div>
             {result.errors.length ? <div className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{result.errors.join('；')}</div> : null}
-            <Table>
-              <TableHeader><TableRow><TableHead>{t('promptFilter.intelligence.rule')}</TableHead><TableHead>{t('promptFilter.intelligence.category')}</TableHead><TableHead>{t('promptFilter.intelligence.weight')}</TableHead><TableHead>{t('promptFilter.intelligence.reason')}</TableHead><TableHead className="text-right">{t('common.actions')}</TableHead></TableRow></TableHeader>
-              <TableBody>
-                {result.candidates.map((candidate) => (
-                  <TableRow key={`${candidate.name}-${candidate.pattern}`}>
-                    <TableCell><div className="flex items-center gap-2 font-medium">{candidate.name}<Badge variant="outline" className={candidate.status === 'update' ? 'border-amber-500/40 text-amber-600' : 'border-emerald-500/40 text-emerald-600'}>{candidate.status === 'update' ? t('promptFilter.intelligence.update') : t('promptFilter.intelligence.new')}</Badge></div><code className="mt-1 block max-w-md break-all text-xs text-muted-foreground">{candidate.pattern}</code></TableCell>
-                    <TableCell>{candidate.category}</TableCell><TableCell>{candidate.weight}{candidate.strict ? ' / strict' : ''}</TableCell>
-                    <TableCell className="max-w-sm text-sm text-muted-foreground">{candidate.rationale || '-'}</TableCell>
-                    <TableCell className="text-right"><Button size="sm" variant="outline" disabled={adding === candidate.name} onClick={() => void add(candidate)}>{candidate.status === 'update' ? t('promptFilter.intelligence.updateRule') : t('promptFilter.intelligence.addRule')}</Button></TableCell>
-                  </TableRow>
-                ))}
-                {!result.candidates.length ? <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">{t('promptFilter.intelligence.noCandidates')}</TableCell></TableRow> : null}
-              </TableBody>
-            </Table>
+            <p className="text-sm text-muted-foreground">{t('promptFilter.intelligence.resultHint')}</p>
           </CardContent>
         </Card>
       ) : null}
 
       <Card>
         <CardContent className="p-5">
-          <div className="mb-4 flex items-center justify-between"><div><h2 className="text-base font-semibold">{t('promptFilter.intelligence.historyTitle')}</h2><p className="mt-1 text-sm text-muted-foreground">{t('promptFilter.intelligence.historyDesc')}</p></div><Button variant="outline" size="sm" onClick={() => void loadHistory()} disabled={historyLoading}><RefreshCw className="size-4" />{t('common.refresh')}</Button></div>
-          <div className="space-y-3">
-            {history.map((run, index) => <div key={`${run.started_at}-${index}`} className="rounded-lg border p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="font-medium">{formatBeijingTime(run.started_at)}</div><div className="flex gap-2"><Badge variant="outline">{t('promptFilter.intelligence.sources')} {run.sources.length}</Badge><Badge variant="outline">{t('promptFilter.intelligence.candidates')} {run.candidates.length}</Badge><Badge variant="outline">{t('promptFilter.intelligence.modelCalls')} {run.model_calls}</Badge></div></div><div className="mt-3 grid gap-2 md:grid-cols-2">{run.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="rounded-md bg-muted/40 p-2 text-sm hover:text-primary"><div className="font-medium">{source.title}</div><div className="truncate text-xs text-muted-foreground">{source.url}</div></a>)}</div>{run.errors.length ? <div className="mt-3 text-sm text-destructive">{run.errors.join('；')}</div> : null}</div>)}
-            {!historyLoading && !history.length ? <div className="py-8 text-center text-muted-foreground">{t('promptFilter.intelligence.noHistory')}</div> : null}
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">{t('promptFilter.intelligence.reviewTitle')}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{t('promptFilter.intelligence.reviewDesc')}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={candidateStatus}
+                onValueChange={(value) => { setCandidateStatus(value); setCandidatePage(1) }}
+                options={['pending', 'published', 'dismissed', 'all'].map((status) => ({ value: status, label: lifecycleLabel(status) }))}
+              />
+              <Input
+                className="w-56"
+                placeholder={t('promptFilter.intelligence.searchPlaceholder')}
+                value={candidateQueryDraft}
+                onChange={(event) => setCandidateQueryDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    setCandidatePage(1)
+                    setCandidateQuery(candidateQueryDraft)
+                  }
+                }}
+              />
+              <Button size="sm" onClick={() => { setCandidatePage(1); setCandidateQuery(candidateQueryDraft) }}>
+                <Search className="size-4" />
+                {t('promptFilter.intelligence.search')}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void loadCandidates()} disabled={candidateLoading}>
+                <RefreshCw className="size-4" />
+                {t('common.refresh')}
+              </Button>
+            </div>
           </div>
+          <div className="mb-3 text-xs text-muted-foreground">{t('promptFilter.intelligence.reviewCount', { count: candidateTotal })}</div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('promptFilter.intelligence.ruleOrEvidence')}</TableHead>
+                <TableHead>{t('promptFilter.intelligence.sourceLabel')}</TableHead>
+                <TableHead>{t('promptFilter.intelligence.statusLabel')}</TableHead>
+                <TableHead>{t('promptFilter.intelligence.evidenceCount')}</TableHead>
+                <TableHead>{t('promptFilter.intelligence.lastSeen')}</TableHead>
+                <TableHead className="text-right">{t('common.actions')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {candidates.map((candidate) => (
+                <TableRow key={candidate.id}>
+                  <TableCell className="max-w-xl">
+                    <div className="flex flex-wrap items-center gap-2 font-medium">
+                      {candidateTitle(candidate)}
+                      <Badge variant="outline">{candidate.kind === 'evidence' ? t('promptFilter.intelligence.evidenceOnly') : candidate.change_type === 'update' ? t('promptFilter.intelligence.update') : t('promptFilter.intelligence.new')}</Badge>
+                    </div>
+                    {candidate.pattern ? <code className="mt-1 block break-all text-xs text-muted-foreground">{candidate.pattern}</code> : null}
+                    {candidate.kind === 'pattern' ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <Badge variant="outline">{t('promptFilter.intelligence.category')}: {candidate.category || '-'}</Badge>
+                        <Badge variant="outline">{t('promptFilter.intelligence.weight')}: {candidate.weight}</Badge>
+                        {candidate.strict ? <Badge variant="outline" className="border-destructive/40 text-destructive">strict</Badge> : null}
+                      </div>
+                    ) : null}
+                    {candidate.sample_preview ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{candidate.sample_preview}</p> : null}
+                    {candidate.rationale ? <p className="mt-1 text-xs text-muted-foreground">{candidate.rationale}</p> : null}
+                  </TableCell>
+                  <TableCell><Badge variant="outline">{sourceLabel(candidate.source)}</Badge></TableCell>
+                  <TableCell><Badge variant="outline">{lifecycleLabel(candidate.lifecycle_status)}</Badge></TableCell>
+                  <TableCell>{candidate.evidence_count}</TableCell>
+                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{candidate.last_seen_at ? formatBeijingTime(candidate.last_seen_at) : '-'}</TableCell>
+                  <TableCell>
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="outline" disabled={evidenceLoading === candidate.id} onClick={() => void viewEvidence(candidate)}>
+                        <FileText className="size-4" />
+                        {t('promptFilter.intelligence.viewEvidence')}
+                      </Button>
+                      {candidate.lifecycle_status === 'pending' && candidate.kind === 'pattern' ? (
+                        <Button size="sm" disabled={candidateAction === candidate.id} onClick={() => setPublishTarget(candidate)}>
+                          {candidate.change_type === 'update' ? t('promptFilter.intelligence.updateRule') : t('promptFilter.intelligence.addRule')}
+                        </Button>
+                      ) : null}
+                      {candidate.lifecycle_status === 'pending' ? (
+                        <Button size="sm" variant="outline" disabled={candidateAction === candidate.id} onClick={() => setDismissTarget(candidate)}>
+                          {t('promptFilter.intelligence.dismiss')}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!candidateLoading && !candidates.length ? <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{t('promptFilter.intelligence.noReviewCandidates')}</TableCell></TableRow> : null}
+            </TableBody>
+          </Table>
+          <Pagination
+            page={candidatePage}
+            totalPages={Math.max(1, Math.ceil(candidateTotal / candidatePageSize))}
+            totalItems={candidateTotal}
+            pageSize={candidatePageSize}
+            onPageChange={setCandidatePage}
+            onPageSizeChange={(next) => { setCandidatePage(1); setCandidatePageSize(next) }}
+            pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+          />
         </CardContent>
       </Card>
+
+      <Card>
+        <CardContent className="p-5">
+          <div className="mb-4 flex items-center justify-between"><div><h2 className="text-base font-semibold">{t('promptFilter.intelligence.historyTitle')}</h2><p className="mt-1 text-sm text-muted-foreground">{t('promptFilter.intelligence.historyDesc')}</p></div><Button variant="outline" size="sm" onClick={() => void loadHistory()} disabled={historyLoading}><RefreshCw className="size-4" />{t('common.refresh')}</Button></div>
+          <div className="space-y-3">
+            {history.map((run, index) => (
+              <div key={`${run.started_at}-${index}`} className="rounded-lg border p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-medium">{formatBeijingTime(run.started_at)}</div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant="outline">{t('promptFilter.intelligence.sources')} {run.sources.length}</Badge>
+                    <Badge variant="outline">{t('promptFilter.intelligence.candidates')} {run.candidates.length}</Badge>
+                    <Badge variant="outline">{t('promptFilter.intelligence.staged')} {run.staged ?? run.added ?? 0}</Badge>
+                    <Badge variant="outline">{t('promptFilter.intelligence.modelCalls')} {run.model_calls}</Badge>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  {run.sources.map((source) => (
+                    <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="rounded-md bg-muted/40 p-2 text-sm hover:text-primary">
+                      <div className="font-medium">{source.title}</div>
+                      <div className="truncate text-xs text-muted-foreground">{source.url}</div>
+                    </a>
+                  ))}
+                </div>
+                {run.candidates.length ? (
+                  <details className="group mt-3 rounded-md border bg-muted/10">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-sm font-medium marker:content-none [&::-webkit-details-marker]:hidden">
+                      {t('promptFilter.intelligence.historyCandidates')}
+                      <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+                    </summary>
+                    <div className="space-y-2 border-t p-3">
+                      {run.candidates.map((candidate, candidateIndex) => (
+                        <div key={`${candidate.name}-${candidate.pattern}-${candidateIndex}`} className="rounded-md bg-background p-3 text-sm">
+                          <div className="flex flex-wrap items-center gap-2 font-medium">
+                            {candidate.name || t('promptFilter.intelligence.unnamedRule')}
+                            <Badge variant="outline">{(candidate.change_type || candidate.status) === 'update' ? t('promptFilter.intelligence.update') : t('promptFilter.intelligence.new')}</Badge>
+                          </div>
+                          {candidate.pattern ? <code className="mt-1 block break-all text-xs text-muted-foreground">{candidate.pattern}</code> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+                {run.errors.length ? <div className="mt-3 text-sm text-destructive">{run.errors.join('；')}</div> : null}
+              </div>
+            ))}
+            {!historyLoading && !history.length ? <div className="py-8 text-center text-muted-foreground">{t('promptFilter.intelligence.noHistory')}</div> : null}
+          </div>
+          <Pagination
+            page={historyPage}
+            totalPages={Math.max(1, Math.ceil(historyTotal / historyPageSize))}
+            totalItems={historyTotal}
+            pageSize={historyPageSize}
+            onPageChange={setHistoryPage}
+            onPageSizeChange={(next) => { setHistoryPage(1); setHistoryPageSize(next) }}
+            pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+          />
+        </CardContent>
+      </Card>
+
+      <Dialog open={Boolean(evidenceDialog)} onOpenChange={(open) => { if (!open) setEvidenceDialog(null) }}>
+        <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('promptFilter.intelligence.evidenceTitle')}</DialogTitle>
+            <DialogDescription>{evidenceDialog ? candidateTitle(evidenceDialog.candidate) : ''}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {evidenceDialog?.evidence.map((evidence) => (
+              <div key={evidence.id} className="rounded-lg border p-4">
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <Badge variant="outline">{sourceLabel(evidence.source_kind)}</Badge>
+                  {evidence.protocol ? <span>{evidence.protocol}</span> : null}
+                  {evidence.provider ? <span>{evidence.provider}</span> : null}
+                  {evidence.model ? <span>{evidence.model}</span> : null}
+                  {evidence.api_key_name ? <span>{evidence.api_key_name}</span> : null}
+                  <span>{formatBeijingTime(evidence.observed_at)}</span>
+                </div>
+                {evidence.sample_preview ? <p className="whitespace-pre-wrap break-words text-sm">{evidence.sample_preview}</p> : null}
+                {evidence.source_ref ? <p className="mt-2 break-all text-xs text-muted-foreground">{t('promptFilter.intelligence.sourceReference')}: {evidence.source_ref}</p> : null}
+                {Object.keys(evidence.metadata || {}).length ? <SoftCodeBlock className="mt-3">{JSON.stringify(evidence.metadata, null, 2)}</SoftCodeBlock> : null}
+              </div>
+            ))}
+            {evidenceDialog && !evidenceDialog.evidence.length ? <div className="py-8 text-center text-muted-foreground">{t('promptFilter.intelligence.noEvidence')}</div> : null}
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setEvidenceDialog(null)}>{t('common.close')}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(dismissTarget)} onOpenChange={(open) => { if (!open && candidateAction === null) setDismissTarget(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('promptFilter.intelligence.dismissTitle')}</DialogTitle>
+            <DialogDescription>{t('promptFilter.intelligence.dismissDesc', { name: dismissTarget ? candidateTitle(dismissTarget) : '' })}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={candidateAction !== null} onClick={() => setDismissTarget(null)}>{t('common.cancel')}</Button>
+            <Button variant="destructive" disabled={candidateAction !== null} onClick={() => void dismiss()}>{t('promptFilter.intelligence.dismiss')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(publishTarget)} onOpenChange={(open) => { if (!open && candidateAction === null) setPublishTarget(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('promptFilter.intelligence.publishTitle')}</DialogTitle>
+            <DialogDescription>{t('promptFilter.intelligence.publishDesc')}</DialogDescription>
+          </DialogHeader>
+          {publishTarget ? (
+            <div className="space-y-3 rounded-lg border p-4">
+              <div className="font-medium">{candidateTitle(publishTarget)}</div>
+              <code className="block break-all text-xs text-muted-foreground">{publishTarget.pattern}</code>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">{t('promptFilter.intelligence.category')}: {publishTarget.category || '-'}</Badge>
+                <Badge variant="outline">{t('promptFilter.intelligence.weight')}: {publishTarget.weight}</Badge>
+                <Badge variant="outline">strict: {publishTarget.strict ? t('promptFilter.intelligence.strictYes') : t('promptFilter.intelligence.strictNo')}</Badge>
+                <Badge variant="outline">{t('promptFilter.intelligence.evidenceCount')}: {publishTarget.evidence_count}</Badge>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={candidateAction !== null} onClick={() => setPublishTarget(null)}>{t('common.cancel')}</Button>
+            <Button disabled={candidateAction !== null || !publishTarget} onClick={() => { if (publishTarget) void publish(publishTarget) }}>{t('promptFilter.intelligence.confirmPublish')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -2410,11 +2695,12 @@ function RulesView({
   onRulesUpdated: (rules: PromptFilterRulesResponse, settings?: SystemSettings) => void
 }) {
   const { t } = useTranslation()
+  const { showToast } = useToast()
   const [infoOpen, setInfoOpen] = useState(false)
   const [previewRule, setPreviewRule] = useState<PromptFilterRule | null>(null)
   const [previewPatternCopied, setPreviewPatternCopied] = useState(false)
   const [customDialogMode, setCustomDialogMode] = useState<'create' | 'edit' | null>(null)
-  const [editingCustomIndex, setEditingCustomIndex] = useState<number | null>(null)
+  const [editingCustomOriginalFingerprint, setEditingCustomOriginalFingerprint] = useState<string | null>(null)
   const [customDialogDraft, setCustomDialogDraft] = useState<CustomRuleDraft>(defaultCustomRuleDraft)
   const [savingRule, setSavingRule] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string>('')
@@ -2439,7 +2725,10 @@ function RulesView({
   }
 
   const disabled = useMemo(() => parseJSONList<string>(form.prompt_filter_disabled_patterns), [form.prompt_filter_disabled_patterns])
-  const customPatterns = rules?.custom_patterns ?? parseJSONList<PromptFilterRule>(form.prompt_filter_custom_patterns)
+  const customPatterns = useMemo(
+    () => parseJSONList<PromptFilterRule>(form.prompt_filter_custom_patterns),
+    [form.prompt_filter_custom_patterns],
+  )
 
   const allCategories = useMemo(() => {
     const cats = new Set<string>()
@@ -2491,16 +2780,34 @@ function RulesView({
     const names = (rules?.builtin_patterns ?? [])
       .map((item) => item.name)
       .filter((name) => current.has(name.toLowerCase()))
-    await savePartialAndReload({ prompt_filter_disabled_patterns: JSON.stringify(names) })
-    setSelectedRules(new Set())
+    if (await savePartialAndReload({ prompt_filter_disabled_patterns: JSON.stringify(names) })) {
+      setSelectedRules(new Set())
+    }
   }
 
-  const savePartialAndReload = async (partial: Partial<SystemSettings>) => {
+  const savePartialAndReload = async (partial: Partial<SystemSettings>): Promise<boolean> => {
     setSavingRule('rules')
     try {
       const updated = await api.updateSettings(partial)
       const nextRules = await api.getPromptFilterRules()
       onRulesUpdated(nextRules, updated)
+      return true
+    } catch (error) {
+      if (error instanceof AdminAPIError && error.status === 409) {
+        try {
+          const [latestSettings, latestRules] = await Promise.all([
+            api.getSettings(),
+            api.getPromptFilterRules(),
+          ])
+          onRulesUpdated(latestRules, latestSettings)
+          showToast(t('promptFilter.ruleSaveConflict'), 'warning')
+        } catch (refreshError) {
+          showToast(`${t('promptFilter.ruleSaveConflictRefreshFailed')}: ${getErrorMessage(refreshError)}`, 'error')
+        }
+        return false
+      }
+      showToast(`${t('promptFilter.saveFailed')}: ${getErrorMessage(error)}`, 'error')
+      return false
     } finally {
       setSavingRule('')
     }
@@ -2519,13 +2826,16 @@ function RulesView({
     await savePartialAndReload({ prompt_filter_disabled_patterns: JSON.stringify(names) })
   }
 
-  const saveCustomPatterns = async (next: PromptFilterRule[]) => {
-    await savePartialAndReload({ prompt_filter_custom_patterns: JSON.stringify(next) })
+  const saveCustomPatterns = async (next: PromptFilterRule[]): Promise<boolean> => {
+    return savePartialAndReload({
+      prompt_filter_custom_patterns: JSON.stringify(next),
+      prompt_filter_custom_patterns_expected: form.prompt_filter_custom_patterns || '[]',
+    })
   }
 
   const startCreateCustomRule = () => {
     setCustomDialogMode('create')
-    setEditingCustomIndex(null)
+    setEditingCustomOriginalFingerprint(null)
     setCustomDialogDraft(defaultCustomRuleDraft)
   }
 
@@ -2533,13 +2843,13 @@ function RulesView({
     const rule = customPatterns[index]
     if (!rule) return
     setCustomDialogMode('edit')
-    setEditingCustomIndex(index)
+    setEditingCustomOriginalFingerprint(customRuleIdentity(rule))
     setCustomDialogDraft(customRuleDraftFromRule(rule))
   }
 
   const closeCustomRuleDialog = () => {
     setCustomDialogMode(null)
-    setEditingCustomIndex(null)
+    setEditingCustomOriginalFingerprint(null)
     setCustomDialogDraft(defaultCustomRuleDraft)
   }
 
@@ -2550,7 +2860,7 @@ function RulesView({
     if (!name || !pattern.trim() || weight === null) return
 
     if (customDialogMode === 'create') {
-      await saveCustomPatterns([
+      const saved = await saveCustomPatterns([
         ...customPatterns,
         {
           name,
@@ -2561,14 +2871,15 @@ function RulesView({
           enabled: true,
         },
       ])
-      closeCustomRuleDialog()
+      if (saved) closeCustomRuleDialog()
       return
     }
 
-    if (customDialogMode === 'edit' && editingCustomIndex !== null) {
+    if (customDialogMode === 'edit' && editingCustomOriginalFingerprint !== null) {
+      const editingCustomIndex = customPatterns.findIndex((rule) => customRuleIdentity(rule) === editingCustomOriginalFingerprint)
       const existing = customPatterns[editingCustomIndex]
-      if (!existing) {
-        closeCustomRuleDialog()
+      if (editingCustomIndex < 0 || !existing) {
+        showToast(t('promptFilter.ruleEditTargetMissing'), 'warning')
         return
       }
       const next = customPatterns.map((rule, index) => index === editingCustomIndex ? {
@@ -2580,8 +2891,7 @@ function RulesView({
         strict: customDialogDraft.strict,
         enabled: rule.enabled !== false,
       } : rule)
-      await saveCustomPatterns(next)
-      closeCustomRuleDialog()
+      if (await saveCustomPatterns(next)) closeCustomRuleDialog()
     }
   }
 
@@ -2725,7 +3035,7 @@ function RulesView({
                   </TableRow>
                 ) : customPatterns.map((rule, index) => (
                   <RuleRow
-                    key={`${rule.name}-${index}`}
+                    key={`${customRuleIdentity(rule)}-${index}`}
                     rule={{ ...rule, builtin: false, enabled: rule.enabled !== false }}
                     onPreview={() => openRulePreview({ ...rule, builtin: false, enabled: rule.enabled !== false })}
                     onToggle={() => void toggleCustom(index)}
