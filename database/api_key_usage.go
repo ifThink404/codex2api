@@ -538,33 +538,34 @@ type APIKeySelfUsageBreakdown struct {
 }
 
 type APIKeySelfUsageLog struct {
-	ID                int64     `json:"id"`
-	Endpoint          string    `json:"endpoint"`
-	Model             string    `json:"model"`
-	EffectiveModel    string    `json:"effective_model"`
-	StatusCode        int       `json:"status_code"`
-	DurationMS        int       `json:"duration_ms"`
-	FirstTokenMS      int       `json:"first_token_ms"`
-	InputTokens       int       `json:"input_tokens"`
-	OutputTokens      int       `json:"output_tokens"`
-	CachedTokens      int       `json:"cached_tokens"`
-	TotalTokens       int       `json:"total_tokens"`
-	UserBilled        float64   `json:"user_billed"`
-	InputCost         float64   `json:"input_cost"`
-	OutputCost        float64   `json:"output_cost"`
-	CacheReadCost     float64   `json:"cache_read_cost"`
-	TotalCost         float64   `json:"total_cost"`
-	InputPrice        float64   `json:"input_price_per_mtoken"`
-	OutputPrice       float64   `json:"output_price_per_mtoken"`
-	CacheReadPrice    float64   `json:"cache_read_price_per_mtoken"`
-	RateMultiplier    float64   `json:"rate_multiplier"`
-	LongContext       bool      `json:"long_context"`
-	ServiceTier       string    `json:"service_tier"`
-	Stream            bool      `json:"stream"`
-	Compact           bool      `json:"compact"`
-	ViaWebsocket      bool      `json:"via_websocket"`
-	UpstreamErrorKind string    `json:"upstream_error_kind"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID                   int64     `json:"id"`
+	Endpoint             string    `json:"endpoint"`
+	Model                string    `json:"model"`
+	EffectiveModel       string    `json:"effective_model"`
+	StatusCode           int       `json:"status_code"`
+	DurationMS           int       `json:"duration_ms"`
+	FirstTokenMS         int       `json:"first_token_ms"`
+	InputTokens          int       `json:"input_tokens"`
+	OutputTokens         int       `json:"output_tokens"`
+	CachedTokens         int       `json:"cached_tokens"`
+	TotalTokens          int       `json:"total_tokens"`
+	UserBilled           float64   `json:"user_billed"`
+	InputCost            float64   `json:"input_cost"`
+	OutputCost           float64   `json:"output_cost"`
+	CacheReadCost        float64   `json:"cache_read_cost"`
+	TotalCost            float64   `json:"total_cost"`
+	InputPrice           float64   `json:"input_price_per_mtoken"`
+	OutputPrice          float64   `json:"output_price_per_mtoken"`
+	CacheReadPrice       float64   `json:"cache_read_price_per_mtoken"`
+	RateMultiplier       float64   `json:"rate_multiplier"`
+	LongContext          bool      `json:"long_context"`
+	ServiceTier          string    `json:"service_tier"`
+	Stream               bool      `json:"stream"`
+	Compact              bool      `json:"compact"`
+	HasCompactionHistory bool      `json:"has_compaction_history"`
+	ViaWebsocket         bool      `json:"via_websocket"`
+	UpstreamErrorKind    string    `json:"upstream_error_kind"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 // populateBillingBreakdown 复用与管理端一致的计费拆解逻辑，按 effective_model + 计费档位
@@ -806,6 +807,7 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 			COALESCE(NULLIF(billing_service_tier, ''), NULLIF(actual_service_tier, ''), NULLIF(service_tier, ''), ''),
 			COALESCE(stream, false),
 			COALESCE(compact, false),
+			COALESCE(has_compaction_history, false),
 			COALESCE(via_websocket, false),
 			COALESCE(upstream_error_kind, ''),
 			created_at
@@ -839,6 +841,7 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 			&item.ServiceTier,
 			&item.Stream,
 			&item.Compact,
+			&item.HasCompactionHistory,
 			&item.ViaWebsocket,
 			&item.UpstreamErrorKind,
 			&createdAtRaw,

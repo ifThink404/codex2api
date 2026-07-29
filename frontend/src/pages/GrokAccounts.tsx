@@ -51,6 +51,7 @@ import AccountHealthBar from "../components/AccountHealthBar";
 import AccountUsageModal from "../components/AccountUsageModal";
 import Modal from "../components/Modal";
 import ModelLogo from "../components/ModelLogo";
+import OperationResultsModal from "../components/OperationResultsModal";
 import PageHeader from "../components/PageHeader";
 import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
@@ -58,6 +59,7 @@ import StatusBadge from "../components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -76,6 +78,12 @@ import {
 import OperationProgressToast from "../components/OperationProgressToast";
 import { getErrorMessage } from "../utils/error";
 import { formatBeijingTime, formatRelativeTime } from "../utils/time";
+import { resolveChannelBatchTestAccountIDs } from "../lib/accountOperationResults";
+import {
+  grokPlanFilterCategory,
+  resolveAccountGrokPlan,
+  type GrokPlanFilter,
+} from "../lib/grokPlan";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_GROK_TEST_MODELS = [
@@ -98,6 +106,11 @@ const GROK_LIMITED_STATUSES = new Set([
 
 // 与 Codex 账号页一致的表格/卡片双布局，选择持久化到 localStorage。
 const GROK_VIEW_MODE_KEY = "codex2api:grok-accounts:view-mode";
+
+// 批量导入的分片大小。后端单次上限是 5000，但一次请求要串行落库/刷新几千条，
+// 墙钟时间会长到浏览器或反代先断开；切成小片可以让每次请求都在一分钟量级完成，
+// 同时给用户可见的进度，失败也只影响当前这一片。
+const GROK_IMPORT_CHUNK_SIZE = 200;
 type GrokViewMode = "table" | "grid";
 
 function getInitialGrokViewMode(): GrokViewMode {
@@ -119,8 +132,6 @@ type StatusFilter =
   | "disabled"
   | "banned"
   | "error";
-// 套餐筛选：free / 付费档（SuperGrok 等）/ api / 其它。
-type PlanFilter = "all" | "free" | "premium" | "api" | "other";
 type AuthFilter = "all" | "oauth" | "api_key";
 type DeviceStep = "idle" | "waiting";
 type GrokSortKey = "usage" | "requests" | "updated" | "group";
@@ -241,32 +252,26 @@ function shortHost(raw?: string | null): string {
   return GROK_DEFAULT_HOSTS.has(host) ? "" : host;
 }
 
-function isPremiumPlan(plan?: string | null): boolean {
-  const p = (plan ?? "").trim().toLowerCase();
-  return Boolean(p) && p !== "api" && p !== "free" && p !== "unknown";
-}
-
-// 套餐徽章：付费档（SuperGrok / Heavy）琥珀，free 绿色，api/unknown 中性。
+// 套餐徽章：使用后端解析出的官方 tier 展示名；付费档琥珀，Free 绿色。
 // 表格用常规尺寸、空值显示占位「—」；卡片用 compact 尺寸、空值不渲染。
 function GrokPlanBadge({
-  plan,
+  account,
   compact = false,
   className,
 }: {
-  plan?: string | null;
+  account: Pick<AccountRow, "plan_type" | "grok_plan">;
   compact?: boolean;
   className?: string;
 }) {
-  const raw = (plan ?? "").trim();
-  const key = raw.toLowerCase();
-  if (!raw) {
+  const plan = resolveAccountGrokPlan(account);
+  if (!plan) {
     return compact ? null : (
       <span className="text-[12px] text-muted-foreground">—</span>
     );
   }
-  const tone = isPremiumPlan(raw)
+  const tone = plan.paid
     ? "bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-400/20"
-    : key === "free"
+    : plan.key === "free"
       ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-400/20"
       : "bg-muted text-muted-foreground ring-border";
   return (
@@ -280,7 +285,7 @@ function GrokPlanBadge({
         className,
       )}
     >
-      {raw}
+      {plan.display}
     </span>
   );
 }
@@ -321,28 +326,28 @@ function isAccountActive(account: AccountRow): boolean {
   );
 }
 
-// 套餐归类：free / 付费档（SuperGrok 等）/ api / 其它（空、unknown）。
-function planCategory(account: AccountRow): Exclude<PlanFilter, "all"> {
-  const p = (account.plan_type ?? "").trim().toLowerCase();
-  if (p === "free") return "free";
-  if (p === "api") return "api";
-  if (isPremiumPlan(p)) return "premium";
-  return "other";
-}
-
 export default function GrokAccounts({
   headerSlot,
+  showOperationResults = false,
+  onShowOperationResultsChange,
 }: {
   // headerSlot 由账号管理页注入 Codex/Grok 顶部切换器，渲染在标题旁。
   headerSlot?: ReactNode;
+  showOperationResults?: boolean;
+  onShowOperationResultsChange?: (visible: boolean) => void;
 } = {}) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   // 与 Codex 账号页一致：用系统自定义确认弹窗，不用 window.confirm。
   const { confirm, confirmDialog } = useConfirmDialog();
   // 批量测试的右上角进度浮层，与 Codex 账号页共用同一实现。
-  const { operationProgress, runStreamingOperation, closeOperationProgress } =
-    useOperationProgress();
+  const {
+    operationProgress,
+    operationResults,
+    runStreamingOperation,
+    closeOperationProgress,
+    closeOperationResults,
+  } = useOperationProgress(showOperationResults);
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [allGroups, setAllGroups] = useState<AccountGroup[]>([]);
@@ -399,6 +404,11 @@ export default function GrokAccounts({
   const ssoFileInputRef = useRef<HTMLInputElement | null>(null);
   const refreshFileInputRef = useRef<HTMLInputElement | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  // 分片导入的进度（done/total 为分片数）；单片导入时为 null。
+  const [importProgress, setImportProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [importResult, setImportResult] = useState<{
     total: number;
     imported: number;
@@ -430,7 +440,7 @@ export default function GrokAccounts({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [authFilter, setAuthFilter] = useState<AuthFilter>("all");
-  const [planFilter, setPlanFilter] = useState<PlanFilter>("all");
+  const [planFilter, setPlanFilter] = useState<GrokPlanFilter>("all");
   const [groupFilter, setGroupFilter] = useState<AccountGroupFilterValue>(
     EMPTY_ACCOUNT_GROUP_FILTER,
   );
@@ -521,6 +531,7 @@ export default function GrokAccounts({
   const filteredAccounts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return accounts.filter((account) => {
+      const resolvedPlan = resolveAccountGrokPlan(account);
       if (statusFilter === "active" && !isAccountActive(account)) return false;
       if (statusFilter === "rate_limited" && !isAccountRateLimited(account))
         return false;
@@ -530,7 +541,10 @@ export default function GrokAccounts({
       if (authFilter === "oauth" && account.grok_auth_kind !== "oauth") return false;
       if (authFilter === "api_key" && account.grok_auth_kind !== "api_key")
         return false;
-      if (planFilter !== "all" && planCategory(account) !== planFilter)
+      if (
+        planFilter !== "all" &&
+        grokPlanFilterCategory(account) !== planFilter
+      )
         return false;
       if (
         !accountMatchesGroupFilter(account.group_ids ?? [], groupFilter)
@@ -548,6 +562,8 @@ export default function GrokAccounts({
         ...(account.models ?? []),
         account.base_url,
         account.plan_type,
+        resolvedPlan?.key,
+        resolvedPlan?.display,
         account.error_message,
         account.proxy_url,
         groupNames,
@@ -914,24 +930,76 @@ export default function GrokAccounts({
       failed: number;
       items: GrokSSOImportItem[];
     }>,
+  ) => runImportChunks([fn]);
+
+  // runImportChunks 按分片顺序调用导入接口并合并结果。
+  // 分片是为了避开中间层超时：后端单次上限已放宽到 5000，但一个请求要串行落库
+  // 几千条，墙钟时间会长到浏览器/反代先断开，用户既看不到进度也不知道进了多少。
+  // 每片结束就把已合并的结果写回去，中途失败也能看到前面那些片的明细。
+  const runImportChunks = async (
+    chunks: Array<
+      () => Promise<{
+        total: number;
+        imported: number;
+        failed: number;
+        items: GrokSSOImportItem[];
+      }>
+    >,
   ) => {
+    if (chunks.length === 0) return;
     setImportBusy(true);
     setImportResult(null);
     setShowImportPicker(false);
+    setImportProgress(
+      chunks.length > 1 ? { done: 0, total: chunks.length } : null,
+    );
+    const merged = {
+      total: 0,
+      imported: 0,
+      failed: 0,
+      items: [] as GrokSSOImportItem[],
+    };
     try {
-      const res = await fn();
-      setImportResult(res);
-      if (res.imported > 0) {
+      for (let i = 0; i < chunks.length; i++) {
+        const res = await chunks[i]();
+        merged.total += res.total ?? 0;
+        merged.imported += res.imported ?? 0;
+        merged.failed += res.failed ?? 0;
+        merged.items = merged.items.concat(res.items ?? []);
+        if (chunks.length > 1) {
+          setImportProgress({ done: i + 1, total: chunks.length });
+        }
+      }
+      setImportResult({ ...merged, items: [...merged.items] });
+      if (merged.imported > 0) {
         showToast(
-          t("grok.fileImportDone", { imported: res.imported, total: res.total }),
+          t("grok.fileImportDone", {
+            imported: merged.imported,
+            total: merged.total,
+          }),
         );
         void reload();
       }
     } catch (err) {
       showToast(getErrorMessage(err), "error");
+      // 中途失败时把已完成分片的结果留在弹窗里，用户能看到哪些已经进去了。
+      if (merged.total > 0) {
+        setImportResult({ ...merged, items: [...merged.items] });
+      }
+      if (merged.imported > 0) void reload();
     } finally {
       setImportBusy(false);
+      setImportProgress(null);
     }
+  };
+
+  // chunkList 把待导入项切成固定大小的分片。
+  const chunkList = <T,>(items: T[], size: number): T[][] => {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
   };
 
   // JSON 凭据文件（CPA / auth.json，可多选）
@@ -941,8 +1009,14 @@ export default function GrokAccounts({
       Array.from(fileList).map((file) => file.text()),
     );
     if (authFileInputRef.current) authFileInputRef.current.value = "";
-    await runImport(() =>
-      api.batchImportGrokAccounts({ files, group_ids: importGroupIds }),
+    await runImportChunks(
+      chunkList(files, GROK_IMPORT_CHUNK_SIZE).map(
+        (part) => () =>
+          api.batchImportGrokAccounts({
+            files: part,
+            group_ids: importGroupIds,
+          }),
+      ),
     );
   };
 
@@ -961,8 +1035,24 @@ export default function GrokAccounts({
     if (!fileList || fileList.length === 0) return;
     const text = await fileList[0].text();
     if (refreshFileInputRef.current) refreshFileInputRef.current.value = "";
-    await runImport(() =>
-      api.importGrokRefreshTokens({ tokens: text, group_ids: importGroupIds }),
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    if (lines.length === 0) {
+      await runImport(() =>
+        api.importGrokRefreshTokens({ tokens: text, group_ids: importGroupIds }),
+      );
+      return;
+    }
+    await runImportChunks(
+      chunkList(lines, GROK_IMPORT_CHUNK_SIZE).map(
+        (part) => () =>
+          api.importGrokRefreshTokens({
+            tokens: part.join("\n"),
+            group_ids: importGroupIds,
+          }),
+      ),
     );
   };
 
@@ -1174,6 +1264,7 @@ export default function GrokAccounts({
       if (!confirmed) return;
       ids = accounts.map((a) => a.id);
     }
+    ids = resolveChannelBatchTestAccountIDs(accounts, "grok", ids);
     if (ids.length === 0) return;
 
     setBatchTesting(true);
@@ -1348,6 +1439,12 @@ export default function GrokAccounts({
         progress={operationProgress}
         onClose={closeOperationProgress}
       />
+      <OperationResultsModal
+        state={showOperationResults ? operationResults : null}
+        accounts={accounts}
+        channel="grok"
+        onClose={closeOperationResults}
+      />
       <StateShell
         variant="page"
         loading={loading}
@@ -1382,7 +1479,12 @@ export default function GrokAccounts({
                 )}
                 <span className="hidden sm:inline">
                   {importBusy
-                    ? t("grok.fileImporting")
+                    ? importProgress
+                      ? t("grok.fileImportProgress", {
+                          done: importProgress.done,
+                          total: importProgress.total,
+                        })
+                      : t("grok.fileImporting")
                     : t("grok.fileImportBtn")}
                 </span>
               </Button>
@@ -1401,6 +1503,20 @@ export default function GrokAccounts({
                     : t("accounts.testConnection")}
                 </span>
               </Button>
+              <label
+                className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground"
+                title={t("accounts.operationResultsPreferenceHint")}
+              >
+                <Switch
+                  checked={showOperationResults}
+                  onCheckedChange={onShowOperationResultsChange}
+                  disabled={!onShowOperationResultsChange}
+                  aria-label={t("accounts.operationResultsPreference")}
+                />
+                <span className="hidden lg:inline">
+                  {t("accounts.operationResultsPreference")}
+                </span>
+              </label>
               <Button
                 variant="outline"
                 size="sm"
@@ -1539,8 +1655,9 @@ export default function GrokAccounts({
                 [
                   ["all", t("accounts.filterAll")],
                   ["free", t("grok.planFree")],
-                  ["premium", t("grok.planPremium")],
-                  ["api", t("grok.planApi")],
+                  ["supergrok", t("grok.planSuperGrok")],
+                  ["supergrok_heavy", t("grok.planSuperGrokHeavy")],
+                  ["supergrok_lite", t("grok.planSuperGrokLite")],
                   ["other", t("grok.planOther")],
                 ] as const
               ).map(([key, label]) => (
@@ -1548,6 +1665,7 @@ export default function GrokAccounts({
                   key={key}
                   type="button"
                   onClick={() => setPlanFilter(key)}
+                  aria-pressed={planFilter === key}
                   className={cn(
                     "shrink-0 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors",
                     planFilter === key
@@ -1748,7 +1866,12 @@ export default function GrokAccounts({
                     <Upload className="size-3.5" />
                   )}
                   {importBusy
-                    ? t("grok.fileImporting")
+                    ? importProgress
+                      ? t("grok.fileImportProgress", {
+                          done: importProgress.done,
+                          total: importProgress.total,
+                        })
+                      : t("grok.fileImporting")
                     : t("grok.fileImportBtn")}
                 </Button>
               </div>
@@ -2929,7 +3052,7 @@ function GrokAccountCard({
               ? t("grok.authKindOAuthShort")
               : t("grok.authKindApiKey")}
           </span>
-          <GrokPlanBadge plan={account.plan_type} compact />
+          <GrokPlanBadge account={account} compact />
           <GrokGroupChips groups={groups} />
           {disabled ? (
             <span className="inline-flex items-center rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-300">
@@ -3230,7 +3353,7 @@ function GrokAccountTableRow({
         </div>
       </TableCell>
       <TableCell className="text-center">
-        <GrokPlanBadge plan={account.plan_type} />
+        <GrokPlanBadge account={account} />
       </TableCell>
       <TableCell>
         <div className="space-y-1.5">

@@ -1316,9 +1316,11 @@ curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
       "url": "http://proxy1.example.com:8080",
       "label": "US Proxy",
       "enabled": true,
-      "last_tested_at": "2024-01-01T12:00:00Z",
-      "last_test_result": "ok",
-      "latency_ms": 150
+      "created_at": "2024-01-01T12:00:00Z",
+      "test_ip": "1.2.3.4",
+      "test_location": "United States·California·Los Angeles",
+      "test_latency_ms": 150,
+      "test_status": "success"
     }
   ]
 }
@@ -1377,23 +1379,28 @@ curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
 
 #### POST /api/admin/proxies/test
 
-测试代理连通性。
+测试代理连通性。传入 `id` 时会持久化 `test_status`；可归因于代理的失败状态（包括代理端 TCP 建立失败/超时、HTTPS/SOCKS 协商失败/超时和 HTTP `407` 代理认证失败）为 `error`，成功复测后恢复为 `success`。调用方取消、已连上代理后的传输错误、SOCKS 代理开始连接目标站点后的不可达或超时、探测服务返回 429/5xx 或无效响应时，响应中的 `conclusive` 为 `false`，原测试状态保持不变。
 
 **请求:**
 
 ```json
 {
   "url": "http://proxy.example.com:8080",
-  "id": 1, // 可选，用于持久化测试结果
+  "id": 1,
   "lang": "zh-CN"
 }
 ```
+
+`id` 可选；省略时仅测试，不持久化结果。
+
+传入 `id` 时，服务端先读取该 ID 当前保存的 URL，仅在其与请求 URL 一致时发起测试；写入结果时再次进行 ID + 原始 URL 比较，测试期间 URL 被修改会返回 HTTP `409`，避免旧结果覆盖新配置。首尾空白只在拨号时去除，兼容历史数据中的非规范 URL。
 
 **响应:**
 
 ```json
 {
   "success": true,
+  "conclusive": true,
   "ip": "1.2.3.4",
   "country": "United States",
   "region": "California",
@@ -1401,6 +1408,41 @@ curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
   "isp": "Example ISP",
   "latency_ms": 150,
   "location": "United States·California·Los Angeles"
+}
+```
+
+#### POST /api/admin/proxies/test-all
+
+由服务端以最多 4 路并发测试指定代理，并通过 SSE 逐项返回进度。请求只传代理 ID，服务端使用数据库中的当前 URL；全部测试结果保存完成后只重载一次运行时代理池。代理池刷新由后台收尾路径执行，不依赖客户端持续读取 SSE。
+
+**请求:**
+
+```json
+{
+  "ids": [1, 2, 3],
+  "lang": "zh-CN"
+}
+```
+
+`ids` 必填、必须为正整数，单次最多 100 个；空数组、未知请求字段、超限请求均返回 HTTP `400`。管理后台在代理超过 100 个时会自动拆成多个顺序批次。同一服务实例同一时间只运行一个批量代理测试，已有任务运行时返回 HTTP `409`。SSE `progress` 事件示例：
+
+```text
+data: {"type":"progress","proxy_id":1,"current":1,"total":3,"success":1,"result":{"success":true,"conclusive":true,"ip":"1.2.3.4","latency_ms":150}}
+```
+
+流结束时发送 `complete` 事件；如果数据库结果已经保存但运行时代理池刷新失败，事件的 `error` 字段会说明该异常。客户端断开会取消尚未完成的探测；已经落库的结果仍会触发一次代理池刷新。
+
+#### POST /api/admin/proxies/clean-error
+
+固定本次操作开始时 `test_status=error` 的代理集合，删除这些代理，并清空实际引用它们的账号绑定。清理期间新变为 `error` 的代理留到下一次清理。提交后会立即从当前进程的运行时代理池剔除实际删除的 URL；若数据库快照重载失败，接口返回 HTTP `500` 和已完成的 `cleaned` / `unbound` 数量，但不会把已删除代理重新投入调度。
+
+**响应:**
+
+```json
+{
+  "message": "已清理 2 个错误代理并解绑 3 个账号",
+  "cleaned": 2,
+  "unbound": 3
 }
 ```
 

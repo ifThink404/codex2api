@@ -95,7 +95,7 @@ func main() {
 			PromptFilterCustomPatterns:        "[]",
 			PromptFilterDisabledPatterns:      "[]",
 			ClientCompatMode:                  proxy.ClientCompatModePreserve,
-			CodexMinCLIVersion:                "0.118.0",
+			CodexMinCLIVersion:                "0.144.1",
 			UsageLogMode:                      database.UsageLogModeFull,
 			UsageLogBatchSize:                 200,
 			UsageLogFlushIntervalSeconds:      5,
@@ -116,6 +116,7 @@ func main() {
 			SmartPacingMinConcurrency:         1,
 			SmartPacingWindows:                "5h,7d",
 			AutoResetCreditsBeforeExpiryMin:   60,
+			UTLSShutdownTimeoutMinutes:        30,
 		}
 		_ = db.UpdateSystemSettings(context.Background(), settings)
 	} else if err != nil {
@@ -145,7 +146,7 @@ func main() {
 			PromptFilterCustomPatterns:        "[]",
 			PromptFilterDisabledPatterns:      "[]",
 			ClientCompatMode:                  proxy.ClientCompatModePreserve,
-			CodexMinCLIVersion:                "0.118.0",
+			CodexMinCLIVersion:                "0.144.1",
 			UsageLogMode:                      database.UsageLogModeFull,
 			UsageLogBatchSize:                 200,
 			UsageLogFlushIntervalSeconds:      5,
@@ -166,6 +167,7 @@ func main() {
 			SmartPacingMinConcurrency:         1,
 			SmartPacingWindows:                "5h,7d",
 			AutoResetCreditsBeforeExpiryMin:   60,
+			UTLSShutdownTimeoutMinutes:        30,
 		}
 	} else {
 		log.Printf("已加载持久化业务设置: ProxyURL=%s, MaxConcurrency=%d, GlobalRPM=%d, PgMaxConns=%d, RedisPoolSize=%d",

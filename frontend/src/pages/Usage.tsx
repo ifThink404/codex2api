@@ -8,6 +8,7 @@ import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
 import ChannelFilter, { useUsageChannel } from '../components/ChannelFilter'
 import ChannelLogo from '../components/ChannelLogo'
+import CompactionBadges from '../components/CompactionBadges'
 import ModelLogo from '../components/ModelLogo'
 import Modal from '../components/Modal'
 import StateShell from '../components/StateShell'
@@ -96,6 +97,7 @@ function getStatusBadgeClassName(statusCode: number): string {
 
 type UsagePresetRangeKey = 'today' | TimeRangeKey
 const USAGE_TIME_RANGE_OPTIONS: UsagePresetRangeKey[] = ['today', '1h', '6h', '24h', '7d', '30d']
+type UsageTypeFilter = '' | 'stream' | 'sync' | 'compact' | 'history'
 
 // 本页面局部的"自定义"区间标记。不污染全局 TimeRangeKey 类型 (Dashboard 等仍只识别预设档)。
 type UsageTimeRangeKey = UsagePresetRangeKey | 'custom'
@@ -1410,7 +1412,7 @@ export default function Usage() {
   const [filterApiKeyId, setFilterApiKeyId] = useState('')
   const [filterAccountId, setFilterAccountId] = useState(getInitialUsageAccountID)
   const [filterFast, setFilterFast] = useState('')
-  const [filterStream, setFilterStream] = useState<'' | 'true' | 'false'>('')
+  const [filterType, setFilterType] = useState<UsageTypeFilter>('')
   const [apiKeys, setAPIKeys] = useState<APIKeyRow[]>([])
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [grokModelOptions, setGrokModelOptions] = useState<string[]>([])
@@ -1475,7 +1477,9 @@ export default function Usage() {
         apiKeyId: filterApiKeyId || undefined,
         accountId: filterAccountId || undefined,
         fast: filterFast || undefined,
-        stream: filterStream || undefined,
+        stream: filterType === 'stream' ? 'true' : filterType === 'sync' ? 'false' : undefined,
+        compact: filterType === 'compact' ? 'true' : undefined,
+        hasCompactionHistory: filterType === 'history' ? 'true' : undefined,
         channel: channel || undefined,
       })
       setLogs(res.logs ?? [])
@@ -1485,7 +1489,7 @@ export default function Usage() {
     } finally {
       setLogsLoading(false)
     }
-  }, [timeRange, customRange, page, pageSize, searchEmail, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterStream, channel])
+  }, [timeRange, customRange, page, pageSize, searchEmail, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterType, channel])
 
   // 首次加载 + timeRange/page 变更时重新拉取日志
   useEffect(() => {
@@ -1586,7 +1590,7 @@ export default function Usage() {
   const avgDurationMs = stats?.avg_duration_ms ?? 0
   const successRequests = rangeRequests - Math.round(rangeRequests * errorRate / 100)
   const showAPIKeyFilter = !apiKeyLoadFailed && apiKeys.length > 0
-  const hasActiveFilters = Boolean(searchInput || filterModel || filterEndpoint || filterApiKeyId || filterAccountId || filterStream || filterFast)
+  const hasActiveFilters = Boolean(searchInput || filterModel || filterEndpoint || filterApiKeyId || filterAccountId || filterType || filterFast)
   const apiKeyOptions = [
     { label: t('usage.allApiKeys'), value: '' },
     ...apiKeys.map((apiKey) => ({ label: formatAPIKeyOptionLabel(apiKey), value: String(apiKey.id) })),
@@ -1904,15 +1908,17 @@ export default function Usage() {
 
               {/* 类型下拉 */}
               <Select
-                className="w-28 shrink-0"
+                className="w-40 shrink-0"
                 compact
-                value={filterStream}
-                onValueChange={(v) => { setFilterStream(v as '' | 'true' | 'false'); setPage(1) }}
+                value={filterType}
+                onValueChange={(v) => { setFilterType(v as UsageTypeFilter); setPage(1) }}
                 placeholder={t('usage.allTypes')}
                 options={[
                   { label: t('usage.allTypes'), value: '' },
-                  { label: 'Stream', value: 'true' },
-                  { label: 'Sync', value: 'false' },
+                  { label: 'Stream', value: 'stream' },
+                  { label: 'Sync', value: 'sync' },
+                  { label: t('usage.compactionTrigger'), value: 'compact' },
+                  { label: t('usage.compactionHistory'), value: 'history' },
                 ]}
               />
 
@@ -1940,7 +1946,7 @@ export default function Usage() {
                     setFilterModel(''); setFilterEndpoint('')
                     setFilterApiKeyId('')
                     setFilterAccountId('')
-                    setFilterStream(''); setFilterFast('')
+                    setFilterType(''); setFilterFast('')
                     setPage(1)
                   }}
                   className="h-8 shrink-0 px-2.5 rounded-lg border border-border bg-background text-[13px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors inline-flex items-center gap-1 whitespace-nowrap"
@@ -2021,6 +2027,10 @@ export default function Usage() {
                           >
                             {log.stream ? 'stream' : 'sync'}
                           </Badge>
+                          <CompactionBadges
+                            compact={log.compact}
+                            hasCompactionHistory={log.has_compaction_history}
+                          />
                         </div>
                         <div className="shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
                           {formatBeijingTime(log.created_at)}
@@ -2234,16 +2244,10 @@ export default function Usage() {
                             >
                               {log.stream ? 'stream' : 'sync'}
                             </Badge>
-                            {log.compact && (
-                              <Badge
-                                variant="outline"
-                                className="text-[11px] font-semibold gap-0.5 border-transparent bg-teal-500/12 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
-                                title={t('usage.compactRequestTooltip')}
-                              >
-                                <Box className="size-3" />
-                                {t('usage.compactRequest')}
-                              </Badge>
-                            )}
+                            <CompactionBadges
+                              compact={log.compact}
+                              hasCompactionHistory={log.has_compaction_history}
+                            />
                           </div>
                         </TableCell>}
                         {visibleColumns.token && <TableCell>

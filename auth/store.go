@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -2454,6 +2455,8 @@ type Store struct {
 	apiKeyGroupsMu                     sync.RWMutex
 	apiKeyAllowedGroups                map[int64][]int64
 	apiKeyAllowedGroupSets             map[int64]map[int64]struct{}
+	apiKeyNoAffinityGroups             map[int64][]int64
+	apiKeyNoAffinityGroupSets          map[int64]map[int64]struct{}
 	apiKeyAllowedPlans                 map[int64][]string
 	apiKeyAllowedPlanSets              map[int64]map[string]struct{}
 	apiKeyUpstreamChannels             map[int64]string
@@ -2494,9 +2497,12 @@ type Store struct {
 	wg                  sync.WaitGroup
 
 	// 代理池
-	proxyPool        []string // 已启用的代理 URL 列表
-	proxyPoolEnabled bool     // 代理池是否开启
-	proxyRoundRobin  uint64   // 轮询计数器
+	proxyPoolReloadMu sync.Mutex
+	proxyPoolLoader   func(context.Context) ([]*database.ProxyRow, error)
+	proxyPool         []string // 已启用的代理 URL 列表
+	proxyPoolSet      map[string]struct{}
+	proxyPoolEnabled  bool   // 代理池是否开启
+	proxyRoundRobin   uint64 // 轮询计数器
 
 	// Fast scheduler POC（默认关闭，通过环境变量启用）
 	fastScheduler        atomic.Pointer[FastScheduler]
@@ -2976,6 +2982,9 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 		sessionBindings:            make(map[string]sessionAffinity),
 		promptFilterNewAPIBindings: make(map[int64]database.PromptFilterNewAPIBinding),
 	}
+	if db != nil {
+		s.proxyPoolLoader = db.ListEnabledProxies
+	}
 	s.testModel.Store(settings.TestModel)
 	s.testContent.Store(NormalizeTestContent(settings.TestContent))
 	s.SetBackgroundRefreshInterval(time.Duration(settings.BackgroundRefreshIntervalMinutes) * time.Minute)
@@ -3005,6 +3014,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.SetGrokAffinityMode(grokAffinityModeFromConfig(settings.GrokConfig))
 	s.SetGrokProbeConfig(grokProbeConfigFromConfig(settings.GrokConfig))
 	s.SetGrokMaxRateLimitRetries(grokMaxRateLimitRetriesFromConfig(settings.GrokConfig))
+	SetConfiguredGrokOAuthClientID(grokOAuthClientIDFromConfig(settings.GrokConfig))
 	if settings.ModelMapping != "" {
 		s.modelMapping.Store(settings.ModelMapping)
 	}
@@ -3074,6 +3084,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 				urls = append(urls, p.URL)
 			}
 			s.proxyPool = urls
+			s.proxyPoolSet = buildProxyPoolSet(urls)
 			log.Printf("代理池已加载: %d 个活跃代理", len(urls))
 		}
 	}
@@ -3552,9 +3563,16 @@ func (s *Store) SetProxyPoolEnabled(enabled bool) {
 
 // ReloadProxyPool 从数据库重新加载代理池
 func (s *Store) ReloadProxyPool() error {
+	s.proxyPoolReloadMu.Lock()
+	defer s.proxyPoolReloadMu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	proxies, err := s.db.ListEnabledProxies(ctx)
+	loader := s.proxyPoolLoader
+	if loader == nil {
+		return errors.New("proxy pool loader is not configured")
+	}
+	proxies, err := loader(ctx)
 	if err != nil {
 		return err
 	}
@@ -3564,9 +3582,44 @@ func (s *Store) ReloadProxyPool() error {
 	}
 	s.mu.Lock()
 	s.proxyPool = urls
+	s.proxyPoolSet = buildProxyPoolSet(urls)
 	s.mu.Unlock()
 	log.Printf("代理池已重新加载: %d 个活跃代理", len(urls))
 	return nil
+}
+
+// RemoveProxyURLs immediately removes proxies from the in-memory pool. It uses
+// the same serialization lock as ReloadProxyPool so an older reload snapshot
+// cannot publish the removed URLs afterward.
+func (s *Store) RemoveProxyURLs(proxyURLs []string) {
+	if s == nil {
+		return
+	}
+	removeSet := buildProxyPoolSet(proxyURLs)
+	if len(removeSet) == 0 {
+		return
+	}
+
+	s.proxyPoolReloadMu.Lock()
+	s.mu.Lock()
+	filtered := make([]string, 0, len(s.proxyPool))
+	for _, proxyURL := range s.proxyPool {
+		if _, remove := removeSet[strings.TrimSpace(proxyURL)]; !remove {
+			filtered = append(filtered, proxyURL)
+		}
+	}
+	s.proxyPool = filtered
+	s.proxyPoolSet = buildProxyPoolSet(filtered)
+	s.mu.Unlock()
+	s.proxyPoolReloadMu.Unlock()
+
+	s.sessionMu.Lock()
+	for key, binding := range s.sessionBindings {
+		if _, remove := removeSet[strings.TrimSpace(binding.proxyURL)]; remove {
+			delete(s.sessionBindings, key)
+		}
+	}
+	s.sessionMu.Unlock()
 }
 
 // GetAutoCleanUnauthorized 获取是否自动清理 401 账号
@@ -3877,12 +3930,18 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		// API Key 凭据没有 AT，下方 at!="" 的恢复分支不会执行，这里补齐身份信息
 		account.AccountID = row.GetCredential("account_id")
 		account.Email = row.GetCredential("email")
-		account.PlanType = row.GetCredential("plan_type")
+		if strings.TrimSpace(apiKey) != "" {
+			account.PlanType = "api"
+		} else {
+			account.PlanType = GrokPlanTypeFromAccessToken(at)
+			if account.PlanType == "" {
+				if storedPlan, ok := ResolveGrokPlan(row.GetCredential("plan_type")); ok {
+					account.PlanType = storedPlan.Key
+				}
+			}
+		}
 		if strings.TrimSpace(apiKey) != "" || at != "" {
 			account.HealthTier = HealthTierHealthy
-		}
-		if account.PlanType == "" {
-			account.PlanType = "api"
 		}
 		// billing 探针的周/月用量随 credentials 落库，重启后在此恢复运行时快照
 		// （周额度占用 5h 槽位、月额度占用 7d 槽位，与探针写入端一致）
@@ -3952,7 +4011,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		account.AccessToken = at
 		account.AccountID = row.GetCredential("account_id")
 		account.Email = row.GetCredential("email")
-		account.PlanType = row.GetCredential("plan_type")
+		if !isGrokAccount {
+			account.PlanType = row.GetCredential("plan_type")
+		}
 		if account.Status != StatusError {
 			account.HealthTier = HealthTierHealthy
 		}
@@ -4595,11 +4656,15 @@ func (s *Store) bindSessionAffinity(key string, account *Account, proxyURL strin
 	if key == "" {
 		return
 	}
+	proxyURL = strings.TrimSpace(proxyURL)
+	if !s.affinityProxyStillValid(account.DBID, proxyURL) {
+		return
+	}
 	ttl := sessionAffinityTTL()
 	now := time.Now()
 	binding := sessionAffinity{
 		accountID:    account.DBID,
-		proxyURL:     strings.TrimSpace(proxyURL),
+		proxyURL:     proxyURL,
 		boundAt:      now,
 		requestCount: 0,
 		expiresAt:    now.Add(ttl),
@@ -4708,6 +4773,12 @@ func (s *Store) NextForSessionWithFilter(key string, apiKeyID int64, exclude map
 	}
 
 	if ok {
+		if !s.affinityProxyStillValid(binding.accountID, binding.proxyURL) {
+			s.UnbindSessionAffinity(key, binding.accountID)
+			ok = false
+		}
+	}
+	if ok {
 		expired := !binding.expiresAt.After(now)
 		// bounded 模式下追加逃逸条件检查
 		escape := false
@@ -4722,11 +4793,7 @@ func (s *Store) NextForSessionWithFilter(key string, apiKeyID int64, exclude map
 		}
 
 		if expired || escape {
-			s.sessionMu.Lock()
-			if current, exists := s.sessionBindings[key]; exists && current.accountID == binding.accountID {
-				delete(s.sessionBindings, key)
-			}
-			s.sessionMu.Unlock()
+			s.UnbindSessionAffinity(key, binding.accountID)
 		} else if acc := s.takeByIDExcluding(binding.accountID, apiKeyID, exclude, filter); acc != nil {
 			// 命中粘性,记一次复用
 			s.sessionMu.Lock()
@@ -4739,6 +4806,10 @@ func (s *Store) NextForSessionWithFilter(key string, apiKeyID int64, exclude map
 		}
 	}
 	if binding, ok := s.getCachedSessionAffinity(key); ok {
+		if !s.affinityProxyStillValid(binding.accountID, binding.proxyURL) {
+			s.UnbindSessionAffinity(key, binding.accountID)
+			return s.NextExcludingWithFilter(apiKeyID, exclude, filter), ""
+		}
 		// 跨进程缓存的 binding 也按 bounded 逻辑校验账号健康；Grok 账号套用 Grok 专属模式。
 		cacheMode := mode
 		if override := s.resolveGrokAffinityOverride(binding.accountID); override != "" {
@@ -4758,6 +4829,59 @@ func (s *Store) NextForSessionWithFilter(key string, apiKeyID int64, exclude map
 	}
 
 	return s.NextExcludingWithFilter(apiKeyID, exclude, filter), ""
+}
+
+// affinityProxyStillValid verifies that a sticky proxy still matches the
+// account's current explicit proxy or the current fallback proxy configuration.
+// This check applies to strict affinity too: affinity may keep an account sticky,
+// but it must never resurrect a proxy that has been removed or disabled.
+func (s *Store) affinityProxyStillValid(accountID int64, proxyURL string) bool {
+	if s == nil || accountID == 0 {
+		return false
+	}
+	proxyURL = strings.TrimSpace(proxyURL)
+
+	s.mu.RLock()
+	account := s.lookupByIDLocked(accountID)
+	poolEnabled := s.proxyPoolEnabled
+	poolHasEntries := len(s.proxyPool) > 0
+	poolContainsProxy := false
+	if poolHasEntries {
+		if s.proxyPoolSet != nil {
+			_, poolContainsProxy = s.proxyPoolSet[proxyURL]
+		} else {
+			// Backward-compatible fallback for tests or manually assembled stores.
+			for _, candidate := range s.proxyPool {
+				if proxyURL == strings.TrimSpace(candidate) {
+					poolContainsProxy = true
+					break
+				}
+			}
+		}
+	}
+	globalProxy := strings.TrimSpace(s.globalProxy)
+	s.mu.RUnlock()
+	if account == nil {
+		return false
+	}
+
+	if accountProxy := account.GetProxyURL(); accountProxy != "" {
+		return proxyURL == accountProxy
+	}
+	if poolEnabled && poolHasEntries {
+		return poolContainsProxy
+	}
+	return proxyURL == globalProxy
+}
+
+func buildProxyPoolSet(urls []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(urls))
+	for _, proxyURL := range urls {
+		if proxyURL = strings.TrimSpace(proxyURL); proxyURL != "" {
+			set[proxyURL] = struct{}{}
+		}
+	}
+	return set
 }
 
 // affinityAccountStillHealthy 检查一个粘性绑定的账号是否仍处于 healthy 桶。
@@ -5289,6 +5413,25 @@ func grokMaxRateLimitRetriesFromConfig(raw string) int {
 		return GrokMaxRateLimitRetriesUnset
 	}
 	return cfg.MaxRateLimitRetries
+}
+
+// GrokOAuthClientIDUnset 表示系统设置未配 client_id（回落到环境变量/内置默认）。
+const GrokOAuthClientIDUnset = ""
+
+// grokOAuthClientIDFromConfig 从 grok_config JSON 解析出 OAuth client_id。
+// 缺省/非法/含空白一律视为未配置，由 EffectiveGrokOAuthClientID 继续回落。
+func grokOAuthClientIDFromConfig(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return GrokOAuthClientIDUnset
+	}
+	var cfg struct {
+		OAuthClientID string `json:"oauth_client_id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return GrokOAuthClientIDUnset
+	}
+	return NormalizeGrokOAuthClientID(cfg.OAuthClientID)
 }
 
 // SetGrokMaxRateLimitRetries 热更新 Grok 专属限流重试上限（<0 视为 0=跟随全局）。
@@ -5983,6 +6126,35 @@ func (s *Store) SetAPIKeyAllowedGroups(apiKeyID int64, groupIDs []int64) {
 	s.rebuildFastScheduler()
 }
 
+// SetAPIKeyNoAffinityGroups 设置未携带下游亲和头时可使用的分流组。
+// 这些组会加入 API Key 的账号授权并集；具体请求仍由 proxy 层按亲和头是否存在精确选池。
+func (s *Store) SetAPIKeyNoAffinityGroups(apiKeyID int64, groupIDs []int64) {
+	if apiKeyID <= 0 {
+		return
+	}
+	normalized := normalizeAllowedGroupIDs(groupIDs)
+	s.apiKeyGroupsMu.Lock()
+	if s.apiKeyNoAffinityGroups == nil {
+		s.apiKeyNoAffinityGroups = make(map[int64][]int64)
+	}
+	if s.apiKeyNoAffinityGroupSets == nil {
+		s.apiKeyNoAffinityGroupSets = make(map[int64]map[int64]struct{})
+	}
+	if int64SliceEqual(s.apiKeyNoAffinityGroups[apiKeyID], normalized) {
+		s.apiKeyGroupsMu.Unlock()
+		return
+	}
+	if len(normalized) == 0 {
+		delete(s.apiKeyNoAffinityGroups, apiKeyID)
+		delete(s.apiKeyNoAffinityGroupSets, apiKeyID)
+	} else {
+		s.apiKeyNoAffinityGroups[apiKeyID] = cloneInt64Slice(normalized)
+		s.apiKeyNoAffinityGroupSets[apiKeyID] = int64Set(normalized)
+	}
+	s.apiKeyGroupsMu.Unlock()
+	s.rebuildFastScheduler()
+}
+
 // SetAPIKeyAllowedPlans 设置某 API Key 的账号套餐白名单。plans 归一(小写、去空白、去重)
 // 后落入内存集合;为空表示不限套餐。仅当集合真正变化时才重建调度器,以免鉴权热路径
 // 每次请求都触发重建。
@@ -6070,6 +6242,8 @@ func (s *Store) LoadAPIKeyAllowedGroups(ctx context.Context) error {
 	s.apiKeyGroupsMu.Lock()
 	s.apiKeyAllowedGroups = make(map[int64][]int64, len(keys))
 	s.apiKeyAllowedGroupSets = make(map[int64]map[int64]struct{}, len(keys))
+	s.apiKeyNoAffinityGroups = make(map[int64][]int64, len(keys))
+	s.apiKeyNoAffinityGroupSets = make(map[int64]map[int64]struct{}, len(keys))
 	s.apiKeyAllowedPlans = make(map[int64][]string, len(keys))
 	s.apiKeyAllowedPlanSets = make(map[int64]map[string]struct{}, len(keys))
 	s.apiKeyUpstreamChannels = make(map[int64]string, len(keys))
@@ -6078,6 +6252,11 @@ func (s *Store) LoadAPIKeyAllowedGroups(ctx context.Context) error {
 		if len(normalized) > 0 {
 			s.apiKeyAllowedGroups[key.ID] = cloneInt64Slice(normalized)
 			s.apiKeyAllowedGroupSets[key.ID] = int64Set(normalized)
+		}
+		noAffinityGroups := normalizeAllowedGroupIDs(key.Limits.NoAffinityGroupIDs)
+		if len(noAffinityGroups) > 0 {
+			s.apiKeyNoAffinityGroups[key.ID] = cloneInt64Slice(noAffinityGroups)
+			s.apiKeyNoAffinityGroupSets[key.ID] = int64Set(noAffinityGroups)
 		}
 		plans := normalizeAllowedPlans(key.Limits.PlanAllow)
 		if len(plans) > 0 {
@@ -6101,6 +6280,7 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 	}
 	s.apiKeyGroupsMu.RLock()
 	allowedGroups := s.apiKeyAllowedGroupSets[apiKeyID]
+	noAffinityGroups := s.apiKeyNoAffinityGroupSets[apiKeyID]
 	allowedPlans := s.apiKeyAllowedPlanSets[apiKeyID]
 	channel := s.apiKeyUpstreamChannels[apiKeyID]
 	s.apiKeyGroupsMu.RUnlock()
@@ -6130,6 +6310,9 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 	}
 	for _, id := range acc.GroupIDs {
 		if _, ok := allowedGroups[id]; ok {
+			return true
+		}
+		if _, ok := noAffinityGroups[id]; ok {
 			return true
 		}
 	}
@@ -6278,6 +6461,26 @@ func (s *Store) ApplyAccountProxyURL(dbID int64, proxyURL string) bool {
 	acc.mu.Lock()
 	acc.ProxyURL = strings.TrimSpace(proxyURL)
 	acc.mu.Unlock()
+	return true
+}
+
+// ClearAccountProxyURLIfMatches clears an account proxy only when its current
+// runtime value still points to one of the removed URLs.
+func (s *Store) ClearAccountProxyURLIfMatches(dbID int64, proxyURLs []string) bool {
+	expected := buildProxyPoolSet(proxyURLs)
+	if len(expected) == 0 {
+		return false
+	}
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+	if _, ok := expected[strings.TrimSpace(acc.ProxyURL)]; !ok {
+		return false
+	}
+	acc.ProxyURL = ""
 	return true
 }
 

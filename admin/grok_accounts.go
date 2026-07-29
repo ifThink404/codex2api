@@ -44,9 +44,8 @@ func grokCredentialsFromRequest(req *addGrokAccountReq) (map[string]interface{},
 	}
 	credentials := map[string]interface{}{
 		"upstream_type": auth.UpstreamGrok,
-		// 默认按 OAuth 订阅账号的免费档展示；API Key 账号无订阅档位，下方分支改回 "api"。
-		// billing 探针成功后 OAuth 账号会被纠正为真实套餐（free/SuperGrok/Heavy）。
-		"plan_type": "free",
+		// OAuth 凭据若带 access_token，会在下方从 JWT tier claim 识别真实套餐；
+		// 缺失/无效 tier 保持空值。API Key 账号无订阅档位，单独标记为 "api"。
 	}
 	if baseURL != "" {
 		credentials["base_url"] = baseURL
@@ -86,6 +85,9 @@ func grokCredentialsFromRequest(req *addGrokAccountReq) (map[string]interface{},
 		credentials["grok_client_id"] = cred.ClientID
 		if cred.AccessToken != "" {
 			credentials["access_token"] = cred.AccessToken
+		}
+		if cred.PlanType != "" {
+			credentials["plan_type"] = cred.PlanType
 		}
 		if !cred.ExpiresAt.IsZero() {
 			credentials["expires_at"] = cred.ExpiresAt.Format(time.RFC3339)
@@ -357,13 +359,19 @@ func credentialStringValue(credentials map[string]interface{}, key string) strin
 	return ""
 }
 
-// grokPlanTypeOrDefault 取 credentials 里的 plan_type，缺失时回落到免费档
-// （现有写入路径都会显式设置，这里仅作防御性兜底）。
-func grokPlanTypeOrDefault(credentials map[string]interface{}) string {
-	if plan := strings.TrimSpace(credentialStringValue(credentials, "plan_type")); plan != "" {
+// grokPlanTypeFromCredentials 优先读取 access_token 的 tier claim，再兼容已有
+// plan_type 展示值；API Key 账号没有订阅 tier，其余缺失/无效值保持空白。
+func grokPlanTypeFromCredentials(credentials map[string]interface{}) string {
+	if plan := auth.GrokPlanTypeFromAccessToken(credentialStringValue(credentials, "access_token")); plan != "" {
 		return plan
 	}
-	return "free"
+	if plan, ok := auth.ResolveGrokPlan(credentialStringValue(credentials, "plan_type")); ok {
+		return plan.Key
+	}
+	if strings.TrimSpace(credentialStringValue(credentials, "api_key")) != "" {
+		return "api"
+	}
+	return ""
 }
 
 // grokAccountFromCredentials 从入库用的 credentials map 构造内存态 Account，
@@ -377,8 +385,8 @@ func grokAccountFromCredentials(id int64, credentials map[string]interface{}, pr
 		BaseURL:      strings.TrimRight(credentialStringValue(credentials, "base_url"), "/"),
 		ModelMapping: credentialStringValue(credentials, "model_mapping"),
 		Email:        credentialStringValue(credentials, "email"),
-		// 与 credentials 保持一致（OAuth 默认 free、API Key 为 api）；不再写死 "api"。
-		PlanType:          grokPlanTypeOrDefault(credentials),
+		// 与 credentials 保持一致：OAuth 使用 tier 映射，API Key 为 api。
+		PlanType:          grokPlanTypeFromCredentials(credentials),
 		GrokClientID:      credentialStringValue(credentials, "grok_client_id"),
 		GrokTokenEndpoint: credentialStringValue(credentials, "grok_token_endpoint"),
 		GrokOIDCIssuer:    credentialStringValue(credentials, "grok_oidc_issuer"),
@@ -419,7 +427,28 @@ type grokBatchImportItem struct {
 	Error string `json:"error,omitempty"`
 }
 
-const grokBatchImportMaxFiles = 500
+const grokBatchImportMaxFiles = 5000
+
+// 批量导入的整体超时按文件数缩放：整个循环串行地逐个文件落库，写死一个常量会让
+// 每个文件分到的预算随批量增大而被摊薄（5000 个文件时只剩 12ms/个），数据库稍有抖动
+// 就会中途超时、后面的文件全部报 context deadline exceeded。封顶是为了不让一个超大
+// 请求无限期占住连接。
+const (
+	grokBatchImportBaseTimeout    = 30 * time.Second
+	grokBatchImportPerFileTimeout = 100 * time.Millisecond
+	grokBatchImportMaxTimeout     = 10 * time.Minute
+)
+
+func grokBatchImportTimeout(files int) time.Duration {
+	if files < 0 {
+		files = 0
+	}
+	timeout := grokBatchImportBaseTimeout + time.Duration(files)*grokBatchImportPerFileTimeout
+	if timeout > grokBatchImportMaxTimeout {
+		return grokBatchImportMaxTimeout
+	}
+	return timeout
+}
 
 // BatchImportGrokAccounts 批量导入 Grok 凭据文件（POST /api/admin/accounts/grok/import）。
 // 每个文件独立解析入库，按 subject / refresh_token 去重（批内 + 与现有账号）。
@@ -468,7 +497,7 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), grokBatchImportTimeout(len(req.Files)))
 	defer cancel()
 	groupIDs, err := h.resolveImportGroupIDsJSON(ctx, req.GroupIDs)
 	if err != nil {

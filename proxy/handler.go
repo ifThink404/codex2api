@@ -207,6 +207,60 @@ func sessionAffinityKey(sessionID string, apiKeyID int64) string {
 	return fmt.Sprintf("%s::api-key:%d", sessionID, apiKeyID)
 }
 
+// applyAffinityGroupRouting keeps fingerprinted requests on the API key's original groups
+// and routes requests without either a Codex engine fingerprint or the dedicated local
+// affinity header to the configured split groups.
+//
+// 当 Key 没配「允许账号分组」（= 不限分组）时，带指纹的请求改为「除分流组以外的全部账号」：
+// 否则分流组既服务无指纹请求、又照常接真 Codex 流量，隔离等于没做——而不限分组恰恰是
+// 绝大多数 Key 的默认配置。
+func applyAffinityGroupRouting(c *gin.Context, identity requestSessionIdentity, filter auth.AccountFilter) auth.AccountFilter {
+	row := apiKeyRowFromContext(c)
+	if row == nil || len(row.Limits.NoAffinityGroupIDs) == 0 {
+		return filter
+	}
+
+	splitGroups := int64GroupSet(row.Limits.NoAffinityGroupIDs)
+	if len(splitGroups) == 0 {
+		return filter
+	}
+
+	if !identity.hasRequestFingerprint {
+		return groupMembershipFilter(splitGroups, true, filter)
+	}
+
+	allowedGroups := int64GroupSet(row.AllowedGroupIDs)
+	if len(allowedGroups) == 0 {
+		// 不限分组：把分流组排除掉，其余（含未分组账号）照常可用。
+		return groupMembershipFilter(splitGroups, false, filter)
+	}
+	return groupMembershipFilter(allowedGroups, true, filter)
+}
+
+func int64GroupSet(ids []int64) map[int64]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			set[id] = struct{}{}
+		}
+	}
+	return set
+}
+
+// groupMembershipFilter 在 filter 之上叠加分组门：want=true 要求账号命中 groups，
+// want=false 要求账号不在 groups 里。
+func groupMembershipFilter(groups map[int64]struct{}, want bool, filter auth.AccountFilter) auth.AccountFilter {
+	return func(account *auth.Account) bool {
+		if account == nil || account.InAnyGroup(groups) != want {
+			return false
+		}
+		return filter == nil || filter(account)
+	}
+}
+
 const proOnlySparkModel = "gpt-5.3-codex-spark"
 
 func isProOnlyModel(model string) bool {
@@ -632,6 +686,7 @@ func (h *Handler) syncAPIKeyAllowedGroups(row *database.APIKeyRow) {
 		return
 	}
 	h.store.SetAPIKeyAllowedGroups(row.ID, row.AllowedGroupIDs)
+	h.store.SetAPIKeyNoAffinityGroups(row.ID, row.Limits.NoAffinityGroupIDs)
 	h.store.SetAPIKeyAllowedPlans(row.ID, row.Limits.PlanAllow)
 	h.store.SetAPIKeyUpstreamChannel(row.ID, row.Limits.ResolveUpstreamChannel())
 }
@@ -822,19 +877,45 @@ func populateClientIPFromRequest(c *gin.Context, input *database.UsageLogInput) 
 }
 
 func populateCompactUsageMetaFromRequest(c *gin.Context, input *database.UsageLogInput) {
-	if input == nil || input.Compact {
+	if input == nil {
 		return
 	}
-	if isCompactUsageEndpoint(input.Endpoint) || isCompactUsageEndpoint(input.InboundEndpoint) || isCompactUsageEndpoint(input.UpstreamEndpoint) {
+
+	meta, ok := cachedRequestCompactionMeta(c)
+	if !ok {
+		if body, bodyOK := rawRequestBodyFromContext(c); bodyOK {
+			meta = requestBodyCompactionMeta(body)
+		}
+		// HTTP requests may carry the same per-turn metadata as a request header.
+		// Client WebSocket turns always cache frame-local metadata before logging,
+		// so the Upgrade request header cannot leak into individual frames here.
+		if c != nil && c.Request != nil && turnMetadataIndicatesCompaction(c.GetHeader("X-Codex-Turn-Metadata")) {
+			meta.UsageTriggered = true
+		}
+	}
+
+	// Only the original inbound path can mark an explicit Compact request.
+	// UpstreamEndpoint may be rewritten internally and must not affect this signal.
+	if isExplicitCompactUsageRequest(c, input) {
+		meta.UsageTriggered = true
+	}
+
+	if meta.UsageTriggered {
 		input.Compact = true
-		return
 	}
-	if c == nil {
-		return
+	if meta.HasHistory {
+		input.HasCompactionHistory = true
 	}
-	if body, ok := rawRequestBodyFromContext(c); ok && requestBodyHasCompactionTrigger(body) {
-		input.Compact = true
+}
+
+func isExplicitCompactUsageRequest(c *gin.Context, input *database.UsageLogInput) bool {
+	if c != nil && c.Request != nil && c.Request.URL != nil {
+		return isCompactUsageEndpoint(c.Request.URL.Path)
 	}
+	if input == nil {
+		return false
+	}
+	return isCompactUsageEndpoint(input.InboundEndpoint) || isCompactUsageEndpoint(input.Endpoint)
 }
 
 func isCompactUsageEndpoint(endpoint string) bool {
@@ -913,27 +994,103 @@ func setRawRequestBody(c *gin.Context, body []byte) {
 	}
 }
 
-// requestBodyHasCompactionTrigger reports whether input itself, or one of the direct input array
-// items, is the Codex compaction request control. Durable compaction history items and nested tool
-// output data are conversation content, not new compaction requests.
-func requestBodyHasCompactionTrigger(body []byte) bool {
-	input := gjson.GetBytes(body, "input")
-	if !input.Exists() {
-		return false
+const requestCompactionMetaContextKey = "request_compaction_meta"
+
+type requestCompactionMeta struct {
+	// ProtocolTriggered is the wire-level compaction_trigger control. Only this
+	// value may affect routing, account pinning, or protocol-specific timeouts.
+	ProtocolTriggered bool
+	// UsageTriggered is the observability signal persisted in usage_logs.compact.
+	UsageTriggered bool
+	// HasHistory marks direct durable compaction/context_compaction input items.
+	HasHistory bool
+}
+
+func cacheRequestCompactionMeta(c *gin.Context, meta requestCompactionMeta) {
+	if c != nil {
+		c.Set(requestCompactionMetaContextKey, meta)
 	}
-	if !input.IsArray() {
-		return gjsonResultIsCompactionTrigger(input)
+}
+
+func cachedRequestCompactionMeta(c *gin.Context) (requestCompactionMeta, bool) {
+	if c == nil {
+		return requestCompactionMeta{}, false
+	}
+	value, exists := c.Get(requestCompactionMetaContextKey)
+	if !exists {
+		return requestCompactionMeta{}, false
+	}
+	meta, ok := value.(requestCompactionMeta)
+	return meta, ok
+}
+
+func requestCompactionMetaForHTTP(c *gin.Context, body []byte) requestCompactionMeta {
+	meta := requestBodyCompactionMeta(body)
+	if c != nil && c.Request != nil {
+		if turnMetadataIndicatesCompaction(c.GetHeader("X-Codex-Turn-Metadata")) {
+			meta.UsageTriggered = true
+		}
+		if c.Request.URL != nil && isCompactUsageEndpoint(c.Request.URL.Path) {
+			meta.UsageTriggered = true
+		}
+	}
+	return meta
+}
+
+// requestBodyCompactionMeta inspects only direct input items plus the canonical
+// per-turn metadata field. It deliberately does not recurse into messages,
+// content, tool output, or arbitrary stringified JSON.
+func requestBodyCompactionMeta(body []byte) requestCompactionMeta {
+	meta := requestCompactionMeta{}
+	input := gjson.GetBytes(body, "input")
+	inspect := func(item gjson.Result) {
+		switch {
+		case gjsonResultIsCompactionTrigger(item):
+			meta.ProtocolTriggered = true
+		case gjsonResultIsCompactionHistory(item):
+			meta.HasHistory = true
+		}
+	}
+	if input.Exists() {
+		if input.IsArray() {
+			input.ForEach(func(_, item gjson.Result) bool {
+				inspect(item)
+				return true
+			})
+		} else {
+			inspect(input)
+		}
 	}
 
-	found := false
-	input.ForEach(func(_, item gjson.Result) bool {
-		if gjsonResultIsCompactionTrigger(item) {
-			found = true
-			return false
+	meta.UsageTriggered = meta.ProtocolTriggered
+	clientMetadata := gjson.GetBytes(body, "client_metadata")
+	if clientMetadata.IsObject() {
+		turnMetadata := clientMetadata.Get("x-codex-turn-metadata")
+		if turnMetadata.Type == gjson.String && turnMetadataIndicatesCompaction(turnMetadata.String()) {
+			meta.UsageTriggered = true
 		}
-		return true
-	})
-	return found
+	}
+	return meta
+}
+
+func turnMetadataIndicatesCompaction(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !gjson.Valid(raw) {
+		return false
+	}
+	root := gjson.Parse(raw)
+	if !root.IsObject() {
+		return false
+	}
+	requestKind := root.Get("request_kind")
+	return requestKind.Type == gjson.String &&
+		strings.EqualFold(strings.TrimSpace(requestKind.String()), "compaction")
+}
+
+// requestBodyHasCompactionTrigger reports only the protocol-level control used
+// for routing. Metadata-only local compaction turns must remain on /responses.
+func requestBodyHasCompactionTrigger(body []byte) bool {
+	return requestBodyCompactionMeta(body).ProtocolTriggered
 }
 
 // storeHasAvailableCodexAccount 判断账号池中是否还有可调度的官方（非中转）账号。
@@ -967,6 +1124,14 @@ func excludeRelayAccountsFilter(inner auth.AccountFilter) auth.AccountFilter {
 
 func gjsonResultIsCompactionTrigger(result gjson.Result) bool {
 	return result.IsObject() && strings.EqualFold(strings.TrimSpace(result.Get("type").String()), "compaction_trigger")
+}
+
+func gjsonResultIsCompactionHistory(result gjson.Result) bool {
+	if !result.IsObject() {
+		return false
+	}
+	itemType := strings.TrimSpace(result.Get("type").String())
+	return strings.EqualFold(itemType, "compaction") || strings.EqualFold(itemType, "context_compaction")
 }
 
 // extractReasoningEffort 从请求体提取推理强度
@@ -1907,6 +2072,8 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	h.capturePromptRequestIngress(c, rawBody)
 	bodyReadDone := time.Now()
+	compactionMeta := requestCompactionMetaForHTTP(c, rawBody)
+	cacheRequestCompactionMeta(c, compactionMeta)
 
 	// body-signal compact：较新的 Codex 客户端把会话压缩触发器作为 input item
 	// （type=compaction_trigger）嵌进普通 /responses 请求体，而不调用
@@ -1919,7 +2086,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	// 一次性 JSON 会让客户端在收到 response.completed 前遇到 EOF（issue #361）。
 	// 非流式请求仍可提升到 compact 专用链路，保留只实现 /responses/compact 的
 	// 中转兼容性。
-	bodySignalCompact := requestBodyHasCompactionTrigger(rawBody)
+	bodySignalCompact := compactionMeta.ProtocolTriggered
 	pinBodySignalToCodexAccounts := bodySignalCompact && h.storeHasAvailableCodexAccount()
 	streamingRelayBodySignal := bodySignalCompact && !pinBodySignalToCodexAccounts && gjson.GetBytes(rawBody, "stream").Bool()
 	if bodySignalCompact && !pinBodySignalToCodexAccounts && !streamingRelayBodySignal {
@@ -2044,6 +2211,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		accountFilter = excludeRelayAccountsFilter(accountFilter)
 	}
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
+	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
@@ -3134,6 +3302,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		return
 	}
 	h.capturePromptRequestIngress(c, rawBody)
+	cacheRequestCompactionMeta(c, requestCompactionMetaForHTTP(c, rawBody))
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
 	// 先让全局/渠道映射看到客户端原始模型（包括 -openai-compact 别名）；
@@ -3232,6 +3401,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 中转账号会命中上游自身的 /responses/compact，使仅接入中转的用户也能压缩（issue #174）。
 	accountFilter := accountFilterForCompactResponsesModelWithOriginal(routingModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
@@ -3762,6 +3932,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
 
 	sessionIdentity := resolveRequestSessionIdentity(c.Request.Header, codexBody)
+	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	apiKeyID := requestAPIKeyID(c)
 	affinityKey := sessionAffinityKey(sessionIdentity.affinityID, apiKeyID)
 

@@ -30,6 +30,7 @@ import {
 import { api } from '../api'
 import { DEFAULT_SITE_LOGO, useBranding } from '../branding'
 import Pagination from '../components/Pagination'
+import CompactionBadges from '../components/CompactionBadges'
 import { useTheme } from '../hooks/useTheme'
 import { usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import type {
@@ -976,9 +977,10 @@ function RecentLogsTable({
                       >
                         {log.stream ? 'stream' : 'sync'}
                       </Badge>
-                      {log.compact ? (
-                        <Badge variant="outline" className="gap-0.5 border-transparent bg-teal-500/12 text-[11px] font-semibold text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"><Box className="size-3" />{t('usage.compactRequest')}</Badge>
-                      ) : null}
+                      <CompactionBadges
+                        compact={log.compact}
+                        hasCompactionHistory={log.has_compaction_history}
+                      />
                     </div>
                   </TableCell>
                   <TableCell className="text-right">

@@ -8,8 +8,6 @@ import {
   MapPin,
   Loader2,
   Zap,
-  ChevronLeft,
-  ChevronRight,
   Eye,
   EyeOff,
   AlertTriangle,
@@ -18,6 +16,7 @@ import {
   Unlink,
   Search,
   Users,
+  Power,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,12 +25,22 @@ import { api, type ProxyRow } from "../api";
 import type { AccountRow } from "../types";
 import ChannelLogo from "../components/ChannelLogo";
 import Modal from "../components/Modal";
+import Pagination from "../components/Pagination";
 import StatusBadge from "../components/StatusBadge";
+import {
+  DEFAULT_PAGE_SIZE_OPTIONS,
+  usePersistedPageSize,
+} from "../hooks/usePersistedPageSize";
 import { useToast } from "../hooks/useToast";
+import { useConfirmDialog } from "../hooks/useConfirmDialog";
+import { postAdminSSE } from "../hooks/useOperationProgress";
+import {
+  applyProxyTestResult,
+  chunkProxyTestIDs,
+  getProxyStatusBadgeKind,
+  readProxyBatchTestSSE,
+} from "../lib/proxyTestState";
 import { getErrorMessage } from "../utils/error";
-
-const PAGE_SIZE = 10;
-const TEST_ALL_CONCURRENCY = 4;
 
 const PROXY_SCHEMES = ["http:", "https:", "socks5:", "socks5h:"];
 
@@ -126,9 +135,51 @@ function maskUrl(url: string): string {
   }
 }
 
+function ProxyStatusBadge({
+  proxy,
+}: {
+  proxy: ProxyRow;
+}) {
+  const { t } = useTranslation();
+  const kind = getProxyStatusBadgeKind(proxy);
+  const styles =
+    kind === "error"
+      ? "border-destructive/25 bg-destructive/10 text-destructive"
+      : kind === "untested"
+        ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+        : kind === "enabled"
+          ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+          : "border-border bg-muted/50 text-muted-foreground";
+  const dot =
+    kind === "error"
+      ? "bg-destructive"
+      : kind === "untested"
+        ? "bg-amber-500"
+        : kind === "enabled"
+          ? "bg-emerald-500"
+          : "bg-muted-foreground/50";
+  const label =
+    kind === "error"
+      ? t("proxies.testStatusError")
+      : kind === "untested"
+        ? t("proxies.testStatusUntested")
+        : kind === "enabled"
+          ? t("proxies.enabled")
+          : t("proxies.disabled");
+  const className = `inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition-all ${styles}`;
+
+  return (
+    <span className={className}>
+      <span className={`size-1.5 rounded-full ${dot}`} />
+      {label}
+    </span>
+  );
+}
+
 export default function Proxies() {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirmDialog();
   const [proxies, setProxies] = useState<ProxyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [poolEnabled, setPoolEnabled] = useState(false);
@@ -141,7 +192,15 @@ export default function Proxies() {
   const [testAllLoading, setTestAllLoading] = useState(false);
   const [testAllDone, setTestAllDone] = useState(0);
   const [testAllFailed, setTestAllFailed] = useState(0);
+  const [testAllTotal, setTestAllTotal] = useState(0);
+  const [cleaningErrors, setCleaningErrors] = useState(false);
   const [page, setPage] = useState(1);
+  const pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS;
+  const [pageSize, setPageSize] = usePersistedPageSize(
+    "proxies",
+    10,
+    pageSizeOptions,
+  );
   const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set());
   const [editingProxy, setEditingProxy] = useState<ProxyRow | null>(null);
   const [editUrl, setEditUrl] = useState("");
@@ -203,8 +262,12 @@ export default function Proxies() {
     reload();
   }, [reload]);
 
-  const totalPages = Math.max(1, Math.ceil(proxies.length / PAGE_SIZE));
-  const pagedProxies = proxies.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(proxies.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedProxies = proxies.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
 
   // proxy_url → 绑定账号数
   const boundCountByProxyUrl = useMemo(() => {
@@ -333,8 +396,8 @@ export default function Proxies() {
   };
 
   useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
+    if (page !== currentPage) setPage(currentPage);
+  }, [currentPage, page]);
 
   const handleTogglePool = async () => {
     const next = !poolEnabled;
@@ -440,35 +503,21 @@ export default function Proxies() {
   };
 
   const handleTest = async (p: ProxyRow) => {
+    if (cleaningErrors) return;
     setTestingIds((prev) => new Set(prev).add(p.id));
     try {
       const result = await api.testProxy(p.url, p.id, ipApiLang);
+      setProxies((prev) =>
+        prev.map((px) =>
+          px.id === p.id ? applyProxyTestResult(px, result) : px,
+        ),
+      );
       if (!result.success) {
-        setProxies((prev) =>
-          prev.map((px) =>
-            px.id === p.id
-              ? { ...px, test_ip: "", test_location: "", test_latency_ms: 0 }
-              : px,
-          ),
-        );
         showToast(
           t("proxies.testFailed", {
             error: result.error || t("proxies.testFailedUnknown"),
           }),
           "error",
-        );
-      } else {
-        setProxies((prev) =>
-          prev.map((px) =>
-            px.id === p.id
-              ? {
-                  ...px,
-                  test_ip: result.ip || "",
-                  test_location: result.location || "",
-                  test_latency_ms: result.latency_ms || 0,
-                }
-              : px,
-          ),
         );
       }
     } catch (error) {
@@ -485,80 +534,126 @@ export default function Proxies() {
   };
 
   const handleTestAll = async () => {
+    if (cleaningErrors || testAllLoading || testingIds.size > 0) return;
+    const queue = [...proxies];
+    if (queue.length === 0) return;
     setTestAllLoading(true);
     setTestAllDone(0);
     setTestAllFailed(0);
+    setTestAllTotal(queue.length);
+    let completedCount = 0;
     let failedCount = 0;
     let firstError = "";
-    let nextIndex = 0;
-    const queue = [...proxies];
-    const testOne = async (p: ProxyRow) => {
-      setTestingIds((prev) => new Set(prev).add(p.id));
-      try {
-        const result = await api.testProxy(p.url, p.id, ipApiLang);
-        if (!result.success) {
-          failedCount += 1;
-          setTestAllFailed(failedCount);
-          if (!firstError)
-            firstError = result.error || t("proxies.testFailedUnknown");
-          setProxies((prev) =>
-            prev.map((px) =>
-              px.id === p.id
-                ? { ...px, test_ip: "", test_location: "", test_latency_ms: 0 }
-                : px,
-            ),
-          );
-        } else {
-          setProxies((prev) =>
-            prev.map((px) =>
-              px.id === p.id
-                ? {
-                    ...px,
-                    test_ip: result.ip || "",
-                    test_location: result.location || "",
-                    test_latency_ms: result.latency_ms || 0,
-                  }
-                : px,
-            ),
-          );
-        }
-      } catch (error) {
-        failedCount += 1;
-        setTestAllFailed(failedCount);
-        if (!firstError) firstError = getErrorMessage(error);
-      } finally {
-        setTestAllDone((prev) => prev + 1);
-        setTestingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(p.id);
-          return next;
+    let completionError = "";
+    setTestingIds(new Set(queue.map((proxy) => proxy.id)));
+
+    try {
+      for (const batchIDs of chunkProxyTestIDs(
+        queue.map((proxy) => proxy.id),
+      )) {
+        const response = await postAdminSSE("/proxies/test-all", {
+          ids: batchIDs,
+          lang: ipApiLang,
         });
-      }
-    };
+        const completeEvent = await readProxyBatchTestSSE(response, (event) => {
+          if (event.type === "complete") {
+            if (!completionError && event.error) {
+              completionError = event.error;
+            }
+            return;
+          }
+          if (event.type !== "progress" || event.proxy_id === undefined) {
+            return;
+          }
 
-    const worker = async () => {
-      for (;;) {
-        const current = nextIndex;
-        nextIndex += 1;
-        const proxy = queue[current];
-        if (!proxy) return;
-        await testOne(proxy);
+          const proxyID = event.proxy_id;
+          const result = event.result;
+          if (result) {
+            setProxies((prev) =>
+              prev.map((proxy) =>
+                proxy.id === proxyID
+                  ? applyProxyTestResult(proxy, result)
+                  : proxy,
+              ),
+            );
+            if (!result.success && !firstError) {
+              firstError = result.error || t("proxies.testFailedUnknown");
+            }
+          }
+          setTestAllDone(completedCount + (event.current ?? 0));
+          setTestAllFailed(failedCount + (event.failed ?? 0));
+          setTestingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(proxyID);
+            return next;
+          });
+        });
+        const batchCompleted = completeEvent?.current ?? 0;
+        if (!completeEvent || batchCompleted !== batchIDs.length) {
+          throw new Error(t("proxies.testAllInterrupted"));
+        }
+        completedCount += batchCompleted;
+        failedCount += completeEvent.failed ?? 0;
+        setTestAllDone(completedCount);
+        setTestAllFailed(failedCount);
       }
-    };
-
-    await Promise.all(
-      Array.from(
-        { length: Math.min(TEST_ALL_CONCURRENCY, queue.length) },
-        worker,
-      ),
-    );
-    if (failedCount > 0) {
+      await reload();
+      if (completionError) {
+        showToast(completionError, "error");
+      } else if (failedCount > 0) {
+        showToast(
+          t("proxies.testAllFailed", {
+            count: failedCount,
+            error: firstError,
+          }),
+          "error",
+        );
+      }
+    } catch (error) {
+      await reload();
       showToast(
-        t("proxies.testAllFailed", { count: failedCount, error: firstError }),
+        t("proxies.testFailed", { error: getErrorMessage(error) }),
         "error",
       );
+    } finally {
+      setTestingIds(new Set());
+      setTestAllLoading(false);
     }
-    setTestAllLoading(false);
+  };
+
+  const errorCount = proxies.filter((p) => p.test_status === "error").length;
+  const testsRunning = testAllLoading || testingIds.size > 0;
+
+  const handleCleanErrors = async () => {
+    if (errorCount === 0 || testsRunning || cleaningErrors) return;
+    const confirmed = await confirm({
+      title: t("proxies.cleanErrorTitle"),
+      description: t("proxies.cleanErrorDesc", { count: errorCount }),
+      confirmText: t("proxies.cleanErrorConfirm"),
+      tone: "destructive",
+      confirmVariant: "destructive",
+    });
+    if (!confirmed) return;
+
+    setCleaningErrors(true);
+    try {
+      const result = await api.cleanErrorProxies();
+      setSelected(new Set());
+      showToast(
+        t("proxies.cleanErrorSuccess", {
+          count: result.cleaned,
+          unbound: result.unbound,
+        }),
+      );
+      await reload();
+    } catch (error) {
+      showToast(
+        t("proxies.cleanErrorFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    } finally {
+      setCleaningErrors(false);
+    }
   };
 
   const allSelected =
@@ -580,10 +675,16 @@ export default function Proxies() {
   };
 
   const enabledCount = proxies.filter((p) => p.enabled).length;
-  const canEnable = enabledCount > 0;
+  const untestedCount = proxies.filter(
+    (p) => !p.test_status || p.test_status === "untested",
+  ).length;
+  const canEnable = proxies.some(
+    (p) => p.enabled && p.test_status !== "error",
+  );
 
   return (
     <div className="space-y-6">
+      {confirmDialog}
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -637,10 +738,27 @@ export default function Proxies() {
             </button>
           )}
 
+          {errorCount > 0 && (
+            <button
+              onClick={handleCleanErrors}
+              disabled={cleaningErrors || testsRunning}
+              className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-semibold text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cleaningErrors ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <AlertTriangle className="size-4" />
+              )}
+              {cleaningErrors
+                ? t("proxies.cleaningErrors")
+                : t("proxies.cleanErrors", { count: errorCount })}
+            </button>
+          )}
+
           {proxies.length > 0 && (
             <button
               onClick={handleTestAll}
-              disabled={testAllLoading}
+              disabled={testsRunning || cleaningErrors}
               className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-muted/50 disabled:opacity-50"
             >
               {testAllLoading ? (
@@ -651,7 +769,7 @@ export default function Proxies() {
               {testAllLoading
                 ? t("proxies.testingAllProgress", {
                     current: testAllDone,
-                    total: proxies.length,
+                    total: testAllTotal,
                     failed: testAllFailed,
                   })
                 : t("proxies.testAll")}
@@ -738,13 +856,11 @@ export default function Proxies() {
         </Card>
         <Card className="py-0">
           <CardContent className="p-4 text-center">
-            <div
-              className={`text-2xl font-bold ${poolEnabled ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`}
-            >
-              {poolEnabled ? t("proxies.roundRobin") : t("proxies.off")}
+            <div className="text-2xl font-bold tabular-nums text-amber-600 dark:text-amber-400">
+              {untestedCount}
             </div>
             <div className="text-xs text-muted-foreground mt-1">
-              {t("proxies.poolStatus")}
+              {t("proxies.untestedCount")}
             </div>
           </CardContent>
         </Card>
@@ -816,21 +932,7 @@ export default function Proxies() {
                           </div>
 
                           <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                            <button
-                              onClick={() => handleToggle(p)}
-                              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition-all ${
-                                p.enabled
-                                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                  : "border-border bg-muted/50 text-muted-foreground"
-                              }`}
-                            >
-                              <span
-                                className={`size-1.5 rounded-full ${p.enabled ? "bg-emerald-500" : "bg-muted-foreground/50"}`}
-                              />
-                              {p.enabled
-                                ? t("proxies.enabled")
-                                : t("proxies.disabled")}
-                            </button>
+                            <ProxyStatusBadge proxy={p} />
                             <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium text-muted-foreground">
                               <Users className="size-3" />
                               {t("proxies.boundCount", {
@@ -872,7 +974,7 @@ export default function Proxies() {
                             </button>
                             <button
                               onClick={() => handleTest(p)}
-                              disabled={isTesting}
+                              disabled={isTesting || cleaningErrors}
                               className="inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 text-xs font-medium text-foreground hover:bg-muted/50 disabled:opacity-50"
                             >
                               {isTesting ? (
@@ -881,6 +983,19 @@ export default function Proxies() {
                                 <Play className="size-3.5" />
                               )}
                               {t("proxies.test")}
+                            </button>
+                            <button
+                              onClick={() => handleToggle(p)}
+                              className={`inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                                p.enabled
+                                  ? "border-amber-500/25 text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                                  : "border-emerald-500/25 text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                              }`}
+                            >
+                              <Power className="size-3.5" />
+                              {p.enabled
+                                ? t("proxies.disableAction")
+                                : t("proxies.enableAction")}
                             </button>
                             <button
                               onClick={() => handleDelete(p.id)}
@@ -984,21 +1099,7 @@ export default function Proxies() {
                             </div>
                           </td>
                           <td className="p-3">
-                            <button
-                              onClick={() => handleToggle(p)}
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold transition-all ${
-                                p.enabled
-                                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
-                                  : "bg-muted/50 text-muted-foreground border border-border"
-                              }`}
-                            >
-                              <span
-                                className={`size-1.5 rounded-full ${p.enabled ? "bg-emerald-500" : "bg-muted-foreground/50"}`}
-                              />
-                              {p.enabled
-                                ? t("proxies.enabled")
-                                : t("proxies.disabled")}
-                            </button>
+                            <ProxyStatusBadge proxy={p} />
                           </td>
                           {/* Bound accounts */}
                           <td className="p-3">
@@ -1074,7 +1175,7 @@ export default function Proxies() {
                               </button>
                               <button
                                 onClick={() => handleTest(p)}
-                                disabled={isTesting}
+                                disabled={isTesting || cleaningErrors}
                                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-border text-foreground hover:bg-muted/50 transition-all disabled:opacity-50"
                                 title={t("proxies.testProxy")}
                               >
@@ -1084,6 +1185,24 @@ export default function Proxies() {
                                   <Play className="size-3.5" />
                                 )}
                                 {t("proxies.test")}
+                              </button>
+                              <button
+                                onClick={() => handleToggle(p)}
+                                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                                  p.enabled
+                                    ? "border-amber-500/25 text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                                    : "border-emerald-500/25 text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                                }`}
+                                title={
+                                  p.enabled
+                                    ? t("proxies.disableAction")
+                                    : t("proxies.enableAction")
+                                }
+                              >
+                                <Power className="size-3.5" />
+                                {p.enabled
+                                  ? t("proxies.disableAction")
+                                  : t("proxies.enableAction")}
                               </button>
                               <button
                                 onClick={() => handleDelete(p.id)}
@@ -1101,51 +1220,20 @@ export default function Proxies() {
                 </table>
               </div>
 
-              {/* Pagination */}
-              {totalPages > 1 && (
-                <div className="flex flex-col gap-2 px-4 py-3 border-t border-border sm:flex-row sm:items-center sm:justify-between">
-                  <span className="text-xs text-muted-foreground">
-                    {t("proxies.pagination", {
-                      total: proxies.length,
-                      page,
-                      totalPages,
-                    })}
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      disabled={page <= 1}
-                      className="flex items-center justify-center size-9 rounded-lg border border-border text-foreground hover:bg-muted/50 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      <ChevronLeft className="size-4" />
-                    </button>
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(
-                      (n) => (
-                        <button
-                          key={n}
-                          onClick={() => setPage(n)}
-                          className={`flex items-center justify-center size-9 rounded-lg text-xs font-medium transition-all ${
-                            n === page
-                              ? "bg-primary text-primary-foreground shadow-sm"
-                              : "border border-border text-foreground hover:bg-muted/50"
-                          }`}
-                        >
-                          {n}
-                        </button>
-                      ),
-                    )}
-                    <button
-                      onClick={() =>
-                        setPage((p) => Math.min(totalPages, p + 1))
-                      }
-                      disabled={page >= totalPages}
-                      className="flex items-center justify-center size-9 rounded-lg border border-border text-foreground hover:bg-muted/50 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      <ChevronRight className="size-4" />
-                    </button>
-                  </div>
-                </div>
-              )}
+              <div className="px-4 pb-3">
+                <Pagination
+                  page={currentPage}
+                  totalPages={totalPages}
+                  onPageChange={setPage}
+                  totalItems={proxies.length}
+                  pageSize={pageSize}
+                  pageSizeOptions={pageSizeOptions}
+                  onPageSizeChange={(nextPageSize) => {
+                    setPageSize(nextPageSize);
+                    setPage(1);
+                  }}
+                />
+              </div>
             </>
           )}
         </CardContent>
