@@ -216,7 +216,8 @@ type OutputConfig struct {
 }
 
 // IntelligenceConfig controls the optional public-source rule intelligence job.
-// It is disabled by default and never auto-adds rules unless AutoAdd is explicitly enabled.
+// Generated proposals are always staged for human review and never enter the
+// runtime rule engine until an administrator explicitly publishes them.
 type IntelligenceConfig struct {
 	Enabled          bool     `json:"enabled"`
 	IntervalHours    int      `json:"interval_hours"`
@@ -225,7 +226,6 @@ type IntelligenceConfig struct {
 	ModelEnabled     bool     `json:"model_enabled"`
 	Model            string   `json:"model"`
 	MaxModelCalls    int      `json:"max_model_calls"`
-	AutoAdd          bool     `json:"auto_add"`
 }
 
 func DefaultIntelligenceQueries() []string {

@@ -118,6 +118,16 @@ export function resetAdminAuthState() {
 // RequestInit 扩展:timeoutMs 可选,开启后到时自动 abort 请求。
 type RequestOptions = RequestInit & { timeoutMs?: number }
 
+export class AdminAPIError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'AdminAPIError'
+    this.status = status
+  }
+}
+
 function extractAdminErrorMessage(body: string, status: number): string {
   if (!body.trim()) {
     return `HTTP ${status}`
@@ -178,7 +188,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (res.status === 401) {
       resetAdminAuthState()
     }
-    throw new Error(extractAdminErrorMessage(body, res.status))
+    throw new AdminAPIError(res.status, extractAdminErrorMessage(body, res.status))
   }
 
   return (await res.json()) as T
@@ -818,8 +828,21 @@ export const api = {
     request<import('./types').PromptIntelligenceRun>('/prompt-filter/intelligence/run', { method: 'POST' }),
   getPromptIntelligenceHistory: (page = 1, pageSize = 20) =>
     request<import('./types').PromptIntelligenceHistoryResponse>(`/prompt-filter/intelligence/history?page=${page}&page_size=${pageSize}`),
-  addPromptIntelligenceRule: (candidate: import('./types').PromptIntelligenceCandidate) =>
-    request<{ added: number; updated: number }>('/prompt-filter/intelligence/rules', { method: 'POST', body: JSON.stringify(candidate) }),
+  getPromptIntelligenceCandidates: (params: { page?: number; pageSize?: number; status?: string; source?: string; q?: string } = {}) => {
+    const search = new URLSearchParams()
+    search.set('page', String(params.page || 1))
+    search.set('page_size', String(params.pageSize || 100))
+    if (params.status) search.set('status', params.status)
+    if (params.source) search.set('source', params.source)
+    if (params.q) search.set('q', params.q)
+    return request<import('./types').PromptIntelligenceCandidatesResponse>(`/prompt-filter/intelligence/candidates?${search.toString()}`)
+  },
+  getPromptIntelligenceCandidateEvidence: (id: number) =>
+    request<import('./types').PromptIntelligenceEvidenceResponse>(`/prompt-filter/intelligence/candidates/${id}/evidence`),
+  publishPromptIntelligenceCandidate: (id: number) =>
+    request<{ candidate: import('./types').PromptIntelligenceCandidate; added: number; updated: number }>(`/prompt-filter/intelligence/candidates/${id}/publish`, { method: 'POST' }),
+  dismissPromptIntelligenceCandidate: (id: number) =>
+    request<import('./types').PromptIntelligenceCandidate>(`/prompt-filter/intelligence/candidates/${id}/dismiss`, { method: 'POST' }),
   getModels: () => request<ModelsResponse>('/models'),
   syncModels: () => request<ModelSyncResponse>('/models/sync', { method: 'POST' }),
   syncCodexCLIVersion: () =>

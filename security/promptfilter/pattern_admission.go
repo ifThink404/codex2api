@@ -319,10 +319,21 @@ func generatedCustomPatternBenignCorpus() []string {
 }
 
 // ValidateCustomPatterns is the admission gate for an explicitly submitted
-// custom rule set. Explicitly disabled legacy rules may be retained; enabled
-// rules must pass the complete audit.
+// custom rule set. Every rule needs a stable, case-insensitively unique name.
+// Explicitly disabled legacy matching semantics may otherwise be retained;
+// enabled rules must pass the complete audit.
 func ValidateCustomPatterns(patterns []PatternConfig) error {
+	seenNames := make(map[string]int, len(patterns))
 	for index, pattern := range patterns {
+		name := strings.TrimSpace(pattern.Name)
+		if name == "" {
+			return fmt.Errorf("custom_patterns[%d]: rule name is required", index)
+		}
+		nameKey := strings.ToLower(name)
+		if previous, exists := seenNames[nameKey]; exists {
+			return fmt.Errorf("custom_patterns[%d] %q duplicates custom_patterns[%d]; rule names must be unique", index, name, previous)
+		}
+		seenNames[nameKey] = index
 		if pattern.Enabled != nil && !*pattern.Enabled {
 			continue
 		}

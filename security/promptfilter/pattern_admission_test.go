@@ -2,6 +2,7 @@ package promptfilter
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,17 @@ func TestAuditPatternConfigRejectsStandaloneAllButAllowsComposite(t *testing.T) 
 	composite.AllPatterns = []string{`(?i)previous\s+instructions`}
 	if issue := AuditPatternConfig(composite); issue != nil {
 		t.Fatalf("specific composite rule rejected: %v", issue)
+	}
+}
+
+func TestValidateCustomPatternsRequiresCaseInsensitiveUniqueNames(t *testing.T) {
+	disabled := false
+	patterns := []PatternConfig{
+		{Name: "custom_rule", Pattern: `(?i)first-specific-marker`, Weight: 60, Category: "custom", Enabled: &disabled},
+		{Name: " Custom_Rule ", Pattern: `(?i)second-specific-marker`, Weight: 60, Category: "custom", Enabled: &disabled},
+	}
+	if err := ValidateCustomPatterns(patterns); err == nil || !strings.Contains(err.Error(), "rule names must be unique") {
+		t.Fatalf("duplicate custom rule names error=%v", err)
 	}
 }
 

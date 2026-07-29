@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -1513,9 +1514,15 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		var readErr error
 		if stream {
 			usage, imageCount, firstTokenMs, imageLogInfo, readErr = h.streamImagesResponse(c, resp.Body, responseFormat, streamPrefix, requestModel, start)
+			if payload := imageResponseFailedPayload(readErr); len(payload) > 0 {
+				h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, responseFailedErrorBody(payload))
+			}
 		} else {
 			var out []byte
 			out, usage, imageCount, imageLogInfo, readErr = collectImagesResponse(c.Request.Context(), resp.Body, responseFormat, requestModel, urlFor)
+			if payload := imageResponseFailedPayload(readErr); len(payload) > 0 {
+				h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, responseFailedErrorBody(payload))
+			}
 			if readErr == nil {
 				persister.finalize(c.Request.Context())
 				c.Data(http.StatusOK, "application/json", out)
@@ -1718,7 +1725,7 @@ func collectImagesResponse(ctx context.Context, body io.Reader, responseFormat, 
 			readErr = imageGenerationFailureError(data)
 			return false
 		case "response.failed":
-			readErr = imageGenerationFailureError(data)
+			readErr = newImageResponseFailedError(data)
 			return false
 		}
 		return true
@@ -1901,7 +1908,7 @@ func (h *Handler) streamImagesResponse(c *gin.Context, body io.Reader, responseF
 			setReadErr(err)
 			return false
 		case "response.failed":
-			err := imageGenerationFailureError(data)
+			err := newImageResponseFailedError(data)
 			writeEvent("error", buildImagesStreamErrorPayload(err.Error()))
 			setReadErr(err)
 			return false
@@ -1996,6 +2003,37 @@ func imageGenerationFailureError(payload []byte) error {
 		return fmt.Errorf("upstream image generation failed (%s): %s", code, message)
 	}
 	return fmt.Errorf("upstream image generation failed: %s", message)
+}
+
+type imageResponseFailedError struct {
+	cause   error
+	payload []byte
+}
+
+func newImageResponseFailedError(payload []byte) error {
+	return &imageResponseFailedError{cause: imageGenerationFailureError(payload), payload: append([]byte(nil), payload...)}
+}
+
+func (e *imageResponseFailedError) Error() string {
+	if e == nil || e.cause == nil {
+		return "upstream image generation failed"
+	}
+	return e.cause.Error()
+}
+
+func (e *imageResponseFailedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func imageResponseFailedPayload(err error) []byte {
+	var failed *imageResponseFailedError
+	if !errors.As(err, &failed) || failed == nil {
+		return nil
+	}
+	return append([]byte(nil), failed.payload...)
 }
 
 func firstNonEmptyImageErrorField(values ...string) string {
