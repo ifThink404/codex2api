@@ -3,6 +3,9 @@ package promptfilter
 import (
 	"encoding/json"
 	"fmt"
+	"html"
+	"io"
+	"net/url"
 	"regexp"
 	"regexp/syntax"
 	"sort"
@@ -790,6 +793,19 @@ func (e *Engine) inspectPreparedScanViews(evidenceText string, policyText string
 			if !patternShouldRun(scanText, pattern, literalHits) {
 				continue
 			}
+			var loc []int
+			if view.Compacted && isBuiltinMinorSafetyPattern(pattern) {
+				loc = minorSafetyCompactMaterialMatchIndex(scanText)
+			} else {
+				loc = compiledPatternMatchIndex(scanText, pattern)
+			}
+			if loc == nil {
+				continue
+			}
+			// Suppression is meaningful only after the rule has matched this view.
+			// Keeping it behind the match prevents every selected rule from running
+			// several policy-wide regexes over a near-1MiB request that it never
+			// matched, without changing any decision or suppression semantics.
 			if patternSuppressedForQuotedPolicyReview(policyText, pattern) ||
 				patternSuppressedForDefensiveRuleArtifact(policyText, pattern) ||
 				patternSuppressedForAuthorizationBoundary(policyText, scanText, pattern) ||
@@ -798,18 +814,10 @@ func (e *Engine) inspectPreparedScanViews(evidenceText string, policyText string
 				patternSuppressedForDefensiveDocumentation(policyText, pattern) {
 				continue
 			}
-			var loc []int
-			if view.Compacted && isBuiltinMinorSafetyPattern(pattern) {
-				loc = minorSafetyCompactMaterialMatchIndex(scanText)
-			} else {
-				loc = compiledPatternMatchIndex(scanText, pattern)
-			}
-			if loc != nil {
-				match := Match{Name: pattern.cfg.Name, Weight: pattern.cfg.Weight, Category: pattern.cfg.Category, Strict: pattern.cfg.Strict, SignalOnly: pattern.cfg.SignalOnly}
-				_, context := regexMatchContext(scanText, loc)
-				recordContext(context)
-				matchesByName[match.Name] = match
-			}
+			match := Match{Name: pattern.cfg.Name, Weight: pattern.cfg.Weight, Category: pattern.cfg.Category, Strict: pattern.cfg.Strict, SignalOnly: pattern.cfg.SignalOnly}
+			_, context := regexMatchContext(scanText, loc)
+			recordContext(context)
+			matchesByName[match.Name] = match
 		}
 	}
 	if normalizationIncomplete {
@@ -1088,6 +1096,535 @@ func (e *Engine) inspectExactCurrentUserPrecheck(text string, performance GuardP
 	return filtered.inspectPreparedScanViews(text, text, scanViewList, true)
 }
 
+// inspectWindowedCurrentUserPrecheck keeps oversized CurrentUser inspection on
+// the synchronous path without running every rule over every near-1MiB derived
+// view. Every source byte remains covered by overlapping windows. Windows stay
+// as independent scan views, while the existing shared scoring core performs one
+// final request-wide decision. This preserves rule-name deduplication, cumulative
+// scoring, strict/category semantics, exclusions, and defensive context without
+// manufacturing regex matches across concatenated window boundaries. Non-strict
+// signal-only vocabulary is omitted because it cannot affect the current action;
+// strict signal-only custom rules remain decision-bearing.
+func (e *Engine) inspectWindowedCurrentUserPrecheck(text string, performance GuardPerformanceConfig) Verdict {
+	if e == nil || strings.TrimSpace(text) == "" {
+		return Verdict{}
+	}
+	if len(text) > MaxGuardCurrentUserBytes {
+		text = limitScanTextExact(text, MaxGuardCurrentUserBytes)
+	}
+	chunkBytes, overlapBytes := guardScanWindow(performance)
+	if chunkBytes < MaxGuardScanChunkBytes {
+		chunkBytes = MaxGuardScanChunkBytes
+	}
+	if overlapBytes <= 0 || overlapBytes >= chunkBytes {
+		overlapBytes = DefaultGuardScanOverlapBytes
+		if overlapBytes >= chunkBytes {
+			overlapBytes = max(1, chunkBytes/16)
+		}
+	}
+	scanner := e.exactPrecheckScanner
+	allViews := make([]scanView, 0, len(text)/chunkBytes*4+4)
+	matchedHints := make(map[string]struct{})
+	type scanViewKey struct {
+		text                    string
+		reviewOnly              bool
+		compacted               bool
+		normalizationIncomplete bool
+	}
+	seenViews := make(map[scanViewKey]struct{})
+	appendViews := func(views []scanView) {
+		for _, view := range views {
+			key := scanViewKey{
+				text:                    view.Text,
+				reviewOnly:              view.ReviewOnly,
+				compacted:               view.Compacted,
+				normalizationIncomplete: view.NormalizationIncomplete,
+			}
+			if _, exists := seenViews[key]; exists {
+				continue
+			}
+			seenViews[key] = struct{}{}
+			allViews = append(allViews, view)
+			if view.ReviewOnly {
+				continue
+			}
+			viewHints, _ := decodedSafetyPriorityMatchedHints(view.Text, scanner)
+			for hint := range viewHints {
+				matchedHints[hint] = struct{}{}
+			}
+		}
+	}
+
+	// Keep one complete primary source view. It preserves the original exact
+	// semantics for regexes, AllPatterns, and distant ExcludePatterns while the
+	// expensive derived normalization work remains window-bounded below.
+	primaryText := text
+	if e.cfg.Advanced.Normalization.DecodeBase64 || e.cfg.Advanced.Normalization.DecodeHex {
+		maxEncodedFragmentBytes := len(text)
+		if maxEncodedFragmentBytes < 16*1024 {
+			maxEncodedFragmentBytes = 16 * 1024
+		}
+		if maxEncodedFragmentBytes > MaxGuardCurrentUserBytes {
+			maxEncodedFragmentBytes = MaxGuardCurrentUserBytes
+		}
+		primaryText = collapseRecognizedEncodedPayloads(text, e.cfg.Advanced.Normalization, maxEncodedFragmentBytes, nil)
+	}
+	appendViews([]scanView{{Text: normalizeForScan(primaryText)}})
+	appendViews(fullCurrentUserDerivedViews(text, normalizeForScan(primaryText), e.cfg.Advanced.Normalization, scanner))
+	appendViews(e.encodedCurrentUserPrecheckViews(text, chunkBytes, overlapBytes))
+	reviewContext := newMinorSafetyScanContext(text)
+
+	for start := 0; start < len(text); {
+		end := min(start+chunkBytes, len(text))
+		for end > start && end < len(text) && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		if end <= start {
+			_, size := utf8.DecodeRuneInString(text[start:])
+			if size <= 0 {
+				break
+			}
+			end = min(start+size, len(text))
+		}
+		windowStart := max(0, start-overlapBytes)
+		for windowStart < start && !utf8.RuneStart(text[windowStart]) {
+			windowStart++
+		}
+		appendViews(e.encodedWindowCurrentUserPrecheckViews(text[windowStart:end], windowStart, chunkBytes, overlapBytes, reviewContext))
+		start = end
+	}
+
+	selectedPatterns := make([]compiledPattern, 0, len(scanner.patterns))
+	for _, candidate := range scanner.patterns {
+		if candidate.pattern.cfg.SignalOnly && !candidate.pattern.cfg.Strict {
+			continue
+		}
+		if len(candidate.hintClauses) > 0 && !containsDecodedSafetyHintClauseWithMatches("", candidate.hintClauses, matchedHints) {
+			continue
+		}
+		selectedPatterns = append(selectedPatterns, candidate.pattern)
+	}
+	filtered := *e
+	filtered.patterns = selectedPatterns
+	filtered.sensitiveWords = nil
+	filtered.literalIndex = buildLiteralIndex(selectedPatterns, nil)
+	filtered.cfg = e.cfg
+	filtered.cfg.MaxTextLength = len(text)
+	filtered.cfg.Advanced.Guard.Performance = performance
+	return filtered.inspectPreparedScanViews(text, text, allViews, true)
+}
+
+// encodedCurrentUserPrecheckViews closes the gap where one encoded token spans
+// multiple source windows. Ordinary decoded blocks enter the same final scoring
+// pass as other derived views. Oversized blocks contribute only real bounded
+// evidence and an incomplete-normalization review signal; quoted non-executing
+// fixtures remain excluded by the full-source review context.
+func (e *Engine) encodedCurrentUserPrecheckViews(text string, chunkBytes, overlapBytes int) []scanView {
+	cfg := e.cfg.Advanced.Normalization
+	if !cfg.Enabled || (!cfg.DecodeBase64 && !cfg.DecodeHex) {
+		return nil
+	}
+	scanner := e.exactPrecheckScanner
+	patterns := make([]decodedSafetyPriorityPattern, 0, len(scanner.patterns))
+	for _, candidate := range scanner.patterns {
+		if candidate.pattern.cfg.SignalOnly && !candidate.pattern.cfg.Strict {
+			continue
+		}
+		// A literal-free custom expression cannot be admitted to an unbounded
+		// decoded probe without reintroducing the same CPU cliff. It remains fully
+		// active in every ordinary and window-sized normalization view.
+		if len(candidate.hintClauses) > 0 {
+			patterns = append(patterns, candidate)
+		}
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	scanner.patterns = patterns
+	scanner.sensitiveWords = nil
+	scanner.hintIndex = buildDecodedSafetyHintIndex(scanner)
+	reviewContext := newMinorSafetyScanContext(text)
+	views := make([]scanView, 0, cfg.MaxEncodedBlocks+1)
+	seen := make(map[string]struct{})
+	incomplete := false
+	remainingDecodedBytes := MaxGuardCurrentUserBytes
+	appendView := func(value string, normalizationIncomplete bool) {
+		value = normalizeForScan(value)
+		if value == "" {
+			incomplete = incomplete || normalizationIncomplete
+			return
+		}
+		if _, exists := seen[value]; exists {
+			incomplete = incomplete || normalizationIncomplete
+			return
+		}
+		if len(value) > remainingDecodedBytes {
+			incomplete = true
+			return
+		}
+		seen[value] = struct{}{}
+		remainingDecodedBytes -= len(value)
+		views = append(views, scanView{Text: value, NormalizationIncomplete: normalizationIncomplete})
+	}
+	type compressedCandidate struct {
+		raw []byte
+	}
+	compressed := make([]compressedCandidate, 0, cfg.MaxEncodedBlocks)
+	for _, candidate := range encodedCandidates(text, cfg, min(len(text), MaxGuardCurrentUserBytes)) {
+		if encodedCandidateCoveredByCurrentUserWindow(candidate, len(text), chunkBytes, overlapBytes) {
+			continue
+		}
+		if encodedBlockReviewOnlyWithContext(reviewContext, candidate.start, candidate.end) {
+			continue
+		}
+		raw, ok := decodeEncodedCandidateRaw(candidate)
+		if !ok {
+			continue
+		}
+		if cfg.DecodeCompression && compressedPayload(raw) {
+			compressed = append(compressed, compressedCandidate{raw: raw})
+			continue
+		}
+		value, printable := decodedPayloadText(raw, false, len(raw))
+		if !printable {
+			continue
+		}
+		priority, evidence := scanPlainTextPriorityWithWindow(value, chunkBytes, overlapBytes, scanner)
+		if priority <= 0 {
+			continue
+		}
+		if len(value) <= cfg.MaxDecodedBytes {
+			appendView(value, false)
+		} else if strings.TrimSpace(evidence) != "" {
+			appendView(evidence, true)
+		}
+		incomplete = incomplete || len(value) > cfg.MaxDecodedBytes
+	}
+	compressionBudget := MaxGuardCurrentUserBytes
+	for index, candidate := range compressed {
+		remainingCandidates := len(compressed) - index
+		if compressionBudget <= 0 || remainingCandidates <= 0 {
+			incomplete = true
+			break
+		}
+		candidateBudget := compressionBudget / remainingCandidates
+		if candidateBudget > 384*1024 {
+			candidateBudget = 384 * 1024
+		}
+		if candidateBudget < 1 {
+			candidateBudget = 1
+		}
+		value, expanded, overflow, decoded := decompressCurrentUserPayloadPrefix(candidate.raw, candidateBudget)
+		compressionBudget -= min(expanded, candidateBudget)
+		if !decoded {
+			continue
+		}
+		priority, evidence := scanPlainTextPriorityWithWindow(value, chunkBytes, overlapBytes, scanner)
+		if !overflow && len(value) <= cfg.MaxDecodedBytes && priority > 0 {
+			appendView(value, false)
+			continue
+		}
+		incomplete = true
+		if priority > 0 && strings.TrimSpace(evidence) != "" {
+			appendView(evidence, true)
+		}
+	}
+	if incomplete {
+		views = append(views, scanView{NormalizationIncomplete: true})
+	}
+	return views
+}
+
+func decompressCurrentUserPayloadPrefix(raw []byte, limit int) (value string, expanded int, overflow bool, ok bool) {
+	if len(raw) < 2 || limit <= 0 {
+		return "", 0, false, false
+	}
+	reader, opened := openCompressedPayload(raw)
+	if !opened {
+		return "", 0, false, false
+	}
+	defer reader.Close()
+	decoded, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+	expanded = len(decoded)
+	if err != nil || len(decoded) == 0 {
+		return "", expanded, false, false
+	}
+	overflow = len(decoded) > limit
+	if overflow {
+		var valid bool
+		decoded, valid = boundedValidUTF8Prefix(decoded, limit)
+		if !valid {
+			return "", expanded, overflow, false
+		}
+	}
+	if !utf8.Valid(decoded) || !mostlyPrintable(string(decoded)) {
+		return "", expanded, overflow, false
+	}
+	return string(decoded), expanded, overflow, true
+}
+
+// boundedValidUTF8Prefix accepts at most one incomplete UTF-8 rune at the
+// truncation boundary. It performs at most utf8.UTFMax full validations, so an
+// invalid byte in the middle of decompressed input cannot turn a request-path
+// check into the quadratic retry loop used by the generic string helper.
+func boundedValidUTF8Prefix(value []byte, limit int) ([]byte, bool) {
+	if limit <= 0 || len(value) == 0 {
+		return nil, false
+	}
+	end := min(len(value), limit)
+	for trim := 0; trim < utf8.UTFMax && end-trim > 0; trim++ {
+		candidate := value[:end-trim]
+		if utf8.Valid(candidate) {
+			return candidate, true
+		}
+	}
+	return nil, false
+}
+
+func encodedCandidateCoveredByCurrentUserWindow(candidate encodedCandidate, textBytes, chunkBytes, overlapBytes int) bool {
+	if candidate.start < 0 || candidate.end <= candidate.start || candidate.end > textBytes {
+		return false
+	}
+	for start := 0; start < textBytes; {
+		end := min(start+chunkBytes, textBytes)
+		windowStart := max(0, start-overlapBytes)
+		if candidate.start >= windowStart && candidate.end <= end {
+			return true
+		}
+		start = end
+	}
+	return false
+}
+
+func (e *Engine) encodedWindowCurrentUserPrecheckViews(window string, absoluteStart, chunkBytes, overlapBytes int, reviewContext *minorSafetyScanContext) []scanView {
+	cfg := e.cfg.Advanced.Normalization
+	if !cfg.Enabled || (!cfg.DecodeBase64 && !cfg.DecodeHex) || window == "" {
+		return nil
+	}
+	maxFragmentBytes := min(len(window), MaxGuardCurrentUserBytes)
+	candidates := encodedCandidates(window, cfg, maxFragmentBytes)
+	if len(candidates) == 0 {
+		return nil
+	}
+	hasActiveCandidate := false
+	for _, candidate := range candidates {
+		if !encodedBlockReviewOnlyWithContext(reviewContext, absoluteStart+candidate.start, absoluteStart+candidate.end) {
+			hasActiveCandidate = true
+			break
+		}
+	}
+	remainingBytes := cfg.MaxDecodedBytes
+	if remainingBytes <= 0 {
+		remainingBytes = 32768
+	}
+	remainingBlocks := cfg.MaxEncodedBlocks
+	if remainingBlocks <= 0 {
+		remainingBlocks = 16
+	}
+	batch := decodeEmbeddedBlockBatchWithWindow(window, cfg, remainingBytes, remainingBlocks, maxFragmentBytes, chunkBytes, overlapBytes, e)
+	active := make([]string, 0, len(batch.blocks))
+	review := make([]string, 0, len(batch.blocks))
+	for _, block := range batch.blocks {
+		if encodedBlockReviewOnlyWithContext(reviewContext, absoluteStart+block.start, absoluteStart+block.end) {
+			review = append(review, block.value)
+		} else {
+			active = append(active, block.value)
+		}
+	}
+	views := make([]scanView, 0, 5)
+	if len(active) > 0 {
+		views = append(views, scanView{Text: normalizeForScan(strings.Join(active, " "))})
+	}
+	if len(review) > 0 {
+		views = append(views, scanView{Text: normalizeForScan(strings.Join(review, " ")), ReviewOnly: true})
+	}
+	if value := normalizeForScan(batch.activeEvidenceText); value != "" {
+		views = append(views, scanView{Text: value, ReviewOnly: !hasActiveCandidate})
+	}
+	if value := normalizeForScan(batch.reviewEvidenceText); value != "" {
+		views = append(views, scanView{Text: value, ReviewOnly: true})
+	}
+	if batch.activeIncomplete && hasActiveCandidate {
+		views = append(views, scanView{NormalizationIncomplete: true})
+	}
+	return views
+}
+
+func fullCurrentUserDerivedViews(text string, primaryView string, cfg NormalizationConfig, scanner decodedSafetyPriorityScanner) []scanView {
+	if !cfg.Enabled || text == "" {
+		return nil
+	}
+	const (
+		maxViews              = 16
+		maxDerivedSources     = maxViews * 2
+		maxPriorityEvidence   = 8
+		priorityEvidenceBytes = 64 * 1024
+	)
+	remainingBytes := 4 * MaxGuardCurrentUserBytes
+	remainingEvidenceBytes := priorityEvidenceBytes
+	seenSources := make(map[string]struct{})
+	seenViews := make(map[string]struct{})
+	seenEvidence := make(map[string]struct{})
+	views := make([]scanView, 0, 6)
+	priorityEvidenceViews := 0
+	canonicalize := func(value string) string {
+		return stripInvisible(boundedNFKC(value, MaxGuardCurrentUserBytes))
+	}
+	appendPriorityEvidence := func(priority int, evidence string) {
+		if priorityEvidenceViews >= maxPriorityEvidence || remainingEvidenceBytes <= 0 {
+			return
+		}
+		if priority <= 0 {
+			return
+		}
+		evidence = normalizeForScan(evidence)
+		if evidence == "" {
+			return
+		}
+		if _, exists := seenEvidence[evidence]; exists {
+			return
+		}
+		if len(evidence) > remainingEvidenceBytes {
+			return
+		}
+		seenEvidence[evidence] = struct{}{}
+		remainingEvidenceBytes -= len(evidence)
+		priorityEvidenceViews++
+		views = append(views, scanView{Text: evidence, NormalizationIncomplete: true})
+	}
+	appendSource := func(value string, frontier *[]string) {
+		if len(seenSources) >= maxDerivedSources {
+			return
+		}
+		value = canonicalize(value)
+		if value == "" {
+			return
+		}
+		if _, exists := seenSources[value]; exists {
+			return
+		}
+		seenSources[value] = struct{}{}
+		*frontier = append(*frontier, value)
+		maxEncodedFragmentBytes := min(len(value), MaxGuardCurrentUserBytes)
+		viewValue := collapseRecognizedEncodedPayloads(value, cfg, maxEncodedFragmentBytes, nil)
+		viewText := normalizeForScan(viewValue)
+		if viewText == "" {
+			return
+		}
+		if _, exists := seenViews[viewText]; exists {
+			return
+		}
+		seenViews[viewText] = struct{}{}
+		if viewText == primaryView {
+			return
+		}
+		if derivedViewRequiresFullSemantics(viewText, scanner) {
+			if len(views) < maxViews && len(viewText) <= remainingBytes {
+				remainingBytes -= len(viewText)
+				views = append(views, scanView{Text: viewText})
+			}
+			return
+		}
+		priority, evidence := scanPlainTextPriorityWithWindow(viewText, MaxGuardScanChunkBytes, DefaultGuardScanOverlapBytes, scanner)
+		if priority <= 0 {
+			return
+		}
+		if len(views) >= maxViews || len(viewText) > remainingBytes || len(viewText) > MaxGuardScanChunkBytes {
+			// Continue deriving later rounds even when ordinary full-view budget is
+			// exhausted, and never admit a large derived view back into the final
+			// regexp pass. A small, independently bounded evidence lane preserves a
+			// real decision-bearing match without multiplying request-path work by
+			// the number of normalization transforms.
+			appendPriorityEvidence(priority, evidence)
+			return
+		}
+		remainingBytes -= len(viewText)
+		views = append(views, scanView{Text: viewText})
+		if len(views) < maxViews && minorSafetyShouldInspectCompact(viewValue) {
+			compact := compactForScan(viewText)
+			if compact != "" && len(compact) <= remainingBytes {
+				if _, exists := seenViews[compact]; !exists {
+					seenViews[compact] = struct{}{}
+					remainingBytes -= len(compact)
+					views = append(views, scanView{Text: compact, Compacted: true})
+				}
+			}
+		}
+	}
+	frontier := make([]string, 0, 4)
+	appendSource(text, &frontier)
+	rot13MayMatch := func(source string) bool {
+		index := scanner.hintIndex
+		if index == nil {
+			index = buildDecodedSafetyHintIndex(scanner)
+		}
+		if index.unhinted {
+			return true
+		}
+		if index.automaton == nil {
+			return false
+		}
+		matched := index.automaton.matchNormalizedROT13Source(source)
+		return decodedSafetyPriorityMatchedHintSetCanMatch(scanner, matched)
+	}
+	for run := 0; run < cfg.MaxDecodeRuns && len(frontier) > 0 && len(seenSources) < maxDerivedSources; run++ {
+		next := make([]string, 0, len(frontier)*2)
+		for _, source := range frontier {
+			transformSource := collapseRecognizedEncodedPayloads(source, cfg, min(len(source), MaxGuardCurrentUserBytes), nil)
+			if cfg.DecodeROT13 && rot13MayMatch(transformSource) {
+				if decoded, changed := decodeROT13Text(transformSource); changed {
+					appendSource(decoded, &next)
+				}
+			}
+			if cfg.DecodeURL {
+				if decoded, err := url.QueryUnescape(transformSource); err == nil && decoded != transformSource {
+					appendSource(decoded, &next)
+				}
+			}
+			if cfg.DecodeHTML {
+				if decoded := html.UnescapeString(transformSource); decoded != transformSource {
+					appendSource(decoded, &next)
+				}
+			}
+			if cfg.DecodeEscapes {
+				if decoded, changed := decodeEscapedText(transformSource); changed {
+					appendSource(decoded, &next)
+				}
+			}
+		}
+		frontier = next
+	}
+	return views
+}
+
+// derivedViewRequiresFullSemantics identifies configured rules whose result
+// cannot be reproduced from a local evidence excerpt. Exclusions and
+// multi-expression rules must see the same complete derived view that exposed
+// the positive candidate; otherwise a distant exclusion can disappear and
+// turn an allow into a block. The positive check intentionally ignores only
+// exclusions so both an active match and an excluded match retain full context.
+func derivedViewRequiresFullSemantics(text string, scanner decodedSafetyPriorityScanner) bool {
+	matchedHints, _ := decodedSafetyPriorityMatchedHints(text, scanner)
+	for _, candidate := range scanner.patterns {
+		pattern := candidate.pattern
+		if len(pattern.exclude) == 0 && len(pattern.all) == 0 && len(pattern.any) == 0 {
+			continue
+		}
+		if len(candidate.hintClauses) > 0 && !containsDecodedSafetyHintClauseWithMatches("", candidate.hintClauses, matchedHints) {
+			continue
+		}
+		if !patternShouldRun(text, pattern, nil) {
+			continue
+		}
+		positive := pattern
+		positive.exclude = nil
+		if compiledPatternMatchIndex(text, positive) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func exactPrecheckNeedsDerivedViews(text string, cfg NormalizationConfig, scanner decodedSafetyPriorityScanner) bool {
 	if !cfg.Enabled || text == "" {
 		return false
@@ -1181,10 +1718,18 @@ var (
 	defensiveDocumentationContextPattern      = regexp.MustCompile(`(?i)\b(?:policy|policies|rule|guideline|standard|moderation|safety|security|detector|classifier|filter|audit|incident\s+report|analysis|documentation|test\s+(?:fixture|case)|example|sample)\b|(?:政策|策略|规则|准则|标准|审核|安全|检测器|分类器|过滤器|审计|事件报告|分析报告|文档|测试(?:夹具|用例)|示例|样例)`)
 	defensiveDocumentationTreatmentPattern    = regexp.MustCompile(`(?i)\b(?:blocks?|reject(?:s|ed|ing)?|den(?:y|ies|ied|ying)|forbid(?:s|den|ding)?|prohibit(?:s|ed|ing)?|disallow(?:s|ed|ing)?|exclude(?:s|d|ing)?|detect(?:s|ed|ing)?|flags?|classif(?:y|ies|ied|ying)|redact(?:s|ed|ing)?|prevent(?:s|ed|ing)?|mitigate(?:s|d|ing)?|reported?|observed|attempted?|unsafe|malicious)\b|(?:拦截|拒绝|禁止|不允许|排除|检测|识别|标记|分类|脱敏|预防|缓解|观察到|尝试|不安全|恶意)`)
 	defensiveDocumentationReactivationPattern = regexp.MustCompile(`(?i)\b(?:ignore|bypass|override|disregard)\b.{0,48}\b(?:policy|rule|guideline|detector|filter|warning)\b|\b(?:then|now|instead|actually|but)\b.{0,40}\b(?:reveal|show|dump|read|build|deploy|run|create|set\s*up|teach|provide|give)\b|(?:忽略|绕过|覆盖|无视).{0,30}(?:政策|规则|准则|检测|过滤|警告)|(?:然后|现在|改为|实际|但是).{0,24}(?:展示|泄露|输出|读取|建立|创建|搭建|部署|运行|教我|提供|给我)`)
+	selfHarmProtectiveDocumentationPattern    = regexp.MustCompile(`(?i)\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid|refuse\s+to)\b.{0,24}\b(?:name|list|describe|provide|give|recommend|suggest|teach)\b.{0,60}\b(?:methods?|steps?|instructions?|ways?|suicide|self[-\s]?harm|cutting)\b|\b(?:methods?|steps?|instructions?|ways?)\b.{0,40}\b(?:must\s+not|should\s+not|cannot|can't|are\s+not\s+to\s+be)\b.{0,32}\b(?:provided|listed|described|recommended|taught)\b|(?:不要|不得|禁止|不能|不应|切勿|避免|不)(?:再)?(?:命名|列出|描述|提供|教授|说明|推荐|建议).{0,32}(?:方法|步骤|方式|替代|自杀|自残|自我伤害)|(?:方法|步骤|方式|替代).{0,32}(?:不要|不得|禁止|不能|不应|切勿|避免|不建议).{0,32}(?:自杀|自残|自我伤害)`)
+	selfHarmBoundPreventionPattern            = regexp.MustCompile(`(?i)\b(?:how\s+to|ways?\s+to|methods?\s+to|steps?\s+to)\s+(?:prevent|avoid|reduce|mitigate|intervene|screen\s+for|treat)\b[^.!?;\n]{0,24}\b` + selfHarmTargetEN + `\b|\b(?:methods?|steps?|strategies?|resources?)\b[^.!?;\n]{0,24}\b(?:to|for)\s+(?:prevent(?:ing)?|avoid(?:ing)?|reduc(?:e|ing)|mitigat(?:e|ing)|interven(?:e|ing)|screen(?:ing)?\s+for|treat(?:ing)?)\b[^.!?;\n]{0,24}\b` + selfHarmTargetEN + `\b|\b(?:methods?|steps?|strategies?|resources?)\b[^.!?;\n]{0,20}\bfor\s+` + selfHarmTargetEN + `\s+(?:prevention|intervention|support|risk\s+reduction)\b|\b(?:prevention|intervention|coping|support|crisis|harm[-\s]?reduction)\s+(?:methods?|steps?|strategies?|resources?)\b[^.!?;\n]{0,24}\b(?:for\s+)?` + selfHarmTargetEN + `\b|\b` + selfHarmTargetEN + `\s+(?:prevention|intervention|support|risk\s+reduction)\s+(?:methods?|strategies?|resources?)\b|(?:如何|怎么)(?:预防|防止|避免|降低|减少|缓解|干预|筛查|治疗)` + selfHarmTargetZH + `|(?:方法|步骤|策略|资源)(?:来|用于|以便)?(?:预防|防止|避免|降低|减少|缓解|干预|筛查|治疗)` + selfHarmTargetZH + `|(?:方法|步骤|策略|资源)[^。！？；\n]{0,12}(?:用于|关于)?` + selfHarmTargetZH + `(?:预防|干预|支持|风险降低)|(?:预防|防止|避免|降低|减少|缓解|干预|筛查|治疗)` + selfHarmTargetZH + `(?:的)?(?:具体|有效|循证)?(?:方法|步骤|策略|资源)|` + selfHarmTargetZH + `(?:预防|干预|支持|风险降低)(?:方法|策略|资源)`)
+	selfHarmResearchMethodsPattern            = regexp.MustCompile(`(?i)\b(?:statistical|research|clinical|epidemiological|intervention)\s+(?:analysis\s+)?methods?\b|(?:统计|研究|临床|流行病学|干预)(?:分析)?方法`)
+	selfHarmResearchOutcomePattern            = regexp.MustCompile(`(?i)\b` + selfHarmTargetEN + `\b[^.!?;\n]{0,24}\b(?:mortality|status|risk|rates?|prevalence|incidence|outcomes?|results?|ideation)\b|\b(?:outcomes?|results?|endpoints?|measures?|mortality|status|rates?|risk)\b[^.!?;\n]{0,24}\b(?:(?:is|was|are|were)\s+)?` + selfHarmTargetEN + `\b|` + selfHarmTargetZH + `(?:率|死亡率|风险|状态|结局|结果|意念)|(?:结局|结果|指标|死亡率|状态|风险)[^。！？；\n]{0,20}(?:是|为)?` + selfHarmTargetZH + ``)
+	selfHarmResearchCausationPattern          = regexp.MustCompile(`(?i)\b(?:ensure|guarantee|cause|induce|trigger|facilitate|promote|bring\s+about|lead\s+to|result\s+in|make)\b|(?:确保|导致|造成|诱发|促成|使[^。！？；\n]{0,16}(?:成为|变成|达到))`)
+	selfHarmPreventionCancellationPattern     = regexp.MustCompile(`(?i)\b(?:ignore|reject|skip|without|instead\s+of|not)\b[^.!?;\n]{0,24}\b(?:prevention|support|coping|intervention|safety)\b|(?:忽略|拒绝|跳过|不要|无需|不做|而不是)[^。！？；\n]{0,20}(?:预防|支持|干预|安全|求助)`)
+	selfHarmDocumentationReactivationPattern  = regexp.MustCompile(selfHarmReactivationPattern)
 	negatedPolicyActionProtectiveBoundPattern = regexp.MustCompile(`(?i)^(?:(?:\b(?:prevent|stop)\b.{0,48}\b(?:from|attempts?\s+to|requests?\s+to)\b)|(?:\b(?:block|detect)\b.{0,48}\b(?:attempts?|requests?|efforts?|users?|the\s+(?:model|assistant))\b.{0,24}\b(?:to|from)\b)|(?:\b(?:test|verify)\b.{0,40}\b(?:whether|that|attempts?|requests?)\b)|(?:防止|阻止|拦截|检测|测试|验证).{0,48}).{0,16}(?:\b(?:bypass|evade|disable|ignore|remove|reveal|show|dump|read|print)\b|(?:绕过|规避|关闭|忽略|移除|泄露|展示|输出|读取|查看))$`)
 	negatedPolicyActionCancellationPattern    = regexp.MustCompile(`(?i)\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't)\b.{0,32}\b(?:prevent|block|stop|detect)\b|(?:不要|不得|禁止|不能|不应|切勿).{0,24}(?:防止|阻止|拦截|检测)`)
 	negatedPolicyActionDirectCancellation     = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:refuse|decline|fail|hesitate|avoid)\b.{0,32}$|^\s*(?:拒绝|避免|犹豫|迟疑|不敢|未能).{0,16}$`)
 	negatedPolicyActionSharedBridgePattern    = regexp.MustCompile(`(?i)^\s*(?:(?:bypass|evade|disable|ignore|remove|reveal|show|dump|read|print)\s*(?:or|/)\s*)+$|^\s*(?:(?:绕过|规避|关闭|忽略|移除|泄露|展示|输出|读取|查看)\s*(?:或|或者|/)\s*)+$`)
+	protectiveWarningSuppressionPattern       = regexp.MustCompile(`(?i)^\s*no\s+(?:warning|disclaimer|refusal)s?\s+(?:suppression|removal|bypass)\b|^\s*(?:禁止|不允许|不要|不得).{0,8}(?:警告|拒绝|免责声明).{0,8}(?:抑制|移除|删除)\b`)
 	protectiveRefusalSuppressionPattern       = regexp.MustCompile(`(?i)\b(?:never|do\s+not|don't|must\s+not|should\s+not)\s+(?:refuse|decline|fail|hesitate|avoid)\b.{0,32}\b(?:block|prevent|stop|detect|reject|deny)\b.{0,64}\b(?:attempts?|requests?|efforts?|users?)\b.{0,48}\b(?:bypass|evade|disable|ignore|remove|reveal|show|dump|read|print)\b|(?:不要|不得|不能|切勿|不应).{0,12}(?:拒绝|遗漏|回避|避免|犹豫).{0,16}(?:拦截|阻止|防止|检测|拒绝).{0,48}(?:泄露|绕过|规避|关闭|忽略|移除).{0,24}(?:系统提示词|开发者消息|安全规则|安全策略|安全过滤|安全校验|内容审核)`)
 )
 
@@ -1434,7 +1979,7 @@ func patternSuppressedForQuotedPolicyReview(original string, pattern compiledPat
 
 func patternSuppressedForDefensiveRuleArtifact(original string, pattern compiledPattern) bool {
 	switch pattern.cfg.Name {
-	case "operational_remote_access_request", "reverse_shell_execution", "malware_creation_request":
+	case "operational_remote_access_request", "reverse_shell_execution", "malware_creation_request", "ransomware_deployment":
 	default:
 		return false
 	}
@@ -1468,7 +2013,22 @@ func patternSuppressedForDefensiveDocumentation(original string, pattern compile
 	default:
 		return false
 	}
-	if pattern.re == nil || defensiveDocumentationReactivationPattern.MatchString(original) {
+	if pattern.re == nil {
+		return false
+	}
+	if pattern.cfg.Name == "self_harm_facilitation" {
+		// Self-harm prevention guidance often contains ordinary transitions such
+		// as "however, provide prevention methods". Only the target-bound
+		// self-harm reactivation detector may cancel its protective suppression;
+		// the generic documentation reactivation pattern is intentionally broader
+		// and would turn prevention guidance into a strict false positive.
+		if selfHarmHasActiveReactivation(original) {
+			return false
+		}
+		if selfHarmProtectiveDocumentationMatches(original, pattern) {
+			return true
+		}
+	} else if defensiveDocumentationReactivationPattern.MatchString(original) {
 		return false
 	}
 	matches := pattern.re.FindAllStringIndex(original, -1)
@@ -1488,6 +2048,49 @@ func patternSuppressedForDefensiveDocumentation(original string, pattern compile
 		}
 	}
 	return true
+}
+
+func selfHarmProtectiveDocumentationMatches(original string, pattern compiledPattern) bool {
+	if pattern.re == nil || selfHarmHasActiveReactivation(original) {
+		return false
+	}
+	matches := pattern.re.FindAllStringIndex(original, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	for _, loc := range matches {
+		if len(loc) != 2 || loc[0] < 0 || loc[1] < loc[0] || loc[1] > len(original) {
+			return false
+		}
+		window := matchSentence(original, loc[0], loc[1])
+		matched := original[loc[0]:loc[1]]
+		protective := selfHarmProtectiveDocumentationPattern.MatchString(window) || selfHarmBoundPreventionPattern.MatchString(matched)
+		research := selfHarmResearchMethodsPattern.MatchString(matched) &&
+			selfHarmResearchOutcomePattern.MatchString(matched) &&
+			!selfHarmResearchCausationPattern.MatchString(matched)
+		if !protective && !research {
+			return false
+		}
+	}
+	return true
+}
+
+func selfHarmHasActiveReactivation(text string) bool {
+	for _, loc := range selfHarmDocumentationReactivationPattern.FindAllStringIndex(text, -1) {
+		if len(loc) != 2 || loc[0] < 0 || loc[1] < loc[0] || loc[1] > len(text) {
+			return true
+		}
+		windowEnd := len(text)
+		if boundary := strings.IndexAny(text[loc[1]:], ".!?;。！？；\n"); boundary >= 0 {
+			windowEnd = loc[1] + boundary
+		}
+		tail := text[loc[0]:windowEnd]
+		if selfHarmBoundPreventionPattern.MatchString(tail) && !selfHarmPreventionCancellationPattern.MatchString(tail) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // patternSuppressedForAuthorizationBoundary distinguishes a neutral access-
@@ -1601,6 +2204,10 @@ func protectiveRefusalMatchesAreBounded(text string, pattern compiledPattern) bo
 	for _, loc := range matches {
 		if len(loc) != 2 || loc[0] < 0 || loc[1] < loc[0] || loc[1] > len(text) {
 			return false
+		}
+		warningWindowEnd := min(len(text), loc[1]+32)
+		if protectiveWarningSuppressionPattern.MatchString(text[loc[0]:warningWindowEnd]) {
+			continue
 		}
 		clause := policySemanticClauseWindow(text, loc[0], loc[1])
 		if clause == "" || !protectiveRefusalSuppressionPattern.MatchString(clause) {
