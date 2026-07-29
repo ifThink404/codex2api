@@ -35,7 +35,13 @@ type Signal struct {
 	highConfidenceToolOutput bool
 }
 
-const currentUserPrecheckRevision = "legacy-regex-current-user-v1"
+const currentUserPrecheckRevision = "legacy-regex-current-user-v2"
+
+// Full derived-view inspection is intentionally capped independently from the
+// envelope sample budget. Larger prompts still retain one complete primary view
+// and request-wide scoring, while expensive normalization/decoding work is
+// bounded to overlapping windows on the synchronous first-token path.
+const maxSynchronousExactCurrentUserBytes = 256 * 1024
 
 const ReasonCodeAdapterUnclassified = "adapter_unclassified"
 
@@ -739,16 +745,13 @@ func parseApprovalReassessmentPrompt(text string, envelope RequestEnvelope) (str
 
 func approvalReassessmentModel(envelope RequestEnvelope) bool {
 	requested := strings.TrimSpace(envelope.RequestedModel)
-	effective := strings.TrimSpace(envelope.EffectiveModel)
-	if requested == "" && effective == "" {
-		return false
-	}
-	for _, model := range []string{requested, effective} {
-		if model != "" && !strings.EqualFold(model, "codex-auto-review") {
-			return false
-		}
-	}
-	return true
+	// The request may already have been mapped to a concrete upstream model
+	// before the GuardPipeline runs. RequestedModel retains the authenticated
+	// client-facing model from NewAPI metadata, while EffectiveModel describes
+	// that resolved upstream target. Trust only an explicit auto-review request;
+	// never let an ordinary requested model inherit this classification merely
+	// because its effective model happens to use the auto-review alias.
+	return strings.EqualFold(requested, "codex-auto-review")
 }
 
 func splitAmbientSafetyPrompt(text string, signatures []applicationTemplateSignature) (string, bool) {
@@ -969,13 +972,18 @@ func prepareCurrentUserPrecheck(envelope RequestEnvelope, detectionContext Detec
 	if err != nil || engine == nil {
 		return envelope
 	}
-	verdict := engine.inspectExactCurrentUserPrecheck(exactText, detectionContext.Guard.Performance)
+	contentDigest := exactGuardTextHash(exactText)
+	verdict := sharedExactGuardSegmentCache.inspectCurrentUserPrecheckHashed(
+		engine,
+		exactText,
+		contentDigest,
+		detectionContext.Guard.Performance,
+	)
 	reviewText := strings.TrimSpace(verdict.MatchContext)
 	if reviewText == "" && len(verdict.Matched) > 0 {
 		reviewText = cachedVerdictRedactedPreview(exactText, 1000)
 	}
 	reviewText = safeUTF8Prefix(reviewText, 16*1024)
-	contentDigest := sha256.Sum256([]byte(exactText))
 	correlationKey := ""
 	if len(verdict.Matched) > 0 {
 		correlationKey = legacySignalCorrelationDigest(contentDigest, verdict.Matched)
@@ -1131,12 +1139,22 @@ func (d LegacyRegexDetector) Detect(_ context.Context, envelope RequestEnvelope,
 type exactGuardSegmentCacheKey struct {
 	engine           *Engine
 	revision         string
+	kind             exactGuardInspectionKind
 	textHash         [sha256.Size]byte
+	textBytes        int
 	maxScanBytes     int
 	scanChunkBytes   int
 	scanOverlapBytes int
 	truncated        bool
 }
+
+type exactGuardInspectionKind uint8
+
+const (
+	exactGuardInspectionSegment exactGuardInspectionKind = iota
+	exactGuardInspectionCurrentUserExact
+	exactGuardInspectionCurrentUserWindowed
+)
 
 type exactGuardSegmentCacheEntry struct {
 	key      exactGuardSegmentCacheKey
@@ -1188,10 +1206,80 @@ func (c *exactGuardSegmentCache) inspectWithBudget(engine *Engine, text string, 
 	if c == nil || !performance.ExactSegmentCacheEnabled {
 		return engine.InspectTextWithPerformanceBudget(text, maxScanBytes, performance)
 	}
+	textHash := exactGuardTextHash(text)
+	return c.inspectComputed(
+		engine,
+		text,
+		textHash,
+		performance,
+		maxScanBytes,
+		truncated,
+		exactGuardInspectionSegment,
+		exactGuardSegmentCacheRevision,
+		func() Verdict {
+			return engine.InspectTextWithPerformanceBudget(text, maxScanBytes, performance)
+		},
+		func(verdict Verdict) Verdict {
+			return restoreExactGuardVerdictWithPerformanceBudget(engine, verdict, text, maxScanBytes, performance)
+		},
+	)
+}
+
+func (c *exactGuardSegmentCache) inspectCurrentUserPrecheckHashed(engine *Engine, text string, textHash [sha256.Size]byte, performance GuardPerformanceConfig) Verdict {
+	if engine == nil {
+		panic("promptfilter: current-user precheck cache received nil engine")
+	}
+	maxScanBytes := len(text)
+	if maxScanBytes > MaxGuardCurrentUserBytes {
+		maxScanBytes = MaxGuardCurrentUserBytes
+	}
+	kind := exactGuardInspectionCurrentUserExact
+	compute := func() Verdict {
+		return engine.inspectExactCurrentUserPrecheck(text, performance)
+	}
+	if len(text) > maxSynchronousExactCurrentUserBytes {
+		kind = exactGuardInspectionCurrentUserWindowed
+		compute = func() Verdict {
+			return engine.inspectWindowedCurrentUserPrecheck(text, performance)
+		}
+	}
+	return c.inspectComputed(
+		engine,
+		text,
+		textHash,
+		performance,
+		maxScanBytes,
+		false,
+		kind,
+		currentUserPrecheckRevision,
+		compute,
+		func(verdict Verdict) Verdict {
+			return restoreCurrentUserPrecheckVerdictWithPerformanceBudget(engine, verdict, text, maxScanBytes, performance)
+		},
+	)
+}
+
+func (c *exactGuardSegmentCache) inspectComputed(
+	engine *Engine,
+	text string,
+	textHash [sha256.Size]byte,
+	performance GuardPerformanceConfig,
+	maxScanBytes int,
+	truncated bool,
+	kind exactGuardInspectionKind,
+	revision string,
+	compute func() Verdict,
+	restore func(Verdict) Verdict,
+) Verdict {
+	if c == nil || !performance.ExactSegmentCacheEnabled {
+		return compute()
+	}
 	key := exactGuardSegmentCacheKey{
 		engine:           engine,
-		revision:         exactGuardSegmentCacheRevision,
-		textHash:         exactGuardTextHash(text),
+		revision:         revision,
+		kind:             kind,
+		textHash:         textHash,
+		textBytes:        len(text),
 		maxScanBytes:     maxScanBytes,
 		scanChunkBytes:   performance.ScanChunkBytes,
 		scanOverlapBytes: performance.ScanOverlapBytes,
@@ -1211,7 +1299,7 @@ func (c *exactGuardSegmentCache) inspectWithBudget(engine *Engine, text string, 
 			// Evidence reconstruction can perform bounded normalization and regex
 			// work. Never hold the process-wide LRU lock while doing that work, or
 			// concurrent cache hits would serialize and recreate a latency queue.
-			return restoreExactGuardVerdictWithPerformanceBudget(engine, cachedVerdict, text, maxScanBytes, performance)
+			return restore(cachedVerdict)
 		}
 		c.removeElement(element)
 	}
@@ -1222,7 +1310,7 @@ func (c *exactGuardSegmentCache) inspectWithBudget(engine *Engine, text string, 
 		if flight.panicValue != nil {
 			panic(flight.panicValue)
 		}
-		return restoreExactGuardVerdictWithPerformanceBudget(engine, flight.verdict, text, maxScanBytes, performance)
+		return restore(flight.verdict)
 	}
 	flight := &exactGuardSegmentFlight{done: make(chan struct{})}
 	c.inflight[key] = flight
@@ -1240,7 +1328,7 @@ func (c *exactGuardSegmentCache) inspectWithBudget(engine *Engine, text string, 
 				panic(recovered)
 			}
 		}()
-		verdict = engine.InspectTextWithPerformanceBudget(text, maxScanBytes, performance)
+		verdict = compute()
 	}()
 	cachedVerdict := cacheExactGuardVerdict(verdict)
 
@@ -1290,6 +1378,29 @@ func cacheExactGuardVerdict(verdict Verdict) Verdict {
 	verdict.FullText = ""
 	verdict.TextPreview = ""
 	verdict.MatchContext = ""
+	verdict.Matched = append([]Match(nil), verdict.Matched...)
+	return verdict
+}
+
+func restoreCurrentUserPrecheckVerdictWithPerformanceBudget(engine *Engine, verdict Verdict, text string, maxScanBytes int, performance GuardPerformanceConfig) Verdict {
+	if engine == nil || len(verdict.Matched) == 0 {
+		return verdict
+	}
+	needsContext := false
+	for _, match := range verdict.Matched {
+		if !match.SignalOnly || match.Strict {
+			needsContext = true
+			break
+		}
+	}
+	if !needsContext {
+		verdict.Matched = append([]Match(nil), verdict.Matched...)
+		return verdict
+	}
+	// Precheck evidence is consumed immediately and then cleared by
+	// prepareCurrentUserPrecheck. Rebuild only the bounded match context; never
+	// reattach the complete prompt or a long-lived preview to the cache result.
+	verdict.MatchContext = engine.cachedVerdictMatchContextWithPerformanceBudget(text, verdict.Matched, maxScanBytes, performance)
 	verdict.Matched = append([]Match(nil), verdict.Matched...)
 	return verdict
 }

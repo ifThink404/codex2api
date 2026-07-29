@@ -2099,7 +2099,7 @@ func decodedSafetyPriorityNormalizedWithHints(normalized string, scanner decoded
 		// admitted for inspection, but they are not enforcement evidence and must
 		// never consume the finite out-of-budget candidate pool ahead of a real
 		// decision rule.
-		if candidatePattern.pattern.cfg.SignalOnly {
+		if candidatePattern.pattern.cfg.SignalOnly && !candidatePattern.pattern.cfg.Strict {
 			continue
 		}
 		if len(candidatePattern.hintClauses) > 0 && !containsDecodedSafetyHintClauseWithMatches(normalized, candidatePattern.hintClauses, matchedHints) {
@@ -2516,6 +2516,16 @@ func decodedSafetyLiteralGuaranteedHintClauses(expression *syntax.Regexp) ([][]s
 }
 
 func decodedSafetyMandatoryHintClauses(pattern compiledPattern) [][]string {
+	if pattern.cfg.Name == "self_harm_facilitation" {
+		// Every branch of the dedicated grammar contains one of these target
+		// terms. Keep the list explicit so future relationship refinements do not
+		// make the syntax extractor drop this strict rule from large-request and
+		// decoded-content fast paths.
+		return singleDecodedSafetyHintClauses([]string{
+			"suicide", "self-harm", "self harm", "cutting", "starve myself", "starving myself",
+			"自杀", "自残", "割腕", "伤害自己", "绝食",
+		})
+	}
 	if pattern.cfg.Name == "prompt_unrestricted_mode" {
 		return singleDecodedSafetyHintClauses([]string{
 			"unrestricted mode", "unrestricted model", "unrestricted assistant", "unrestricted access",

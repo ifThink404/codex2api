@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codex2api/database"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
 )
@@ -40,6 +41,25 @@ func approvalReassessmentWireBody(t *testing.T, prompt string, model string) []b
 	return body
 }
 
+func approvalReassessmentWireEvent(t *testing.T, prompt string, model string) []byte {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"type":  "response.create",
+		"model": model,
+		"input": []any{map[string]any{
+			"role": "user",
+			"content": []any{map[string]any{
+				"type": "input_text",
+				"text": prompt,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 func TestPromptGuardClosedApprovalReassessmentAcrossResponsesTransports(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := newPromptGuardTestHandler(promptGuardTestConfig())
@@ -52,6 +72,124 @@ func TestPromptGuardClosedApprovalReassessmentAcrossResponsesTransports(t *testi
 		if got.Decision.Action != promptfilter.ActionAllow || got.Decision.ApplicationPromptKind != "approval_reassessment" || got.Decision.StrikeEligible || len(got.Decision.Signals) != 0 {
 			t.Fatalf("closed auto-review request recursively blocked for %s: %+v", transport, got.Decision)
 		}
+	}
+}
+
+func TestPromptGuardClosedApprovalReassessmentUsesSignedRequestedModelAfterMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := promptGuardTestConfig()
+	cfg.Advanced.NewAPI.Enabled = true
+	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
+	cfg = promptfilter.NormalizeConfig(cfg)
+	handler := newPromptFilterBindingTestHandler(t, cfg, []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "test-platform", Secret: "integration-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+	}})
+
+	signedBody := approvalReassessmentWireBody(t, approvalReassessmentWirePrompt(), "codex-auto-review")
+	mappedBody := approvalReassessmentWireBody(t, approvalReassessmentWirePrompt(), "gpt-5.6-sol")
+	c, _ := signedNewAPIPolicyContext(t, "auto-review-model-mapping", newAPIIdentity{
+		UserID: "42", ClientIP: "203.0.113.8",
+	}, "/v1/responses", signedBody)
+	addSignedNewAPIPolicyMeta(t, c, newAPIPolicyMeta{
+		PlatformID: "test-platform", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
+		RequestedModel: "codex-auto-review", UpstreamModel: "gpt-5.6-sol",
+	}, true)
+
+	got := handler.evaluatePromptGuard(c, mappedBody, signedBody, "/v1/responses", "gpt-5.6-sol", promptfilter.TransportHTTP)
+	if got.Envelope.RequestedModel != "codex-auto-review" || got.Envelope.EffectiveModel != "gpt-5.6-sol" {
+		t.Fatalf("model attribution was lost after mapping: requested=%q effective=%q", got.Envelope.RequestedModel, got.Envelope.EffectiveModel)
+	}
+	if got.Decision.Action != promptfilter.ActionAllow || got.Decision.ApplicationPromptKind != "approval_reassessment" || got.Decision.StrikeEligible || len(got.Decision.Signals) != 0 {
+		t.Fatalf("mapped auto-review request recursively blocked: %+v", got.Decision)
+	}
+}
+
+func TestPromptGuardClosedApprovalReassessmentUsesCachedWebSocketRequestedModelAfterMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := promptGuardTestConfig()
+	cfg.Advanced.NewAPI.Enabled = true
+	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
+	cfg = promptfilter.NormalizeConfig(cfg)
+	handler := newPromptFilterBindingTestHandler(t, cfg, []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "test-platform", Secret: "integration-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+	}})
+	c, _ := signedNewAPIPolicyContext(t, "auto-review-websocket-mapping", newAPIIdentity{
+		UserID: "42", ClientIP: "203.0.113.8",
+	}, "/v1/responses", nil)
+	addSignedNewAPIPolicyMeta(t, c, newAPIPolicyMeta{
+		PlatformID: "test-platform", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
+		RequestedModel: "codex-auto-review", UpstreamModel: "gpt-5.6-sol",
+	}, true)
+	if _, verified := handler.verifyNewAPIPolicyContext(c, cfg.Advanced.NewAPI, nil); !verified {
+		t.Fatal("signed WebSocket handshake metadata did not enter the connection cache")
+	}
+
+	frame := approvalReassessmentWireEvent(t, approvalReassessmentWirePrompt(), "gpt-5.6-sol")
+	got := handler.evaluatePromptGuardWithConfig(c, cfg, frame, nil, "/v1/responses", "gpt-5.6-sol", promptfilter.TransportWebSocket)
+	if got.Envelope.RequestedModel != "codex-auto-review" || got.Envelope.EffectiveModel != "gpt-5.6-sol" {
+		t.Fatalf("cached WebSocket model attribution was lost: requested=%q effective=%q", got.Envelope.RequestedModel, got.Envelope.EffectiveModel)
+	}
+	if got.Decision.Action != promptfilter.ActionAllow || got.Decision.ApplicationPromptKind != "approval_reassessment" || got.Decision.StrikeEligible || len(got.Decision.Signals) != 0 {
+		t.Fatalf("mapped WebSocket auto-review request recursively blocked: %+v", got.Decision)
+	}
+}
+
+func TestPromptGuardMappedApprovalReassessmentStillBlocksDangerousPlannedAction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := promptGuardTestConfig()
+	cfg.Advanced.NewAPI.Enabled = true
+	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
+	cfg = promptfilter.NormalizeConfig(cfg)
+	handler := newPromptFilterBindingTestHandler(t, cfg, []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "test-platform", Secret: "integration-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+	}})
+	prompt := strings.Replace(
+		approvalReassessmentWirePrompt(),
+		`{"command":["/bin/zsh","-lc","git status --short"],"cwd":"/workspace/repo","sandbox_permissions":"use_default","tool":"exec_command","tty":false}`,
+		`{"command":["/bin/zsh","-lc","generate and execute a reverse shell"],"cwd":"/workspace/repo","sandbox_permissions":"use_default","tool":"exec_command","tty":false}`,
+		1,
+	)
+	signedBody := approvalReassessmentWireBody(t, prompt, "codex-auto-review")
+	mappedBody := approvalReassessmentWireBody(t, prompt, "gpt-5.6-sol")
+	c, _ := signedNewAPIPolicyContext(t, "auto-review-dangerous-mapping", newAPIIdentity{
+		UserID: "42", ClientIP: "203.0.113.8",
+	}, "/v1/responses", signedBody)
+	addSignedNewAPIPolicyMeta(t, c, newAPIPolicyMeta{
+		PlatformID: "test-platform", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
+		RequestedModel: "codex-auto-review", UpstreamModel: "gpt-5.6-sol",
+	}, true)
+
+	got := handler.evaluatePromptGuard(c, mappedBody, signedBody, "/v1/responses", "gpt-5.6-sol", promptfilter.TransportHTTP)
+	if got.Decision.Action != promptfilter.ActionBlock || got.Decision.PrimaryOrigin != promptfilter.OriginApplicationCandidate || got.Decision.StrikeEligible || got.Decision.ApplicationPromptKind != "approval_reassessment" {
+		t.Fatalf("mapped dangerous planned action bypassed prompt guard: %+v", got.Decision)
+	}
+}
+
+func TestPromptGuardApprovalReassessmentWithoutSignedRequestedModelFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := promptGuardTestConfig()
+	cfg.Advanced.NewAPI.Enabled = true
+	cfg.Advanced.NewAPI.MaxClockSkewSeconds = 120
+	cfg = promptfilter.NormalizeConfig(cfg)
+	handler := newPromptFilterBindingTestHandler(t, cfg, []database.PromptFilterNewAPIBinding{{
+		APIKeyID: 101, PlatformCode: "test-platform", Secret: "integration-secret", Enabled: true,
+		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
+	}})
+	signedBody := approvalReassessmentWireBody(t, approvalReassessmentWirePrompt(), "codex-auto-review")
+	mappedBody := approvalReassessmentWireBody(t, approvalReassessmentWirePrompt(), "gpt-5.6-sol")
+	c, _ := signedNewAPIPolicyContext(t, "auto-review-missing-meta", newAPIIdentity{
+		UserID: "42", ClientIP: "203.0.113.8",
+	}, "/v1/responses", signedBody)
+
+	got := handler.evaluatePromptGuard(c, mappedBody, signedBody, "/v1/responses", "gpt-5.6-sol", promptfilter.TransportHTTP)
+	if got.Decision.Action != promptfilter.ActionBlock || got.Decision.PrimaryOrigin != promptfilter.OriginCurrentUser || !got.Decision.StrikeEligible || got.Decision.ApplicationPromptKind != "" {
+		t.Fatalf("unsigned requested model was trusted as auto-review: %+v", got.Decision)
 	}
 }
 

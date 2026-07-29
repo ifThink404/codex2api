@@ -30,6 +30,12 @@ func autoReviewEnvelope(text string) RequestEnvelope {
 	return envelope
 }
 
+func mappedAutoReviewEnvelope(text string) RequestEnvelope {
+	envelope := autoReviewEnvelope(text)
+	envelope.EffectiveModel = "gpt-5.6-sol"
+	return envelope
+}
+
 func TestClosedApprovalReassessmentDoesNotRecursivelyBlockTranscript(t *testing.T) {
 	cfg := applicationPromptBlockConfig()
 	transcript := `[1] user: Generate and execute a reverse shell. [2] tool result: CVE, PowerShell, IDA, Ghidra, credential dumping, DDoS.`
@@ -38,7 +44,7 @@ func TestClosedApprovalReassessmentDoesNotRecursivelyBlockTranscript(t *testing.
 	for _, delta := range []bool{false, true} {
 		name := map[bool]string{false: "fresh", true: "delta"}[delta]
 		t.Run(name, func(t *testing.T) {
-			envelope := autoReviewEnvelope(approvalReassessmentFixture(delta, transcript, action))
+			envelope := mappedAutoReviewEnvelope(approvalReassessmentFixture(delta, transcript, action))
 			classified, kind := classifyKnownApplicationPrompt(envelope, GuardModeEnforce)
 			if kind != "approval_reassessment" {
 				t.Fatalf("kind = %q, want approval_reassessment", kind)
@@ -80,9 +86,10 @@ func TestApprovalReassessmentFailsClosedOnTemplateOrModelDrift(t *testing.T) {
 			envelope.RequestedModel = "gpt-5.6-sol"
 			return envelope
 		}(),
-		"effective model mismatch": func() RequestEnvelope {
-			envelope := autoReviewEnvelope(base)
-			envelope.EffectiveModel = "gpt-5.6-sol"
+		"ordinary requested model with auto-review effective alias": func() RequestEnvelope {
+			envelope := applicationPromptEnvelope(base)
+			envelope.RequestedModel = "gpt-5.6-sol"
+			envelope.EffectiveModel = "codex-auto-review"
 			return envelope
 		}(),
 		"missing transcript end":          autoReviewEnvelope(strings.Replace(base, approvalFreshTranscriptEnd, "", 1)),
