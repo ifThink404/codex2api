@@ -143,20 +143,11 @@ func TestMessagesResponseFailedCyberPolicyEntersUnifiedAuditAndCandidateQueue(t 
 
 	_ = invokeAnthropicMessagesStream(t, handler)
 	waitPromptFilterAuditIdle(t, db)
-	logs, err := db.ListPromptFilterLogs(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("ListPromptFilterLogs: %v", err)
+	incidents, incidentTotal, err := db.ListPromptPolicyIncidentsPage(context.Background(), database.PromptPolicyIncidentQuery{Page: 1, PageSize: 10})
+	if err != nil || incidentTotal == 0 || len(incidents) == 0 || incidents[0].Endpoint != "/v1/messages" || incidents[0].Transport != "sse" {
+		t.Fatalf("messages cyber_policy incident total=%d items=%#v err=%v", incidentTotal, incidents, err)
 	}
-	found := false
-	for _, item := range logs {
-		if item.Source == "upstream_cyber_policy" && item.Endpoint == "/v1/messages" && item.ErrorCode == "cyber_policy" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("messages cyber_policy log missing: %#v", logs)
-	}
+	assertCyberUsageIncidentLinks(t, db, "/v1/messages")
 	candidates, total, err := db.ListPromptRuleCandidates(context.Background(), database.PromptRuleCandidateQuery{Status: database.PromptRuleCandidateStatusPending})
 	if err != nil || total != 1 || len(candidates) != 1 || candidates[0].Kind != database.PromptRuleCandidateKindEvidence {
 		t.Fatalf("messages candidate total=%d items=%#v err=%v", total, candidates, err)

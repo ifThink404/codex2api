@@ -2,6 +2,9 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -21,6 +24,20 @@ type promptFilterLogsResponse struct {
 	Total    int                         `json:"total"`
 	Page     int                         `json:"page"`
 	PageSize int                         `json:"page_size"`
+}
+
+type promptPolicyIncidentsResponse struct {
+	Incidents []*database.PromptPolicyIncident `json:"incidents"`
+	Total     int                              `json:"total"`
+	Page      int                              `json:"page"`
+	PageSize  int                              `json:"page_size"`
+}
+
+type promptPolicyIncidentDetailResponse struct {
+	Incident  *database.PromptPolicyIncident        `json:"incident"`
+	Matches   json.RawMessage                       `json:"matches"`
+	Candidate *database.PromptRuleCandidate         `json:"candidate,omitempty"`
+	Evidence  *database.PromptRuleCandidateEvidence `json:"evidence,omitempty"`
 }
 
 type promptFilterTestRequest struct {
@@ -164,7 +181,80 @@ func (h *Handler) ClearPromptFilterLogs(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	writeMessage(c, http.StatusOK, "Prompt 检查日志已清空")
+	writeMessage(c, http.StatusOK, "Prompt 检查日志和上游 CY 事件已清空")
+}
+
+func (h *Handler) ListPromptPolicyIncidents(c *gin.Context) {
+	page := positiveQueryInt(c, "page", 1)
+	pageSize := positiveQueryInt(c, "page_size", positiveQueryInt(c, "limit", 20))
+	apiKeyID := int64(0)
+	if raw := strings.TrimSpace(c.Query("api_key_id")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			apiKeyID = parsed
+		}
+	}
+	var localMiss *bool
+	if raw := strings.TrimSpace(c.Query("local_miss")); raw != "" {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			localMiss = &parsed
+		}
+	}
+	evaluationState := strings.TrimSpace(c.Query("evaluation_state"))
+	if evaluationState == "" {
+		evaluationState = strings.TrimSpace(c.Query("status"))
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	incidents, total, err := h.db.ListPromptPolicyIncidentsPage(ctx, database.PromptPolicyIncidentQuery{
+		Page: page, PageSize: pageSize, Endpoint: c.Query("endpoint"), Model: c.Query("model"), APIKeyID: apiKeyID,
+		EvaluationState: evaluationState, Outcome: c.Query("outcome"), LocalMiss: localMiss, Query: c.Query("q"),
+	})
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	if incidents == nil {
+		incidents = []*database.PromptPolicyIncident{}
+	}
+	c.JSON(http.StatusOK, promptPolicyIncidentsResponse{Incidents: incidents, Total: total, Page: page, PageSize: pageSize})
+}
+
+func (h *Handler) GetPromptPolicyIncident(c *gin.Context) {
+	incidentID := strings.TrimSpace(c.Param("incident_id"))
+	if incidentID == "" {
+		writeError(c, http.StatusBadRequest, "缺少 incident_id")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	incident, err := h.db.GetPromptPolicyIncident(ctx, incidentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(c, http.StatusNotFound, "CY 事件不存在")
+		return
+	}
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	matches := json.RawMessage(incident.LocalMatchedPatterns)
+	if !json.Valid(matches) {
+		matches = json.RawMessage("[]")
+	}
+	response := promptPolicyIncidentDetailResponse{Incident: incident, Matches: matches}
+	if incident.CandidateID > 0 {
+		if candidate, candidateErr := h.db.GetPromptRuleCandidate(ctx, incident.CandidateID); candidateErr == nil {
+			response.Candidate = candidate
+		}
+		if evidence, evidenceErr := h.db.ListPromptRuleCandidateEvidence(ctx, incident.CandidateID, 500); evidenceErr == nil {
+			for _, item := range evidence {
+				if item.ID == incident.CandidateEvidenceID {
+					response.Evidence = item
+					break
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // MatchPromptFilterLog 按时间/端点/APIKey 找到与某次请求最接近的一条提示词过滤日志，
@@ -200,7 +290,7 @@ func (h *Handler) MatchPromptFilterLog(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"found": log != nil, "log": log})
+	c.JSON(http.StatusOK, gin.H{"found": log != nil, "log": log, "legacy_inferred": log != nil})
 }
 
 func (h *Handler) TestPromptFilter(c *gin.Context) {

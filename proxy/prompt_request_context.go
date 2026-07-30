@@ -7,9 +7,11 @@ import (
 
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 const promptRequestSecurityContextKey = "prompt_filter_request_security_context"
+const promptPolicyRequestCorrelationContextKey = "prompt_policy_request_correlation_id"
 
 // promptRequestSecurityContext owns request-local prompt security state. It is
 // deliberately separate from the verified NewAPI identity keys because an HTTP
@@ -81,7 +83,11 @@ func (h *Handler) promptFilterConfigForRequest(c *gin.Context) promptfilter.Conf
 // reference only when signed NewAPI verification can need the pre-mapping body.
 // Callers must treat the buffer as immutable; body rewrites use a new slice.
 func (h *Handler) capturePromptRequestIngress(c *gin.Context, body []byte) {
-	if h == nil || h.store == nil || c == nil {
+	if c == nil {
+		return
+	}
+	ensurePromptPolicyRequestCorrelationID(c)
+	if h == nil || h.store == nil {
 		return
 	}
 	cfg := h.promptFilterConfigForRequest(c)
@@ -89,6 +95,29 @@ func (h *Handler) capturePromptRequestIngress(c *gin.Context, body []byte) {
 		return
 	}
 	setIngressRequestBodyIfAbsent(c, body)
+}
+
+func ensurePromptPolicyRequestCorrelationID(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if raw, exists := c.Get(promptPolicyRequestCorrelationContextKey); exists {
+		if value, ok := raw.(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	value := uuid.NewString()
+	c.Set(promptPolicyRequestCorrelationContextKey, value)
+	return value
+}
+
+func resetPromptPolicyRequestCorrelationID(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value := uuid.NewString()
+	c.Set(promptPolicyRequestCorrelationContextKey, value)
+	return value
 }
 
 func sameRequestBodyBuffer(left, right []byte) bool {

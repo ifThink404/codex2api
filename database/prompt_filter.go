@@ -43,6 +43,8 @@ type PromptFilterAuditStats struct {
 type promptFilterAuditJob struct {
 	input             PromptFilterLogInput
 	hasLog            bool
+	incident          PromptPolicyIncidentInput
+	hasIncident       bool
 	candidate         PromptRuleCandidateInput
 	candidateEvidence PromptRuleCandidateEvidenceInput
 	hasCandidate      bool
@@ -157,6 +159,23 @@ func (q *promptFilterAuditQueue) enqueueCandidate(candidate PromptRuleCandidateI
 	return q.enqueueJob(job, priority)
 }
 
+func (q *promptFilterAuditQueue) enqueueIncident(incident PromptPolicyIncidentInput, candidate PromptRuleCandidateInput, evidence PromptRuleCandidateEvidenceInput) bool {
+	if q == nil || q.db == nil {
+		return false
+	}
+	jobBytes := int64(promptPolicyIncidentJobBytes(incident, candidate, evidence))
+	if jobBytes > promptFilterAuditMaxJobBytes {
+		q.drop(PromptFilterLogPriorityHigh, "job_too_large")
+		return false
+	}
+	job := promptFilterAuditJob{
+		incident: clonePromptPolicyIncidentInput(incident), hasIncident: true,
+		candidate: clonePromptRuleCandidateInput(candidate), candidateEvidence: clonePromptRuleCandidateEvidenceInput(evidence),
+		hasCandidate: true, bytes: jobBytes,
+	}
+	return q.enqueueJob(job, PromptFilterLogPriorityHigh)
+}
+
 func (q *promptFilterAuditQueue) enqueueJob(job promptFilterAuditJob, priority PromptFilterLogPriority) bool {
 	q.enqueueMu.RLock()
 	defer q.enqueueMu.RUnlock()
@@ -253,7 +272,9 @@ func (q *promptFilterAuditQueue) worker() {
 			for attempt := 0; attempt < attempts; attempt++ {
 				ctx, cancel := context.WithTimeout(q.ctx, promptFilterAuditTaskTimeout)
 				var err error
-				if job.hasLog {
+				if job.hasIncident {
+					err = q.db.PersistPromptPolicyIncident(ctx, job.incident, job.candidate, job.candidateEvidence)
+				} else if job.hasLog {
 					err = q.db.InsertPromptFilterLog(ctx, &job.input)
 				} else if job.hasCandidate {
 					_, _, err = q.db.StagePromptRuleCandidate(ctx, job.candidate, job.candidateEvidence)
@@ -331,7 +352,8 @@ func promptFilterLogInputBytes(input PromptFilterLogInput) int {
 	return len(input.Source) + len(input.Endpoint) + len(input.Protocol) + len(input.Provider) + len(input.Model) +
 		len(input.Action) + len(input.Mode) + len(input.PolicyProfile) + len(input.ReasonCode) + len(input.PrimaryOrigin) +
 		len(input.MatchedPatterns) + len(input.TextPreview) + len(input.MatchContext) + len(input.FullText) +
-		len(input.APIKeyName) + len(input.APIKeyMasked) + len(input.ClientIP) + len(input.ErrorCode) + len(input.ReviewModel) + len(input.ReviewError)
+		len(input.APIKeyName) + len(input.APIKeyMasked) + len(input.ClientIP) + len(input.ErrorCode) + len(input.ReviewModel) + len(input.ReviewError) +
+		len(input.RequestCorrelationID)
 }
 
 func clonePromptFilterLogInput(input PromptFilterLogInput) PromptFilterLogInput {
@@ -355,6 +377,7 @@ func clonePromptFilterLogInput(input PromptFilterLogInput) PromptFilterLogInput 
 	input.ErrorCode = strings.Clone(input.ErrorCode)
 	input.ReviewModel = strings.Clone(input.ReviewModel)
 	input.ReviewError = strings.Clone(input.ReviewError)
+	input.RequestCorrelationID = strings.Clone(input.RequestCorrelationID)
 	return input
 }
 
@@ -362,7 +385,18 @@ func promptRuleCandidateJobBytes(candidate PromptRuleCandidateInput, evidence Pr
 	return len(candidate.Fingerprint) + len(candidate.Kind) + len(candidate.Source) + len(candidate.Name) + len(candidate.Category) +
 		len(candidate.RuleJSON) + len(candidate.Rationale) + len(candidate.SourceURL) + len(candidate.SamplePreview) +
 		len(evidence.SourceKind) + len(evidence.SourceRef) + len(evidence.SourceRefHash) + len(evidence.SamplePreview) +
-		len(evidence.MetadataJSON) + len(evidence.Protocol) + len(evidence.Provider) + len(evidence.Model) + len(evidence.APIKeyName)
+		len(evidence.MetadataJSON) + len(evidence.Protocol) + len(evidence.Provider) + len(evidence.Model) + len(evidence.APIKeyName) +
+		len(evidence.PromptPolicyIncidentID)
+}
+
+func promptPolicyIncidentJobBytes(incident PromptPolicyIncidentInput, candidate PromptRuleCandidateInput, evidence PromptRuleCandidateEvidenceInput) int {
+	return len(incident.IncidentID) + len(incident.RequestCorrelationID) + len(incident.Transport) + len(incident.Endpoint) +
+		len(incident.Protocol) + len(incident.Provider) + len(incident.Model) + len(incident.APIKeyName) + len(incident.APIKeyMasked) +
+		len(incident.Platform) + len(incident.SourceRef) + len(incident.UpstreamErrorCode) + len(incident.UpstreamError) +
+		len(incident.LocalEvaluationState) + len(incident.LocalOutcome) + len(incident.LocalAction) + len(incident.LocalMode) +
+		len(incident.LocalPolicyProfile) + len(incident.LocalReasonCode) + len(incident.LocalReason) + len(incident.LocalPrimaryOrigin) + len(incident.LocalReviewModel) +
+		len(incident.LocalReviewError) + len(incident.LocalMatchedPatterns) + len(incident.PromptFingerprint) + len(incident.PromptPreview) +
+		len(incident.PromptText) + promptRuleCandidateJobBytes(candidate, evidence)
 }
 
 func clonePromptRuleCandidateInput(input PromptRuleCandidateInput) PromptRuleCandidateInput {
@@ -388,6 +422,38 @@ func clonePromptRuleCandidateEvidenceInput(input PromptRuleCandidateEvidenceInpu
 	input.Provider = strings.Clone(input.Provider)
 	input.Model = strings.Clone(input.Model)
 	input.APIKeyName = strings.Clone(input.APIKeyName)
+	input.PromptPolicyIncidentID = strings.Clone(input.PromptPolicyIncidentID)
+	return input
+}
+
+func clonePromptPolicyIncidentInput(input PromptPolicyIncidentInput) PromptPolicyIncidentInput {
+	input.IncidentID = strings.Clone(input.IncidentID)
+	input.RequestCorrelationID = strings.Clone(input.RequestCorrelationID)
+	input.Transport = strings.Clone(input.Transport)
+	input.Endpoint = strings.Clone(input.Endpoint)
+	input.Protocol = strings.Clone(input.Protocol)
+	input.Provider = strings.Clone(input.Provider)
+	input.Model = strings.Clone(input.Model)
+	input.APIKeyName = strings.Clone(input.APIKeyName)
+	input.APIKeyMasked = strings.Clone(input.APIKeyMasked)
+	input.Platform = strings.Clone(input.Platform)
+	input.SourceRef = strings.Clone(input.SourceRef)
+	input.UpstreamErrorCode = strings.Clone(input.UpstreamErrorCode)
+	input.UpstreamError = strings.Clone(input.UpstreamError)
+	input.LocalEvaluationState = strings.Clone(input.LocalEvaluationState)
+	input.LocalOutcome = strings.Clone(input.LocalOutcome)
+	input.LocalAction = strings.Clone(input.LocalAction)
+	input.LocalMode = strings.Clone(input.LocalMode)
+	input.LocalPolicyProfile = strings.Clone(input.LocalPolicyProfile)
+	input.LocalReasonCode = strings.Clone(input.LocalReasonCode)
+	input.LocalReason = strings.Clone(input.LocalReason)
+	input.LocalPrimaryOrigin = strings.Clone(input.LocalPrimaryOrigin)
+	input.LocalReviewModel = strings.Clone(input.LocalReviewModel)
+	input.LocalReviewError = strings.Clone(input.LocalReviewError)
+	input.LocalMatchedPatterns = strings.Clone(input.LocalMatchedPatterns)
+	input.PromptFingerprint = strings.Clone(input.PromptFingerprint)
+	input.PromptPreview = strings.Clone(input.PromptPreview)
+	input.PromptText = strings.Clone(input.PromptText)
 	return input
 }
 
@@ -409,6 +475,15 @@ func (db *DB) EnqueuePromptRuleCandidate(candidate *PromptRuleCandidateInput, ev
 		return false
 	}
 	return db.promptFilterAudit.enqueueCandidate(*candidate, *evidence, priority)
+}
+
+// EnqueuePromptPolicyIncident atomically persists an upstream CY incident and
+// its candidate evidence without blocking or changing the request outcome.
+func (db *DB) EnqueuePromptPolicyIncident(incident *PromptPolicyIncidentInput, candidate *PromptRuleCandidateInput, evidence *PromptRuleCandidateEvidenceInput) bool {
+	if db == nil || incident == nil || candidate == nil || evidence == nil || db.promptFilterAudit == nil {
+		return false
+	}
+	return db.promptFilterAudit.enqueueIncident(*incident, *candidate, *evidence)
 }
 
 func (db *DB) PromptFilterAuditStats() PromptFilterAuditStats {
@@ -444,63 +519,65 @@ func (db *DB) WaitPromptFilterAuditIdle(ctx context.Context) bool {
 }
 
 type PromptFilterLog struct {
-	ID              int64     `json:"id"`
-	CreatedAt       time.Time `json:"created_at"`
-	Source          string    `json:"source"`
-	Endpoint        string    `json:"endpoint"`
-	Protocol        string    `json:"protocol"`
-	Provider        string    `json:"provider"`
-	Model           string    `json:"model"`
-	Action          string    `json:"action"`
-	Mode            string    `json:"mode"`
-	Score           int       `json:"score"`
-	AuditScore      int       `json:"audit_score"`
-	Threshold       int       `json:"threshold"`
-	PolicyProfile   string    `json:"policy_profile"`
-	ReasonCode      string    `json:"reason_code"`
-	PrimaryOrigin   string    `json:"primary_origin"`
-	StrikeEligible  bool      `json:"strike_eligible"`
-	MatchedPatterns string    `json:"matched_patterns"`
-	TextPreview     string    `json:"text_preview"`
-	MatchContext    string    `json:"match_context"`
-	FullText        string    `json:"full_text"`
-	APIKeyID        int64     `json:"api_key_id"`
-	APIKeyName      string    `json:"api_key_name"`
-	APIKeyMasked    string    `json:"api_key_masked"`
-	ClientIP        string    `json:"client_ip"`
-	ErrorCode       string    `json:"error_code"`
-	ReviewModel     string    `json:"review_model"`
-	ReviewFlagged   bool      `json:"review_flagged"`
-	ReviewError     string    `json:"review_error"`
+	ID                   int64     `json:"id"`
+	CreatedAt            time.Time `json:"created_at"`
+	Source               string    `json:"source"`
+	Endpoint             string    `json:"endpoint"`
+	Protocol             string    `json:"protocol"`
+	Provider             string    `json:"provider"`
+	Model                string    `json:"model"`
+	Action               string    `json:"action"`
+	Mode                 string    `json:"mode"`
+	Score                int       `json:"score"`
+	AuditScore           int       `json:"audit_score"`
+	Threshold            int       `json:"threshold"`
+	PolicyProfile        string    `json:"policy_profile"`
+	ReasonCode           string    `json:"reason_code"`
+	PrimaryOrigin        string    `json:"primary_origin"`
+	StrikeEligible       bool      `json:"strike_eligible"`
+	MatchedPatterns      string    `json:"matched_patterns"`
+	TextPreview          string    `json:"text_preview"`
+	MatchContext         string    `json:"match_context"`
+	FullText             string    `json:"full_text"`
+	APIKeyID             int64     `json:"api_key_id"`
+	APIKeyName           string    `json:"api_key_name"`
+	APIKeyMasked         string    `json:"api_key_masked"`
+	ClientIP             string    `json:"client_ip"`
+	ErrorCode            string    `json:"error_code"`
+	ReviewModel          string    `json:"review_model"`
+	ReviewFlagged        bool      `json:"review_flagged"`
+	ReviewError          string    `json:"review_error"`
+	RequestCorrelationID string    `json:"request_correlation_id,omitempty"`
 }
 
 type PromptFilterLogInput struct {
-	Source          string
-	Endpoint        string
-	Protocol        string
-	Provider        string
-	Model           string
-	Action          string
-	Mode            string
-	Score           int
-	AuditScore      int
-	Threshold       int
-	PolicyProfile   string
-	ReasonCode      string
-	PrimaryOrigin   string
-	StrikeEligible  bool
-	MatchedPatterns string
-	TextPreview     string
-	MatchContext    string
-	FullText        string
-	APIKeyID        int64
-	APIKeyName      string
-	APIKeyMasked    string
-	ClientIP        string
-	ErrorCode       string
-	ReviewModel     string
-	ReviewFlagged   bool
-	ReviewError     string
+	Source               string
+	Endpoint             string
+	Protocol             string
+	Provider             string
+	Model                string
+	Action               string
+	Mode                 string
+	Score                int
+	AuditScore           int
+	Threshold            int
+	PolicyProfile        string
+	ReasonCode           string
+	PrimaryOrigin        string
+	StrikeEligible       bool
+	MatchedPatterns      string
+	TextPreview          string
+	MatchContext         string
+	FullText             string
+	APIKeyID             int64
+	APIKeyName           string
+	APIKeyMasked         string
+	ClientIP             string
+	ErrorCode            string
+	ReviewModel          string
+	ReviewFlagged        bool
+	ReviewError          string
+	RequestCorrelationID string
 }
 
 type PromptFilterLogQuery struct {
@@ -522,12 +599,13 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO prompt_filter_logs (
 			source, endpoint, request_protocol, request_provider, model, action, mode, score, audit_score, threshold_value, policy_profile, reason_code, primary_origin, strike_eligible, matched_patterns, text_preview,
-			match_context, api_key_id, api_key_name, api_key_masked, client_ip, error_code, review_model, review_flagged, review_error, full_text
+			match_context, api_key_id, api_key_name, api_key_masked, client_ip, error_code, review_model, review_flagged, review_error, full_text, request_correlation_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
 	`, input.Source, input.Endpoint, input.Protocol, input.Provider, input.Model, input.Action, input.Mode, input.Score, input.AuditScore, input.Threshold,
 		input.PolicyProfile, input.ReasonCode, input.PrimaryOrigin, input.StrikeEligible, input.MatchedPatterns, input.TextPreview, input.MatchContext,
-		input.APIKeyID, input.APIKeyName, input.APIKeyMasked, input.ClientIP, input.ErrorCode, input.ReviewModel, input.ReviewFlagged, input.ReviewError, input.FullText)
+		input.APIKeyID, input.APIKeyName, input.APIKeyMasked, input.ClientIP, input.ErrorCode, input.ReviewModel, input.ReviewFlagged, input.ReviewError, input.FullText,
+		input.RequestCorrelationID)
 	return err
 }
 
@@ -566,7 +644,8 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		       COALESCE(policy_profile, ''), COALESCE(reason_code, ''), COALESCE(primary_origin, ''), COALESCE(strike_eligible, false),
 		       COALESCE(matched_patterns, '[]'), COALESCE(text_preview, ''), COALESCE(match_context, ''), COALESCE(api_key_id, 0),
 		       COALESCE(api_key_name, ''), COALESCE(api_key_masked, ''), COALESCE(client_ip, ''), COALESCE(error_code, ''),
-		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(full_text, '')
+		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(full_text, ''),
+		       COALESCE(request_correlation_id, '')
 		FROM prompt_filter_logs
 		`+where+`
 		ORDER BY id DESC
@@ -584,7 +663,8 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		if err := rows.Scan(&item.ID, &createdAtRaw, &item.Source, &item.Endpoint, &item.Protocol, &item.Provider, &item.Model, &item.Action, &item.Mode,
 			&item.Score, &item.AuditScore, &item.Threshold, &item.PolicyProfile, &item.ReasonCode, &item.PrimaryOrigin, &item.StrikeEligible,
 			&item.MatchedPatterns, &item.TextPreview, &item.MatchContext, &item.APIKeyID, &item.APIKeyName,
-			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.FullText); err != nil {
+			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.FullText,
+			&item.RequestCorrelationID); err != nil {
 			return nil, 0, err
 		}
 		createdAt, err := parseDBTimeValue(createdAtRaw)
@@ -664,7 +744,8 @@ func (db *DB) FindNearestPromptFilterLog(ctx context.Context, at time.Time, sour
 		       COALESCE(policy_profile, ''), COALESCE(reason_code, ''), COALESCE(primary_origin, ''), COALESCE(strike_eligible, false),
 		       COALESCE(matched_patterns, '[]'), COALESCE(text_preview, ''), COALESCE(match_context, ''), COALESCE(api_key_id, 0),
 		       COALESCE(api_key_name, ''), COALESCE(api_key_masked, ''), COALESCE(client_ip, ''), COALESCE(error_code, ''),
-		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(full_text, '')
+		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(full_text, ''),
+		       COALESCE(request_correlation_id, '')
 		FROM prompt_filter_logs
 		WHERE `+strings.Join(clauses, " AND ")+`
 		ORDER BY id DESC
@@ -683,7 +764,8 @@ func (db *DB) FindNearestPromptFilterLog(ctx context.Context, at time.Time, sour
 		if err := rows.Scan(&item.ID, &createdAtRaw, &item.Source, &item.Endpoint, &item.Protocol, &item.Provider, &item.Model, &item.Action, &item.Mode,
 			&item.Score, &item.AuditScore, &item.Threshold, &item.PolicyProfile, &item.ReasonCode, &item.PrimaryOrigin, &item.StrikeEligible,
 			&item.MatchedPatterns, &item.TextPreview, &item.MatchContext, &item.APIKeyID, &item.APIKeyName,
-			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.FullText); err != nil {
+			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.FullText,
+			&item.RequestCorrelationID); err != nil {
 			return nil, err
 		}
 		createdAt, err := parseDBTimeValue(createdAtRaw)
@@ -719,12 +801,12 @@ func (db *DB) ClearPromptFilterLogs(ctx context.Context) error {
 		return nil
 	}
 	if db.isSQLite() {
-		if _, err := db.conn.ExecContext(ctx, `DELETE FROM prompt_filter_logs`); err != nil {
+		if _, err := db.conn.ExecContext(ctx, `DELETE FROM prompt_filter_logs; DELETE FROM prompt_policy_incidents`); err != nil {
 			return err
 		}
-		_, err := db.conn.ExecContext(ctx, `DELETE FROM sqlite_sequence WHERE name = 'prompt_filter_logs'`)
+		_, err := db.conn.ExecContext(ctx, `DELETE FROM sqlite_sequence WHERE name IN ('prompt_filter_logs', 'prompt_policy_incidents')`)
 		return err
 	}
-	_, err := db.conn.ExecContext(ctx, `TRUNCATE TABLE prompt_filter_logs RESTART IDENTITY`)
+	_, err := db.conn.ExecContext(ctx, `TRUNCATE TABLE prompt_filter_logs, prompt_policy_incidents RESTART IDENTITY`)
 	return err
 }

@@ -676,20 +676,11 @@ func TestForwardImagesResponseFailedCyberPolicyEntersUnifiedAuditAndCandidateQue
 	responsesBody := []byte(`{"model":"gpt-5.4","input":"draw a harmless landscape","tools":[{"type":"image_generation","model":"gpt-image-2","size":"1024x1024"}],"stream":true}`)
 	handler.forwardImagesRequest(c, "/v1/images/generations", "gpt-image-2", "gpt-image-2", "gpt-image-2", responsesBody, "b64_json", "image_generation", false)
 	waitPromptFilterAuditIdle(t, db)
-	logs, err := db.ListPromptFilterLogs(context.Background(), 20)
-	if err != nil {
-		t.Fatalf("ListPromptFilterLogs: %v", err)
+	incidents, incidentTotal, err := db.ListPromptPolicyIncidentsPage(context.Background(), database.PromptPolicyIncidentQuery{Page: 1, PageSize: 20})
+	if err != nil || incidentTotal != 1 || len(incidents) != 1 || incidents[0].Endpoint != "/v1/images/generations" || incidents[0].Transport != "http" {
+		t.Fatalf("image cyber_policy incident total=%d items=%#v err=%v", incidentTotal, incidents, err)
 	}
-	found := false
-	for _, item := range logs {
-		if item.Source == "upstream_cyber_policy" && item.Endpoint == "/v1/images/generations" && item.ErrorCode == "cyber_policy" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("image cyber_policy log missing: %#v", logs)
-	}
+	assertCyberUsageIncidentLinks(t, db, "/v1/images/generations")
 	candidates, total, err := db.ListPromptRuleCandidates(context.Background(), database.PromptRuleCandidateQuery{Status: database.PromptRuleCandidateStatusPending})
 	if err != nil || total != 1 || len(candidates) != 1 || candidates[0].Kind != database.PromptRuleCandidateKindEvidence {
 		t.Fatalf("image candidate total=%d items=%#v err=%v", total, candidates, err)

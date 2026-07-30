@@ -15,7 +15,7 @@ import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import { getPromptFilterScoreBand, normalizePromptFilterScore } from '../lib/promptFilterScore'
 import { parseAdvancedConfigDocument, patchAdvancedConfigDocument, readAdvancedConfigPath } from '../types'
-import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceRun, SystemSettings } from '../types'
+import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceRun, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, SystemSettings } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -2581,6 +2581,8 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
   const [pageSize, setPageSize] = usePersistedPageSize('prompt_filter_logs', 20, DEFAULT_PAGE_SIZE_OPTIONS)
   const [logs, setLogs] = useState<PromptFilterLog[]>([])
   const [total, setTotal] = useState(0)
+	const [incidents, setIncidents] = useState<PromptPolicyIncident[]>([])
+	const [incidentTotal, setIncidentTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -2588,18 +2590,23 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
     setLoading(true)
     setError(null)
     try {
-      const result = await api.getPromptFilterLogs({
-        page,
-        pageSize,
-        action: filters.action,
-        source: filters.source,
-        endpoint: filters.endpoint,
-        model: filters.model,
-        apiKeyId: filters.apiKeyId,
-        q: filters.q,
-      })
+		const [result, incidentResult] = await Promise.all([
+			api.getPromptFilterLogs({
+				page,
+				pageSize,
+				action: filters.action,
+				source: filters.source,
+				endpoint: filters.endpoint,
+				model: filters.model,
+				apiKeyId: filters.apiKeyId,
+				q: filters.q,
+			}),
+			api.getPromptPolicyIncidents({ page, pageSize, endpoint: filters.endpoint, model: filters.model, apiKeyId: filters.apiKeyId, q: filters.q }),
+		])
       setLogs(result.logs ?? [])
       setTotal(result.total ?? 0)
+		setIncidents(incidentResult.incidents ?? [])
+		setIncidentTotal(incidentResult.total ?? 0)
     } catch (err) {
       setError(getErrorMessage(err))
     } finally {
@@ -2622,7 +2629,7 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
     setPage(1)
   }
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+	const totalPages = Math.max(1, Math.ceil(Math.max(total, incidentTotal) / pageSize))
 
   return (
     <Card>
@@ -2634,7 +2641,7 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
               <RefreshCw className="size-3.5" />
               {t('common.refresh')}
             </Button>
-            <Button variant="outline" onClick={() => void clearLogs().then(loadLogs)} disabled={clearing || logs.length === 0}>
+            <Button variant="outline" onClick={() => void clearLogs().then(loadLogs)} disabled={clearing || (logs.length === 0 && incidents.length === 0)}>
               <Trash2 className="size-3.5" />
               {clearing ? t('promptFilter.clearing') : t('promptFilter.clearLogs')}
             </Button>
@@ -2646,7 +2653,7 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
             <Select value={draftFilters.action} onValueChange={(value) => setDraftFilters((current) => ({ ...current, action: value }))} options={[{ label: t('common.all'), value: '' }, { label: t('promptFilter.modeBlock'), value: 'block' }, { label: t('promptFilter.modeWarn'), value: 'warn' }, { label: t('promptFilter.actionAllow'), value: 'allow' }]} />
           </Field>
           <Field label={t('promptFilter.source')}>
-            <Select value={draftFilters.source} onValueChange={(value) => setDraftFilters((current) => ({ ...current, source: value }))} options={[{ label: t('common.all'), value: '' }, { label: 'local_filter', value: 'local_filter' }, { label: 'upstream_cyber_policy', value: 'upstream_cyber_policy' }]} />
+            <Select value={draftFilters.source} onValueChange={(value) => setDraftFilters((current) => ({ ...current, source: value }))} options={[{ label: t('common.all'), value: '' }, { label: t('promptFilter.sources.local_filter'), value: 'local_filter' }, { label: t('promptFilter.sources.upstream_cyber_policy'), value: 'upstream_cyber_policy' }]} />
           </Field>
           <Field label={t('promptFilter.endpoint')}>
             <Input value={draftFilters.endpoint} onChange={(event) => setDraftFilters((current) => ({ ...current, endpoint: event.target.value }))} placeholder="/v1/responses" />
@@ -2671,12 +2678,15 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
             <X className="size-4" />
             {t('promptFilter.resetFilters')}
           </Button>
-          <span className="self-center text-xs text-muted-foreground">{loading ? t('common.loading') : t('promptFilter.recordsCount', { count: total })}</span>
+			<span className="self-center text-xs text-muted-foreground">{loading ? t('common.loading') : t('promptFilter.auditRecordsCount', { incidents: incidentTotal, logs: total })}</span>
         </div>
 
-        <StateShell loading={loading} error={error} isEmpty={!loading && logs.length === 0} onRetry={() => void loadLogs()} emptyTitle={t('promptFilter.noLogs')}>
+		<StateShell loading={loading} error={error} isEmpty={!loading && logs.length === 0 && incidents.length === 0} onRetry={() => void loadLogs()} emptyTitle={t('promptFilter.noLogs')}>
+			<div className="mb-2 mt-1 text-sm font-semibold">{t('promptFilter.cyberIncidentsTitle')}</div>
+			<PromptPolicyIncidentsTable incidents={incidents} />
+			<div className="mb-2 mt-5 text-sm font-semibold">{t('promptFilter.localAuditLogsTitle')}</div>
           <PromptFilterLogsTable logs={logs} />
-          <Pagination page={page} totalPages={totalPages} totalItems={total} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(next) => { setPage(1); setPageSize(next) }} pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS} />
+			<Pagination page={page} totalPages={totalPages} totalItems={Math.max(total, incidentTotal)} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(next) => { setPage(1); setPageSize(next) }} pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS} />
         </StateShell>
       </CardContent>
     </Card>
@@ -3343,6 +3353,111 @@ function RuleRow({
   )
 }
 
+function PromptPolicyIncidentsTable({ incidents }: { incidents: PromptPolicyIncident[] }) {
+  const { t } = useTranslation()
+  return (
+    <div className="rounded-lg border border-border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>{t('promptFilter.colTime')}</TableHead>
+            <TableHead>{t('promptFilter.cyberUpstream')}</TableHead>
+            <TableHead>{t('promptFilter.cyberLocalResult')}</TableHead>
+            <TableHead>{t('promptFilter.colScore')}</TableHead>
+            <TableHead>{t('promptFilter.colEndpoint')}</TableHead>
+            <TableHead>{t('promptFilter.cyberAttempt')}</TableHead>
+            <TableHead className="text-right">{t('promptFilter.cyberDetail')}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {incidents.length === 0 ? (
+            <TableRow><TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">{t('promptFilter.noCyberIncidents')}</TableCell></TableRow>
+          ) : incidents.map((incident) => (
+            <TableRow key={incident.incident_id}>
+              <TableCell className="whitespace-nowrap text-xs">{formatBeijingTime(incident.created_at)}</TableCell>
+              <TableCell><Badge variant="destructive">{incident.upstream_error_code || 'cyber_policy'} · {incident.status_code || '-'}</Badge></TableCell>
+              <TableCell>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Badge variant="outline">{t(`promptFilter.cyberState.${incident.local_evaluation_state}`)}</Badge>
+                  <Badge variant={incident.local_miss ? 'destructive' : 'secondary'}>{t(`promptFilter.cyberOutcome.${incident.local_outcome}`)}</Badge>
+                  {incident.local_miss ? <Badge variant="destructive">{t('promptFilter.cyberLocalMiss')}</Badge> : null}
+                </div>
+              </TableCell>
+              <TableCell className="font-mono text-xs">{formatPromptPolicyScore(incident.local_score, t('promptFilter.cyberUnscored'))} / {formatPromptPolicyScore(incident.local_audit_score, t('promptFilter.cyberUnscored'))}</TableCell>
+              <TableCell><div className="font-mono text-xs">{incident.endpoint || '-'}</div><div className="text-xs text-muted-foreground">{incident.model || '-'}</div></TableCell>
+              <TableCell className="font-mono text-xs">{incident.transport || '-'} · #{incident.attempt_index || '-'}</TableCell>
+              <TableCell className="text-right"><PromptPolicyIncidentDetailButton incident={incident} /></TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+function PromptPolicyIncidentDetailButton({ incident }: { incident: PromptPolicyIncident }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [detail, setDetail] = useState<PromptPolicyIncidentDetailResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const show = async () => {
+    setOpen(true)
+    if (detail || loading) return
+    setLoading(true)
+    setError(null)
+    try {
+      setDetail(await api.getPromptPolicyIncident(incident.incident_id))
+    } catch (err) {
+      setError(getErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+  const item = detail?.incident ?? incident
+  const content = (item.prompt_text || item.prompt_preview || '').trim()
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => void show()}>{t('promptFilter.cyberDetail')}</Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('promptFilter.cyberDetailTitle')}</DialogTitle>
+            <DialogDescription className="break-all font-mono">{item.incident_id}</DialogDescription>
+          </DialogHeader>
+          {loading ? <div className="py-8 text-center text-sm text-muted-foreground">{t('common.loading')}</div> : error ? <div className="text-sm text-destructive">{error}</div> : (
+            <div className="space-y-4 text-sm">
+              {item.local_evaluation_state === 'legacy_unknown' ? <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-amber-700 dark:text-amber-300">{t('promptFilter.cyberLegacyUnknown')}</div> : null}
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <PromptPolicyDetailField label={t('promptFilter.cyberUpstream')} value={`${item.status_code || '-'} · ${item.upstream_error_code || 'cyber_policy'}`} />
+                <PromptPolicyDetailField label={t('promptFilter.cyberLocalResult')} value={`${t(`promptFilter.cyberState.${item.local_evaluation_state}`)} · ${t(`promptFilter.cyberOutcome.${item.local_outcome}`)}`} />
+                <PromptPolicyDetailField label={t('promptFilter.cyberLocalMiss')} value={item.local_miss ? t('promptFilter.testResultYes') : t('promptFilter.testResultNo')} />
+                <PromptPolicyDetailField label={t('promptFilter.executionScore')} value={formatPromptPolicyScore(item.local_score, t('promptFilter.cyberUnscored'))} />
+                <PromptPolicyDetailField label={t('promptFilter.auditScore')} value={formatPromptPolicyScore(item.local_audit_score, t('promptFilter.cyberUnscored'))} />
+                <PromptPolicyDetailField label={t('promptFilter.cyberProtocolTransport')} value={`${item.protocol || '-'} · ${item.transport || '-'}`} />
+                <PromptPolicyDetailField label={t('promptFilter.model')} value={item.model || '-'} />
+                <PromptPolicyDetailField label={t('promptFilter.cyberAccountAttempt')} value={`${item.account_id || '-'} · #${item.attempt_index || '-'}`} />
+                <PromptPolicyDetailField label={t('promptFilter.cyberCandidate')} value={detail?.candidate ? `${detail.candidate.status} · #${detail.candidate.id}` : '-'} />
+              </div>
+              {(item.local_reason || item.local_reason_code) ? <PromptPolicyDetailField label={t('promptFilter.cyberReason')} value={item.local_reason || item.local_reason_code} /> : null}
+              {detail && detail.matches.length > 0 ? <div><div className="mb-2 font-semibold">{t('promptFilter.testResultMatches')}</div><div className="flex flex-wrap gap-1.5">{detail.matches.map((match, index) => <Badge key={`${match.name}-${index}`} variant="secondary">{match.name} · {match.weight}</Badge>)}</div></div> : null}
+              {content ? <div><div className="mb-2 font-semibold">{t('promptFilter.userPromptLabel')}</div><pre className="max-h-[45vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 text-xs">{content}</pre></div> : null}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+function PromptPolicyDetailField({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-md border border-border bg-muted/20 p-2.5"><div className="text-xs font-semibold text-muted-foreground">{label}</div><div className="mt-1 break-words">{value}</div></div>
+}
+
+function formatPromptPolicyScore(value: number | null | undefined, unscored: string) {
+  return value === null || value === undefined ? unscored : String(value)
+}
+
 function PromptFilterLogsTable({ logs, compact = false }: { logs: PromptFilterLog[]; compact?: boolean }) {
   const { t } = useTranslation()
   return (
@@ -3676,9 +3791,9 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
               {primaryOriginLabel}
             </Badge>
           ) : null}
-          {log.strike_eligible ? <Badge variant="destructive" className="text-[11px]">strike</Badge> : null}
-          {log.source === 'upstream_cyber_policy' ? <Badge variant="outline" className="text-[11px]">upstream</Badge> : null}
-          {log.review_model ? <Badge variant="outline" className="h-auto max-w-full whitespace-normal break-words text-left leading-tight text-[11px]">{log.review_flagged ? 'review flagged' : 'review cleared'}</Badge> : null}
+          {log.strike_eligible ? <Badge variant="destructive" className="text-[11px]">{t('promptFilter.labels.strike')}</Badge> : null}
+          {log.source === 'upstream_cyber_policy' ? <Badge variant="outline" className="text-[11px]">{t('promptFilter.labels.upstream')}</Badge> : null}
+          {log.review_model ? <Badge variant="outline" className="h-auto max-w-full whitespace-normal break-words text-left leading-tight text-[11px]">{log.review_flagged ? t('promptFilter.labels.reviewFlagged') : t('promptFilter.labels.reviewCleared')}</Badge> : null}
         </div>
       </TableCell>
       <TableCell>
