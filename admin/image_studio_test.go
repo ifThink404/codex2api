@@ -66,6 +66,42 @@ func TestBuildAdminImageGenerationRequestOmitsAutoSize(t *testing.T) {
 	}
 }
 
+func TestNormalizeImageJobUpscale(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   string
+		size    string
+		upscale string
+		want    string
+		wantErr bool
+	}{
+		{name: "explicit 2k", model: "gpt-image-2", upscale: "2K", want: "2k"},
+		{name: "2k dimensions", model: "gpt-image-2", size: "2560x1440", want: "2k"},
+		{name: "4k dimensions", model: "gpt-image-2", size: "3840x2160", want: "4k"},
+		{name: "4k square", model: "gpt-image-2", size: "2880x2880", want: "4k"},
+		{name: "model alias", model: "gpt-image-2-4k", want: "4k"},
+		{name: "native size", model: "gpt-image-2", size: "1536x1024", want: ""},
+		{name: "invalid explicit", model: "gpt-image-2", upscale: "8k", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeImageJobUpscale(test.model, test.size, test.upscale)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeImageJobUpscale() error = nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeImageJobUpscale() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("normalizeImageJobUpscale() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestImageJobJPEGFallbackDecision(t *testing.T) {
 	req := imageGenerationJobPayload{OutputFormat: "png"}
 	if !shouldFallbackImageJobToJPEG(req, http.StatusBadGateway, fmt.Errorf("upstream image generation failed (server_error): An error occurred while processing your request")) {
@@ -85,6 +121,77 @@ func TestImageJobJPEGFallbackDecision(t *testing.T) {
 	fallback := jpegFallbackImageJobRequest(imageGenerationJobPayload{OutputFormat: "png", Background: "transparent"})
 	if fallback.OutputFormat != "jpeg" || fallback.Background != "opaque" {
 		t.Fatalf("fallback request = %#v, want jpeg with opaque background", fallback)
+	}
+}
+
+func TestRunImageJobBatchAggregatesSuccessfulOutputs(t *testing.T) {
+	var calls int
+	response, status, partialErrors, err := runImageJobBatch(3, func() ([]byte, int, error) {
+		calls++
+		if calls == 2 {
+			return nil, http.StatusGatewayTimeout, fmt.Errorf("timeout")
+		}
+		body, err := json.Marshal(map[string]any{
+			"model": "gpt-image-2",
+			"data":  []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString([]byte{byte(calls)})}},
+		})
+		return body, http.StatusOK, err
+	})
+	if err != nil {
+		t.Fatalf("runImageJobBatch returned error: %v", err)
+	}
+	if status != http.StatusOK || calls != 3 {
+		t.Fatalf("status=%d calls=%d", status, calls)
+	}
+	if len(partialErrors) != 1 || !strings.Contains(partialErrors[0], "output 2") {
+		t.Fatalf("partialErrors = %#v", partialErrors)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response, &payload); err != nil {
+		t.Fatalf("decode batch response: %v", err)
+	}
+	data, _ := payload["data"].([]any)
+	if len(data) != 2 || payload["requested_n"] != float64(3) || payload["completed_n"] != float64(2) {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestUpscaleImageBytesUsesConfiguredRealESRGANService(t *testing.T) {
+	pngBytes := tinyPNG(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/upscale" {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		if request.URL.Query().Get("target_width") != "3840" || request.URL.Query().Get("target_height") != "3840" {
+			t.Fatalf("query = %q", request.URL.RawQuery)
+		}
+		writer.Header().Set("Content-Type", "image/png")
+		writer.Header().Set("X-Upscale-Applied", "true")
+		writer.Header().Set("X-Upscale-Method", "realesrgan-general-x4v3")
+		_, _ = writer.Write(pngBytes)
+	}))
+	defer server.Close()
+	t.Setenv("IMAGE_UPSCALER_ENDPOINT", server.URL)
+
+	data, contentType, method, err := upscaleImageBytes(context.Background(), pngBytes, "4k")
+	if err != nil {
+		t.Fatalf("upscaleImageBytes returned error: %v", err)
+	}
+	if string(data) != string(pngBytes) || contentType != "image/png" || method != "realesrgan-general-x4v3" {
+		t.Fatalf("result contentType=%q method=%q bytes=%d", contentType, method, len(data))
+	}
+}
+
+func TestUpscaleImageBytesFailsWhenConfiguredServiceFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "model unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	t.Setenv("IMAGE_UPSCALER_ENDPOINT", server.URL)
+
+	_, _, _, err := upscaleImageBytes(context.Background(), tinyPNG(t), "2k")
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("err = %v, want configured service failure", err)
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
-	"github.com/codex2api/internal/imageproc"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
@@ -207,7 +206,16 @@ func normalizeExternalImageJobFields(req *imageGenerationJobPayload) (bool, erro
 	}
 	req.Background = normalizeOptionalImageParam(req.Background)
 	req.Style = normalizeOptionalImageParam(req.Style)
-	req.Upscale = imageproc.NormalizeUpscale(req.Upscale)
+	normalizedUpscale, err := normalizeImageJobUpscale(req.Model, req.Size, req.Upscale)
+	if err != nil {
+		return false, err
+	}
+	req.Upscale = normalizedUpscale
+	count, err := normalizeImageJobOutputCount(req.N)
+	if err != nil {
+		return false, err
+	}
+	req.N = count
 
 	images := make([]string, 0, len(req.InputImages))
 	for _, imageURL := range req.InputImages {

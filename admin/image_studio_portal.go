@@ -180,7 +180,16 @@ func normalizePortalImageJobPayload(req *imageGenerationJobPayload, editMode boo
 	}
 	req.Background = normalizeOptionalImageParam(req.Background)
 	req.Style = normalizeOptionalImageParam(req.Style)
-	req.Upscale = imageproc.NormalizeUpscale(req.Upscale)
+	normalizedUpscale, err := normalizeImageJobUpscale(req.Model, req.Size, req.Upscale)
+	if err != nil {
+		return err
+	}
+	req.Upscale = normalizedUpscale
+	count, err := normalizeImageJobOutputCount(req.N)
+	if err != nil {
+		return errors.New("生成数量必须在 1 到 4 之间")
+	}
+	req.N = count
 	req.TemplateID = 0 // portal never selects admin templates by id write
 
 	if editMode {

@@ -318,6 +318,18 @@ func (db *DB) MarkImageJobSucceeded(ctx context.Context, id int64, durationMs in
 	return err
 }
 
+func (db *DB) MarkImageJobSucceededWithWarning(ctx context.Context, id int64, message string, durationMs int) error {
+	if len([]rune(message)) > 2000 {
+		message = string([]rune(message)[:2000])
+	}
+	_, err := db.conn.ExecContext(ctx, `
+		UPDATE image_generation_jobs
+		SET status=$1, duration_ms=$2, completed_at=CURRENT_TIMESTAMP, error_message=$3
+		WHERE id=$4
+	`, ImageJobSucceeded, durationMs, message, id)
+	return err
+}
+
 func (db *DB) MarkImageJobFailed(ctx context.Context, id int64, message string, durationMs int) error {
 	if len([]rune(message)) > 2000 {
 		message = string([]rune(message)[:2000])

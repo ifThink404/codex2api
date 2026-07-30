@@ -84,6 +84,8 @@ Codex2API 采用三层配置架构：
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
 | `IMAGE_ASSET_DIR` | 否 | `/data/images` | 管理台生图工作台保存图片文件的服务器目录；Docker 部署建议持久化 `/data` |
+| `IMAGE_UPSCALER_ENDPOINT` | 否 | 空 | RealESRGAN 服务地址，例如 `http://image-upscaler:8090`；配置后 `upscale=2k/4k` 必须由该服务成功处理，否则异步任务失败 |
+| `IMAGE_UPSCALER_FIT` | 否 | `inside` | RealESRGAN 目标尺寸适配方式，可选 `inside` 或 `cover` |
 | `BACKGROUND_ASSET_DIR` | 否 | `/data/backgrounds` | 管理台背景图/MP4 上传文件的服务器目录；未配置时优先保存到 `IMAGE_ASSET_DIR` 同级的 `backgrounds` 目录 |
 
 ### 日志目录
