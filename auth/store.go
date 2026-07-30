@@ -120,8 +120,10 @@ type Account struct {
 	GrokOIDCIssuer    string
 	GrokPrincipalType string
 	GrokPrincipalID   string
-	// grokRateLimit 是上游逐请求返回的配额余量快照（x-ratelimit-* 头），仅运行时。
-	grokRateLimit *GrokRateLimitSnapshot
+	// grokRateLimit 是上游逐请求返回的配额余量快照（x-ratelimit-* 头）。
+	// 内存实时更新;dirty 位驱动 store 后台循环按分钟批量落库(grok_rate_limit 凭据)。
+	grokRateLimit      *GrokRateLimitSnapshot
+	grokRateLimitDirty bool
 	// grokFreeQuota 是免费额度耗尽 429 解析出的权威用量快照，随 credentials 落库。
 	grokFreeQuota  *GrokFreeQuotaSnapshot
 	Status         AccountStatus
@@ -3967,6 +3969,14 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 				account.SetGrokFreeQuotaSnapshot(snap)
 			}
 		}
+		// 配额余量快照（x-ratelimit-* 头）重启后恢复,用量进度条不清零。
+		// markDirty=false:恢复值本来自库里,不需要再触发落库。
+		if raw := strings.TrimSpace(row.GetCredential("grok_rate_limit")); raw != "" {
+			var snap GrokRateLimitSnapshot
+			if err := json.Unmarshal([]byte(raw), &snap); err == nil && !snap.UpdatedAt.IsZero() {
+				account.setGrokRateLimitSnapshot(snap, false)
+			}
+		}
 	}
 	account.ScoreBiasOverride = reflectOptionalInt64Field(row, "ScoreBiasOverride")
 	account.BaseConcurrencyOverride = reflectOptionalInt64Field(row, "BaseConcurrencyOverride")
@@ -4150,6 +4160,8 @@ func (s *Store) StartBackgroundRefresh() {
 		expiredCleanupTicker := time.NewTicker(15 * time.Minute)
 		// 添加定时重建 FastScheduler 以优化性能
 		rebuildSchedulerTicker := time.NewTicker(10 * time.Minute)
+		// Grok 配额余量快照按分钟批量落库(逐请求都在变,不逐请求写库)。
+		grokRateLimitPersistTicker := time.NewTicker(time.Minute)
 		// 到点即探定时器：始终武装到「最近的限流冷却/窗口重置边界」，倒计时归零即探针刷新。
 		boundaryProbeTimer := time.NewTimer(time.Hour)
 		if !boundaryProbeTimer.Stop() {
@@ -4160,6 +4172,7 @@ func (s *Store) StartBackgroundRefresh() {
 		defer fullUsageCleanupTicker.Stop()
 		defer expiredCleanupTicker.Stop()
 		defer rebuildSchedulerTicker.Stop()
+		defer grokRateLimitPersistTicker.Stop()
 		defer boundaryProbeTimer.Stop()
 
 		resetRefreshTimer := func() {
@@ -4218,13 +4231,50 @@ func (s *Store) StartBackgroundRefresh() {
 				if s.FastSchedulerEnabled() {
 					s.rebuildFastScheduler()
 				}
+			case <-grokRateLimitPersistTicker.C:
+				s.flushGrokRateLimitSnapshots()
 			case <-s.stopCh:
+				// 退出前把未落库的余量快照写掉,容器重启后进度条不清零。
+				s.flushGrokRateLimitSnapshots()
 				return
 			case <-backgroundCtx.Done():
+				s.flushGrokRateLimitSnapshots()
 				return
 			}
 		}
 	}()
+}
+
+// flushGrokRateLimitSnapshots 把自上次落库后有更新的 Grok 配额余量快照批量写进
+// credentials(grok_rate_limit)。逐请求的 x-ratelimit 观测只更新内存并置脏位,
+// 由该函数按分钟节流落库;重启时在账号加载处恢复。
+func (s *Store) flushGrokRateLimitSnapshots() {
+	if s == nil || s.db == nil {
+		return
+	}
+	s.mu.RLock()
+	accounts := make([]*Account, len(s.accounts))
+	copy(accounts, s.accounts)
+	s.mu.RUnlock()
+
+	for _, acc := range accounts {
+		if !acc.IsGrokAPI() {
+			continue
+		}
+		snap, dirty := acc.TakeGrokRateLimitSnapshotIfDirty()
+		if !dirty {
+			continue
+		}
+		raw, err := json.Marshal(snap)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := s.db.UpdateCredentials(ctx, acc.DBID, map[string]interface{}{"grok_rate_limit": string(raw)}); err != nil {
+			log.Printf("[账号 %d] 持久化 grok_rate_limit 失败: %v", acc.DBID, err)
+		}
+		cancel()
+	}
 }
 
 // Stop 停止后台刷新

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChangeEvent, ReactNode } from "react";
 import {
@@ -47,6 +47,7 @@ import AccountGroupFilterSelect, {
 } from "../components/AccountGroupFilterSelect";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
 import { useImportGroupIds } from "../hooks/useImportGroupIds";
+import { useIsDesktop } from "../hooks/useMediaQuery";
 import AccountHealthBar from "../components/AccountHealthBar";
 import AccountUsageModal from "../components/AccountUsageModal";
 import Modal from "../components/Modal";
@@ -142,6 +143,20 @@ const FALLBACK_GROUP_COLOR = "#2563eb";
 function normalizeGroupColor(color?: string): string {
   const value = (color || "").trim();
   return /^#[0-9a-fA-F]{6}$/.test(value) ? value : FALLBACK_GROUP_COLOR;
+}
+
+// GrokRowHandlers 是行组件的全部动作回调。父组件用 ref 转发保证引用恒定,
+// 配合 memo 行组件让"勾选/单行 busy"只重渲染受影响的行。
+interface GrokRowHandlers {
+  toggleSelect: (id: number) => void;
+  openDetail: (account: AccountRow) => void;
+  test: (account: AccountRow) => void;
+  usage: (account: AccountRow) => void;
+  refresh: (account: AccountRow) => void;
+  toggleEnabled: (account: AccountRow) => void;
+  edit: (account: AccountRow) => void;
+  remove: (account: AccountRow) => void;
+  usageRefreshed: () => void;
 }
 
 function resolveAccountGroups(
@@ -345,6 +360,7 @@ export default function GrokAccounts({
     operationProgress,
     operationResults,
     runStreamingOperation,
+    reportOperationEvent,
     closeOperationProgress,
     closeOperationResults,
   } = useOperationProgress(showOperationResults);
@@ -448,6 +464,7 @@ export default function GrokAccounts({
   const [sortDir, setSortDir] = useState<GrokSortDir>("desc");
   const [cleaning, setCleaning] = useState(false);
   const [viewMode, setViewMode] = useState<GrokViewMode>(getInitialGrokViewMode);
+  const isDesktop = useIsDesktop();
   // 与 Codex 账号页一致：客户端分页 + 本地记忆每页条数，避免 Grok 号池过大时一次渲染卡死。
   const pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS;
   const [page, setPage] = useState(1);
@@ -506,6 +523,29 @@ export default function GrokAccounts({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // 导入/添加账号后,后端的 billing 用量探针是异步的(OAuth 号还要先刷 AT,
+  // 通常 2~10s 才写回)。导入完成那一刻 reload 拿到的还是没有用量的账号,
+  // 这里按梯度静默补刷几次,把探针结果自动带出来,免得用户手动刷新。
+  const usageSettleTimersRef = useRef<number[]>([]);
+  const scheduleUsageSettleReloads = useCallback(() => {
+    usageSettleTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    // 后端探针链 = 刷 AT + billing + 连通性测试(带并发闸),单号约 5~15s,
+    // 批量导入时更久;30s 档兜住多数场景,更大批量由用户手动刷新或定期探测收尾。
+    usageSettleTimersRef.current = [2500, 7000, 15000, 30000].map((delay) =>
+      window.setTimeout(() => {
+        void reload();
+      }, delay),
+    );
+  }, [reload]);
+  useEffect(
+    () => () => {
+      usageSettleTimersRef.current.forEach((timer) =>
+        window.clearTimeout(timer),
+      );
+    },
+    [],
+  );
 
   const stats = useMemo(() => {
     const total = accounts.length;
@@ -722,6 +762,36 @@ export default function GrokAccounts({
 
   const clearSelection = useCallback(() => setSelected(new Set()), []);
 
+  // 行回调经由 ref 转发:rowHandlers 引用恒定(memo 行不因父组件重渲染而失效),
+  // ref.current 每次渲染刷新,始终指向最新的处理函数。
+  const rowHandlersRef = useRef<GrokRowHandlers>(null as unknown as GrokRowHandlers);
+  rowHandlersRef.current = {
+    toggleSelect,
+    openDetail: openAccountDetail,
+    test: (account) => setTestingAccount(account),
+    usage: (account) => setUsageAccount(account),
+    refresh: (account) => void handleRefresh(account),
+    toggleEnabled: (account) => void handleToggleEnabled(account),
+    // openEdit/handleRefresh 等在组件体更靠后定义,这里一律用闭包延迟取值,避开 TDZ。
+    edit: (account) => openEdit(account),
+    remove: (account) => void handleDelete(account),
+    usageRefreshed: () => void reload(),
+  };
+  const rowHandlers = useMemo<GrokRowHandlers>(
+    () => ({
+      toggleSelect: (id) => rowHandlersRef.current.toggleSelect(id),
+      openDetail: (account) => rowHandlersRef.current.openDetail(account),
+      test: (account) => rowHandlersRef.current.test(account),
+      usage: (account) => rowHandlersRef.current.usage(account),
+      refresh: (account) => rowHandlersRef.current.refresh(account),
+      toggleEnabled: (account) => rowHandlersRef.current.toggleEnabled(account),
+      edit: (account) => rowHandlersRef.current.edit(account),
+      remove: (account) => rowHandlersRef.current.remove(account),
+      usageRefreshed: () => rowHandlersRef.current.usageRefreshed(),
+    }),
+    [],
+  );
+
   const credentialReady =
     addMethod === "api_key"
       ? Boolean(form.api_key?.trim())
@@ -887,6 +957,7 @@ export default function GrokAccounts({
       setShowAdd(false);
       resetAddForm();
       void reload();
+      scheduleUsageSettleReloads();
     } catch (err) {
       showToast(getErrorMessage(err), "error");
     } finally {
@@ -910,6 +981,7 @@ export default function GrokAccounts({
       if (res.imported > 0) {
         showToast(t("grok.ssoImportDone", { imported: res.imported, total: res.total }));
         void reload();
+        scheduleUsageSettleReloads();
       }
       if (res.imported === res.total) {
         // 全部成功：清空输入，方便继续导入下一批
@@ -930,12 +1002,15 @@ export default function GrokAccounts({
       failed: number;
       items: GrokSSOImportItem[];
     }>,
-  ) => runImportChunks([fn]);
+    totalItems = 0,
+  ) => runImportChunks([fn], totalItems);
 
   // runImportChunks 按分片顺序调用导入接口并合并结果。
   // 分片是为了避开中间层超时：后端单次上限已放宽到 5000，但一个请求要串行落库
   // 几千条，墙钟时间会长到浏览器/反代先断开，用户既看不到进度也不知道进了多少。
   // 每片结束就把已合并的结果写回去，中途失败也能看到前面那些片的明细。
+  // totalItems 是全部待导入条数(调用方按文件/行数预先算好),用于右上角进度浮层
+  // (与 Codex 账号页批量操作同款);传 0 则进度条按分片完成时的累计条数走。
   const runImportChunks = async (
     chunks: Array<
       () => Promise<{
@@ -945,6 +1020,7 @@ export default function GrokAccounts({
         items: GrokSSOImportItem[];
       }>
     >,
+    totalItems = 0,
   ) => {
     if (chunks.length === 0) return;
     setImportBusy(true);
@@ -953,12 +1029,29 @@ export default function GrokAccounts({
     setImportProgress(
       chunks.length > 1 ? { done: 0, total: chunks.length } : null,
     );
+    const progressTitle = t("grok.importProgressTitle");
+    reportOperationEvent(progressTitle, {
+      type: "start",
+      action: "grok_import",
+      current: 0,
+      total: totalItems,
+    });
     const merged = {
       total: 0,
       imported: 0,
       failed: 0,
       items: [] as GrokSSOImportItem[],
     };
+    const reportMerged = (type: "progress" | "complete", error?: string) =>
+      reportOperationEvent(progressTitle, {
+        type,
+        action: "grok_import",
+        current: merged.total,
+        total: Math.max(totalItems, merged.total),
+        success: merged.imported,
+        failed: merged.failed,
+        error,
+      });
     try {
       for (let i = 0; i < chunks.length; i++) {
         const res = await chunks[i]();
@@ -969,8 +1062,13 @@ export default function GrokAccounts({
         if (chunks.length > 1) {
           setImportProgress({ done: i + 1, total: chunks.length });
         }
+        reportMerged(i === chunks.length - 1 ? "complete" : "progress");
       }
-      setImportResult({ ...merged, items: [...merged.items] });
+      // 全部成功时不再弹明细弹窗(右上角进度浮层已给出结果);
+      // 有失败才弹,保留逐号失败原因供排查。
+      if (merged.failed > 0) {
+        setImportResult({ ...merged, items: [...merged.items] });
+      }
       if (merged.imported > 0) {
         showToast(
           t("grok.fileImportDone", {
@@ -979,14 +1077,20 @@ export default function GrokAccounts({
           }),
         );
         void reload();
+        scheduleUsageSettleReloads();
       }
     } catch (err) {
-      showToast(getErrorMessage(err), "error");
-      // 中途失败时把已完成分片的结果留在弹窗里，用户能看到哪些已经进去了。
+      const message = getErrorMessage(err);
+      showToast(message, "error");
+      // 中途失败:浮层收尾并带上错误,已完成分片的结果留在弹窗里。
+      reportMerged("complete", message);
       if (merged.total > 0) {
         setImportResult({ ...merged, items: [...merged.items] });
       }
-      if (merged.imported > 0) void reload();
+      if (merged.imported > 0) {
+        void reload();
+        scheduleUsageSettleReloads();
+      }
     } finally {
       setImportBusy(false);
       setImportProgress(null);
@@ -1017,16 +1121,25 @@ export default function GrokAccounts({
             group_ids: importGroupIds,
           }),
       ),
+      files.length,
     );
   };
+
+  // countImportLines 统计文本导入的有效行数(空行/注释行不算),供进度条总数。
+  const countImportLines = (text: string) =>
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#")).length;
 
   // sso.txt（每行一个 sso token，自动转 Build 账号）
   const handleImportSsoFile = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     const text = await fileList[0].text();
     if (ssoFileInputRef.current) ssoFileInputRef.current.value = "";
-    await runImport(() =>
-      api.importGrokSSO({ tokens: text, group_ids: importGroupIds }),
+    await runImport(
+      () => api.importGrokSSO({ tokens: text, group_ids: importGroupIds }),
+      countImportLines(text),
     );
   };
 
@@ -1053,6 +1166,7 @@ export default function GrokAccounts({
             group_ids: importGroupIds,
           }),
       ),
+      lines.length,
     );
   };
 
@@ -1079,6 +1193,7 @@ export default function GrokAccounts({
               setShowAdd(false);
               resetAddForm();
               void reload();
+              scheduleUsageSettleReloads();
               return;
             }
             // pending — continue
@@ -1103,7 +1218,7 @@ export default function GrokAccounts({
         })();
       }, delay);
     },
-    [form.name, form.proxy_url, reload, showToast, stopDevicePoll, t],
+    [form.name, form.proxy_url, reload, scheduleUsageSettleReloads, showToast, stopDevicePoll, t],
   );
 
   const handleDeviceStart = async () => {
@@ -1683,41 +1798,6 @@ export default function GrokAccounts({
               value={groupFilter}
               onChange={setGroupFilter}
             />
-            <div className="flex flex-wrap items-center gap-1">
-              {(
-                [
-                  ["usage", t("grok.sortUsage"), t("grok.sortUsageHint")],
-                  [
-                    "requests",
-                    t("grok.sortRequests"),
-                    t("grok.sortRequestsHint"),
-                  ],
-                  ["updated", t("grok.sortUpdated"), t("grok.sortUpdatedHint")],
-                  ["group", t("grok.sortGroup"), t("grok.sortGroupHint")],
-                ] as const
-              ).map(([key, label, hint]) => (
-                <button
-                  key={key}
-                  type="button"
-                  title={hint}
-                  aria-pressed={sortKey === key}
-                  onClick={() => toggleSort(key)}
-                  className={cn(
-                    "inline-flex h-8 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
-                    sortKey === key
-                      ? "border-primary/30 bg-primary/10 text-primary"
-                      : "border-border bg-background text-muted-foreground hover:border-primary/25 hover:bg-accent/50 hover:text-foreground",
-                  )}
-                >
-                  {label}
-                  {sortKey === key ? (
-                    <span aria-hidden="true">
-                      {sortDir === "desc" ? "↓" : "↑"}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
             <div className="hidden shrink-0 items-center rounded-md border border-border bg-muted/50 p-0.5 lg:inline-flex lg:ml-auto">
               {(
                 [
@@ -1744,6 +1824,42 @@ export default function GrokAccounts({
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1">
+            {(
+              [
+                ["usage", t("grok.sortUsage"), t("grok.sortUsageHint")],
+                [
+                  "requests",
+                  t("grok.sortRequests"),
+                  t("grok.sortRequestsHint"),
+                ],
+                ["updated", t("grok.sortUpdated"), t("grok.sortUpdatedHint")],
+                ["group", t("grok.sortGroup"), t("grok.sortGroupHint")],
+              ] as const
+            ).map(([key, label, hint]) => (
+              <button
+                key={key}
+                type="button"
+                title={hint}
+                aria-pressed={sortKey === key}
+                onClick={() => toggleSort(key)}
+                className={cn(
+                  "inline-flex h-8 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                  sortKey === key
+                    ? "border-primary/30 bg-primary/10 text-primary"
+                    : "border-border bg-background text-muted-foreground hover:border-primary/25 hover:bg-accent/50 hover:text-foreground",
+                )}
+              >
+                {label}
+                {sortKey === key ? (
+                  <span aria-hidden="true">
+                    {sortDir === "desc" ? "↓" : "↑"}
+                  </span>
+                ) : null}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -1892,7 +2008,7 @@ export default function GrokAccounts({
             )
           }
         >
-          {viewMode === "table" ? (
+          {viewMode === "table" && isDesktop ? (
             <div className="data-table-shell hidden lg:block">
               <Table className="[&_td]:px-2.5 [&_th]:px-2.5 [&_td]:py-4">
                 <TableHeader>
@@ -1963,59 +2079,47 @@ export default function GrokAccounts({
                 </TableHeader>
                 <TableBody>
                   {pagedAccounts.map((account, index) => (
-                    <GrokAccountTableRow
+                    <MemoGrokAccountTableRow
                       key={account.id}
                       account={account}
-                      groups={resolveAccountGroups(account.group_ids, allGroups)}
+                      allGroups={allGroups}
                       sequence={(currentPage - 1) * pageSize + index + 1}
                       busy={busyId === account.id}
                       batchTesting={batchTesting}
                       selected={selected.has(account.id)}
                       detailOpen={detailAccountId === account.id}
-                      onToggleSelect={() => toggleSelect(account.id)}
-                      onOpenDetail={() => openAccountDetail(account)}
                       healthBuckets={healthBars[String(account.id)]}
-                      onTest={() => setTestingAccount(account)}
-                      onUsage={() => setUsageAccount(account)}
-                      onRefresh={() => void handleRefresh(account)}
-                      onToggleEnabled={() => void handleToggleEnabled(account)}
-                      onEdit={() => openEdit(account)}
-                      onDelete={() => void handleDelete(account)}
-                      onUsageRefreshed={() => void reload()}
+                      handlers={rowHandlers}
                     />
                   ))}
                 </TableBody>
               </Table>
             </div>
           ) : null}
-          <div
-            className={cn(
-              "grid grid-cols-1 gap-3 xl:grid-cols-2",
-              viewMode === "table" && "lg:hidden",
-            )}
-          >
-            {pagedAccounts.map((account, index) => (
-              <GrokAccountCard
-                key={account.id}
-                account={account}
-                groups={resolveAccountGroups(account.group_ids, allGroups)}
-                sequence={(currentPage - 1) * pageSize + index + 1}
-                busy={busyId === account.id}
-                batchTesting={batchTesting}
-                selected={selected.has(account.id)}
-                detailOpen={detailAccountId === account.id}
-                onToggleSelect={() => toggleSelect(account.id)}
-                onOpenDetail={() => openAccountDetail(account)}
-                onTest={() => setTestingAccount(account)}
-                onUsage={() => setUsageAccount(account)}
-                onRefresh={() => void handleRefresh(account)}
-                onToggleEnabled={() => void handleToggleEnabled(account)}
-                onEdit={() => openEdit(account)}
-                onDelete={() => void handleDelete(account)}
-                onUsageRefreshed={() => void reload()}
-              />
-            ))}
-          </div>
+          {/* 桌面 table 模式下卡片列表原先只是 CSS 隐藏(lg:hidden),React 仍然
+              渲染了整份 DOM——大号池下等于双倍渲染。按视口只渲染可见的那一份。 */}
+          {viewMode !== "table" || !isDesktop ? (
+            <div
+              className={cn(
+                "grid grid-cols-1 gap-3 xl:grid-cols-2",
+                viewMode === "table" && "lg:hidden",
+              )}
+            >
+              {pagedAccounts.map((account, index) => (
+                <MemoGrokAccountCard
+                  key={account.id}
+                  account={account}
+                  allGroups={allGroups}
+                  sequence={(currentPage - 1) * pageSize + index + 1}
+                  busy={busyId === account.id}
+                  batchTesting={batchTesting}
+                  selected={selected.has(account.id)}
+                  detailOpen={detailAccountId === account.id}
+                  handlers={rowHandlers}
+                />
+              ))}
+            </div>
+          ) : null}
           <Pagination
             page={currentPage}
             totalPages={totalPages}
@@ -2899,6 +3003,102 @@ export default function GrokAccounts({
     </div>
   );
 }
+
+// Memo 包装层:props 全部是稳定引用/原始值(handlers 经 ref 转发恒定),
+// 勾选、单行 busy 等局部状态变化只重渲染受影响的行,而不是整页行×2。
+// groups 在包装层内按账号 memo 解析,避免父组件每次渲染生成新数组打穿 memo。
+const MemoGrokAccountTableRow = memo(function MemoGrokAccountTableRow({
+  account,
+  allGroups,
+  sequence,
+  busy,
+  batchTesting,
+  selected,
+  detailOpen,
+  healthBuckets,
+  handlers,
+}: {
+  account: AccountRow;
+  allGroups: AccountGroup[];
+  sequence: number;
+  busy: boolean;
+  batchTesting: boolean;
+  selected: boolean;
+  detailOpen: boolean;
+  healthBuckets?: AccountHealthBucket[];
+  handlers: GrokRowHandlers;
+}) {
+  const groups = useMemo(
+    () => resolveAccountGroups(account.group_ids, allGroups),
+    [account.group_ids, allGroups],
+  );
+  return (
+    <GrokAccountTableRow
+      account={account}
+      groups={groups}
+      sequence={sequence}
+      busy={busy}
+      batchTesting={batchTesting}
+      selected={selected}
+      detailOpen={detailOpen}
+      healthBuckets={healthBuckets}
+      onToggleSelect={() => handlers.toggleSelect(account.id)}
+      onOpenDetail={() => handlers.openDetail(account)}
+      onTest={() => handlers.test(account)}
+      onUsage={() => handlers.usage(account)}
+      onRefresh={() => handlers.refresh(account)}
+      onToggleEnabled={() => handlers.toggleEnabled(account)}
+      onEdit={() => handlers.edit(account)}
+      onDelete={() => handlers.remove(account)}
+      onUsageRefreshed={handlers.usageRefreshed}
+    />
+  );
+});
+
+const MemoGrokAccountCard = memo(function MemoGrokAccountCard({
+  account,
+  allGroups,
+  sequence,
+  busy,
+  batchTesting,
+  selected,
+  detailOpen,
+  handlers,
+}: {
+  account: AccountRow;
+  allGroups: AccountGroup[];
+  sequence: number;
+  busy: boolean;
+  batchTesting: boolean;
+  selected: boolean;
+  detailOpen: boolean;
+  handlers: GrokRowHandlers;
+}) {
+  const groups = useMemo(
+    () => resolveAccountGroups(account.group_ids, allGroups),
+    [account.group_ids, allGroups],
+  );
+  return (
+    <GrokAccountCard
+      account={account}
+      groups={groups}
+      sequence={sequence}
+      busy={busy}
+      batchTesting={batchTesting}
+      selected={selected}
+      detailOpen={detailOpen}
+      onToggleSelect={() => handlers.toggleSelect(account.id)}
+      onOpenDetail={() => handlers.openDetail(account)}
+      onTest={() => handlers.test(account)}
+      onUsage={() => handlers.usage(account)}
+      onRefresh={() => handlers.refresh(account)}
+      onToggleEnabled={() => handlers.toggleEnabled(account)}
+      onEdit={() => handlers.edit(account)}
+      onDelete={() => handlers.remove(account)}
+      onUsageRefreshed={handlers.usageRefreshed}
+    />
+  );
+});
 
 function GrokAccountCard({
   account,

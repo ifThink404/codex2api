@@ -1122,6 +1122,60 @@ func excludeRelayAccountsFilter(inner auth.AccountFilter) auth.AccountFilter {
 	}
 }
 
+func relayOnlyAccountFilter(inner auth.AccountFilter) auth.AccountFilter {
+	return func(account *auth.Account) bool {
+		if account == nil || !account.IsRelayStyle() {
+			return false
+		}
+		return inner == nil || inner(account)
+	}
+}
+
+func responseCachePreparationFailure(prepared responsesBodyPreparation) (status int, reason string, unavailable bool) {
+	if prepared.PreviousResponseID == "" || prepared.Bypassed || prepared.CacheLookup.Kind == responseCacheLookupHit {
+		return 0, "", false
+	}
+	switch prepared.CacheLookup.Kind {
+	case responseCacheLookupKnownEvicted:
+		return http.StatusConflict, "local_context_evicted", true
+	case responseCacheLookupKnownOversize:
+		return http.StatusConflict, "local_context_oversize", true
+	case responseCacheLookupReconstructionTooLarge:
+		return http.StatusConflict, "reconstruction_too_large", true
+	case responseCacheLookupBackendCorrupt:
+		return http.StatusConflict, "backend_value_corrupt", true
+	case responseCacheLookupBackendError:
+		if prepared.RequiresLocalContext {
+			return http.StatusServiceUnavailable, "backend_unavailable", true
+		}
+	case responseCacheLookupMiss, responseCacheLookupExpired:
+		if prepared.RequiresLocalContext {
+			return http.StatusConflict, "missing_required_call_context", true
+		}
+	}
+	return 0, "", false
+}
+
+func sendResponseContextUnavailable(c *gin.Context, status int, reason string) {
+	code := api.ErrCodeResponseContextUnavailable
+	errType := api.ErrorTypeInvalidRequest
+	message := "Previous response context is unavailable"
+	if status == http.StatusServiceUnavailable {
+		code = api.ErrCodeServiceUnavailable
+		errType = api.ErrorTypeServer
+		message = "Previous response context backend is temporarily unavailable"
+	}
+	if status == http.StatusConflict {
+		recordResponseCacheKnownUnavailableError()
+	}
+	api.SendErrorWithStatus(c, api.NewAPIErrorWithDetails(
+		code,
+		message,
+		errType,
+		api.ErrorDetail{Field: "previous_response_id", Message: reason},
+	), status)
+}
+
 func gjsonResultIsCompactionTrigger(result gjson.Result) bool {
 	return result.IsObject() && strings.EqualFold(strings.TrimSpace(result.Get("type").String()), "compaction_trigger")
 }
@@ -2169,7 +2223,9 @@ func (h *Handler) Responses(c *gin.Context) {
 	// OpenAI Responses relay body 仅在实际命中 relay 账号时惰性生成，避免 Codex 路径重复转换。
 	// previous_response_id 缓存按下游 API Key 隔离，防止跨用户注入他人对话历史。
 	respCacheOwner := responseCacheOwner(apiKeyID)
-	codexBody, expandedInputRaw := PrepareResponsesBodyForOwner(rawBody, respCacheOwner)
+	bodyPreparation := prepareResponsesBodyForOwnerDetailed(rawBody, respCacheOwner)
+	codexBody, expandedInputRaw := bodyPreparation.Body, bodyPreparation.ExpandedInputRaw
+	continuationStatus, continuationReason, continuationUnavailable := responseCachePreparationFailure(bodyPreparation)
 	// strip 策略：剥离网关注入及客户端携带的图片工具能力声明，作为普通文本请求继续（issue #411）。
 	codexBody = applyImageGenerationStripPolicy(c, codexBody)
 	var openAIResponsesBody []byte
@@ -2207,8 +2263,11 @@ func (h *Handler) Responses(c *gin.Context) {
 		accountFilter = accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
 	}
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
-	if pinBodySignalToCodexAccounts {
+	if pinBodySignalToCodexAccounts && !continuationUnavailable {
 		accountFilter = excludeRelayAccountsFilter(accountFilter)
+	}
+	if continuationUnavailable {
+		accountFilter = relayOnlyAccountFilter(accountFilter)
 	}
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
@@ -2226,6 +2285,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	retryExclusions := newRetryAccountExclusions()
 	var wsHTTPFallback websocketHTTPFallbackState
 	invalidEncryptedContentRetried := false
+	relayContinuationAttempted := false
 	overflowCompactRetried := false
 	overflowCompactEnabled := autoCompactOverflowEnabled(c)
 
@@ -2241,7 +2301,11 @@ func (h *Handler) Responses(c *gin.Context) {
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
-			account, stickyProxyURL = h.nextRetryAccountForSession(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter)
+			if continuationUnavailable && !relayContinuationAttempted {
+				account, stickyProxyURL = h.nextAccountForSessionWithFilter(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter)
+			} else {
+				account, stickyProxyURL = h.nextRetryAccountForSession(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter)
+			}
 		}
 		if account == nil {
 			if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
@@ -2251,6 +2315,10 @@ func (h *Handler) Responses(c *gin.Context) {
 			// 候选被 scope 预算剔空时给出真实原因，而不是含糊的「无可用账号」。
 			if msg := scopeBudgetExhaustedMessage(c); msg != "" {
 				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
+				return
+			}
+			if continuationUnavailable && !relayContinuationAttempted {
+				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
 				return
 			}
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
@@ -2303,6 +2371,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		downstreamHeaders := c.Request.Header.Clone()
 
 		if account.IsRelayStyle() {
+			relayContinuationAttempted = true
 			if lastUpstreamCancel != nil {
 				lastUpstreamCancel()
 			}
@@ -3412,7 +3481,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	rawBody, _ = sjson.SetBytes(rawBody, "stream", false)
 
 	// 准备上游请求体（previous_response_id 缓存按下游 API Key 隔离）
-	codexBody, _ := PrepareCompactResponsesBodyForOwner(rawBody, responseCacheOwner(apiKeyID))
+	bodyPreparation := prepareCompactResponsesBodyForOwnerDetailed(rawBody, responseCacheOwner(apiKeyID))
+	codexBody := bodyPreparation.Body
+	continuationStatus, continuationReason, continuationUnavailable := responseCachePreparationFailure(bodyPreparation)
 	// strip 策略：剥离图片工具能力声明后作为普通文本请求继续（issue #411）。
 	codexBody = applyImageGenerationStripPolicy(c, codexBody)
 	if err := validateResponsesImageGenerationSizes(codexBody); err != nil {
@@ -3435,6 +3506,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 中转账号会命中上游自身的 /responses/compact，使仅接入中转的用户也能压缩（issue #174）。
 	accountFilter := accountFilterForCompactResponsesModelWithOriginal(routingModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	if continuationUnavailable {
+		accountFilter = relayOnlyAccountFilter(accountFilter)
+	}
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
@@ -3452,10 +3526,19 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	var lastBody []byte
 	excludeAccounts := make(map[int64]bool)
 	invalidEncryptedContentRetried := false
+	relayContinuationAttempted := false
 
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL := h.nextAccountForSessionWithFilter(affinityKey, apiKeyID, excludeAccounts, accountFilter)
 		if account == nil {
+			if continuationUnavailable && !relayContinuationAttempted {
+				if msg := scopeBudgetExhaustedMessage(c); msg != "" {
+					SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
+					return
+				}
+				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
+				return
+			}
 			account, stickyProxyURL = h.store.WaitForSessionAvailableWithFilter(c.Request.Context(), affinityKey, 30*time.Second, apiKeyID, excludeAccounts, accountFilter)
 			if account == nil {
 				if (lastStatusCode == http.StatusTooManyRequests || lastStatusCode == http.StatusBadGateway) && len(lastBody) > 0 {
@@ -3487,6 +3570,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		downstreamHeaders := c.Request.Header.Clone()
 
 		if account.IsOpenAIResponsesAPI() {
+			relayContinuationAttempted = true
 			baseURL, _ := account.OpenAIResponsesCredentials()
 			upstreamEndpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses/compact")
 			upstreamBody := openAIResponsesBody

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Globe,
@@ -14,6 +14,7 @@ import {
   Pencil,
   Link2,
   Unlink,
+  Scale,
   Search,
   Users,
   Power,
@@ -43,6 +44,10 @@ import {
 import { getErrorMessage } from "../utils/error";
 
 const PROXY_SCHEMES = ["http:", "https:", "socks5:", "socks5h:"];
+
+// 绑定弹窗一次最多渲染的账号行数。大号池下全量渲染会卡死页面,
+// 超出部分提示用搜索/筛选缩小范围(选择集不受渲染上限影响)。
+const BIND_LIST_RENDER_CAP = 100;
 
 type BindFilter = "all" | "unbound" | "this" | "other";
 // 账号池大类：Codex 池（含 AT / Agent / OpenAI Responses）与 Grok 池
@@ -176,6 +181,76 @@ function ProxyStatusBadge({
   );
 }
 
+// BindAccountRow 是绑定弹窗里的单行账号。memo 化:勾选状态变化时只重渲染
+// 受影响的行,避免大列表整体重排(大号池卡死问题)。
+const BindAccountRow = memo(function BindAccountRow({
+  account,
+  checked,
+  isThis,
+  onToggle,
+}: {
+  account: AccountRow;
+  checked: boolean;
+  isThis: boolean;
+  onToggle: (id: number) => void;
+}) {
+  const { t } = useTranslation();
+  const boundUrl = normalizeProxyUrl(account.proxy_url);
+  const kind = accountKindKey(account);
+  return (
+    <li>
+      <label
+        className={`flex cursor-pointer items-start gap-3 px-5 py-3 transition-colors sm:px-6 ${
+          checked ? "bg-primary/5" : "hover:bg-muted/30"
+        }`}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => onToggle(account.id)}
+          className="mt-1 size-4 shrink-0 rounded"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-semibold text-foreground">
+              {accountDisplayName(account)}
+            </span>
+            <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+              {t(`proxies.accountKind.${kind}`, { defaultValue: kind })}
+            </span>
+            <StatusBadge status={account.status} />
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span className="tabular-nums">#{account.id}</span>
+            {account.name && account.email ? (
+              <span className="truncate">{account.name}</span>
+            ) : null}
+            {boundUrl ? (
+              <span
+                className={`inline-flex max-w-full items-center gap-1 truncate ${
+                  isThis
+                    ? "font-medium text-primary"
+                    : "text-amber-600 dark:text-amber-400"
+                }`}
+                title={boundUrl}
+              >
+                <Link2 className="size-3 shrink-0" />
+                {isThis
+                  ? t("proxies.bindStatusThis")
+                  : t("proxies.bindStatusOther", { proxy: maskUrl(boundUrl) })}
+              </span>
+            ) : (
+              <span className="text-muted-foreground/80">
+                {t("proxies.bindStatusNone")}
+              </span>
+            )}
+          </div>
+        </div>
+      </label>
+    </li>
+  );
+});
+
 export default function Proxies() {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
@@ -218,12 +293,23 @@ export default function Proxies() {
   const [bindQuery, setBindQuery] = useState("");
   const [bindSubmitting, setBindSubmitting] = useState(false);
 
+  // 一键均衡绑定(把账号按最少绑定优先摊到可用代理上)
+  const [showBalance, setShowBalance] = useState(false);
+  const [balanceChannel, setBalanceChannel] = useState<"" | "codex" | "grok">(
+    "grok",
+  );
+  const [balanceMode, setBalanceMode] = useState<"unbound" | "all">("unbound");
+  const [balanceMaxPerProxy, setBalanceMaxPerProxy] = useState("");
+  const [balanceSubmitting, setBalanceSubmitting] = useState(false);
+
   const ipApiLang = i18n.language?.startsWith("zh") ? "zh-CN" : "en";
 
+  // 账号列表只在绑定弹窗打开时按需加载 lite 视图(只含身份/绑定字段)。
+  // 页面本身的绑定计数用服务端聚合的 bound_count,大号池下不再拉全量账号。
   const reloadAccounts = useCallback(async () => {
     setAccountsLoading(true);
     try {
-      const res = await api.getAccounts();
+      const res = await api.getAccounts({ view: "lite" });
       setAccounts(res.accounts ?? []);
     } catch (error) {
       showToast(
@@ -239,16 +325,12 @@ export default function Proxies() {
 
   const reload = useCallback(async () => {
     try {
-      const [proxyRes, settingsRes, accountsRes] = await Promise.all([
+      const [proxyRes, settingsRes] = await Promise.all([
         api.listProxies(),
         api.getSettings(),
-        api.getAccounts().catch(() => null),
       ]);
       setProxies(proxyRes.proxies);
       setPoolEnabled(settingsRes.proxy_pool_enabled);
-      if (accountsRes) {
-        setAccounts(accountsRes.accounts ?? []);
-      }
     } catch (error) {
       showToast(
         t("proxies.loadFailed", { error: getErrorMessage(error) }),
@@ -269,7 +351,8 @@ export default function Proxies() {
     currentPage * pageSize,
   );
 
-  // proxy_url → 绑定账号数
+  // 绑定计数以服务端聚合的 bound_count 为准;弹窗内已加载账号时用本地
+  // 数据实时刷新(绑定/解绑后不用等代理列表重拉)。
   const boundCountByProxyUrl = useMemo(() => {
     const map = new Map<string, number>();
     for (const account of accounts) {
@@ -280,9 +363,19 @@ export default function Proxies() {
     return map;
   }, [accounts]);
 
+  const boundCountForProxy = useCallback(
+    (proxy: ProxyRow): number => {
+      if (accounts.length > 0) {
+        return boundCountByProxyUrl.get(normalizeProxyUrl(proxy.url)) ?? 0;
+      }
+      return proxy.bound_count ?? 0;
+    },
+    [accounts.length, boundCountByProxyUrl],
+  );
+
   const totalBoundAccounts = useMemo(
-    () => accounts.filter((a) => normalizeProxyUrl(a.proxy_url)).length,
-    [accounts],
+    () => proxies.reduce((sum, p) => sum + (p.bound_count ?? 0), 0),
+    [proxies],
   );
 
   const bindFilteredAccounts = useMemo(() => {
@@ -313,9 +406,25 @@ export default function Proxies() {
     });
   }, [accounts, bindingProxy, bindFilter, bindKindFilter, bindQuery]);
 
+  // 只渲染前 N 条,选择/全选仍作用于全部筛选结果。
+  const bindRenderedAccounts = useMemo(
+    () => bindFilteredAccounts.slice(0, BIND_LIST_RENDER_CAP),
+    [bindFilteredAccounts],
+  );
+  const bindHiddenCount = bindFilteredAccounts.length - bindRenderedAccounts.length;
+
   const bindVisibleAllSelected =
     bindFilteredAccounts.length > 0 &&
     bindFilteredAccounts.every((a) => bindSelected.has(a.id));
+
+  const toggleBindAccount = useCallback((id: number) => {
+    setBindSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const openBindModal = (proxy: ProxyRow) => {
     setBindingProxy(proxy);
@@ -380,7 +489,8 @@ export default function Proxies() {
               fail: result.failed,
             }),
       );
-      await reloadAccounts();
+      // 同时刷新代理列表的服务端 bound_count。
+      await Promise.all([reloadAccounts(), reload()]);
       // 绑定成功后同步本地选中：绑定时保持选中，解绑后清空
       if (mode === "unbind") {
         setBindSelected(new Set());
@@ -621,6 +731,39 @@ export default function Proxies() {
     }
   };
 
+  const handleAutoBalance = async () => {
+    const maxPerProxy = Number(balanceMaxPerProxy.trim());
+    setBalanceSubmitting(true);
+    try {
+      const result = await api.autoBalanceProxies({
+        channel: balanceChannel || undefined,
+        mode: balanceMode,
+        max_per_proxy:
+          Number.isInteger(maxPerProxy) && maxPerProxy > 0 ? maxPerProxy : 0,
+      });
+      showToast(
+        t("proxies.balanceDone", {
+          assigned: result.assigned,
+          kept: result.kept,
+          skipped: result.skipped,
+        }),
+        result.skipped > 0 ? "error" : "success",
+      );
+      setShowBalance(false);
+      await Promise.all([
+        reload(),
+        accounts.length > 0 ? reloadAccounts() : Promise.resolve(),
+      ]);
+    } catch (error) {
+      showToast(
+        t("proxies.balanceFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    } finally {
+      setBalanceSubmitting(false);
+    }
+  };
+
   const errorCount = proxies.filter((p) => p.test_status === "error").length;
   const testsRunning = testAllLoading || testingIds.size > 0;
 
@@ -752,6 +895,17 @@ export default function Proxies() {
               {cleaningErrors
                 ? t("proxies.cleaningErrors")
                 : t("proxies.cleanErrors", { count: errorCount })}
+            </button>
+          )}
+
+          {proxies.some((p) => p.enabled && p.test_status !== "error") && (
+            <button
+              onClick={() => setShowBalance(true)}
+              disabled={balanceSubmitting}
+              className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-muted/50 disabled:opacity-50"
+            >
+              <Scale className="size-4" />
+              {t("proxies.autoBalance")}
             </button>
           )}
 
@@ -936,7 +1090,7 @@ export default function Proxies() {
                             <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs font-medium text-muted-foreground">
                               <Users className="size-3" />
                               {t("proxies.boundCount", {
-                                count: boundCountByProxyUrl.get(p.url) ?? 0,
+                                count: boundCountForProxy(p),
                               })}
                             </span>
                             {p.test_latency_ms > 0 ? (
@@ -1111,7 +1265,7 @@ export default function Proxies() {
                             >
                               <Users className="size-3" />
                               <span className="tabular-nums">
-                                {boundCountByProxyUrl.get(p.url) ?? 0}
+                                {boundCountForProxy(p)}
                               </span>
                             </button>
                           </td>
@@ -1300,6 +1454,117 @@ export default function Proxies() {
         </div>
       </Modal>
 
+      {/* 一键均衡绑定 */}
+      <Modal
+        show={showBalance}
+        title={t("proxies.balanceModalTitle")}
+        onClose={() => {
+          if (!balanceSubmitting) setShowBalance(false);
+        }}
+        contentClassName="sm:max-w-[520px]"
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowBalance(false)}
+              disabled={balanceSubmitting}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              className="gap-1.5"
+              onClick={() => void handleAutoBalance()}
+              disabled={balanceSubmitting}
+            >
+              {balanceSubmitting ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Scale className="size-3.5" />
+              )}
+              {t("proxies.balanceConfirm")}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            {t("proxies.balanceDesc")}
+          </p>
+          <div className="space-y-1.5">
+            <span className="text-xs font-semibold text-muted-foreground">
+              {t("proxies.balanceChannel")}
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                [
+                  ["grok", t("proxies.bindKindGrok")],
+                  ["codex", t("proxies.bindKindCodex")],
+                  ["", t("proxies.bindKindAll")],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key || "all"}
+                  type="button"
+                  onClick={() => setBalanceChannel(key)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    balanceChannel === key
+                      ? "border-primary/30 bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <span className="text-xs font-semibold text-muted-foreground">
+              {t("proxies.balanceMode")}
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                [
+                  ["unbound", t("proxies.balanceModeUnbound")],
+                  ["all", t("proxies.balanceModeAll")],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setBalanceMode(key)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    balanceMode === key
+                      ? "border-primary/30 bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {balanceMode === "all"
+                ? t("proxies.balanceModeAllHint")
+                : t("proxies.balanceModeUnboundHint")}
+            </p>
+          </div>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-muted-foreground">
+              {t("proxies.balanceMaxPerProxy")}
+            </span>
+            <Input
+              type="number"
+              min={0}
+              value={balanceMaxPerProxy}
+              onChange={(e) => setBalanceMaxPerProxy(e.target.value)}
+              placeholder={t("proxies.balanceMaxPerProxyPlaceholder")}
+            />
+          </label>
+        </div>
+      </Modal>
+
       {/* 绑定账号到代理 */}
       <Modal
         show={Boolean(bindingProxy)}
@@ -1366,7 +1631,7 @@ export default function Proxies() {
                 <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
                   <Users className="size-3" />
                   {t("proxies.boundCount", {
-                    count: boundCountByProxyUrl.get(bindingProxy.url) ?? 0,
+                    count: boundCountForProxy(bindingProxy),
                   })}
                 </span>
               </div>
@@ -1475,80 +1740,30 @@ export default function Proxies() {
                     : t("proxies.bindNoMatch")}
                 </div>
               ) : (
-                <ul className="divide-y divide-border/60">
-                  {bindFilteredAccounts.map((account) => {
-                    const checked = bindSelected.has(account.id);
-                    const boundUrl = normalizeProxyUrl(account.proxy_url);
-                    const isThis = isAccountBoundToProxy(
-                      account,
-                      bindingProxy.url,
-                    );
-                    const kind = accountKindKey(account);
-                    return (
-                      <li key={account.id}>
-                        <label
-                          className={`flex cursor-pointer items-start gap-3 px-5 py-3 transition-colors sm:px-6 ${
-                            checked ? "bg-primary/5" : "hover:bg-muted/30"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              setBindSelected((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(account.id)) next.delete(account.id);
-                                else next.add(account.id);
-                                return next;
-                              });
-                            }}
-                            className="mt-1 size-4 shrink-0 rounded"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="truncate text-sm font-semibold text-foreground">
-                                {accountDisplayName(account)}
-                              </span>
-                              <span className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                                {t(`proxies.accountKind.${kind}`, {
-                                  defaultValue: kind,
-                                })}
-                              </span>
-                              <StatusBadge status={account.status} />
-                            </div>
-                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                              <span className="tabular-nums">#{account.id}</span>
-                              {account.name && account.email ? (
-                                <span className="truncate">{account.name}</span>
-                              ) : null}
-                              {boundUrl ? (
-                                <span
-                                  className={`inline-flex max-w-full items-center gap-1 truncate ${
-                                    isThis
-                                      ? "font-medium text-primary"
-                                      : "text-amber-600 dark:text-amber-400"
-                                  }`}
-                                  title={boundUrl}
-                                >
-                                  <Link2 className="size-3 shrink-0" />
-                                  {isThis
-                                    ? t("proxies.bindStatusThis")
-                                    : t("proxies.bindStatusOther", {
-                                        proxy: maskUrl(boundUrl),
-                                      })}
-                                </span>
-                              ) : (
-                                <span className="text-muted-foreground/80">
-                                  {t("proxies.bindStatusNone")}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <>
+                  <ul className="divide-y divide-border/60">
+                    {bindRenderedAccounts.map((account) => (
+                      <BindAccountRow
+                        key={account.id}
+                        account={account}
+                        checked={bindSelected.has(account.id)}
+                        isThis={isAccountBoundToProxy(
+                          account,
+                          bindingProxy.url,
+                        )}
+                        onToggle={toggleBindAccount}
+                      />
+                    ))}
+                  </ul>
+                  {bindHiddenCount > 0 ? (
+                    <div className="border-t border-border/60 px-5 py-3 text-center text-xs text-muted-foreground sm:px-6">
+                      {t("proxies.bindListTruncated", {
+                        hidden: bindHiddenCount,
+                        shown: bindRenderedAccounts.length,
+                      })}
+                    </div>
+                  ) : null}
+                </>
               )}
             </div>
           </div>

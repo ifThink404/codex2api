@@ -274,7 +274,11 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					ignore_usage_limit_status INTEGER DEFAULT 0,
 					auto_reset_credits_enabled INTEGER DEFAULT 0,
 					auto_reset_credits_before_expiry_min INTEGER DEFAULT 60,
-					utls_shutdown_timeout_minutes INTEGER DEFAULT 30
+					utls_shutdown_timeout_minutes INTEGER DEFAULT 30,
+					response_cache_local_max_bytes INTEGER NOT NULL DEFAULT 67108864,
+					response_cache_local_max_entry_bytes INTEGER NOT NULL DEFAULT 8388608,
+					response_cache_reconstruct_max_bytes INTEGER NOT NULL DEFAULT 67108864,
+					response_cache_config_generation INTEGER NOT NULL DEFAULT 1
 				);`,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
@@ -508,6 +512,10 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "auto_reset_credits_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "auto_reset_credits_before_expiry_min", "INTEGER DEFAULT 60"},
 		{"system_settings", "utls_shutdown_timeout_minutes", "INTEGER DEFAULT 30"},
+		{"system_settings", "response_cache_local_max_bytes", "INTEGER NOT NULL DEFAULT 67108864"},
+		{"system_settings", "response_cache_local_max_entry_bytes", "INTEGER NOT NULL DEFAULT 8388608"},
+		{"system_settings", "response_cache_reconstruct_max_bytes", "INTEGER NOT NULL DEFAULT 67108864"},
+		{"system_settings", "response_cache_config_generation", "INTEGER NOT NULL DEFAULT 1"},
 		{"system_settings", "max_retries", "INTEGER DEFAULT 2"},
 		{"system_settings", "max_rate_limit_retries", "INTEGER DEFAULT 1"},
 		{"system_settings", "allow_remote_migration", "INTEGER DEFAULT 0"},

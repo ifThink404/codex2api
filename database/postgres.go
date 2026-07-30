@@ -902,7 +902,11 @@ func (db *DB) migrate(ctx context.Context) error {
 				usage_probe_concurrency INT DEFAULT 16,
 				usage_probe_responses_fallback_enabled BOOLEAN DEFAULT TRUE,
 				recovery_probe_interval_minutes INT DEFAULT 30,
-			scheduler_mode VARCHAR(20) DEFAULT 'round_robin'
+			scheduler_mode VARCHAR(20) DEFAULT 'round_robin',
+			response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864,
+			response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608,
+			response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864,
+			response_cache_config_generation BIGINT NOT NULL DEFAULT 1
 		);
 	CREATE TABLE IF NOT EXISTS api_key_scope_counters (
 		api_key_id BIGINT NOT NULL,
@@ -1025,6 +1029,10 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_before_expiry_min INT DEFAULT 60;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_config_generation BIGINT NOT NULL DEFAULT 1;
 
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS auto_pause_5h_threshold DOUBLE PRECISION DEFAULT 0;
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS auto_pause_7d_threshold DOUBLE PRECISION DEFAULT 0;
@@ -1239,6 +1247,8 @@ type APIKeyRow struct {
 //   - MaxConcurrency: 同一 API Key 在当前实例内允许的最大并发请求数。
 //   - CostLimit5h / CostLimit7d: 美元成本上限,滑动 5h / 7d 窗口,与账号侧窗口语义一致。
 //   - TokenLimit5h / TokenLimit7d: token 上限,滑动 5h / 7d 窗口。
+//   - CostLimitDaily / TokenLimitDaily: 自然日(服务器本地时区,零点清零)上限。与滑动窗口
+//     不同,到点全额恢复;与 scope 维度的 1d(滚动 24h)也刻意区分(issue #460)。
 //   - PlanAllow: 账号套餐白名单(plus/pro/team/...)。非空时该 Key 仅调度命中其一的账号,
 //     语义与 AllowedGroupIDs 类似,均在账号选择阶段过滤。空表示不限套餐。
 type APIKeyLimits struct {
@@ -1254,9 +1264,11 @@ type APIKeyLimits struct {
 	CostLimit5h        float64 `json:"cost_limit_5h,omitempty"`
 	CostLimit7d        float64 `json:"cost_limit_7d,omitempty"`
 	CostLimit30d       float64 `json:"cost_limit_30d,omitempty"`
+	CostLimitDaily     float64 `json:"cost_limit_daily,omitempty"`
 	TokenLimit5h       int64   `json:"token_limit_5h,omitempty"`
 	TokenLimit7d       int64   `json:"token_limit_7d,omitempty"`
 	TokenLimit30d      int64   `json:"token_limit_30d,omitempty"`
+	TokenLimitDaily    int64   `json:"token_limit_daily,omitempty"`
 	// DisableImageGeneration 为 true 时，该 Key 禁止访问生图模型(gpt-image-*)与
 	// 生图工具链路(image_generation 工具 / /v1/images 端点)，命中一律 403。
 	// 保留为向后兼容字段：新配置改用 ImageGenerationPolicy；未设 policy 时该 bool=true
@@ -1330,8 +1342,8 @@ func (l APIKeyLimits) IsZero() bool {
 	return len(l.ModelAllow) == 0 && len(l.ModelDeny) == 0 && len(l.PlanAllow) == 0 &&
 		len(l.NoAffinityGroupIDs) == 0 &&
 		l.RPM == 0 && l.RPD == 0 && l.MaxConcurrency == 0 &&
-		l.CostLimit5h == 0 && l.CostLimit7d == 0 && l.CostLimit30d == 0 &&
-		l.TokenLimit5h == 0 && l.TokenLimit7d == 0 && l.TokenLimit30d == 0 &&
+		l.CostLimit5h == 0 && l.CostLimit7d == 0 && l.CostLimit30d == 0 && l.CostLimitDaily == 0 &&
+		l.TokenLimit5h == 0 && l.TokenLimit7d == 0 && l.TokenLimit30d == 0 && l.TokenLimitDaily == 0 &&
 		len(l.ScopeLimits) == 0 &&
 		!l.DisableImageGeneration &&
 		!l.AutoCompactOnOverflow &&
@@ -1631,7 +1643,7 @@ func (db *DB) UpdateAPIKey(ctx context.Context, id int64, update APIKeyUpdate) e
 // total_used (cumulative history). Increments reset_count and sets last_reset_at.
 func (db *DB) ResetAPIKeyQuota(ctx context.Context, id int64) error {
 	res, err := db.conn.ExecContext(ctx,
-		`UPDATE api_keys SET quota_used = 0, reset_count = COALESCE(reset_count, 0) + 1, last_reset_at = NOW() WHERE id = $1`, id)
+		`UPDATE api_keys SET quota_used = 0, reset_count = COALESCE(reset_count, 0) + 1, last_reset_at = CURRENT_TIMESTAMP WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -1643,6 +1655,23 @@ func (db *DB) ResetAPIKeyQuota(ctx context.Context, id int64) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// ResetAllAPIKeyQuotas resets the current-period usage for every API key that
+// has a quota configured. Unlimited keys are intentionally excluded because
+// they do not have a renewable quota period.
+func (db *DB) ResetAllAPIKeyQuotas(ctx context.Context) (int64, error) {
+	res, err := db.conn.ExecContext(ctx, `
+		UPDATE api_keys
+		SET quota_used = 0,
+			reset_count = COALESCE(reset_count, 0) + 1,
+			last_reset_at = CURRENT_TIMESTAMP
+		WHERE COALESCE(quota_limit, 0) > 0
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // ==================== System Settings ====================
@@ -2499,6 +2528,66 @@ type ProxyRow struct {
 	TestLocation  string    `json:"test_location"`
 	TestLatencyMs int       `json:"test_latency_ms"`
 	TestStatus    string    `json:"test_status"`
+	// BoundCount 是绑定到该代理的账号数,由列表接口按 proxy_url 聚合填充,
+	// 前端据此免拉全量账号(代理页大号池卡死问题)。
+	BoundCount int64 `json:"bound_count"`
+}
+
+// SetAccountProxyURLs 在单事务里批量更新账号的 proxy_url(代理均衡绑定)。
+// 调用方负责同步运行时 store(ApplyAccountProxyURL)。
+func (db *DB) SetAccountProxyURLs(ctx context.Context, assignments map[int64]string) error {
+	if len(assignments) == 0 {
+		return nil
+	}
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	query := `UPDATE accounts SET proxy_url = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+	if db.isSQLite() {
+		query = `UPDATE accounts SET proxy_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+	}
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for id, proxyURL := range assignments {
+		if _, err := stmt.ExecContext(ctx, strings.TrimSpace(proxyURL), id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// CountAccountsByProxyURL 统计各 proxy_url 绑定的未删除账号数。
+// 供代理列表页展示绑定数,替代前端拉全量账号自行聚合。
+func (db *DB) CountAccountsByProxyURL(ctx context.Context) (map[string]int64, error) {
+	rows, err := db.conn.QueryContext(ctx, `
+		SELECT TRIM(proxy_url), COUNT(*)
+		FROM accounts
+		WHERE TRIM(COALESCE(proxy_url, '')) <> ''
+		  AND status <> 'deleted'
+		  AND COALESCE(error_message, '') <> 'deleted'
+		GROUP BY TRIM(proxy_url)
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var url string
+		var count int64
+		if err := rows.Scan(&url, &count); err != nil {
+			return nil, err
+		}
+		out[url] = count
+	}
+	return out, rows.Err()
 }
 
 // ListProxies 获取所有代理

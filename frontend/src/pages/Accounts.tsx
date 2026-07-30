@@ -3633,9 +3633,7 @@ export default function Accounts() {
   const batchBaseConcurrencyInvalid =
     batchUpdateBaseConcurrency &&
     batchBaseConcurrencyTrimmed !== "" &&
-    (batchBaseConcurrencyValue === null ||
-      batchBaseConcurrencyValue < 1 ||
-      batchBaseConcurrencyValue > 50);
+    (batchBaseConcurrencyValue === null || batchBaseConcurrencyValue < 1);
   const batchSchedulerPriorityInvalid =
     batchUpdateSchedulerPriority &&
     isSchedulerPriorityInputInvalid(batchSchedulerPriorityInput);
@@ -3979,9 +3977,7 @@ export default function Accounts() {
       parsedScoreBias > 200);
   const concurrencyInputInvalid =
     concurrencyMode === "custom" &&
-    (parsedBaseConcurrency === null ||
-      parsedBaseConcurrency < 1 ||
-      parsedBaseConcurrency > 50);
+    (parsedBaseConcurrency === null || parsedBaseConcurrency < 1);
   const editAutoPause5hThresholdInvalid = isPercentThresholdInputInvalid(
     editAutoPause5hThresholdInput,
   );
@@ -4162,9 +4158,7 @@ export default function Accounts() {
   );
   const groupBaseConcurrencyInvalid =
     groupDraft.baseConcurrencyInput.trim() !== "" &&
-    (parsedGroupBaseConcurrency === null ||
-      parsedGroupBaseConcurrency < 1 ||
-      parsedGroupBaseConcurrency > 50);
+    (parsedGroupBaseConcurrency === null || parsedGroupBaseConcurrency < 1);
 
   const resetGroupDraft = () => {
     setGroupDraft({
@@ -8878,7 +8872,6 @@ export default function Accounts() {
                     <Input
                       type="number"
                       min={1}
-                      max={50}
                       step={1}
                       inputMode="numeric"
                       value={groupDraft.baseConcurrencyInput}

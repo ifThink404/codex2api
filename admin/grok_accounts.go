@@ -341,7 +341,7 @@ func (h *Handler) FetchGrokModels(c *gin.Context) {
 		probe.AccessToken = td.AccessToken
 	}
 
-	models, err := proxy.FetchGrokModelIDs(ctx, probe)
+	models, err := proxy.FetchGrokModelIDs(ctx, probe, h.store.ResolveProxyForAccount(probe))
 	if err != nil {
 		writeError(c, http.StatusBadGateway, err.Error())
 		return
