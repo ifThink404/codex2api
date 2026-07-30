@@ -138,7 +138,7 @@ func TestPromptGuardClosedApprovalReassessmentUsesCachedWebSocketRequestedModelA
 	}
 }
 
-func TestPromptGuardMappedApprovalReassessmentStillBlocksDangerousPlannedAction(t *testing.T) {
+func TestPromptGuardMappedApprovalReassessmentAuditsDangerousPlannedAction(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := promptGuardTestConfig()
 	cfg.Advanced.NewAPI.Enabled = true
@@ -166,8 +166,8 @@ func TestPromptGuardMappedApprovalReassessmentStillBlocksDangerousPlannedAction(
 	}, true)
 
 	got := handler.evaluatePromptGuard(c, mappedBody, signedBody, "/v1/responses", "gpt-5.6-sol", promptfilter.TransportHTTP)
-	if got.Decision.Action != promptfilter.ActionBlock || got.Decision.PrimaryOrigin != promptfilter.OriginApplicationCandidate || got.Decision.StrikeEligible || got.Decision.ApplicationPromptKind != "approval_reassessment" {
-		t.Fatalf("mapped dangerous planned action bypassed prompt guard: %+v", got.Decision)
+	if got.Decision.Action != promptfilter.ActionAllow || got.Decision.WouldAction != promptfilter.ActionBlock || got.Decision.AuditScore == 0 || got.Decision.PrimaryOrigin != promptfilter.OriginApplicationCandidate || got.Decision.StrikeEligible || got.Decision.ApplicationPromptKind != "approval_reassessment" {
+		t.Fatalf("mapped dangerous planned action bypassed prompt guard audit: %+v", got.Decision)
 	}
 }
 
@@ -193,7 +193,7 @@ func TestPromptGuardApprovalReassessmentWithoutSignedRequestedModelFailsClosed(t
 	}
 }
 
-func TestPromptGuardApprovalReassessmentScansPlannedAction(t *testing.T) {
+func TestPromptGuardApprovalReassessmentAuditsPlannedAction(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := newPromptGuardTestHandler(promptGuardTestConfig())
 	prompt := strings.Replace(
@@ -206,8 +206,8 @@ func TestPromptGuardApprovalReassessmentScansPlannedAction(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	got := handler.evaluatePromptGuard(c, body, body, "/v1/responses", "codex-auto-review", promptfilter.TransportHTTP)
-	if got.Decision.Action != promptfilter.ActionBlock || got.Decision.PrimaryOrigin != promptfilter.OriginApplicationCandidate || got.Decision.StrikeEligible || got.Decision.ApplicationPromptKind != "approval_reassessment" {
-		t.Fatalf("dangerous planned action bypassed prompt guard: %+v", got.Decision)
+	if got.Decision.Action != promptfilter.ActionAllow || got.Decision.WouldAction != promptfilter.ActionBlock || got.Decision.AuditScore == 0 || got.Decision.PrimaryOrigin != promptfilter.OriginApplicationCandidate || got.Decision.StrikeEligible || got.Decision.ApplicationPromptKind != "approval_reassessment" {
+		t.Fatalf("dangerous planned action bypassed prompt guard audit: %+v", got.Decision)
 	}
 }
 

@@ -480,7 +480,8 @@ var ambientApplicationSignatures = []applicationTemplateSignature{{
 // rule phrases. Recognize it only when both complete static regions match a
 // known release signature and the dynamic candidate block has the exact
 // JSON-string field layout emitted by Codex Desktop. Only that dynamic block is
-// scanned. It remains fully enforceable, but can never create a user strike.
+// scanned. It remains visible to audit, but can never synchronously block or
+// create a user strike.
 // Any template mutation or text appended outside the signed static suffix
 // fails classification and the original current-user segment is scanned.
 func classifyKnownApplicationPrompt(envelope RequestEnvelope, globalMode string) (RequestEnvelope, string) {
@@ -529,7 +530,7 @@ func classifyKnownApplicationPrompt(envelope RequestEnvelope, globalMode string)
 	// unique delimiters, valid planned-action JSON, and an empty trailing suffix
 	// must all agree. The transcript is untrusted review evidence and is not
 	// recursively enforced, but the exact planned-action JSON remains a
-	// non-punitive application candidate and is synchronously scanned. Thus a
+	// non-punitive application candidate and is synchronously audited. Thus a
 	// client cannot turn the public template into a whole-request filter bypass.
 	if candidate, ok := parseApprovalReassessmentPrompt(text, envelope); ok {
 		return replaceSingleCurrentUserWithApplicationCandidate(envelope, currentIndex, candidate), "approval_reassessment"
@@ -1564,6 +1565,8 @@ func (e *Engine) cachedVerdictMatchContextWithPerformanceBudget(text string, mat
 				patternSuppressedForDefensiveRuleArtifact(limitedText, pattern) ||
 				patternSuppressedForAuthorizationBoundary(limitedText, scanText, pattern) ||
 				patternSuppressedForNegatedPolicyAction(limitedText, scanText, pattern) ||
+				patternSuppressedForProtectiveRefusal(limitedText, scanText, pattern) ||
+				patternSuppressedForNarrativeRefusal(limitedText, scanText, pattern) ||
 				patternSuppressedForDefensiveDocumentation(limitedText, pattern) {
 				continue
 			}
@@ -1647,11 +1650,11 @@ func (DefaultGuardPolicy) Decide(request GuardRequest, detectionContext Detectio
 	var selectedAudit *Signal
 	for index := range decision.Signals {
 		signal := &decision.Signals[index]
-		highConfidenceToolOutput := signal.Origin == OriginToolOutput && signal.highConfidenceToolOutput
-		if !guardOriginCanEnforce(signal.Origin) && signal.LayerMode == GuardModeEnforce && !highConfidenceToolOutput {
+		if !guardOriginCanEnforce(signal.Origin) && (signal.LayerMode == GuardModeEnforce || signal.LayerMode == GuardModeWarn) {
 			// Defense in depth for custom detectors/policies that construct signals
 			// directly instead of using DetectionContext.LayerMode. Auxiliary
-			// provenance may audit or warn, but can never synchronously block.
+			// provenance may audit, but can never synchronously block. Composite tool
+			// output remains high-confidence audit evidence rather than user intent.
 			signal.LayerMode = GuardModeShadow
 		}
 		if actionRank(signal.SuggestedAction) > actionRank(decision.WouldAction) {

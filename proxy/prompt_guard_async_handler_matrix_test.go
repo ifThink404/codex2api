@@ -217,7 +217,7 @@ func TestAsyncShadowAuxiliaryRealHandlerUpstreamMatrix(t *testing.T) {
 			invokePromptGuardHandlerMatrixRequest(t, handler, tc.invoke, tc.endpoint, "application/json", []byte(tc.normalBody), http.StatusOK, &upstreamCalls, 1)
 			invokePromptGuardHandlerMatrixRequest(t, handler, tc.invoke, tc.endpoint, "application/json", []byte(tc.harmfulCurrentBody), http.StatusBadRequest, &upstreamCalls, 0)
 			if tc.blockingToolBody != "" {
-				invokePromptGuardHandlerMatrixRequest(t, handler, tc.invoke, tc.endpoint, "application/json", []byte(tc.blockingToolBody), http.StatusBadRequest, &upstreamCalls, 0)
+				invokePromptGuardHandlerMatrixRequest(t, handler, tc.invoke, tc.endpoint, "application/json", []byte(tc.blockingToolBody), http.StatusOK, &upstreamCalls, 1)
 			}
 
 			beforeAsyncLogs := countAsyncShadowHandlerLogs(t, db, tc.endpoint)
@@ -304,7 +304,7 @@ func TestAsyncShadowAuxiliaryResponsesWebSocketRealHandler(t *testing.T) {
 
 	invokeResponsesWSMatrixRequest(t, wsURL, []byte(normal), &upstreamCalls, 1, "response.completed")
 	invokeResponsesWSMatrixRequest(t, wsURL, []byte(harmful), &upstreamCalls, 0, "error")
-	invokeResponsesWSMatrixRequest(t, wsURL, []byte(blockingTool), &upstreamCalls, 0, "error")
+	invokeResponsesWSMatrixRequest(t, wsURL, []byte(blockingTool), &upstreamCalls, 1, "response.completed")
 	beforeAsyncLogs := countAsyncShadowHandlerLogs(t, db, "/v1/responses")
 	invokeResponsesWSMatrixRequest(t, wsURL, []byte(shadow), &upstreamCalls, 1, "response.completed")
 	waitPromptGuardShadowDispatcherIdle(t, dispatcher)
