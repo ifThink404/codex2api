@@ -342,30 +342,34 @@ func (h *Handler) Messages(c *gin.Context) {
 
 			log.Printf("上游返回错误 (attempt %d, status %d, /v1/messages): %s", attempt+1, resp.StatusCode, string(errBody))
 			logUpstreamError("/v1/messages", resp.StatusCode, model, account.ID(), errBody)
-			h.logUpstreamCyberPolicy(c, "/v1/messages", model, errBody)
+			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/messages", model, errBody, upstreamCyberPolicyAttempt{
+				Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
+				AccountID: account.ID(), AttemptIndex: attempt + 1,
+			}))
 			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
-				AccountID:            account.ID(),
-				Endpoint:             "/v1/messages",
-				Model:                model,
-				EffectiveModel:       attemptEffectiveModel,
-				StatusCode:           resp.StatusCode,
-				DurationMs:           durationMs,
-				ReasoningEffort:      reasoningEffort,
-				InboundEndpoint:      "/v1/messages",
-				UpstreamEndpoint:     upstreamEndpoint,
-				Stream:               isStream,
-				ViaWebsocket:         useWebsocket,
-				ServiceTier:          usageTiers.ServiceTier,
-				RequestedServiceTier: usageTiers.RequestedServiceTier,
-				ActualServiceTier:    usageTiers.ActualServiceTier,
-				BillingServiceTier:   usageTiers.BillingServiceTier,
-				IsRetryAttempt:       shouldRetry,
-				AttemptIndex:         attempt + 1,
-				UpstreamErrorKind:    upstreamErrorKind(resp.StatusCode, errBody, decision),
-				ErrorMessage:         usageLogErrorMessage(resp.StatusCode, errBody),
+				AccountID:              account.ID(),
+				Endpoint:               "/v1/messages",
+				Model:                  model,
+				EffectiveModel:         attemptEffectiveModel,
+				StatusCode:             resp.StatusCode,
+				DurationMs:             durationMs,
+				ReasoningEffort:        reasoningEffort,
+				InboundEndpoint:        "/v1/messages",
+				UpstreamEndpoint:       upstreamEndpoint,
+				Stream:                 isStream,
+				ViaWebsocket:           useWebsocket,
+				ServiceTier:            usageTiers.ServiceTier,
+				RequestedServiceTier:   usageTiers.RequestedServiceTier,
+				ActualServiceTier:      usageTiers.ActualServiceTier,
+				BillingServiceTier:     usageTiers.BillingServiceTier,
+				IsRetryAttempt:         shouldRetry,
+				AttemptIndex:           attempt + 1,
+				UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
+				ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
+				PromptPolicyIncidentID: promptPolicyIncidentID,
 			})
 
 			if shouldRetry {
@@ -597,9 +601,13 @@ func (h *Handler) Messages(c *gin.Context) {
 			outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 		}
 		ttftGuard.Stop()
+		promptPolicyIncidentID := ""
 		if len(terminalFailurePayload) > 0 {
 			outcome = classifyResponseFailedOutcome(terminalFailurePayload)
-			h.logUpstreamCyberPolicy(c, "/v1/messages", model, responseFailedErrorBody(terminalFailurePayload))
+			promptPolicyIncidentID = acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/messages", model, responseFailedErrorBody(terminalFailurePayload), upstreamCyberPolicyAttempt{
+				Transport: upstreamPromptPolicyTransport(true, useWebsocket), StatusCode: outcome.logStatusCode,
+				AccountID: account.ID(), AttemptIndex: attempt + 1,
+			}))
 			// 流式 response.failed 也要把额度耗尽/限流账号冷却下来，
 			// 否则该账号会保持高分继续被调度（与 /v1/responses 路径保持一致）。
 			responseFailedDecision := h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)
@@ -619,6 +627,13 @@ func (h *Handler) Messages(c *gin.Context) {
 			continue
 		}
 		if shouldTransparentRetryStream(outcome, attempt, maxRetries, wroteAnyBody, c.Request.Context().Err(), writeErr) {
+			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model, EffectiveModel: attemptEffectiveModel,
+				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
+				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
+				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
+				ErrorMessage: usageLogErrorMessage(outcome.logStatusCode, []byte(outcome.failureMessage)),
+			}, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重试 (attempt %d/%d, account %d, /v1/messages): %s",
 				attempt+1, maxRetries+1, account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
@@ -676,22 +691,24 @@ func (h *Handler) Messages(c *gin.Context) {
 		c.Set("x-service-tier", usageTiers.ServiceTier)
 
 		logInput := &database.UsageLogInput{
-			AccountID:            account.ID(),
-			Endpoint:             "/v1/messages",
-			Model:                model,
-			EffectiveModel:       attemptEffectiveModel,
-			StatusCode:           logStatusCode,
-			DurationMs:           totalDuration,
-			FirstTokenMs:         firstTokenMs,
-			ReasoningEffort:      reasoningEffort,
-			InboundEndpoint:      "/v1/messages",
-			UpstreamEndpoint:     upstreamEndpoint,
-			Stream:               isStream,
-			ViaWebsocket:         useWebsocket,
-			ServiceTier:          usageTiers.ServiceTier,
-			RequestedServiceTier: usageTiers.RequestedServiceTier,
-			ActualServiceTier:    usageTiers.ActualServiceTier,
-			BillingServiceTier:   usageTiers.BillingServiceTier,
+			AccountID:              account.ID(),
+			Endpoint:               "/v1/messages",
+			Model:                  model,
+			EffectiveModel:         attemptEffectiveModel,
+			StatusCode:             logStatusCode,
+			DurationMs:             totalDuration,
+			FirstTokenMs:           firstTokenMs,
+			ReasoningEffort:        reasoningEffort,
+			InboundEndpoint:        "/v1/messages",
+			UpstreamEndpoint:       upstreamEndpoint,
+			Stream:                 isStream,
+			ViaWebsocket:           useWebsocket,
+			ServiceTier:            usageTiers.ServiceTier,
+			RequestedServiceTier:   usageTiers.RequestedServiceTier,
+			ActualServiceTier:      usageTiers.ActualServiceTier,
+			BillingServiceTier:     usageTiers.BillingServiceTier,
+			PromptPolicyIncidentID: promptPolicyIncidentID,
+			AttemptIndex:           attempt + 1,
 		}
 		if logStatusCode != http.StatusOK {
 			logInput.ErrorMessage = usageLogErrorMessage(logStatusCode, []byte(outcome.failureMessage))

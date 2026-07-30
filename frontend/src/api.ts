@@ -55,6 +55,8 @@ import type {
   OpsOverviewResponse,
   PromptFilterLog,
   PromptFilterLogsResponse,
+	PromptPolicyIncidentDetailResponse,
+	PromptPolicyIncidentsResponse,
   PromptFilterNewAPIBinding,
   PromptFilterNewAPIBindingsResponse,
   PromptFilterRulePatternTestResponse,
@@ -871,8 +873,23 @@ export const api = {
     if (params.endpoint) search.set('endpoint', params.endpoint)
     if (params.apiKeyId) search.set('api_key_id', String(params.apiKeyId))
     if (params.source) search.set('source', params.source)
-    return request<{ found: boolean; log: PromptFilterLog | null }>(`/prompt-filter/logs/match?${search.toString()}`)
-  },
+		return request<{ found: boolean; log: PromptFilterLog | null; legacy_inferred: boolean }>(`/prompt-filter/logs/match?${search.toString()}`)
+	},
+	getPromptPolicyIncidents: (params: { page?: number; pageSize?: number; endpoint?: string; model?: string; apiKeyId?: string; evaluationState?: string; outcome?: string; localMiss?: boolean; q?: string } = {}) => {
+		const search = new URLSearchParams()
+		search.set('page', String(params.page || 1))
+		search.set('page_size', String(params.pageSize || 20))
+		if (params.endpoint) search.set('endpoint', params.endpoint)
+		if (params.model) search.set('model', params.model)
+		if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
+		if (params.evaluationState) search.set('evaluation_state', params.evaluationState)
+		if (params.outcome) search.set('outcome', params.outcome)
+		if (params.localMiss !== undefined) search.set('local_miss', String(params.localMiss))
+		if (params.q) search.set('q', params.q)
+		return request<PromptPolicyIncidentsResponse>(`/prompt-policy/incidents?${search.toString()}`)
+	},
+	getPromptPolicyIncident: (incidentId: string) =>
+		request<PromptPolicyIncidentDetailResponse>(`/prompt-policy/incidents/${encodeURIComponent(incidentId)}`),
   testPromptFilter: (data: { text: string; endpoint?: string; model?: string }) =>
     request<PromptFilterTestResponse>('/prompt-filter/test', { method: 'POST', body: JSON.stringify(data) }),
   testPromptFilterRulePattern: (data: { pattern: string; text: string }) =>

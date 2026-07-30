@@ -185,13 +185,14 @@ func (h *Handler) logPromptFilterVerdictWithDecision(c *gin.Context, endpoint st
 }
 
 type promptFilterAuditContext struct {
-	ClientIP     string
-	APIKeyID     int64
-	APIKeyName   string
-	APIKeyMasked string
-	Endpoint     string
-	Protocol     string
-	Provider     string
+	ClientIP             string
+	APIKeyID             int64
+	APIKeyName           string
+	APIKeyMasked         string
+	Endpoint             string
+	Protocol             string
+	Provider             string
+	RequestCorrelationID string
 }
 
 func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAuditContext {
@@ -205,13 +206,14 @@ func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAu
 	h.populateCachedVerifiedNewAPIAuditMeta(c, input)
 	populatePromptFilterAPIKeyMeta(c, input)
 	return promptFilterAuditContext{
-		ClientIP:     input.ClientIP,
-		APIKeyID:     input.APIKeyID,
-		APIKeyName:   input.APIKeyName,
-		APIKeyMasked: input.APIKeyMasked,
-		Endpoint:     input.Endpoint,
-		Protocol:     input.Protocol,
-		Provider:     input.Provider,
+		ClientIP:             input.ClientIP,
+		APIKeyID:             input.APIKeyID,
+		APIKeyName:           input.APIKeyName,
+		APIKeyMasked:         input.APIKeyMasked,
+		Endpoint:             input.Endpoint,
+		Protocol:             input.Protocol,
+		Provider:             input.Provider,
+		RequestCorrelationID: ensurePromptPolicyRequestCorrelationID(c),
 	}
 }
 
@@ -241,21 +243,22 @@ func (h *Handler) buildPromptFilterLogInput(auditContext promptFilterAuditContex
 		return nil
 	}
 	input := &database.PromptFilterLogInput{
-		Source:          source,
-		Endpoint:        endpoint,
-		Model:           model,
-		Action:          verdict.Action,
-		Mode:            verdict.Mode,
-		Score:           verdict.Score,
-		Threshold:       verdict.Threshold,
-		MatchedPatterns: promptfilter.MatchesJSON(verdict.Matched),
-		TextPreview:     promptfilter.RedactedPreview(verdict.TextPreview, 500),
-		MatchContext:    promptfilter.RedactedPreview(verdict.MatchContext, promptFilterMatchContextMaxRunes),
-		ClientIP:        auditContext.ClientIP,
-		ErrorCode:       errorCode,
-		ReviewModel:     verdict.ReviewModel,
-		ReviewFlagged:   verdict.ReviewFlagged,
-		ReviewError:     verdict.ReviewError,
+		Source:               source,
+		Endpoint:             endpoint,
+		Model:                model,
+		Action:               verdict.Action,
+		Mode:                 verdict.Mode,
+		Score:                verdict.Score,
+		Threshold:            verdict.Threshold,
+		MatchedPatterns:      promptfilter.MatchesJSON(verdict.Matched),
+		TextPreview:          promptfilter.RedactedPreview(verdict.TextPreview, 500),
+		MatchContext:         promptfilter.RedactedPreview(verdict.MatchContext, promptFilterMatchContextMaxRunes),
+		ClientIP:             auditContext.ClientIP,
+		ErrorCode:            errorCode,
+		ReviewModel:          verdict.ReviewModel,
+		ReviewFlagged:        verdict.ReviewFlagged,
+		ReviewError:          verdict.ReviewError,
+		RequestCorrelationID: auditContext.RequestCorrelationID,
 	}
 	if envelope != nil {
 		if envelope.Protocol != promptfilter.ProtocolUnknown {
@@ -345,28 +348,16 @@ func applyVerifiedNewAPIAuditMeta(policyContext verifiedNewAPIPolicyContext, inp
 	}
 }
 
-func (h *Handler) logUpstreamCyberPolicy(c *gin.Context, endpoint string, model string, body []byte) {
-	if h == nil || h.store == nil {
-		return
-	}
+func (h *Handler) logUpstreamCyberPolicy(c *gin.Context, endpoint string, model string, body []byte, attempts ...upstreamCyberPolicyAttempt) (string, bool) {
 	errorCode := upstreamCyberPolicyCode(body)
 	if errorCode == "" {
-		return
+		return "", false
 	}
-	cfg := h.promptFilterConfigForRequest(c)
-	verdict := promptfilter.Verdict{
-		Enabled:   true,
-		Mode:      cfg.Mode,
-		Action:    promptfilter.ActionBlock,
-		Score:     0,
-		Threshold: cfg.Threshold,
-		Reason:    "upstream returned cyber policy",
-		// 上游 cyber_policy 没有本地提取文本，把脱敏后的上游错误体作为「详细内容」记录，
-		// 方便在日志里看清触发详情，同时避免持久化敏感字段。
-		FullText: promptfilter.RedactSensitive(string(body)),
+	attempt := upstreamCyberPolicyAttempt{}
+	if len(attempts) > 0 {
+		attempt = attempts[0]
 	}
-	h.logPromptFilterVerdict(c, endpoint, model, "upstream_cyber_policy", errorCode, verdict)
-	h.enqueueUpstreamCyberPolicyEvidence(c, endpoint, model, errorCode)
+	return h.enqueueUpstreamCyberPolicyEvidence(c, endpoint, model, errorCode, body, attempt)
 }
 
 func upstreamCyberPolicyCode(body []byte) string {

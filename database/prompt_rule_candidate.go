@@ -81,6 +81,7 @@ const sqlitePromptRuleCandidateEvidenceDDL = `CREATE TABLE IF NOT EXISTS prompt_
 	model TEXT NOT NULL DEFAULT '',
 	api_key_id INTEGER NOT NULL DEFAULT 0,
 	api_key_name TEXT NOT NULL DEFAULT '',
+	prompt_policy_incident_id TEXT NULL,
 	observed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	UNIQUE(candidate_id, source_kind, source_ref_hash)
@@ -99,6 +100,7 @@ const postgresPromptRuleCandidateEvidenceDDL = `CREATE TABLE IF NOT EXISTS promp
 	model VARCHAR(100) NOT NULL DEFAULT '',
 	api_key_id INT NOT NULL DEFAULT 0,
 	api_key_name VARCHAR(255) NOT NULL DEFAULT '',
+	prompt_policy_incident_id VARCHAR(64) NULL,
 	observed_at TIMESTAMPTZ DEFAULT NOW(),
 	created_at TIMESTAMPTZ DEFAULT NOW(),
 	UNIQUE(candidate_id, source_kind, source_ref_hash)
@@ -125,20 +127,21 @@ type PromptRuleCandidate struct {
 }
 
 type PromptRuleCandidateEvidence struct {
-	ID            int64     `json:"id"`
-	CandidateID   int64     `json:"candidate_id"`
-	SourceKind    string    `json:"source_kind"`
-	SourceRef     string    `json:"source_ref,omitempty"`
-	SourceRefHash string    `json:"source_ref_hash"`
-	SamplePreview string    `json:"sample_preview,omitempty"`
-	MetadataJSON  string    `json:"-"`
-	Protocol      string    `json:"protocol,omitempty"`
-	Provider      string    `json:"provider,omitempty"`
-	Model         string    `json:"model,omitempty"`
-	APIKeyID      int64     `json:"api_key_id,omitempty"`
-	APIKeyName    string    `json:"api_key_name,omitempty"`
-	ObservedAt    time.Time `json:"observed_at"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                     int64     `json:"id"`
+	CandidateID            int64     `json:"candidate_id"`
+	SourceKind             string    `json:"source_kind"`
+	SourceRef              string    `json:"source_ref,omitempty"`
+	SourceRefHash          string    `json:"source_ref_hash"`
+	SamplePreview          string    `json:"sample_preview,omitempty"`
+	MetadataJSON           string    `json:"-"`
+	Protocol               string    `json:"protocol,omitempty"`
+	Provider               string    `json:"provider,omitempty"`
+	Model                  string    `json:"model,omitempty"`
+	APIKeyID               int64     `json:"api_key_id,omitempty"`
+	APIKeyName             string    `json:"api_key_name,omitempty"`
+	PromptPolicyIncidentID string    `json:"prompt_policy_incident_id,omitempty"`
+	ObservedAt             time.Time `json:"observed_at"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 type PromptRuleCandidateInput struct {
@@ -154,17 +157,18 @@ type PromptRuleCandidateInput struct {
 }
 
 type PromptRuleCandidateEvidenceInput struct {
-	SourceKind    string
-	SourceRef     string
-	SourceRefHash string
-	SamplePreview string
-	MetadataJSON  string
-	Protocol      string
-	Provider      string
-	Model         string
-	APIKeyID      int64
-	APIKeyName    string
-	ObservedAt    time.Time
+	SourceKind             string
+	SourceRef              string
+	SourceRefHash          string
+	SamplePreview          string
+	MetadataJSON           string
+	Protocol               string
+	Provider               string
+	Model                  string
+	APIKeyID               int64
+	APIKeyName             string
+	PromptPolicyIncidentID string
+	ObservedAt             time.Time
 }
 
 // PromptRuleCandidateMigrationCompletion binds one durable migration marker to
@@ -258,6 +262,7 @@ func normalizePromptRuleCandidateEvidenceInput(input PromptRuleCandidateEvidence
 	input.Provider = strings.TrimSpace(input.Provider)
 	input.Model = strings.TrimSpace(input.Model)
 	input.APIKeyName = strings.TrimSpace(input.APIKeyName)
+	input.PromptPolicyIncidentID = truncateCandidateRunes(strings.TrimSpace(input.PromptPolicyIncidentID), 64)
 	if input.ObservedAt.IsZero() {
 		input.ObservedAt = time.Now().UTC()
 	}
@@ -303,54 +308,11 @@ func (db *DB) StagePromptRuleCandidate(ctx context.Context, rawCandidate PromptR
 			return beginErr
 		}
 		defer tx.Rollback()
-		if _, execErr := tx.ExecContext(ctx, `
-			INSERT INTO prompt_rule_candidates (
-				fingerprint, kind, status, last_source, name, category, rule_json, rationale, source_url,
-				evidence_count, sample_preview, created_at, updated_at, last_seen_at
-			) VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, 0, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $10)
-			ON CONFLICT(fingerprint) DO NOTHING
-		`, candidate.Fingerprint, candidate.Kind, candidate.Source, candidate.Name, candidate.Category, candidate.RuleJSON,
-			candidate.Rationale, candidate.SourceURL, candidate.SamplePreview, evidence.ObservedAt); execErr != nil {
-			return execErr
-		}
-		if scanErr := tx.QueryRowContext(ctx, `SELECT id FROM prompt_rule_candidates WHERE fingerprint=$1`, candidate.Fingerprint).Scan(&candidateID); scanErr != nil {
-			return scanErr
-		}
-		result, execErr := tx.ExecContext(ctx, `
-			INSERT INTO prompt_rule_candidate_evidence (
-				candidate_id, source_kind, source_ref, source_ref_hash, sample_preview, metadata_json,
-				request_protocol, request_provider, model, api_key_id, api_key_name, observed_at, created_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
-			ON CONFLICT(candidate_id, source_kind, source_ref_hash) DO NOTHING
-		`, candidateID, evidence.SourceKind, evidence.SourceRef, evidence.SourceRefHash, evidence.SamplePreview, evidence.MetadataJSON,
-			evidence.Protocol, evidence.Provider, evidence.Model, evidence.APIKeyID, evidence.APIKeyName, evidence.ObservedAt)
-		if execErr != nil {
-			return execErr
-		}
-		affected, rowsErr := result.RowsAffected()
-		if rowsErr != nil {
-			return rowsErr
-		}
-		evidenceAdded = affected > 0
-		if evidenceAdded {
-			if _, execErr = tx.ExecContext(ctx, `
-				UPDATE prompt_rule_candidates SET
-					kind = CASE WHEN status='pending' AND $1 >= last_seen_at THEN $2 ELSE kind END,
-					last_source = CASE WHEN $1 >= last_seen_at AND $3<>'' THEN $3 ELSE last_source END,
-					name = CASE WHEN status='pending' AND $1 >= last_seen_at AND $4<>'' THEN $4 ELSE name END,
-					category = CASE WHEN status='pending' AND $1 >= last_seen_at AND $5<>'' THEN $5 ELSE category END,
-					rule_json = CASE WHEN status='pending' AND $1 >= last_seen_at AND $6<>'{}' THEN $6 ELSE rule_json END,
-					rationale = CASE WHEN status='pending' AND $1 >= last_seen_at AND $7<>'' THEN $7 ELSE rationale END,
-					source_url = CASE WHEN $1 >= last_seen_at AND $8<>'' THEN $8 ELSE source_url END,
-					sample_preview = CASE WHEN $1 >= last_seen_at AND $9<>'' THEN $9 ELSE sample_preview END,
-					evidence_count = evidence_count + 1,
-					updated_at = CURRENT_TIMESTAMP,
-					last_seen_at = CASE WHEN $1 > last_seen_at THEN $1 ELSE last_seen_at END
-				WHERE id=$10
-			`, evidence.ObservedAt, candidate.Kind, candidate.Source, candidate.Name, candidate.Category, candidate.RuleJSON,
-				candidate.Rationale, candidate.SourceURL, candidate.SamplePreview, candidateID); execErr != nil {
-				return execErr
-			}
+		var evidenceID int64
+		candidateID, evidenceID, evidenceAdded, err = stagePromptRuleCandidateTx(ctx, tx, candidate, evidence)
+		_ = evidenceID
+		if err != nil {
+			return err
 		}
 		return tx.Commit()
 	})
@@ -359,6 +321,62 @@ func (db *DB) StagePromptRuleCandidate(ctx context.Context, rawCandidate PromptR
 	}
 	item, err := db.GetPromptRuleCandidate(ctx, candidateID)
 	return item, evidenceAdded, err
+}
+
+func stagePromptRuleCandidateTx(ctx context.Context, tx *sql.Tx, candidate PromptRuleCandidateInput, evidence PromptRuleCandidateEvidenceInput) (candidateID int64, evidenceID int64, evidenceAdded bool, err error) {
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO prompt_rule_candidates (
+			fingerprint, kind, status, last_source, name, category, rule_json, rationale, source_url,
+			evidence_count, sample_preview, created_at, updated_at, last_seen_at
+		) VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, 0, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $10)
+		ON CONFLICT(fingerprint) DO NOTHING
+	`, candidate.Fingerprint, candidate.Kind, candidate.Source, candidate.Name, candidate.Category, candidate.RuleJSON,
+		candidate.Rationale, candidate.SourceURL, candidate.SamplePreview, evidence.ObservedAt); err != nil {
+		return 0, 0, false, err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM prompt_rule_candidates WHERE fingerprint=$1`, candidate.Fingerprint).Scan(&candidateID); err != nil {
+		return 0, 0, false, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO prompt_rule_candidate_evidence (
+			candidate_id, source_kind, source_ref, source_ref_hash, sample_preview, metadata_json,
+			request_protocol, request_provider, model, api_key_id, api_key_name, prompt_policy_incident_id, observed_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP)
+		ON CONFLICT(candidate_id, source_kind, source_ref_hash) DO NOTHING
+	`, candidateID, evidence.SourceKind, evidence.SourceRef, evidence.SourceRefHash, evidence.SamplePreview, evidence.MetadataJSON,
+		evidence.Protocol, evidence.Provider, evidence.Model, evidence.APIKeyID, evidence.APIKeyName, evidence.PromptPolicyIncidentID, evidence.ObservedAt)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, 0, false, err
+	}
+	evidenceAdded = affected > 0
+	if evidenceAdded {
+		if _, err = tx.ExecContext(ctx, `
+			UPDATE prompt_rule_candidates SET
+				kind = CASE WHEN status='pending' AND $1 >= last_seen_at THEN $2 ELSE kind END,
+				last_source = CASE WHEN $1 >= last_seen_at AND $3<>'' THEN $3 ELSE last_source END,
+				name = CASE WHEN status='pending' AND $1 >= last_seen_at AND $4<>'' THEN $4 ELSE name END,
+				category = CASE WHEN status='pending' AND $1 >= last_seen_at AND $5<>'' THEN $5 ELSE category END,
+				rule_json = CASE WHEN status='pending' AND $1 >= last_seen_at AND $6<>'{}' THEN $6 ELSE rule_json END,
+				rationale = CASE WHEN status='pending' AND $1 >= last_seen_at AND $7<>'' THEN $7 ELSE rationale END,
+				source_url = CASE WHEN $1 >= last_seen_at AND $8<>'' THEN $8 ELSE source_url END,
+				sample_preview = CASE WHEN $1 >= last_seen_at AND $9<>'' THEN $9 ELSE sample_preview END,
+				evidence_count = evidence_count + 1,
+				updated_at = CURRENT_TIMESTAMP,
+				last_seen_at = CASE WHEN $1 > last_seen_at THEN $1 ELSE last_seen_at END
+			WHERE id=$10
+		`, evidence.ObservedAt, candidate.Kind, candidate.Source, candidate.Name, candidate.Category, candidate.RuleJSON,
+			candidate.Rationale, candidate.SourceURL, candidate.SamplePreview, candidateID); err != nil {
+			return 0, 0, false, err
+		}
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM prompt_rule_candidate_evidence WHERE candidate_id=$1 AND source_kind=$2 AND source_ref_hash=$3`, candidateID, evidence.SourceKind, evidence.SourceRefHash).Scan(&evidenceID); err != nil {
+		return 0, 0, false, err
+	}
+	return candidateID, evidenceID, evidenceAdded, nil
 }
 
 func (db *DB) GetPromptRuleCandidate(ctx context.Context, id int64) (*PromptRuleCandidate, error) {
@@ -429,7 +447,8 @@ func (db *DB) ListPromptRuleCandidateEvidence(ctx context.Context, candidateID i
 	}
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT id, candidate_id, source_kind, source_ref, source_ref_hash, sample_preview, metadata_json,
-		       request_protocol, request_provider, model, api_key_id, api_key_name, observed_at, created_at
+		       request_protocol, request_provider, model, api_key_id, api_key_name,
+		       COALESCE(prompt_policy_incident_id, ''), observed_at, created_at
 		FROM prompt_rule_candidate_evidence WHERE candidate_id=$1 ORDER BY observed_at DESC, id DESC LIMIT $2
 	`, candidateID, limit)
 	if err != nil {
@@ -441,7 +460,8 @@ func (db *DB) ListPromptRuleCandidateEvidence(ctx context.Context, candidateID i
 		item := &PromptRuleCandidateEvidence{}
 		var observedRaw, createdRaw any
 		if err := rows.Scan(&item.ID, &item.CandidateID, &item.SourceKind, &item.SourceRef, &item.SourceRefHash, &item.SamplePreview,
-			&item.MetadataJSON, &item.Protocol, &item.Provider, &item.Model, &item.APIKeyID, &item.APIKeyName, &observedRaw, &createdRaw); err != nil {
+			&item.MetadataJSON, &item.Protocol, &item.Provider, &item.Model, &item.APIKeyID, &item.APIKeyName,
+			&item.PromptPolicyIncidentID, &observedRaw, &createdRaw); err != nil {
 			return nil, err
 		}
 		if item.ObservedAt, err = parseDBTimeValue(observedRaw); err != nil {

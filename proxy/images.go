@@ -1480,23 +1480,27 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			h.store.Release(account)
 			excludeAccounts[account.ID()] = true
 			logUpstreamError(inboundEndpoint, resp.StatusCode, logModel, account.ID(), errBody)
-			h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, errBody)
+			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, errBody, upstreamCyberPolicyAttempt{
+				Transport: upstreamPromptPolicyTransport(stream, false), StatusCode: resp.StatusCode,
+				AccountID: account.ID(), AttemptIndex: attempt + 1,
+			}))
 			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, requestModel)
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries)
 			h.logUsageForRequest(c, &database.UsageLogInput{
-				AccountID:         account.ID(),
-				Endpoint:          inboundEndpoint,
-				Model:             logModel,
-				EffectiveModel:    logEffectiveModel,
-				StatusCode:        resp.StatusCode,
-				DurationMs:        durationMs,
-				InboundEndpoint:   inboundEndpoint,
-				UpstreamEndpoint:  "/v1/responses",
-				Stream:            stream,
-				IsRetryAttempt:    shouldRetry,
-				AttemptIndex:      attempt + 1,
-				UpstreamErrorKind: upstreamErrorKind(resp.StatusCode, errBody, decision),
-				ErrorMessage:      usageLogErrorMessage(resp.StatusCode, errBody),
+				AccountID:              account.ID(),
+				Endpoint:               inboundEndpoint,
+				Model:                  logModel,
+				EffectiveModel:         logEffectiveModel,
+				StatusCode:             resp.StatusCode,
+				DurationMs:             durationMs,
+				InboundEndpoint:        inboundEndpoint,
+				UpstreamEndpoint:       "/v1/responses",
+				Stream:                 stream,
+				IsRetryAttempt:         shouldRetry,
+				AttemptIndex:           attempt + 1,
+				UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
+				ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
+				PromptPolicyIncidentID: promptPolicyIncidentID,
 			})
 			if shouldRetry {
 				lastStatusCode = resp.StatusCode
@@ -1518,16 +1522,21 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		var imageCount int
 		var imageLogInfo imageUsageLogInfo
 		var readErr error
+		promptPolicyIncidentID := ""
 		if stream {
 			usage, imageCount, firstTokenMs, imageLogInfo, readErr = h.streamImagesResponse(c, resp.Body, responseFormat, streamPrefix, requestModel, start)
 			if payload := imageResponseFailedPayload(readErr); len(payload) > 0 {
-				h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, responseFailedErrorBody(payload))
+				promptPolicyIncidentID = acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, responseFailedErrorBody(payload), upstreamCyberPolicyAttempt{
+					Transport: "sse", StatusCode: http.StatusBadGateway, AccountID: account.ID(), AttemptIndex: attempt + 1,
+				}))
 			}
 		} else {
 			var out []byte
 			out, usage, imageCount, imageLogInfo, readErr = collectImagesResponse(c.Request.Context(), resp.Body, responseFormat, requestModel, urlFor)
 			if payload := imageResponseFailedPayload(readErr); len(payload) > 0 {
-				h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, responseFailedErrorBody(payload))
+				promptPolicyIncidentID = acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, responseFailedErrorBody(payload), upstreamCyberPolicyAttempt{
+					Transport: "http", StatusCode: http.StatusBadGateway, AccountID: account.ID(), AttemptIndex: attempt + 1,
+				}))
 			}
 			if readErr == nil {
 				persister.finalize(c.Request.Context())
@@ -1541,7 +1550,9 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				willRetry := shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts)
 				// Always record the failed attempt so it appears in usage stats,
 				// matching the chat completions error path.
-				h.logUsageForRequest(c, buildImageErrorUsageLog(account, inboundEndpoint, logModel, logEffectiveModel, stream, int(time.Since(start).Milliseconds()), attempt, willRetry, readErr, usage, imageLogInfo))
+				failedLog := buildImageErrorUsageLog(account, inboundEndpoint, logModel, logEffectiveModel, stream, int(time.Since(start).Milliseconds()), attempt, willRetry, readErr, usage, imageLogInfo)
+				failedLog.PromptPolicyIncidentID = promptPolicyIncidentID
+				h.logUsageForRequest(c, failedLog)
 				if willRetry {
 					lastStatusCode = http.StatusBadGateway
 					lastBody = []byte(readErr.Error())
@@ -1564,7 +1575,9 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			// Only retry when nothing has been written to the client yet.
 			willRetry := shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts) && !c.Writer.Written()
 			// Always record the failed attempt so it appears in usage stats.
-			h.logUsageForRequest(c, buildImageErrorUsageLog(account, inboundEndpoint, logModel, logEffectiveModel, stream, int(time.Since(start).Milliseconds()), attempt, willRetry, readErr, usage, imageLogInfo))
+			failedLog := buildImageErrorUsageLog(account, inboundEndpoint, logModel, logEffectiveModel, stream, int(time.Since(start).Milliseconds()), attempt, willRetry, readErr, usage, imageLogInfo)
+			failedLog.PromptPolicyIncidentID = promptPolicyIncidentID
+			h.logUsageForRequest(c, failedLog)
 			if willRetry {
 				lastStatusCode = statusCode
 				lastBody = []byte(readErr.Error())

@@ -1052,7 +1052,8 @@ export interface PromptFilterLog {
   error_code: string
   review_model: string
   review_flagged: boolean
-  review_error: string
+	review_error: string
+	request_correlation_id?: string
 }
 
 export interface PromptFilterLogsResponse {
@@ -1060,6 +1061,83 @@ export interface PromptFilterLogsResponse {
   total: number
   page: number
   page_size: number
+}
+
+export type PromptPolicyEvaluationState = 'completed' | 'not_run' | 'unavailable' | 'legacy_unknown'
+export type PromptPolicyLocalOutcome = 'no_hit' | 'audit_hit' | 'warn' | 'block'
+
+export interface PromptPolicyIncident {
+	id: number
+	incident_id: string
+	request_correlation_id?: string
+	created_at: ISODateString
+	attempt_index: number
+	transport: string
+	endpoint: string
+	protocol: string
+	provider: string
+	model: string
+	status_code: number
+	account_id: number
+	api_key_id: number
+	api_key_name: string
+	api_key_masked: string
+	platform: string
+	source_ref?: string
+	upstream_error_code: string
+	upstream_error: string
+	local_evaluation_state: PromptPolicyEvaluationState
+	local_outcome: PromptPolicyLocalOutcome
+	local_action: string
+	local_score: number | null
+	local_raw_score: number | null
+	local_audit_score: number | null
+	local_audit_raw_score: number | null
+	local_threshold: number
+	local_mode: string
+	local_policy_profile: string
+	local_reason_code: string
+	local_reason: string
+	local_primary_origin: string
+	local_strike_eligible: boolean
+	local_review_model: string
+	local_review_flagged: boolean
+	local_review_error: string
+	local_matched_patterns: string
+	prompt_fingerprint: string
+	prompt_preview: string
+	prompt_text: string
+	candidate_id?: number
+	candidate_evidence_id?: number
+	local_miss: boolean
+}
+
+export interface PromptPolicyIncidentsResponse {
+	incidents: PromptPolicyIncident[]
+	total: number
+	page: number
+	page_size: number
+}
+
+export interface PromptPolicyIncidentDetailResponse {
+	incident: PromptPolicyIncident
+	matches: PromptFilterMatch[]
+	candidate?: {
+		id: number
+		status: string
+		kind: string
+		name: string
+		category: string
+		evidence_count: number
+		sample_preview?: string
+	}
+	evidence?: {
+		id: number
+		source_kind: string
+		source_ref?: string
+		prompt_policy_incident_id?: string
+		observed_at: ISODateString
+	}
 }
 
 export interface PromptFilterTestResponse {
@@ -1544,7 +1622,8 @@ export interface UsageLog {
   is_retry_attempt: boolean
   attempt_index: number
   upstream_error_kind: string
-  error_message: string
+	error_message: string
+	prompt_policy_incident_id?: string
 }
 
 export type UsageLogsResponse = ApiListResponse<'logs', UsageLog>
