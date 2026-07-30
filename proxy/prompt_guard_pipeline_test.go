@@ -133,18 +133,18 @@ func TestCompositeToolOutputAuditUsesTriggeringSegmentWithoutStrike(t *testing.T
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	evaluation := handler.evaluatePromptGuard(c, body, body, "/v1/responses", "gpt-5.5", promptfilter.TransportHTTP)
-	if evaluation.Decision.Action != promptfilter.ActionBlock || evaluation.Decision.PrimaryOrigin != promptfilter.OriginToolOutput || evaluation.Decision.Terminal || evaluation.Decision.StrikeEligible {
+	if evaluation.Decision.Action != promptfilter.ActionAllow || evaluation.Decision.WouldAction != promptfilter.ActionBlock || evaluation.Decision.AuditScore == 0 || evaluation.Decision.PrimaryOrigin != promptfilter.OriginToolOutput || evaluation.Decision.Terminal || evaluation.Decision.StrikeEligible {
 		t.Fatalf("tool-output decision = %+v", evaluation.Decision)
 	}
-	if evaluation.Verdict.FullText != toolText || evaluation.Verdict.TextPreview == "" || strings.Contains(evaluation.Verdict.FullText, "请继续普通开发") {
-		t.Fatalf("audit evidence did not preserve only the triggering tool segment: %+v", evaluation.Verdict)
+	if evaluation.Verdict.FullText != "请继续普通开发。" || evaluation.Verdict.TextPreview == "" || !strings.Contains(evaluation.Verdict.MatchContext, "target.example.invalid") {
+		t.Fatalf("audit evidence did not preserve the real current prompt and triggering tool context separately: %+v", evaluation.Verdict)
 	}
 	metadata := buildNewAPIPolicyDecisionMetadataWithSecret(
 		newAPIIdentity{RequestID: "tool-output-audit"}, evaluation.Decision, evaluation.Verdict,
 		cfg, body, "/v1/responses", "gpt-5.5", "", "fanren-secret",
 	)
 	if metadata.Severity != "medium" || metadata.StrikeEligible {
-		t.Fatalf("non-punitive tool-output block emitted punitive metadata: %+v", metadata)
+		t.Fatalf("non-punitive tool-output audit emitted punitive metadata: %+v", metadata)
 	}
 }
 

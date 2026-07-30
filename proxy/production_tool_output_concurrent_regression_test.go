@@ -162,7 +162,7 @@ func TestCompositeOperationalToolOutputConcurrentV1Matrix(t *testing.T) {
 							c.Request = httptest.NewRequest(http.MethodPost, tc.endpoint, nil)
 							decision := handler.evaluatePromptGuard(c, tc.body, tc.body, tc.endpoint, tc.model, tc.transport).Decision
 							_, deferred := decision.DeferredAudit()
-							if decision.Action != promptfilter.ActionBlock || decision.PrimaryOrigin != promptfilter.OriginToolOutput || decision.Terminal || decision.StrikeEligible || deferred {
+							if decision.Action != promptfilter.ActionAllow || decision.WouldAction != promptfilter.ActionBlock || decision.AuditScore == 0 || decision.PrimaryOrigin != promptfilter.OriginToolOutput || decision.Terminal || decision.StrikeEligible || deferred {
 								errs <- fmt.Errorf("iteration=%d decision=%+v deferred=%v", iteration, decision, deferred)
 							}
 						}

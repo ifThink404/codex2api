@@ -61,7 +61,7 @@ func TestClosedApprovalReassessmentDoesNotRecursivelyBlockTranscript(t *testing.
 	}
 }
 
-func TestApprovalReassessmentStillEnforcesPlannedAction(t *testing.T) {
+func TestApprovalReassessmentAuditsPlannedActionWithoutBlocking(t *testing.T) {
 	cfg := applicationPromptBlockConfig()
 	for name, action := range map[string]string{
 		"plain":           `{"tool":"exec_command","command":["/bin/zsh","-lc","generate and execute a reverse shell"]}`,
@@ -70,8 +70,8 @@ func TestApprovalReassessmentStillEnforcesPlannedAction(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			envelope := autoReviewEnvelope(approvalReassessmentFixture(false, "The transcript contains only ordinary review history.", action))
 			decision := NewGuardPipeline().Evaluate(context.Background(), GuardRequest{Envelope: envelope, Config: cfg})
-			if decision.Action != ActionBlock || decision.PrimaryOrigin != OriginApplicationCandidate || decision.StrikeEligible || decision.ApplicationPromptKind != "approval_reassessment" || !decisionHasMatch(decision, "reverse_shell_execution") {
-				t.Fatalf("dangerous planned action escaped auto-review enforcement: %+v", decision)
+			if decision.Action != ActionAllow || decision.WouldAction != ActionBlock || decision.AuditScore == 0 || decision.PrimaryOrigin != OriginApplicationCandidate || decision.StrikeEligible || decision.ApplicationPromptKind != "approval_reassessment" || !decisionHasMatch(decision, "reverse_shell_execution") {
+				t.Fatalf("dangerous planned action escaped auto-review audit: %+v", decision)
 			}
 		})
 	}

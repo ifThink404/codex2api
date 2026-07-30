@@ -777,6 +777,13 @@ func (e *Engine) inspectPreparedScanViews(evidenceText string, policyText string
 			}
 		}
 		for _, pattern := range e.patterns {
+			// A rule contributes at most one request-wide match. Once an
+			// unsuppressed match was recorded, evaluating the same regexp and its
+			// policy-wide suppressors in later normalization views cannot change the
+			// verdict and is especially expensive for near-1MiB prompts.
+			if _, exists := matchesByName[pattern.cfg.Name]; exists {
+				continue
+			}
 			if view.Compacted && !isBuiltinMinorSafetyPattern(pattern) {
 				continue
 			}
@@ -811,6 +818,7 @@ func (e *Engine) inspectPreparedScanViews(evidenceText string, policyText string
 				patternSuppressedForAuthorizationBoundary(policyText, scanText, pattern) ||
 				patternSuppressedForNegatedPolicyAction(policyText, scanText, pattern) ||
 				patternSuppressedForProtectiveRefusal(policyText, scanText, pattern) ||
+				patternSuppressedForNarrativeRefusal(policyText, scanText, pattern) ||
 				patternSuppressedForDefensiveDocumentation(policyText, pattern) {
 				continue
 			}
@@ -1731,6 +1739,9 @@ var (
 	negatedPolicyActionSharedBridgePattern    = regexp.MustCompile(`(?i)^\s*(?:(?:bypass|evade|disable|ignore|remove|reveal|show|dump|read|print)\s*(?:or|/)\s*)+$|^\s*(?:(?:绕过|规避|关闭|忽略|移除|泄露|展示|输出|读取|查看)\s*(?:或|或者|/)\s*)+$`)
 	protectiveWarningSuppressionPattern       = regexp.MustCompile(`(?i)^\s*no\s+(?:warning|disclaimer|refusal)s?\s+(?:suppression|removal|bypass)\b|^\s*(?:禁止|不允许|不要|不得).{0,8}(?:警告|拒绝|免责声明).{0,8}(?:抑制|移除|删除)\b`)
 	protectiveRefusalSuppressionPattern       = regexp.MustCompile(`(?i)\b(?:never|do\s+not|don't|must\s+not|should\s+not)\s+(?:refuse|decline|fail|hesitate|avoid)\b.{0,32}\b(?:block|prevent|stop|detect|reject|deny)\b.{0,64}\b(?:attempts?|requests?|efforts?|users?)\b.{0,48}\b(?:bypass|evade|disable|ignore|remove|reveal|show|dump|read|print)\b|(?:不要|不得|不能|切勿|不应).{0,12}(?:拒绝|遗漏|回避|避免|犹豫).{0,16}(?:拦截|阻止|防止|检测|拒绝).{0,48}(?:泄露|绕过|规避|关闭|忽略|移除).{0,24}(?:系统提示词|开发者消息|安全规则|安全策略|安全过滤|安全校验|内容审核)`)
+	narrativeRefusalContextPattern            = regexp.MustCompile(`(?i)\b(?:character|story|novel|plot|dialogue|quote|lyrics?|fiction|scene|relationship|he\s+said|she\s+said)\b|(?:角色|人物|剧情|小说|故事|台词|对白|引语|歌词|动漫|动画|电影|场景|关系|状态|他说|她说|它说|喜羊羊|猫化)`)
+	refusalPolicyContextPattern               = regexp.MustCompile(`(?i)\b(?:assistant|model|chatbot|llm|system|developer|prompt|instruction|policy|safety|moderation|filter|refusal|response|reply)\b|(?:助手|模型|聊天机器人|系统|开发者|提示词|指令|规则|政策|安全|审核|过滤|拒答|回答|回复)`)
+	refusalDirectiveContextPattern            = regexp.MustCompile(`(?i)(?:^|[.!?;:。！？；：\n]\s*)(?:please|you\s+must|must|always|never|do\s+not|don't|no\s+(?:warnings?|refusals?|disclaimers?)|请|请你|你必须|必须|务必|始终|永远|不要|不得|禁止|不允许)`)
 )
 
 var (
@@ -2009,7 +2020,9 @@ func patternSuppressedForDefensiveRuleArtifact(original string, pattern compiled
 // an attacker could append to an operational request as a bypass.
 func patternSuppressedForDefensiveDocumentation(original string, pattern compiledPattern) bool {
 	switch pattern.cfg.Name {
-	case "prompt_system_exfiltration", "malicious_persistence_c2", "self_harm_facilitation":
+	case "prompt_system_exfiltration", "malicious_persistence_c2", "self_harm_facilitation",
+		"safety_bypass_request", "operational_security_technique_request",
+		"reverse_engineering_secret_extraction", "credential_theft":
 	default:
 		return false
 	}
@@ -2044,6 +2057,36 @@ func patternSuppressedForDefensiveDocumentation(original string, pattern compile
 			return false
 		}
 		if pattern.cfg.Name == "malicious_persistence_c2" && !benignPersistenceDocumentationPattern.MatchString(window) {
+			return false
+		}
+	}
+	return true
+}
+
+// patternSuppressedForNarrativeRefusal prevents ordinary dialogue and character
+// analysis such as "舍不得拒绝我" from becoming a prompt-injection decision. The
+// exception is intentionally unavailable when the local sentence talks about an
+// assistant/model, instructions, policy, moderation, or contains an imperative
+// request. Those cases remain fully enforceable.
+func patternSuppressedForNarrativeRefusal(original string, scanText string, pattern compiledPattern) bool {
+	if pattern.cfg.Name != "prompt_refusal_suppression" || pattern.re == nil {
+		return false
+	}
+	if scanText == "" {
+		scanText = normalizeForScan(original)
+	}
+	matches := pattern.re.FindAllStringIndex(scanText, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	for _, loc := range matches {
+		if len(loc) != 2 || loc[0] < 0 || loc[1] < loc[0] || loc[1] > len(scanText) {
+			return false
+		}
+		window := localMatchWindow(scanText, loc[0], loc[1], 120)
+		if !narrativeRefusalContextPattern.MatchString(window) ||
+			refusalPolicyContextPattern.MatchString(window) ||
+			refusalDirectiveContextPattern.MatchString(window) {
 			return false
 		}
 	}
