@@ -1213,7 +1213,7 @@ func (h *Handler) saveImageJobAssets(ctx context.Context, jobID int64, req image
 			return saved, err
 		}
 		if req.Upscale != "" {
-			upscaledBytes, upscaledMime, upscaleErr := h.upscaleImageJobAsset(ctx, jobID, idx+1, imageBytes, req.Upscale)
+			upscaledBytes, upscaledMime, upscaleErr := h.upscaleImageJobAsset(ctx, jobID, idx+1, imageBytes, req.Upscale, req.Size)
 			if upscaleErr != nil {
 				return saved, upscaleErr
 			}
@@ -1287,13 +1287,13 @@ func (h *Handler) saveImageJobAssets(ctx context.Context, jobID int64, req image
 	return saved, nil
 }
 
-func (h *Handler) upscaleImageJobAsset(ctx context.Context, jobID int64, assetIndex int, imageBytes []byte, scale string) ([]byte, string, error) {
+func (h *Handler) upscaleImageJobAsset(ctx context.Context, jobID int64, assetIndex int, imageBytes []byte, scale, requestedSize string) ([]byte, string, error) {
 	scale = imageproc.NormalizeUpscale(scale)
 	if scale == "" || len(imageBytes) == 0 {
 		return nil, "", nil
 	}
 	cache := imageproc.GlobalUpscaleCache()
-	key := imageproc.ComputeUpscaleCacheKey(imageBytes, scale)
+	key := imageproc.ComputeUpscaleCacheKey(imageBytes, scale) + "-" + strings.ToLower(strings.TrimSpace(requestedSize))
 	if data, contentType, ok := cache.Get(key); ok && contentType != "" {
 		return data, contentType, nil
 	}
@@ -1316,7 +1316,7 @@ func (h *Handler) upscaleImageJobAsset(ctx context.Context, jobID int64, assetIn
 	}
 
 	beforeWidth, beforeHeight := imageDimensions(imageBytes)
-	upscaled, contentType, method, err := upscaleImageBytes(upscaleCtx, imageBytes, scale)
+	upscaled, contentType, method, err := upscaleImageBytes(upscaleCtx, imageBytes, scale, requestedSize)
 	if err != nil {
 		log.Printf("[image-studio] job=%d asset_index=%d local_upscale_failed scale=%s error=%s",
 			jobID,

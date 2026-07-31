@@ -16,7 +16,7 @@ import (
 
 const maxImageUpscalerResponseBytes = 64 << 20
 
-func upscaleImageBytes(ctx context.Context, imageBytes []byte, scale string) ([]byte, string, string, error) {
+func upscaleImageBytes(ctx context.Context, imageBytes []byte, scale, requestedSize string) ([]byte, string, string, error) {
 	endpoint := strings.TrimSpace(os.Getenv("IMAGE_UPSCALER_ENDPOINT"))
 	if endpoint == "" {
 		data, contentType, err := imageproc.DoUpscale(imageBytes, scale)
@@ -35,12 +35,7 @@ func upscaleImageBytes(ctx context.Context, imageBytes []byte, scale string) ([]
 	if longSide >= targetLongSide {
 		return nil, "", "realesrgan", nil
 	}
-	targetWidth := targetLongSide
-	targetHeight := max(1, height*targetLongSide/width)
-	if height > width {
-		targetHeight = targetLongSide
-		targetWidth = max(1, width*targetLongSide/height)
-	}
+	targetWidth, targetHeight, exactTarget := imageUpscaleTargetDimensions(width, height, targetLongSide, requestedSize)
 
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -52,7 +47,11 @@ func upscaleImageBytes(ctx context.Context, imageBytes []byte, scale string) ([]
 	query.Set("target_height", strconv.Itoa(targetHeight))
 	query.Set("format", "png")
 	query.Set("trigger_ratio", "1")
-	query.Set("fit", normalizeImageUpscalerFit(os.Getenv("IMAGE_UPSCALER_FIT")))
+	fit := normalizeImageUpscalerFit(os.Getenv("IMAGE_UPSCALER_FIT"))
+	if exactTarget {
+		fit = "cover"
+	}
+	query.Set("fit", fit)
 	parsed.RawQuery = query.Encode()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(imageBytes))
@@ -98,6 +97,38 @@ func upscaleImageBytes(ctx context.Context, imageBytes []byte, scale string) ([]
 		contentType = "image/png"
 	}
 	return body, contentType, method, nil
+}
+
+func imageUpscaleTargetDimensions(width, height, targetLongSide int, requestedSize string) (int, int, bool) {
+	requestedSize = strings.ToLower(strings.TrimSpace(requestedSize))
+	if targetLongSide == imageproc.UpscaleLongSide(imageproc.Upscale2K) {
+		switch requestedSize {
+		case "2048x2048":
+			return 2048, 2048, true
+		case "2560x1440":
+			return 2560, 1440, true
+		case "1440x2560":
+			return 1440, 2560, true
+		}
+	}
+	if targetLongSide == imageproc.UpscaleLongSide(imageproc.Upscale4K) {
+		switch requestedSize {
+		case "3840x2160":
+			return 3840, 2160, true
+		case "2160x3840":
+			return 2160, 3840, true
+		case "2880x2880":
+			return 2880, 2880, true
+		}
+	}
+
+	targetWidth := targetLongSide
+	targetHeight := max(1, height*targetLongSide/width)
+	if height > width {
+		targetHeight = targetLongSide
+		targetWidth = max(1, width*targetLongSide/height)
+	}
+	return targetWidth, targetHeight, false
 }
 
 func normalizeImageUpscalerFit(value string) string {

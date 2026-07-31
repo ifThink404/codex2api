@@ -162,8 +162,11 @@ func TestUpscaleImageBytesUsesConfiguredRealESRGANService(t *testing.T) {
 		if request.URL.Path != "/v1/upscale" {
 			t.Fatalf("path = %q", request.URL.Path)
 		}
-		if request.URL.Query().Get("target_width") != "3840" || request.URL.Query().Get("target_height") != "3840" {
+		if request.URL.Query().Get("target_width") != "3840" || request.URL.Query().Get("target_height") != "2160" {
 			t.Fatalf("query = %q", request.URL.RawQuery)
+		}
+		if request.URL.Query().Get("fit") != "cover" {
+			t.Fatalf("fit = %q", request.URL.Query().Get("fit"))
 		}
 		writer.Header().Set("Content-Type", "image/png")
 		writer.Header().Set("X-Upscale-Applied", "true")
@@ -173,7 +176,7 @@ func TestUpscaleImageBytesUsesConfiguredRealESRGANService(t *testing.T) {
 	defer server.Close()
 	t.Setenv("IMAGE_UPSCALER_ENDPOINT", server.URL)
 
-	data, contentType, method, err := upscaleImageBytes(context.Background(), pngBytes, "4k")
+	data, contentType, method, err := upscaleImageBytes(context.Background(), pngBytes, "4k", "3840x2160")
 	if err != nil {
 		t.Fatalf("upscaleImageBytes returned error: %v", err)
 	}
@@ -189,9 +192,23 @@ func TestUpscaleImageBytesFailsWhenConfiguredServiceFails(t *testing.T) {
 	defer server.Close()
 	t.Setenv("IMAGE_UPSCALER_ENDPOINT", server.URL)
 
-	_, _, _, err := upscaleImageBytes(context.Background(), tinyPNG(t), "2k")
+	_, _, _, err := upscaleImageBytes(context.Background(), tinyPNG(t), "2k", "")
 	if err == nil || !strings.Contains(err.Error(), "503") {
 		t.Fatalf("err = %v, want configured service failure", err)
+	}
+}
+
+func TestImageUpscaleTargetDimensionsPreservesLegacyAspectRatioWithoutRequestedSize(t *testing.T) {
+	width, height, exact := imageUpscaleTargetDimensions(1536, 1024, 3840, "")
+	if width != 3840 || height != 2560 || exact {
+		t.Fatalf("target = %dx%d exact=%t", width, height, exact)
+	}
+}
+
+func TestImageUpscaleTargetDimensionsDoesNotApplyMismatchedRequestedSize(t *testing.T) {
+	width, height, exact := imageUpscaleTargetDimensions(1536, 1024, 2560, "3840x2160")
+	if width != 2560 || height != 1706 || exact {
+		t.Fatalf("target = %dx%d exact=%t", width, height, exact)
 	}
 }
 
