@@ -193,6 +193,12 @@ func (h *Handler) ListPromptPolicyIncidents(c *gin.Context) {
 			apiKeyID = parsed
 		}
 	}
+	accountID := int64(0)
+	if raw := strings.TrimSpace(c.Query("account_id")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			accountID = parsed
+		}
+	}
 	var localMiss *bool
 	if raw := strings.TrimSpace(c.Query("local_miss")); raw != "" {
 		if parsed, err := strconv.ParseBool(raw); err == nil {
@@ -206,8 +212,8 @@ func (h *Handler) ListPromptPolicyIncidents(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	incidents, total, err := h.db.ListPromptPolicyIncidentsPage(ctx, database.PromptPolicyIncidentQuery{
-		Page: page, PageSize: pageSize, Endpoint: c.Query("endpoint"), Model: c.Query("model"), APIKeyID: apiKeyID,
-		EvaluationState: evaluationState, Outcome: c.Query("outcome"), LocalMiss: localMiss, Query: c.Query("q"),
+		Page: page, PageSize: pageSize, Endpoint: c.Query("endpoint"), Model: c.Query("model"), APIKeyID: apiKeyID, AccountID: accountID,
+		EvaluationState: evaluationState, Outcome: c.Query("outcome"), LocalComparison: c.Query("local_comparison"), LocalMiss: localMiss, Query: c.Query("q"),
 	})
 	if err != nil {
 		writeInternalError(c, err)

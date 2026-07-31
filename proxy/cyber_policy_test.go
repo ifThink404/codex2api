@@ -191,6 +191,9 @@ func TestPromptPolicyIncidentProtocolMatrixKeepsExactUsageLinks(t *testing.T) {
 		if incident.Endpoint != want.endpoint || incident.Transport != want.transport || incident.Protocol != want.protocol {
 			t.Fatalf("protocol matrix context incident=%#v want=%#v", incident, want)
 		}
+		if !incident.PromptAvailable || incident.LocalComparison != database.PromptPolicyComparisonConfirmedMiss || !incident.LocalMiss {
+			t.Fatalf("exact completed/no-hit evidence was not classified as a confirmed miss: %#v", incident)
+		}
 	}
 }
 

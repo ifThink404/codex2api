@@ -29,16 +29,34 @@ func TestPromptPolicyIncidentListAndDetailAPI(t *testing.T) {
 	zero := 0
 	incident := database.PromptPolicyIncidentInput{
 		IncidentID: "incident-admin", RequestCorrelationID: "request-admin", Endpoint: "/v1/responses", Model: "gpt-5.4",
-		Protocol: "responses", Transport: "sse", StatusCode: 400, UpstreamErrorCode: "cyber_policy",
+		Protocol: "responses", Transport: "sse", StatusCode: 400, AccountID: 73, AccountName: "account@example.com", AccountGroupIDs: []int64{4}, AccountGroupNames: []string{"打铁"},
+		APIKeyID: 9, APIKeyName: "test-key", APIKeyAllowedGroupIDs: []int64{1, 4}, APIKeyAllowedGroupNames: []string{"凡人", "打铁"}, UpstreamErrorCode: "cyber_policy",
 		LocalEvaluationState: database.PromptPolicyEvaluationCompleted, LocalOutcome: database.PromptPolicyOutcomeNoHit,
 		LocalScore: &zero, LocalRawScore: &zero, LocalAuditScore: &zero, LocalAuditRawScore: &zero,
 		LocalMatchedPatterns: `[{"name":"test","weight":0}]`, PromptFingerprint: adminPolicyFingerprint("prompt"), PromptPreview: "prompt", PromptText: "prompt",
+		PromptAvailable: true, LocalComparison: database.PromptPolicyComparisonConfirmedMiss,
 		ObservedAt: time.Now().UTC(),
 	}
 	candidate := database.PromptRuleCandidateInput{Fingerprint: incident.PromptFingerprint, Kind: database.PromptRuleCandidateKindEvidence, Source: database.PromptRuleCandidateSourceUpstreamCyberPolicy, SamplePreview: "prompt"}
 	evidence := database.PromptRuleCandidateEvidenceInput{SourceKind: database.PromptRuleCandidateSourceUpstreamCyberPolicy, SourceRef: "request-admin", SourceRefHash: adminPolicyFingerprint("incident-admin"), MetadataJSON: `{}`, ObservedAt: incident.ObservedAt}
 	if err := db.PersistPromptPolicyIncident(t.Context(), incident, candidate, evidence); err != nil {
 		t.Fatalf("PersistPromptPolicyIncident: %v", err)
+	}
+	second := incident
+	second.IncidentID = "incident-admin-second"
+	second.RequestCorrelationID = "request-admin-second"
+	second.PromptFingerprint = adminPolicyFingerprint("prompt-second")
+	second.PromptPreview = "prompt-second"
+	second.PromptText = "prompt-second"
+	second.ObservedAt = second.ObservedAt.Add(time.Second)
+	secondCandidate := candidate
+	secondCandidate.Fingerprint = second.PromptFingerprint
+	secondEvidence := evidence
+	secondEvidence.SourceRef = second.RequestCorrelationID
+	secondEvidence.SourceRefHash = adminPolicyFingerprint(second.IncidentID)
+	secondEvidence.ObservedAt = second.ObservedAt
+	if err := db.PersistPromptPolicyIncident(t.Context(), second, secondCandidate, secondEvidence); err != nil {
+		t.Fatalf("PersistPromptPolicyIncident(second): %v", err)
 	}
 
 	h := &Handler{db: db}
@@ -47,7 +65,7 @@ func TestPromptPolicyIncidentListAndDetailAPI(t *testing.T) {
 	router.GET("/api/admin/prompt-policy/incidents/:incident_id", h.GetPromptPolicyIncident)
 
 	listRecorder := httptest.NewRecorder()
-	router.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/prompt-policy/incidents?local_miss=true&outcome=no_hit", nil))
+	router.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/prompt-policy/incidents?local_miss=true&outcome=no_hit&account_id=73&page=2&page_size=1", nil))
 	if listRecorder.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
 	}
@@ -55,7 +73,7 @@ func TestPromptPolicyIncidentListAndDetailAPI(t *testing.T) {
 		Incidents []database.PromptPolicyIncident `json:"incidents"`
 		Total     int                             `json:"total"`
 	}
-	if err := json.Unmarshal(listRecorder.Body.Bytes(), &list); err != nil || list.Total != 1 || len(list.Incidents) != 1 || !list.Incidents[0].LocalMiss {
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &list); err != nil || list.Total != 2 || len(list.Incidents) != 1 || !list.Incidents[0].LocalMiss || list.Incidents[0].AccountName != "account@example.com" || len(list.Incidents[0].AccountGroupNames) != 1 {
 		t.Fatalf("list response=%s err=%v", listRecorder.Body.String(), err)
 	}
 

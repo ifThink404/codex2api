@@ -632,6 +632,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/prompt-filter/logs", h.ClearPromptFilterLogs)
 	api.GET("/prompt-policy/incidents", h.ListPromptPolicyIncidents)
 	api.GET("/prompt-policy/incidents/:incident_id", h.GetPromptPolicyIncident)
+	api.GET("/prompt-policy/risk-profiles", h.ListPromptRiskProfiles)
+	api.GET("/prompt-policy/risk-profiles/:subject_type/:subject_key", h.GetPromptRiskProfile)
 	api.POST("/prompt-filter/test", h.TestPromptFilter)
 	api.POST("/prompt-filter/rules/test", h.TestPromptFilterRulePattern)
 	api.GET("/prompt-filter/rules", h.GetPromptFilterRules)

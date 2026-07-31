@@ -1054,6 +1054,13 @@ export interface PromptFilterLog {
   review_flagged: boolean
 	review_error: string
 	request_correlation_id?: string
+	newapi_policy_status?: string
+	newapi_platform?: string
+  newapi_user_id?: string
+  newapi_request_id?: string
+  newapi_decision_id?: string
+  session_hash?: string
+  client_ip_hash?: string
 }
 
 export interface PromptFilterLogsResponse {
@@ -1065,6 +1072,7 @@ export interface PromptFilterLogsResponse {
 
 export type PromptPolicyEvaluationState = 'completed' | 'not_run' | 'unavailable' | 'legacy_unknown'
 export type PromptPolicyLocalOutcome = 'no_hit' | 'audit_hit' | 'warn' | 'block'
+export type PromptPolicyLocalComparison = 'confirmed_miss' | 'upstream_only' | 'evidence_unavailable' | 'local_detected' | 'not_comparable' | 'legacy_unknown'
 
 export interface PromptPolicyIncident {
 	id: number
@@ -1079,10 +1087,22 @@ export interface PromptPolicyIncident {
 	model: string
 	status_code: number
 	account_id: number
+	account_name: string
+	account_platform: string
+	account_group_ids: number[]
+	account_group_names: string[]
 	api_key_id: number
 	api_key_name: string
 	api_key_masked: string
+	api_key_allowed_group_ids: number[]
+	api_key_allowed_group_names: string[]
 	platform: string
+	newapi_policy_status?: string
+	newapi_platform?: string
+	newapi_user_id?: string
+	newapi_request_id?: string
+	session_hash?: string
+	client_ip_hash?: string
 	source_ref?: string
 	upstream_error_code: string
 	upstream_error: string
@@ -1107,6 +1127,8 @@ export interface PromptPolicyIncident {
 	prompt_fingerprint: string
 	prompt_preview: string
 	prompt_text: string
+	prompt_available: boolean
+	local_comparison: PromptPolicyLocalComparison
 	candidate_id?: number
 	candidate_evidence_id?: number
 	local_miss: boolean
@@ -1138,6 +1160,97 @@ export interface PromptPolicyIncidentDetailResponse {
 		prompt_policy_incident_id?: string
 		observed_at: ISODateString
 	}
+}
+
+export type PromptRiskSubjectType = 'newapi_user' | 'session' | 'api_key' | 'client_ip' | 'upstream_account'
+export type PromptRiskLevel = 'low' | 'observed' | 'elevated' | 'high' | 'critical'
+
+export interface PromptRiskScoreBreakdown {
+  local_signal: number
+  upstream_signal: number
+  recurrence: number
+  identity_confidence: number
+}
+
+export interface PromptRiskProfile {
+  subject_type: PromptRiskSubjectType
+  subject_key: string
+  subject_display: string
+  platform?: string
+  is_person: boolean
+  identity_confidence: number
+  risk_score: number
+  risk_level: PromptRiskLevel
+  recommended_actions: string[]
+  score_breakdown: PromptRiskScoreBreakdown
+  latest_at: ISODateString
+  event_count: number
+  events_10m: number
+  events_24h: number
+  events_7d: number
+  events_30d: number
+  upstream_cy_count: number
+  confirmed_miss_count: number
+  local_block_count: number
+  local_warn_count: number
+  distinct_fingerprints: number
+  repeated_fingerprints: number
+  api_key_id?: number
+  api_key_name?: string
+  api_key_masked?: string
+  account_id?: number
+  account_name?: string
+}
+
+export interface PromptRiskEvent {
+  id: number
+  created_at: ISODateString
+  source_type: string
+  source_id: string
+  incident_id?: string
+  prompt_filter_log_id?: number
+  request_correlation_id?: string
+  subject_type: PromptRiskSubjectType
+  subject_key: string
+  subject_display: string
+  platform?: string
+  is_person: boolean
+  identity_confidence: number
+  event_kind: string
+  request_risk_score: number
+  evidence_confidence: number
+  reason_code?: string
+  action?: string
+  local_outcome?: string
+  local_comparison?: string
+  endpoint?: string
+  model?: string
+  prompt_fingerprint?: string
+  prompt_preview?: string
+  api_key_id?: number
+  api_key_name?: string
+  api_key_masked?: string
+  account_id?: number
+  account_name?: string
+}
+
+export interface PromptRiskProfilesResponse {
+  profiles: PromptRiskProfile[]
+  total: number
+  page: number
+  page_size: number
+  scoring_version: string
+  guardrail: string
+}
+
+export interface PromptRiskProfileDetailResponse {
+  profile: PromptRiskProfile
+  events: PromptRiskEvent[]
+  event_total: number
+  event_page: number
+  event_page_size: number
+  scoring_version: string
+  guardrail: string
 }
 
 export interface PromptFilterTestResponse {
