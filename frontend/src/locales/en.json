@@ -2242,6 +2242,8 @@
 	"cyberSourceKey": "Source key",
 	"cyberAccount": "Account / groups",
 	"cyberAccountPlatform": "Account platform",
+	"cyberRoutingSource": "Account and group data source",
+	"cyberRoutingState": { "event_snapshot": "Snapshot at event time", "current_inferred": "Historical record: enriched from current account directory", "unavailable": "Unavailable" },
 	"cyberGroups": "Account groups at event time",
 	"cyberKeyAllowedGroups": "Key-allowed groups at event time",
 	"cyberPromptAvailable": "Linked prompt available",

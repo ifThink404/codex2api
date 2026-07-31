@@ -3628,6 +3628,7 @@ function PromptPolicyIncidentsTable({ incidents }: { incidents: PromptPolicyInci
               <TableCell>
                 <div className="max-w-[180px] truncate text-sm" title={incident.account_name}>{incident.account_name || `#${incident.account_id || '-'}`}</div>
                 <div className="max-w-[200px] truncate text-xs text-muted-foreground" title={incident.account_group_names?.join(', ')}>{incident.account_group_names?.join(', ') || '-'}</div>
+				{incident.routing_snapshot_state === 'current_inferred' ? <div className="text-[11px] text-amber-600 dark:text-amber-300">{t('promptFilter.cyberRoutingState.current_inferred')}</div> : null}
               </TableCell>
               <TableCell className="font-mono text-xs">{formatPromptPolicyScore(incident.local_score, t('promptFilter.cyberUnscored'))} / {formatPromptPolicyScore(incident.local_audit_score, t('promptFilter.cyberUnscored'))}</TableCell>
               <TableCell><div className="font-mono text-xs">{incident.endpoint || '-'}</div><div className="text-xs text-muted-foreground">{incident.model || '-'}</div></TableCell>
@@ -3685,6 +3686,7 @@ function PromptPolicyIncidentDetailButton({ incident }: { incident: PromptPolicy
                 <PromptPolicyDetailField label={t('promptFilter.cyberSourceKey')} value={`${item.api_key_name || item.api_key_masked || '-'} · #${item.api_key_id || '-'}`} />
                 <PromptPolicyDetailField label={t('promptFilter.cyberAccountAttempt')} value={`${item.account_name || '-'} · #${item.account_id || '-'} · ${t('promptFilter.cyberAttempt')} #${item.attempt_index || '-'}`} />
                 <PromptPolicyDetailField label={t('promptFilter.cyberAccountPlatform')} value={item.account_platform || item.platform || '-'} />
+				<PromptPolicyDetailField label={t('promptFilter.cyberRoutingSource')} value={t(`promptFilter.cyberRoutingState.${item.routing_snapshot_state || 'unavailable'}`)} />
                 <PromptPolicyDetailField label={t('promptFilter.risk.newapiIdentity')} value={item.newapi_user_id ? `${item.newapi_platform || '-'} · ${item.newapi_user_id} · ${item.newapi_policy_status || '-'}` : '-'} />
                 <PromptPolicyDetailField label={t('promptFilter.cyberGroups')} value={item.account_group_names?.join(', ') || item.account_group_ids?.join(', ') || '-'} />
                 <PromptPolicyDetailField label={t('promptFilter.cyberKeyAllowedGroups')} value={item.api_key_allowed_group_names?.join(', ') || item.api_key_allowed_group_ids?.join(', ') || '-'} />

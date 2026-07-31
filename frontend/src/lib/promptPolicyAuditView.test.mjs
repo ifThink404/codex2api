@@ -19,6 +19,7 @@ test('CY routing snapshots and NewAPI audit passthrough are visible', () => {
     'account_name',
     'account_group_names',
     'api_key_allowed_group_names',
+	'routing_snapshot_state',
     'local_comparison',
     'prompt_available',
     'newapi_policy_status',
@@ -28,5 +29,6 @@ test('CY routing snapshots and NewAPI audit passthrough are visible', () => {
     assert.match(types, new RegExp(`${field}[?:]`))
   }
   assert.match(source, /cyberComparisonStatus/)
+	assert.match(source, /cyberRoutingState/)
   assert.match(source, /newapiPolicyStatus/)
 })

@@ -78,6 +78,8 @@
 	"cyberSourceKey": "來源 Key",
 	"cyberAccount": "作用帳號 / 群組",
 	"cyberAccountPlatform": "帳號平台",
+	"cyberRoutingSource": "帳號與群組資訊來源",
+	"cyberRoutingState": { "event_snapshot": "事件發生時快照", "current_inferred": "歷史記錄：依目前帳號目錄補全", "unavailable": "無法還原" },
 	"cyberGroups": "事件發生時帳號群組",
 	"cyberKeyAllowedGroups": "事件發生時 Key 可用群組",
 	"cyberPromptAvailable": "關聯 Prompt 可用",

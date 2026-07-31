@@ -2242,6 +2242,8 @@
 	"cyberSourceKey": "来源 Key",
 	"cyberAccount": "作用账号 / 分组",
 	"cyberAccountPlatform": "账号平台",
+	"cyberRoutingSource": "账号与分组信息来源",
+	"cyberRoutingState": { "event_snapshot": "事件发生时快照", "current_inferred": "历史记录：按当前账号目录补全", "unavailable": "无法还原" },
 	"cyberGroups": "事件时账号分组",
 	"cyberKeyAllowedGroups": "事件时 Key 可用分组",
 	"cyberPromptAvailable": "关联 Prompt 可用",

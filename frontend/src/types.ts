@@ -1096,6 +1096,7 @@ export interface PromptPolicyIncident {
 	api_key_masked: string
 	api_key_allowed_group_ids: number[]
 	api_key_allowed_group_names: string[]
+	routing_snapshot_state: 'event_snapshot' | 'current_inferred' | 'unavailable'
 	platform: string
 	newapi_policy_status?: string
 	newapi_platform?: string
