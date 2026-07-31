@@ -73,3 +73,19 @@ func TestSignedCYCreatesSeparatedPersonKeyNetworkSessionAndAccountProfiles(t *te
 		}
 	}
 }
+
+func TestPromptPolicyRoutingSnapshotNormalizesDefaultCodexAccount(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{})
+	t.Cleanup(store.Stop)
+	account := &auth.Account{DBID: 73, Email: "codex-account@example.com", AccessToken: "test-token"}
+	store.AddAccount(account)
+	store.SetGroupName(4, "打铁")
+	store.ApplyAccountGroups(account.DBID, []int64{4})
+	store.SetAPIKeyAllowedGroups(9, []int64{4})
+	handler := NewHandler(store, nil, nil, nil)
+
+	snapshot := handler.capturePromptPolicyRoutingSnapshot(account.DBID, 9)
+	if snapshot.AccountName != account.Email || snapshot.AccountPlatform != database.UpstreamChannelCodex || len(snapshot.AccountGroupNames) != 1 || len(snapshot.APIKeyAllowedGroupNames) != 1 {
+		t.Fatalf("routing snapshot = %#v", snapshot)
+	}
+}

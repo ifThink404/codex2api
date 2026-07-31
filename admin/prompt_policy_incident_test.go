@@ -103,7 +103,7 @@ func TestPromptPolicyIncidentHistoricalRoutingUsesCurrentDirectory(t *testing.T)
 	defer db.Close()
 	store := auth.NewStore(nil, nil, &database.SystemSettings{})
 	t.Cleanup(store.Stop)
-	account := &auth.Account{DBID: 73, Email: "current-account@example.com", UpstreamType: "codex", AccessToken: "test-token"}
+	account := &auth.Account{DBID: 73, Email: "current-account@example.com", AccessToken: "test-token"}
 	store.AddAccount(account)
 	store.SetGroupName(4, "打铁")
 	store.SetGroupName(5, "凡人")
@@ -141,7 +141,7 @@ func TestPromptPolicyIncidentHistoricalRoutingUsesCurrentDirectory(t *testing.T)
 		t.Fatalf("list response=%s err=%v", listRecorder.Body.String(), err)
 	}
 	got := list.Incidents[0]
-	if got.RoutingSnapshotState != "current_inferred" || got.AccountName != account.Email || got.AccountPlatform != account.UpstreamType || len(got.AccountGroupNames) != 1 || len(got.APIKeyAllowedGroupNames) != 2 {
+	if got.RoutingSnapshotState != "current_inferred" || got.AccountName != account.Email || got.AccountPlatform != database.UpstreamChannelCodex || len(got.AccountGroupNames) != 1 || len(got.APIKeyAllowedGroupNames) != 2 {
 		t.Fatalf("historical routing was not enriched: %+v", got)
 	}
 

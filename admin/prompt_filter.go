@@ -291,6 +291,9 @@ func (h *Handler) enrichPromptPolicyIncidentRouting(incident *database.PromptPol
 			incident.AccountName = strings.TrimSpace(account.Email)
 			incident.AccountPlatform = strings.TrimSpace(account.UpstreamType)
 			account.Mu().RUnlock()
+			if incident.AccountPlatform == "" {
+				incident.AccountPlatform = database.UpstreamChannelCodex
+			}
 			incident.AccountGroupIDs = account.GroupIDSnapshot()
 			incident.AccountGroupNames = h.store.ResolveGroupNames(incident.AccountGroupIDs)
 			inferred = true
