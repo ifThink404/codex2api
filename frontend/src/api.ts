@@ -62,6 +62,8 @@ import type {
   PromptFilterRulePatternTestResponse,
   PromptFilterRulesResponse,
   PromptFilterTestResponse,
+  PromptReviewTestRequest,
+  PromptReviewTestResponse,
   PublicAPIKeyUsageResponse,
   RecycleBinAccountsResponse,
   ResetCreditsDetailResponse,
@@ -862,6 +864,8 @@ export const api = {
 		request<import('./types').PromptRiskProfileDetailResponse>(`/prompt-policy/risk-profiles/${encodeURIComponent(subjectType)}/${encodeURIComponent(subjectKey)}?event_page=${eventPage}&event_page_size=${eventPageSize}`),
   testPromptFilter: (data: { text: string; endpoint?: string; model?: string }) =>
     request<PromptFilterTestResponse>('/prompt-filter/test', { method: 'POST', body: JSON.stringify(data) }),
+  testPromptReview: (data: PromptReviewTestRequest) =>
+    request<PromptReviewTestResponse>('/prompt-filter/review/test', { method: 'POST', body: JSON.stringify(data) }),
   testPromptFilterRulePattern: (data: { pattern: string; text: string }) =>
     request<PromptFilterRulePatternTestResponse>('/prompt-filter/rules/test', { method: 'POST', body: JSON.stringify(data) }),
   getPromptFilterRules: () =>

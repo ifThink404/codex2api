@@ -114,6 +114,49 @@ func TestPromptFilterReviewFlaggedKeepsBlock(t *testing.T) {
 	}
 }
 
+func TestPromptFilterReviewsAndBlocksLocallyCleanRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reviewCalls := 0
+	reviewServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reviewCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"omni-moderation-latest","results":[{"flagged":true}]}`))
+	}))
+	defer reviewServer.Close()
+
+	previousClient := promptfilter.DefaultReviewClient
+	promptfilter.DefaultReviewClient = promptfilter.ReviewClient{HTTPClient: reviewServer.Client()}
+	t.Cleanup(func() { promptfilter.DefaultReviewClient = previousClient })
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{
+		MaxConcurrency:                   2,
+		TestConcurrency:                  1,
+		PromptFilterEnabled:              true,
+		PromptFilterMode:                 promptfilter.ModeBlock,
+		PromptFilterThreshold:            50,
+		PromptFilterStrictThreshold:      90,
+		PromptFilterLogMatches:           true,
+		PromptFilterMaxTextLength:        promptfilter.DefaultMaxTextLength,
+		PromptFilterCustomPatterns:       "[]",
+		PromptFilterDisabledPatterns:     "[]",
+		PromptFilterReviewEnabled:        true,
+		PromptFilterReviewAPIKey:         "review-key",
+		PromptFilterReviewBaseURL:        reviewServer.URL,
+		PromptFilterReviewModel:          "omni-moderation-latest",
+		PromptFilterReviewTimeoutSeconds: 2,
+		PromptFilterReviewFailClosed:     true,
+	})
+	handler := NewHandler(store, nil, nil, nil)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	blocked := handler.inspectPromptFilterTextOpenAI(ctx, "请帮我整理普通会议纪要。", "/v1/responses", "gpt-5.4")
+	if !blocked || reviewCalls != 1 || recorder.Code != http.StatusBadRequest {
+		t.Fatalf("blocked=%v reviewCalls=%d status=%d", blocked, reviewCalls, recorder.Code)
+	}
+}
+
 func TestPromptFilterWarningMessageNeverEmpty(t *testing.T) {
 	tests := []struct {
 		name       string

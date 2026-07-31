@@ -1271,6 +1271,32 @@ export interface PromptFilterTestResponse {
   model?: string
 }
 
+export interface PromptReviewTestRequest {
+  text: string
+  api_key?: string
+  base_url: string
+  model: string
+  request_mode: 'moderations' | 'chat_completions' | string
+  system_prompt: string
+  user_prompt_template: string
+  payload_template: string
+  confidence_threshold: number
+  timeout_seconds: number
+  max_concurrent: number
+  max_text_length: number
+}
+
+export interface PromptReviewTestResponse {
+  ok: boolean
+  endpoint: string
+  model: string
+  flagged: boolean
+  confidence: number
+  confidence_threshold: number
+  reason?: string
+  latency_ms: number
+}
+
 export interface PromptFilterRulePatternTestResponse {
   matched: boolean
   error?: string

@@ -328,18 +328,17 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 	verdict.FullText = text
 	verdict.TextPreview = promptfilter.RedactedPreview(text, 500)
 	verdict.ExtractedChars = len([]rune(text))
-	// Semantic review must examine the text that produced the enforcement
-	// decision. The persisted preview intentionally contains only the current
-	// user prompt, so a history/tool/session enforcement signal cannot safely be
-	// reviewed against that different text: a benign current prompt could clear
-	// an administrator-enabled auxiliary-layer block. Clean-prompt sampling is
-	// still allowed when the pipeline itself made no enforcement decision.
+	// The persisted evidence may point at a local auxiliary-layer match, but the
+	// external entry review always receives the current user request. This keeps
+	// the <user_input> contract stable and prevents tool/history text from being
+	// mistaken for the user's current instruction.
+	reviewText := promptGuardReviewText(decision, envelope)
 	inspectCurrentPrompt := promptGuardShouldInspect(decision, cfg)
 	if inspectCurrentPrompt {
 		advancedCfg := cfg
 		verdict = h.applyPromptSemanticProtection(c, text, verdict, advancedCfg)
 		if shouldReviewPromptGuardDecision(decision, verdict, cfg) {
-			verdict = h.reviewPromptFilterVerdict(ctx, text, verdict, cfg)
+			verdict = h.reviewPromptFilterVerdict(ctx, reviewText, verdict, cfg)
 		}
 		if advancedCfg.Advanced.Risk.Enabled {
 			verdict = h.applyPromptRisk(c, verdict, advancedCfg)
@@ -490,6 +489,7 @@ func (h *Handler) evaluateLegacyPromptGuard(c *gin.Context, ctx context.Context,
 	verdict = h.applyPromptSemanticProtection(c, text, verdict, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
 		verdict = h.reviewPromptFilterVerdict(ctx, text, verdict, cfg)
+		verdict = promptfilter.ApplyReviewMode(verdict, cfg.Mode)
 	}
 	if cfg.Advanced.Risk.Enabled {
 		verdict = h.applyPromptRisk(c, verdict, cfg)
@@ -544,6 +544,9 @@ func promptGuardShouldInspect(decision promptfilter.Decision, cfg promptfilter.C
 	if decision.ReasonCode == promptfilter.ReasonCodeAdapterUnclassified {
 		return false
 	}
+	if promptfilter.NormalizeReviewConfig(cfg.Review).Ready() {
+		return true
+	}
 	if promptGuardHasReviewableEnforcement(decision) {
 		return true
 	}
@@ -587,9 +590,6 @@ func envelopeCurrentUserText(envelope promptfilter.RequestEnvelope) string {
 }
 
 func shouldReviewPromptGuardDecision(decision promptfilter.Decision, verdict promptfilter.Verdict, cfg promptfilter.Config) bool {
-	if decision.Profile == promptfilter.GuardProfileStrict && decision.Terminal && decision.StrikeEligible {
-		return false
-	}
 	return shouldReviewPromptFilterVerdict(verdict, cfg)
 }
 
@@ -609,6 +609,11 @@ func finalizePromptGuardDecision(decision promptfilter.Decision, verdict promptf
 		}
 	}
 	decision.Action = finalAction
+	if verdict.Reviewed && verdict.ReviewFlagged && finalAction != promptfilter.ActionAllow && len(verdict.Matched) == 0 {
+		decision.PrimaryOrigin = promptfilter.OriginCurrentUser
+		decision.PrimaryDetector = "external_review"
+		decision.StrikeEligible = false
+	}
 	if decision.ApplicationPromptKind != "" && finalAction != promptfilter.ActionAllow && decision.PrimaryOrigin == "" {
 		decision.PrimaryOrigin = promptfilter.OriginApplicationCandidate
 	}

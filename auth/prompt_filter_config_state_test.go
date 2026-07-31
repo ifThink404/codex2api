@@ -57,6 +57,30 @@ func TestPromptFilterConfigFromInvalidAdvancedSettingsUsesSafeDefaultDocument(t 
 	}
 }
 
+func TestPromptFilterConfigLoadsReviewAdapterFromAdvancedSettings(t *testing.T) {
+	settings := &database.SystemSettings{
+		PromptFilterReviewEnabled:        true,
+		PromptFilterReviewAPIKey:         "stored-key",
+		PromptFilterReviewBaseURL:        "https://review.example",
+		PromptFilterReviewModel:          "deepseek-v4-flash",
+		PromptFilterReviewTimeoutSeconds: 7,
+		PromptFilterAdvancedConfig: `{"review_adapter":{
+			"request_mode":"chat_completions",
+			"system_prompt":"system",
+			"user_prompt_template":"<user_input>{{text}}</user_input>",
+			"payload_template":"",
+			"confidence_threshold":0.76,
+			"max_concurrent":19,
+			"max_text_length":12000
+		}}`,
+	}
+	cfg, _ := promptFilterConfigFromSettings(settings)
+	adapter := cfg.Review.Adapter
+	if adapter.RequestMode != promptfilter.ReviewRequestModeChatCompletions || adapter.ConfidenceThreshold != 0.76 || adapter.MaxConcurrent != 19 || adapter.MaxTextLength != 12000 {
+		t.Fatalf("review adapter = %+v", adapter)
+	}
+}
+
 func TestSetPromptFilterConfigQuarantinesUnsafeLegacyCustomRule(t *testing.T) {
 	store := &Store{}
 	cfg := promptfilter.DefaultConfig()
