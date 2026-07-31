@@ -828,21 +828,38 @@ export const api = {
     if (params.source) search.set('source', params.source)
 		return request<{ found: boolean; log: PromptFilterLog | null; legacy_inferred: boolean }>(`/prompt-filter/logs/match?${search.toString()}`)
 	},
-	getPromptPolicyIncidents: (params: { page?: number; pageSize?: number; endpoint?: string; model?: string; apiKeyId?: string; evaluationState?: string; outcome?: string; localMiss?: boolean; q?: string } = {}) => {
+	getPromptPolicyIncidents: (params: { page?: number; pageSize?: number; endpoint?: string; model?: string; apiKeyId?: string; accountId?: string; evaluationState?: string; outcome?: string; localComparison?: string; localMiss?: boolean; q?: string } = {}) => {
 		const search = new URLSearchParams()
 		search.set('page', String(params.page || 1))
 		search.set('page_size', String(params.pageSize || 20))
 		if (params.endpoint) search.set('endpoint', params.endpoint)
 		if (params.model) search.set('model', params.model)
 		if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
+		if (params.accountId) search.set('account_id', params.accountId)
 		if (params.evaluationState) search.set('evaluation_state', params.evaluationState)
 		if (params.outcome) search.set('outcome', params.outcome)
+		if (params.localComparison) search.set('local_comparison', params.localComparison)
 		if (params.localMiss !== undefined) search.set('local_miss', String(params.localMiss))
 		if (params.q) search.set('q', params.q)
 		return request<PromptPolicyIncidentsResponse>(`/prompt-policy/incidents?${search.toString()}`)
 	},
 	getPromptPolicyIncident: (incidentId: string) =>
 		request<PromptPolicyIncidentDetailResponse>(`/prompt-policy/incidents/${encodeURIComponent(incidentId)}`),
+	getPromptRiskProfiles: (params: { page?: number; pageSize?: number; subjectType?: string; platform?: string; riskLevel?: string; apiKeyId?: string; accountId?: string; minScore?: string; q?: string } = {}) => {
+		const search = new URLSearchParams()
+		search.set('page', String(params.page || 1))
+		search.set('page_size', String(params.pageSize || 20))
+		if (params.subjectType) search.set('subject_type', params.subjectType)
+		if (params.platform) search.set('platform', params.platform)
+		if (params.riskLevel) search.set('risk_level', params.riskLevel)
+		if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
+		if (params.accountId) search.set('account_id', params.accountId)
+		if (params.minScore) search.set('min_score', params.minScore)
+		if (params.q) search.set('q', params.q)
+		return request<import('./types').PromptRiskProfilesResponse>(`/prompt-policy/risk-profiles?${search.toString()}`)
+	},
+	getPromptRiskProfile: (subjectType: string, subjectKey: string, eventPage = 1, eventPageSize = 20) =>
+		request<import('./types').PromptRiskProfileDetailResponse>(`/prompt-policy/risk-profiles/${encodeURIComponent(subjectType)}/${encodeURIComponent(subjectKey)}?event_page=${eventPage}&event_page_size=${eventPageSize}`),
   testPromptFilter: (data: { text: string; endpoint?: string; model?: string }) =>
     request<PromptFilterTestResponse>('/prompt-filter/test', { method: 'POST', body: JSON.stringify(data) }),
   testPromptFilterRulePattern: (data: { pattern: string; text: string }) =>

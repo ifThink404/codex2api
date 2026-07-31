@@ -56,7 +56,8 @@ func promptPolicyTestInputs(incidentID string) (PromptPolicyIncidentInput, Promp
 	incident := PromptPolicyIncidentInput{
 		IncidentID: incidentID, RequestCorrelationID: "request-1", AttemptIndex: 2, Transport: "sse",
 		Endpoint: "/v1/responses", Protocol: "responses", Provider: "openai", Model: "gpt-5.4",
-		StatusCode: 400, AccountID: 7, APIKeyID: 9, APIKeyName: "test", UpstreamErrorCode: "cyber_policy",
+		StatusCode: 400, AccountID: 7, AccountName: "account@example.com", AccountPlatform: "openai", AccountGroupIDs: []int64{4, 7}, AccountGroupNames: []string{"打铁", "Team"},
+		APIKeyID: 9, APIKeyName: "test", APIKeyAllowedGroupIDs: []int64{1, 4, 7}, APIKeyAllowedGroupNames: []string{"凡人", "打铁", "Team"}, UpstreamErrorCode: "cyber_policy",
 		UpstreamError: `{"error":{"code":"cyber_policy"}}`, LocalEvaluationState: PromptPolicyEvaluationCompleted,
 		LocalOutcome: PromptPolicyOutcomeNoHit, LocalAction: "allow", LocalScore: &zero, LocalRawScore: &zero,
 		LocalAuditScore: &zero, LocalAuditRawScore: &zero, LocalThreshold: 50, LocalMode: "block",
@@ -89,8 +90,11 @@ func TestPromptPolicyIncidentPersistsNullableScoresAndExactEvidenceLink(t *testi
 	if got.LocalScore == nil || *got.LocalScore != 0 || got.LocalAuditScore == nil || *got.LocalAuditScore != 0 {
 		t.Fatalf("real zero scores were not preserved: %#v", got)
 	}
-	if !got.LocalMiss || got.CandidateID == 0 || got.CandidateEvidenceID == 0 {
-		t.Fatalf("incident linkage/local_miss = %#v", got)
+	if got.LocalMiss || got.LocalComparison != PromptPolicyComparisonUpstreamOnly || got.CandidateID == 0 || got.CandidateEvidenceID == 0 {
+		t.Fatalf("incident linkage/comparison = %#v", got)
+	}
+	if got.AccountName != incident.AccountName || len(got.AccountGroupIDs) != 2 || len(got.AccountGroupNames) != 2 || len(got.APIKeyAllowedGroupIDs) != 3 || len(got.APIKeyAllowedGroupNames) != 3 || !got.PromptAvailable {
+		t.Fatalf("routing snapshot was not preserved: %#v", got)
 	}
 	items, err := db.ListPromptRuleCandidateEvidence(ctx, got.CandidateID, 10)
 	if err != nil || len(items) != 1 || items[0].ID != got.CandidateEvidenceID || items[0].PromptPolicyIncidentID != incident.IncidentID {
@@ -180,8 +184,8 @@ func TestPromptPolicyIncidentSQLiteSchemaAndIndexes(t *testing.T) {
 	for table, expected := range map[string][]string{
 		"usage_logs":                     {"prompt_policy_incident_id"},
 		"prompt_rule_candidate_evidence": {"prompt_policy_incident_id"},
-		"prompt_filter_logs":             {"request_correlation_id"},
-		"prompt_policy_incidents":        {"incident_id", "request_correlation_id", "local_score", "local_audit_score", "candidate_id", "candidate_evidence_id"},
+		"prompt_filter_logs":             {"request_correlation_id", "newapi_policy_status", "newapi_platform", "newapi_user_id", "newapi_request_id", "newapi_decision_id"},
+		"prompt_policy_incidents":        {"incident_id", "request_correlation_id", "account_name", "account_group_ids", "api_key_allowed_group_ids", "prompt_available", "local_comparison", "local_score", "local_audit_score", "candidate_id", "candidate_evidence_id"},
 	} {
 		columns, err := db.sqliteTableColumns(ctx, table)
 		if err != nil {
@@ -208,7 +212,7 @@ func TestPromptPolicyIncidentSQLiteSchemaAndIndexes(t *testing.T) {
 	}
 	for _, name := range []string{
 		"idx_prompt_policy_incidents_request", "idx_prompt_policy_incidents_created", "idx_prompt_policy_incidents_api_key",
-		"idx_prompt_policy_incidents_endpoint", "idx_prompt_policy_incidents_outcome",
+		"idx_prompt_policy_incidents_account", "idx_prompt_policy_incidents_endpoint", "idx_prompt_policy_incidents_outcome", "idx_prompt_policy_incidents_comparison",
 	} {
 		if !indexes[name] {
 			t.Fatalf("prompt_policy_incidents missing index %q", name)
@@ -241,8 +245,14 @@ func TestPromptPolicyIncidentPostgresMigrationDDL(t *testing.T) {
 		"ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS prompt_policy_incident_id",
 		"ALTER TABLE prompt_rule_candidate_evidence ADD COLUMN IF NOT EXISTS prompt_policy_incident_id",
 		"ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS request_correlation_id",
+		"ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS newapi_policy_status",
+		"account_group_ids TEXT",
+		"api_key_allowed_group_ids TEXT",
+		"local_comparison VARCHAR(32)",
 		"idx_prompt_policy_incidents_request",
 		"idx_prompt_policy_incidents_outcome",
+		"idx_prompt_policy_incidents_account",
+		"idx_prompt_policy_incidents_comparison",
 		"legacy-",
 	} {
 		if !strings.Contains(joined, fragment) {

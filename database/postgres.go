@@ -471,6 +471,11 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	}
 	db.promptFilterAudit = newPromptFilterAuditQueue(db)
 	db.promptFilterAudit.start()
+	db.RunBackgroundTask(func(taskCtx context.Context) {
+		if err := db.backfillPromptRiskEvents(taskCtx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("回填提示词风险画像失败，将在下次启动继续: %v", err)
+		}
+	})
 
 	return db, nil
 }

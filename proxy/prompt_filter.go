@@ -170,6 +170,25 @@ func (h *Handler) logPromptFilterVerdictWithDecision(c *gin.Context, endpoint st
 		}
 	}
 	auditContext := h.capturePromptFilterAuditContext(c)
+	if verdict.Action == promptfilter.ActionBlock && decision != nil && auditContext.NewAPIPolicyStatus == "verified" {
+		if cached, exists := c.Get(newAPIPolicyMetaContextKey); exists {
+			if policyContext, ok := cached.(verifiedNewAPIPolicyContext); ok {
+				metadata := buildNewAPIPolicyDecisionMetadataWithSecret(
+					policyContext.Identity,
+					*decision,
+					verdict,
+					cfg,
+					[]byte(verdict.FullText),
+					endpoint,
+					model,
+					"",
+					policyContext.VerificationSecret,
+				)
+				auditContext.NewAPIPolicyStatus = "signed_response"
+				auditContext.NewAPIDecisionID = metadata.DecisionID
+			}
+		}
+	}
 	input := h.buildPromptFilterLogInput(auditContext, endpoint, model, source, errorCode, verdict, decision, envelope, logMatches)
 	if input == nil {
 		return
@@ -193,6 +212,13 @@ type promptFilterAuditContext struct {
 	Protocol             string
 	Provider             string
 	RequestCorrelationID string
+	NewAPIPolicyStatus   string
+	NewAPIPlatform       string
+	NewAPIUserID         string
+	NewAPIRequestID      string
+	NewAPIDecisionID     string
+	SessionHash          string
+	ClientIPHash         string
 }
 
 func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAuditContext {
@@ -205,6 +231,17 @@ func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAu
 	// cyber-policy logging simply omits metadata if no verified context exists.
 	h.populateCachedVerifiedNewAPIAuditMeta(c, input)
 	populatePromptFilterAPIKeyMeta(c, input)
+	newAPIStatus, policyContext := h.cachedNewAPIPolicyAuditState(c)
+	sessionHash := ""
+	if (newAPIStatus == "verified" || newAPIStatus == "signed_response") && policyContext.MetaVerified {
+		sessionHash = hashRiskIdentity(policyContext.Meta.SessionFingerprint)
+	} else if newAPIStatus == "unbound" {
+		sessionHash = hashRiskIdentity(promptSessionID(c))
+	}
+	clientIP := input.ClientIP
+	if (newAPIStatus == "verified" || newAPIStatus == "signed_response") && strings.TrimSpace(policyContext.Identity.ClientIP) != "" {
+		clientIP = policyContext.Identity.ClientIP
+	}
 	return promptFilterAuditContext{
 		ClientIP:             input.ClientIP,
 		APIKeyID:             input.APIKeyID,
@@ -214,7 +251,35 @@ func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAu
 		Protocol:             input.Protocol,
 		Provider:             input.Provider,
 		RequestCorrelationID: ensurePromptPolicyRequestCorrelationID(c),
+		NewAPIPolicyStatus:   newAPIStatus,
+		NewAPIPlatform:       policyContext.Platform,
+		NewAPIUserID:         policyContext.Identity.UserID,
+		NewAPIRequestID:      policyContext.Identity.RequestID,
+		SessionHash:          sessionHash,
+		ClientIPHash:         hashRiskIdentity(clientIP),
 	}
+}
+
+func (h *Handler) cachedNewAPIPolicyAuditState(c *gin.Context) (string, verifiedNewAPIPolicyContext) {
+	if c == nil || h == nil || h.store == nil {
+		return "unbound", verifiedNewAPIPolicyContext{}
+	}
+	binding, bound := h.resolvePromptFilterNewAPIBinding(c)
+	if !bound {
+		return "unbound", verifiedNewAPIPolicyContext{}
+	}
+	if !binding.Enabled {
+		return "binding_disabled", verifiedNewAPIPolicyContext{Platform: normalizedNewAPIPlatform(binding.PlatformCode)}
+	}
+	if cached, exists := c.Get(newAPIPolicyMetaContextKey); exists {
+		if policyContext, ok := cached.(verifiedNewAPIPolicyContext); ok && policyContext.APIKeyID == requestAPIKeyID(c) {
+			return "verified", policyContext
+		}
+	}
+	if strings.TrimSpace(c.GetHeader("X-NewAPI-Signature")) == "" {
+		return "unsigned_request", verifiedNewAPIPolicyContext{Platform: normalizedNewAPIPlatform(binding.PlatformCode)}
+	}
+	return "verification_failed", verifiedNewAPIPolicyContext{Platform: normalizedNewAPIPlatform(binding.PlatformCode)}
 }
 
 func (h *Handler) logPromptFilterVerdictWithAuditContext(_ context.Context, auditContext promptFilterAuditContext, endpoint string, model string, source string, errorCode string, verdict promptfilter.Verdict, decision *promptfilter.Decision, envelope *promptfilter.RequestEnvelope, logMatches bool) error {
@@ -259,6 +324,13 @@ func (h *Handler) buildPromptFilterLogInput(auditContext promptFilterAuditContex
 		ReviewFlagged:        verdict.ReviewFlagged,
 		ReviewError:          verdict.ReviewError,
 		RequestCorrelationID: auditContext.RequestCorrelationID,
+		NewAPIPolicyStatus:   auditContext.NewAPIPolicyStatus,
+		NewAPIPlatform:       auditContext.NewAPIPlatform,
+		NewAPIUserID:         auditContext.NewAPIUserID,
+		NewAPIRequestID:      auditContext.NewAPIRequestID,
+		NewAPIDecisionID:     auditContext.NewAPIDecisionID,
+		SessionHash:          auditContext.SessionHash,
+		ClientIPHash:         auditContext.ClientIPHash,
 	}
 	if envelope != nil {
 		if envelope.Protocol != promptfilter.ProtocolUnknown {

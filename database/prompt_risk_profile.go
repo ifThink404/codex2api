@@ -1,0 +1,787 @@
+package database
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	PromptRiskScoringVersion = "prompt-risk-v1"
+
+	PromptRiskSubjectNewAPIUser      = "newapi_user"
+	PromptRiskSubjectSession         = "session"
+	PromptRiskSubjectAPIKey          = "api_key"
+	PromptRiskSubjectClientIP        = "client_ip"
+	PromptRiskSubjectUpstreamAccount = "upstream_account"
+
+	PromptRiskLevelLow      = "low"
+	PromptRiskLevelObserved = "observed"
+	PromptRiskLevelElevated = "elevated"
+	PromptRiskLevelHigh     = "high"
+	PromptRiskLevelCritical = "critical"
+
+	promptRiskSourceLog      = "prompt_filter_log"
+	promptRiskSourceIncident = "prompt_policy_incident"
+)
+
+type PromptRiskProfile struct {
+	SubjectType          string                   `json:"subject_type"`
+	SubjectKey           string                   `json:"subject_key"`
+	SubjectDisplay       string                   `json:"subject_display"`
+	Platform             string                   `json:"platform,omitempty"`
+	IsPerson             bool                     `json:"is_person"`
+	IdentityConfidence   int                      `json:"identity_confidence"`
+	RiskScore            int                      `json:"risk_score"`
+	RiskLevel            string                   `json:"risk_level"`
+	RecommendedActions   []string                 `json:"recommended_actions"`
+	ScoreBreakdown       PromptRiskScoreBreakdown `json:"score_breakdown"`
+	LatestAt             time.Time                `json:"latest_at"`
+	EventCount           int                      `json:"event_count"`
+	Events10m            int                      `json:"events_10m"`
+	Events24h            int                      `json:"events_24h"`
+	Events7d             int                      `json:"events_7d"`
+	Events30d            int                      `json:"events_30d"`
+	UpstreamCYCount      int                      `json:"upstream_cy_count"`
+	ConfirmedMissCount   int                      `json:"confirmed_miss_count"`
+	LocalBlockCount      int                      `json:"local_block_count"`
+	LocalWarnCount       int                      `json:"local_warn_count"`
+	DistinctFingerprints int                      `json:"distinct_fingerprints"`
+	RepeatedFingerprints int                      `json:"repeated_fingerprints"`
+	APIKeyID             int64                    `json:"api_key_id,omitempty"`
+	APIKeyName           string                   `json:"api_key_name,omitempty"`
+	APIKeyMasked         string                   `json:"api_key_masked,omitempty"`
+	AccountID            int64                    `json:"account_id,omitempty"`
+	AccountName          string                   `json:"account_name,omitempty"`
+}
+
+type PromptRiskScoreBreakdown struct {
+	LocalSignal        int `json:"local_signal"`
+	UpstreamSignal     int `json:"upstream_signal"`
+	Recurrence         int `json:"recurrence"`
+	IdentityConfidence int `json:"identity_confidence"`
+}
+
+type PromptRiskEvent struct {
+	ID                   int64     `json:"id"`
+	CreatedAt            time.Time `json:"created_at"`
+	SourceType           string    `json:"source_type"`
+	SourceID             string    `json:"source_id"`
+	IncidentID           string    `json:"incident_id,omitempty"`
+	PromptFilterLogID    int64     `json:"prompt_filter_log_id,omitempty"`
+	RequestCorrelationID string    `json:"request_correlation_id,omitempty"`
+	SubjectType          string    `json:"subject_type"`
+	SubjectKey           string    `json:"subject_key"`
+	SubjectDisplay       string    `json:"subject_display"`
+	Platform             string    `json:"platform,omitempty"`
+	IsPerson             bool      `json:"is_person"`
+	IdentityConfidence   int       `json:"identity_confidence"`
+	EventKind            string    `json:"event_kind"`
+	RequestRiskScore     int       `json:"request_risk_score"`
+	EvidenceConfidence   int       `json:"evidence_confidence"`
+	ReasonCode           string    `json:"reason_code,omitempty"`
+	Action               string    `json:"action,omitempty"`
+	LocalOutcome         string    `json:"local_outcome,omitempty"`
+	LocalComparison      string    `json:"local_comparison,omitempty"`
+	Endpoint             string    `json:"endpoint,omitempty"`
+	Model                string    `json:"model,omitempty"`
+	PromptFingerprint    string    `json:"prompt_fingerprint,omitempty"`
+	PromptPreview        string    `json:"prompt_preview,omitempty"`
+	APIKeyID             int64     `json:"api_key_id,omitempty"`
+	APIKeyName           string    `json:"api_key_name,omitempty"`
+	APIKeyMasked         string    `json:"api_key_masked,omitempty"`
+	AccountID            int64     `json:"account_id,omitempty"`
+	AccountName          string    `json:"account_name,omitempty"`
+}
+
+type PromptRiskProfileQuery struct {
+	Page        int
+	PageSize    int
+	SubjectType string
+	SubjectKey  string
+	Platform    string
+	RiskLevel   string
+	APIKeyID    int64
+	AccountID   int64
+	MinScore    int
+	Query       string
+}
+
+type PromptRiskEventQuery struct {
+	Page     int
+	PageSize int
+}
+
+type promptRiskSignal struct {
+	SourceType           string
+	SourceID             string
+	IncidentID           string
+	PromptFilterLogID    int64
+	RequestCorrelationID string
+	CreatedAt            time.Time
+	EventKind            string
+	RequestRiskScore     int
+	EvidenceConfidence   int
+	ReasonCode           string
+	Action               string
+	LocalOutcome         string
+	LocalComparison      string
+	Endpoint             string
+	Model                string
+	PromptFingerprint    string
+	PromptPreview        string
+	APIKeyID             int64
+	APIKeyName           string
+	APIKeyMasked         string
+	AccountID            int64
+	AccountName          string
+	NewAPIPolicyStatus   string
+	NewAPIPlatform       string
+	NewAPIUserID         string
+	SessionHash          string
+	ClientIPHash         string
+}
+
+type promptRiskSubject struct {
+	Type               string
+	Key                string
+	Display            string
+	Platform           string
+	IsPerson           bool
+	IdentityConfidence int
+}
+
+type promptRiskAggregate struct {
+	Profile           PromptRiskProfile
+	FingerprintEvents int
+	PositiveEvents24h int
+	WeightedTotal     int64
+	WeightedLocal     int64
+	WeightedUpstream  int64
+}
+
+func parsePromptRiskTimeValue(value any) (time.Time, error) {
+	parsed, err := parseDBTimeValue(value)
+	if err == nil {
+		return parsed, nil
+	}
+	var raw string
+	switch typed := value.(type) {
+	case string:
+		raw = typed
+	case []byte:
+		raw = string(typed)
+	default:
+		return time.Time{}, err
+	}
+	raw = strings.TrimSpace(raw)
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
+	} {
+		if parsed, parseErr := time.Parse(layout, raw); parseErr == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, err
+}
+
+func (db *DB) ensurePromptRiskEventsTable(ctx context.Context) error {
+	if db == nil {
+		return errors.New("database is nil")
+	}
+	boolType := "BOOLEAN"
+	idType := "BIGSERIAL PRIMARY KEY"
+	timeDefault := "TIMESTAMPTZ DEFAULT NOW()"
+	if db.isSQLite() {
+		boolType = "INTEGER"
+		idType = "INTEGER PRIMARY KEY AUTOINCREMENT"
+		timeDefault = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+	}
+	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS prompt_risk_events (
+		id %s,
+		created_at %s,
+		source_type VARCHAR(32) NOT NULL,
+		source_id VARCHAR(96) NOT NULL,
+		incident_id VARCHAR(64) DEFAULT '',
+		prompt_filter_log_id BIGINT DEFAULT 0,
+		request_correlation_id VARCHAR(64) DEFAULT '',
+		subject_type VARCHAR(32) NOT NULL,
+		subject_key VARCHAR(160) NOT NULL,
+		subject_display VARCHAR(255) DEFAULT '',
+		platform VARCHAR(100) DEFAULT '',
+		is_person %s DEFAULT FALSE,
+		identity_confidence INT DEFAULT 0,
+		event_kind VARCHAR(64) NOT NULL,
+		request_risk_score INT DEFAULT 0,
+		evidence_confidence INT DEFAULT 0,
+		reason_code VARCHAR(100) DEFAULT '',
+		action VARCHAR(32) DEFAULT '',
+		local_outcome VARCHAR(32) DEFAULT '',
+		local_comparison VARCHAR(32) DEFAULT '',
+		endpoint VARCHAR(256) DEFAULT '',
+		model VARCHAR(100) DEFAULT '',
+		prompt_fingerprint VARCHAR(64) DEFAULT '',
+		prompt_preview TEXT DEFAULT '',
+		api_key_id BIGINT DEFAULT 0,
+		api_key_name VARCHAR(255) DEFAULT '',
+		api_key_masked VARCHAR(64) DEFAULT '',
+		account_id BIGINT DEFAULT 0,
+		account_name VARCHAR(255) DEFAULT '',
+		UNIQUE(source_type, source_id, subject_type, subject_key)
+	);
+	CREATE TABLE IF NOT EXISTS prompt_risk_event_sources (
+		source_type VARCHAR(32) NOT NULL,
+		source_id VARCHAR(96) NOT NULL,
+		processed_at %s,
+		PRIMARY KEY(source_type, source_id)
+	);`, idType, timeDefault, boolType, timeDefault)
+	if _, err := db.conn.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_subject ON prompt_risk_events(subject_type, subject_key, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_created ON prompt_risk_events(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_kind ON prompt_risk_events(event_kind, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_incident ON prompt_risk_events(incident_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_api_key ON prompt_risk_events(api_key_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_account ON prompt_risk_events(account_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_sources_processed ON prompt_risk_event_sources(processed_at)`,
+	} {
+		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func promptRiskHash(namespace, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(namespace + "\x00" + value))
+	return hex.EncodeToString(digest[:16])
+}
+
+func promptRiskClamp(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func promptRiskSignalForLog(log PromptFilterLog) (promptRiskSignal, bool) {
+	kind := ""
+	score := 0
+	confidence := 0
+	reviewCleared := strings.TrimSpace(log.ReviewModel) != "" && !log.ReviewFlagged && strings.TrimSpace(log.ReviewError) == ""
+	switch {
+	case reviewCleared:
+		kind, score, confidence = "review_cleared", 0, 95
+	case strings.EqualFold(log.Action, "block") && log.StrikeEligible:
+		kind, score, confidence = "local_block_strike", 48, 95
+	case strings.EqualFold(log.Action, "block"):
+		kind, score, confidence = "local_block", 38, 85
+	case strings.EqualFold(log.Action, "warn"):
+		kind, score, confidence = "local_warn", 22, 75
+	case log.AuditScore > 0 || strings.TrimSpace(log.MatchedPatterns) != "" && strings.TrimSpace(log.MatchedPatterns) != "[]":
+		kind, score, confidence = "local_audit_hit", 10, 60
+	default:
+		return promptRiskSignal{}, false
+	}
+	if log.ReviewFlagged {
+		confidence = max(confidence, 95)
+	}
+	return promptRiskSignal{
+		SourceType: promptRiskSourceLog, SourceID: strconv.FormatInt(log.ID, 10), PromptFilterLogID: log.ID,
+		RequestCorrelationID: log.RequestCorrelationID, CreatedAt: log.CreatedAt, EventKind: kind,
+		RequestRiskScore: score, EvidenceConfidence: confidence, ReasonCode: log.ReasonCode, Action: log.Action,
+		Endpoint: log.Endpoint, Model: log.Model, PromptPreview: log.TextPreview, APIKeyID: log.APIKeyID,
+		APIKeyName: log.APIKeyName, APIKeyMasked: log.APIKeyMasked, NewAPIPolicyStatus: log.NewAPIPolicyStatus,
+		NewAPIPlatform: log.NewAPIPlatform, NewAPIUserID: log.NewAPIUserID, SessionHash: log.SessionHash,
+		ClientIPHash: log.ClientIPHash,
+	}, true
+}
+
+func promptRiskSignalForIncident(incident PromptPolicyIncident) promptRiskSignal {
+	kind := "upstream_cy_legacy_unknown"
+	score, confidence := 8, 25
+	switch incident.LocalComparison {
+	case PromptPolicyComparisonConfirmedMiss:
+		kind, score, confidence = "upstream_cy_confirmed_miss", 52, 92
+	case PromptPolicyComparisonLocalDetected:
+		kind, score, confidence = "upstream_cy_local_detected", 28, 85
+	case PromptPolicyComparisonUpstreamOnly:
+		kind, score, confidence = "upstream_cy_upstream_only", 34, 68
+	case PromptPolicyComparisonEvidenceUnavailable:
+		kind, score, confidence = "upstream_cy_evidence_unavailable", 14, 35
+	case PromptPolicyComparisonNotComparable:
+		kind, score, confidence = "upstream_cy_not_comparable", 12, 30
+	}
+	return promptRiskSignal{
+		SourceType: promptRiskSourceIncident, SourceID: incident.IncidentID, IncidentID: incident.IncidentID,
+		RequestCorrelationID: incident.RequestCorrelationID, CreatedAt: incident.CreatedAt, EventKind: kind,
+		RequestRiskScore: score, EvidenceConfidence: confidence, ReasonCode: incident.LocalReasonCode,
+		Action: incident.LocalAction, LocalOutcome: incident.LocalOutcome, LocalComparison: incident.LocalComparison,
+		Endpoint: incident.Endpoint, Model: incident.Model, PromptFingerprint: incident.PromptFingerprint,
+		PromptPreview: incident.PromptPreview, APIKeyID: incident.APIKeyID, APIKeyName: incident.APIKeyName,
+		APIKeyMasked: incident.APIKeyMasked, AccountID: incident.AccountID, AccountName: incident.AccountName,
+		NewAPIPolicyStatus: incident.NewAPIPolicyStatus, NewAPIPlatform: incident.NewAPIPlatform,
+		NewAPIUserID: incident.NewAPIUserID, SessionHash: incident.SessionHash, ClientIPHash: incident.ClientIPHash,
+	}
+}
+
+func promptRiskSubjects(signal promptRiskSignal) []promptRiskSubject {
+	items := make([]promptRiskSubject, 0, 5)
+	verifiedIdentity := signal.NewAPIPolicyStatus == "verified" || signal.NewAPIPolicyStatus == "signed_response"
+	platform := strings.TrimSpace(signal.NewAPIPlatform)
+	if verifiedIdentity && strings.TrimSpace(signal.NewAPIUserID) != "" {
+		key := promptRiskHash("newapi-user", platform+"\x00"+strings.TrimSpace(signal.NewAPIUserID))
+		items = append(items, promptRiskSubject{Type: PromptRiskSubjectNewAPIUser, Key: key, Display: strings.TrimSpace(signal.NewAPIUserID), Platform: platform, IsPerson: true, IdentityConfidence: 100})
+	}
+	if strings.TrimSpace(signal.SessionHash) != "" {
+		confidence := 50
+		if verifiedIdentity {
+			confidence = 85
+		}
+		items = append(items, promptRiskSubject{Type: PromptRiskSubjectSession, Key: strings.TrimSpace(signal.SessionHash), Display: "session-" + shortRiskKey(signal.SessionHash), Platform: platform, IdentityConfidence: confidence})
+	}
+	if signal.APIKeyID > 0 {
+		display := strings.TrimSpace(signal.APIKeyName)
+		if display == "" {
+			display = strings.TrimSpace(signal.APIKeyMasked)
+		}
+		if display == "" {
+			display = "API Key #" + strconv.FormatInt(signal.APIKeyID, 10)
+		}
+		items = append(items, promptRiskSubject{Type: PromptRiskSubjectAPIKey, Key: strconv.FormatInt(signal.APIKeyID, 10), Display: display, Platform: platform, IdentityConfidence: 60})
+	}
+	if strings.TrimSpace(signal.ClientIPHash) != "" {
+		items = append(items, promptRiskSubject{Type: PromptRiskSubjectClientIP, Key: strings.TrimSpace(signal.ClientIPHash), Display: "IP-" + shortRiskKey(signal.ClientIPHash), Platform: platform, IdentityConfidence: 30})
+	}
+	if signal.AccountID > 0 {
+		display := strings.TrimSpace(signal.AccountName)
+		if display == "" {
+			display = "Account #" + strconv.FormatInt(signal.AccountID, 10)
+		}
+		items = append(items, promptRiskSubject{Type: PromptRiskSubjectUpstreamAccount, Key: strconv.FormatInt(signal.AccountID, 10), Display: display, Platform: platform, IdentityConfidence: 25})
+	}
+	return items
+}
+
+func shortRiskKey(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 10 {
+		return value
+	}
+	return value[:10]
+}
+
+type promptRiskEventExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func insertPromptRiskSignal(ctx context.Context, exec promptRiskEventExecutor, signal promptRiskSignal) error {
+	if signal.SourceType == "" || signal.SourceID == "" {
+		return nil
+	}
+	if signal.CreatedAt.IsZero() {
+		signal.CreatedAt = time.Now().UTC()
+	}
+	for _, subject := range promptRiskSubjects(signal) {
+		if subject.Key == "" {
+			continue
+		}
+		if _, err := exec.ExecContext(ctx, `INSERT INTO prompt_risk_events (
+			created_at, source_type, source_id, incident_id, prompt_filter_log_id, request_correlation_id,
+			subject_type, subject_key, subject_display, platform, is_person, identity_confidence,
+			event_kind, request_risk_score, evidence_confidence, reason_code, action, local_outcome, local_comparison,
+			endpoint, model, prompt_fingerprint, prompt_preview, api_key_id, api_key_name, api_key_masked, account_id, account_name
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+		ON CONFLICT(source_type, source_id, subject_type, subject_key) DO NOTHING`,
+			signal.CreatedAt, signal.SourceType, signal.SourceID, signal.IncidentID, signal.PromptFilterLogID, signal.RequestCorrelationID,
+			subject.Type, subject.Key, truncateCandidateRunes(subject.Display, 255), truncateCandidateRunes(subject.Platform, 100),
+			subject.IsPerson, promptRiskClamp(subject.IdentityConfidence), signal.EventKind, promptRiskClamp(signal.RequestRiskScore),
+			promptRiskClamp(signal.EvidenceConfidence), truncateCandidateRunes(signal.ReasonCode, 100), truncateCandidateRunes(signal.Action, 32),
+			truncateCandidateRunes(signal.LocalOutcome, 32), truncateCandidateRunes(signal.LocalComparison, 32),
+			truncateCandidateRunes(signal.Endpoint, 256), truncateCandidateRunes(signal.Model, 100), truncateCandidateRunes(signal.PromptFingerprint, 64),
+			truncateCandidateRunes(signal.PromptPreview, 500), signal.APIKeyID, truncateCandidateRunes(signal.APIKeyName, 255),
+			truncateCandidateRunes(signal.APIKeyMasked, 64), signal.AccountID, truncateCandidateRunes(signal.AccountName, 255)); err != nil {
+			return err
+		}
+	}
+	_, err := exec.ExecContext(ctx, `INSERT INTO prompt_risk_event_sources(source_type, source_id) VALUES ($1,$2) ON CONFLICT(source_type, source_id) DO NOTHING`, signal.SourceType, signal.SourceID)
+	return err
+}
+
+func (db *DB) backfillPromptRiskEvents(ctx context.Context) error {
+	cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	if err := db.backfillPromptRiskLogs(ctx, cutoff); err != nil {
+		return err
+	}
+	return db.backfillPromptRiskIncidents(ctx, cutoff)
+}
+
+func (db *DB) backfillPromptRiskLogs(ctx context.Context, cutoff time.Time) error {
+	for {
+		rows, err := db.conn.QueryContext(ctx, `SELECT l.id, l.created_at, COALESCE(l.source,''), COALESCE(l.endpoint,''), COALESCE(l.model,''),
+			COALESCE(l.action,''), COALESCE(l.score,0), COALESCE(l.audit_score,0), COALESCE(l.reason_code,''), COALESCE(l.strike_eligible,false),
+			COALESCE(l.matched_patterns,'[]'), COALESCE(l.text_preview,''), COALESCE(l.api_key_id,0), COALESCE(l.api_key_name,''),
+			COALESCE(l.api_key_masked,''), COALESCE(l.client_ip,''), COALESCE(l.review_model,''), COALESCE(l.review_flagged,false),
+			COALESCE(l.review_error,''), COALESCE(l.request_correlation_id,''), COALESCE(l.newapi_policy_status,''),
+			COALESCE(l.newapi_platform,''), COALESCE(l.newapi_user_id,''), COALESCE(l.newapi_request_id,''),
+			COALESCE(l.newapi_decision_id,''), COALESCE(l.session_hash,'')
+		FROM prompt_filter_logs l
+		WHERE l.created_at >= $1 AND NOT EXISTS (
+			SELECT 1 FROM prompt_risk_event_sources s WHERE s.source_type=$2 AND s.source_id=CAST(l.id AS TEXT)
+		) ORDER BY l.id LIMIT 500`, cutoff, promptRiskSourceLog)
+		if err != nil {
+			return err
+		}
+		logs := make([]PromptFilterLog, 0, 500)
+		for rows.Next() {
+			var item PromptFilterLog
+			var createdRaw any
+			var clientIP string
+			if err := rows.Scan(&item.ID, &createdRaw, &item.Source, &item.Endpoint, &item.Model, &item.Action, &item.Score, &item.AuditScore,
+				&item.ReasonCode, &item.StrikeEligible, &item.MatchedPatterns, &item.TextPreview, &item.APIKeyID, &item.APIKeyName,
+				&item.APIKeyMasked, &clientIP, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.RequestCorrelationID,
+				&item.NewAPIPolicyStatus, &item.NewAPIPlatform, &item.NewAPIUserID, &item.NewAPIRequestID, &item.NewAPIDecisionID,
+				&item.SessionHash); err != nil {
+				rows.Close()
+				return err
+			}
+			item.ClientIPHash = promptRiskHash("client-ip", clientIP)
+			item.CreatedAt, err = parsePromptRiskTimeValue(createdRaw)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			logs = append(logs, item)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(logs) == 0 {
+			return nil
+		}
+		if err := db.withSQLiteWriteLock(ctx, func() error {
+			tx, err := db.conn.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			for _, item := range logs {
+				signal, ok := promptRiskSignalForLog(item)
+				if !ok {
+					signal = promptRiskSignal{SourceType: promptRiskSourceLog, SourceID: strconv.FormatInt(item.ID, 10), CreatedAt: item.CreatedAt}
+				}
+				if err := insertPromptRiskSignal(ctx, tx, signal); err != nil {
+					return err
+				}
+			}
+			return tx.Commit()
+		}); err != nil {
+			return err
+		}
+	}
+}
+
+func (db *DB) backfillPromptRiskIncidents(ctx context.Context, cutoff time.Time) error {
+	for {
+		rows, err := db.conn.QueryContext(ctx, promptPolicyIncidentSelect+` WHERE created_at >= $1 AND NOT EXISTS (
+			SELECT 1 FROM prompt_risk_event_sources s WHERE s.source_type=$2 AND s.source_id=prompt_policy_incidents.incident_id
+		) ORDER BY id LIMIT 500`, cutoff, promptRiskSourceIncident)
+		if err != nil {
+			return err
+		}
+		items := make([]*PromptPolicyIncident, 0, 500)
+		for rows.Next() {
+			item, scanErr := scanPromptPolicyIncident(rows)
+			if scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			items = append(items, item)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			return nil
+		}
+		if err := db.withSQLiteWriteLock(ctx, func() error {
+			tx, err := db.conn.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			for _, item := range items {
+				if err := insertPromptRiskSignal(ctx, tx, promptRiskSignalForIncident(*item)); err != nil {
+					return err
+				}
+			}
+			return tx.Commit()
+		}); err != nil {
+			return err
+		}
+	}
+}
+
+func (db *DB) ListPromptRiskProfiles(ctx context.Context, query PromptRiskProfileQuery) ([]*PromptRiskProfile, int, error) {
+	if db == nil {
+		return nil, 0, nil
+	}
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	if query.PageSize <= 0 || query.PageSize > 200 {
+		query.PageSize = 20
+	}
+	now := time.Now().UTC()
+	cutoff30d, cutoff7d, cutoff24h, cutoff10m := now.Add(-30*24*time.Hour), now.Add(-7*24*time.Hour), now.Add(-24*time.Hour), now.Add(-10*time.Minute)
+	clauses := []string{"created_at >= $1"}
+	args := []any{cutoff30d, cutoff10m, cutoff24h, cutoff7d}
+	if value := strings.TrimSpace(query.SubjectType); value != "" && value != "all" {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf("subject_type=$%d", len(args)))
+	}
+	if value := strings.TrimSpace(query.SubjectKey); value != "" {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf("subject_key=$%d", len(args)))
+	}
+	if value := strings.TrimSpace(query.Platform); value != "" {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf("platform=$%d", len(args)))
+	}
+	if query.APIKeyID > 0 {
+		args = append(args, query.APIKeyID)
+		clauses = append(clauses, fmt.Sprintf("api_key_id=$%d", len(args)))
+	}
+	if query.AccountID > 0 {
+		args = append(args, query.AccountID)
+		clauses = append(clauses, fmt.Sprintf("account_id=$%d", len(args)))
+	}
+	if value := strings.TrimSpace(query.Query); value != "" {
+		args = append(args, "%"+strings.ToLower(value)+"%")
+		i := len(args)
+		clauses = append(clauses, fmt.Sprintf(`(LOWER(subject_display) LIKE $%d OR LOWER(subject_key) LIKE $%d OR LOWER(platform) LIKE $%d OR LOWER(api_key_name) LIKE $%d OR LOWER(api_key_masked) LIKE $%d OR LOWER(account_name) LIKE $%d)`, i, i, i, i, i, i))
+	}
+	rows, err := db.conn.QueryContext(ctx, `SELECT subject_type, subject_key,
+		MAX(subject_display), MAX(platform), MAX(CASE WHEN is_person THEN 1 ELSE 0 END), MAX(identity_confidence), MAX(created_at),
+		COUNT(*), SUM(CASE WHEN created_at >= $2 THEN 1 ELSE 0 END), SUM(CASE WHEN created_at >= $3 THEN 1 ELSE 0 END),
+		SUM(CASE WHEN created_at >= $4 THEN 1 ELSE 0 END),
+		SUM(CASE WHEN request_risk_score>0 AND created_at >= $3 THEN 1 ELSE 0 END),
+		SUM(CASE WHEN event_kind LIKE 'upstream_cy_%' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN event_kind='upstream_cy_confirmed_miss' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN event_kind LIKE 'local_block%' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN event_kind='local_warn' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN prompt_fingerprint<>'' THEN 1 ELSE 0 END),
+		COUNT(DISTINCT CASE WHEN prompt_fingerprint<>'' THEN prompt_fingerprint END),
+		MAX(api_key_id), MAX(api_key_name), MAX(api_key_masked), MAX(account_id), MAX(account_name),
+		SUM(request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END),
+		SUM(CASE WHEN event_kind LIKE 'local_%' OR event_kind='review_cleared' THEN request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END ELSE 0 END),
+		SUM(CASE WHEN event_kind LIKE 'upstream_cy_%' THEN request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END ELSE 0 END)
+	FROM prompt_risk_events WHERE `+strings.Join(clauses, " AND ")+`
+	GROUP BY subject_type, subject_key`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	aggregates := make([]promptRiskAggregate, 0)
+	for rows.Next() {
+		var item promptRiskAggregate
+		var latestRaw any
+		var isPerson int
+		if err := rows.Scan(&item.Profile.SubjectType, &item.Profile.SubjectKey, &item.Profile.SubjectDisplay, &item.Profile.Platform,
+			&isPerson, &item.Profile.IdentityConfidence, &latestRaw, &item.Profile.EventCount, &item.Profile.Events10m,
+			&item.Profile.Events24h, &item.Profile.Events7d, &item.PositiveEvents24h, &item.Profile.UpstreamCYCount, &item.Profile.ConfirmedMissCount,
+			&item.Profile.LocalBlockCount, &item.Profile.LocalWarnCount, &item.FingerprintEvents, &item.Profile.DistinctFingerprints,
+			&item.Profile.APIKeyID, &item.Profile.APIKeyName, &item.Profile.APIKeyMasked, &item.Profile.AccountID,
+			&item.Profile.AccountName, &item.WeightedTotal, &item.WeightedLocal, &item.WeightedUpstream); err != nil {
+			return nil, 0, err
+		}
+		item.Profile.IsPerson = isPerson != 0
+		item.Profile.Events30d = item.Profile.EventCount
+		item.Profile.RepeatedFingerprints = max(0, item.FingerprintEvents-item.Profile.DistinctFingerprints)
+		item.Profile.LatestAt, err = parsePromptRiskTimeValue(latestRaw)
+		if err != nil {
+			return nil, 0, err
+		}
+		finalizePromptRiskAggregate(&item)
+		if query.MinScore > 0 && item.Profile.RiskScore < query.MinScore {
+			continue
+		}
+		if level := strings.TrimSpace(query.RiskLevel); level != "" && level != "all" && item.Profile.RiskLevel != level {
+			continue
+		}
+		aggregates = append(aggregates, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	sort.SliceStable(aggregates, func(i, j int) bool {
+		if aggregates[i].Profile.RiskScore == aggregates[j].Profile.RiskScore {
+			return aggregates[i].Profile.LatestAt.After(aggregates[j].Profile.LatestAt)
+		}
+		return aggregates[i].Profile.RiskScore > aggregates[j].Profile.RiskScore
+	})
+	total := len(aggregates)
+	start := (query.Page - 1) * query.PageSize
+	if start >= total {
+		return []*PromptRiskProfile{}, total, nil
+	}
+	end := min(total, start+query.PageSize)
+	items := make([]*PromptRiskProfile, 0, end-start)
+	for i := start; i < end; i++ {
+		profile := aggregates[i].Profile
+		items = append(items, &profile)
+	}
+	return items, total, nil
+}
+
+func finalizePromptRiskAggregate(item *promptRiskAggregate) {
+	if item == nil {
+		return
+	}
+	points := float64(item.WeightedTotal) / 1_000_000
+	base := saturationRiskScore(points)
+	recurrence := min(20, item.Profile.RepeatedFingerprints*3+max(0, item.PositiveEvents24h-1)*2+max(0, item.Profile.ConfirmedMissCount-1)*3)
+	item.Profile.RiskScore = min(100, base+recurrence)
+	item.Profile.RiskLevel = promptRiskLevel(item.Profile.RiskScore)
+	item.Profile.RecommendedActions = promptRiskRecommendations(item.Profile)
+	item.Profile.ScoreBreakdown = PromptRiskScoreBreakdown{
+		LocalSignal:        saturationRiskScore(float64(item.WeightedLocal) / 1_000_000),
+		UpstreamSignal:     saturationRiskScore(float64(item.WeightedUpstream) / 1_000_000),
+		Recurrence:         min(100, recurrence*5),
+		IdentityConfidence: item.Profile.IdentityConfidence,
+	}
+}
+
+func saturationRiskScore(points float64) int {
+	if points <= 0 {
+		return 0
+	}
+	return promptRiskClamp(int(math.Round(100 * (1 - math.Exp(-points/65)))))
+}
+
+func promptRiskLevel(score int) string {
+	switch {
+	case score >= 80:
+		return PromptRiskLevelCritical
+	case score >= 60:
+		return PromptRiskLevelHigh
+	case score >= 35:
+		return PromptRiskLevelElevated
+	case score >= 15:
+		return PromptRiskLevelObserved
+	default:
+		return PromptRiskLevelLow
+	}
+}
+
+func promptRiskRecommendations(profile PromptRiskProfile) []string {
+	switch profile.RiskLevel {
+	case PromptRiskLevelCritical:
+		if profile.SubjectType == PromptRiskSubjectUpstreamAccount {
+			return []string{"account_rotation_review", "enhanced_review"}
+		}
+		return []string{"temporary_restriction_review", "rate_limit", "enhanced_review"}
+	case PromptRiskLevelHigh:
+		if profile.SubjectType == PromptRiskSubjectAPIKey || profile.SubjectType == PromptRiskSubjectClientIP {
+			return []string{"require_signed_identity", "rate_limit", "enhanced_review"}
+		}
+		if profile.SubjectType == PromptRiskSubjectUpstreamAccount {
+			return []string{"account_routing_review", "enhanced_review"}
+		}
+		return []string{"rate_limit", "enhanced_review"}
+	case PromptRiskLevelElevated:
+		return []string{"enhanced_review", "monitor"}
+	case PromptRiskLevelObserved:
+		return []string{"monitor"}
+	default:
+		return []string{"observe"}
+	}
+}
+
+func (db *DB) GetPromptRiskProfile(ctx context.Context, subjectType, subjectKey string) (*PromptRiskProfile, error) {
+	items, _, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{Page: 1, PageSize: 1, SubjectType: strings.TrimSpace(subjectType), SubjectKey: strings.TrimSpace(subjectKey)})
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item.SubjectKey == strings.TrimSpace(subjectKey) {
+			return item, nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (db *DB) ListPromptRiskEvents(ctx context.Context, subjectType, subjectKey string, query PromptRiskEventQuery) ([]*PromptRiskEvent, int, error) {
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	if query.PageSize <= 0 || query.PageSize > 200 {
+		query.PageSize = 20
+	}
+	subjectType, subjectKey = strings.TrimSpace(subjectType), strings.TrimSpace(subjectKey)
+	var total int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompt_risk_events WHERE subject_type=$1 AND subject_key=$2`, subjectType, subjectKey).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := db.conn.QueryContext(ctx, `SELECT id, created_at, source_type, source_id, incident_id, prompt_filter_log_id,
+		request_correlation_id, subject_type, subject_key, subject_display, platform, is_person, identity_confidence,
+		event_kind, request_risk_score, evidence_confidence, reason_code, action, local_outcome, local_comparison,
+		endpoint, model, prompt_fingerprint, prompt_preview, api_key_id, api_key_name, api_key_masked, account_id, account_name
+	FROM prompt_risk_events WHERE subject_type=$1 AND subject_key=$2 ORDER BY id DESC LIMIT $3 OFFSET $4`,
+		subjectType, subjectKey, query.PageSize, (query.Page-1)*query.PageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*PromptRiskEvent, 0, query.PageSize)
+	for rows.Next() {
+		item := &PromptRiskEvent{}
+		var createdRaw any
+		if err := rows.Scan(&item.ID, &createdRaw, &item.SourceType, &item.SourceID, &item.IncidentID, &item.PromptFilterLogID,
+			&item.RequestCorrelationID, &item.SubjectType, &item.SubjectKey, &item.SubjectDisplay, &item.Platform, &item.IsPerson,
+			&item.IdentityConfidence, &item.EventKind, &item.RequestRiskScore, &item.EvidenceConfidence, &item.ReasonCode,
+			&item.Action, &item.LocalOutcome, &item.LocalComparison, &item.Endpoint, &item.Model, &item.PromptFingerprint,
+			&item.PromptPreview, &item.APIKeyID, &item.APIKeyName, &item.APIKeyMasked, &item.AccountID, &item.AccountName); err != nil {
+			return nil, 0, err
+		}
+		item.CreatedAt, err = parsePromptRiskTimeValue(createdRaw)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
+func (db *DB) ClearPromptRiskEvents(ctx context.Context) error {
+	if db == nil {
+		return nil
+	}
+	if db.isSQLite() {
+		if _, err := db.conn.ExecContext(ctx, `DELETE FROM prompt_risk_events; DELETE FROM prompt_risk_event_sources`); err != nil {
+			return err
+		}
+		_, err := db.conn.ExecContext(ctx, `DELETE FROM sqlite_sequence WHERE name='prompt_risk_events'`)
+		return err
+	}
+	_, err := db.conn.ExecContext(ctx, `TRUNCATE TABLE prompt_risk_events, prompt_risk_event_sources RESTART IDENTITY`)
+	return err
+}
