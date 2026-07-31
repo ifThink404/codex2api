@@ -635,6 +635,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/prompt-policy/risk-profiles", h.ListPromptRiskProfiles)
 	api.GET("/prompt-policy/risk-profiles/:subject_type/:subject_key", h.GetPromptRiskProfile)
 	api.POST("/prompt-filter/test", h.TestPromptFilter)
+	api.POST("/prompt-filter/review/test", h.TestPromptReviewConnection)
 	api.POST("/prompt-filter/rules/test", h.TestPromptFilterRulePattern)
 	api.GET("/prompt-filter/rules", h.GetPromptFilterRules)
 	api.GET("/prompt-filter/newapi-bindings", h.ListPromptFilterNewAPIBindings)
@@ -8925,6 +8926,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		promptFilterChanged = true
 	}
 	if promptFilterChanged {
+		promptFilterCfg.Review.Adapter = promptFilterCfg.Advanced.ReviewAdapter
 		promptFilterCfg = promptfilter.NormalizeConfig(promptFilterCfg)
 		if promptFilterCfg.Review.Enabled && strings.TrimSpace(promptFilterCfg.Review.APIKey) == "" {
 			writeError(c, http.StatusBadRequest, "Prompt 检查二次审查已启用时必须填写审查 API Key")

@@ -5603,6 +5603,7 @@ func promptFilterConfigFromSettings(settings *database.SystemSettings) (promptfi
 		Model:          settings.PromptFilterReviewModel,
 		TimeoutSeconds: settings.PromptFilterReviewTimeoutSeconds,
 		FailClosed:     settings.PromptFilterReviewFailClosed,
+		Adapter:        cfg.Advanced.ReviewAdapter,
 	}
 	return promptfilter.NormalizeConfig(cfg), advancedRaw
 }

@@ -157,7 +157,10 @@ func (h *Handler) logPromptFilterVerdictWithDecision(c *gin.Context, endpoint st
 	if h == nil || h.db == nil || !verdict.Enabled {
 		return
 	}
-	if source == "local_filter" && len(verdict.Matched) == 0 && verdict.Action == promptfilter.ActionAllow && verdict.ReviewError == "" && verdict.ReviewModel == "" && !promptFilterDecisionRequiresAudit(decision) {
+	// Full model review runs on every extractable request, but a clean pass with
+	// no local evidence must not turn the prompt log into a full traffic archive.
+	// Persist flagged results, failures, local matches, and explicit audit states.
+	if source == "local_filter" && len(verdict.Matched) == 0 && verdict.Action == promptfilter.ActionAllow && verdict.ReviewError == "" && !verdict.ReviewFlagged && !promptFilterDecisionRequiresAudit(decision) {
 		return
 	}
 	logMatches := true
@@ -486,13 +489,13 @@ func populatePromptFilterAPIKeyMeta(c *gin.Context, input *database.PromptFilter
 }
 
 func shouldReviewPromptFilterVerdict(verdict promptfilter.Verdict, cfg promptfilter.Config) bool {
-	if verdict.Action != promptfilter.ActionWarn && verdict.Action != promptfilter.ActionBlock {
-		return false
-	}
-	return promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
+	return cfg.Enabled && promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
 }
 
 func (h *Handler) reviewPromptFilterVerdict(ctx context.Context, text string, verdict promptfilter.Verdict, cfg promptfilter.Config) promptfilter.Verdict {
-	flagged, model, err := promptfilter.DefaultReviewClient.ReviewText(ctx, text, cfg.Review)
-	return promptfilter.ApplyReviewResult(verdict, flagged, model, err, cfg.Review)
+	if strings.TrimSpace(text) == "" {
+		return verdict
+	}
+	outcome, err := promptfilter.DefaultReviewClient.ReviewTextDetailed(ctx, text, cfg.Review)
+	return promptfilter.ApplyReviewOutcome(verdict, outcome, err, cfg.Review)
 }

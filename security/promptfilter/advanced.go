@@ -35,6 +35,7 @@ type AdvancedConfig struct {
 	Intelligence    IntelligenceConfig    `json:"intelligence"`
 	NewAPI          NewAPIConfig          `json:"newapi"`
 	Guard           GuardConfig           `json:"guard"`
+	ReviewAdapter   ReviewAdapterConfig   `json:"review_adapter"`
 }
 
 const (

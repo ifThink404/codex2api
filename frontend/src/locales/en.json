@@ -2168,9 +2168,10 @@
     "sensitiveWordsPlaceholder": "One term per line. A match is an audit signal; blocking still requires explicit harmful intent or a matching compound rule.",
     "sensitiveWordsHint": "Sensitive words are audit signals only and never raise the enforcement score. Use a custom intent or strict rule when a specific combination must be blocked.",
     "customPatterns": "Custom Rules JSON",
-    "reviewTitle": "Secondary Review",
-    "reviewDesc": "Call an OpenAI Moderations-compatible endpoint only after local rules produce a warning or block candidate. Audit-only sensitive-word matches do not call the review endpoint.",
-    "reviewEnabled": "Enable Review",
+    "reviewTitle": "Full Model Review",
+    "reviewDesc": "When enabled, every request with extractable user input is reviewed by the configured model. Local regex rules remain parallel evidence and no longer gate review calls.",
+    "reviewAllRequestsHint": "Full entry review covers Responses, Chat Completions, Messages, Images, and their HTTP, SSE, and WebSocket paths before forwarding. Size latency, model quota, and failure policy for production traffic.",
+    "reviewEnabled": "Enable Full Review",
     "reviewFailClosed": "Review Failure Policy",
     "reviewFailClosedBlock": "Block on failure",
     "reviewFailClosedAllow": "Allow on failure",
@@ -2180,7 +2181,29 @@
     "reviewApiKey": "Review API Keys",
     "reviewApiKeyPlaceholder": "One key per line (sk-...), multiple allowed",
     "reviewApiKeyConfigured": "{{n}} key(s) configured; leave blank to keep",
-    "reviewApiKeyHint": "One key per line. Add multiple keys to share the Moderations TPM quota; on rate limits it automatically fails over to the next key.",
+    "reviewApiKeyHint": "One key per line. Multiple keys are round-robin balanced and failed over on rate limits, invalid keys, or server errors.",
+    "reviewRequestMode": "Request Adapter",
+    "reviewModeChat": "Chat Completions (DeepSeek, etc.)",
+    "reviewModeModerations": "Moderations (legacy compatible)",
+    "reviewConfidenceThreshold": "Violation Confidence Threshold",
+    "reviewMaxConcurrent": "Maximum Concurrent Reviews",
+    "reviewMaxTextLength": "Maximum Review Characters",
+    "reviewSystemPrompt": "Agent / System Prompt",
+    "reviewSystemPromptHint": "Immutable review instructions. The model should emit only confidence and reason JSON.",
+    "reviewUserPromptTemplate": "User Input Wrapper",
+    "reviewUserPromptTemplateHint": "Must contain {{text}}. The server safely substitutes it inside the <user_input> wrapper.",
+    "reviewPayloadTemplate": "Payload JSON Template (optional)",
+    "reviewPayloadTemplateHint": "Leave blank for the built-in adapter. Custom JSON supports {{model}}, {{system_prompt}}, {{user_prompt}}, and {{text}}; substitution occurs after JSON parsing.",
+    "reviewConnectionTestTitle": "Review Model Connection Test",
+    "reviewConnectionTestDesc": "Sends one real review with the current unsaved Base URL, model, prompts, and payload. A blank API key uses the stored key.",
+    "reviewRunTest": "Test Review Request",
+    "reviewTesting": "Testing review...",
+    "reviewTestSuccess": "Review connection and JSON parsing succeeded",
+    "reviewTestFailed": "Review model test failed",
+    "reviewTestEndpoint": "Resolved endpoint",
+    "reviewTestLatency": "Latency",
+    "reviewTestConfidence": "Confidence / threshold",
+    "reviewTestReason": "Model reason",
     "testerTitle": "Rule Tester",
     "testEndpoint": "Endpoint",
     "testModel": "Model",
@@ -2422,7 +2445,7 @@
         "p2": "It is a gateway policy layer: deterministic local rules score the request first, then the selected mode decides monitor / warn / block. Optional layers add decoding, cumulative risk, output scanning, and NewAPI audit integration.",
         "b1": "Local rules: intent-bearing built-in/custom patterns produce the enforcement score; sensitive words and signal-only patterns remain audit evidence.",
         "b2": "Modes: monitor logs only, warn can pass through, block rejects the request.",
-        "b3": "Terminal rules: strict hits and terminal categories still pass intent, effective-score, and context checks. Balanced profiles may review them; strict profiles prevent downgrade.",
+        "b3": "Terminal rules still pass intent, effective-score, and context checks. When full model review is enabled, terminal candidates enter the same review path.",
         "b4": "Observability: hit logs store action, score, matched rules, and content preview for triage."
       },
       "pipeline": {
@@ -2432,7 +2455,7 @@
         "s2": "Optional: normalize input and decode URL / HTML / Base64 encodings.",
         "s3": "Match local rules: sensitive words and signal-only topics enter audit scoring, while intent-bearing built-in/custom rules enter enforcement scoring.",
         "s4": "Evaluate score thresholds, strict threshold, terminal strict, and terminal categories.",
-        "s5": "Optional: accumulate user / IP / session risk, or call secondary Moderations-compatible review.",
+        "s5": "Optional: accumulate user / IP / session risk. With full model review enabled, every extractable current-user input calls a Moderations- or Chat-Completions-compatible endpoint.",
         "s6": "Emit allow / warn / block; requests using NewAPI audit integration also receive signed policy events for the caller to handle according to its own configuration.",
         "s7": "Optional: buffer and scan SSE / WebSocket output so risky content in model replies is still caught."
       },
@@ -2466,7 +2489,7 @@
         "monitor": "Log only; do not change request allow path. Best for initial tuning.",
         "warn": "Log and mark a warning; request usually continues upstream. Good for canary.",
         "block": "Reject when thresholds or terminal hits fire. Use for production hard enforcement.",
-        "callout": "In block/enforce mode, strict:true rules still pass intent, effective-score, and context checks. Balanced profiles may continue to secondary review; terminal high-confidence hits in strict profiles skip downgrade."
+        "callout": "In block/enforce mode, strict:true rules still pass intent, effective-score, and context checks. Full model review applies the same review and failure policy to every extractable current-user input."
       },
       "scoring": {
         "title": "Scoring, thresholds, and terminal hits",
@@ -2474,7 +2497,7 @@
         "p2": "Terminal paths still require high-confidence harmful intent. Rule scores and context discounts are applied first; strict rules or terminal categories become terminal only after the effective score reaches the block threshold.",
         "b1": "Block threshold: cumulative score that triggers the mode action (block in block mode).",
         "b2": "Strict threshold: cumulative strict-rule score that can also trigger handling.",
-        "b3": "Terminal strict blocking: a strict match enters terminal handling after intent and effective-score checks pass; the profile decides whether secondary review can downgrade it.",
+        "b3": "Terminal strict blocking starts after intent and effective-score checks pass; when full model review is enabled it still receives the unified model verdict.",
         "b4": "Terminal categories: become terminal only with a high-confidence violation; avoid assigning dual-use technology categories."
       },
       "advanced": {
@@ -2489,12 +2512,12 @@
         "callout": "Use Redis-backed cache for multi-replica cumulative risk. Keep decode runs at 1–2 to control latency. Output scanning holds a small window for cross-frame detection: when combined with preflight passthrough (codex_preflight_sse_passthrough), tiny metadata frames may still be briefly buffered so first-frame speed is not guaranteed to recover; and once HTTP 200 is committed before the first content event, upstream error status-code recovery changes — grayscale the two together."
       },
       "review": {
-        "title": "Secondary review",
-        "p1": "Secondary review runs only after a local rule match, calling an OpenAI Moderations-compatible endpoint. Clean local requests never call the review API, which controls cost and latency.",
-        "p2": "Configure base URL, model, timeout, multiple API keys (auto-failover on rate limits), and failure policy.",
+        "title": "Full model review",
+        "p1": "With the master switch and model review enabled, every extractable current-user input is reviewed before forwarding. Local rules remain parallel evidence and no longer gate model calls.",
+        "p2": "Supports Moderations and Chat Completions adapters with configurable base URL, model, agent prompt, input wrapper, payload JSON, confidence threshold, concurrency, timeout, multiple API keys, and failure policy.",
         "b1": "Block on failure: conservative production default when review times out or errors.",
         "b2": "Allow on failure: keep traffic flowing if review is unavailable (canary).",
-        "b3": "Balanced profiles may continue reviewing terminal candidates; strict-profile current-user terminal violations skip secondary-review downgrade."
+        "b3": "A flagged model verdict can block a locally clean request; a clear verdict can remove a local false positive. Errors follow the configured fail-open or fail-closed policy."
       },
       "rules": {
         "title": "Working with the rule set",

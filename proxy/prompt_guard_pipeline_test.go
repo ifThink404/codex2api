@@ -869,8 +869,8 @@ func TestAuxiliaryLayerRequestedEnforceIsShadowOnlyAndNotReviewed(t *testing.T) 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	got := handler.evaluatePromptGuard(c, body, body, "/v1/responses", "gpt-5.5", promptfilter.TransportHTTP)
-	if reviewCalls != 0 {
-		t.Fatalf("auxiliary-layer match was reviewed against different current text; calls=%d", reviewCalls)
+	if reviewCalls != 1 {
+		t.Fatalf("full entry review calls = %d, want 1 for the current user request", reviewCalls)
 	}
 	if got.Decision.Action != promptfilter.ActionAllow || got.Decision.WouldAction != promptfilter.ActionBlock || got.Decision.PrimaryOrigin != promptfilter.OriginHistory || got.Decision.StrikeEligible {
 		t.Fatalf("auxiliary-layer decision was not normalized to shadow-only evidence: %+v", got.Decision)
@@ -904,6 +904,64 @@ func TestPromptGuardBlocksCurrentPromptAcrossProtocols(t *testing.T) {
 		if got.Decision.Action != promptfilter.ActionBlock || !got.Decision.StrikeEligible || got.Decision.PrimaryOrigin != promptfilter.OriginCurrentUser {
 			t.Fatalf("current prompt was not enforced for %s: %+v", tc.endpoint, got.Decision)
 		}
+	}
+}
+
+func TestFullReviewRunsForEveryCleanRequestAcrossProtocolAdapters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reviewCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reviewCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"omni-moderation-latest","results":[{"flagged":false}]}`))
+	}))
+	defer server.Close()
+
+	previousClient := promptfilter.DefaultReviewClient
+	promptfilter.DefaultReviewClient = promptfilter.ReviewClient{HTTPClient: server.Client()}
+	t.Cleanup(func() { promptfilter.DefaultReviewClient = previousClient })
+
+	cfg := promptGuardTestConfig()
+	cfg.Review.Enabled = true
+	cfg.Review.APIKey = "review-key"
+	cfg.Review.BaseURL = server.URL
+	cfg.Review.TimeoutSeconds = 2
+	handler := newPromptGuardTestHandler(promptfilter.NormalizeConfig(cfg))
+	tests := []struct {
+		name      string
+		endpoint  string
+		model     string
+		transport promptfilter.Transport
+		body      string
+	}{
+		{name: "responses_http", endpoint: "/v1/responses", model: "gpt-5.5", transport: promptfilter.TransportHTTP, body: `{"input":"请修复按钮间距。"}`},
+		{name: "responses_sse", endpoint: "/v1/responses", model: "gpt-5.5", transport: promptfilter.TransportHTTP, body: `{"stream":true,"input":"请整理会议纪要。"}`},
+		{name: "responses_ws", endpoint: "/v1/responses", model: "gpt-5.5", transport: promptfilter.TransportWebSocket, body: `{"type":"response.create","input":"请解释 Go context。"}`},
+		{name: "compact", endpoint: "/v1/responses/compact", model: "gpt-5.5", transport: promptfilter.TransportHTTP, body: `{"input":"请压缩普通会话。"}`},
+		{name: "chat", endpoint: "/v1/chat/completions", model: "gpt-5.5", transport: promptfilter.TransportHTTP, body: `{"messages":[{"role":"user","content":"请写一个普通排序函数。"}]}`},
+		{name: "messages", endpoint: "/v1/messages", model: "claude-sonnet-4", transport: promptfilter.TransportHTTP, body: `{"messages":[{"role":"user","content":"请翻译这段文字。"}]}`},
+		{name: "images", endpoint: "/v1/images/generations", model: "gpt-image-2", transport: promptfilter.TransportHTTP, body: `{"prompt":"画一只蓝色小鸟。"}`},
+	}
+	for index, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(tc.body)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, tc.endpoint, nil)
+			got := handler.evaluatePromptGuard(c, body, body, tc.endpoint, tc.model, tc.transport)
+			if got.Decision.Action != promptfilter.ActionAllow || !got.Verdict.Reviewed || got.Verdict.ReviewFlagged {
+				t.Fatalf("full review result = %+v", got)
+			}
+			if reviewCalls != index+1 {
+				t.Fatalf("review calls = %d, want %d", reviewCalls, index+1)
+			}
+		})
+	}
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil)
+	imageEdit := handler.evaluatePromptGuardTextWithConfig(c, cfg, "把天空改成蓝色。", "/v1/images/edits", "gpt-image-2")
+	if imageEdit.Decision.Action != promptfilter.ActionAllow || !imageEdit.Verdict.Reviewed || reviewCalls != len(tests)+1 {
+		t.Fatalf("image edit review failed: calls=%d result=%+v", reviewCalls, imageEdit)
 	}
 }
 

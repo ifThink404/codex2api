@@ -2168,9 +2168,10 @@
     "sensitiveWordsPlaceholder": "每行一个词；命中只作为审计信号计分，仍需明确高危意图或组合规则才会拦截",
     "sensitiveWordsHint": "敏感词只进入审计分，不会抬高执行分；如需拦截特定组合，请配置带意图条件的自定义规则或 strict 终局规则。",
     "customPatterns": "自定义规则 JSON",
-    "reviewTitle": "二次审查",
-    "reviewDesc": "仅当本地规则形成警告或拦截候选时调用 OpenAI Moderations 兼容接口；仅命中审计型敏感词不会调用二次审查。",
-    "reviewEnabled": "启用二次审查",
+    "reviewTitle": "全量模型复核",
+    "reviewDesc": "启用后，对每一个能够提取到用户输入的请求执行统一模型审核；本地正则只作为并行证据，不再决定是否触发复核。",
+    "reviewAllRequestsHint": "全量入口审核：Responses、Chat Completions、Messages、Images 及其 HTTP、SSE、WebSocket 请求都会在转发前复核。请根据流量评估延迟、模型额度和失败策略。",
+    "reviewEnabled": "启用全量模型复核",
     "reviewFailClosed": "审查失败策略",
     "reviewFailClosedBlock": "失败时拦截",
     "reviewFailClosedAllow": "失败时放行",
@@ -2180,7 +2181,29 @@
     "reviewApiKey": "审查 API Key（可多个）",
     "reviewApiKeyPlaceholder": "每行一个 key（sk-...），可填多个",
     "reviewApiKeyConfigured": "已配置 {{n}} 个 key，留空保持不变",
-    "reviewApiKeyHint": "每行一个 key。配置多个可分摊 Moderations 的 TPM 额度，遇到限流会自动切换到下一个 key。",
+    "reviewApiKeyHint": "每行一个 key。配置多个可轮询分摊额度，遇到限流、无效 key 或服务端错误时自动切换。",
+    "reviewRequestMode": "请求适配模式",
+    "reviewModeChat": "Chat Completions（DeepSeek 等）",
+    "reviewModeModerations": "Moderations（兼容旧配置）",
+    "reviewConfidenceThreshold": "违规置信度阈值",
+    "reviewMaxConcurrent": "最大并发审核数",
+    "reviewMaxTextLength": "单次审核最大字符数",
+    "reviewSystemPrompt": "Agent / System Prompt",
+    "reviewSystemPromptHint": "模型的不可变审核指令。模型应只输出 confidence 与 reason JSON。",
+    "reviewUserPromptTemplate": "用户输入包装模板",
+    "reviewUserPromptTemplateHint": "必须包含 {{text}}；服务端会安全替换并把请求内容放入 <user_input> 标签。",
+    "reviewPayloadTemplate": "Payload JSON 模板（可选）",
+    "reviewPayloadTemplateHint": "留空使用内置适配。自定义 JSON 支持 {{model}}、{{system_prompt}}、{{user_prompt}}、{{text}}，替换发生在 JSON 解析后，不会破坏转义。",
+    "reviewConnectionTestTitle": "审核模型连接测试",
+    "reviewConnectionTestDesc": "使用当前未保存的 Base URL、模型、Prompt 和 Payload 发起一次真实审核；API Key 留空时使用已保存的 Key。",
+    "reviewRunTest": "测试审核请求",
+    "reviewTesting": "审核测试中...",
+    "reviewTestSuccess": "审核模型连接与 JSON 解析正常",
+    "reviewTestFailed": "审核模型测试失败",
+    "reviewTestEndpoint": "实际请求端点",
+    "reviewTestLatency": "耗时",
+    "reviewTestConfidence": "置信度 / 阈值",
+    "reviewTestReason": "模型原因",
     "testerTitle": "规则测试",
     "testEndpoint": "端点",
     "testModel": "模型",
@@ -2422,7 +2445,7 @@
         "p2": "它是网关侧策略能力：先由本地确定性规则打分，再按模式决定监控、警告或拦截；高级层可叠加解码还原、累计风险、输出扫描与 NewAPI 审计接入。",
         "b1": "本地规则：带意图的内置/自定义规则形成执行分；敏感词和 signal-only 规则只保留为审计证据。",
         "b2": "处理模式：监控只记日志，警告可透传，拦截会阻断请求。",
-        "b3": "终局规则：strict 或指定分类仍需通过意图、有效分和上下文判断；均衡档案可继续二次审查，严格档案才禁止降级。",
+        "b3": "终局规则：strict 或指定分类仍需通过意图、有效分和上下文判断；启用全量模型复核后，终局候选也会进入同一复核链路。",
         "b4": "可观测：触发日志记录动作、分数、命中规则与内容预览，便于复核误报。"
       },
       "pipeline": {
@@ -2432,7 +2455,7 @@
         "s2": "可选：输入规范化与 URL / HTML / Base64 解码还原。",
         "s3": "本地规则匹配：敏感词和 signal-only 主题进入审计分，带意图的内置/自定义规则进入执行分。",
         "s4": "判断阈值 / 强规则阈值 / 终局 strict 与终局分类。",
-        "s5": "可选：累计用户 / IP / 会话风险，或触发二次审查（Moderations 兼容接口）。",
+        "s5": "可选：累计用户 / IP / 会话风险；启用全量模型复核后，每个可提取的当前用户输入都会调用 Moderations 或 Chat Completions 兼容接口。",
         "s6": "按模式输出 allow / warn / block；若请求通过 NewAPI 审计接入，还会返回可验签的策略事件供调用方按自身配置处理。",
         "s7": "可选：对 SSE / WebSocket 输出流继续缓冲扫描，防止危险内容仅出现在模型回复中。"
       },
@@ -2466,7 +2489,7 @@
         "monitor": "只记录，不改变请求放行。适合上线初期与规则调参。",
         "warn": "记录并标记警告，请求通常仍会继续上游（具体以网关策略为准）。适合启用拦截前观察。",
         "block": "达到阈值或终局命中时拒绝请求。适合生产硬防护。",
-        "callout": "在拦截/执行模式下，strict:true 规则仍需经过意图、有效分和上下文判定。均衡档案可以继续二次审查；严格档案中的终局高可信命中才会跳过降级。"
+        "callout": "在拦截/执行模式下，strict:true 规则仍需经过意图、有效分和上下文判定。全量模型复核启用后，所有可提取的当前用户输入均使用同一复核与失败策略。"
       },
       "scoring": {
         "title": "打分、阈值与终局",
@@ -2474,7 +2497,7 @@
         "p2": "终局路径仍要求高可信违规意图：先计算规则分与上下文降权，达到拦截阈值后，strict 终局或终局分类才会进入直接拦截路径。",
         "b1": "拦截阈值：累计分数达到后触发对应动作（在 block 模式下为拦截）。",
         "b2": "强规则阈值：strict 规则累计达到后也可触发处理。",
-        "b3": "严格规则终局拦截：strict 规则命中且意图与有效分达到阈值后进入终局流程；是否允许二次审查降级由审核档案决定。",
+        "b3": "严格规则终局拦截：strict 规则命中且意图与有效分达到阈值后进入终局流程；启用全量模型复核时仍会得到统一模型结论。",
         "b4": "终局拦截分类：仅在该分类同时形成高可信违规判定时进入终局，不建议配置双用途技术分类。"
       },
       "advanced": {
@@ -2489,12 +2512,12 @@
         "callout": "多副本部署时累计风险建议使用 Redis 缓存；解码轮数建议 1–2，过高会增加延迟。输出扫描为跨帧检测会保留有限窗口：与预检透传（codex_preflight_sse_passthrough）同时开启时，小体积 metadata 帧仍可能被短暂缓存，首帧速度不一定能恢复；且首个内容事件前一旦提交 HTTP 200，后续上游错误的状态码恢复语义会改变，两者同开需单独验证。"
       },
       "review": {
-        "title": "二次审查",
-        "p1": "二次审查在本地规则已经命中后，再调用 OpenAI Moderations 兼容接口确认。未命中本地规则的请求不会调用审查接口，以控制成本与延迟。",
-        "p2": "可配置 Base URL、模型、超时、多个 API Key（限流自动切换）以及失败策略。",
+        "title": "全量模型复核",
+        "p1": "总开关与模型复核启用后，每个可提取的当前用户输入都会在转发前调用审核模型；本地规则仅提供并行证据，不再作为调用门槛。",
+        "p2": "支持 Moderations 与 Chat Completions 适配，可配置 Base URL、模型、Agent Prompt、输入包装、Payload JSON、置信度阈值、并发、超时、多个 API Key 与失败策略。",
         "b1": "失败时拦截：审查超时/出错时保守拦截，适合生产。",
         "b2": "失败时放行：审查不可用时不阻断业务，适合初始观察与可用性优先的场景。",
-        "b3": "均衡档案允许对终局候选继续二次审查；严格档案中的当前用户终局违规会跳过二次审查降级。"
+        "b3": "模型判定违规时可拦截本地未命中的请求；模型判定合规时可清除本地误报。失败时按 fail-open / fail-closed 设置处理。"
       },
       "rules": {
         "title": "规则集使用建议",

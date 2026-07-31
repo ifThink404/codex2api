@@ -55,6 +55,32 @@ type promptFilterTestResponse struct {
 	Model    string                   `json:"model"`
 }
 
+type promptReviewTestRequest struct {
+	Text                string  `json:"text"`
+	APIKey              string  `json:"api_key"`
+	BaseURL             string  `json:"base_url"`
+	Model               string  `json:"model"`
+	RequestMode         string  `json:"request_mode"`
+	SystemPrompt        string  `json:"system_prompt"`
+	UserPromptTemplate  string  `json:"user_prompt_template"`
+	PayloadTemplate     string  `json:"payload_template"`
+	ConfidenceThreshold float64 `json:"confidence_threshold"`
+	TimeoutSeconds      int     `json:"timeout_seconds"`
+	MaxConcurrent       int     `json:"max_concurrent"`
+	MaxTextLength       int     `json:"max_text_length"`
+}
+
+type promptReviewTestResponse struct {
+	OK                  bool    `json:"ok"`
+	Endpoint            string  `json:"endpoint"`
+	Model               string  `json:"model"`
+	Flagged             bool    `json:"flagged"`
+	Confidence          float64 `json:"confidence"`
+	ConfidenceThreshold float64 `json:"confidence_threshold"`
+	Reason              string  `json:"reason,omitempty"`
+	LatencyMS           int64   `json:"latency_ms"`
+}
+
 type promptFilterRulePatternTestRequest struct {
 	Pattern string `json:"pattern"`
 	Text    string `json:"text"`
@@ -93,6 +119,7 @@ func (h *Handler) inspectImagePromptFilter(c *gin.Context, text string, model st
 	verdict := promptfilter.InspectText(text, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
 		verdict = reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
+		verdict = promptfilter.ApplyReviewMode(verdict, cfg.Mode)
 	}
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", verdict.Reason)
@@ -380,6 +407,71 @@ func (h *Handler) TestPromptFilter(c *gin.Context) {
 	})
 }
 
+func (h *Handler) TestPromptReviewConnection(c *gin.Context) {
+	var req promptReviewTestRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求体无效")
+		return
+	}
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		writeError(c, http.StatusBadRequest, "text 不能为空")
+		return
+	}
+	if len([]rune(req.Text)) > 20000 {
+		writeError(c, http.StatusBadRequest, "text 不能超过 20000 个字符")
+		return
+	}
+	if h == nil || h.store == nil {
+		writeError(c, http.StatusServiceUnavailable, "Prompt 审核配置不可用")
+		return
+	}
+	reviewCfg := h.store.GetPromptFilterConfig().Review
+	reviewCfg.Enabled = true
+	if key := strings.TrimSpace(req.APIKey); key != "" {
+		reviewCfg.APIKey = key
+	}
+	if baseURL := strings.TrimSpace(req.BaseURL); baseURL != "" {
+		reviewCfg.BaseURL = baseURL
+	}
+	if model := strings.TrimSpace(req.Model); model != "" {
+		reviewCfg.Model = model
+	}
+	if req.TimeoutSeconds > 0 {
+		reviewCfg.TimeoutSeconds = req.TimeoutSeconds
+	}
+	reviewCfg.Adapter = promptfilter.ReviewAdapterConfig{
+		RequestMode:         req.RequestMode,
+		SystemPrompt:        req.SystemPrompt,
+		UserPromptTemplate:  req.UserPromptTemplate,
+		PayloadTemplate:     req.PayloadTemplate,
+		ConfidenceThreshold: req.ConfidenceThreshold,
+		MaxConcurrent:       req.MaxConcurrent,
+		MaxTextLength:       req.MaxTextLength,
+	}
+	reviewCfg = promptfilter.NormalizeReviewConfig(reviewCfg)
+	if err := promptfilter.ValidateReviewConfig(reviewCfg); err != nil {
+		writeError(c, http.StatusBadRequest, "Prompt 审核配置无效: "+err.Error())
+		return
+	}
+	started := time.Now()
+	outcome, err := promptfilter.DefaultReviewClient.ReviewTextDetailed(c.Request.Context(), req.Text, reviewCfg)
+	if err != nil {
+		writeError(c, http.StatusBadGateway, "Prompt 审核连接测试失败: "+err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, promptReviewTestResponse{
+		OK:                  true,
+		Endpoint:            outcome.Endpoint,
+		Model:               outcome.Model,
+		Flagged:             outcome.Flagged,
+		Confidence:          outcome.Confidence,
+		ConfidenceThreshold: reviewCfg.Adapter.ConfidenceThreshold,
+		Reason:              outcome.Reason,
+		LatencyMS:           time.Since(started).Milliseconds(),
+	})
+}
+
 func (h *Handler) TestPromptFilterRulePattern(c *gin.Context) {
 	var req promptFilterRulePatternTestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -450,13 +542,13 @@ func positiveQueryInt(c *gin.Context, key string, fallback int) int {
 }
 
 func shouldReviewPromptFilterVerdict(verdict promptfilter.Verdict, cfg promptfilter.Config) bool {
-	if verdict.Action != promptfilter.ActionWarn && verdict.Action != promptfilter.ActionBlock {
-		return false
-	}
-	return promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
+	return cfg.Enabled && promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
 }
 
 func reviewPromptFilterVerdict(ctx context.Context, text string, verdict promptfilter.Verdict, cfg promptfilter.Config) promptfilter.Verdict {
-	flagged, model, err := promptfilter.DefaultReviewClient.ReviewText(ctx, text, cfg.Review)
-	return promptfilter.ApplyReviewResult(verdict, flagged, model, err, cfg.Review)
+	if strings.TrimSpace(text) == "" {
+		return verdict
+	}
+	outcome, err := promptfilter.DefaultReviewClient.ReviewTextDetailed(ctx, text, cfg.Review)
+	return promptfilter.ApplyReviewOutcome(verdict, outcome, err, cfg.Review)
 }

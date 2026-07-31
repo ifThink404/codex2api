@@ -52,12 +52,13 @@ type Config struct {
 }
 
 type ReviewConfig struct {
-	Enabled        bool   `json:"enabled"`
-	APIKey         string `json:"api_key,omitempty"`
-	BaseURL        string `json:"base_url"`
-	Model          string `json:"model"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
-	FailClosed     bool   `json:"fail_closed"`
+	Enabled        bool                `json:"enabled"`
+	APIKey         string              `json:"api_key,omitempty"`
+	BaseURL        string              `json:"base_url"`
+	Model          string              `json:"model"`
+	TimeoutSeconds int                 `json:"timeout_seconds"`
+	FailClosed     bool                `json:"fail_closed"`
+	Adapter        ReviewAdapterConfig `json:"adapter"`
 }
 
 type PatternConfig struct {
@@ -616,10 +617,9 @@ func Inspect(body []byte, endpoint string, cfg Config) Verdict {
 }
 
 // RequiresRequestText 判断当前配置下是否真的需要从请求正文提取文本。
-// 本地 filter 关闭时 InspectText 直接判定为放行；review 仅在本地 filter 产出
-// warn/block 后才触发，risk 只读取聚合分数与身份、不消费正文，newapi 只塑形
-// 已拦截响应。Sidecar 也受同一个主开关控制；主开关关闭时语义审核入口会
-// 直接放行，因此不能仅因遗留的 Sidecar 子开关仍为 true 就遍历整个正文。
+// 本地 filter 主开关开启后，启用的外部 review 会审核每一个可提取的当前用户
+// 输入，不再以本地 warn/block 作为触发条件。risk 只读取聚合分数与身份、
+// newapi 只塑形已拦截响应；所有正文能力仍受同一个主开关控制。
 //
 // 全部相关能力关闭时返回 false，调用方应在提取正文前直接放行，避免对大请求体
 // (曾达 16MB) 做无效的 JSON 遍历/UTF-8 解码 (issue #417)。
