@@ -2829,6 +2829,10 @@ function RiskProfilesView() {
   )
 }
 
+function promptRiskIdentityPrimary(profile: Pick<PromptRiskProfile, 'subject_display' | 'newapi_user_name' | 'newapi_user_email'>) {
+  return profile.newapi_user_name || profile.newapi_user_email || profile.subject_display || '-'
+}
+
 function RiskProfilesTable({ profiles }: { profiles: PromptRiskProfile[] }) {
   const { t } = useTranslation()
   return (
@@ -2846,8 +2850,9 @@ function RiskProfilesTable({ profiles }: { profiles: PromptRiskProfile[] }) {
         <TableBody>{profiles.map((profile) => (
           <TableRow key={`${profile.subject_type}:${profile.subject_key}`}>
             <TableCell>
-              <div className="flex items-center gap-2"><Users className="size-4 text-muted-foreground" /><span className="font-medium">{profile.subject_display || '-'}</span></div>
-              <div className="mt-1 flex flex-wrap gap-1"><Badge variant={profile.is_person ? 'default' : 'outline'}>{profile.is_person ? t('promptFilter.risk.person') : t('promptFilter.risk.nonPerson')}</Badge><Badge variant="outline">{t(`promptFilter.risk.subjects.${profile.subject_type}`)}</Badge>{profile.platform ? <Badge variant="secondary">{profile.platform}</Badge> : null}</div>
+              <div className="flex items-center gap-2"><Users className="size-4 text-muted-foreground" /><span className="font-medium">{promptRiskIdentityPrimary(profile)}</span></div>
+              {profile.newapi_user_id || profile.newapi_user_email ? <div className="mt-1 text-xs text-muted-foreground">{profile.newapi_user_id ? `${t('promptFilter.risk.userId')} #${profile.newapi_user_id}` : ''}{profile.newapi_user_id && profile.newapi_user_email ? ' · ' : ''}{profile.newapi_user_email || ''}</div> : null}
+              <div className="mt-1 flex flex-wrap gap-1"><Badge variant={profile.is_person ? 'default' : 'outline'}>{profile.is_person ? t('promptFilter.risk.person') : t('promptFilter.risk.nonPerson')}</Badge><Badge variant="outline">{t(`promptFilter.risk.subjects.${profile.subject_type}`)}</Badge>{profile.platform ? <Badge variant="secondary">{profile.platform}</Badge> : null}{profile.newapi_user_group ? <Badge variant="secondary">{t('promptFilter.risk.userGroup')}: {profile.newapi_user_group}</Badge> : null}</div>
               <div className="mt-1 font-mono text-[11px] text-muted-foreground">{profile.subject_key.slice(0, 18)}</div>
             </TableCell>
             <TableCell><div className="flex items-center gap-2"><span className="font-mono text-lg font-semibold">{profile.risk_score}</span><Badge className={promptRiskBadgeClass(profile.risk_level)}>{t(`promptFilter.risk.levels.${profile.risk_level}`)}</Badge></div><div className="text-xs text-muted-foreground">{t('promptFilter.risk.identityConfidence')} {profile.identity_confidence}%</div></TableCell>
@@ -2892,7 +2897,7 @@ function PromptRiskProfileDetailButton({ profile }: { profile: PromptRiskProfile
     <Button size="sm" variant="outline" onClick={() => { setEventPage(1); setOpen(true) }}>{t('promptFilter.cyberDetail')}</Button>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[90vh] sm:max-w-6xl overflow-y-auto">
-        <DialogHeader><DialogTitle>{t('promptFilter.risk.detailTitle')}</DialogTitle><DialogDescription>{item.subject_display} · {t(`promptFilter.risk.subjects.${item.subject_type}`)}</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{t('promptFilter.risk.detailTitle')}</DialogTitle><DialogDescription>{promptRiskIdentityPrimary(item)} · {t(`promptFilter.risk.subjects.${item.subject_type}`)}</DialogDescription></DialogHeader>
         {loading && !detail ? <div className="py-8 text-center text-sm text-muted-foreground">{t('common.loading')}</div> : error ? <div className="text-sm text-destructive">{error}</div> : <div className="space-y-4">
           <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">{detail?.guardrail || t('promptFilter.risk.guardrail')}</div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -2902,14 +2907,18 @@ function PromptRiskProfileDetailButton({ profile }: { profile: PromptRiskProfile
             <MetricTile label={t('promptFilter.risk.recurrence')}><span className="font-mono text-xl">{item.score_breakdown.recurrence}</span></MetricTile>
           </div>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <PromptPolicyDetailField label={t('promptFilter.risk.identity')} value={`${item.subject_display} · ${item.is_person ? t('promptFilter.risk.person') : t('promptFilter.risk.nonPerson')}`} />
+            <PromptPolicyDetailField label={t('promptFilter.risk.identity')} value={`${promptRiskIdentityPrimary(item)} · ${item.is_person ? t('promptFilter.risk.person') : t('promptFilter.risk.nonPerson')}`} />
             <PromptPolicyDetailField label={t('promptFilter.risk.identityConfidence')} value={`${item.identity_confidence}%`} />
             <PromptPolicyDetailField label={t('promptFilter.cyberSourceKey')} value={item.api_key_name || item.api_key_masked || (item.api_key_id ? `#${item.api_key_id}` : '-')} />
             <PromptPolicyDetailField label={t('promptFilter.cyberAccount')} value={item.account_name || (item.account_id ? `#${item.account_id}` : '-')} />
+            <PromptPolicyDetailField label={t('promptFilter.risk.userId')} value={item.newapi_user_id ? `#${item.newapi_user_id}` : '-'} />
+            <PromptPolicyDetailField label={t('promptFilter.risk.userName')} value={item.newapi_user_name || '-'} />
+            <PromptPolicyDetailField label={t('promptFilter.risk.userEmail')} value={item.newapi_user_email || '-'} />
+            <PromptPolicyDetailField label={t('promptFilter.risk.userGroup')} value={item.newapi_user_group || '-'} />
           </div>
           <div><div className="mb-2 text-sm font-semibold">{t('promptFilter.risk.eventHistory')} · {detail?.event_total ?? 0}</div>
             <div className="overflow-x-auto rounded-lg border border-border"><Table><TableHeader><TableRow><TableHead>{t('promptFilter.colTime')}</TableHead><TableHead>{t('promptFilter.risk.eventKind')}</TableHead><TableHead>{t('promptFilter.risk.requestEvidence')}</TableHead><TableHead>{t('promptFilter.colEndpoint')}</TableHead><TableHead>{t('promptFilter.risk.scope')}</TableHead></TableRow></TableHeader><TableBody>
-              {(detail?.events ?? []).map((event) => <TableRow key={event.id}><TableCell className="whitespace-nowrap text-xs">{formatBeijingTime(event.created_at)}</TableCell><TableCell><Badge variant="outline">{t(`promptFilter.risk.events.${event.event_kind}`)}</Badge></TableCell><TableCell className="font-mono text-xs">{event.request_risk_score} × {event.evidence_confidence}%</TableCell><TableCell><div className="font-mono text-xs">{event.endpoint || '-'}</div><div className="text-xs text-muted-foreground">{event.model || '-'}</div></TableCell><TableCell className="text-xs"><div>{event.api_key_name || event.api_key_masked || '-'}</div><div className="text-muted-foreground">{event.account_name || '-'}</div></TableCell></TableRow>)}
+              {(detail?.events ?? []).map((event) => <TableRow key={event.id}><TableCell className="whitespace-nowrap text-xs">{formatBeijingTime(event.created_at)}</TableCell><TableCell><Badge variant="outline">{t(`promptFilter.risk.events.${event.event_kind}`)}</Badge></TableCell><TableCell className="font-mono text-xs">{event.request_risk_score} × {event.evidence_confidence}%</TableCell><TableCell><div className="font-mono text-xs">{event.endpoint || '-'}</div><div className="text-xs text-muted-foreground">{event.model || '-'}</div></TableCell><TableCell className="text-xs"><div>{event.newapi_user_name || (event.newapi_user_id ? `${t('promptFilter.risk.userId')} #${event.newapi_user_id}` : event.api_key_name || event.api_key_masked || '-')}</div><div className="text-muted-foreground">{event.newapi_user_group ? `${event.newapi_user_group} · ` : ''}{event.account_name || '-'}</div></TableCell></TableRow>)}
             </TableBody></Table></div>
             <Pagination page={eventPage} totalPages={totalPages} totalItems={detail?.event_total ?? 0} pageSize={eventPageSize} onPageChange={setEventPage} onPageSizeChange={(next) => { setEventPage(1); setEventPageSize(next) }} pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS} />
           </div>

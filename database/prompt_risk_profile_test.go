@@ -36,6 +36,9 @@ func TestPromptRiskProfilesSeparatePersonTenantNetworkAndAccount(t *testing.T) {
 	incident.NewAPIPolicyStatus = "verified"
 	incident.NewAPIPlatform = "newapi-prod"
 	incident.NewAPIUserID = "user-42"
+	incident.NewAPIUserName = "凡人用户"
+	incident.NewAPIUserEmail = "fanren-user@example.com"
+	incident.NewAPIUserGroup = "fanren-paid"
 	incident.NewAPIRequestID = "req-cy-42"
 	incident.SessionHash = logInput.SessionHash
 	incident.ClientIPHash = logInput.ClientIPHash
@@ -53,6 +56,9 @@ func TestPromptRiskProfilesSeparatePersonTenantNetworkAndAccount(t *testing.T) {
 	if user == nil || !user.IsPerson || user.IdentityConfidence != 100 || user.EventCount != 2 || user.ConfirmedMissCount != 1 || user.RiskScore < 60 {
 		t.Fatalf("signed user profile = %#v", user)
 	}
+	if user.SubjectDisplay != "凡人用户" || user.NewAPIUserID != "user-42" || user.NewAPIUserEmail != "fanren-user@example.com" || user.NewAPIUserGroup != "fanren-paid" {
+		t.Fatalf("signed user identity = %#v", user)
+	}
 	key := findPromptRiskProfile(profiles, PromptRiskSubjectAPIKey)
 	if key == nil || key.IsPerson || key.IdentityConfidence != 60 || key.APIKeyID != 9 {
 		t.Fatalf("API key profile = %#v", key)
@@ -67,6 +73,37 @@ func TestPromptRiskProfilesSeparatePersonTenantNetworkAndAccount(t *testing.T) {
 	events, eventTotal, err := db.ListPromptRiskEvents(ctx, user.SubjectType, user.SubjectKey, PromptRiskEventQuery{Page: 1, PageSize: 1})
 	if err != nil || eventTotal != 2 || len(events) != 1 {
 		t.Fatalf("user events total=%d items=%#v err=%v", eventTotal, events, err)
+	}
+	if events[0].NewAPIUserName != "凡人用户" || events[0].NewAPIUserID != "user-42" {
+		t.Fatalf("event identity = %#v", events[0])
+	}
+	filtered, filteredTotal, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{Page: 1, PageSize: 20, Query: "fanren-user@example.com"})
+	if err != nil || filteredTotal != 1 || len(filtered) != 1 || filtered[0].SubjectKey != user.SubjectKey {
+		t.Fatalf("identity search total=%d items=%#v err=%v", filteredTotal, filtered, err)
+	}
+}
+
+func TestPromptRiskIdentityDirectoryEnrichesHistoricalProfiles(t *testing.T) {
+	db := newPromptPolicySQLiteTestDB(t)
+	ctx := context.Background()
+	if err := db.InsertPromptFilterLog(ctx, &PromptFilterLogInput{
+		Source: "local_filter", Action: "block", StrikeEligible: true, MatchedPatterns: `[{"name":"x"}]`,
+		NewAPIPolicyStatus: "verified", NewAPIPlatform: "fanren", NewAPIUserID: "73",
+	}); err != nil {
+		t.Fatalf("InsertPromptFilterLog: %v", err)
+	}
+	if err := db.UpsertPromptRiskIdentities(ctx, []PromptRiskIdentityInput{{
+		Platform: "fanren", ExternalUserID: "73", UserName: "known-user", UserEmail: "known@example.com", UserGroup: "vip", Source: "admin_import",
+	}}); err != nil {
+		t.Fatalf("UpsertPromptRiskIdentities: %v", err)
+	}
+	profiles, total, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{Page: 1, PageSize: 20, SubjectType: PromptRiskSubjectNewAPIUser, Query: "vip"})
+	if err != nil || total != 1 || len(profiles) != 1 {
+		t.Fatalf("profiles total=%d items=%#v err=%v", total, profiles, err)
+	}
+	profile := profiles[0]
+	if profile.SubjectDisplay != "known-user" || profile.NewAPIUserID != "73" || profile.NewAPIUserEmail != "known@example.com" || profile.NewAPIUserGroup != "vip" {
+		t.Fatalf("historical profile identity = %#v", profile)
 	}
 }
 
@@ -199,6 +236,7 @@ func TestPromptRiskSQLiteSchemaAndIndexes(t *testing.T) {
 		"prompt_policy_incidents":   {"newapi_policy_status", "newapi_platform", "newapi_user_id", "newapi_request_id", "session_hash", "client_ip_hash"},
 		"prompt_risk_events":        {"source_type", "source_id", "subject_type", "subject_key", "is_person", "identity_confidence", "request_risk_score", "evidence_confidence", "incident_id", "api_key_id", "account_id"},
 		"prompt_risk_event_sources": {"source_type", "source_id", "processed_at"},
+		"prompt_risk_identities":    {"subject_type", "subject_key", "platform", "external_user_id", "user_name", "user_email", "user_group", "source", "updated_at"},
 	} {
 		columns, err := db.sqliteTableColumns(ctx, table)
 		if err != nil {

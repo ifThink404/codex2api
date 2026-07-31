@@ -1178,6 +1178,10 @@ export interface PromptRiskProfile {
   subject_key: string
   subject_display: string
   platform?: string
+  newapi_user_id?: string
+  newapi_user_name?: string
+  newapi_user_email?: string
+  newapi_user_group?: string
   is_person: boolean
   identity_confidence: number
   risk_score: number
@@ -1215,6 +1219,10 @@ export interface PromptRiskEvent {
   subject_key: string
   subject_display: string
   platform?: string
+  newapi_user_id?: string
+  newapi_user_name?: string
+  newapi_user_email?: string
+  newapi_user_group?: string
   is_person: boolean
   identity_confidence: number
   event_kind: string

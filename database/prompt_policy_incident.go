@@ -114,6 +114,9 @@ type PromptPolicyIncidentInput struct {
 	NewAPIPolicyStatus      string
 	NewAPIPlatform          string
 	NewAPIUserID            string
+	NewAPIUserName          string
+	NewAPIUserEmail         string
+	NewAPIUserGroup         string
 	NewAPIRequestID         string
 	SessionHash             string
 	ClientIPHash            string
@@ -337,6 +340,9 @@ func normalizePromptPolicyIncidentInput(input PromptPolicyIncidentInput) (Prompt
 	input.NewAPIPolicyStatus = truncateCandidateRunes(strings.TrimSpace(input.NewAPIPolicyStatus), 32)
 	input.NewAPIPlatform = truncateCandidateRunes(strings.TrimSpace(input.NewAPIPlatform), 100)
 	input.NewAPIUserID = truncateCandidateRunes(strings.TrimSpace(input.NewAPIUserID), 255)
+	input.NewAPIUserName = truncateCandidateRunes(strings.TrimSpace(input.NewAPIUserName), 128)
+	input.NewAPIUserEmail = truncateCandidateRunes(strings.TrimSpace(input.NewAPIUserEmail), 320)
+	input.NewAPIUserGroup = truncateCandidateRunes(strings.TrimSpace(input.NewAPIUserGroup), 100)
 	input.NewAPIRequestID = truncateCandidateRunes(strings.TrimSpace(input.NewAPIRequestID), 255)
 	input.SessionHash = truncateCandidateRunes(strings.TrimSpace(input.SessionHash), 64)
 	input.ClientIPHash = truncateCandidateRunes(strings.TrimSpace(input.ClientIPHash), 64)
@@ -468,7 +474,11 @@ func (db *DB) PersistPromptPolicyIncident(ctx context.Context, rawIncident Promp
 			LocalOutcome: incident.LocalOutcome, LocalAction: incident.LocalAction, LocalReasonCode: incident.LocalReasonCode,
 			LocalComparison: incident.LocalComparison, PromptFingerprint: incident.PromptFingerprint, PromptPreview: incident.PromptPreview,
 		}
-		if err := insertPromptRiskSignal(ctx, tx, promptRiskSignalForIncident(storedIncident)); err != nil {
+		riskSignal := promptRiskSignalForIncident(storedIncident)
+		riskSignal.NewAPIUserName = incident.NewAPIUserName
+		riskSignal.NewAPIUserEmail = incident.NewAPIUserEmail
+		riskSignal.NewAPIUserGroup = incident.NewAPIUserGroup
+		if err := insertPromptRiskSignal(ctx, tx, riskSignal); err != nil {
 			return err
 		}
 		return tx.Commit()

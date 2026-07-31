@@ -355,7 +355,8 @@ func promptFilterLogInputBytes(input PromptFilterLogInput) int {
 		len(input.MatchedPatterns) + len(input.TextPreview) + len(input.MatchContext) + len(input.FullText) +
 		len(input.APIKeyName) + len(input.APIKeyMasked) + len(input.ClientIP) + len(input.ErrorCode) + len(input.ReviewModel) + len(input.ReviewError) +
 		len(input.RequestCorrelationID) + len(input.NewAPIPolicyStatus) + len(input.NewAPIPlatform) + len(input.NewAPIUserID) +
-		len(input.NewAPIRequestID) + len(input.NewAPIDecisionID) + len(input.SessionHash) + len(input.ClientIPHash)
+		len(input.NewAPIUserName) + len(input.NewAPIUserEmail) + len(input.NewAPIUserGroup) + len(input.NewAPIRequestID) +
+		len(input.NewAPIDecisionID) + len(input.SessionHash) + len(input.ClientIPHash)
 }
 
 func clonePromptFilterLogInput(input PromptFilterLogInput) PromptFilterLogInput {
@@ -383,6 +384,9 @@ func clonePromptFilterLogInput(input PromptFilterLogInput) PromptFilterLogInput 
 	input.NewAPIPolicyStatus = strings.Clone(input.NewAPIPolicyStatus)
 	input.NewAPIPlatform = strings.Clone(input.NewAPIPlatform)
 	input.NewAPIUserID = strings.Clone(input.NewAPIUserID)
+	input.NewAPIUserName = strings.Clone(input.NewAPIUserName)
+	input.NewAPIUserEmail = strings.Clone(input.NewAPIUserEmail)
+	input.NewAPIUserGroup = strings.Clone(input.NewAPIUserGroup)
 	input.NewAPIRequestID = strings.Clone(input.NewAPIRequestID)
 	input.NewAPIDecisionID = strings.Clone(input.NewAPIDecisionID)
 	input.SessionHash = strings.Clone(input.SessionHash)
@@ -402,7 +406,8 @@ func promptPolicyIncidentJobBytes(incident PromptPolicyIncidentInput, candidate 
 	return len(incident.IncidentID) + len(incident.RequestCorrelationID) + len(incident.Transport) + len(incident.Endpoint) +
 		len(incident.Protocol) + len(incident.Provider) + len(incident.Model) + len(incident.APIKeyName) + len(incident.APIKeyMasked) +
 		len(incident.AccountName) + len(incident.AccountPlatform) + len(incident.Platform) + len(incident.NewAPIPolicyStatus) +
-		len(incident.NewAPIPlatform) + len(incident.NewAPIUserID) + len(incident.NewAPIRequestID) + len(incident.SessionHash) + len(incident.ClientIPHash) +
+		len(incident.NewAPIPlatform) + len(incident.NewAPIUserID) + len(incident.NewAPIUserName) + len(incident.NewAPIUserEmail) +
+		len(incident.NewAPIUserGroup) + len(incident.NewAPIRequestID) + len(incident.SessionHash) + len(incident.ClientIPHash) +
 		len(incident.SourceRef) + len(incident.UpstreamErrorCode) + len(incident.UpstreamError) +
 		len(incident.LocalEvaluationState) + len(incident.LocalOutcome) + len(incident.LocalAction) + len(incident.LocalMode) +
 		len(incident.LocalPolicyProfile) + len(incident.LocalReasonCode) + len(incident.LocalReason) + len(incident.LocalPrimaryOrigin) + len(incident.LocalReviewModel) +
@@ -459,6 +464,9 @@ func clonePromptPolicyIncidentInput(input PromptPolicyIncidentInput) PromptPolic
 	input.NewAPIPolicyStatus = strings.Clone(input.NewAPIPolicyStatus)
 	input.NewAPIPlatform = strings.Clone(input.NewAPIPlatform)
 	input.NewAPIUserID = strings.Clone(input.NewAPIUserID)
+	input.NewAPIUserName = strings.Clone(input.NewAPIUserName)
+	input.NewAPIUserEmail = strings.Clone(input.NewAPIUserEmail)
+	input.NewAPIUserGroup = strings.Clone(input.NewAPIUserGroup)
 	input.NewAPIRequestID = strings.Clone(input.NewAPIRequestID)
 	input.SessionHash = strings.Clone(input.SessionHash)
 	input.ClientIPHash = strings.Clone(input.ClientIPHash)
@@ -614,6 +622,9 @@ type PromptFilterLogInput struct {
 	NewAPIPolicyStatus   string
 	NewAPIPlatform       string
 	NewAPIUserID         string
+	NewAPIUserName       string
+	NewAPIUserEmail      string
+	NewAPIUserGroup      string
 	NewAPIRequestID      string
 	NewAPIDecisionID     string
 	SessionHash          string
@@ -677,6 +688,9 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 		if !ok {
 			signal = promptRiskSignal{SourceType: promptRiskSourceLog, SourceID: strconv.FormatInt(id, 10), CreatedAt: createdAt}
 		}
+		signal.NewAPIUserName = input.NewAPIUserName
+		signal.NewAPIUserEmail = input.NewAPIUserEmail
+		signal.NewAPIUserGroup = input.NewAPIUserGroup
 		if err := insertPromptRiskSignal(ctx, tx, signal); err != nil {
 			return err
 		}

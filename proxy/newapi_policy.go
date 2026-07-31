@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/codex2api/api"
 	"github.com/codex2api/database"
@@ -53,6 +54,9 @@ type newAPIOriginalAuditMeta struct {
 
 type newAPIPolicyMeta struct {
 	PlatformID         string `json:"platform_id,omitempty"`
+	UserName           string `json:"user_name,omitempty"`
+	UserEmail          string `json:"user_email,omitempty"`
+	UserGroup          string `json:"user_group,omitempty"`
 	Profile            string `json:"profile"`
 	Mode               string `json:"mode"`
 	Provider           string `json:"provider"`
@@ -428,6 +432,16 @@ func normalizeVerifiedNewAPIPolicyMeta(meta *newAPIPolicyMeta) bool {
 	if meta.ChannelID < 0 {
 		meta.ChannelID = 0
 	}
+	var ok bool
+	if meta.UserName, ok = normalizedVerifiedNewAPIIdentityText(meta.UserName, 128); !ok {
+		return false
+	}
+	if meta.UserEmail, ok = normalizedVerifiedNewAPIIdentityText(meta.UserEmail, 320); !ok {
+		return false
+	}
+	if meta.UserGroup, ok = normalizedVerifiedNewAPIIdentityText(meta.UserGroup, 100); !ok {
+		return false
+	}
 	meta.SessionFingerprint = strings.ToLower(strings.TrimSpace(meta.SessionFingerprint))
 	if meta.SessionFingerprint != "" {
 		decoded, err := hex.DecodeString(meta.SessionFingerprint)
@@ -436,6 +450,23 @@ func normalizeVerifiedNewAPIPolicyMeta(meta *newAPIPolicyMeta) bool {
 		}
 	}
 	return true
+}
+
+func normalizedVerifiedNewAPIIdentityText(value string, maxRunes int) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", true
+	}
+	runes := []rune(value)
+	if len(runes) > maxRunes {
+		runes = runes[:maxRunes]
+	}
+	for _, r := range runes {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	return string(runes), true
 }
 
 func normalizedPolicyMetaToken(value string, maxLen int) string {
