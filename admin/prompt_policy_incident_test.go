@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
 )
@@ -73,7 +74,7 @@ func TestPromptPolicyIncidentListAndDetailAPI(t *testing.T) {
 		Incidents []database.PromptPolicyIncident `json:"incidents"`
 		Total     int                             `json:"total"`
 	}
-	if err := json.Unmarshal(listRecorder.Body.Bytes(), &list); err != nil || list.Total != 2 || len(list.Incidents) != 1 || !list.Incidents[0].LocalMiss || list.Incidents[0].AccountName != "account@example.com" || len(list.Incidents[0].AccountGroupNames) != 1 {
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &list); err != nil || list.Total != 2 || len(list.Incidents) != 1 || !list.Incidents[0].LocalMiss || list.Incidents[0].AccountName != "account@example.com" || len(list.Incidents[0].AccountGroupNames) != 1 || list.Incidents[0].RoutingSnapshotState != "event_snapshot" {
 		t.Fatalf("list response=%s err=%v", listRecorder.Body.String(), err)
 	}
 
@@ -89,6 +90,70 @@ func TestPromptPolicyIncidentListAndDetailAPI(t *testing.T) {
 		Evidence  map[string]any                `json:"evidence"`
 	}
 	if err := json.Unmarshal(detailRecorder.Body.Bytes(), &detail); err != nil || detail.Incident.IncidentID != "incident-admin" || len(detail.Matches) != 1 || detail.Candidate == nil || detail.Evidence == nil {
+		t.Fatalf("detail response=%s err=%v", detailRecorder.Body.String(), err)
+	}
+}
+
+func TestPromptPolicyIncidentHistoricalRoutingUsesCurrentDirectory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "admin-policy-routing.db"))
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	defer db.Close()
+	store := auth.NewStore(nil, nil, &database.SystemSettings{})
+	t.Cleanup(store.Stop)
+	account := &auth.Account{DBID: 73, Email: "current-account@example.com", UpstreamType: "codex", AccessToken: "test-token"}
+	store.AddAccount(account)
+	store.SetGroupName(4, "打铁")
+	store.SetGroupName(5, "凡人")
+	store.ApplyAccountGroups(account.DBID, []int64{4})
+	store.SetAPIKeyAllowedGroups(9, []int64{4, 5})
+
+	incident := database.PromptPolicyIncidentInput{
+		IncidentID: "incident-routing-legacy", RequestCorrelationID: "request-routing-legacy", Endpoint: "/v1/responses", Model: "gpt-5.4",
+		Protocol: "responses", Transport: "sse", StatusCode: 400, AccountID: account.DBID,
+		APIKeyID: 9, APIKeyName: "legacy-key", UpstreamErrorCode: "cyber_policy",
+		LocalEvaluationState: database.PromptPolicyEvaluationCompleted, LocalOutcome: database.PromptPolicyOutcomeNoHit,
+		LocalMatchedPatterns: `[]`, PromptFingerprint: adminPolicyFingerprint("legacy-prompt"), PromptPreview: "legacy-prompt", PromptText: "legacy-prompt",
+		PromptAvailable: true, LocalComparison: database.PromptPolicyComparisonConfirmedMiss, ObservedAt: time.Now().UTC(),
+	}
+	candidate := database.PromptRuleCandidateInput{Fingerprint: incident.PromptFingerprint, Kind: database.PromptRuleCandidateKindEvidence, Source: database.PromptRuleCandidateSourceUpstreamCyberPolicy, SamplePreview: incident.PromptPreview}
+	evidence := database.PromptRuleCandidateEvidenceInput{SourceKind: database.PromptRuleCandidateSourceUpstreamCyberPolicy, SourceRef: incident.RequestCorrelationID, SourceRefHash: adminPolicyFingerprint(incident.IncidentID), MetadataJSON: `{}`, ObservedAt: incident.ObservedAt}
+	if err := db.PersistPromptPolicyIncident(t.Context(), incident, candidate, evidence); err != nil {
+		t.Fatalf("PersistPromptPolicyIncident: %v", err)
+	}
+
+	h := &Handler{db: db, store: store}
+	router := gin.New()
+	router.GET("/api/admin/prompt-policy/incidents", h.ListPromptPolicyIncidents)
+	router.GET("/api/admin/prompt-policy/incidents/:incident_id", h.GetPromptPolicyIncident)
+
+	listRecorder := httptest.NewRecorder()
+	router.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/prompt-policy/incidents?page=1&page_size=20", nil))
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var list struct {
+		Incidents []database.PromptPolicyIncident `json:"incidents"`
+	}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &list); err != nil || len(list.Incidents) != 1 {
+		t.Fatalf("list response=%s err=%v", listRecorder.Body.String(), err)
+	}
+	got := list.Incidents[0]
+	if got.RoutingSnapshotState != "current_inferred" || got.AccountName != account.Email || got.AccountPlatform != account.UpstreamType || len(got.AccountGroupNames) != 1 || len(got.APIKeyAllowedGroupNames) != 2 {
+		t.Fatalf("historical routing was not enriched: %+v", got)
+	}
+
+	detailRecorder := httptest.NewRecorder()
+	router.ServeHTTP(detailRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/prompt-policy/incidents/incident-routing-legacy", nil))
+	if detailRecorder.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", detailRecorder.Code, detailRecorder.Body.String())
+	}
+	var detail struct {
+		Incident database.PromptPolicyIncident `json:"incident"`
+	}
+	if err := json.Unmarshal(detailRecorder.Body.Bytes(), &detail); err != nil || detail.Incident.RoutingSnapshotState != "current_inferred" || detail.Incident.AccountName != account.Email {
 		t.Fatalf("detail response=%s err=%v", detailRecorder.Body.String(), err)
 	}
 }

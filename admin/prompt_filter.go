@@ -222,6 +222,9 @@ func (h *Handler) ListPromptPolicyIncidents(c *gin.Context) {
 	if incidents == nil {
 		incidents = []*database.PromptPolicyIncident{}
 	}
+	for _, incident := range incidents {
+		h.enrichPromptPolicyIncidentRouting(incident)
+	}
 	c.JSON(http.StatusOK, promptPolicyIncidentsResponse{Incidents: incidents, Total: total, Page: page, PageSize: pageSize})
 }
 
@@ -242,6 +245,7 @@ func (h *Handler) GetPromptPolicyIncident(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
+	h.enrichPromptPolicyIncidentRouting(incident)
 	matches := json.RawMessage(incident.LocalMatchedPatterns)
 	if !json.Valid(matches) {
 		matches = json.RawMessage("[]")
@@ -261,6 +265,49 @@ func (h *Handler) GetPromptPolicyIncident(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) enrichPromptPolicyIncidentRouting(incident *database.PromptPolicyIncident) {
+	if incident == nil {
+		return
+	}
+	hasEventSnapshot := strings.TrimSpace(incident.AccountName) != "" ||
+		strings.TrimSpace(incident.AccountPlatform) != "" ||
+		len(incident.AccountGroupIDs) > 0 || len(incident.AccountGroupNames) > 0 ||
+		len(incident.APIKeyAllowedGroupIDs) > 0 || len(incident.APIKeyAllowedGroupNames) > 0
+	if hasEventSnapshot {
+		incident.RoutingSnapshotState = "event_snapshot"
+		return
+	}
+	if h == nil || h.store == nil {
+		incident.RoutingSnapshotState = "unavailable"
+		return
+	}
+
+	inferred := false
+	if incident.AccountID > 0 {
+		if account := h.store.FindByID(incident.AccountID); account != nil {
+			account.Mu().RLock()
+			incident.AccountName = strings.TrimSpace(account.Email)
+			incident.AccountPlatform = strings.TrimSpace(account.UpstreamType)
+			account.Mu().RUnlock()
+			incident.AccountGroupIDs = account.GroupIDSnapshot()
+			incident.AccountGroupNames = h.store.ResolveGroupNames(incident.AccountGroupIDs)
+			inferred = true
+		}
+	}
+	if incident.APIKeyID > 0 {
+		incident.APIKeyAllowedGroupIDs = h.store.GetAPIKeyAllowedGroups(incident.APIKeyID)
+		incident.APIKeyAllowedGroupNames = h.store.ResolveGroupNames(incident.APIKeyAllowedGroupIDs)
+		if len(incident.APIKeyAllowedGroupIDs) > 0 {
+			inferred = true
+		}
+	}
+	if inferred {
+		incident.RoutingSnapshotState = "current_inferred"
+		return
+	}
+	incident.RoutingSnapshotState = "unavailable"
 }
 
 // MatchPromptFilterLog 按时间/端点/APIKey 找到与某次请求最接近的一条提示词过滤日志，

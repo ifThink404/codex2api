@@ -51,6 +51,7 @@ type PromptPolicyIncident struct {
 	APIKeyMasked            string    `json:"api_key_masked"`
 	APIKeyAllowedGroupIDs   []int64   `json:"api_key_allowed_group_ids"`
 	APIKeyAllowedGroupNames []string  `json:"api_key_allowed_group_names"`
+	RoutingSnapshotState    string    `json:"routing_snapshot_state"`
 	Platform                string    `json:"platform"`
 	NewAPIPolicyStatus      string    `json:"newapi_policy_status,omitempty"`
 	NewAPIPlatform          string    `json:"newapi_platform,omitempty"`
