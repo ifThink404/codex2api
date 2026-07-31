@@ -215,6 +215,9 @@ type promptFilterAuditContext struct {
 	NewAPIPolicyStatus   string
 	NewAPIPlatform       string
 	NewAPIUserID         string
+	NewAPIUserName       string
+	NewAPIUserEmail      string
+	NewAPIUserGroup      string
 	NewAPIRequestID      string
 	NewAPIDecisionID     string
 	SessionHash          string
@@ -233,8 +236,12 @@ func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAu
 	populatePromptFilterAPIKeyMeta(c, input)
 	newAPIStatus, policyContext := h.cachedNewAPIPolicyAuditState(c)
 	sessionHash := ""
+	newAPIUserName, newAPIUserEmail, newAPIUserGroup := "", "", ""
 	if (newAPIStatus == "verified" || newAPIStatus == "signed_response") && policyContext.MetaVerified {
 		sessionHash = hashRiskIdentity(policyContext.Meta.SessionFingerprint)
+		newAPIUserName = policyContext.Meta.UserName
+		newAPIUserEmail = policyContext.Meta.UserEmail
+		newAPIUserGroup = policyContext.Meta.UserGroup
 	} else if newAPIStatus == "unbound" {
 		sessionHash = hashRiskIdentity(promptSessionID(c))
 	}
@@ -254,6 +261,9 @@ func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAu
 		NewAPIPolicyStatus:   newAPIStatus,
 		NewAPIPlatform:       policyContext.Platform,
 		NewAPIUserID:         policyContext.Identity.UserID,
+		NewAPIUserName:       newAPIUserName,
+		NewAPIUserEmail:      newAPIUserEmail,
+		NewAPIUserGroup:      newAPIUserGroup,
 		NewAPIRequestID:      policyContext.Identity.RequestID,
 		SessionHash:          sessionHash,
 		ClientIPHash:         hashRiskIdentity(clientIP),
@@ -327,6 +337,9 @@ func (h *Handler) buildPromptFilterLogInput(auditContext promptFilterAuditContex
 		NewAPIPolicyStatus:   auditContext.NewAPIPolicyStatus,
 		NewAPIPlatform:       auditContext.NewAPIPlatform,
 		NewAPIUserID:         auditContext.NewAPIUserID,
+		NewAPIUserName:       auditContext.NewAPIUserName,
+		NewAPIUserEmail:      auditContext.NewAPIUserEmail,
+		NewAPIUserGroup:      auditContext.NewAPIUserGroup,
 		NewAPIRequestID:      auditContext.NewAPIRequestID,
 		NewAPIDecisionID:     auditContext.NewAPIDecisionID,
 		SessionHash:          auditContext.SessionHash,

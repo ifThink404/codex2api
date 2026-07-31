@@ -38,6 +38,10 @@ type PromptRiskProfile struct {
 	SubjectKey           string                   `json:"subject_key"`
 	SubjectDisplay       string                   `json:"subject_display"`
 	Platform             string                   `json:"platform,omitempty"`
+	NewAPIUserID         string                   `json:"newapi_user_id,omitempty"`
+	NewAPIUserName       string                   `json:"newapi_user_name,omitempty"`
+	NewAPIUserEmail      string                   `json:"newapi_user_email,omitempty"`
+	NewAPIUserGroup      string                   `json:"newapi_user_group,omitempty"`
 	IsPerson             bool                     `json:"is_person"`
 	IdentityConfidence   int                      `json:"identity_confidence"`
 	RiskScore            int                      `json:"risk_score"`
@@ -82,6 +86,10 @@ type PromptRiskEvent struct {
 	SubjectKey           string    `json:"subject_key"`
 	SubjectDisplay       string    `json:"subject_display"`
 	Platform             string    `json:"platform,omitempty"`
+	NewAPIUserID         string    `json:"newapi_user_id,omitempty"`
+	NewAPIUserName       string    `json:"newapi_user_name,omitempty"`
+	NewAPIUserEmail      string    `json:"newapi_user_email,omitempty"`
+	NewAPIUserGroup      string    `json:"newapi_user_group,omitempty"`
 	IsPerson             bool      `json:"is_person"`
 	IdentityConfidence   int       `json:"identity_confidence"`
 	EventKind            string    `json:"event_kind"`
@@ -120,6 +128,25 @@ type PromptRiskEventQuery struct {
 	PageSize int
 }
 
+type PromptRiskIdentityInput struct {
+	Platform       string
+	ExternalUserID string
+	UserName       string
+	UserEmail      string
+	UserGroup      string
+	Source         string
+}
+
+type promptRiskIdentity struct {
+	SubjectType    string
+	SubjectKey     string
+	Platform       string
+	ExternalUserID string
+	UserName       string
+	UserEmail      string
+	UserGroup      string
+}
+
 type promptRiskSignal struct {
 	SourceType           string
 	SourceID             string
@@ -146,6 +173,9 @@ type promptRiskSignal struct {
 	NewAPIPolicyStatus   string
 	NewAPIPlatform       string
 	NewAPIUserID         string
+	NewAPIUserName       string
+	NewAPIUserEmail      string
+	NewAPIUserGroup      string
 	SessionHash          string
 	ClientIPHash         string
 }
@@ -243,7 +273,19 @@ func (db *DB) ensurePromptRiskEventsTable(ctx context.Context) error {
 		source_id VARCHAR(96) NOT NULL,
 		processed_at %s,
 		PRIMARY KEY(source_type, source_id)
-	);`, idType, timeDefault, boolType, timeDefault)
+	);
+	CREATE TABLE IF NOT EXISTS prompt_risk_identities (
+		subject_type VARCHAR(32) NOT NULL,
+		subject_key VARCHAR(160) NOT NULL,
+		platform VARCHAR(100) DEFAULT '',
+		external_user_id VARCHAR(255) DEFAULT '',
+		user_name VARCHAR(128) DEFAULT '',
+		user_email VARCHAR(320) DEFAULT '',
+		user_group VARCHAR(100) DEFAULT '',
+		source VARCHAR(32) DEFAULT '',
+		updated_at %s,
+		PRIMARY KEY(subject_type, subject_key)
+	);`, idType, timeDefault, boolType, timeDefault, timeDefault)
 	if _, err := db.conn.ExecContext(ctx, ddl); err != nil {
 		return err
 	}
@@ -255,6 +297,8 @@ func (db *DB) ensurePromptRiskEventsTable(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_api_key ON prompt_risk_events(api_key_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_account ON prompt_risk_events(account_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_sources_processed ON prompt_risk_event_sources(processed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_identities_external ON prompt_risk_identities(platform, external_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_identities_updated ON prompt_risk_identities(updated_at)`,
 	} {
 		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {
 			return err
@@ -343,13 +387,104 @@ func promptRiskSignalForIncident(incident PromptPolicyIncident) promptRiskSignal
 	}
 }
 
+func normalizePromptRiskIdentity(input PromptRiskIdentityInput) (promptRiskIdentity, bool) {
+	platform := strings.ToLower(truncateCandidateRunes(strings.TrimSpace(input.Platform), 100))
+	externalUserID := truncateCandidateRunes(strings.TrimSpace(input.ExternalUserID), 255)
+	if platform == "" || externalUserID == "" {
+		return promptRiskIdentity{}, false
+	}
+	return promptRiskIdentity{
+		SubjectType:    PromptRiskSubjectNewAPIUser,
+		SubjectKey:     promptRiskHash("newapi-user", platform+"\x00"+externalUserID),
+		Platform:       platform,
+		ExternalUserID: externalUserID,
+		UserName:       truncateCandidateRunes(strings.TrimSpace(input.UserName), 128),
+		UserEmail:      truncateCandidateRunes(strings.TrimSpace(input.UserEmail), 320),
+		UserGroup:      truncateCandidateRunes(strings.TrimSpace(input.UserGroup), 100),
+	}, true
+}
+
+func promptRiskIdentityForSignal(signal promptRiskSignal) (promptRiskIdentity, bool) {
+	verified := signal.NewAPIPolicyStatus == "verified" || signal.NewAPIPolicyStatus == "signed_response"
+	if !verified {
+		return promptRiskIdentity{}, false
+	}
+	return normalizePromptRiskIdentity(PromptRiskIdentityInput{
+		Platform:       signal.NewAPIPlatform,
+		ExternalUserID: signal.NewAPIUserID,
+		UserName:       signal.NewAPIUserName,
+		UserEmail:      signal.NewAPIUserEmail,
+		UserGroup:      signal.NewAPIUserGroup,
+	})
+}
+
+func promptRiskIdentityDisplay(identity promptRiskIdentity) string {
+	if value := strings.TrimSpace(identity.UserName); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(identity.UserEmail); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(identity.ExternalUserID); value != "" {
+		return value
+	}
+	return ""
+}
+
+func upsertPromptRiskIdentity(ctx context.Context, exec promptRiskEventExecutor, identity promptRiskIdentity, source string) error {
+	if identity.SubjectKey == "" {
+		return nil
+	}
+	source = truncateCandidateRunes(strings.TrimSpace(source), 32)
+	if source == "" {
+		source = "signed_metadata"
+	}
+	_, err := exec.ExecContext(ctx, `INSERT INTO prompt_risk_identities (
+		subject_type, subject_key, platform, external_user_id, user_name, user_email, user_group, source, updated_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	ON CONFLICT(subject_type, subject_key) DO UPDATE SET
+		platform=excluded.platform,
+		external_user_id=excluded.external_user_id,
+		user_name=CASE WHEN excluded.user_name<>'' THEN excluded.user_name ELSE prompt_risk_identities.user_name END,
+		user_email=CASE WHEN excluded.user_email<>'' THEN excluded.user_email ELSE prompt_risk_identities.user_email END,
+		user_group=CASE WHEN excluded.user_group<>'' THEN excluded.user_group ELSE prompt_risk_identities.user_group END,
+		source=excluded.source,
+		updated_at=excluded.updated_at`, identity.SubjectType, identity.SubjectKey, identity.Platform, identity.ExternalUserID,
+		identity.UserName, identity.UserEmail, identity.UserGroup, source, time.Now().UTC())
+	return err
+}
+
+func (db *DB) UpsertPromptRiskIdentities(ctx context.Context, inputs []PromptRiskIdentityInput) error {
+	if db == nil || len(inputs) == 0 {
+		return nil
+	}
+	if err := db.ensurePromptRiskEventsTable(ctx); err != nil {
+		return err
+	}
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, input := range inputs {
+		identity, ok := normalizePromptRiskIdentity(input)
+		if !ok {
+			continue
+		}
+		if err := upsertPromptRiskIdentity(ctx, tx, identity, input.Source); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func promptRiskSubjects(signal promptRiskSignal) []promptRiskSubject {
 	items := make([]promptRiskSubject, 0, 5)
 	verifiedIdentity := signal.NewAPIPolicyStatus == "verified" || signal.NewAPIPolicyStatus == "signed_response"
 	platform := strings.TrimSpace(signal.NewAPIPlatform)
 	if verifiedIdentity && strings.TrimSpace(signal.NewAPIUserID) != "" {
-		key := promptRiskHash("newapi-user", platform+"\x00"+strings.TrimSpace(signal.NewAPIUserID))
-		items = append(items, promptRiskSubject{Type: PromptRiskSubjectNewAPIUser, Key: key, Display: strings.TrimSpace(signal.NewAPIUserID), Platform: platform, IsPerson: true, IdentityConfidence: 100})
+		identity, _ := promptRiskIdentityForSignal(signal)
+		items = append(items, promptRiskSubject{Type: PromptRiskSubjectNewAPIUser, Key: identity.SubjectKey, Display: promptRiskIdentityDisplay(identity), Platform: platform, IsPerson: true, IdentityConfidence: 100})
 	}
 	if strings.TrimSpace(signal.SessionHash) != "" {
 		confidence := 50
@@ -399,6 +534,11 @@ func insertPromptRiskSignal(ctx context.Context, exec promptRiskEventExecutor, s
 	}
 	if signal.CreatedAt.IsZero() {
 		signal.CreatedAt = time.Now().UTC()
+	}
+	if identity, ok := promptRiskIdentityForSignal(signal); ok {
+		if err := upsertPromptRiskIdentity(ctx, exec, identity, "signed_metadata"); err != nil {
+			return err
+		}
 	}
 	for _, subject := range promptRiskSubjects(signal) {
 		if subject.Key == "" {
@@ -540,6 +680,79 @@ func (db *DB) backfillPromptRiskIncidents(ctx context.Context, cutoff time.Time)
 	}
 }
 
+func (db *DB) loadPromptRiskIdentities(ctx context.Context, subjectKeys []string) (map[string]promptRiskIdentity, error) {
+	keys := make([]string, 0, len(subjectKeys))
+	seen := make(map[string]struct{}, len(subjectKeys))
+	for _, key := range subjectKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return map[string]promptRiskIdentity{}, nil
+	}
+	args := make([]any, 0, len(keys)+1)
+	args = append(args, PromptRiskSubjectNewAPIUser)
+	placeholders := make([]string, 0, len(keys))
+	for _, key := range keys {
+		args = append(args, key)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+	}
+	rows, err := db.conn.QueryContext(ctx, `SELECT subject_type, subject_key, platform, external_user_id, user_name, user_email, user_group
+		FROM prompt_risk_identities WHERE subject_type=$1 AND subject_key IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make(map[string]promptRiskIdentity, len(keys))
+	for rows.Next() {
+		var identity promptRiskIdentity
+		if err := rows.Scan(&identity.SubjectType, &identity.SubjectKey, &identity.Platform, &identity.ExternalUserID, &identity.UserName, &identity.UserEmail, &identity.UserGroup); err != nil {
+			return nil, err
+		}
+		items[identity.SubjectKey] = identity
+	}
+	return items, rows.Err()
+}
+
+func applyPromptRiskIdentityToProfile(profile *PromptRiskProfile, identity promptRiskIdentity) {
+	if profile == nil || identity.SubjectKey == "" {
+		return
+	}
+	profile.NewAPIUserID = identity.ExternalUserID
+	profile.NewAPIUserName = identity.UserName
+	profile.NewAPIUserEmail = identity.UserEmail
+	profile.NewAPIUserGroup = identity.UserGroup
+	if display := promptRiskIdentityDisplay(identity); display != "" {
+		profile.SubjectDisplay = display
+	}
+	if identity.Platform != "" {
+		profile.Platform = identity.Platform
+	}
+}
+
+func applyPromptRiskIdentityToEvent(event *PromptRiskEvent, identity promptRiskIdentity) {
+	if event == nil || identity.SubjectKey == "" {
+		return
+	}
+	event.NewAPIUserID = identity.ExternalUserID
+	event.NewAPIUserName = identity.UserName
+	event.NewAPIUserEmail = identity.UserEmail
+	event.NewAPIUserGroup = identity.UserGroup
+	if display := promptRiskIdentityDisplay(identity); display != "" {
+		event.SubjectDisplay = display
+	}
+	if identity.Platform != "" {
+		event.Platform = identity.Platform
+	}
+}
+
 func (db *DB) ListPromptRiskProfiles(ctx context.Context, query PromptRiskProfileQuery) ([]*PromptRiskProfile, int, error) {
 	if db == nil {
 		return nil, 0, nil
@@ -577,7 +790,10 @@ func (db *DB) ListPromptRiskProfiles(ctx context.Context, query PromptRiskProfil
 	if value := strings.TrimSpace(query.Query); value != "" {
 		args = append(args, "%"+strings.ToLower(value)+"%")
 		i := len(args)
-		clauses = append(clauses, fmt.Sprintf(`(LOWER(subject_display) LIKE $%d OR LOWER(subject_key) LIKE $%d OR LOWER(platform) LIKE $%d OR LOWER(api_key_name) LIKE $%d OR LOWER(api_key_masked) LIKE $%d OR LOWER(account_name) LIKE $%d)`, i, i, i, i, i, i))
+		clauses = append(clauses, fmt.Sprintf(`(LOWER(subject_display) LIKE $%d OR LOWER(subject_key) LIKE $%d OR LOWER(platform) LIKE $%d OR LOWER(api_key_name) LIKE $%d OR LOWER(api_key_masked) LIKE $%d OR LOWER(account_name) LIKE $%d OR EXISTS (
+			SELECT 1 FROM prompt_risk_identities pri WHERE pri.subject_type=prompt_risk_events.subject_type AND pri.subject_key=prompt_risk_events.subject_key
+			AND (LOWER(pri.external_user_id) LIKE $%d OR LOWER(pri.user_name) LIKE $%d OR LOWER(pri.user_email) LIKE $%d OR LOWER(pri.user_group) LIKE $%d)
+		))`, i, i, i, i, i, i, i, i, i, i))
 	}
 	rows, err := db.conn.QueryContext(ctx, `SELECT subject_type, subject_key,
 		MAX(subject_display), MAX(platform), MAX(CASE WHEN is_person THEN 1 ELSE 0 END), MAX(identity_confidence), MAX(created_at),
@@ -631,6 +847,22 @@ func (db *DB) ListPromptRiskProfiles(ctx context.Context, query PromptRiskProfil
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+	identityKeys := make([]string, 0, len(aggregates))
+	for i := range aggregates {
+		if aggregates[i].Profile.SubjectType == PromptRiskSubjectNewAPIUser {
+			identityKeys = append(identityKeys, aggregates[i].Profile.SubjectKey)
+		}
+	}
+	identities, err := db.loadPromptRiskIdentities(ctx, identityKeys)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range aggregates {
+		applyPromptRiskIdentityToProfile(&aggregates[i].Profile, identities[aggregates[i].Profile.SubjectKey])
 	}
 	sort.SliceStable(aggregates, func(i, j int) bool {
 		if aggregates[i].Profile.RiskScore == aggregates[j].Profile.RiskScore {
@@ -750,7 +982,6 @@ func (db *DB) ListPromptRiskEvents(ctx context.Context, subjectType, subjectKey 
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 	items := make([]*PromptRiskEvent, 0, query.PageSize)
 	for rows.Next() {
 		item := &PromptRiskEvent{}
@@ -768,7 +999,23 @@ func (db *DB) ListPromptRiskEvents(ctx context.Context, subjectType, subjectKey 
 		}
 		items = append(items, item)
 	}
-	return items, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+	if subjectType == PromptRiskSubjectNewAPIUser {
+		identities, err := db.loadPromptRiskIdentities(ctx, []string{subjectKey})
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, item := range items {
+			applyPromptRiskIdentityToEvent(item, identities[subjectKey])
+		}
+	}
+	return items, total, nil
 }
 
 func (db *DB) ClearPromptRiskEvents(ctx context.Context) error {
