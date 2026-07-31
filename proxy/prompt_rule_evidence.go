@@ -64,6 +64,9 @@ func (h *Handler) capturePromptPolicyRoutingSnapshot(accountID, apiKeyID int64) 
 		snapshot.AccountName = strings.TrimSpace(account.Email)
 		snapshot.AccountPlatform = strings.TrimSpace(account.UpstreamType)
 		account.Mu().RUnlock()
+		if snapshot.AccountPlatform == "" {
+			snapshot.AccountPlatform = database.UpstreamChannelCodex
+		}
 		snapshot.AccountGroupIDs = account.GroupIDSnapshot()
 		snapshot.AccountGroupNames = h.store.ResolveGroupNames(snapshot.AccountGroupIDs)
 	}
