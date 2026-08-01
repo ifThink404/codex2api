@@ -354,6 +354,7 @@ func promptFilterLogInputBytes(input PromptFilterLogInput) int {
 		len(input.Action) + len(input.Mode) + len(input.PolicyProfile) + len(input.ReasonCode) + len(input.PrimaryOrigin) +
 		len(input.MatchedPatterns) + len(input.TextPreview) + len(input.MatchContext) + len(input.FullText) +
 		len(input.APIKeyName) + len(input.APIKeyMasked) + len(input.ClientIP) + len(input.ErrorCode) + len(input.ReviewModel) + len(input.ReviewError) +
+		len(input.ReviewReason) + len(input.ReviewEndpoint) + len(input.ReviewRequestMode) +
 		len(input.RequestCorrelationID) + len(input.NewAPIPolicyStatus) + len(input.NewAPIPlatform) + len(input.NewAPIUserID) +
 		len(input.NewAPIUserName) + len(input.NewAPIUserEmail) + len(input.NewAPIUserGroup) + len(input.NewAPIRequestID) +
 		len(input.NewAPIDecisionID) + len(input.SessionHash) + len(input.ClientIPHash)
@@ -380,6 +381,12 @@ func clonePromptFilterLogInput(input PromptFilterLogInput) PromptFilterLogInput 
 	input.ErrorCode = strings.Clone(input.ErrorCode)
 	input.ReviewModel = strings.Clone(input.ReviewModel)
 	input.ReviewError = strings.Clone(input.ReviewError)
+	input.ReviewConfidence = cloneFloat64Pointer(input.ReviewConfidence)
+	input.ReviewThreshold = cloneFloat64Pointer(input.ReviewThreshold)
+	input.ReviewReason = strings.Clone(input.ReviewReason)
+	input.ReviewEndpoint = strings.Clone(input.ReviewEndpoint)
+	input.ReviewRequestMode = strings.Clone(input.ReviewRequestMode)
+	input.ReviewLatencyMS = cloneInt64Pointer(input.ReviewLatencyMS)
 	input.RequestCorrelationID = strings.Clone(input.RequestCorrelationID)
 	input.NewAPIPolicyStatus = strings.Clone(input.NewAPIPolicyStatus)
 	input.NewAPIPlatform = strings.Clone(input.NewAPIPlatform)
@@ -392,6 +399,22 @@ func clonePromptFilterLogInput(input PromptFilterLogInput) PromptFilterLogInput 
 	input.SessionHash = strings.Clone(input.SessionHash)
 	input.ClientIPHash = strings.Clone(input.ClientIPHash)
 	return input
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneInt64Pointer(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func promptRuleCandidateJobBytes(candidate PromptRuleCandidateInput, evidence PromptRuleCandidateEvidenceInput) int {
@@ -581,6 +604,13 @@ type PromptFilterLog struct {
 	ReviewModel          string    `json:"review_model"`
 	ReviewFlagged        bool      `json:"review_flagged"`
 	ReviewError          string    `json:"review_error"`
+	Reviewed             bool      `json:"reviewed"`
+	ReviewConfidence     *float64  `json:"review_confidence"`
+	ReviewThreshold      *float64  `json:"review_threshold"`
+	ReviewReason         string    `json:"review_reason"`
+	ReviewEndpoint       string    `json:"review_endpoint"`
+	ReviewRequestMode    string    `json:"review_request_mode"`
+	ReviewLatencyMS      *int64    `json:"review_latency_ms"`
 	RequestCorrelationID string    `json:"request_correlation_id,omitempty"`
 	NewAPIPolicyStatus   string    `json:"newapi_policy_status,omitempty"`
 	NewAPIPlatform       string    `json:"newapi_platform,omitempty"`
@@ -618,6 +648,13 @@ type PromptFilterLogInput struct {
 	ReviewModel          string
 	ReviewFlagged        bool
 	ReviewError          string
+	Reviewed             bool
+	ReviewConfidence     *float64
+	ReviewThreshold      *float64
+	ReviewReason         string
+	ReviewEndpoint       string
+	ReviewRequestMode    string
+	ReviewLatencyMS      *int64
 	RequestCorrelationID string
 	NewAPIPolicyStatus   string
 	NewAPIPlatform       string
@@ -632,15 +669,17 @@ type PromptFilterLogInput struct {
 }
 
 type PromptFilterLogQuery struct {
-	Page     int
-	PageSize int
-	Limit    int
-	Source   string
-	Action   string
-	Endpoint string
-	Model    string
-	APIKeyID int64
-	Query    string
+	Page                int
+	PageSize            int
+	Limit               int
+	Source              string
+	Action              string
+	Endpoint            string
+	Model               string
+	APIKeyID            int64
+	Query               string
+	ReviewState         string
+	ExcludeIntelligence bool
 }
 
 func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogInput) error {
@@ -658,14 +697,17 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO prompt_filter_logs (
 				source, endpoint, request_protocol, request_provider, model, action, mode, score, audit_score, threshold_value, policy_profile, reason_code, primary_origin, strike_eligible, matched_patterns, text_preview,
-				match_context, api_key_id, api_key_name, api_key_masked, client_ip, error_code, review_model, review_flagged, review_error, full_text, request_correlation_id,
+				match_context, api_key_id, api_key_name, api_key_masked, client_ip, error_code, review_model, review_flagged, review_error,
+				reviewed, review_confidence, review_threshold, review_reason, review_endpoint, review_request_mode, review_latency_ms,
+				full_text, request_correlation_id,
 				newapi_policy_status, newapi_platform, newapi_user_id, newapi_request_id, newapi_decision_id, session_hash
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
 			RETURNING id, created_at
 		`, input.Source, input.Endpoint, input.Protocol, input.Provider, input.Model, input.Action, input.Mode, input.Score, input.AuditScore, input.Threshold,
 			input.PolicyProfile, input.ReasonCode, input.PrimaryOrigin, input.StrikeEligible, input.MatchedPatterns, input.TextPreview, input.MatchContext,
-			input.APIKeyID, input.APIKeyName, input.APIKeyMasked, input.ClientIP, input.ErrorCode, input.ReviewModel, input.ReviewFlagged, input.ReviewError, input.FullText,
+			input.APIKeyID, input.APIKeyName, input.APIKeyMasked, input.ClientIP, input.ErrorCode, input.ReviewModel, input.ReviewFlagged, input.ReviewError,
+			input.Reviewed, input.ReviewConfidence, input.ReviewThreshold, input.ReviewReason, input.ReviewEndpoint, input.ReviewRequestMode, input.ReviewLatencyMS, input.FullText,
 			input.RequestCorrelationID, input.NewAPIPolicyStatus, input.NewAPIPlatform, input.NewAPIUserID, input.NewAPIRequestID, input.NewAPIDecisionID, input.SessionHash).Scan(&id, &createdRaw); err != nil {
 			return err
 		}
@@ -679,8 +721,11 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 			Threshold: input.Threshold, PolicyProfile: input.PolicyProfile, ReasonCode: input.ReasonCode, PrimaryOrigin: input.PrimaryOrigin,
 			StrikeEligible: input.StrikeEligible, MatchedPatterns: input.MatchedPatterns, TextPreview: input.TextPreview,
 			APIKeyID: input.APIKeyID, APIKeyName: input.APIKeyName, APIKeyMasked: input.APIKeyMasked, ReviewModel: input.ReviewModel,
-			ReviewFlagged: input.ReviewFlagged, ReviewError: input.ReviewError, RequestCorrelationID: input.RequestCorrelationID,
-			NewAPIPolicyStatus: input.NewAPIPolicyStatus, NewAPIPlatform: input.NewAPIPlatform, NewAPIUserID: input.NewAPIUserID,
+			ReviewFlagged: input.ReviewFlagged, ReviewError: input.ReviewError, Reviewed: input.Reviewed,
+			ReviewConfidence: input.ReviewConfidence, ReviewThreshold: input.ReviewThreshold, ReviewReason: input.ReviewReason,
+			ReviewEndpoint: input.ReviewEndpoint, ReviewRequestMode: input.ReviewRequestMode, ReviewLatencyMS: input.ReviewLatencyMS,
+			RequestCorrelationID: input.RequestCorrelationID,
+			NewAPIPolicyStatus:   input.NewAPIPolicyStatus, NewAPIPlatform: input.NewAPIPlatform, NewAPIUserID: input.NewAPIUserID,
 			NewAPIRequestID: input.NewAPIRequestID, NewAPIDecisionID: input.NewAPIDecisionID, SessionHash: input.SessionHash,
 			ClientIPHash: input.ClientIPHash,
 		}
@@ -733,7 +778,9 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		       COALESCE(policy_profile, ''), COALESCE(reason_code, ''), COALESCE(primary_origin, ''), COALESCE(strike_eligible, false),
 		       COALESCE(matched_patterns, '[]'), COALESCE(text_preview, ''), COALESCE(match_context, ''), COALESCE(api_key_id, 0),
 		       COALESCE(api_key_name, ''), COALESCE(api_key_masked, ''), COALESCE(client_ip, ''), COALESCE(error_code, ''),
-		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(full_text, ''),
+		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(reviewed, false),
+		       review_confidence, review_threshold, COALESCE(review_reason, ''), COALESCE(review_endpoint, ''), COALESCE(review_request_mode, ''), review_latency_ms,
+		       COALESCE(full_text, ''),
 		       COALESCE(request_correlation_id, ''), COALESCE(newapi_policy_status, ''), COALESCE(newapi_platform, ''),
 		       COALESCE(newapi_user_id, ''), COALESCE(newapi_request_id, ''), COALESCE(newapi_decision_id, ''), COALESCE(session_hash, '')
 		FROM prompt_filter_logs
@@ -753,7 +800,8 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		if err := rows.Scan(&item.ID, &createdAtRaw, &item.Source, &item.Endpoint, &item.Protocol, &item.Provider, &item.Model, &item.Action, &item.Mode,
 			&item.Score, &item.AuditScore, &item.Threshold, &item.PolicyProfile, &item.ReasonCode, &item.PrimaryOrigin, &item.StrikeEligible,
 			&item.MatchedPatterns, &item.TextPreview, &item.MatchContext, &item.APIKeyID, &item.APIKeyName,
-			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.FullText,
+			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.Reviewed,
+			&item.ReviewConfidence, &item.ReviewThreshold, &item.ReviewReason, &item.ReviewEndpoint, &item.ReviewRequestMode, &item.ReviewLatencyMS, &item.FullText,
 			&item.RequestCorrelationID, &item.NewAPIPolicyStatus, &item.NewAPIPlatform, &item.NewAPIUserID, &item.NewAPIRequestID, &item.NewAPIDecisionID, &item.SessionHash); err != nil {
 			return nil, 0, err
 		}
@@ -783,6 +831,15 @@ func promptFilterLogWhere(query PromptFilterLogQuery) (string, []any) {
 	addExact("action", query.Action)
 	addExact("endpoint", query.Endpoint)
 	addExact("model", query.Model)
+	if query.ExcludeIntelligence && strings.TrimSpace(query.Source) == "" {
+		clauses = append(clauses, "source NOT LIKE 'intel_%'")
+	}
+	switch strings.ToLower(strings.TrimSpace(query.ReviewState)) {
+	case "reviewed", "true":
+		clauses = append(clauses, "reviewed = true")
+	case "not_reviewed", "false":
+		clauses = append(clauses, "reviewed = false")
+	}
 	if query.APIKeyID > 0 {
 		args = append(args, query.APIKeyID)
 		clauses = append(clauses, fmt.Sprintf("api_key_id = $%d", len(args)))
@@ -797,12 +854,15 @@ func promptFilterLogWhere(query PromptFilterLogQuery) (string, []any) {
 			LOWER(COALESCE(matched_patterns, '')) LIKE $%d OR
 			LOWER(COALESCE(error_code, '')) LIKE $%d OR
 			LOWER(COALESCE(review_error, '')) LIKE $%d OR
+			LOWER(COALESCE(review_reason, '')) LIKE $%d OR
+			LOWER(COALESCE(review_model, '')) LIKE $%d OR
+			LOWER(COALESCE(review_endpoint, '')) LIKE $%d OR
 			LOWER(COALESCE(api_key_name, '')) LIKE $%d OR
 			LOWER(COALESCE(api_key_masked, '')) LIKE $%d OR
 			LOWER(COALESCE(newapi_user_id, '')) LIKE $%d OR
 			LOWER(COALESCE(newapi_request_id, '')) LIKE $%d OR
 			LOWER(COALESCE(newapi_decision_id, '')) LIKE $%d
-		)`, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx))
+		)`, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx))
 	}
 	if len(clauses) == 0 {
 		return "", args

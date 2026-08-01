@@ -20,8 +20,8 @@ func TestPromptRiskTrustAdminGrantDetailAndRevoke(t *testing.T) {
 	}
 	defer db.Close()
 	if err := db.InsertPromptFilterLog(t.Context(), &database.PromptFilterLogInput{
-		Source: "local_filter", Action: "allow", ReviewModel: "deepseek-v4-flash", ReviewFlagged: false,
-		NewAPIPolicyStatus: "verified", NewAPIPlatform: "fanren", NewAPIUserID: "trusted-admin-user",
+		Source: "local_filter", Action: "allow", ReviewModel: "review-model", ReviewFlagged: false,
+		NewAPIPolicyStatus: "verified", NewAPIPlatform: "gateway-a", NewAPIUserID: "trusted-admin-user",
 	}); err != nil {
 		t.Fatalf("InsertPromptFilterLog: %v", err)
 	}

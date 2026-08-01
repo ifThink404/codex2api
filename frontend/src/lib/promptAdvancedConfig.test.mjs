@@ -96,6 +96,7 @@ test('review adapter patches preserve prompts, payload templates, and unknown fi
   })
   const result = patchAdvancedConfigDocument(raw, [
     { path: ['review_adapter', 'request_mode'], value: 'chat_completions' },
+    { path: ['review_adapter', 'scope'], value: 'local_candidates' },
     { path: ['review_adapter', 'system_prompt'], value: 'system' },
     { path: ['review_adapter', 'user_prompt_template'], value: '<user_input>{{text}}</user_input>' },
     { path: ['review_adapter', 'payload_template'], value: '{"input":"{{user_prompt}}"}' },
@@ -104,6 +105,7 @@ test('review adapter patches preserve prompts, payload templates, and unknown fi
   assert.equal(result.ok, true)
   const saved = JSON.parse(result.serialized)
   assert.equal(saved.review_adapter.request_mode, 'chat_completions')
+  assert.equal(saved.review_adapter.scope, 'local_candidates')
   assert.equal(saved.review_adapter.user_prompt_template, '<user_input>{{text}}</user_input>')
   assert.equal(saved.review_adapter.payload_template, '{"input":"{{user_prompt}}"}')
   assert.equal(saved.review_adapter.confidence_threshold, 0.72)
@@ -221,18 +223,28 @@ test('Prompt Filter consolidates advanced controls and tests all configured revi
   assert.match(source, /test_all_keys: true/)
   assert.match(source, /reviewTestResult\.results/)
   assert.match(source, /openLearningReview/)
-  assert.match(source, /本身不是 cyber abuse/)
-  assert.match(source, /confidence 必须不高于 0\.10/)
+  for (const fragment of [
+    'reviewTemplatesTitle',
+    'normalizationSimplifiedDesc',
+    'guard.simplifiedSummary',
+    'extensions.collapsedDesc',
+    'recommendedStrengthTitle',
+  ]) {
+    assert.equal(source.includes(fragment), true, `simplified protection control is missing: ${fragment}`)
+  }
+  const reviewPanel = source.indexOf("t('promptFilter.reviewServiceSummary')")
+  const reviewTemplates = source.indexOf("t('promptFilter.reviewTemplatesTitle')")
+  const expertPanel = source.indexOf("t('promptFilter.expertSettingsSummary')")
+  assert.ok(reviewTemplates > reviewPanel && reviewTemplates < expertPanel, 'review request templates must stay inside the model review section')
 })
 
-test('recommended review prompt stays identical to the backend runtime default', () => {
+test('review prompt defaults are owned by the backend rather than duplicated in the UI', () => {
   const frontendSource = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
   const backendSource = readFileSync(new URL('../../../security/promptfilter/review.go', import.meta.url), 'utf8')
-  const frontendPrompt = frontendSource.match(/const defaultReviewSystemPrompt = `([\s\S]*?)`\n\nconst defaultReviewUserPromptTemplate/)?.[1]
-  const backendPrompt = backendSource.match(/const DefaultReviewSystemPrompt = `([\s\S]*?)`\n\nconst DefaultReviewUserPromptTemplate/)?.[1]
-  assert.ok(frontendPrompt)
-  assert.ok(backendPrompt)
-  assert.equal(frontendPrompt, backendPrompt)
+  assert.equal(frontendSource.includes('const defaultReviewSystemPrompt'), false)
+  assert.match(frontendSource, /system_prompt: ''/)
+  assert.match(frontendSource, /reviewSystemPromptPlaceholder/)
+  assert.match(backendSource, /const DefaultReviewSystemPrompt = `/)
 })
 
 test('Prompt Filter rule tester renders the final GuardPipeline decision metadata', () => {
@@ -251,14 +263,16 @@ test('Prompt Filter rule tester renders the final GuardPipeline decision metadat
   }
 })
 
-test('Prompt Filter exposes full-request review configuration and live connection testing', () => {
+test('Prompt Filter exposes explicit review scope and live connection testing', () => {
   const source = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
   const requiredFragments = [
     "request_mode: 'moderations'",
+    "scope: 'all_requests'",
+    "'local_candidates'",
     "value: 'chat_completions'",
     "['review_adapter', key]",
     'api.testPromptReview',
-    'reviewAllRequestsHint',
+    'reviewScopeHint',
     '{{user_prompt}}',
   ]
   for (const fragment of requiredFragments) {

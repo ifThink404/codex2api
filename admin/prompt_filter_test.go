@@ -25,7 +25,7 @@ func TestPromptReviewConnectionUsesUnsavedChatAdapterAndStoredKey(t *testing.T) 
 			t.Fatalf("path=%s authorization=%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"model":   "deepseek-v4-flash",
+			"model":   "review-model",
 			"choices": []map[string]any{{"message": map[string]any{"content": `{"confidence":0.11,"reason":""}`}}},
 		})
 	}))
@@ -43,7 +43,7 @@ func TestPromptReviewConnectionUsesUnsavedChatAdapterAndStoredKey(t *testing.T) 
 	body := `{
 		"text":"普通会议纪要",
 		"base_url":"` + server.URL + `",
-		"model":"deepseek-v4-flash",
+		"model":"review-model",
 		"request_mode":"chat_completions",
 		"system_prompt":"system",
 		"user_prompt_template":"<user_input>{{text}}</user_input>",
@@ -64,7 +64,7 @@ func TestPromptReviewConnectionUsesUnsavedChatAdapterAndStoredKey(t *testing.T) 
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !response.OK || response.Flagged || response.Confidence != 0.11 || response.Model != "deepseek-v4-flash" {
+	if !response.OK || response.Flagged || response.Confidence != 0.11 || response.Model != "review-model" {
 		t.Fatalf("response=%+v", response)
 	}
 }
@@ -90,17 +90,17 @@ func TestPromptReviewConnectionTestsAllKeysConcurrentlyWithoutReturningSecrets(t
 		seenMu.Unlock()
 		time.Sleep(40 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"model": "deepseek-v4-flash", "choices": []map[string]any{{"message": map[string]any{"content": `{"confidence":0.05,"reason":""}`}}},
+			"model": "review-model", "choices": []map[string]any{{"message": map[string]any{"content": `{"confidence":0.05,"reason":""}`}}},
 		})
 	}))
 	defer server.Close()
 	store := auth.NewStore(nil, nil, &database.SystemSettings{
 		PromptFilterReviewEnabled: true, PromptFilterReviewAPIKey: "key-one\nkey-two\nkey-three",
-		PromptFilterReviewBaseURL: server.URL, PromptFilterReviewModel: "deepseek-v4-flash", PromptFilterReviewTimeoutSeconds: 2,
+		PromptFilterReviewBaseURL: server.URL, PromptFilterReviewModel: "review-model", PromptFilterReviewTimeoutSeconds: 2,
 	})
 	t.Cleanup(store.Stop)
 	handler := &Handler{store: store}
-	body := `{"text":"普通会议纪要","base_url":"` + server.URL + `","model":"deepseek-v4-flash","request_mode":"chat_completions","system_prompt":"system","user_prompt_template":"<user_input>{{text}}</user_input>","confidence_threshold":0.7,"timeout_seconds":2,"max_concurrent":8,"max_text_length":4096,"test_all_keys":true}`
+	body := `{"text":"普通会议纪要","base_url":"` + server.URL + `","model":"review-model","request_mode":"chat_completions","system_prompt":"system","user_prompt_template":"<user_input>{{text}}</user_input>","confidence_threshold":0.7,"timeout_seconds":2,"max_concurrent":8,"max_text_length":4096,"test_all_keys":true}`
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/admin/prompt-filter/review/test", strings.NewReader(body))

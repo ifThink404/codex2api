@@ -19,14 +19,14 @@ func TestPromptRiskAdaptiveTrustBypassesOnlyCleanSynchronousReview(t *testing.T)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reviewCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"model": "deepseek-v4-flash", "choices": []map[string]any{{"message": map[string]any{"content": `{"confidence":0.99,"reason":"high risk"}`}}},
+			"model": "review-model", "choices": []map[string]any{{"message": map[string]any{"content": `{"confidence":0.99,"reason":"high risk"}`}}},
 		})
 	}))
 	defer server.Close()
 
 	cfg := promptGuardTestConfig()
 	cfg.Review = promptfilter.ReviewConfig{
-		Enabled: true, APIKey: "test-key", BaseURL: server.URL, Model: "deepseek-v4-flash", TimeoutSeconds: 2,
+		Enabled: true, APIKey: "test-key", BaseURL: server.URL, Model: "review-model", TimeoutSeconds: 2,
 		Adapter: promptfilter.ReviewAdapterConfig{
 			RequestMode: "chat_completions", SystemPrompt: "review", UserPromptTemplate: "<user_input>{{text}}</user_input>",
 			ConfidenceThreshold: 0.7, MaxConcurrent: 4, MaxTextLength: 4096,
@@ -34,7 +34,7 @@ func TestPromptRiskAdaptiveTrustBypassesOnlyCleanSynchronousReview(t *testing.T)
 	}
 	cfg = promptfilter.NormalizeConfig(cfg)
 	handler := newPromptGuardTestHandler(cfg)
-	subjectKey := database.PromptRiskNewAPIUserSubjectKey("fanren", "trusted-user")
+	subjectKey := database.PromptRiskNewAPIUserSubjectKey("gateway-a", "trusted-user")
 	handler.store.ReplacePromptRiskTrustPolicies([]*database.PromptRiskTrustPolicy{{
 		ID: 7, SubjectType: database.PromptRiskSubjectNewAPIUser, SubjectKey: subjectKey,
 		Status: database.PromptRiskTrustStatusActive, ValidUntil: time.Now().UTC().Add(time.Hour), RiskThreshold: 35, LastRiskScore: 0,
@@ -43,7 +43,7 @@ func TestPromptRiskAdaptiveTrustBypassesOnlyCleanSynchronousReview(t *testing.T)
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 		c.Set(newAPIIdentityContextKey, verifiedNewAPIIdentityContext{
-			Identity: newAPIIdentity{UserID: "trusted-user", RequestID: "request-1"}, APIKeyID: 101, Platform: "fanren", VerificationSecret: "secret",
+			Identity: newAPIIdentity{UserID: "trusted-user", RequestID: "request-1"}, APIKeyID: 101, Platform: "gateway-a", VerificationSecret: "secret",
 		})
 		return c
 	}

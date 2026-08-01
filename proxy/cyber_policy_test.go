@@ -487,8 +487,8 @@ func TestUpstreamCyberPolicyGlobalCandidateKeepsPerPlatformProvenance(t *testing
 		handler.capturePromptRuleLearningEvidence(ctx, "/v1/responses", "gpt-5.4", evaluation)
 		handler.logUpstreamCyberPolicy(ctx, "/v1/responses", "gpt-5.4", payload)
 	}
-	observe(9, "fanren-key", "fanren")
-	observe(10, "buycodekey-key", "buycodekey")
+	observe(9, "gateway-a-key", "gateway-a")
+	observe(10, "gateway-b-key", "gateway-b")
 	waitPromptFilterAuditIdle(t, db)
 
 	candidates, total, err := db.ListPromptRuleCandidates(context.Background(), database.PromptRuleCandidateQuery{Status: database.PromptRuleCandidateStatusPending})

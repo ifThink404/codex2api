@@ -16,12 +16,12 @@ func TestStoreInitLoadsAndHotReplacesPromptFilterNewAPIBinding(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	apiKeyID, err := db.InsertAPIKey(ctx, "fanren", "sk-fanren-store-binding")
+	apiKeyID, err := db.InsertAPIKey(ctx, "gateway-a", "sk-gateway-a-store-binding")
 	if err != nil {
 		t.Fatalf("InsertAPIKey: %v", err)
 	}
 	binding := &database.PromptFilterNewAPIBinding{
-		APIKeyID: apiKeyID, PlatformCode: "fanren", PlatformName: "凡人", Secret: "01234567890123456789012345678901",
+		APIKeyID: apiKeyID, PlatformCode: "gateway-a", PlatformName: "示例平台", Secret: "01234567890123456789012345678901",
 		Enabled: true, RequireSignedIdentity: true, PolicyMode: "enforce", PolicyProfile: "balanced",
 	}
 	if err := db.CreatePromptFilterNewAPIBinding(ctx, binding); err != nil {
@@ -33,7 +33,7 @@ func TestStoreInitLoadsAndHotReplacesPromptFilterNewAPIBinding(t *testing.T) {
 		t.Fatalf("Store.Init: %v", err)
 	}
 	got, ok := store.GetPromptFilterNewAPIBinding(apiKeyID)
-	if !ok || got.Secret != binding.Secret || got.PlatformCode != "fanren" {
+	if !ok || got.Secret != binding.Secret || got.PlatformCode != "gateway-a" {
 		t.Fatalf("runtime binding = %#v ok=%v", got, ok)
 	}
 	if !store.HasPromptFilterNewAPIBindings() {
@@ -44,7 +44,7 @@ func TestStoreInitLoadsAndHotReplacesPromptFilterNewAPIBinding(t *testing.T) {
 	if again.Secret != binding.Secret {
 		t.Fatalf("getter leaked mutable state: %q", again.Secret)
 	}
-	binding.PlatformCode = "fanren-prod"
+	binding.PlatformCode = "gateway-a-prod"
 	if err := db.UpdatePromptFilterNewAPIBinding(ctx, binding); err != nil {
 		t.Fatalf("Update binding: %v", err)
 	}
@@ -52,19 +52,19 @@ func TestStoreInitLoadsAndHotReplacesPromptFilterNewAPIBinding(t *testing.T) {
 		t.Fatalf("hot reload: %v", err)
 	}
 	updated, ok := store.GetPromptFilterNewAPIBinding(apiKeyID)
-	if !ok || updated.PlatformCode != "fanren-prod" {
+	if !ok || updated.PlatformCode != "gateway-a-prod" {
 		t.Fatalf("updated runtime binding = %#v ok=%v", updated, ok)
 	}
 	expiresAt := time.Now().UTC().Add(time.Minute)
 	direct := *binding
-	direct.PlatformCode = "fanren-direct"
+	direct.PlatformCode = "gateway-a-direct"
 	direct.PreviousSecretExpiresAt = &expiresAt
 	store.UpsertPromptFilterNewAPIBinding(direct)
 	expiresAt = expiresAt.Add(time.Hour)
 	direct.PreviousSecretExpiresAt = nil
 	direct.Secret = "mutated-after-upsert"
 	directGot, ok := store.GetPromptFilterNewAPIBinding(apiKeyID)
-	if !ok || directGot.PlatformCode != "fanren-direct" || directGot.Secret != binding.Secret || directGot.PreviousSecretExpiresAt == nil || !directGot.PreviousSecretExpiresAt.Before(expiresAt) {
+	if !ok || directGot.PlatformCode != "gateway-a-direct" || directGot.Secret != binding.Secret || directGot.PreviousSecretExpiresAt == nil || !directGot.PreviousSecretExpiresAt.Before(expiresAt) {
 		t.Fatalf("direct runtime upsert did not publish an immutable copy: %#v ok=%v", directGot, ok)
 	}
 	store.RemovePromptFilterNewAPIBinding(apiKeyID)

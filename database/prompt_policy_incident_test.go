@@ -57,7 +57,7 @@ func promptPolicyTestInputs(incidentID string) (PromptPolicyIncidentInput, Promp
 		IncidentID: incidentID, RequestCorrelationID: "request-1", AttemptIndex: 2, Transport: "sse",
 		Endpoint: "/v1/responses", Protocol: "responses", Provider: "openai", Model: "gpt-5.4",
 		StatusCode: 400, AccountID: 7, AccountName: "account@example.com", AccountPlatform: "openai", AccountGroupIDs: []int64{4, 7}, AccountGroupNames: []string{"打铁", "Team"},
-		APIKeyID: 9, APIKeyName: "test", APIKeyAllowedGroupIDs: []int64{1, 4, 7}, APIKeyAllowedGroupNames: []string{"凡人", "打铁", "Team"}, UpstreamErrorCode: "cyber_policy",
+		APIKeyID: 9, APIKeyName: "test", APIKeyAllowedGroupIDs: []int64{1, 4, 7}, APIKeyAllowedGroupNames: []string{"示例平台", "打铁", "Team"}, UpstreamErrorCode: "cyber_policy",
 		UpstreamError: `{"error":{"code":"cyber_policy"}}`, LocalEvaluationState: PromptPolicyEvaluationCompleted,
 		LocalOutcome: PromptPolicyOutcomeNoHit, LocalAction: "allow", LocalScore: &zero, LocalRawScore: &zero,
 		LocalAuditScore: &zero, LocalAuditRawScore: &zero, LocalThreshold: 50, LocalMode: "block",

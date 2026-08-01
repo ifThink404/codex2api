@@ -1053,6 +1053,13 @@ export interface PromptFilterLog {
   review_model: string
   review_flagged: boolean
 	review_error: string
+	reviewed: boolean
+	review_confidence: number | null
+	review_threshold: number | null
+	review_reason: string
+	review_endpoint: string
+	review_request_mode: string
+	review_latency_ms: number | null
 	request_correlation_id?: string
 	newapi_policy_status?: string
 	newapi_platform?: string

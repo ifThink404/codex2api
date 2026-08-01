@@ -1,4 +1,6 @@
-# NewAPI 审计接入
+# 可选 NewAPI 身份与执行适配器
+
+NewAPI 是一个可选的外部适配器，不是 Prompt Filter、本地拦截、外部模型审核或风险画像的运行前提。未使用 NewAPI 的部署可以忽略本文。
 
 Codex2API 只接受与实际请求使用的 Codex2API Key 一对一绑定的 NewAPI 签名身份：
 
@@ -56,7 +58,7 @@ X-NewAPI-Signature
 
 原始端点、协议和模型提供商放入 `X-NewAPI-Policy-Meta`，并使用独立的 `policy-meta-v1` HMAC 签名。为兼容已有 NewAPI，Codex2API 仍可解析其中的模式与档位字段，但不会将其用作拦截配置。扩展元数据不会改变 V1 身份签名格式。
 
-## NewAPI 二开建议
+## 外部适配器实现建议
 
 1. 在 OpenAI 兼容渠道创建上游请求头时签名，不接受客户端提交的同名头。
 2. 必须设置目标地址允许列表，只向 Codex2API 主机发送身份头。
@@ -65,9 +67,4 @@ X-NewAPI-Signature
 5. 管理员和超级管理员应保留自动处罚保护，避免误报造成管理后台失联。
 6. 审计页面必须使用管理员鉴权；Prompt 证据应限制长度并设置数据保留周期。
 
-本地 NewAPI 示例实现位于：
-
-- `service/codex_policy.go`：目标校验、签名和违规响应处理。
-- `model/prompt_policy.go`：审计记录、次数统计、封号和 IP 黑名单。
-- `middleware/prompt_policy.go`：黑名单请求拦截。
-- `controller/prompt_policy.go`：管理员审计接口。
+外部项目的文件布局和持久化实现不属于本仓库契约。兼容实现只需遵守上述签名、目标限制、默认关闭处罚和隐私边界。
