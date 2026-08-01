@@ -13,7 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const promptRiskHistoryGuardrail = "历史画像只提供运营建议，不会单独把当前无风险请求改为拦截"
+const promptRiskHistoryGuardrail = "画像只统计本地 warn/block 与上游 CY；影子审计和普通命中不再抬高风险。画像不会单独封禁当前请求，只控制可自动失效的模型复核豁免；达到阈值或再次出现 CY 时立即恢复同步审核。"
 
 type promptRiskProfilesResponse struct {
 	Profiles       []*database.PromptRiskProfile `json:"profiles"`
@@ -25,13 +25,14 @@ type promptRiskProfilesResponse struct {
 }
 
 type promptRiskProfileDetailResponse struct {
-	Profile        *database.PromptRiskProfile `json:"profile"`
-	Events         []*database.PromptRiskEvent `json:"events"`
-	EventTotal     int                         `json:"event_total"`
-	EventPage      int                         `json:"event_page"`
-	EventPageSize  int                         `json:"event_page_size"`
-	ScoringVersion string                      `json:"scoring_version"`
-	Guardrail      string                      `json:"guardrail"`
+	Profile        *database.PromptRiskProfile      `json:"profile"`
+	Events         []*database.PromptRiskEvent      `json:"events"`
+	TrustEvents    []*database.PromptRiskTrustEvent `json:"trust_events"`
+	EventTotal     int                              `json:"event_total"`
+	EventPage      int                              `json:"event_page"`
+	EventPageSize  int                              `json:"event_page_size"`
+	ScoringVersion string                           `json:"scoring_version"`
+	Guardrail      string                           `json:"guardrail"`
 }
 
 func (h *Handler) ListPromptRiskProfiles(c *gin.Context) {
@@ -56,6 +57,7 @@ func (h *Handler) ListPromptRiskProfiles(c *gin.Context) {
 	if profiles == nil {
 		profiles = []*database.PromptRiskProfile{}
 	}
+	h.attachPromptRiskTrustPolicies(ctx, profiles)
 	c.JSON(http.StatusOK, promptRiskProfilesResponse{
 		Profiles: profiles, Total: total, Page: page, PageSize: pageSize,
 		ScoringVersion: database.PromptRiskScoringVersion, Guardrail: promptRiskHistoryGuardrail,
@@ -90,10 +92,37 @@ func (h *Handler) GetPromptRiskProfile(c *gin.Context) {
 	if events == nil {
 		events = []*database.PromptRiskEvent{}
 	}
+	h.attachPromptRiskTrustPolicies(ctx, []*database.PromptRiskProfile{profile})
+	trustEvents, err := h.db.ListPromptRiskTrustEvents(ctx, subjectType, subjectKey, 100)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, promptRiskProfileDetailResponse{
-		Profile: profile, Events: events, EventTotal: total, EventPage: eventPage, EventPageSize: eventPageSize,
+		Profile: profile, Events: events, TrustEvents: trustEvents, EventTotal: total, EventPage: eventPage, EventPageSize: eventPageSize,
 		ScoringVersion: database.PromptRiskScoringVersion, Guardrail: promptRiskHistoryGuardrail,
 	})
+}
+
+func (h *Handler) attachPromptRiskTrustPolicies(ctx context.Context, profiles []*database.PromptRiskProfile) {
+	if h == nil || h.db == nil || len(profiles) == 0 {
+		return
+	}
+	policies, err := h.db.ListAllPromptRiskTrustPolicies(ctx, "all")
+	if err != nil {
+		return
+	}
+	bySubject := make(map[string]*database.PromptRiskTrustPolicy, len(policies))
+	for _, policy := range policies {
+		if policy != nil {
+			bySubject[policy.SubjectType+"\x00"+policy.SubjectKey] = policy
+		}
+	}
+	for _, profile := range profiles {
+		if profile != nil {
+			profile.TrustPolicy = bySubject[profile.SubjectType+"\x00"+profile.SubjectKey]
+		}
+	}
 }
 
 func promptRiskPositiveInt64(raw string) int64 {

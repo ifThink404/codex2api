@@ -33,3 +33,21 @@ test('risk profile API supports filters and exact subject detail', () => {
   assert.match(api, /encodeURIComponent\(subjectType\)/)
   assert.match(api, /encodeURIComponent\(subjectKey\)/)
 })
+
+test('person profiles expose auditable temporary adaptive trust without a permanent allowlist', () => {
+  assert.match(source, /subjectType: 'newapi_user'/)
+  assert.match(source, /upsertPromptRiskTrust/)
+  assert.match(source, /revokePromptRiskTrust/)
+  assert.match(api, /\/trust/)
+  assert.match(types, /PromptRiskTrustPolicy/)
+  assert.match(types, /trust_events/)
+  assert.match(zh.promptFilter.risk.trust.description, /同步 DS/)
+  assert.match(zh.promptFilter.risk.trust.dialogDescription, /不是永久白名单/)
+  assert.match(zh.promptFilter.risk.trust.safetyHint, /CY/)
+})
+
+test('risk page separates people from environment subjects', () => {
+  assert.match(source, /peopleProfiles/)
+  assert.match(source, /allObjects/)
+  assert.match(zh.promptFilter.risk.nonPersonHint, /環境|环境/)
+})

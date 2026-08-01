@@ -68,17 +68,32 @@ type promptReviewTestRequest struct {
 	TimeoutSeconds      int     `json:"timeout_seconds"`
 	MaxConcurrent       int     `json:"max_concurrent"`
 	MaxTextLength       int     `json:"max_text_length"`
+	TestAllKeys         bool    `json:"test_all_keys"`
+}
+
+type promptReviewKeyTestResult struct {
+	KeyIndex   int     `json:"key_index"`
+	OK         bool    `json:"ok"`
+	Endpoint   string  `json:"endpoint,omitempty"`
+	Model      string  `json:"model,omitempty"`
+	Flagged    bool    `json:"flagged"`
+	Confidence float64 `json:"confidence"`
+	Reason     string  `json:"reason,omitempty"`
+	LatencyMS  int64   `json:"latency_ms"`
+	Error      string  `json:"error,omitempty"`
 }
 
 type promptReviewTestResponse struct {
-	OK                  bool    `json:"ok"`
-	Endpoint            string  `json:"endpoint"`
-	Model               string  `json:"model"`
-	Flagged             bool    `json:"flagged"`
-	Confidence          float64 `json:"confidence"`
-	ConfidenceThreshold float64 `json:"confidence_threshold"`
-	Reason              string  `json:"reason,omitempty"`
-	LatencyMS           int64   `json:"latency_ms"`
+	OK                  bool                        `json:"ok"`
+	Endpoint            string                      `json:"endpoint"`
+	Model               string                      `json:"model"`
+	Flagged             bool                        `json:"flagged"`
+	Confidence          float64                     `json:"confidence"`
+	ConfidenceThreshold float64                     `json:"confidence_threshold"`
+	Reason              string                      `json:"reason,omitempty"`
+	LatencyMS           int64                       `json:"latency_ms"`
+	KeyCount            int                         `json:"key_count,omitempty"`
+	Results             []promptReviewKeyTestResult `json:"results,omitempty"`
 }
 
 type promptFilterRulePatternTestRequest struct {
@@ -454,6 +469,51 @@ func (h *Handler) TestPromptReviewConnection(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "Prompt 审核配置无效: "+err.Error())
 		return
 	}
+	keys := reviewCfg.APIKeyList()
+	if req.TestAllKeys && len(keys) > 1 {
+		type indexedResult struct {
+			index   int
+			outcome promptfilter.ReviewOutcome
+			latency int64
+			err     error
+		}
+		resultCh := make(chan indexedResult, len(keys))
+		started := time.Now()
+		for index, key := range keys {
+			go func(index int, key string) {
+				keyCfg := reviewCfg
+				keyCfg.APIKey = key
+				keyStarted := time.Now()
+				outcome, testErr := promptfilter.DefaultReviewClient.ReviewTextDetailed(c.Request.Context(), req.Text, keyCfg)
+				resultCh <- indexedResult{index: index, outcome: outcome, latency: time.Since(keyStarted).Milliseconds(), err: testErr}
+			}(index, key)
+		}
+		results := make([]promptReviewKeyTestResult, len(keys))
+		allOK := true
+		var first promptfilter.ReviewOutcome
+		for range keys {
+			item := <-resultCh
+			if item.index == 0 {
+				first = item.outcome
+			}
+			result := promptReviewKeyTestResult{
+				KeyIndex: item.index + 1, OK: item.err == nil, Flagged: item.outcome.Flagged,
+				Endpoint: item.outcome.Endpoint, Model: item.outcome.Model, Confidence: item.outcome.Confidence,
+				Reason: item.outcome.Reason, LatencyMS: item.latency,
+			}
+			if item.err != nil {
+				allOK = false
+				result.Error = item.err.Error()
+			}
+			results[item.index] = result
+		}
+		c.JSON(http.StatusOK, promptReviewTestResponse{
+			OK: allOK, Endpoint: first.Endpoint, Model: reviewCfg.Model, Flagged: first.Flagged,
+			Confidence: first.Confidence, ConfidenceThreshold: reviewCfg.Adapter.ConfidenceThreshold,
+			Reason: first.Reason, LatencyMS: time.Since(started).Milliseconds(), KeyCount: len(keys), Results: results,
+		})
+		return
+	}
 	started := time.Now()
 	outcome, err := promptfilter.DefaultReviewClient.ReviewTextDetailed(c.Request.Context(), req.Text, reviewCfg)
 	if err != nil {
@@ -469,6 +529,7 @@ func (h *Handler) TestPromptReviewConnection(c *gin.Context) {
 		ConfidenceThreshold: reviewCfg.Adapter.ConfidenceThreshold,
 		Reason:              outcome.Reason,
 		LatencyMS:           time.Since(started).Milliseconds(),
+		KeyCount:            len(keys),
 	})
 }
 

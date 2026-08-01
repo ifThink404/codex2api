@@ -274,6 +274,26 @@ func TestPromptIntelligenceCandidateHTTPLifecycle(t *testing.T) {
 	if evidencePublish.Code != http.StatusBadRequest {
 		t.Fatalf("evidence publish status=%d body=%s", evidencePublish.Code, evidencePublish.Body.String())
 	}
+	draftRecorder := httptest.NewRecorder()
+	draftContext, _ := gin.CreateTestContext(draftRecorder)
+	draftContext.Params = gin.Params{{Key: "id", Value: evidenceID}}
+	draftContext.Request = httptest.NewRequest(http.MethodPost, "/api/admin/prompt-filter/intelligence/candidates/"+evidenceID+"/draft", strings.NewReader(`{"name":"cy_http_draft","pattern":"(?i)steal\\s+http-candidate\\s+credentials","weight":85,"category":"credential_theft","strict":true,"rationale":"human reviewed CY evidence"}`))
+	draftContext.Request.Header.Set("Content-Type", "application/json")
+	handler.CreatePromptIntelligenceCandidateDraft(draftContext)
+	if draftRecorder.Code != http.StatusCreated {
+		t.Fatalf("draft status=%d body=%s", draftRecorder.Code, draftRecorder.Body.String())
+	}
+	var draftResponse struct {
+		Candidate promptIntelligenceCandidate `json:"candidate"`
+	}
+	if err := json.Unmarshal(draftRecorder.Body.Bytes(), &draftResponse); err != nil || draftResponse.Candidate.ID == 0 || draftResponse.Candidate.Kind != database.PromptRuleCandidateKindPattern {
+		t.Fatalf("draft response=%s err=%v", draftRecorder.Body.String(), err)
+	}
+	draftID := strconv.FormatInt(draftResponse.Candidate.ID, 10)
+	draftPublish := request(http.MethodPost, "/api/admin/prompt-filter/intelligence/candidates/"+draftID+"/publish", gin.Params{{Key: "id", Value: draftID}}, handler.PublishPromptIntelligenceCandidate)
+	if draftPublish.Code != http.StatusOK {
+		t.Fatalf("draft publish status=%d body=%s", draftPublish.Code, draftPublish.Body.String())
+	}
 	patternID := strconv.FormatInt(patternCandidates[0].ID, 10)
 	patternPublish := request(http.MethodPost, "/api/admin/prompt-filter/intelligence/candidates/"+patternID+"/publish", gin.Params{{Key: "id", Value: patternID}}, handler.PublishPromptIntelligenceCandidate)
 	if patternPublish.Code != http.StatusOK {

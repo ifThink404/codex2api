@@ -214,6 +214,15 @@ test('Prompt Filter editor does not render runtime tuning controls', () => {
   }
 })
 
+test('Prompt Filter consolidates advanced controls and tests all configured review keys', () => {
+  const source = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
+  assert.match(source, /advancedOpen/)
+  assert.match(source, /applyRecommendedProtection/)
+  assert.match(source, /test_all_keys: true/)
+  assert.match(source, /reviewTestResult\.results/)
+  assert.match(source, /openLearningReview/)
+})
+
 test('Prompt Filter rule tester renders the final GuardPipeline decision metadata', () => {
   const source = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
   const requiredFragments = [

@@ -1510,6 +1510,8 @@ function IntelligenceView() {
   const [candidatePageSize, setCandidatePageSize] = useState(20)
   const [candidateAction, setCandidateAction] = useState<number | null>(null)
   const [publishTarget, setPublishTarget] = useState<PromptIntelligenceCandidate | null>(null)
+  const [draftTarget, setDraftTarget] = useState<PromptIntelligenceCandidate | null>(null)
+  const [draftForm, setDraftForm] = useState({ name: '', pattern: '', weight: 35, category: 'cyber_abuse', strict: true, rationale: '' })
   const [evidenceLoading, setEvidenceLoading] = useState<number | null>(null)
   const [evidenceDialog, setEvidenceDialog] = useState<PromptIntelligenceEvidenceResponse | null>(null)
   const [dismissTarget, setDismissTarget] = useState<PromptIntelligenceCandidate | null>(null)
@@ -1584,6 +1586,29 @@ function IntelligenceView() {
       await api.dismissPromptIntelligenceCandidate(dismissTarget.id)
       showToast(t('promptFilter.intelligence.dismissSuccess'))
       setDismissTarget(null)
+      await loadCandidates()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setCandidateAction(null)
+    }
+  }
+
+  const openDraft = (candidate: PromptIntelligenceCandidate) => {
+    setDraftTarget(candidate)
+    setDraftForm({
+      name: '', pattern: '', weight: 35, category: 'cyber_abuse', strict: true,
+      rationale: candidate.sample_preview ? t('promptFilter.intelligence.draftRationaleFromEvidence') : '',
+    })
+  }
+
+  const createDraft = async () => {
+    if (!draftTarget) return
+    setCandidateAction(draftTarget.id)
+    try {
+      const result = await api.createPromptIntelligenceCandidateDraft(draftTarget.id, draftForm)
+      showToast(t('promptFilter.intelligence.draftCreated', { name: result.candidate.name }))
+      setDraftTarget(null)
       await loadCandidates()
     } catch (error) {
       showToast(getErrorMessage(error), 'error')
@@ -1725,6 +1750,12 @@ function IntelligenceView() {
                           {candidate.change_type === 'update' ? t('promptFilter.intelligence.updateRule') : t('promptFilter.intelligence.addRule')}
                         </Button>
                       ) : null}
+                      {candidate.lifecycle_status === 'pending' && candidate.kind === 'evidence' ? (
+                        <Button size="sm" disabled={candidateAction === candidate.id} onClick={() => openDraft(candidate)}>
+                          <Pencil className="size-4" />
+                          {t('promptFilter.intelligence.createDraft')}
+                        </Button>
+                      ) : null}
                       {candidate.lifecycle_status === 'pending' ? (
                         <Button size="sm" variant="outline" disabled={candidateAction === candidate.id} onClick={() => setDismissTarget(candidate)}>
                           {t('promptFilter.intelligence.dismiss')}
@@ -1845,6 +1876,30 @@ function IntelligenceView() {
           <DialogFooter>
             <Button variant="outline" disabled={candidateAction !== null} onClick={() => setDismissTarget(null)}>{t('common.cancel')}</Button>
             <Button variant="destructive" disabled={candidateAction !== null} onClick={() => void dismiss()}>{t('promptFilter.intelligence.dismiss')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(draftTarget)} onOpenChange={(open) => { if (!open && candidateAction === null) setDraftTarget(null) }}>
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('promptFilter.intelligence.createDraftTitle')}</DialogTitle>
+            <DialogDescription>{t('promptFilter.intelligence.createDraftDesc')}</DialogDescription>
+          </DialogHeader>
+          {draftTarget?.sample_preview ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm whitespace-pre-wrap break-words">{draftTarget.sample_preview}</div>
+          ) : null}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label={t('promptFilter.intelligence.draftName')}><Input value={draftForm.name} onChange={(event) => setDraftForm((current) => ({ ...current, name: event.target.value }))} /></Field>
+            <Field label={t('promptFilter.intelligence.category')}><Input value={draftForm.category} onChange={(event) => setDraftForm((current) => ({ ...current, category: event.target.value }))} /></Field>
+            <Field label={t('promptFilter.intelligence.weight')}><DraftNumberInput min={1} max={100} value={draftForm.weight} onValueChange={(value) => setDraftForm((current) => ({ ...current, weight: value }))} /></Field>
+            <Field label={t('promptFilter.intelligence.strictLabel')}><Select value={draftForm.strict ? 'true' : 'false'} onValueChange={(value) => setDraftForm((current) => ({ ...current, strict: value === 'true' }))} options={[{ label: t('promptFilter.intelligence.strictYes'), value: 'true' }, { label: t('promptFilter.intelligence.strictNo'), value: 'false' }]} /></Field>
+          </div>
+          <Field label={t('promptFilter.intelligence.draftPattern')} hint={t('promptFilter.intelligence.draftPatternHint')}><Textarea rows={5} className="font-mono" value={draftForm.pattern} onChange={(event) => setDraftForm((current) => ({ ...current, pattern: event.target.value }))} /></Field>
+          <Field label={t('promptFilter.intelligence.draftRationale')}><Textarea rows={3} value={draftForm.rationale} onChange={(event) => setDraftForm((current) => ({ ...current, rationale: event.target.value }))} /></Field>
+          <DialogFooter>
+            <Button variant="outline" disabled={candidateAction !== null} onClick={() => setDraftTarget(null)}>{t('common.cancel')}</Button>
+            <Button disabled={candidateAction !== null || !draftForm.name.trim() || !draftForm.pattern.trim()} onClick={() => void createDraft()}>{t('promptFilter.intelligence.saveDraft')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2498,6 +2553,7 @@ function OverviewView({
   const [reviewTestText, setReviewTestText] = useState('请帮我整理今天的会议纪要。')
   const [reviewTesting, setReviewTesting] = useState(false)
   const [reviewTestResult, setReviewTestResult] = useState<PromptReviewTestResponse | null>(null)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const updateReviewAdapter = <K extends keyof ReviewAdapterFormConfig>(key: K, value: ReviewAdapterFormConfig[K]) => {
     const patched = patchAdvancedConfigDocument(form.prompt_filter_advanced_config, [{ path: ['review_adapter', key], value }])
     if (!patched.ok) {
@@ -2529,6 +2585,7 @@ function OverviewView({
         timeout_seconds: form.prompt_filter_review_timeout_seconds,
         max_concurrent: reviewAdapter.max_concurrent,
         max_text_length: reviewAdapter.max_text_length,
+        test_all_keys: true,
       })
       setReviewTestResult(result)
       showToast(t('promptFilter.reviewTestSuccess'))
@@ -2537,6 +2594,30 @@ function OverviewView({
     } finally {
       setReviewTesting(false)
     }
+  }
+  const applyRecommendedProtection = () => {
+    const patched = patchAdvancedConfigDocument(form.prompt_filter_advanced_config, [
+      { path: ['review_adapter', 'request_mode'], value: 'chat_completions' },
+      { path: ['review_adapter', 'confidence_threshold'], value: 0.7 },
+      { path: ['review_adapter', 'max_concurrent'], value: 64 },
+      { path: ['review_adapter', 'max_text_length'], value: 32768 },
+    ])
+    if (!patched.ok) {
+      showToast(t('promptFilter.advancedConfigInvalidSave'), 'error')
+      return
+    }
+    setForm((current) => ({
+      ...current,
+      prompt_filter_enabled: true,
+      prompt_filter_mode: 'block',
+      prompt_filter_strict_terminal_enabled: true,
+      prompt_filter_log_matches: true,
+      prompt_filter_review_enabled: true,
+      prompt_filter_review_fail_closed: false,
+      prompt_filter_review_timeout_seconds: 12,
+      prompt_filter_advanced_config: patched.serialized,
+    }))
+    showToast(t('promptFilter.recommendedApplied'))
   }
 
   return (
@@ -2557,6 +2638,16 @@ function OverviewView({
         </MetricTile>
       </div>
 
+      <Card className="mb-4 border-primary/20 bg-primary/[0.03]">
+        <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 font-semibold"><Shield className="size-4" />{t('promptFilter.coverageTitle')}</div>
+            <div className="mt-2 flex flex-wrap gap-1.5"><Badge variant="outline">Responses</Badge><Badge variant="outline">Chat Completions</Badge><Badge variant="outline">Messages</Badge><Badge variant="outline">Images</Badge><Badge variant="outline">HTTP / SSE / WebSocket</Badge><Badge variant="outline">{t('promptFilter.coverageEveryRequest')}</Badge><Badge variant="outline">{t('promptFilter.coverageLearning')}</Badge><Badge variant="outline">{t('promptFilter.coverageProfiles')}</Badge></div>
+          </div>
+          <div className="flex flex-wrap gap-2"><Button variant="outline" asChild><NavLink to="/prompt-filter/intelligence"><ClipboardCheck className="size-4" />{t('promptFilter.openLearningReview')}</NavLink></Button><Button variant="outline" onClick={() => setAdvancedOpen(true)}><Pencil className="size-4" />{t('promptFilter.advancedButton')}</Button><Button onClick={applyRecommendedProtection}><Shield className="size-4" />{t('promptFilter.applyRecommended')}</Button></div>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(420px,1.1fr)]">
         <Card>
           <CardContent className="space-y-5">
@@ -2576,26 +2667,8 @@ function OverviewView({
                   options={modeOptions}
                 />
               </Field>
-              <Field label={t('promptFilter.threshold')}>
-                <DraftNumberInput min={1} max={100} value={form.prompt_filter_threshold} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_threshold: value }))} />
-              </Field>
-              <Field label={t('promptFilter.strictThreshold')}>
-                <DraftNumberInput min={1} max={100} value={form.prompt_filter_strict_threshold} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_strict_threshold: value }))} />
-              </Field>
-              <Field label={t('promptFilter.strictTerminal')} hint={t('promptFilter.strictTerminalHint')}>
-                <Select value={form.prompt_filter_strict_terminal_enabled ? 'true' : 'false'} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_strict_terminal_enabled: value === 'true' }))} options={booleanOptions} />
-              </Field>
-              <Field label={t('promptFilter.logMatches')}>
-                <Select value={form.prompt_filter_log_matches ? 'true' : 'false'} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_log_matches: value === 'true' }))} options={booleanOptions} />
-              </Field>
-              <Field label={t('promptFilter.maxTextLength')}>
-                <DraftNumberInput min={1024} max={262144} value={form.prompt_filter_max_text_length} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_max_text_length: value }))} />
-              </Field>
             </div>
-            <Field label={t('promptFilter.sensitiveWords')}>
-              <Textarea rows={5} value={form.prompt_filter_sensitive_words} placeholder={t('promptFilter.sensitiveWordsPlaceholder')} onChange={(event) => setForm((current) => ({ ...current, prompt_filter_sensitive_words: event.target.value }))} />
-              <span className="block text-xs leading-5 text-muted-foreground">{t('promptFilter.sensitiveWordsHint')}</span>
-            </Field>
+            <p className="text-xs leading-5 text-muted-foreground">{t('promptFilter.simpleConfigHint')}</p>
           </CardContent>
         </Card>
 
@@ -2627,11 +2700,6 @@ function OverviewView({
 
       <Card className="mt-4">
         <CardContent className="space-y-5 pt-5">
-          <AdvancedProtectionEditor
-            value={form.prompt_filter_advanced_config}
-            onChange={(value) => setForm((current) => ({ ...current, prompt_filter_advanced_config: value }))}
-          />
-
           <div className="space-y-4 rounded-lg border border-border bg-muted/20 p-4">
             <div>
               <SectionTitle title={t('promptFilter.reviewTitle')} />
@@ -2659,25 +2727,6 @@ function OverviewView({
               <Field label={t('promptFilter.reviewTimeout')}>
                 <DraftNumberInput min={1} max={60} value={form.prompt_filter_review_timeout_seconds} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_review_timeout_seconds: value }))} />
               </Field>
-              <Field label={t('promptFilter.reviewRequestMode')}>
-                <Select
-                  value={reviewAdapter.request_mode}
-                  onValueChange={(value) => updateReviewAdapter('request_mode', value as ReviewAdapterFormConfig['request_mode'])}
-                  options={[
-                    { label: t('promptFilter.reviewModeChat'), value: 'chat_completions' },
-                    { label: t('promptFilter.reviewModeModerations'), value: 'moderations' },
-                  ]}
-                />
-              </Field>
-              <Field label={t('promptFilter.reviewConfidenceThreshold')}>
-                <DraftNumberInput integer={false} step="0.01" min={0.01} max={1} value={reviewAdapter.confidence_threshold} onValueChange={(value) => updateReviewAdapter('confidence_threshold', value)} />
-              </Field>
-              <Field label={t('promptFilter.reviewMaxConcurrent')}>
-                <DraftNumberInput min={1} max={256} value={reviewAdapter.max_concurrent} onValueChange={(value) => updateReviewAdapter('max_concurrent', value)} />
-              </Field>
-              <Field label={t('promptFilter.reviewMaxTextLength')}>
-                <DraftNumberInput min={1024} max={262144} value={reviewAdapter.max_text_length} onValueChange={(value) => updateReviewAdapter('max_text_length', value)} />
-              </Field>
             </div>
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(180px,0.8fr)]">
               <Field label={t('promptFilter.reviewBaseUrl')}>
@@ -2700,21 +2749,6 @@ function OverviewView({
                 onChange={(event) => setForm((current) => ({ ...current, prompt_filter_review_api_key: event.target.value }))}
               />
               <span className="block text-xs leading-5 text-muted-foreground">{t('promptFilter.reviewApiKeyHint')}</span>
-            </Field>
-            <Field label={t('promptFilter.reviewSystemPrompt')} hint={t('promptFilter.reviewSystemPromptHint')}>
-              <Textarea rows={16} className="font-mono text-xs leading-5" value={reviewAdapter.system_prompt} onChange={(event) => updateReviewAdapter('system_prompt', event.target.value)} />
-            </Field>
-            <Field label={t('promptFilter.reviewUserPromptTemplate')} hint={t('promptFilter.reviewUserPromptTemplateHint')}>
-              <Textarea rows={9} className="font-mono text-xs leading-5" value={reviewAdapter.user_prompt_template} onChange={(event) => updateReviewAdapter('user_prompt_template', event.target.value)} />
-            </Field>
-            <Field label={t('promptFilter.reviewPayloadTemplate')} hint={t('promptFilter.reviewPayloadTemplateHint')}>
-              <Textarea
-                rows={10}
-                className="font-mono text-xs leading-5"
-                value={reviewAdapter.payload_template}
-                placeholder={'{\n  "model": "{{model}}",\n  "messages": [\n    {"role": "system", "content": "{{system_prompt}}"},\n    {"role": "user", "content": "{{user_prompt}}"}\n  ],\n  "temperature": 0\n}'}
-                onChange={(event) => updateReviewAdapter('payload_template', event.target.value)}
-              />
             </Field>
             <div className="space-y-3 rounded-lg border border-border bg-background/70 p-4">
               <div>
@@ -2740,6 +2774,7 @@ function OverviewView({
                   <div>{t('promptFilter.reviewTestConfidence')}: {reviewTestResult.confidence.toFixed(2)} / {reviewTestResult.confidence_threshold.toFixed(2)}</div>
                   <div>{t('promptFilter.reviewModel')}: <span className="font-mono">{reviewTestResult.model}</span></div>
                   {reviewTestResult.reason ? <div className="sm:col-span-2">{t('promptFilter.reviewTestReason')}: {reviewTestResult.reason}</div> : null}
+                  {reviewTestResult.results?.length ? <div className="sm:col-span-2 mt-1 grid gap-2 md:grid-cols-3">{reviewTestResult.results.map((item) => <div key={item.key_index} className="rounded border bg-background p-2"><div className="flex items-center justify-between gap-2"><span className="font-medium">Key #{item.key_index}</span><Badge variant={item.ok ? 'default' : 'destructive'}>{item.ok ? t('common.success') : t('common.failed')}</Badge></div><div className="mt-1 text-muted-foreground">{item.latency_ms} ms · {item.ok ? item.confidence.toFixed(2) : item.error || '-'}</div></div>)}</div> : null}
                 </div>
               ) : null}
             </div>
@@ -2751,6 +2786,31 @@ function OverviewView({
           </Button>
         </CardContent>
       </Card>
+
+      <Dialog open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <DialogContent className="max-h-[92vh] max-w-5xl overflow-y-auto">
+          <DialogHeader><DialogTitle>{t('promptFilter.advancedTitle')}</DialogTitle><DialogDescription>{t('promptFilter.advancedDescription')}</DialogDescription></DialogHeader>
+          <div className="space-y-5">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-4 rounded-lg border p-4">
+              <Field label={t('promptFilter.threshold')}><DraftNumberInput min={1} max={100} value={form.prompt_filter_threshold} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_threshold: value }))} /></Field>
+              <Field label={t('promptFilter.strictThreshold')}><DraftNumberInput min={1} max={100} value={form.prompt_filter_strict_threshold} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_strict_threshold: value }))} /></Field>
+              <Field label={t('promptFilter.strictTerminal')} hint={t('promptFilter.strictTerminalHint')}><Select value={form.prompt_filter_strict_terminal_enabled ? 'true' : 'false'} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_strict_terminal_enabled: value === 'true' }))} options={booleanOptions} /></Field>
+              <Field label={t('promptFilter.logMatches')}><Select value={form.prompt_filter_log_matches ? 'true' : 'false'} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_log_matches: value === 'true' }))} options={booleanOptions} /></Field>
+              <Field label={t('promptFilter.maxTextLength')}><DraftNumberInput min={1024} max={262144} value={form.prompt_filter_max_text_length} onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_max_text_length: value }))} /></Field>
+              <Field label={t('promptFilter.reviewRequestMode')}><Select value={reviewAdapter.request_mode} onValueChange={(value) => updateReviewAdapter('request_mode', value as ReviewAdapterFormConfig['request_mode'])} options={[{ label: t('promptFilter.reviewModeChat'), value: 'chat_completions' }, { label: t('promptFilter.reviewModeModerations'), value: 'moderations' }]} /></Field>
+              <Field label={t('promptFilter.reviewConfidenceThreshold')}><DraftNumberInput integer={false} step="0.01" min={0.01} max={1} value={reviewAdapter.confidence_threshold} onValueChange={(value) => updateReviewAdapter('confidence_threshold', value)} /></Field>
+              <Field label={t('promptFilter.reviewMaxConcurrent')}><DraftNumberInput min={1} max={256} value={reviewAdapter.max_concurrent} onValueChange={(value) => updateReviewAdapter('max_concurrent', value)} /></Field>
+              <Field label={t('promptFilter.reviewMaxTextLength')}><DraftNumberInput min={1024} max={262144} value={reviewAdapter.max_text_length} onValueChange={(value) => updateReviewAdapter('max_text_length', value)} /></Field>
+            </div>
+            <Field label={t('promptFilter.sensitiveWords')}><Textarea rows={5} value={form.prompt_filter_sensitive_words} placeholder={t('promptFilter.sensitiveWordsPlaceholder')} onChange={(event) => setForm((current) => ({ ...current, prompt_filter_sensitive_words: event.target.value }))} /><span className="block text-xs leading-5 text-muted-foreground">{t('promptFilter.sensitiveWordsHint')}</span></Field>
+            <AdvancedProtectionEditor value={form.prompt_filter_advanced_config} onChange={(value) => setForm((current) => ({ ...current, prompt_filter_advanced_config: value }))} />
+            <Field label={t('promptFilter.reviewSystemPrompt')} hint={t('promptFilter.reviewSystemPromptHint')}><Textarea rows={16} className="font-mono text-xs leading-5" value={reviewAdapter.system_prompt} onChange={(event) => updateReviewAdapter('system_prompt', event.target.value)} /></Field>
+            <Field label={t('promptFilter.reviewUserPromptTemplate')} hint={t('promptFilter.reviewUserPromptTemplateHint')}><Textarea rows={9} className="font-mono text-xs leading-5" value={reviewAdapter.user_prompt_template} onChange={(event) => updateReviewAdapter('user_prompt_template', event.target.value)} /></Field>
+            <Field label={t('promptFilter.reviewPayloadTemplate')} hint={t('promptFilter.reviewPayloadTemplateHint')}><Textarea rows={10} className="font-mono text-xs leading-5" value={reviewAdapter.payload_template} placeholder={'{\n  "model": "{{model}}",\n  "messages": [\n    {"role": "system", "content": "{{system_prompt}}"},\n    {"role": "user", "content": "{{user_prompt}}"}\n  ],\n  "temperature": 0\n}'} onChange={(event) => updateReviewAdapter('payload_template', event.target.value)} /></Field>
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setAdvancedOpen(false)}>{t('common.close')}</Button><Button onClick={() => { onSave(); setAdvancedOpen(false) }} disabled={saving || Boolean(advancedConfigError)}><Save className="size-4" />{saving ? t('common.saving') : t('common.save')}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Card className="mt-4">
         <CardContent>
@@ -2900,7 +2960,7 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
 }
 
 const emptyRiskProfileFilters: RiskProfileFilters = {
-  subjectType: '',
+  subjectType: 'newapi_user',
   riskLevel: '',
   platform: '',
   apiKeyId: '',
@@ -2982,6 +3042,16 @@ function RiskProfilesView() {
           {scoringVersion ? <div className="mt-1 pl-6 font-mono text-xs opacity-75">{scoringVersion}</div> : null}
         </div>
 
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/20 p-3">
+          <Button size="sm" variant={draftFilters.subjectType === 'newapi_user' ? 'default' : 'outline'} onClick={() => { setDraftFilters((current) => ({ ...current, subjectType: 'newapi_user' })); setFilters((current) => ({ ...current, subjectType: 'newapi_user' })); setPage(1) }}>
+            <Users className="size-4" />{t('promptFilter.risk.peopleProfiles')}
+          </Button>
+          <Button size="sm" variant={draftFilters.subjectType === '' ? 'default' : 'outline'} onClick={() => { setDraftFilters((current) => ({ ...current, subjectType: '' })); setFilters((current) => ({ ...current, subjectType: '' })); setPage(1) }}>
+            <Network className="size-4" />{t('promptFilter.risk.allObjects')}
+          </Button>
+          <span className="text-xs leading-5 text-muted-foreground">{draftFilters.subjectType === 'newapi_user' ? t('promptFilter.risk.peopleProfilesHint') : t('promptFilter.risk.nonPersonHint')}</span>
+        </div>
+
         <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(155px,1fr))] gap-3">
           <Field label={t('promptFilter.risk.subjectType')}>
             <Select value={draftFilters.subjectType} onValueChange={(value) => setDraftFilters((current) => ({ ...current, subjectType: value }))} options={[
@@ -3039,7 +3109,7 @@ function RiskProfilesTable({ profiles }: { profiles: PromptRiskProfile[] }) {
             <TableCell>
               <div className="flex items-center gap-2"><Users className="size-4 text-muted-foreground" /><span className="font-medium">{promptRiskIdentityPrimary(profile)}</span></div>
               {profile.newapi_user_id || profile.newapi_user_email ? <div className="mt-1 text-xs text-muted-foreground">{profile.newapi_user_id ? `${t('promptFilter.risk.userId')} #${profile.newapi_user_id}` : ''}{profile.newapi_user_id && profile.newapi_user_email ? ' · ' : ''}{profile.newapi_user_email || ''}</div> : null}
-              <div className="mt-1 flex flex-wrap gap-1"><Badge variant={profile.is_person ? 'default' : 'outline'}>{profile.is_person ? t('promptFilter.risk.person') : t('promptFilter.risk.nonPerson')}</Badge><Badge variant="outline">{t(`promptFilter.risk.subjects.${profile.subject_type}`)}</Badge>{profile.platform ? <Badge variant="secondary">{profile.platform}</Badge> : null}{profile.newapi_user_group ? <Badge variant="secondary">{t('promptFilter.risk.userGroup')}: {profile.newapi_user_group}</Badge> : null}</div>
+              <div className="mt-1 flex flex-wrap gap-1"><Badge variant={profile.is_person ? 'default' : 'outline'}>{profile.is_person ? t('promptFilter.risk.person') : t('promptFilter.risk.nonPerson')}</Badge><Badge variant="outline">{t(`promptFilter.risk.subjects.${profile.subject_type}`)}</Badge>{profile.platform ? <Badge variant="secondary">{profile.platform}</Badge> : null}{profile.newapi_user_group ? <Badge variant="secondary">{t('promptFilter.risk.userGroup')}: {profile.newapi_user_group}</Badge> : null}{profile.trust_policy ? <Badge variant={profile.trust_policy.status === 'active' ? 'default' : 'outline'}>{t(`promptFilter.risk.trust.status.${profile.trust_policy.status}`, { defaultValue: profile.trust_policy.status })}</Badge> : null}</div>
               <div className="mt-1 font-mono text-[11px] text-muted-foreground">{profile.subject_key.slice(0, 18)}</div>
             </TableCell>
             <TableCell><div className="flex items-center gap-2"><span className="font-mono text-lg font-semibold">{profile.risk_score}</span><Badge className={promptRiskBadgeClass(profile.risk_level)}>{t(`promptFilter.risk.levels.${profile.risk_level}`)}</Badge></div><div className="text-xs text-muted-foreground">{t('promptFilter.risk.identityConfidence')} {profile.identity_confidence}%</div></TableCell>
@@ -3057,7 +3127,11 @@ function RiskProfilesTable({ profiles }: { profiles: PromptRiskProfile[] }) {
 
 function PromptRiskProfileDetailButton({ profile }: { profile: PromptRiskProfile }) {
   const { t } = useTranslation()
+  const { showToast } = useToast()
   const [open, setOpen] = useState(false)
+  const [trustOpen, setTrustOpen] = useState(false)
+  const [trustSaving, setTrustSaving] = useState(false)
+  const [trustDraft, setTrustDraft] = useState({ durationHours: 24, riskThreshold: 35, reason: '' })
   const [detail, setDetail] = useState<PromptRiskProfileDetailResponse | null>(null)
   const [eventPage, setEventPage] = useState(1)
   const [eventPageSize, setEventPageSize] = usePersistedPageSize('prompt_risk_profile_events', 20, DEFAULT_PAGE_SIZE_OPTIONS)
@@ -3080,6 +3154,35 @@ function PromptRiskProfileDetailButton({ profile }: { profile: PromptRiskProfile
   useEffect(() => { void loadDetail() }, [loadDetail])
   const item = detail?.profile ?? profile
   const totalPages = Math.max(1, Math.ceil((detail?.event_total ?? 0) / eventPageSize))
+  const saveTrust = async () => {
+    setTrustSaving(true)
+    try {
+      await api.upsertPromptRiskTrust(item.subject_type, item.subject_key, {
+        duration_hours: trustDraft.durationHours,
+        risk_threshold: trustDraft.riskThreshold,
+        reason: trustDraft.reason.trim(),
+      })
+      setTrustOpen(false)
+      showToast(t('promptFilter.risk.trust.saved'))
+      await loadDetail()
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error')
+    } finally {
+      setTrustSaving(false)
+    }
+  }
+  const revokeTrust = async () => {
+    setTrustSaving(true)
+    try {
+      await api.revokePromptRiskTrust(item.subject_type, item.subject_key)
+      showToast(t('promptFilter.risk.trust.revoked'))
+      await loadDetail()
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error')
+    } finally {
+      setTrustSaving(false)
+    }
+  }
   return <>
     <Button size="sm" variant="outline" onClick={() => { setEventPage(1); setOpen(true) }}>{t('promptFilter.cyberDetail')}</Button>
     <Dialog open={open} onOpenChange={setOpen}>
@@ -3087,6 +3190,16 @@ function PromptRiskProfileDetailButton({ profile }: { profile: PromptRiskProfile
         <DialogHeader><DialogTitle>{t('promptFilter.risk.detailTitle')}</DialogTitle><DialogDescription>{promptRiskIdentityPrimary(item)} · {t(`promptFilter.risk.subjects.${item.subject_type}`)}</DialogDescription></DialogHeader>
         {loading && !detail ? <div className="py-8 text-center text-sm text-muted-foreground">{t('common.loading')}</div> : error ? <div className="text-sm text-destructive">{error}</div> : <div className="space-y-4">
           <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">{detail?.guardrail || t('promptFilter.risk.guardrail')}</div>
+          <div className="rounded-lg border bg-muted/20 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2 font-semibold"><Shield className="size-4" />{t('promptFilter.risk.trust.title')}{item.trust_policy ? <Badge variant={item.trust_policy.status === 'active' ? 'default' : 'outline'}>{t(`promptFilter.risk.trust.status.${item.trust_policy.status}`, { defaultValue: item.trust_policy.status })}</Badge> : null}</div>
+                <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">{t('promptFilter.risk.trust.description')}</p>
+              </div>
+              {item.is_person ? <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => { setTrustDraft({ durationHours: 24, riskThreshold: item.trust_policy?.risk_threshold ?? 35, reason: item.trust_policy?.reason ?? '' }); setTrustOpen(true) }}>{item.trust_policy?.status === 'active' ? t('promptFilter.risk.trust.adjust') : t('promptFilter.risk.trust.enable')}</Button>{item.trust_policy?.status === 'active' ? <Button size="sm" variant="destructive" disabled={trustSaving} onClick={() => void revokeTrust()}>{t('promptFilter.risk.trust.revoke')}</Button> : null}</div> : null}
+            </div>
+            {item.trust_policy ? <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4"><PromptPolicyDetailField label={t('promptFilter.risk.trust.validUntil')} value={formatBeijingTime(item.trust_policy.valid_until)} /><PromptPolicyDetailField label={t('promptFilter.risk.trust.threshold')} value={String(item.trust_policy.risk_threshold)} /><PromptPolicyDetailField label={t('promptFilter.risk.trust.bypassCount')} value={String(item.trust_policy.bypass_count)} /><PromptPolicyDetailField label={t('promptFilter.risk.trust.lastEvaluation')} value={item.trust_policy.last_evaluated_at ? `${item.trust_policy.last_risk_score} · ${formatBeijingTime(item.trust_policy.last_evaluated_at)}` : '-'} /></div> : <p className="mt-3 text-xs text-muted-foreground">{item.is_person ? t('promptFilter.risk.trust.notEnabled') : t('promptFilter.risk.trust.personOnly')}</p>}
+          </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <MetricTile label={t('promptFilter.risk.totalScore')}><span className="font-mono text-xl">{item.risk_score}</span> <Badge className={promptRiskBadgeClass(item.risk_level)}>{t(`promptFilter.risk.levels.${item.risk_level}`)}</Badge></MetricTile>
             <MetricTile label={t('promptFilter.risk.localSignal')}><span className="font-mono text-xl">{item.score_breakdown.local_signal}</span></MetricTile>
@@ -3109,7 +3222,20 @@ function PromptRiskProfileDetailButton({ profile }: { profile: PromptRiskProfile
             </TableBody></Table></div>
             <Pagination page={eventPage} totalPages={totalPages} totalItems={detail?.event_total ?? 0} pageSize={eventPageSize} onPageChange={setEventPage} onPageSizeChange={(next) => { setEventPage(1); setEventPageSize(next) }} pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS} />
           </div>
+          {(detail?.trust_events?.length ?? 0) > 0 ? <div><div className="mb-2 text-sm font-semibold">{t('promptFilter.risk.trust.history')}</div><div className="overflow-x-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>{t('promptFilter.colTime')}</TableHead><TableHead>{t('promptFilter.risk.trust.operation')}</TableHead><TableHead>{t('promptFilter.risk.score')}</TableHead><TableHead>{t('promptFilter.risk.trust.reason')}</TableHead></TableRow></TableHeader><TableBody>{detail?.trust_events.map((event) => <TableRow key={event.id}><TableCell className="whitespace-nowrap text-xs">{formatBeijingTime(event.created_at)}</TableCell><TableCell><Badge variant="outline">{t(`promptFilter.risk.trust.events.${event.event_type}`, { defaultValue: event.event_type })}</Badge></TableCell><TableCell className="font-mono text-xs">{event.risk_score}{event.risk_level ? ` · ${event.risk_level}` : ''}</TableCell><TableCell className="text-xs">{event.reason || '-'}</TableCell></TableRow>)}</TableBody></Table></div></div> : null}
         </div>}
+      </DialogContent>
+    </Dialog>
+    <Dialog open={trustOpen} onOpenChange={(value) => { if (!trustSaving) setTrustOpen(value) }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t('promptFilter.risk.trust.dialogTitle')}</DialogTitle><DialogDescription>{t('promptFilter.risk.trust.dialogDescription')}</DialogDescription></DialogHeader>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={t('promptFilter.risk.trust.duration')}><Select value={String(trustDraft.durationHours)} onValueChange={(value) => setTrustDraft((current) => ({ ...current, durationHours: Number(value) }))} options={[{ label: '24h', value: '24' }, { label: '72h', value: '72' }, { label: '7d', value: '168' }, { label: '30d', value: '720' }]} /></Field>
+          <Field label={t('promptFilter.risk.trust.threshold')}><DraftNumberInput min={15} max={79} value={trustDraft.riskThreshold} onValueChange={(value) => setTrustDraft((current) => ({ ...current, riskThreshold: value }))} /></Field>
+        </div>
+        <Field label={t('promptFilter.risk.trust.reason')} hint={t('promptFilter.risk.trust.reasonHint')}><Textarea rows={4} value={trustDraft.reason} onChange={(event) => setTrustDraft((current) => ({ ...current, reason: event.target.value }))} /></Field>
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-muted-foreground">{t('promptFilter.risk.trust.safetyHint')}</div>
+        <DialogFooter><Button variant="outline" disabled={trustSaving} onClick={() => setTrustOpen(false)}>{t('common.cancel')}</Button><Button disabled={trustSaving || !trustDraft.reason.trim()} onClick={() => void saveTrust()}>{trustSaving ? t('common.saving') : t('common.save')}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   </>

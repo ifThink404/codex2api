@@ -1,0 +1,472 @@
+package database
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	PromptRiskTrustStatusActive    = "active"
+	PromptRiskTrustStatusSuspended = "suspended"
+	PromptRiskTrustStatusRevoked   = "revoked"
+	PromptRiskTrustStatusExpired   = "expired"
+
+	PromptRiskTrustEventGranted       = "granted"
+	PromptRiskTrustEventReactivated   = "reactivated"
+	PromptRiskTrustEventSuspended     = "suspended"
+	PromptRiskTrustEventAutoSuspended = "auto_suspended"
+	PromptRiskTrustEventRevoked       = "revoked"
+	PromptRiskTrustEventExpired       = "expired"
+	PromptRiskTrustEventBypassUsed    = "bypass_used"
+	PromptRiskTrustEventEvaluated     = "evaluated"
+)
+
+type PromptRiskTrustPolicy struct {
+	ID              int64      `json:"id"`
+	SubjectType     string     `json:"subject_type"`
+	SubjectKey      string     `json:"subject_key"`
+	Status          string     `json:"status"`
+	Reason          string     `json:"reason,omitempty"`
+	RiskThreshold   int        `json:"risk_threshold"`
+	ValidUntil      time.Time  `json:"valid_until"`
+	LastEvaluatedAt *time.Time `json:"last_evaluated_at,omitempty"`
+	LastRiskScore   int        `json:"last_risk_score"`
+	LastRiskLevel   string     `json:"last_risk_level,omitempty"`
+	BypassCount     int64      `json:"bypass_count"`
+	LastBypassAt    *time.Time `json:"last_bypass_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+type PromptRiskTrustEvent struct {
+	ID            int64     `json:"id"`
+	PolicyID      int64     `json:"policy_id"`
+	SubjectType   string    `json:"subject_type"`
+	SubjectKey    string    `json:"subject_key"`
+	EventType     string    `json:"event_type"`
+	Reason        string    `json:"reason,omitempty"`
+	RiskScore     int       `json:"risk_score"`
+	RiskLevel     string    `json:"risk_level,omitempty"`
+	RequestIDHash string    `json:"request_id_hash,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type PromptRiskTrustPolicyInput struct {
+	SubjectType   string
+	SubjectKey    string
+	Reason        string
+	RiskThreshold int
+	ValidUntil    time.Time
+}
+
+type PromptRiskTrustPolicyQuery struct {
+	Page     int
+	PageSize int
+	Status   string
+	Query    string
+}
+
+var promptRiskTrustSchemaMu sync.Mutex
+
+func (db *DB) ensurePromptRiskTrustTables(ctx context.Context) error {
+	if db == nil {
+		return errors.New("database unavailable")
+	}
+	promptRiskTrustSchemaMu.Lock()
+	defer promptRiskTrustSchemaMu.Unlock()
+	policyDDL := `CREATE TABLE IF NOT EXISTS prompt_risk_trust_policies (
+		id BIGSERIAL PRIMARY KEY,
+		subject_type VARCHAR(40) NOT NULL,
+		subject_key VARCHAR(128) NOT NULL UNIQUE,
+		status VARCHAR(24) NOT NULL DEFAULT 'active',
+		reason TEXT NOT NULL DEFAULT '',
+		risk_threshold INT NOT NULL DEFAULT 35,
+		valid_until TIMESTAMP NOT NULL,
+		last_evaluated_at TIMESTAMP NULL,
+		last_risk_score INT NOT NULL DEFAULT 0,
+		last_risk_level VARCHAR(24) NOT NULL DEFAULT 'low',
+		bypass_count BIGINT NOT NULL DEFAULT 0,
+		last_bypass_at TIMESTAMP NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`
+	eventDDL := `CREATE TABLE IF NOT EXISTS prompt_risk_trust_events (
+		id BIGSERIAL PRIMARY KEY,
+		policy_id BIGINT NOT NULL,
+		subject_type VARCHAR(40) NOT NULL,
+		subject_key VARCHAR(128) NOT NULL,
+		event_type VARCHAR(40) NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		risk_score INT NOT NULL DEFAULT 0,
+		risk_level VARCHAR(24) NOT NULL DEFAULT '',
+		request_id_hash VARCHAR(128) NOT NULL DEFAULT '',
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`
+	if db.isSQLite() {
+		policyDDL = `CREATE TABLE IF NOT EXISTS prompt_risk_trust_policies (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			subject_type TEXT NOT NULL,
+			subject_key TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL DEFAULT 'active',
+			reason TEXT NOT NULL DEFAULT '',
+			risk_threshold INTEGER NOT NULL DEFAULT 35,
+			valid_until TIMESTAMP NOT NULL,
+			last_evaluated_at TIMESTAMP NULL,
+			last_risk_score INTEGER NOT NULL DEFAULT 0,
+			last_risk_level TEXT NOT NULL DEFAULT 'low',
+			bypass_count INTEGER NOT NULL DEFAULT 0,
+			last_bypass_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`
+		eventDDL = `CREATE TABLE IF NOT EXISTS prompt_risk_trust_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			policy_id INTEGER NOT NULL,
+			subject_type TEXT NOT NULL,
+			subject_key TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			risk_score INTEGER NOT NULL DEFAULT 0,
+			risk_level TEXT NOT NULL DEFAULT '',
+			request_id_hash TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`
+	}
+	for _, stmt := range []string{
+		policyDDL,
+		eventDDL,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_trust_status_until ON prompt_risk_trust_policies(status, valid_until)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_trust_events_policy ON prompt_risk_trust_events(policy_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_trust_events_subject ON prompt_risk_trust_events(subject_type, subject_key, created_at)`,
+	} {
+		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizePromptRiskTrustInput(input PromptRiskTrustPolicyInput) (PromptRiskTrustPolicyInput, error) {
+	input.SubjectType = strings.TrimSpace(input.SubjectType)
+	input.SubjectKey = strings.TrimSpace(input.SubjectKey)
+	input.Reason = strings.TrimSpace(input.Reason)
+	if input.SubjectType != PromptRiskSubjectNewAPIUser || input.SubjectKey == "" {
+		return input, errors.New("adaptive trust requires a signed NewAPI person profile")
+	}
+	if input.RiskThreshold <= 0 {
+		input.RiskThreshold = 35
+	}
+	if input.RiskThreshold < 15 || input.RiskThreshold > 79 {
+		return input, errors.New("risk threshold must be between 15 and 79")
+	}
+	if input.ValidUntil.IsZero() || !input.ValidUntil.After(time.Now().UTC()) {
+		return input, errors.New("valid_until must be in the future")
+	}
+	if input.ValidUntil.After(time.Now().UTC().Add(30 * 24 * time.Hour)) {
+		return input, errors.New("adaptive trust cannot exceed 30 days")
+	}
+	if input.Reason == "" {
+		return input, errors.New("reason is required")
+	}
+	return input, nil
+}
+
+func (db *DB) UpsertPromptRiskTrustPolicy(ctx context.Context, raw PromptRiskTrustPolicyInput) (*PromptRiskTrustPolicy, error) {
+	if err := db.ensurePromptRiskTrustTables(ctx); err != nil {
+		return nil, err
+	}
+	input, err := normalizePromptRiskTrustInput(raw)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	previous := ""
+	_ = tx.QueryRowContext(ctx, `SELECT status FROM prompt_risk_trust_policies WHERE subject_key=$1`, input.SubjectKey).Scan(&previous)
+	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_risk_trust_policies (
+		subject_type, subject_key, status, reason, risk_threshold, valid_until, updated_at
+	) VALUES ($1,$2,$3,$4,$5,$6,CURRENT_TIMESTAMP)
+	ON CONFLICT(subject_key) DO UPDATE SET
+		subject_type=EXCLUDED.subject_type, status='active', reason=EXCLUDED.reason,
+		risk_threshold=EXCLUDED.risk_threshold, valid_until=EXCLUDED.valid_until,
+		last_evaluated_at=NULL, updated_at=CURRENT_TIMESTAMP`, input.SubjectType, input.SubjectKey,
+		PromptRiskTrustStatusActive, input.Reason, input.RiskThreshold, input.ValidUntil.UTC())
+	if err != nil {
+		return nil, err
+	}
+	var policyID int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM prompt_risk_trust_policies WHERE subject_key=$1`, input.SubjectKey).Scan(&policyID); err != nil {
+		return nil, err
+	}
+	eventType := PromptRiskTrustEventGranted
+	if previous != "" {
+		eventType = PromptRiskTrustEventReactivated
+	}
+	if err := insertPromptRiskTrustEvent(ctx, tx, policyID, input.SubjectType, input.SubjectKey, eventType, input.Reason, 0, "", ""); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return db.GetPromptRiskTrustPolicy(ctx, input.SubjectType, input.SubjectKey)
+}
+
+func insertPromptRiskTrustEvent(ctx context.Context, exec promptRiskEventExecutor, policyID int64, subjectType, subjectKey, eventType, reason string, riskScore int, riskLevel, requestIDHash string) error {
+	_, err := exec.ExecContext(ctx, `INSERT INTO prompt_risk_trust_events (
+		policy_id, subject_type, subject_key, event_type, reason, risk_score, risk_level, request_id_hash, created_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP)`, policyID, subjectType, subjectKey, eventType,
+		strings.TrimSpace(reason), promptRiskClamp(riskScore), strings.TrimSpace(riskLevel), strings.TrimSpace(requestIDHash))
+	return err
+}
+
+func scanPromptRiskTrustPolicy(scanner interface{ Scan(...any) error }) (*PromptRiskTrustPolicy, error) {
+	item := &PromptRiskTrustPolicy{}
+	var validUntil, lastEvaluated, lastBypass, createdAt, updatedAt any
+	if err := scanner.Scan(&item.ID, &item.SubjectType, &item.SubjectKey, &item.Status, &item.Reason,
+		&item.RiskThreshold, &validUntil, &lastEvaluated, &item.LastRiskScore, &item.LastRiskLevel,
+		&item.BypassCount, &lastBypass, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	var err error
+	if item.ValidUntil, err = parsePromptRiskTimeValue(validUntil); err != nil {
+		return nil, err
+	}
+	if lastEvaluated != nil {
+		value, parseErr := parsePromptRiskTimeValue(lastEvaluated)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		item.LastEvaluatedAt = &value
+	}
+	if lastBypass != nil {
+		value, parseErr := parsePromptRiskTimeValue(lastBypass)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		item.LastBypassAt = &value
+	}
+	if item.CreatedAt, err = parsePromptRiskTimeValue(createdAt); err != nil {
+		return nil, err
+	}
+	if item.UpdatedAt, err = parsePromptRiskTimeValue(updatedAt); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+const promptRiskTrustSelect = `SELECT id, subject_type, subject_key, status, reason, risk_threshold, valid_until,
+	last_evaluated_at, last_risk_score, last_risk_level, bypass_count, last_bypass_at, created_at, updated_at
+	FROM prompt_risk_trust_policies`
+
+func (db *DB) GetPromptRiskTrustPolicy(ctx context.Context, subjectType, subjectKey string) (*PromptRiskTrustPolicy, error) {
+	if err := db.ensurePromptRiskTrustTables(ctx); err != nil {
+		return nil, err
+	}
+	return scanPromptRiskTrustPolicy(db.conn.QueryRowContext(ctx, promptRiskTrustSelect+` WHERE subject_type=$1 AND subject_key=$2`, strings.TrimSpace(subjectType), strings.TrimSpace(subjectKey)))
+}
+
+func (db *DB) ListPromptRiskTrustPolicies(ctx context.Context, query PromptRiskTrustPolicyQuery) ([]*PromptRiskTrustPolicy, int, error) {
+	if err := db.ensurePromptRiskTrustTables(ctx); err != nil {
+		return nil, 0, err
+	}
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	if query.PageSize <= 0 || query.PageSize > 200 {
+		query.PageSize = 20
+	}
+	clauses := []string{"1=1"}
+	args := []any{}
+	if status := strings.TrimSpace(query.Status); status != "" && status != "all" {
+		args = append(args, status)
+		clauses = append(clauses, fmt.Sprintf("status=$%d", len(args)))
+	}
+	if q := strings.TrimSpace(query.Query); q != "" {
+		args = append(args, "%"+strings.ToLower(q)+"%")
+		clauses = append(clauses, fmt.Sprintf("(LOWER(subject_key) LIKE $%d OR LOWER(reason) LIKE $%d)", len(args), len(args)))
+	}
+	where := " WHERE " + strings.Join(clauses, " AND ")
+	var total int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompt_risk_trust_policies`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, query.PageSize, (query.Page-1)*query.PageSize)
+	rows, err := db.conn.QueryContext(ctx, promptRiskTrustSelect+where+fmt.Sprintf(" ORDER BY updated_at DESC, id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*PromptRiskTrustPolicy, 0, query.PageSize)
+	for rows.Next() {
+		item, scanErr := scanPromptRiskTrustPolicy(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
+func (db *DB) ListActivePromptRiskTrustPolicies(ctx context.Context) ([]*PromptRiskTrustPolicy, error) {
+	return db.ListAllPromptRiskTrustPolicies(ctx, PromptRiskTrustStatusActive)
+}
+
+func (db *DB) ListAllPromptRiskTrustPolicies(ctx context.Context, status string) ([]*PromptRiskTrustPolicy, error) {
+	result := make([]*PromptRiskTrustPolicy, 0)
+	for page := 1; ; page++ {
+		items, total, err := db.ListPromptRiskTrustPolicies(ctx, PromptRiskTrustPolicyQuery{Page: page, PageSize: 200, Status: status})
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, items...)
+		if len(result) >= total || len(items) == 0 {
+			return result, nil
+		}
+	}
+}
+
+func (db *DB) transitionPromptRiskTrustPolicy(ctx context.Context, subjectType, subjectKey, status, eventType, reason string, riskScore int, riskLevel string) (*PromptRiskTrustPolicy, error) {
+	if err := db.ensurePromptRiskTrustTables(ctx); err != nil {
+		return nil, err
+	}
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var id int64
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT id, status FROM prompt_risk_trust_policies WHERE subject_type=$1 AND subject_key=$2`, subjectType, subjectKey).Scan(&id, &current); err != nil {
+		return nil, err
+	}
+	if current != status {
+		result, err := tx.ExecContext(ctx, `UPDATE prompt_risk_trust_policies SET status=$1, reason=$2, last_risk_score=$3, last_risk_level=$4, last_evaluated_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$5 AND status=$6`, status, reason, promptRiskClamp(riskScore), riskLevel, id, current)
+		if err != nil {
+			return nil, err
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if updated == 0 {
+			if err := tx.Commit(); err != nil {
+				return nil, err
+			}
+			return db.GetPromptRiskTrustPolicy(ctx, subjectType, subjectKey)
+		}
+		if err := insertPromptRiskTrustEvent(ctx, tx, id, subjectType, subjectKey, eventType, reason, riskScore, riskLevel, ""); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return db.GetPromptRiskTrustPolicy(ctx, subjectType, subjectKey)
+}
+
+func (db *DB) RevokePromptRiskTrustPolicy(ctx context.Context, subjectType, subjectKey, reason string) (*PromptRiskTrustPolicy, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "管理员撤销自适应可信策略"
+	}
+	return db.transitionPromptRiskTrustPolicy(ctx, subjectType, subjectKey, PromptRiskTrustStatusRevoked, PromptRiskTrustEventRevoked, reason, 0, "")
+}
+
+func (db *DB) SuspendPromptRiskTrustPolicy(ctx context.Context, subjectType, subjectKey, reason string, riskScore int, riskLevel string) (*PromptRiskTrustPolicy, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "风险画像达到重新审核阈值"
+	}
+	return db.transitionPromptRiskTrustPolicy(ctx, subjectType, subjectKey, PromptRiskTrustStatusSuspended, PromptRiskTrustEventAutoSuspended, reason, riskScore, riskLevel)
+}
+
+func (db *DB) ReconcilePromptRiskTrustPolicies(ctx context.Context) ([]*PromptRiskTrustPolicy, error) {
+	items, err := db.ListActivePromptRiskTrustPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	for _, item := range items {
+		if !item.ValidUntil.After(now) {
+			_, _ = db.transitionPromptRiskTrustPolicy(ctx, item.SubjectType, item.SubjectKey, PromptRiskTrustStatusExpired, PromptRiskTrustEventExpired, "自适应可信期限已到", item.LastRiskScore, item.LastRiskLevel)
+			continue
+		}
+		profile, profileErr := db.GetPromptRiskProfile(ctx, item.SubjectType, item.SubjectKey)
+		if profileErr != nil && !errors.Is(profileErr, sql.ErrNoRows) {
+			return nil, profileErr
+		}
+		score, level := 0, PromptRiskLevelLow
+		if profile != nil {
+			score, level = profile.RiskScore, profile.RiskLevel
+		}
+		if score >= item.RiskThreshold || level == PromptRiskLevelHigh || level == PromptRiskLevelCritical {
+			_, _ = db.SuspendPromptRiskTrustPolicy(ctx, item.SubjectType, item.SubjectKey, "风险画像达到重新审核阈值", score, level)
+			continue
+		}
+		_, err = db.conn.ExecContext(ctx, `UPDATE prompt_risk_trust_policies SET last_evaluated_at=CURRENT_TIMESTAMP, last_risk_score=$1, last_risk_level=$2 WHERE id=$3`, score, level, item.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return db.ListActivePromptRiskTrustPolicies(ctx)
+}
+
+func (db *DB) RecordPromptRiskTrustBypass(ctx context.Context, policyID int64, subjectType, subjectKey, requestIDHash string) error {
+	if err := db.ensurePromptRiskTrustTables(ctx); err != nil {
+		return err
+	}
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE prompt_risk_trust_policies SET bypass_count=bypass_count+1, last_bypass_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active'`, policyID)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated == 0 {
+		return tx.Commit()
+	}
+	if err := insertPromptRiskTrustEvent(ctx, tx, policyID, subjectType, subjectKey, PromptRiskTrustEventBypassUsed, "跳过同步模型复核，本地高危规则仍生效", 0, PromptRiskLevelLow, requestIDHash); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (db *DB) ListPromptRiskTrustEvents(ctx context.Context, subjectType, subjectKey string, limit int) ([]*PromptRiskTrustEvent, error) {
+	if err := db.ensurePromptRiskTrustTables(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := db.conn.QueryContext(ctx, `SELECT id, policy_id, subject_type, subject_key, event_type, reason, risk_score, risk_level, request_id_hash, created_at FROM prompt_risk_trust_events WHERE subject_type=$1 AND subject_key=$2 ORDER BY created_at DESC, id DESC LIMIT $3`, subjectType, subjectKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*PromptRiskTrustEvent, 0, limit)
+	for rows.Next() {
+		item := &PromptRiskTrustEvent{}
+		var created any
+		if err := rows.Scan(&item.ID, &item.PolicyID, &item.SubjectType, &item.SubjectKey, &item.EventType, &item.Reason, &item.RiskScore, &item.RiskLevel, &item.RequestIDHash, &created); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, err = parsePromptRiskTimeValue(created)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}

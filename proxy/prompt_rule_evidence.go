@@ -254,6 +254,11 @@ func (h *Handler) enqueueUpstreamCyberPolicyEvidence(c *gin.Context, endpoint, m
 		ObservedAt:             incident.ObservedAt,
 	}
 	accepted := h.db.EnqueuePromptPolicyIncident(&incident, &candidate, &evidence)
+	if accepted {
+		if policy, subjectKey, trusted := h.promptRiskTrustPolicyForRequest(c); trusted {
+			h.suspendPromptRiskTrustPolicy(policy, subjectKey, "上游返回 cyber_policy，恢复同步模型复核")
+		}
+	}
 	return incidentID, accepted
 }
 

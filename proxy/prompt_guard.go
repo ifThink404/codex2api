@@ -338,7 +338,17 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 		advancedCfg := cfg
 		verdict = h.applyPromptSemanticProtection(c, text, verdict, advancedCfg)
 		if shouldReviewPromptGuardDecision(decision, verdict, cfg) {
-			verdict = h.reviewPromptFilterVerdict(ctx, reviewText, verdict, cfg)
+			if policy, subjectKey, trusted := h.promptRiskTrustPolicyForRequest(c); trusted && promptRiskTrustCanBypassReview(decision, verdict, reviewText) {
+				verdict.Reason = "adaptive trusted profile bypassed synchronous model review"
+				decision.ReasonCode = "adaptive_trust_review_bypass"
+				h.recordPromptRiskTrustBypass(c, policy, subjectKey)
+			} else {
+				localTrustRisk := trusted && promptRiskTrustShouldSuspend(decision, verdict)
+				verdict = h.reviewPromptFilterVerdict(ctx, reviewText, verdict, cfg)
+				if trusted && (localTrustRisk || verdict.ReviewFlagged || verdict.Action == promptfilter.ActionBlock) {
+					h.suspendPromptRiskTrustPolicy(policy, subjectKey, "模型复核或本地高危规则命中")
+				}
+			}
 		}
 		if advancedCfg.Advanced.Risk.Enabled {
 			verdict = h.applyPromptRisk(c, verdict, advancedCfg)
@@ -488,8 +498,17 @@ func (h *Handler) evaluateLegacyPromptGuard(c *gin.Context, ctx context.Context,
 	verdict := promptfilter.InspectText(text, cfg)
 	verdict = h.applyPromptSemanticProtection(c, text, verdict, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
-		verdict = h.reviewPromptFilterVerdict(ctx, text, verdict, cfg)
-		verdict = promptfilter.ApplyReviewMode(verdict, cfg.Mode)
+		if policy, subjectKey, trusted := h.promptRiskTrustPolicyForRequest(c); trusted && verdict.Action == promptfilter.ActionAllow && verdict.Score == 0 && verdict.RawScore == 0 && len(verdict.Matched) == 0 && strings.TrimSpace(text) != "" {
+			verdict.Reason = "adaptive trusted profile bypassed synchronous model review"
+			h.recordPromptRiskTrustBypass(c, policy, subjectKey)
+		} else {
+			localTrustRisk := trusted && (verdict.Action != promptfilter.ActionAllow || verdict.Score > 0 || verdict.RawScore > 0 || len(verdict.Matched) > 0)
+			verdict = h.reviewPromptFilterVerdict(ctx, text, verdict, cfg)
+			verdict = promptfilter.ApplyReviewMode(verdict, cfg.Mode)
+			if trusted && (localTrustRisk || verdict.ReviewFlagged || verdict.Action == promptfilter.ActionBlock) {
+				h.suspendPromptRiskTrustPolicy(policy, subjectKey, "模型复核或本地高危规则命中")
+			}
+		}
 	}
 	if cfg.Advanced.Risk.Enabled {
 		verdict = h.applyPromptRisk(c, verdict, cfg)

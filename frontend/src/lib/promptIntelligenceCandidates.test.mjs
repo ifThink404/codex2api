@@ -10,6 +10,7 @@ test('prompt intelligence uses the persistent candidate lifecycle API', () => {
   for (const fragment of [
     '/prompt-filter/intelligence/candidates?',
     '/prompt-filter/intelligence/candidates/${id}/evidence',
+    '/prompt-filter/intelligence/candidates/${id}/draft',
     '/prompt-filter/intelligence/candidates/${id}/publish',
     '/prompt-filter/intelligence/candidates/${id}/dismiss',
   ]) {
@@ -27,6 +28,9 @@ test('pending evidence cannot be published and every lifecycle action stays in t
   assert.equal(pageSource.includes('publishPromptIntelligenceCandidate(candidate.id)'), true)
   assert.equal(pageSource.includes('dismissPromptIntelligenceCandidate(dismissTarget.id)'), true)
   assert.equal(pageSource.includes('result.staged'), true)
+  assert.equal(pageSource.includes("candidate.lifecycle_status === 'pending' && candidate.kind === 'evidence'"), true)
+  assert.equal(pageSource.includes('createPromptIntelligenceCandidateDraft(draftTarget.id'), true)
+  assert.equal(pageSource.includes('saveDraft'), true)
 })
 
 test('legacy automatic rule admission is not exposed as a setting', () => {
