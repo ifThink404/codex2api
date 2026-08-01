@@ -3040,11 +3040,18 @@ func (h *Handler) Responses(c *gin.Context) {
 			// clientGone：客户端写失败后置位，后续事件不再写客户端，
 			// 但继续读上游直到 response.completed/failed，以拿到准确 usage。
 			clientGone := false
+			// downstreamMu 串行化下游写路径与其共享状态(clientGone/writeErr/
+			// wroteAnyBody/streamWriter):自动续想的保活 goroutine(issue #458)
+			// 与 forward 并发写同一个 ResponseWriter,必须互斥。续想关闭时无
+			// 并发方,锁零竞争。
+			var downstreamMu sync.Mutex
 			var pendingFirstTokenEvents bytes.Buffer
 			// 前置元数据事件立即透传（旧版兼容，issue #425）：每个 attempt 取一次快照，
 			// 热更新对新请求生效，流转发中途不切换缓冲策略。
 			preflightPassthrough := CurrentRuntimeSettings().CodexPreflightSSEPassthrough
 			forward := func(data []byte) bool {
+				downstreamMu.Lock()
+				defer downstreamMu.Unlock()
 				parsed := gjson.ParseBytes(data)
 				eventType := parsed.Get("type").String()
 
@@ -3140,7 +3147,28 @@ func (h *Handler) Responses(c *gin.Context) {
 						// 否则会破坏首包前 response.failed 的抑制/换号语义。
 						ttftGuard.MarkProgress(gjson.GetBytes(data, "type").String())
 					},
-					clientGone: func() bool { return clientGone || c.Request.Context().Err() != nil },
+					clientGone: func() bool {
+						downstreamMu.Lock()
+						gone := clientGone
+						downstreamMu.Unlock()
+						return gone || c.Request.Context().Err() != nil
+					},
+					keepalive: func() bool {
+						downstreamMu.Lock()
+						defer downstreamMu.Unlock()
+						// 首个真实字节写出前绝不保活:注释一旦落笔就提交 200 header,
+						// 首 token 前 response.failed 按真实错误码返回/换号重试的全部
+						// 语义会被摧毁(PR #318 同类坑)。此时也无 200 可保,直接跳过。
+						if clientGone || !wroteAnyBody {
+							return !clientGone
+						}
+						if err := streamWriter.WriteSSEComment(continueKeepaliveComment); err != nil {
+							writeErr = err
+							clientGone = true
+							return false
+						}
+						return true
+					},
 					openRound: func(body []byte) (*http.Response, error) {
 						// 续想轮复用同一账号与上游通道（reasoning encrypted_content 绑定账号，
 						// 换号会被上游拒绝），沿用与客户端解耦的 drainable context。
