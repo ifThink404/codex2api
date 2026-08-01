@@ -65,6 +65,7 @@ type PromptRiskProfile struct {
 	APIKeyMasked         string                   `json:"api_key_masked,omitempty"`
 	AccountID            int64                    `json:"account_id,omitempty"`
 	AccountName          string                   `json:"account_name,omitempty"`
+	TrustPolicy          *PromptRiskTrustPolicy   `json:"trust_policy,omitempty"`
 }
 
 type PromptRiskScoreBreakdown struct {
@@ -327,6 +328,15 @@ func promptRiskClamp(value int) int {
 }
 
 func promptRiskSignalForLog(log PromptFilterLog) (promptRiskSignal, bool) {
+	source := strings.ToLower(strings.TrimSpace(log.Source))
+	reasonCode := strings.ToLower(strings.TrimSpace(log.ReasonCode))
+	origin := strings.ToLower(strings.TrimSpace(log.PrimaryOrigin))
+	if source != "" && source != "local_filter" {
+		return promptRiskSignal{}, false
+	}
+	if reasonCode == "prompt_policy_shadow_async" || origin == "tool_output" || origin == "tool_arguments" || origin == "session_context" || origin == "history" || origin == "system" || origin == "developer" || origin == "instructions" || origin == "attachment_refs" || origin == "attachment_content" {
+		return promptRiskSignal{}, false
+	}
 	kind := ""
 	score := 0
 	confidence := 0
@@ -340,8 +350,6 @@ func promptRiskSignalForLog(log PromptFilterLog) (promptRiskSignal, bool) {
 		kind, score, confidence = "local_block", 38, 85
 	case strings.EqualFold(log.Action, "warn"):
 		kind, score, confidence = "local_warn", 22, 75
-	case log.AuditScore > 0 || strings.TrimSpace(log.MatchedPatterns) != "" && strings.TrimSpace(log.MatchedPatterns) != "[]":
-		kind, score, confidence = "local_audit_hit", 10, 60
 	default:
 		return promptRiskSignal{}, false
 	}
@@ -395,13 +403,25 @@ func normalizePromptRiskIdentity(input PromptRiskIdentityInput) (promptRiskIdent
 	}
 	return promptRiskIdentity{
 		SubjectType:    PromptRiskSubjectNewAPIUser,
-		SubjectKey:     promptRiskHash("newapi-user", platform+"\x00"+externalUserID),
+		SubjectKey:     PromptRiskNewAPIUserSubjectKey(platform, externalUserID),
 		Platform:       platform,
 		ExternalUserID: externalUserID,
 		UserName:       truncateCandidateRunes(strings.TrimSpace(input.UserName), 128),
 		UserEmail:      truncateCandidateRunes(strings.TrimSpace(input.UserEmail), 320),
 		UserGroup:      truncateCandidateRunes(strings.TrimSpace(input.UserGroup), 100),
 	}, true
+}
+
+// PromptRiskNewAPIUserSubjectKey returns the stable privacy-preserving key used
+// by both risk events and request-time adaptive trust checks. Raw platform user
+// identifiers are never placed in runtime lookup keys.
+func PromptRiskNewAPIUserSubjectKey(platform, externalUserID string) string {
+	platform = strings.ToLower(truncateCandidateRunes(strings.TrimSpace(platform), 100))
+	externalUserID = truncateCandidateRunes(strings.TrimSpace(externalUserID), 255)
+	if platform == "" || externalUserID == "" {
+		return ""
+	}
+	return promptRiskHash("newapi-user", platform+"\x00"+externalUserID)
 }
 
 func promptRiskIdentityForSignal(signal promptRiskSignal) (promptRiskIdentity, bool) {
@@ -799,16 +819,16 @@ func (db *DB) ListPromptRiskProfiles(ctx context.Context, query PromptRiskProfil
 		MAX(subject_display), MAX(platform), MAX(CASE WHEN is_person THEN 1 ELSE 0 END), MAX(identity_confidence), MAX(created_at),
 		COUNT(*), SUM(CASE WHEN created_at >= $2 THEN 1 ELSE 0 END), SUM(CASE WHEN created_at >= $3 THEN 1 ELSE 0 END),
 		SUM(CASE WHEN created_at >= $4 THEN 1 ELSE 0 END),
-		SUM(CASE WHEN request_risk_score>0 AND created_at >= $3 THEN 1 ELSE 0 END),
+		SUM(CASE WHEN request_risk_score>0 AND event_kind NOT IN ('local_audit_hit', 'review_cleared') AND created_at >= $3 THEN 1 ELSE 0 END),
 		SUM(CASE WHEN event_kind LIKE 'upstream_cy_%' THEN 1 ELSE 0 END),
 		SUM(CASE WHEN event_kind='upstream_cy_confirmed_miss' THEN 1 ELSE 0 END),
 		SUM(CASE WHEN event_kind LIKE 'local_block%' THEN 1 ELSE 0 END),
 		SUM(CASE WHEN event_kind='local_warn' THEN 1 ELSE 0 END),
-		SUM(CASE WHEN prompt_fingerprint<>'' THEN 1 ELSE 0 END),
-		COUNT(DISTINCT CASE WHEN prompt_fingerprint<>'' THEN prompt_fingerprint END),
+		SUM(CASE WHEN prompt_fingerprint<>'' AND event_kind NOT IN ('local_audit_hit', 'review_cleared') THEN 1 ELSE 0 END),
+		COUNT(DISTINCT CASE WHEN prompt_fingerprint<>'' AND event_kind NOT IN ('local_audit_hit', 'review_cleared') THEN prompt_fingerprint END),
 		MAX(api_key_id), MAX(api_key_name), MAX(api_key_masked), MAX(account_id), MAX(account_name),
-		SUM(request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END),
-		SUM(CASE WHEN event_kind LIKE 'local_%' OR event_kind='review_cleared' THEN request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END ELSE 0 END),
+		SUM(CASE WHEN event_kind IN ('local_audit_hit', 'review_cleared') THEN 0 ELSE request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END END),
+		SUM(CASE WHEN event_kind LIKE 'local_%' AND event_kind<>'local_audit_hit' THEN request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END ELSE 0 END),
 		SUM(CASE WHEN event_kind LIKE 'upstream_cy_%' THEN request_risk_score * evidence_confidence * identity_confidence * CASE WHEN created_at >= $2 THEN 100 WHEN created_at >= $3 THEN 75 WHEN created_at >= $4 THEN 40 ELSE 15 END ELSE 0 END)
 	FROM prompt_risk_events WHERE `+strings.Join(clauses, " AND ")+`
 	GROUP BY subject_type, subject_key`, args...)
@@ -866,6 +886,11 @@ func (db *DB) ListPromptRiskProfiles(ctx context.Context, query PromptRiskProfil
 	}
 	sort.SliceStable(aggregates, func(i, j int) bool {
 		if aggregates[i].Profile.RiskScore == aggregates[j].Profile.RiskScore {
+			if aggregates[i].Profile.LatestAt.Equal(aggregates[j].Profile.LatestAt) {
+				left := aggregates[i].Profile.SubjectType + "\x00" + aggregates[i].Profile.SubjectKey
+				right := aggregates[j].Profile.SubjectType + "\x00" + aggregates[j].Profile.SubjectKey
+				return left < right
+			}
 			return aggregates[i].Profile.LatestAt.After(aggregates[j].Profile.LatestAt)
 		}
 		return aggregates[i].Profile.RiskScore > aggregates[j].Profile.RiskScore

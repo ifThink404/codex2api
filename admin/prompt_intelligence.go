@@ -94,6 +94,15 @@ type promptIntelligenceCandidatesResponse struct {
 	Total      int                           `json:"total"`
 }
 
+type promptIntelligenceCandidateDraftRequest struct {
+	Name      string `json:"name"`
+	Pattern   string `json:"pattern"`
+	Weight    int    `json:"weight"`
+	Category  string `json:"category"`
+	Strict    bool   `json:"strict"`
+	Rationale string `json:"rationale"`
+}
+
 var promptIntelligenceRunMu sync.Mutex
 
 var (
@@ -105,6 +114,7 @@ func (h *Handler) StartPromptIntelligence(ctx context.Context) {
 	if h == nil || h.store == nil {
 		return
 	}
+	h.startPromptRiskTrustSync(ctx)
 	h.startPromptRuleRuntimeSync(ctx)
 	h.startDBBackgroundTaskWithParent(ctx, func(ctx context.Context) {
 		if err := h.migrateLegacyAutomaticIntelligenceRules(ctx); err != nil {
@@ -276,6 +286,90 @@ func (h *Handler) GetPromptIntelligenceCandidateEvidence(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"candidate": promptIntelligenceCandidateFromDB(item, h.store.GetPromptFilterConfig()), "evidence": evidence})
+}
+
+func (h *Handler) CreatePromptIntelligenceCandidateDraft(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, http.StatusBadRequest, "候选证据 ID 无效")
+		return
+	}
+	parent, err := h.db.GetPromptRuleCandidate(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "候选证据不存在")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	if parent.Kind != database.PromptRuleCandidateKindEvidence {
+		writeError(c, http.StatusConflict, "只有上游风险证据可以转换为规则草案")
+		return
+	}
+	if parent.Status != database.PromptRuleCandidateStatusPending {
+		writeError(c, http.StatusConflict, "只有待审核的上游风险证据可以转换为规则草案")
+		return
+	}
+	var request promptIntelligenceCandidateDraftRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "规则草案参数无效")
+		return
+	}
+	proposal := promptIntelligenceCandidate{
+		Name: strings.TrimSpace(request.Name), Pattern: strings.TrimSpace(request.Pattern),
+		Weight: request.Weight, Category: strings.TrimSpace(request.Category), Strict: request.Strict,
+		Rationale: strings.TrimSpace(request.Rationale),
+	}
+	if proposal.Rationale == "" {
+		proposal.Rationale = fmt.Sprintf("由 CY 证据 #%d 经人工审核创建", parent.ID)
+	}
+	if err := validateIntelligenceCandidate(proposal); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	pattern := promptfilter.PatternConfig{
+		Name: proposal.Name, Pattern: proposal.Pattern, Weight: proposal.Weight,
+		Category: proposal.Category, Strict: proposal.Strict,
+	}
+	ruleJSON, _ := json.Marshal(pattern)
+	metadata, _ := json.Marshal(map[string]any{
+		"review_action":       "create_rule_draft",
+		"source_candidate_id": parent.ID,
+		"source_fingerprint":  parent.Fingerprint,
+		"source_kind":         parent.Kind,
+		"source":              parent.LastSource,
+		"rationale":           proposal.Rationale,
+	})
+	sourceRef := fmt.Sprintf("candidate:%d", parent.ID)
+	item, _, err := h.db.StagePromptRuleCandidate(c.Request.Context(), database.PromptRuleCandidateInput{
+		Fingerprint:   promptRuleCandidateFingerprint(pattern),
+		Kind:          database.PromptRuleCandidateKindPattern,
+		Source:        database.PromptRuleCandidateSourceManual,
+		Name:          proposal.Name,
+		Category:      proposal.Category,
+		RuleJSON:      string(ruleJSON),
+		Rationale:     proposal.Rationale,
+		SourceURL:     sourceRef,
+		SamplePreview: parent.SamplePreview,
+	}, database.PromptRuleCandidateEvidenceInput{
+		SourceKind: database.PromptRuleCandidateSourceManual,
+		SourceRef:  sourceRef,
+		SourceRefHash: promptfilter.StableEvidenceFingerprint(
+			"evidence-ref",
+			database.PromptRuleCandidateSourceManual+"\x00"+sourceRef+"\x00"+proposal.Pattern,
+		),
+		SamplePreview: parent.SamplePreview,
+		MetadataJSON:  string(metadata),
+		ObservedAt:    time.Now(),
+	})
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	result := promptIntelligenceCandidateFromDB(item, h.store.GetPromptFilterConfig())
+	h.insertIntelligenceLog(c.Request.Context(), "intel_candidate_draft", "staged", "", result, nil)
+	c.JSON(http.StatusCreated, gin.H{"candidate": result, "source_candidate_id": parent.ID})
 }
 
 func (h *Handler) PublishPromptIntelligenceCandidate(c *gin.Context) {

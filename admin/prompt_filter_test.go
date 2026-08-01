@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -63,6 +66,63 @@ func TestPromptReviewConnectionUsesUnsavedChatAdapterAndStoredKey(t *testing.T) 
 	}
 	if !response.OK || response.Flagged || response.Confidence != 0.11 || response.Model != "deepseek-v4-flash" {
 		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestPromptReviewConnectionTestsAllKeysConcurrentlyWithoutReturningSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	seen := map[string]int{}
+	var seenMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			previous := maxActive.Load()
+			if current <= previous || maxActive.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		authorization := r.Header.Get("Authorization")
+		seenMu.Lock()
+		seen[authorization]++
+		seenMu.Unlock()
+		time.Sleep(40 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "deepseek-v4-flash", "choices": []map[string]any{{"message": map[string]any{"content": `{"confidence":0.05,"reason":""}`}}},
+		})
+	}))
+	defer server.Close()
+	store := auth.NewStore(nil, nil, &database.SystemSettings{
+		PromptFilterReviewEnabled: true, PromptFilterReviewAPIKey: "key-one\nkey-two\nkey-three",
+		PromptFilterReviewBaseURL: server.URL, PromptFilterReviewModel: "deepseek-v4-flash", PromptFilterReviewTimeoutSeconds: 2,
+	})
+	t.Cleanup(store.Stop)
+	handler := &Handler{store: store}
+	body := `{"text":"普通会议纪要","base_url":"` + server.URL + `","model":"deepseek-v4-flash","request_mode":"chat_completions","system_prompt":"system","user_prompt_template":"<user_input>{{text}}</user_input>","confidence_threshold":0.7,"timeout_seconds":2,"max_concurrent":8,"max_text_length":4096,"test_all_keys":true}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/admin/prompt-filter/review/test", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handler.TestPromptReviewConnection(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response promptReviewTestResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || !response.OK || response.KeyCount != 3 || len(response.Results) != 3 {
+		t.Fatalf("response=%s err=%v", recorder.Body.String(), err)
+	}
+	if maxActive.Load() < 2 {
+		t.Fatalf("keys were not tested concurrently; max_active=%d", maxActive.Load())
+	}
+	for _, authorization := range []string{"Bearer key-one", "Bearer key-two", "Bearer key-three"} {
+		if seen[authorization] != 1 {
+			t.Fatalf("authorization %q seen=%d all=%#v", authorization, seen[authorization], seen)
+		}
+		if strings.Contains(recorder.Body.String(), strings.TrimPrefix(authorization, "Bearer ")) {
+			t.Fatalf("response leaked key: %s", recorder.Body.String())
+		}
 	}
 }
 

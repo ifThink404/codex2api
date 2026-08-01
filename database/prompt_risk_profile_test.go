@@ -3,6 +3,9 @@ package database
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +193,38 @@ func TestPromptRiskProfilesPaginateFilterAndClearWithAuditHistory(t *testing.T) 
 	}
 }
 
+func TestPromptRiskProfilesUseStableTieBreakerAcrossPages(t *testing.T) {
+	db := newPromptPolicySQLiteTestDB(t)
+	ctx := context.Background()
+	createdAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	for index := 0; index < 6; index++ {
+		userID := fmt.Sprintf("stable-user-%d", index)
+		subjectKey := PromptRiskNewAPIUserSubjectKey("fanren", userID)
+		if _, err := db.conn.ExecContext(ctx, `INSERT INTO prompt_risk_events (
+			created_at, source_type, source_id, subject_type, subject_key, subject_display, platform,
+			is_person, identity_confidence, event_kind, request_risk_score, evidence_confidence, action
+		) VALUES ($1,'prompt_filter',$2,'newapi_user',$3,$4,'fanren',true,100,'local_warn',45,100,'warn')`,
+			createdAt, fmt.Sprintf("stable-source-%d", index), subjectKey, userID); err != nil {
+			t.Fatalf("insert stable profile: %v", err)
+		}
+	}
+	got := make([]string, 0, 6)
+	for page := 1; page <= 3; page++ {
+		items, total, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{Page: page, PageSize: 2, SubjectType: PromptRiskSubjectNewAPIUser})
+		if err != nil || total != 6 || len(items) != 2 {
+			t.Fatalf("page=%d total=%d items=%#v err=%v", page, total, items, err)
+		}
+		for _, item := range items {
+			got = append(got, item.SubjectKey)
+		}
+	}
+	want := append([]string(nil), got...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unstable page order got=%#v want=%#v", got, want)
+	}
+}
+
 func TestPromptRiskScoringBandsAndHistoryGuardrail(t *testing.T) {
 	for _, test := range []struct {
 		score int
@@ -225,6 +260,29 @@ func TestPromptRiskClearedReviewDoesNotIncreaseRiskOrRecurrence(t *testing.T) {
 	}
 	if profiles[0].RiskScore != 0 || profiles[0].ScoreBreakdown.Recurrence != 0 || profiles[0].RiskLevel != PromptRiskLevelLow {
 		t.Fatalf("cleared reviews increased risk: %#v", profiles[0])
+	}
+}
+
+func TestPromptRiskHistoricalAuditOnlyEventsNoLongerInflateProfiles(t *testing.T) {
+	db := newPromptPolicySQLiteTestDB(t)
+	ctx := context.Background()
+	subjectKey := PromptRiskNewAPIUserSubjectKey("fanren", "audit-only-user")
+	for index := 0; index < 5; index++ {
+		if _, err := db.conn.ExecContext(ctx, `INSERT INTO prompt_risk_events (
+			created_at, source_type, source_id, subject_type, subject_key, subject_display, platform,
+			is_person, identity_confidence, event_kind, request_risk_score, evidence_confidence,
+			action, prompt_fingerprint
+		) VALUES (CURRENT_TIMESTAMP,'prompt_filter',$1,'newapi_user',$2,'audit-only-user','fanren',true,100,'local_audit_hit',10,100,'allow',$3)`,
+			fmt.Sprintf("legacy-audit-%d", index), subjectKey, promptRiskHash("audit", fmt.Sprintf("%d", index))); err != nil {
+			t.Fatalf("insert legacy audit event: %v", err)
+		}
+	}
+	profiles, total, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{Page: 1, PageSize: 20, SubjectType: PromptRiskSubjectNewAPIUser})
+	if err != nil || total != 1 || len(profiles) != 1 {
+		t.Fatalf("profiles total=%d items=%#v err=%v", total, profiles, err)
+	}
+	if profiles[0].RiskScore != 0 || profiles[0].ScoreBreakdown.Recurrence != 0 || profiles[0].RiskLevel != PromptRiskLevelLow {
+		t.Fatalf("legacy audit-only events still inflate risk: %#v", profiles[0])
 	}
 }
 

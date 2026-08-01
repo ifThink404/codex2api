@@ -862,6 +862,10 @@ export const api = {
 	},
 	getPromptRiskProfile: (subjectType: string, subjectKey: string, eventPage = 1, eventPageSize = 20) =>
 		request<import('./types').PromptRiskProfileDetailResponse>(`/prompt-policy/risk-profiles/${encodeURIComponent(subjectType)}/${encodeURIComponent(subjectKey)}?event_page=${eventPage}&event_page_size=${eventPageSize}`),
+	upsertPromptRiskTrust: (subjectType: string, subjectKey: string, data: { duration_hours: number; risk_threshold: number; reason: string }) =>
+		request<{ policy: import('./types').PromptRiskTrustPolicy }>(`/prompt-policy/risk-profiles/${encodeURIComponent(subjectType)}/${encodeURIComponent(subjectKey)}/trust`, { method: 'PUT', body: JSON.stringify(data) }),
+	revokePromptRiskTrust: (subjectType: string, subjectKey: string) =>
+		request<{ policy: import('./types').PromptRiskTrustPolicy }>(`/prompt-policy/risk-profiles/${encodeURIComponent(subjectType)}/${encodeURIComponent(subjectKey)}/trust`, { method: 'DELETE' }),
   testPromptFilter: (data: { text: string; endpoint?: string; model?: string }) =>
     request<PromptFilterTestResponse>('/prompt-filter/test', { method: 'POST', body: JSON.stringify(data) }),
   testPromptReview: (data: PromptReviewTestRequest) =>
@@ -885,6 +889,8 @@ export const api = {
   },
   getPromptIntelligenceCandidateEvidence: (id: number) =>
     request<import('./types').PromptIntelligenceEvidenceResponse>(`/prompt-filter/intelligence/candidates/${id}/evidence`),
+  createPromptIntelligenceCandidateDraft: (id: number, data: import('./types').PromptIntelligenceRuleDraft) =>
+    request<{ candidate: import('./types').PromptIntelligenceCandidate; source_candidate_id: number }>(`/prompt-filter/intelligence/candidates/${id}/draft`, { method: 'POST', body: JSON.stringify(data) }),
   publishPromptIntelligenceCandidate: (id: number) =>
     request<{ candidate: import('./types').PromptIntelligenceCandidate; added: number; updated: number }>(`/prompt-filter/intelligence/candidates/${id}/publish`, { method: 'POST' }),
   dismissPromptIntelligenceCandidate: (id: number) =>
