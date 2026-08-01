@@ -221,6 +221,18 @@ test('Prompt Filter consolidates advanced controls and tests all configured revi
   assert.match(source, /test_all_keys: true/)
   assert.match(source, /reviewTestResult\.results/)
   assert.match(source, /openLearningReview/)
+  assert.match(source, /本身不是 cyber abuse/)
+  assert.match(source, /confidence 必须不高于 0\.10/)
+})
+
+test('recommended review prompt stays identical to the backend runtime default', () => {
+  const frontendSource = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
+  const backendSource = readFileSync(new URL('../../../security/promptfilter/review.go', import.meta.url), 'utf8')
+  const frontendPrompt = frontendSource.match(/const defaultReviewSystemPrompt = `([\s\S]*?)`\n\nconst defaultReviewUserPromptTemplate/)?.[1]
+  const backendPrompt = backendSource.match(/const DefaultReviewSystemPrompt = `([\s\S]*?)`\n\nconst DefaultReviewUserPromptTemplate/)?.[1]
+  assert.ok(frontendPrompt)
+  assert.ok(backendPrompt)
+  assert.equal(frontendPrompt, backendPrompt)
 })
 
 test('Prompt Filter rule tester renders the final GuardPipeline decision metadata', () => {
