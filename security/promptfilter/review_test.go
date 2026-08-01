@@ -12,6 +12,18 @@ import (
 	"testing"
 )
 
+func TestDefaultReviewPromptCalibratesPromptInjectionOnlyContent(t *testing.T) {
+	for _, fragment := range []string{
+		"本身不是 cyber abuse",
+		"confidence 必须不高于 0.10",
+		"没有针对他人系统、凭据、安全机制的具体攻击行为",
+	} {
+		if !strings.Contains(DefaultReviewSystemPrompt, fragment) {
+			t.Fatalf("default review prompt missing calibration fragment %q", fragment)
+		}
+	}
+}
+
 func TestReviewTextAllowsWhenNotFlagged(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
