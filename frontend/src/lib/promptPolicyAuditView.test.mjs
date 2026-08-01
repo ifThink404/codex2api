@@ -32,3 +32,9 @@ test('CY routing snapshots and NewAPI audit passthrough are visible', () => {
 	assert.match(source, /cyberRoutingState/)
   assert.match(source, /newapiPolicyStatus/)
 })
+
+test('Prompt log tables show the complete API key name inside the fixed-width column', () => {
+  assert.match(source, /const apiKeyLabel = log\.api_key_name \|\| log\.api_key_masked \|\| '-'/)
+  assert.match(source, /className="whitespace-normal break-all font-mono text-\[11px\] leading-4 text-foreground" title=\{apiKeyLabel\}/)
+  assert.doesNotMatch(source, /max-w-\[110px\] truncate[^\n]*api_key_name/)
+})

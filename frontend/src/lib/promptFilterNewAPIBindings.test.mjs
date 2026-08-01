@@ -37,18 +37,29 @@ test('key binding UI documents one-to-one isolation and one-time secret reveal',
   }
 })
 
-test('key bindings are embedded in the single NewAPI audit integration panel', () => {
-  const panelIndex = pageSource.indexOf("title={t('promptFilter.newapi.title')}")
+test('key bindings are embedded in an optional NewAPI adapter panel', () => {
+  const panelIndex = pageSource.indexOf("t('promptFilter.newapiAdapterSummary')")
   const bindingIndex = pageSource.indexOf('<PromptFilterNewAPIBindings />')
-  const intelligenceIndex = pageSource.indexOf("title={t('promptFilter.intelligence.configTitle')}")
+  const expertIndex = pageSource.indexOf("t('promptFilter.expertSettingsSummary')")
 
-  assert.ok(panelIndex >= 0, 'missing NewAPI audit integration panel')
+  assert.ok(panelIndex >= 0, 'missing optional NewAPI adapter panel')
   assert.ok(bindingIndex > panelIndex, 'Key bindings must be rendered inside the NewAPI integration panel')
-  assert.ok(intelligenceIndex > bindingIndex, 'Key bindings must remain inside the NewAPI panel before the next integration panel')
+  assert.ok(expertIndex > bindingIndex, 'Key bindings must remain inside the NewAPI panel before expert settings')
   assert.equal(pageSource.match(/<PromptFilterNewAPIBindings \/>/g)?.length, 1)
   assert.equal(componentSource.includes('<Card'), false, 'embedded binding editor must not create a second top-level card')
   assert.equal(pageSource.includes('getPromptFilterNewAPISecret'), false)
   assert.equal(pageSource.includes("setBool('newapi', 'enabled'"), false)
+  const recommendedPreset = pageSource.slice(
+    pageSource.indexOf('const applyRecommendedProtection'),
+    pageSource.indexOf('\n\n  return (', pageSource.indexOf('const applyRecommendedProtection')),
+  )
+  for (const fragment of [
+    "recommendedStrength === 'penalty'",
+    "t('promptFilter.penaltyRequiresNewAPI')",
+    'prompt_filter_review_enabled: true',
+  ]) {
+    assert.equal(recommendedPreset.includes(fragment), false, `generic local preset still contains a deployment-specific dependency: ${fragment}`)
+  }
 })
 
 test('enabling required signatures is protected by a 401 safety confirmation', () => {

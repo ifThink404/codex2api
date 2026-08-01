@@ -141,7 +141,7 @@ func TestCompositeToolOutputAuditUsesTriggeringSegmentWithoutStrike(t *testing.T
 	}
 	metadata := buildNewAPIPolicyDecisionMetadataWithSecret(
 		newAPIIdentity{RequestID: "tool-output-audit"}, evaluation.Decision, evaluation.Verdict,
-		cfg, body, "/v1/responses", "gpt-5.5", "", "fanren-secret",
+		cfg, body, "/v1/responses", "gpt-5.5", "", "gateway-a-secret",
 	)
 	if metadata.Severity != "medium" || metadata.StrikeEligible {
 		t.Fatalf("non-punitive tool-output audit emitted punitive metadata: %+v", metadata)

@@ -11,11 +11,11 @@ func TestPromptRiskAdaptiveTrustLifecycleAndAutomaticSuspension(t *testing.T) {
 	ctx := context.Background()
 	if err := db.InsertPromptFilterLog(ctx, &PromptFilterLogInput{
 		Source: "local_filter", Action: "allow", ReviewModel: "review-model", ReviewFlagged: false,
-		NewAPIPolicyStatus: "verified", NewAPIPlatform: "fanren", NewAPIUserID: "trusted-user",
+		NewAPIPolicyStatus: "verified", NewAPIPlatform: "gateway-a", NewAPIUserID: "trusted-user",
 	}); err != nil {
 		t.Fatalf("InsertPromptFilterLog(clean): %v", err)
 	}
-	subjectKey := PromptRiskNewAPIUserSubjectKey("fanren", "trusted-user")
+	subjectKey := PromptRiskNewAPIUserSubjectKey("gateway-a", "trusted-user")
 	policy, err := db.UpsertPromptRiskTrustPolicy(ctx, PromptRiskTrustPolicyInput{
 		SubjectType: PromptRiskSubjectNewAPIUser, SubjectKey: subjectKey, Reason: "低风险付费用户首字优化",
 		RiskThreshold: 35, ValidUntil: time.Now().UTC().Add(24 * time.Hour),
@@ -33,7 +33,7 @@ func TestPromptRiskAdaptiveTrustLifecycleAndAutomaticSuspension(t *testing.T) {
 	if err := db.InsertPromptFilterLog(ctx, &PromptFilterLogInput{
 		Source: "local_filter", Action: "block", Score: 90, AuditScore: 90, StrikeEligible: true,
 		MatchedPatterns: `[{"name":"terminal","weight":90}]`, NewAPIPolicyStatus: "verified",
-		NewAPIPlatform: "fanren", NewAPIUserID: "trusted-user",
+		NewAPIPlatform: "gateway-a", NewAPIUserID: "trusted-user",
 	}); err != nil {
 		t.Fatalf("InsertPromptFilterLog(block): %v", err)
 	}

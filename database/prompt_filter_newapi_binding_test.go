@@ -71,16 +71,16 @@ func TestPromptFilterNewAPIBindingCRUDAndSecretRotationSQLite(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	apiKeyID, err := db.InsertAPIKey(ctx, "fanren", "sk-fanren-binding-test")
+	apiKeyID, err := db.InsertAPIKey(ctx, "gateway-a", "sk-gateway-a-binding-test")
 	if err != nil {
 		t.Fatalf("InsertAPIKey: %v", err)
 	}
-	otherAPIKeyID, err := db.InsertAPIKey(ctx, "buycodekey", "sk-buycodekey-binding-test")
+	otherAPIKeyID, err := db.InsertAPIKey(ctx, "gateway-b", "sk-gateway-b-binding-test")
 	if err != nil {
 		t.Fatalf("InsertAPIKey other: %v", err)
 	}
 	binding := &PromptFilterNewAPIBinding{
-		APIKeyID: apiKeyID, PlatformCode: "fanren", PlatformName: "凡人 NewAPI",
+		APIKeyID: apiKeyID, PlatformCode: "gateway-a", PlatformName: "示例平台 NewAPI",
 		Secret: "01234567890123456789012345678901", Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: PromptFilterPolicyModeEnforce, PolicyProfile: PromptFilterPolicyProfileBalanced,
 	}
@@ -91,7 +91,7 @@ func TestPromptFilterNewAPIBindingCRUDAndSecretRotationSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get binding: %v", err)
 	}
-	if got.PlatformCode != "fanren" || got.Secret != binding.Secret || !got.Enabled || !got.RequireSignedIdentity {
+	if got.PlatformCode != "gateway-a" || got.Secret != binding.Secret || !got.Enabled || !got.RequireSignedIdentity {
 		t.Fatalf("binding = %#v", got)
 	}
 	if got.PolicyMode != PromptFilterPolicyModeInherit || got.PolicyProfile != PromptFilterPolicyProfileInherit {
@@ -111,8 +111,8 @@ func TestPromptFilterNewAPIBindingCRUDAndSecretRotationSQLite(t *testing.T) {
 		t.Fatalf("duplicate platform error = %v, want conflict", err)
 	}
 
-	got.PlatformCode = "fanren-prod"
-	got.PlatformName = "凡人生产站"
+	got.PlatformCode = "gateway-a-prod"
+	got.PlatformName = "示例平台生产站"
 	got.PolicyMode = PromptFilterPolicyModeWarn
 	got.PolicyProfile = PromptFilterPolicyProfileStrict
 	got.Enabled = false
@@ -168,11 +168,11 @@ func TestNormalizePromptFilterPlatformCode(t *testing.T) {
 	}
 	for _, value := range []string{
 		strings.Repeat("a", 33),
-		"_fanren",
-		"-fanren",
-		"fanren.prod",
-		"fanren/prod",
-		"fanren:prod",
+		"_gateway-a",
+		"-gateway-a",
+		"gateway-a.prod",
+		"gateway-a/prod",
+		"gateway-a:prod",
 		"",
 	} {
 		if got, ok := NormalizePromptFilterPlatformCode(value); ok {

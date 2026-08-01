@@ -151,7 +151,7 @@ func TestPromptFilterAuditLogKeepsEnvelopeMetadataWhenSignedMetaIsUnknown(t *tes
 func TestPromptFilterAuditClassifiesNewAPIPassthroughState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{
-		{APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true},
+		{APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true},
 		{APIKeyID: 102, PlatformCode: "disabled", Secret: "disabled-secret", Enabled: false},
 	})
 	makeContext := func(apiKeyID int64) *gin.Context {
@@ -162,7 +162,7 @@ func TestPromptFilterAuditClassifiesNewAPIPassthroughState(t *testing.T) {
 	}
 
 	unsigned := handler.capturePromptFilterAuditContext(makeContext(101))
-	if unsigned.NewAPIPolicyStatus != "unsigned_request" || unsigned.NewAPIPlatform != "fanren" {
+	if unsigned.NewAPIPolicyStatus != "unsigned_request" || unsigned.NewAPIPlatform != "gateway-a" {
 		t.Fatalf("unsigned bound request state = %+v", unsigned)
 	}
 	invalid := makeContext(101)
@@ -181,18 +181,18 @@ func TestPromptFilterAuditClassifiesNewAPIPassthroughState(t *testing.T) {
 func TestPromptFilterAuditCapturesOnlyVerifiedSignedUserIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true,
 	}})
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Set(contextAPIKeyID, int64(101))
 	c.Set(newAPIPolicyMetaContextKey, verifiedNewAPIPolicyContext{
 		Identity: newAPIIdentity{UserID: "73", ClientIP: "203.0.113.73", RequestID: "req-73"},
-		APIKeyID: 101, Platform: "fanren", MetaVerified: true,
-		Meta: newAPIPolicyMeta{UserName: "凡人用户", UserEmail: "fanren@example.com", UserGroup: "vip"},
+		APIKeyID: 101, Platform: "gateway-a", MetaVerified: true,
+		Meta: newAPIPolicyMeta{UserName: "示例平台用户", UserEmail: "gateway-a@example.com", UserGroup: "vip"},
 	})
 	got := handler.capturePromptFilterAuditContext(c)
-	if got.NewAPIPolicyStatus != "verified" || got.NewAPIUserID != "73" || got.NewAPIUserName != "凡人用户" || got.NewAPIUserEmail != "fanren@example.com" || got.NewAPIUserGroup != "vip" {
+	if got.NewAPIPolicyStatus != "verified" || got.NewAPIUserID != "73" || got.NewAPIUserName != "示例平台用户" || got.NewAPIUserEmail != "gateway-a@example.com" || got.NewAPIUserGroup != "vip" {
 		t.Fatalf("verified identity audit = %+v", got)
 	}
 }
@@ -466,25 +466,25 @@ func TestBoundNewAPIIdentityIsolatedByAPIKeyPlatformAndSecret(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	fingerprint := promptSessionTestFingerprint("same-session")
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{
-		{APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
-		{APIKeyID: 202, PlatformCode: "buycodekey", Secret: "buy-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+		{APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+		{APIKeyID: 202, PlatformCode: "gateway-b", Secret: "gateway-b-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
 	})
 	identity := newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}
 
-	fanren := signedBoundNewAPIPolicyContext(t, "same-request", identity, body, 101, "fanren", "fanren-secret", fingerprint)
-	fanrenCfg := handler.promptFilterConfigForRequest(fanren)
-	fanrenVerified, ok := handler.verifyNewAPIPolicyContext(fanren, fanrenCfg.Advanced.NewAPI, body)
-	if !ok || fanrenVerified.APIKeyID != 101 || fanrenVerified.Platform != "fanren" || fanrenVerified.VerificationSecret != "fanren-secret" {
-		t.Fatalf("fanren verification = %+v ok=%v", fanrenVerified, ok)
+	gatewayAContext := signedBoundNewAPIPolicyContext(t, "same-request", identity, body, 101, "gateway-a", "gateway-a-secret", fingerprint)
+	gatewayAConfig := handler.promptFilterConfigForRequest(gatewayAContext)
+	gatewayAVerified, ok := handler.verifyNewAPIPolicyContext(gatewayAContext, gatewayAConfig.Advanced.NewAPI, body)
+	if !ok || gatewayAVerified.APIKeyID != 101 || gatewayAVerified.Platform != "gateway-a" || gatewayAVerified.VerificationSecret != "gateway-a-secret" {
+		t.Fatalf("gateway-a verification = %+v ok=%v", gatewayAVerified, ok)
 	}
 
 	// The exact same request/user/session tuple is valid on another platform;
 	// replay state is scoped by Codex API key and bound platform.
-	buy := signedBoundNewAPIPolicyContext(t, "same-request", identity, body, 202, "buycodekey", "buy-secret", fingerprint)
+	buy := signedBoundNewAPIPolicyContext(t, "same-request", identity, body, 202, "gateway-b", "gateway-b-secret", fingerprint)
 	buyCfg := handler.promptFilterConfigForRequest(buy)
 	buyVerified, ok := handler.verifyNewAPIPolicyContext(buy, buyCfg.Advanced.NewAPI, body)
-	if !ok || buyVerified.APIKeyID != 202 || buyVerified.Platform != "buycodekey" || buyVerified.VerificationSecret != "buy-secret" {
-		t.Fatalf("buycodekey verification = %+v ok=%v", buyVerified, ok)
+	if !ok || buyVerified.APIKeyID != 202 || buyVerified.Platform != "gateway-b" || buyVerified.VerificationSecret != "gateway-b-secret" {
+		t.Fatalf("gateway-b verification = %+v ok=%v", buyVerified, ok)
 	}
 
 	for _, tc := range []struct {
@@ -493,9 +493,9 @@ func TestBoundNewAPIIdentityIsolatedByAPIKeyPlatformAndSecret(t *testing.T) {
 		secret     string
 		platformID string
 	}{
-		{name: "other binding secret", requestID: "cross-secret", secret: "buy-secret", platformID: "fanren"},
-		{name: "legacy global fallback", requestID: "global-fallback", secret: "legacy-global-secret", platformID: "fanren"},
-		{name: "signed platform mismatch", requestID: "platform-mismatch", secret: "fanren-secret", platformID: "buycodekey"},
+		{name: "other binding secret", requestID: "cross-secret", secret: "gateway-b-secret", platformID: "gateway-a"},
+		{name: "legacy global fallback", requestID: "global-fallback", secret: "legacy-global-secret", platformID: "gateway-a"},
+		{name: "signed platform mismatch", requestID: "platform-mismatch", secret: "gateway-a-secret", platformID: "gateway-b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := signedBoundNewAPIPolicyContext(t, tc.requestID, identity, body, 101, tc.platformID, tc.secret, fingerprint)
@@ -510,7 +510,7 @@ func TestBoundNewAPIIdentityIsolatedByAPIKeyPlatformAndSecret(t *testing.T) {
 func TestNewAPIIdentitySecretsDoNotFallbackForUnboundKeyInBindingMode(t *testing.T) {
 	t.Setenv("PROMPT_FILTER_NEWAPI_SECRET", "legacy-global-secret")
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true,
 		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
 	}})
 	unbound, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -533,7 +533,7 @@ func TestNewAPIIdentitySecretsDoNotFallbackForUnboundKeyInBindingMode(t *testing
 
 func TestUnboundWebSocketIsNotRevokedByAnotherKeysBinding(t *testing.T) {
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true,
 		PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit,
 	}})
 	connection, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -558,7 +558,7 @@ func TestUnboundWebSocketIsNotRevokedByAnotherKeysBinding(t *testing.T) {
 
 func TestBindingSnapshotRefreshesPolicyAndRevokesObsoleteWebSocketIdentity(t *testing.T) {
 	oldBinding := database.PromptFilterNewAPIBinding{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "old-secret", Enabled: true, RequireSignedIdentity: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "old-secret", Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: database.PromptFilterPolicyModeWarn, PolicyProfile: database.PromptFilterPolicyProfileResearch,
 	}
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{oldBinding})
@@ -567,11 +567,11 @@ func TestBindingSnapshotRefreshesPolicyAndRevokesObsoleteWebSocketIdentity(t *te
 		c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 		c.Set(contextAPIKeyID, int64(101))
 		binding, bound := handler.resolvePromptFilterNewAPIBinding(c)
-		if !bound || binding.PlatformCode != "fanren" {
+		if !bound || binding.PlatformCode != "gateway-a" {
 			t.Fatalf("initial binding = %+v bound=%v", binding, bound)
 		}
 		c.Set(newAPIIdentityContextKey, verifiedNewAPIIdentityContext{
-			APIKeyID: 101, Platform: "fanren", VerificationSecret: "old-secret",
+			APIKeyID: 101, Platform: "gateway-a", VerificationSecret: "old-secret",
 		})
 		return c
 	}
@@ -579,7 +579,7 @@ func TestBindingSnapshotRefreshesPolicyAndRevokesObsoleteWebSocketIdentity(t *te
 	c := newConnection()
 	expiresAt := time.Now().Add(time.Minute)
 	rotated := database.PromptFilterNewAPIBinding{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "new-secret", PreviousSecret: "old-secret", PreviousSecretExpiresAt: &expiresAt,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "new-secret", PreviousSecret: "old-secret", PreviousSecretExpiresAt: &expiresAt,
 		Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileStrict,
 	}
@@ -601,9 +601,9 @@ func TestBindingSnapshotRefreshesPolicyAndRevokesObsoleteWebSocketIdentity(t *te
 		name     string
 		bindings []database.PromptFilterNewAPIBinding
 	}{
-		{name: "secret grace expired", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "fanren", Secret: "new-secret", Enabled: true, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
-		{name: "binding disabled", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "fanren", Secret: "old-secret", Enabled: false, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
-		{name: "platform rebound", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "buycodekey", Secret: "old-secret", Enabled: true, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
+		{name: "secret grace expired", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "gateway-a", Secret: "new-secret", Enabled: true, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
+		{name: "binding disabled", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "gateway-a", Secret: "old-secret", Enabled: false, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
+		{name: "platform rebound", bindings: []database.PromptFilterNewAPIBinding{{APIKeyID: 101, PlatformCode: "gateway-b", Secret: "old-secret", Enabled: true, RequireSignedIdentity: true, PolicyMode: "inherit", PolicyProfile: "inherit"}}},
 		{name: "binding deleted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -640,7 +640,7 @@ func TestResponsesWebSocketClosesBeforeUpstreamAfterBindingSecretRevocation(t *t
 	defer store.Stop()
 	store.SetPromptFilterConfig(promptGuardTestConfig())
 	store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{{
-		APIKeyID: apiKeyID, PlatformCode: "fanren", Secret: "fanren-old-secret", Enabled: true, RequireSignedIdentity: true,
+		APIKeyID: apiKeyID, PlatformCode: "gateway-a", Secret: "gateway-a-old-secret", Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
 	}})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at", PlanType: "plus", AccountID: "acct-ws-binding"})
@@ -662,7 +662,7 @@ func TestResponsesWebSocketClosesBeforeUpstreamAfterBindingSecretRevocation(t *t
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
 	signedRequest := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 	signedRequest.Header.Set("Authorization", "Bearer "+apiKey)
-	setSignedNewAPIRequestHeaders(t, signedRequest, nil, "ws-binding-handshake", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "fanren", "fanren-old-secret", "")
+	setSignedNewAPIRequestHeaders(t, signedRequest, nil, "ws-binding-handshake", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "gateway-a", "gateway-a-old-secret", "")
 	conn, response, err := websocket.DefaultDialer.Dial(wsURL, signedRequest.Header)
 	if err != nil {
 		if response != nil {
@@ -673,7 +673,7 @@ func TestResponsesWebSocketClosesBeforeUpstreamAfterBindingSecretRevocation(t *t
 	defer conn.Close()
 
 	store.UpsertPromptFilterNewAPIBinding(database.PromptFilterNewAPIBinding{
-		APIKeyID: apiKeyID, PlatformCode: "fanren", Secret: "fanren-new-secret", Enabled: true, RequireSignedIdentity: true,
+		APIKeyID: apiKeyID, PlatformCode: "gateway-a", Secret: "gateway-a-new-secret", Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
 	})
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.5","input":"hello"}`)); err != nil {
@@ -699,15 +699,15 @@ func TestBindingAndSignedMetaCannotControlGuardModeOrProfile(t *testing.T) {
 		cfg := promptGuardTestConfig()
 		cfg.Advanced.Guard.AllowTrustedOverrides = true
 		handler := newPromptFilterBindingTestHandler(t, cfg, []database.PromptFilterNewAPIBinding{{
-			APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+			APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true,
 			PolicyMode: bindingMode, PolicyProfile: bindingProfile,
 		}})
-		c, _ := signedNewAPIPolicyContextWithSecret(t, requestID, identity, "/v1/responses", body, "fanren-secret")
+		c, _ := signedNewAPIPolicyContextWithSecret(t, requestID, identity, "/v1/responses", body, "gateway-a-secret")
 		c.Set(contextAPIKeyID, int64(101))
 		addSignedNewAPIPolicyMetaWithSecret(t, c, newAPIPolicyMeta{
-			PlatformID: "fanren", Profile: promptfilter.GuardProfileResearch, Mode: promptfilter.GuardModeOff,
+			PlatformID: "gateway-a", Profile: promptfilter.GuardProfileResearch, Mode: promptfilter.GuardModeOff,
 			Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
-		}, true, "fanren-secret")
+		}, true, "gateway-a-secret")
 		requestCfg := handler.promptFilterConfigForRequest(c)
 		_, _, trusted, profile, mode, _, _ := handler.resolvePromptGuardOverrides(c, requestCfg, body, "gpt-5.5")
 		return profile, mode, trusted
@@ -733,7 +733,7 @@ func TestSignedPolicyMetaRejectsInvalidPlatformCodeWithoutTruncation(t *testing.
 	if !normalizeVerifiedNewAPIPolicyMeta(&meta) || meta.PlatformID != strings.ToLower(valid32) {
 		t.Fatalf("valid platform metadata was rejected or not normalized: %+v", meta)
 	}
-	for _, value := range []string{strings.Repeat("a", 33), "fanren.prod", "_fanren"} {
+	for _, value := range []string{strings.Repeat("a", 33), "gateway-a.prod", "_gateway-a"} {
 		invalid := newAPIPolicyMeta{
 			PlatformID: value, Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
 			Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
@@ -746,11 +746,11 @@ func TestSignedPolicyMetaRejectsInvalidPlatformCodeWithoutTruncation(t *testing.
 
 func TestSignedPolicyMetaNormalizesUserIdentityText(t *testing.T) {
 	meta := newAPIPolicyMeta{
-		PlatformID: "fanren", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		PlatformID: "gateway-a", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
 		Provider: string(promptfilter.ModelFamilyOpenAI), Protocol: string(promptfilter.ProtocolResponses),
-		UserName: "  凡人用户  ", UserEmail: " user@example.com ", UserGroup: " vip ",
+		UserName: "  示例平台用户  ", UserEmail: " user@example.com ", UserGroup: " vip ",
 	}
-	if !normalizeVerifiedNewAPIPolicyMeta(&meta) || meta.UserName != "凡人用户" || meta.UserEmail != "user@example.com" || meta.UserGroup != "vip" {
+	if !normalizeVerifiedNewAPIPolicyMeta(&meta) || meta.UserName != "示例平台用户" || meta.UserEmail != "user@example.com" || meta.UserGroup != "vip" {
 		t.Fatalf("identity metadata normalization = %+v", meta)
 	}
 	meta.UserName = "bad\nname"
@@ -764,12 +764,12 @@ func TestBoundPreviousSecretGraceSignsDecisionWithVerifiedSecret(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	expires := time.Now().Add(time.Minute)
 	binding := database.PromptFilterNewAPIBinding{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "current-secret", Enabled: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "current-secret", Enabled: true,
 		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
 		PreviousSecret: "previous-secret", PreviousSecretExpiresAt: &expires,
 	}
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{binding})
-	c := signedBoundNewAPIPolicyContext(t, "previous-grace", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "fanren", "previous-secret", "")
+	c := signedBoundNewAPIPolicyContext(t, "previous-grace", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "gateway-a", "previous-secret", "")
 	cfg := handler.promptFilterConfigForRequest(c)
 	decision := promptfilter.Decision{Action: promptfilter.ActionBlock, Profile: promptfilter.GuardProfileBalanced, ReasonCode: "prompt_policy_match", StrikeEligible: true}
 	verdict := promptfilter.Verdict{Action: promptfilter.ActionBlock, FullText: "blocked evidence"}
@@ -795,7 +795,7 @@ func TestBoundPreviousSecretGraceSignsDecisionWithVerifiedSecret(t *testing.T) {
 	expired := time.Now().Add(-time.Second)
 	binding.PreviousSecretExpiresAt = &expired
 	handler.store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{&binding})
-	expiredContext := signedBoundNewAPIPolicyContext(t, "previous-expired", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "fanren", "previous-secret", "")
+	expiredContext := signedBoundNewAPIPolicyContext(t, "previous-expired", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "gateway-a", "previous-secret", "")
 	expiredCfg := handler.promptFilterConfigForRequest(expiredContext)
 	if _, verified := handler.verifyNewAPIPolicyContext(expiredContext, expiredCfg.Advanced.NewAPI, body); verified {
 		t.Fatal("expired previous secret was accepted")
@@ -806,15 +806,15 @@ func TestSignedNewAPIPolicyBlockUsesAnthropicErrorEnvelopeForMessages(t *testing
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hello"}]}`)
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, RequireSignedIdentity: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
 	}})
-	c, recorder := signedNewAPIPolicyContextWithSecret(t, "messages-policy-block", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/messages", body, "fanren-secret")
+	c, recorder := signedNewAPIPolicyContextWithSecret(t, "messages-policy-block", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/messages", body, "gateway-a-secret")
 	c.Set(contextAPIKeyID, int64(101))
 	addSignedNewAPIPolicyMetaWithSecret(t, c, newAPIPolicyMeta{
-		PlatformID: "fanren", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
+		PlatformID: "gateway-a", Profile: promptfilter.GuardProfileBalanced, Mode: promptfilter.GuardModeEnforce,
 		Provider: string(promptfilter.ModelFamilyAnthropic), Protocol: string(promptfilter.ProtocolMessages),
-	}, true, "fanren-secret")
+	}, true, "gateway-a-secret")
 	cfg := handler.promptFilterConfigForRequest(c)
 	decision := promptfilter.Decision{Action: promptfilter.ActionBlock, Profile: promptfilter.GuardProfileBalanced, ReasonCode: "prompt_policy_match"}
 	verdict := promptfilter.Verdict{Action: promptfilter.ActionBlock, FullText: "blocked tool output"}
@@ -835,7 +835,7 @@ func TestBindingCannotChangeRequestPolicySnapshot(t *testing.T) {
 	base.Advanced.Guard.Mode = promptfilter.GuardModeEnforce
 	base.Advanced.Guard.DefaultProfile = promptfilter.GuardProfileBalanced
 	handler := newPromptFilterBindingTestHandler(t, base, []database.PromptFilterNewAPIBinding{{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true,
 		PolicyMode: database.PromptFilterPolicyModeWarn, PolicyProfile: database.PromptFilterPolicyProfileResearch,
 	}})
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -851,7 +851,7 @@ func TestRequiredBoundIdentityFailsWithoutPolicyPenalty(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	handler := newPromptFilterBindingTestHandler(t, promptGuardTestConfig(), []database.PromptFilterNewAPIBinding{{
-		APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, RequireSignedIdentity: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
 	}})
 
@@ -867,7 +867,7 @@ func TestRequiredBoundIdentityFailsWithoutPolicyPenalty(t *testing.T) {
 	}
 	assertNoPromptPolicyPenaltyHeaders(t, missingRecorder.Header())
 
-	missingMeta, missingMetaRecorder := signedNewAPIPolicyContextWithSecret(t, "missing-meta", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/responses", body, "fanren-secret")
+	missingMeta, missingMetaRecorder := signedNewAPIPolicyContextWithSecret(t, "missing-meta", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "/v1/responses", body, "gateway-a-secret")
 	missingMeta.Set(contextAPIKeyID, int64(101))
 	if !handler.rejectRequiredNewAPIIdentity(missingMeta, handler.promptFilterConfigForRequest(missingMeta).Advanced.NewAPI, body) {
 		t.Fatal("missing signed platform metadata was not rejected")
@@ -877,7 +877,7 @@ func TestRequiredBoundIdentityFailsWithoutPolicyPenalty(t *testing.T) {
 	}
 	assertNoPromptPolicyPenaltyHeaders(t, missingMetaRecorder.Header())
 
-	wrongPlatform := signedBoundNewAPIPolicyContext(t, "wrong-platform-required", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "buycodekey", "fanren-secret", "")
+	wrongPlatform := signedBoundNewAPIPolicyContext(t, "wrong-platform-required", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "gateway-b", "gateway-a-secret", "")
 	if !handler.rejectRequiredNewAPIIdentity(wrongPlatform, handler.promptFilterConfigForRequest(wrongPlatform).Advanced.NewAPI, body) {
 		t.Fatal("mismatched signed platform identity was not rejected")
 	}
@@ -902,7 +902,7 @@ func TestAuthMiddlewareEnforcesBoundIdentityAndRestoresV1Body(t *testing.T) {
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1})
 	store.SetPromptFilterConfig(promptGuardTestConfig())
 	store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{{
-		APIKeyID: apiKeyID, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, RequireSignedIdentity: true,
+		APIKeyID: apiKeyID, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true, RequireSignedIdentity: true,
 		PolicyMode: database.PromptFilterPolicyModeEnforce, PolicyProfile: database.PromptFilterPolicyProfileBalanced,
 	}})
 	handler := NewHandler(store, db, nil, nil)
@@ -946,7 +946,7 @@ func TestAuthMiddlewareEnforcesBoundIdentityAndRestoresV1Body(t *testing.T) {
 	wrongPlatformBody := []byte(`{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hello"}]}`)
 	wrongPlatform := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(wrongPlatformBody))
 	wrongPlatform.Header.Set("Authorization", "Bearer "+apiKey)
-	setSignedNewAPIRequestHeaders(t, wrongPlatform, wrongPlatformBody, "messages-wrong-platform", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "buycodekey", "fanren-secret", "")
+	setSignedNewAPIRequestHeaders(t, wrongPlatform, wrongPlatformBody, "messages-wrong-platform", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "gateway-b", "gateway-a-secret", "")
 	wrongPlatformRecorder := httptest.NewRecorder()
 	router.ServeHTTP(wrongPlatformRecorder, wrongPlatform)
 	if wrongPlatformRecorder.Code != http.StatusUnauthorized || gjson.GetBytes(wrongPlatformRecorder.Body.Bytes(), "type").String() != "error" || gjson.GetBytes(wrongPlatformRecorder.Body.Bytes(), "error.type").String() != "authentication_error" {
@@ -957,7 +957,7 @@ func TestAuthMiddlewareEnforcesBoundIdentityAndRestoresV1Body(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	valid := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	valid.Header.Set("Authorization", "Bearer "+apiKey)
-	setSignedNewAPIRequestHeaders(t, valid, body, "v1-valid", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "fanren", "fanren-secret", "")
+	setSignedNewAPIRequestHeaders(t, valid, body, "v1-valid", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "gateway-a", "gateway-a-secret", "")
 	validRecorder := httptest.NewRecorder()
 	router.ServeHTTP(validRecorder, valid)
 	if validRecorder.Code != http.StatusOK || !bytes.Equal(validRecorder.Body.Bytes(), body) {
@@ -968,10 +968,10 @@ func TestAuthMiddlewareEnforcesBoundIdentityAndRestoresV1Body(t *testing.T) {
 	handler.RegisterRoutes(verifyRouter)
 	verifyRequest := httptest.NewRequest(http.MethodPost, "/v1/prompt-filter/newapi/verify", nil)
 	verifyRequest.Header.Set("Authorization", "Bearer "+apiKey)
-	setSignedNewAPIRequestHeaders(t, verifyRequest, nil, "v1-binding-handshake", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "fanren", "fanren-secret", "")
+	setSignedNewAPIRequestHeaders(t, verifyRequest, nil, "v1-binding-handshake", newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "gateway-a", "gateway-a-secret", "")
 	verifyRecorder := httptest.NewRecorder()
 	verifyRouter.ServeHTTP(verifyRecorder, verifyRequest)
-	if verifyRecorder.Code != http.StatusOK || gjson.GetBytes(verifyRecorder.Body.Bytes(), "platform").String() != "fanren" {
+	if verifyRecorder.Code != http.StatusOK || gjson.GetBytes(verifyRecorder.Body.Bytes(), "platform").String() != "gateway-a" {
 		t.Fatalf("authenticated V1 binding handshake = %d %s", verifyRecorder.Code, verifyRecorder.Body.String())
 	}
 }
@@ -985,8 +985,8 @@ func TestBoundRiskAndSessionStateArePlatformScoped(t *testing.T) {
 	cfg.Advanced.Risk.IPWeightPercent = 0
 	cfg.Advanced.Risk.SessionWeightPercent = 100
 	handler := newPromptFilterBindingTestHandler(t, promptfilter.NormalizeConfig(cfg), []database.PromptFilterNewAPIBinding{
-		{APIKeyID: 101, PlatformCode: "fanren", Secret: "fanren-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
-		{APIKeyID: 202, PlatformCode: "buycodekey", Secret: "buy-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+		{APIKeyID: 101, PlatformCode: "gateway-a", Secret: "gateway-a-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
+		{APIKeyID: 202, PlatformCode: "gateway-b", Secret: "gateway-b-secret", Enabled: true, PolicyMode: database.PromptFilterPolicyModeInherit, PolicyProfile: database.PromptFilterPolicyProfileInherit},
 	})
 	fingerprint := promptSessionTestFingerprint("same-session")
 	identity := newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}
@@ -998,27 +998,27 @@ func TestBoundRiskAndSessionStateArePlatformScoped(t *testing.T) {
 		setIngressRequestBodyIfAbsent(c, body)
 		return handler.applyPromptRisk(c, verdict, handler.promptFilterConfigForRequest(c))
 	}
-	if got := applyRisk("risk-fanren-1", 101, "fanren", "fanren-secret"); got.RiskScore > verdict.Score {
-		t.Fatalf("first fanren risk unexpectedly accumulated: %+v", got)
+	if got := applyRisk("risk-gateway-a-1", 101, "gateway-a", "gateway-a-secret"); got.RiskScore > verdict.Score {
+		t.Fatalf("first gateway-a risk unexpectedly accumulated: %+v", got)
 	}
-	if got := applyRisk("risk-buy-1", 202, "buycodekey", "buy-secret"); got.RiskScore > verdict.Score {
-		t.Fatalf("buycodekey inherited fanren risk: %+v", got)
+	if got := applyRisk("risk-gateway-b-1", 202, "gateway-b", "gateway-b-secret"); got.RiskScore > verdict.Score {
+		t.Fatalf("gateway-b inherited gateway-a risk: %+v", got)
 	}
-	if got := applyRisk("risk-fanren-2", 101, "fanren", "fanren-secret"); got.RiskScore <= verdict.Score {
+	if got := applyRisk("risk-gateway-a-2", 101, "gateway-a", "gateway-a-secret"); got.RiskScore <= verdict.Score {
 		t.Fatalf("same-platform session risk did not accumulate: %+v", got)
 	}
 
-	seed := evaluateBoundPromptSession(t, handler, "session-fanren-seed", 101, "fanren", "fanren-secret", fingerprint, []byte(`{"input":"请记住这段平台隔离上下文。"}`))
+	seed := evaluateBoundPromptSession(t, handler, "session-gateway-a-seed", 101, "gateway-a", "gateway-a-secret", fingerprint, []byte(`{"input":"请记住这段平台隔离上下文。"}`))
 	if seed.Decision.Action == promptfilter.ActionBlock {
 		t.Fatalf("benign session seed blocked: %+v", seed.Decision)
 	}
-	buyContinuation := evaluateBoundPromptSession(t, handler, "session-buy-cont", 202, "buycodekey", "buy-secret", fingerprint, []byte(`{"input":"继续"}`))
+	buyContinuation := evaluateBoundPromptSession(t, handler, "session-gateway-b-cont", 202, "gateway-b", "gateway-b-secret", fingerprint, []byte(`{"input":"继续"}`))
 	if promptEnvelopeHasOrigin(buyContinuation.Envelope, promptfilter.OriginSessionContext) {
 		t.Fatalf("session context crossed platform boundary: %+v", buyContinuation.Envelope.Segments)
 	}
-	fanrenContinuation := evaluateBoundPromptSession(t, handler, "session-fanren-cont", 101, "fanren", "fanren-secret", fingerprint, []byte(`{"input":"继续"}`))
-	if !promptEnvelopeHasOrigin(fanrenContinuation.Envelope, promptfilter.OriginSessionContext) {
-		t.Fatalf("same-platform session context was not linked: %+v", fanrenContinuation.Envelope.Segments)
+	gatewayAContinuation := evaluateBoundPromptSession(t, handler, "session-gateway-a-cont", 101, "gateway-a", "gateway-a-secret", fingerprint, []byte(`{"input":"继续"}`))
+	if !promptEnvelopeHasOrigin(gatewayAContinuation.Envelope, promptfilter.OriginSessionContext) {
+		t.Fatalf("same-platform session context was not linked: %+v", gatewayAContinuation.Envelope.Segments)
 	}
 }
 

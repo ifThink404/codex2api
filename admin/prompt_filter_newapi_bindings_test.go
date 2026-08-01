@@ -46,7 +46,7 @@ func TestPromptFilterNewAPIBindingAdminLifecycleMasksSecretsAndReloadsStore(t *t
 		t.Fatalf("overlong platform code response=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 
-	createBody := `{"api_key_id":` + jsonNumber(apiKeyID) + `,"platform_code":"fanren","platform_name":"凡人 NewAPI"}`
+	createBody := `{"api_key_id":` + jsonNumber(apiKeyID) + `,"platform_code":"gateway-a","platform_name":"示例平台 NewAPI"}`
 	created := do(http.MethodPost, "/api/admin/prompt-filter/newapi-bindings", createBody)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
@@ -74,12 +74,12 @@ func TestPromptFilterNewAPIBindingAdminLifecycleMasksSecretsAndReloadsStore(t *t
 		t.Fatalf("list leaked secret: %s", listed.Body.String())
 	}
 
-	patched := do(http.MethodPatch, "/api/admin/prompt-filter/newapi-bindings/"+jsonNumber(apiKeyID), `{"platform_name":"凡人生产站","enabled":false}`)
+	patched := do(http.MethodPatch, "/api/admin/prompt-filter/newapi-bindings/"+jsonNumber(apiKeyID), `{"platform_name":"示例平台生产站","enabled":false}`)
 	if patched.Code != http.StatusOK {
 		t.Fatalf("patch status=%d body=%s", patched.Code, patched.Body.String())
 	}
 	runtimeBinding, _ = store.GetPromptFilterNewAPIBinding(apiKeyID)
-	if runtimeBinding.PlatformName != "凡人生产站" || runtimeBinding.Enabled {
+	if runtimeBinding.PlatformName != "示例平台生产站" || runtimeBinding.Enabled {
 		t.Fatalf("runtime patch binding=%#v", runtimeBinding)
 	}
 	if strings.Contains(patched.Body.String(), "policy_mode") || strings.Contains(patched.Body.String(), "policy_profile") {
@@ -143,7 +143,7 @@ func TestPromptFilterNewAPIBindingSecretRotationCompletesAfterClientCancellation
 	apiKeyID := insertTestAPIKey(t, db, "Canceled Binding Rotation")
 	originalSecret := "01234567890123456789012345678901"
 	if err := db.CreatePromptFilterNewAPIBinding(context.Background(), &database.PromptFilterNewAPIBinding{
-		APIKeyID: apiKeyID, PlatformCode: "fanren-canceled", PlatformName: "凡人取消测试", Secret: originalSecret,
+		APIKeyID: apiKeyID, PlatformCode: "gateway-a-canceled", PlatformName: "示例平台取消测试", Secret: originalSecret,
 		Enabled: true,
 	}); err != nil {
 		t.Fatalf("create binding: %v", err)

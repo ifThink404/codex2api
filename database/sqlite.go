@@ -392,6 +392,13 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			review_model TEXT DEFAULT '',
 			review_flagged INTEGER DEFAULT 0,
 			review_error TEXT DEFAULT '',
+			reviewed INTEGER DEFAULT 0,
+			review_confidence REAL NULL,
+			review_threshold REAL NULL,
+			review_reason TEXT DEFAULT '',
+			review_endpoint TEXT DEFAULT '',
+			review_request_mode TEXT DEFAULT '',
+			review_latency_ms INTEGER NULL,
 			full_text TEXT DEFAULT ''
 		);`,
 		`DROP TABLE IF EXISTS prompt_filter_secrets;`,
@@ -549,6 +556,13 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"prompt_filter_logs", "review_model", "TEXT DEFAULT ''"},
 		{"prompt_filter_logs", "review_flagged", "INTEGER DEFAULT 0"},
 		{"prompt_filter_logs", "review_error", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "reviewed", "INTEGER DEFAULT 0"},
+		{"prompt_filter_logs", "review_confidence", "REAL NULL"},
+		{"prompt_filter_logs", "review_threshold", "REAL NULL"},
+		{"prompt_filter_logs", "review_reason", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_endpoint", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_request_mode", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_latency_ms", "INTEGER NULL"},
 		{"prompt_filter_logs", "full_text", "TEXT DEFAULT ''"},
 		{"prompt_filter_logs", "match_context", "TEXT DEFAULT ''"},
 		{"prompt_filter_logs", "audit_score", "INTEGER DEFAULT 0"},
@@ -638,6 +652,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_created_at ON prompt_filter_logs(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_action_created_at ON prompt_filter_logs(action, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_source_id ON prompt_filter_logs(source, id DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_reviewed_id ON prompt_filter_logs(reviewed, id DESC);`,
 	}
 	for _, stmt := range indexStatements {
 		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {

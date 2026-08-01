@@ -197,14 +197,16 @@ func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	logs, total, err := h.db.ListPromptFilterLogsPage(ctx, database.PromptFilterLogQuery{
-		Page:     page,
-		PageSize: pageSize,
-		Source:   c.Query("source"),
-		Action:   c.Query("action"),
-		Endpoint: c.Query("endpoint"),
-		Model:    c.Query("model"),
-		APIKeyID: apiKeyID,
-		Query:    c.Query("q"),
+		Page:                page,
+		PageSize:            pageSize,
+		Source:              c.Query("source"),
+		Action:              c.Query("action"),
+		Endpoint:            c.Query("endpoint"),
+		Model:               c.Query("model"),
+		APIKeyID:            apiKeyID,
+		Query:               c.Query("q"),
+		ReviewState:         c.Query("reviewed"),
+		ExcludeIntelligence: true,
 	})
 	if err != nil {
 		writeInternalError(c, err)
@@ -603,7 +605,7 @@ func positiveQueryInt(c *gin.Context, key string, fallback int) int {
 }
 
 func shouldReviewPromptFilterVerdict(verdict promptfilter.Verdict, cfg promptfilter.Config) bool {
-	return cfg.Enabled && promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
+	return cfg.Enabled && promptfilter.ShouldReviewVerdict(verdict, cfg.Review)
 }
 
 func reviewPromptFilterVerdict(ctx context.Context, text string, verdict promptfilter.Verdict, cfg promptfilter.Config) promptfilter.Verdict {

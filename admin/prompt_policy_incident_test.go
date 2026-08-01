@@ -31,7 +31,7 @@ func TestPromptPolicyIncidentListAndDetailAPI(t *testing.T) {
 	incident := database.PromptPolicyIncidentInput{
 		IncidentID: "incident-admin", RequestCorrelationID: "request-admin", Endpoint: "/v1/responses", Model: "gpt-5.4",
 		Protocol: "responses", Transport: "sse", StatusCode: 400, AccountID: 73, AccountName: "account@example.com", AccountGroupIDs: []int64{4}, AccountGroupNames: []string{"打铁"},
-		APIKeyID: 9, APIKeyName: "test-key", APIKeyAllowedGroupIDs: []int64{1, 4}, APIKeyAllowedGroupNames: []string{"凡人", "打铁"}, UpstreamErrorCode: "cyber_policy",
+		APIKeyID: 9, APIKeyName: "test-key", APIKeyAllowedGroupIDs: []int64{1, 4}, APIKeyAllowedGroupNames: []string{"示例平台", "打铁"}, UpstreamErrorCode: "cyber_policy",
 		LocalEvaluationState: database.PromptPolicyEvaluationCompleted, LocalOutcome: database.PromptPolicyOutcomeNoHit,
 		LocalScore: &zero, LocalRawScore: &zero, LocalAuditScore: &zero, LocalAuditRawScore: &zero,
 		LocalMatchedPatterns: `[{"name":"test","weight":0}]`, PromptFingerprint: adminPolicyFingerprint("prompt"), PromptPreview: "prompt", PromptText: "prompt",
@@ -106,7 +106,7 @@ func TestPromptPolicyIncidentHistoricalRoutingUsesCurrentDirectory(t *testing.T)
 	account := &auth.Account{DBID: 73, Email: "current-account@example.com", AccessToken: "test-token"}
 	store.AddAccount(account)
 	store.SetGroupName(4, "打铁")
-	store.SetGroupName(5, "凡人")
+	store.SetGroupName(5, "示例平台")
 	store.ApplyAccountGroups(account.DBID, []int64{4})
 	store.SetAPIKeyAllowedGroups(9, []int64{4, 5})
 

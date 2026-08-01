@@ -39,9 +39,9 @@ func TestPromptRiskProfilesSeparatePersonTenantNetworkAndAccount(t *testing.T) {
 	incident.NewAPIPolicyStatus = "verified"
 	incident.NewAPIPlatform = "newapi-prod"
 	incident.NewAPIUserID = "user-42"
-	incident.NewAPIUserName = "凡人用户"
-	incident.NewAPIUserEmail = "fanren-user@example.com"
-	incident.NewAPIUserGroup = "fanren-paid"
+	incident.NewAPIUserName = "示例平台用户"
+	incident.NewAPIUserEmail = "gateway-a-user@example.com"
+	incident.NewAPIUserGroup = "gateway-a-paid"
 	incident.NewAPIRequestID = "req-cy-42"
 	incident.SessionHash = logInput.SessionHash
 	incident.ClientIPHash = logInput.ClientIPHash
@@ -59,7 +59,7 @@ func TestPromptRiskProfilesSeparatePersonTenantNetworkAndAccount(t *testing.T) {
 	if user == nil || !user.IsPerson || user.IdentityConfidence != 100 || user.EventCount != 2 || user.ConfirmedMissCount != 1 || user.RiskScore < 60 {
 		t.Fatalf("signed user profile = %#v", user)
 	}
-	if user.SubjectDisplay != "凡人用户" || user.NewAPIUserID != "user-42" || user.NewAPIUserEmail != "fanren-user@example.com" || user.NewAPIUserGroup != "fanren-paid" {
+	if user.SubjectDisplay != "示例平台用户" || user.NewAPIUserID != "user-42" || user.NewAPIUserEmail != "gateway-a-user@example.com" || user.NewAPIUserGroup != "gateway-a-paid" {
 		t.Fatalf("signed user identity = %#v", user)
 	}
 	key := findPromptRiskProfile(profiles, PromptRiskSubjectAPIKey)
@@ -77,10 +77,10 @@ func TestPromptRiskProfilesSeparatePersonTenantNetworkAndAccount(t *testing.T) {
 	if err != nil || eventTotal != 2 || len(events) != 1 {
 		t.Fatalf("user events total=%d items=%#v err=%v", eventTotal, events, err)
 	}
-	if events[0].NewAPIUserName != "凡人用户" || events[0].NewAPIUserID != "user-42" {
+	if events[0].NewAPIUserName != "示例平台用户" || events[0].NewAPIUserID != "user-42" {
 		t.Fatalf("event identity = %#v", events[0])
 	}
-	filtered, filteredTotal, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{Page: 1, PageSize: 20, Query: "fanren-user@example.com"})
+	filtered, filteredTotal, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{Page: 1, PageSize: 20, Query: "gateway-a-user@example.com"})
 	if err != nil || filteredTotal != 1 || len(filtered) != 1 || filtered[0].SubjectKey != user.SubjectKey {
 		t.Fatalf("identity search total=%d items=%#v err=%v", filteredTotal, filtered, err)
 	}
@@ -91,12 +91,12 @@ func TestPromptRiskIdentityDirectoryEnrichesHistoricalProfiles(t *testing.T) {
 	ctx := context.Background()
 	if err := db.InsertPromptFilterLog(ctx, &PromptFilterLogInput{
 		Source: "local_filter", Action: "block", StrikeEligible: true, MatchedPatterns: `[{"name":"x"}]`,
-		NewAPIPolicyStatus: "verified", NewAPIPlatform: "fanren", NewAPIUserID: "73",
+		NewAPIPolicyStatus: "verified", NewAPIPlatform: "gateway-a", NewAPIUserID: "73",
 	}); err != nil {
 		t.Fatalf("InsertPromptFilterLog: %v", err)
 	}
 	if err := db.UpsertPromptRiskIdentities(ctx, []PromptRiskIdentityInput{{
-		Platform: "fanren", ExternalUserID: "73", UserName: "known-user", UserEmail: "known@example.com", UserGroup: "vip", Source: "admin_import",
+		Platform: "gateway-a", ExternalUserID: "73", UserName: "known-user", UserEmail: "known@example.com", UserGroup: "vip", Source: "admin_import",
 	}}); err != nil {
 		t.Fatalf("UpsertPromptRiskIdentities: %v", err)
 	}
@@ -199,11 +199,11 @@ func TestPromptRiskProfilesUseStableTieBreakerAcrossPages(t *testing.T) {
 	createdAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	for index := 0; index < 6; index++ {
 		userID := fmt.Sprintf("stable-user-%d", index)
-		subjectKey := PromptRiskNewAPIUserSubjectKey("fanren", userID)
+		subjectKey := PromptRiskNewAPIUserSubjectKey("gateway-a", userID)
 		if _, err := db.conn.ExecContext(ctx, `INSERT INTO prompt_risk_events (
 			created_at, source_type, source_id, subject_type, subject_key, subject_display, platform,
 			is_person, identity_confidence, event_kind, request_risk_score, evidence_confidence, action
-		) VALUES ($1,'prompt_filter',$2,'newapi_user',$3,$4,'fanren',true,100,'local_warn',45,100,'warn')`,
+		) VALUES ($1,'prompt_filter',$2,'newapi_user',$3,$4,'gateway-a',true,100,'local_warn',45,100,'warn')`,
 			createdAt, fmt.Sprintf("stable-source-%d", index), subjectKey, userID); err != nil {
 			t.Fatalf("insert stable profile: %v", err)
 		}
@@ -266,13 +266,13 @@ func TestPromptRiskClearedReviewDoesNotIncreaseRiskOrRecurrence(t *testing.T) {
 func TestPromptRiskHistoricalAuditOnlyEventsNoLongerInflateProfiles(t *testing.T) {
 	db := newPromptPolicySQLiteTestDB(t)
 	ctx := context.Background()
-	subjectKey := PromptRiskNewAPIUserSubjectKey("fanren", "audit-only-user")
+	subjectKey := PromptRiskNewAPIUserSubjectKey("gateway-a", "audit-only-user")
 	for index := 0; index < 5; index++ {
 		if _, err := db.conn.ExecContext(ctx, `INSERT INTO prompt_risk_events (
 			created_at, source_type, source_id, subject_type, subject_key, subject_display, platform,
 			is_person, identity_confidence, event_kind, request_risk_score, evidence_confidence,
 			action, prompt_fingerprint
-		) VALUES (CURRENT_TIMESTAMP,'prompt_filter',$1,'newapi_user',$2,'audit-only-user','fanren',true,100,'local_audit_hit',10,100,'allow',$3)`,
+		) VALUES (CURRENT_TIMESTAMP,'prompt_filter',$1,'newapi_user',$2,'audit-only-user','gateway-a',true,100,'local_audit_hit',10,100,'allow',$3)`,
 			fmt.Sprintf("legacy-audit-%d", index), subjectKey, promptRiskHash("audit", fmt.Sprintf("%d", index))); err != nil {
 			t.Fatalf("insert legacy audit event: %v", err)
 		}

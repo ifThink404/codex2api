@@ -23,12 +23,12 @@ func TestSignedCYCreatesSeparatedPersonKeyNetworkSessionAndAccountProfiles(t *te
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1})
 	store.SetPromptFilterConfig(cfg)
 	store.ReplacePromptFilterNewAPIBindings([]*database.PromptFilterNewAPIBinding{{
-		APIKeyID: 101, PlatformCode: "fanren", PlatformName: "凡人平台", Secret: "fanren-secret", Enabled: true, RequireSignedIdentity: true,
+		APIKeyID: 101, PlatformCode: "gateway-a", PlatformName: "示例平台平台", Secret: "gateway-a-secret", Enabled: true, RequireSignedIdentity: true,
 	}})
 	handler := NewHandler(store, db, nil, nil)
 	handler.SetRuntimeCache(cache.NewMemory(1))
 	body := []byte(`{"model":"gpt-5.6-sol","input":"ordinary request"}`)
-	ctx := signedBoundNewAPIPolicyContext(t, "risk-cy-request", newAPIIdentity{UserID: "operator-42", ClientIP: "203.0.113.9"}, body, 101, "fanren", "fanren-secret", "0123456789abcdef0123456789abcdef")
+	ctx := signedBoundNewAPIPolicyContext(t, "risk-cy-request", newAPIIdentity{UserID: "operator-42", ClientIP: "203.0.113.9"}, body, 101, "gateway-a", "gateway-a-secret", "0123456789abcdef0123456789abcdef")
 	ctx.Set(contextAPIKeyName, "tenant-key")
 	ctx.Set(contextAPIKeyMasked, "sk-***risk")
 	setIngressRequestBodyIfAbsent(ctx, body)
@@ -48,7 +48,7 @@ func TestSignedCYCreatesSeparatedPersonKeyNetworkSessionAndAccountProfiles(t *te
 	if err != nil {
 		t.Fatalf("GetPromptPolicyIncident: %v", err)
 	}
-	if incident.NewAPIPolicyStatus != "verified" || incident.NewAPIPlatform != "fanren" || incident.NewAPIUserID != "operator-42" || incident.APIKeyID != 101 || incident.AccountID != 73 || incident.SessionHash == "" || incident.ClientIPHash == "" {
+	if incident.NewAPIPolicyStatus != "verified" || incident.NewAPIPlatform != "gateway-a" || incident.NewAPIUserID != "operator-42" || incident.APIKeyID != 101 || incident.AccountID != 73 || incident.SessionHash == "" || incident.ClientIPHash == "" {
 		t.Fatalf("incident identity/routing snapshot = %#v", incident)
 	}
 	profiles, total, err := db.ListPromptRiskProfiles(context.Background(), database.PromptRiskProfileQuery{Page: 1, PageSize: 20})

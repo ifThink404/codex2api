@@ -84,27 +84,33 @@ type Match struct {
 }
 
 type Verdict struct {
-	Enabled             bool    `json:"enabled"`
-	Mode                string  `json:"mode"`
-	Action              string  `json:"action"`
-	Score               int     `json:"score"`
-	RawScore            int     `json:"raw_score"`
-	RiskScore           int     `json:"risk_score,omitempty"`
-	Threshold           int     `json:"threshold"`
-	SensitiveIntent     bool    `json:"sensitive_intent"`
-	StrictHit           bool    `json:"strict_hit"`
-	TerminalStrictHit   bool    `json:"terminal_strict_hit"`
-	TerminalCategoryHit bool    `json:"terminal_category_hit"`
-	Matched             []Match `json:"matched"`
-	Reason              string  `json:"reason,omitempty"`
-	TextPreview         string  `json:"text_preview,omitempty"`
-	MatchContext        string  `json:"match_context,omitempty"`
-	FullText            string  `json:"full_text,omitempty"`
-	ExtractedChars      int     `json:"extracted_chars"`
-	Reviewed            bool    `json:"reviewed,omitempty"`
-	ReviewFlagged       bool    `json:"review_flagged,omitempty"`
-	ReviewError         string  `json:"review_error,omitempty"`
-	ReviewModel         string  `json:"review_model,omitempty"`
+	Enabled             bool     `json:"enabled"`
+	Mode                string   `json:"mode"`
+	Action              string   `json:"action"`
+	Score               int      `json:"score"`
+	RawScore            int      `json:"raw_score"`
+	RiskScore           int      `json:"risk_score,omitempty"`
+	Threshold           int      `json:"threshold"`
+	SensitiveIntent     bool     `json:"sensitive_intent"`
+	StrictHit           bool     `json:"strict_hit"`
+	TerminalStrictHit   bool     `json:"terminal_strict_hit"`
+	TerminalCategoryHit bool     `json:"terminal_category_hit"`
+	Matched             []Match  `json:"matched"`
+	Reason              string   `json:"reason,omitempty"`
+	TextPreview         string   `json:"text_preview,omitempty"`
+	MatchContext        string   `json:"match_context,omitempty"`
+	FullText            string   `json:"full_text,omitempty"`
+	ExtractedChars      int      `json:"extracted_chars"`
+	Reviewed            bool     `json:"reviewed,omitempty"`
+	ReviewFlagged       bool     `json:"review_flagged,omitempty"`
+	ReviewError         string   `json:"review_error,omitempty"`
+	ReviewModel         string   `json:"review_model,omitempty"`
+	ReviewConfidence    *float64 `json:"review_confidence,omitempty"`
+	ReviewThreshold     *float64 `json:"review_threshold,omitempty"`
+	ReviewReason        string   `json:"review_reason,omitempty"`
+	ReviewEndpoint      string   `json:"review_endpoint,omitempty"`
+	ReviewRequestMode   string   `json:"review_request_mode,omitempty"`
+	ReviewLatencyMS     *int64   `json:"review_latency_ms,omitempty"`
 }
 
 type Engine struct {

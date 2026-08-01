@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/codex2api/api"
 	"github.com/codex2api/database"
@@ -160,7 +161,7 @@ func (h *Handler) logPromptFilterVerdictWithDecision(c *gin.Context, endpoint st
 	// Full model review runs on every extractable request, but a clean pass with
 	// no local evidence must not turn the prompt log into a full traffic archive.
 	// Persist flagged results, failures, local matches, and explicit audit states.
-	if source == "local_filter" && len(verdict.Matched) == 0 && verdict.Action == promptfilter.ActionAllow && verdict.ReviewError == "" && !verdict.ReviewFlagged && !promptFilterDecisionRequiresAudit(decision) {
+	if source == "local_filter" && len(verdict.Matched) == 0 && verdict.Action == promptfilter.ActionAllow && verdict.ReviewError == "" && !verdict.Reviewed && !promptFilterDecisionRequiresAudit(decision) {
 		return
 	}
 	logMatches := true
@@ -336,6 +337,13 @@ func (h *Handler) buildPromptFilterLogInput(auditContext promptFilterAuditContex
 		ReviewModel:          verdict.ReviewModel,
 		ReviewFlagged:        verdict.ReviewFlagged,
 		ReviewError:          verdict.ReviewError,
+		Reviewed:             verdict.Reviewed,
+		ReviewConfidence:     verdict.ReviewConfidence,
+		ReviewThreshold:      verdict.ReviewThreshold,
+		ReviewReason:         promptfilter.RedactedPreview(verdict.ReviewReason, 500),
+		ReviewEndpoint:       verdict.ReviewEndpoint,
+		ReviewRequestMode:    verdict.ReviewRequestMode,
+		ReviewLatencyMS:      verdict.ReviewLatencyMS,
 		RequestCorrelationID: auditContext.RequestCorrelationID,
 		NewAPIPolicyStatus:   auditContext.NewAPIPolicyStatus,
 		NewAPIPlatform:       auditContext.NewAPIPlatform,
@@ -489,13 +497,27 @@ func populatePromptFilterAPIKeyMeta(c *gin.Context, input *database.PromptFilter
 }
 
 func shouldReviewPromptFilterVerdict(verdict promptfilter.Verdict, cfg promptfilter.Config) bool {
-	return cfg.Enabled && promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
+	return cfg.Enabled && promptfilter.ShouldReviewVerdict(verdict, cfg.Review)
 }
 
 func (h *Handler) reviewPromptFilterVerdict(ctx context.Context, text string, verdict promptfilter.Verdict, cfg promptfilter.Config) promptfilter.Verdict {
 	if strings.TrimSpace(text) == "" {
 		return verdict
 	}
+	startedAt := time.Now()
 	outcome, err := promptfilter.DefaultReviewClient.ReviewTextDetailed(ctx, text, cfg.Review)
-	return promptfilter.ApplyReviewOutcome(verdict, outcome, err, cfg.Review)
+	reviewed := promptfilter.ApplyReviewOutcome(verdict, outcome, err, cfg.Review)
+	normalized := promptfilter.NormalizeReviewConfig(cfg.Review)
+	threshold := normalized.Adapter.ConfidenceThreshold
+	latencyMS := time.Since(startedAt).Milliseconds()
+	reviewed.ReviewThreshold = &threshold
+	reviewed.ReviewLatencyMS = &latencyMS
+	reviewed.ReviewReason = strings.TrimSpace(outcome.Reason)
+	reviewed.ReviewEndpoint = strings.TrimSpace(outcome.Endpoint)
+	reviewed.ReviewRequestMode = normalized.Adapter.RequestMode
+	if err == nil {
+		confidence := outcome.Confidence
+		reviewed.ReviewConfidence = &confidence
+	}
+	return reviewed
 }

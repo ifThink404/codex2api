@@ -62,10 +62,11 @@ func TestPromptFilterConfigLoadsReviewAdapterFromAdvancedSettings(t *testing.T) 
 		PromptFilterReviewEnabled:        true,
 		PromptFilterReviewAPIKey:         "stored-key",
 		PromptFilterReviewBaseURL:        "https://review.example",
-		PromptFilterReviewModel:          "deepseek-v4-flash",
+		PromptFilterReviewModel:          "review-model",
 		PromptFilterReviewTimeoutSeconds: 7,
 		PromptFilterAdvancedConfig: `{"review_adapter":{
 			"request_mode":"chat_completions",
+			"scope":"local_candidates",
 			"system_prompt":"system",
 			"user_prompt_template":"<user_input>{{text}}</user_input>",
 			"payload_template":"",
@@ -76,7 +77,7 @@ func TestPromptFilterConfigLoadsReviewAdapterFromAdvancedSettings(t *testing.T) 
 	}
 	cfg, _ := promptFilterConfigFromSettings(settings)
 	adapter := cfg.Review.Adapter
-	if adapter.RequestMode != promptfilter.ReviewRequestModeChatCompletions || adapter.ConfidenceThreshold != 0.76 || adapter.MaxConcurrent != 19 || adapter.MaxTextLength != 12000 {
+	if adapter.RequestMode != promptfilter.ReviewRequestModeChatCompletions || adapter.Scope != promptfilter.ReviewScopeLocalCandidates || adapter.ConfidenceThreshold != 0.76 || adapter.MaxConcurrent != 19 || adapter.MaxTextLength != 12000 {
 		t.Fatalf("review adapter = %+v", adapter)
 	}
 }
