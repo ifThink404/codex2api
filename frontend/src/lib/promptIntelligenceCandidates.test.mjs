@@ -39,3 +39,19 @@ test('legacy automatic rule admission is not exposed as a setting', () => {
   assert.equal(pageSource.includes("setBool('intelligence', 'auto_add'"), false)
   assert.equal(pageSource.includes("{ path: ['intelligence', 'auto_add'], remove: true }"), true, 'legacy data should be cleaned when advanced settings are next saved')
 })
+
+test('CY evidence AI analysis keeps rule publishing and identity updates behind separate controls', () => {
+  for (const fragment of [
+    '/prompt-filter/intelligence/ai-providers',
+    '/prompt-filter/intelligence/candidates/${id}/analyze',
+    '/prompt-filter/intelligence/candidates/${candidateId}/identity-updates/${evidenceId}/apply',
+    '/prompt-filter/intelligence/candidates/${candidateId}/identity-updates/${evidenceId}/rollback',
+  ]) {
+    assert.equal(apiSource.includes(fragment), true, `missing controlled AI API: ${fragment}`)
+  }
+  assert.equal(pageSource.includes("setIdentityUpdateMode('suggest')"), true)
+  assert.equal(pageSource.includes("value: 'guarded_auto'"), true)
+  assert.equal(pageSource.includes('applyPromptIntelligenceIdentityUpdate'), true)
+  assert.equal(pageSource.includes('rollbackPromptIntelligenceIdentityUpdate'), true)
+  assert.equal(pageSource.includes('publishPromptIntelligenceCandidate(candidate.id)'), true, 'rule publication must remain a distinct action')
+})

@@ -328,11 +328,12 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 	verdict.FullText = text
 	verdict.TextPreview = promptfilter.RedactedPreview(text, 500)
 	verdict.ExtractedChars = len([]rune(text))
-	// The persisted evidence may point at a local auxiliary-layer match, but the
-	// external entry review always receives the current user request. This keeps
-	// the <user_input> contract stable and prevents tool/history text from being
-	// mistaken for the user's current instruction.
+	// Normal entry review receives the current user request. A narrowly qualified
+	// upstream-compatibility block instead reviews the exact auxiliary evidence;
+	// that result may add context, but it cannot clear the deterministic block or
+	// turn auxiliary provenance into a user strike.
 	reviewText := promptGuardReviewText(decision, envelope)
+	compatibilityBlock := promptGuardAuxiliaryCompatibilityBlock(decision)
 	inspectCurrentPrompt := promptGuardShouldInspect(decision, cfg)
 	if inspectCurrentPrompt {
 		advancedCfg := cfg
@@ -345,6 +346,9 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 			} else {
 				localTrustRisk := trusted && promptRiskTrustShouldSuspend(decision, verdict)
 				verdict = h.reviewPromptFilterVerdict(ctx, reviewText, verdict, cfg)
+				if compatibilityBlock {
+					verdict = retainPromptGuardAuxiliaryCompatibilityBlock(verdict)
+				}
 				if trusted && (localTrustRisk || verdict.ReviewFlagged || verdict.Action == promptfilter.ActionBlock) {
 					h.suspendPromptRiskTrustPolicy(policy, subjectKey, "模型复核或本地高危规则命中")
 				}
@@ -579,12 +583,30 @@ func promptGuardShouldInspect(decision promptfilter.Decision, cfg promptfilter.C
 }
 
 func promptGuardReviewText(decision promptfilter.Decision, envelope promptfilter.RequestEnvelope) string {
-	if decision.ApplicationPromptKind != "" || decision.PrimaryOrigin == promptfilter.OriginApplicationCandidate || decision.PrimaryOrigin == promptfilter.OriginCurrentUser {
+	if decision.ApplicationPromptKind != "" || decision.PrimaryOrigin == promptfilter.OriginApplicationCandidate || decision.PrimaryOrigin == promptfilter.OriginCurrentUser || promptGuardAuxiliaryCompatibilityBlock(decision) {
 		if candidate := strings.TrimSpace(decision.ReviewText); candidate != "" {
 			return candidate
 		}
 	}
 	return envelopeCurrentUserText(envelope)
+}
+
+func promptGuardAuxiliaryCompatibilityBlock(decision promptfilter.Decision) bool {
+	return decision.Action == promptfilter.ActionBlock &&
+		decision.PrimaryOrigin == promptfilter.OriginToolOutput &&
+		!decision.StrikeEligible && !decision.Terminal &&
+		strings.TrimSpace(decision.ReviewText) != ""
+}
+
+func retainPromptGuardAuxiliaryCompatibilityBlock(verdict promptfilter.Verdict) promptfilter.Verdict {
+	verdict.Action = promptfilter.ActionBlock
+	verdict.TerminalStrictHit = false
+	verdict.TerminalCategoryHit = false
+	verdict.SensitiveIntent = false
+	if !verdict.ReviewFlagged {
+		verdict.Reason = "upstream compatibility guard retained auxiliary risk block"
+	}
+	return verdict
 }
 
 func promptGuardAuditText(decision promptfilter.Decision, envelope promptfilter.RequestEnvelope) string {

@@ -1590,6 +1590,62 @@ export interface PromptIntelligenceEvidenceResponse {
   evidence: PromptIntelligenceEvidence[]
 }
 
+export type PromptIntelligenceAIProvider = 'review' | 'account_pool'
+export type PromptIdentityUpdateMode = 'suggest' | 'guarded_auto'
+
+export interface PromptIntelligenceAIAnalysisRequest {
+  provider: PromptIntelligenceAIProvider
+  model?: string
+  api_key_id?: number
+  identity_update_mode: PromptIdentityUpdateMode
+}
+
+export interface PromptIntelligenceGatewayKey {
+  id: number
+  name: string
+  masked: string
+  status: 'active' | 'expired' | 'quota_exhausted' | string
+}
+
+export interface PromptIntelligenceAIProvidersResponse {
+  review: { configured: boolean; model: string; key_count: number }
+  gateway_keys: PromptIntelligenceGatewayKey[]
+}
+
+export interface PromptIntelligenceAIIdentityPatch {
+  clauses: string[]
+  rationale?: string
+}
+
+export interface PromptIntelligenceAIDecision {
+  decision: 'no_change' | 'rule' | 'identity' | 'both'
+  confidence: number
+  reason: string
+  rule?: PromptIntelligenceRuleDraft
+  identity_patch?: PromptIntelligenceAIIdentityPatch
+}
+
+export interface PromptIdentityUpdateResult {
+  mode: 'suggest' | 'guarded_auto' | 'manual' | 'rollback' | string
+  suggested: boolean
+  eligible: boolean
+  applied: boolean
+  analysis_evidence_id: number
+  revision_evidence_id?: number
+  clauses?: string[]
+  block_reason?: string
+}
+
+export interface PromptIntelligenceAIAnalysisResponse {
+  analysis_evidence_id: number
+  provider: PromptIntelligenceAIProvider
+  model: string
+  decision: PromptIntelligenceAIDecision
+  rule_candidate?: PromptIntelligenceCandidate
+  rule_error?: string
+  identity_update: PromptIdentityUpdateResult
+}
+
 export interface PromptIntelligenceHistoryResponse {
   runs: PromptIntelligenceRun[]
   total: number

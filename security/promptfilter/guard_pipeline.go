@@ -1650,11 +1650,13 @@ func (DefaultGuardPolicy) Decide(request GuardRequest, detectionContext Detectio
 	var selectedAudit *Signal
 	for index := range decision.Signals {
 		signal := &decision.Signals[index]
-		if !guardOriginCanEnforce(signal.Origin) && (signal.LayerMode == GuardModeEnforce || signal.LayerMode == GuardModeWarn) {
+		compatibilityBlock := signal.Origin == OriginToolOutput && signal.highConfidenceToolOutput
+		if !guardOriginCanEnforce(signal.Origin) && !compatibilityBlock && (signal.LayerMode == GuardModeEnforce || signal.LayerMode == GuardModeWarn) {
 			// Defense in depth for custom detectors/policies that construct signals
 			// directly instead of using DetectionContext.LayerMode. Auxiliary
-			// provenance may audit, but can never synchronously block. Composite tool
-			// output remains high-confidence audit evidence rather than user intent.
+			// provenance normally remains audit-only. The narrowly qualified composite
+			// tool-output signal is an upstream-compatibility boundary: it may stop the
+			// request, but it is never terminal evidence and never creates a strike.
 			signal.LayerMode = GuardModeShadow
 		}
 		if actionRank(signal.SuggestedAction) > actionRank(decision.WouldAction) {

@@ -739,6 +739,9 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 		if err := insertPromptRiskSignal(ctx, tx, signal); err != nil {
 			return err
 		}
+		if err := reconcileStoredPromptPolicyIncidentFromShadowTx(ctx, tx, input); err != nil {
+			return err
+		}
 		return tx.Commit()
 	})
 }

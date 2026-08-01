@@ -414,6 +414,85 @@ func decodePromptPolicyStringSlice(raw string) []string {
 	return values
 }
 
+type promptPolicyShadowEvidence struct {
+	AuditScore      int
+	ReasonCode      string
+	PrimaryOrigin   string
+	MatchedPatterns string
+}
+
+func promptPolicyHasMatchedEvidence(raw string) bool {
+	var matches []json.RawMessage
+	return json.Unmarshal([]byte(strings.TrimSpace(raw)), &matches) == nil && len(matches) > 0
+}
+
+func loadPromptPolicyShadowEvidenceTx(ctx context.Context, tx *sql.Tx, correlationID string) (*promptPolicyShadowEvidence, error) {
+	correlationID = strings.TrimSpace(correlationID)
+	if correlationID == "" {
+		return nil, nil
+	}
+	evidence := &promptPolicyShadowEvidence{}
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(audit_score,0), COALESCE(reason_code,''), COALESCE(primary_origin,''), COALESCE(matched_patterns,'[]')
+		FROM prompt_filter_logs WHERE request_correlation_id=$1 AND reason_code='prompt_policy_shadow_async'
+		ORDER BY id DESC LIMIT 1`, correlationID).Scan(&evidence.AuditScore, &evidence.ReasonCode, &evidence.PrimaryOrigin, &evidence.MatchedPatterns)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !promptPolicyHasMatchedEvidence(evidence.MatchedPatterns) {
+		return nil, nil
+	}
+	return evidence, nil
+}
+
+func mergePromptPolicyShadowEvidence(incident *PromptPolicyIncidentInput, evidence *promptPolicyShadowEvidence) {
+	if incident == nil || evidence == nil {
+		return
+	}
+	incident.LocalComparison = PromptPolicyComparisonLocalDetected
+	if incident.LocalEvaluationState == PromptPolicyEvaluationCompleted && incident.LocalOutcome == PromptPolicyOutcomeNoHit {
+		incident.LocalOutcome = PromptPolicyOutcomeAuditHit
+	}
+	if incident.LocalAuditScore == nil || evidence.AuditScore > *incident.LocalAuditScore {
+		score := evidence.AuditScore
+		incident.LocalAuditScore = &score
+	}
+	incident.LocalMatchedPatterns = evidence.MatchedPatterns
+	if strings.TrimSpace(evidence.PrimaryOrigin) != "" {
+		incident.LocalPrimaryOrigin = evidence.PrimaryOrigin
+	}
+	if strings.TrimSpace(evidence.ReasonCode) != "" {
+		incident.LocalReasonCode = evidence.ReasonCode
+	}
+}
+
+func reconcileStoredPromptPolicyIncidentFromShadowTx(ctx context.Context, tx *sql.Tx, input *PromptFilterLogInput) error {
+	if input == nil || strings.TrimSpace(input.RequestCorrelationID) == "" || input.ReasonCode != "prompt_policy_shadow_async" || !promptPolicyHasMatchedEvidence(input.MatchedPatterns) {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE prompt_policy_incidents SET
+		local_comparison=$1,
+		local_outcome=CASE WHEN local_evaluation_state=$2 AND local_outcome=$3 THEN $4 ELSE local_outcome END,
+		local_audit_score=CASE WHEN local_audit_score IS NULL OR local_audit_score < $5 THEN $5 ELSE local_audit_score END,
+		local_reason_code=$6,
+		local_primary_origin=CASE WHEN $7<>'' THEN $7 ELSE local_primary_origin END,
+		local_matched_patterns=$8
+		WHERE request_correlation_id=$9 AND upstream_error_code='cyber_policy'`,
+		PromptPolicyComparisonLocalDetected, PromptPolicyEvaluationCompleted, PromptPolicyOutcomeNoHit, PromptPolicyOutcomeAuditHit,
+		input.AuditScore, input.ReasonCode, input.PrimaryOrigin, input.MatchedPatterns, strings.TrimSpace(input.RequestCorrelationID)); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE prompt_risk_events SET
+		event_kind='upstream_cy_local_detected', request_risk_score=28, evidence_confidence=85,
+		local_outcome=$1, local_comparison=$2, reason_code=$3
+		WHERE source_type=$4 AND source_id IN (
+			SELECT incident_id FROM prompt_policy_incidents WHERE request_correlation_id=$5 AND upstream_error_code='cyber_policy'
+		)`, PromptPolicyOutcomeAuditHit, PromptPolicyComparisonLocalDetected, input.ReasonCode, promptRiskSourceIncident, strings.TrimSpace(input.RequestCorrelationID))
+	return err
+}
+
 func (db *DB) PersistPromptPolicyIncident(ctx context.Context, rawIncident PromptPolicyIncidentInput, rawCandidate PromptRuleCandidateInput, rawEvidence PromptRuleCandidateEvidenceInput) error {
 	if db == nil {
 		return errors.New("database is nil")
@@ -457,6 +536,21 @@ func (db *DB) PersistPromptPolicyIncident(ctx context.Context, rawIncident Promp
 			incident.LocalReviewModel, incident.LocalReviewFlagged, incident.LocalReviewError, incident.LocalMatchedPatterns,
 			incident.PromptFingerprint, incident.PromptPreview, incident.PromptText, incident.PromptAvailable, incident.LocalComparison); execErr != nil {
 			return execErr
+		}
+		shadowEvidence, shadowErr := loadPromptPolicyShadowEvidenceTx(ctx, tx, incident.RequestCorrelationID)
+		if shadowErr != nil {
+			return shadowErr
+		}
+		if shadowEvidence != nil {
+			mergePromptPolicyShadowEvidence(&incident, shadowEvidence)
+			if _, execErr := tx.ExecContext(ctx, `UPDATE prompt_policy_incidents SET
+				local_comparison=$1, local_outcome=$2, local_audit_score=$3,
+				local_reason_code=$4, local_primary_origin=$5, local_matched_patterns=$6
+				WHERE incident_id=$7`, incident.LocalComparison, incident.LocalOutcome, incident.LocalAuditScore,
+				incident.LocalReasonCode, incident.LocalPrimaryOrigin, incident.LocalMatchedPatterns,
+				incident.IncidentID); execErr != nil {
+				return execErr
+			}
 		}
 		candidateID, evidenceID, _, stageErr := stagePromptRuleCandidateTx(ctx, tx, candidate, evidence)
 		if stageErr != nil {

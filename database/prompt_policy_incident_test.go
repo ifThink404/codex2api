@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -134,6 +135,101 @@ func TestPromptPolicyIncidentCompositeTransactionRollsBack(t *testing.T) {
 	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompt_rule_candidates WHERE fingerprint=$1`, candidate.Fingerprint).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("candidate transaction was not rolled back count=%d err=%v", count, err)
 	}
+}
+
+func TestPromptPolicyIncidentReconcilesAsyncShadowEvidenceInEitherWriteOrder(t *testing.T) {
+	patterns := `[{"name":"malware_family","category":"malware","weight":20}]`
+	shadowInput := func(correlationID string) *PromptFilterLogInput {
+		return &PromptFilterLogInput{
+			Source: "local_filter", Endpoint: "/v1/responses", Model: "gpt-5.4", Action: "allow", Mode: "block",
+			AuditScore: 20, Threshold: 50, ReasonCode: "prompt_policy_shadow_async", PrimaryOrigin: "tool_output",
+			MatchedPatterns: patterns, RequestCorrelationID: correlationID,
+		}
+	}
+	insertShadow := func(t *testing.T, db *DB, correlationID string) {
+		t.Helper()
+		if err := db.InsertPromptFilterLog(context.Background(), shadowInput(correlationID)); err != nil {
+			t.Fatalf("InsertPromptFilterLog: %v", err)
+		}
+	}
+	assertReconciled := func(t *testing.T, db *DB, incidentID string) {
+		t.Helper()
+		got, err := db.GetPromptPolicyIncident(context.Background(), incidentID)
+		if err != nil {
+			t.Fatalf("GetPromptPolicyIncident: %v", err)
+		}
+		if got.LocalComparison != PromptPolicyComparisonLocalDetected || got.LocalOutcome != PromptPolicyOutcomeAuditHit || got.LocalMiss {
+			t.Fatalf("async evidence comparison was not reconciled: %#v", got)
+		}
+		if got.LocalAuditScore == nil || *got.LocalAuditScore != 20 || got.LocalReasonCode != "prompt_policy_shadow_async" || got.LocalPrimaryOrigin != "tool_output" || got.LocalMatchedPatterns != patterns {
+			t.Fatalf("async evidence fields were not reconciled: %#v", got)
+		}
+		var eventKind, comparison string
+		if err := db.conn.QueryRowContext(context.Background(), `SELECT event_kind, local_comparison FROM prompt_risk_events WHERE source_type=$1 AND source_id=$2 LIMIT 1`, promptRiskSourceIncident, incidentID).Scan(&eventKind, &comparison); err != nil {
+			t.Fatalf("query risk event: %v", err)
+		}
+		if eventKind != "upstream_cy_local_detected" || comparison != PromptPolicyComparisonLocalDetected {
+			t.Fatalf("risk event was not reconciled: kind=%q comparison=%q", eventKind, comparison)
+		}
+	}
+
+	t.Run("shadow_before_incident", func(t *testing.T) {
+		db := newPromptPolicySQLiteTestDB(t)
+		incident, candidate, evidence := promptPolicyTestInputs("incident-shadow-first")
+		incident.RequestCorrelationID = "request-shadow-first"
+		evidence.SourceRef = incident.RequestCorrelationID
+		insertShadow(t, db, incident.RequestCorrelationID)
+		if err := db.PersistPromptPolicyIncident(context.Background(), incident, candidate, evidence); err != nil {
+			t.Fatalf("PersistPromptPolicyIncident: %v", err)
+		}
+		assertReconciled(t, db, incident.IncidentID)
+	})
+
+	t.Run("incident_before_shadow", func(t *testing.T) {
+		db := newPromptPolicySQLiteTestDB(t)
+		incident, candidate, evidence := promptPolicyTestInputs("incident-cy-first")
+		incident.RequestCorrelationID = "request-cy-first"
+		evidence.SourceRef = incident.RequestCorrelationID
+		if err := db.PersistPromptPolicyIncident(context.Background(), incident, candidate, evidence); err != nil {
+			t.Fatalf("PersistPromptPolicyIncident: %v", err)
+		}
+		insertShadow(t, db, incident.RequestCorrelationID)
+		assertReconciled(t, db, incident.IncidentID)
+	})
+
+	t.Run("concurrent", func(t *testing.T) {
+		db := newPromptPolicySQLiteTestDB(t)
+		for index := 0; index < 25; index++ {
+			incidentID := fmt.Sprintf("incident-concurrent-%d", index)
+			correlationID := fmt.Sprintf("request-concurrent-%d", index)
+			incident, candidate, evidence := promptPolicyTestInputs(incidentID)
+			incident.RequestCorrelationID = correlationID
+			evidence.SourceRef = correlationID
+			start := make(chan struct{})
+			errs := make(chan error, 2)
+			var workers sync.WaitGroup
+			workers.Add(2)
+			go func() {
+				defer workers.Done()
+				<-start
+				errs <- db.PersistPromptPolicyIncident(context.Background(), incident, candidate, evidence)
+			}()
+			go func() {
+				defer workers.Done()
+				<-start
+				errs <- db.InsertPromptFilterLog(context.Background(), shadowInput(correlationID))
+			}()
+			close(start)
+			workers.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatalf("concurrent persistence %d: %v", index, err)
+				}
+			}
+			assertReconciled(t, db, incidentID)
+		}
+	})
 }
 
 func TestClearPromptFilterLogsClearsIncidentsButKeepsCandidateEvidence(t *testing.T) {

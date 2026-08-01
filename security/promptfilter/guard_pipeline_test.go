@@ -751,7 +751,7 @@ func TestAsyncShadowAuxiliaryPreservesSynchronousEnforcementBoundaries(t *testin
 	})
 }
 
-func TestCompositeOperationalToolOutputAuditsWithoutBlocking(t *testing.T) {
+func TestCompositeOperationalToolOutputBlocksWithoutStrike(t *testing.T) {
 	cfg := testConfig(ModeBlock)
 	cfg.StrictTerminalEnabled = true
 	cfg.Advanced.Guard.Mode = GuardModeEnforce
@@ -770,13 +770,13 @@ func TestCompositeOperationalToolOutputAuditsWithoutBlocking(t *testing.T) {
 	if _, deferred := decision.DeferredAudit(); deferred {
 		t.Fatalf("high-confidence tool output was deferred: %+v", decision)
 	}
-	if decision.Action != ActionAllow || decision.WouldAction != ActionBlock || decision.AuditScore == 0 || decision.PrimaryOrigin != OriginToolOutput || decision.Terminal {
-		t.Fatalf("high-confidence tool output was not audited synchronously: %+v", decision)
+	if decision.Action != ActionBlock || decision.WouldAction != ActionBlock || decision.AuditScore == 0 || decision.PrimaryOrigin != OriginToolOutput || decision.Terminal {
+		t.Fatalf("high-confidence tool output was not blocked synchronously: %+v", decision)
 	}
 	if decision.StrikeEligible {
 		t.Fatalf("tool-output block became strike eligible: %+v", decision)
 	}
-	if len(decision.Signals) != 1 || !decision.Signals[0].highConfidenceToolOutput || decision.Signals[0].StrikeEligible {
+	if len(decision.Signals) != 1 || !decision.Signals[0].highConfidenceToolOutput || decision.Signals[0].LayerMode != GuardModeEnforce || decision.Signals[0].StrikeEligible {
 		t.Fatalf("tool-output enforcement signal lost its safety boundary: %+v", decision.Signals)
 	}
 
@@ -789,8 +789,8 @@ func TestCompositeOperationalToolOutputAuditsWithoutBlocking(t *testing.T) {
 		},
 		Config: warnConfig,
 	})
-	if warnDecision.Action != ActionAllow || warnDecision.AuditScore == 0 || warnDecision.Terminal || warnDecision.StrikeEligible {
-		t.Fatalf("global warn did not keep tool output audit-only: %+v", warnDecision)
+	if warnDecision.Action != ActionWarn || warnDecision.AuditScore == 0 || warnDecision.Terminal || warnDecision.StrikeEligible {
+		t.Fatalf("global warn did not preserve the non-blocking warning boundary: %+v", warnDecision)
 	}
 }
 

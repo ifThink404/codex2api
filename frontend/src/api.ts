@@ -937,6 +937,14 @@ export const api = {
   },
   getPromptIntelligenceCandidateEvidence: (id: number) =>
     request<import('./types').PromptIntelligenceEvidenceResponse>(`/prompt-filter/intelligence/candidates/${id}/evidence`),
+  getPromptIntelligenceAIProviders: () =>
+    request<import('./types').PromptIntelligenceAIProvidersResponse>('/prompt-filter/intelligence/ai-providers'),
+  analyzePromptIntelligenceCandidate: (id: number, data: import('./types').PromptIntelligenceAIAnalysisRequest) =>
+    request<import('./types').PromptIntelligenceAIAnalysisResponse>(`/prompt-filter/intelligence/candidates/${id}/analyze`, { method: 'POST', body: JSON.stringify(data) }),
+  applyPromptIntelligenceIdentityUpdate: (candidateId: number, evidenceId: number) =>
+    request<{ identity_update: import('./types').PromptIdentityUpdateResult }>(`/prompt-filter/intelligence/candidates/${candidateId}/identity-updates/${evidenceId}/apply`, { method: 'POST' }),
+  rollbackPromptIntelligenceIdentityUpdate: (candidateId: number, evidenceId: number) =>
+    request<{ identity_update: import('./types').PromptIdentityUpdateResult }>(`/prompt-filter/intelligence/candidates/${candidateId}/identity-updates/${evidenceId}/rollback`, { method: 'POST' }),
   createPromptIntelligenceCandidateDraft: (id: number, data: import('./types').PromptIntelligenceRuleDraft) =>
     request<{ candidate: import('./types').PromptIntelligenceCandidate; source_candidate_id: number }>(`/prompt-filter/intelligence/candidates/${id}/draft`, { method: 'POST', body: JSON.stringify(data) }),
   publishPromptIntelligenceCandidate: (id: number) =>

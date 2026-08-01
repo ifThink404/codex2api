@@ -15,7 +15,7 @@ import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import { getPromptFilterScoreBand, normalizePromptFilterScore } from '../lib/promptFilterScore'
 import { parseAdvancedConfigDocument, patchAdvancedConfigDocument, readAdvancedConfigPath } from '../types'
-import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceRun, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings } from '../types'
+import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIdentityUpdateMode, PromptIntelligenceAIAnalysisResponse, PromptIntelligenceAIProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceGatewayKey, PromptIntelligenceRun, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -1422,6 +1422,14 @@ function IntelligenceView() {
   const [evidenceLoading, setEvidenceLoading] = useState<number | null>(null)
   const [evidenceDialog, setEvidenceDialog] = useState<PromptIntelligenceEvidenceResponse | null>(null)
   const [dismissTarget, setDismissTarget] = useState<PromptIntelligenceCandidate | null>(null)
+  const [aiTarget, setAITarget] = useState<PromptIntelligenceCandidate | null>(null)
+  const [aiProvider, setAIProvider] = useState<PromptIntelligenceAIProvider>('review')
+  const [aiModel, setAIModel] = useState('')
+  const [aiAPIKeyID, setAIAPIKeyID] = useState('0')
+  const [identityUpdateMode, setIdentityUpdateMode] = useState<PromptIdentityUpdateMode>('suggest')
+  const [aiLoading, setAILoading] = useState(false)
+  const [aiResult, setAIResult] = useState<PromptIntelligenceAIAnalysisResponse | null>(null)
+  const [gatewayKeys, setGatewayKeys] = useState<PromptIntelligenceGatewayKey[]>([])
   const candidateLoadSequence = useRef(0)
 
   const loadHistory = useCallback(async (page = historyPage) => {
@@ -1532,6 +1540,75 @@ function IntelligenceView() {
       showToast(getErrorMessage(error), 'error')
     } finally {
       setEvidenceLoading(null)
+    }
+  }
+
+  const openAIAnalysis = async (candidate: PromptIntelligenceCandidate) => {
+    setAITarget(candidate)
+    setAIProvider('review')
+    setAIModel('')
+    setAIAPIKeyID('0')
+    setIdentityUpdateMode('suggest')
+    setAIResult(null)
+    if (!gatewayKeys.length) {
+      try {
+        const response = await api.getPromptIntelligenceAIProviders()
+        setGatewayKeys(response.gateway_keys.filter((key) => key.status === 'active'))
+      } catch {
+        // DS analysis remains available even when the optional Key list fails.
+      }
+    }
+  }
+
+  const runAIAnalysis = async () => {
+    if (!aiTarget) return
+    setAILoading(true)
+    try {
+      const value = await api.analyzePromptIntelligenceCandidate(aiTarget.id, {
+        provider: aiProvider,
+        model: aiModel.trim() || undefined,
+        api_key_id: aiProvider === 'account_pool' ? Number(aiAPIKeyID) || undefined : undefined,
+        identity_update_mode: identityUpdateMode,
+      })
+      setAIResult(value)
+      showToast(t('promptFilter.intelligence.aiAnalysisSuccess'))
+      await loadCandidates()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setAILoading(false)
+    }
+  }
+
+  const applyAIIdentity = async () => {
+    if (!aiTarget || !aiResult) return
+    setAILoading(true)
+    try {
+      const value = await api.applyPromptIntelligenceIdentityUpdate(aiTarget.id, aiResult.analysis_evidence_id)
+      setAIResult((current) => current ? { ...current, identity_update: value.identity_update } : current)
+      showToast(t('promptFilter.intelligence.identityApplied'))
+      await loadCandidates()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setAILoading(false)
+    }
+  }
+
+  const rollbackAIIdentity = async (candidateID: number, revisionEvidenceID: number) => {
+    setAILoading(true)
+    try {
+      const value = await api.rollbackPromptIntelligenceIdentityUpdate(candidateID, revisionEvidenceID)
+      setAIResult((current) => current ? { ...current, identity_update: value.identity_update } : current)
+      if (evidenceDialog?.candidate.id === candidateID) {
+        setEvidenceDialog(await api.getPromptIntelligenceCandidateEvidence(candidateID))
+      }
+      showToast(t('promptFilter.intelligence.identityRolledBack'))
+      await loadCandidates()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setAILoading(false)
     }
   }
 
@@ -1658,10 +1735,16 @@ function IntelligenceView() {
                         </Button>
                       ) : null}
                       {candidate.lifecycle_status === 'pending' && candidate.kind === 'evidence' ? (
-                        <Button size="sm" disabled={candidateAction === candidate.id} onClick={() => openDraft(candidate)}>
-                          <Pencil className="size-4" />
-                          {t('promptFilter.intelligence.createDraft')}
-                        </Button>
+                        <>
+                          <Button size="sm" variant="outline" disabled={candidateAction === candidate.id} onClick={() => void openAIAnalysis(candidate)}>
+                            <Sparkles className="size-4" />
+                            {t('promptFilter.intelligence.aiAnalyze')}
+                          </Button>
+                          <Button size="sm" disabled={candidateAction === candidate.id} onClick={() => openDraft(candidate)}>
+                            <Pencil className="size-4" />
+                            {t('promptFilter.intelligence.createDraft')}
+                          </Button>
+                        </>
                       ) : null}
                       {candidate.lifecycle_status === 'pending' ? (
                         <Button size="sm" variant="outline" disabled={candidateAction === candidate.id} onClick={() => setDismissTarget(candidate)}>
@@ -1746,6 +1829,116 @@ function IntelligenceView() {
         </CardContent>
       </Card>
 
+      <Dialog open={Boolean(aiTarget)} onOpenChange={(open) => { if (!open && !aiLoading) { setAITarget(null); setAIResult(null) } }}>
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('promptFilter.intelligence.aiAnalysisTitle')}</DialogTitle>
+            <DialogDescription>{t('promptFilter.intelligence.aiAnalysisDesc')}</DialogDescription>
+          </DialogHeader>
+          {aiTarget?.sample_preview ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm whitespace-pre-wrap break-words">
+              {aiTarget.sample_preview}
+            </div>
+          ) : null}
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label={t('promptFilter.intelligence.aiProvider')}>
+              <Select
+                value={aiProvider}
+                onValueChange={(value) => setAIProvider(value as PromptIntelligenceAIProvider)}
+                options={[
+                  { value: 'review', label: t('promptFilter.intelligence.aiProviderReview') },
+                  { value: 'account_pool', label: t('promptFilter.intelligence.aiProviderPool') },
+                ]}
+              />
+            </Field>
+            <Field label={t('promptFilter.intelligence.aiModel')} hint={t('promptFilter.intelligence.aiModelHint')}>
+              <Input value={aiModel} onChange={(event) => setAIModel(event.target.value)} placeholder={t('promptFilter.intelligence.aiModelDefault')} />
+            </Field>
+            {aiProvider === 'account_pool' ? (
+              <Field label={t('promptFilter.intelligence.aiGatewayKey')} hint={t('promptFilter.intelligence.aiGatewayKeyHint')}>
+                <Select
+                  value={aiAPIKeyID}
+                  onValueChange={setAIAPIKeyID}
+                  options={[
+                    { value: '0', label: t('promptFilter.intelligence.aiGatewayKeyAuto') },
+                    ...gatewayKeys.map((key) => ({ value: String(key.id), label: `${key.name || `#${key.id}`} · ${key.masked}` })),
+                  ]}
+                />
+              </Field>
+            ) : null}
+            <Field label={t('promptFilter.intelligence.identityUpdateMode')} hint={t('promptFilter.intelligence.identityUpdateModeHint')}>
+              <Select
+                value={identityUpdateMode}
+                onValueChange={(value) => setIdentityUpdateMode(value as PromptIdentityUpdateMode)}
+                options={[
+                  { value: 'suggest', label: t('promptFilter.intelligence.identitySuggest') },
+                  { value: 'guarded_auto', label: t('promptFilter.intelligence.identityGuardedAuto') },
+                ]}
+              />
+            </Field>
+          </div>
+          <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+            {t('promptFilter.intelligence.identitySafetyHint')}
+          </div>
+
+          {aiResult ? (
+            <div className="space-y-4 rounded-xl border p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge>{t(`promptFilter.intelligence.aiDecision.${aiResult.decision.decision}`, { defaultValue: aiResult.decision.decision })}</Badge>
+                <Badge variant="outline">{t('promptFilter.intelligence.aiConfidence')}: {(aiResult.decision.confidence * 100).toFixed(0)}%</Badge>
+                <Badge variant="outline">{aiResult.provider} · {aiResult.model}</Badge>
+              </div>
+              <p className="text-sm">{aiResult.decision.reason || t('promptFilter.intelligence.aiNoReason')}</p>
+              {aiResult.decision.rule ? (
+                <div className="rounded-lg border p-3">
+                  <div className="font-medium">{t('promptFilter.intelligence.aiRuleSuggestion')}</div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                    <Badge variant="outline">{aiResult.decision.rule.name}</Badge>
+                    <Badge variant="outline">{aiResult.decision.rule.category}</Badge>
+                    <Badge variant="outline">{t('promptFilter.intelligence.weight')}: {aiResult.decision.rule.weight}</Badge>
+                  </div>
+                  <code className="mt-2 block break-all rounded bg-muted/40 p-2 text-xs">{aiResult.decision.rule.pattern}</code>
+                  {aiResult.rule_candidate ? <p className="mt-2 text-xs text-emerald-600">{t('promptFilter.intelligence.aiRuleStaged')}</p> : null}
+                  {aiResult.rule_error ? <p className="mt-2 text-xs text-destructive">{aiResult.rule_error}</p> : null}
+                </div>
+              ) : null}
+              {aiResult.decision.identity_patch ? (
+                <div className="rounded-lg border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-medium">{t('promptFilter.intelligence.aiIdentitySuggestion')}</div>
+                    {aiResult.identity_update.applied ? <Badge className="bg-emerald-600">{t('promptFilter.intelligence.identityAppliedBadge')}</Badge> : <Badge variant="outline">{t('promptFilter.intelligence.identityPendingBadge')}</Badge>}
+                  </div>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                    {aiResult.decision.identity_patch.clauses.map((clause, index) => <li key={`${clause}-${index}`}>{clause}</li>)}
+                  </ul>
+                  {aiResult.identity_update.block_reason ? <p className="mt-2 text-xs text-amber-600">{aiResult.identity_update.block_reason}</p> : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {!aiResult.identity_update.applied ? (
+                      <Button size="sm" disabled={aiLoading} onClick={() => void applyAIIdentity()}>
+                        <Save className="size-4" />
+                        {t('promptFilter.intelligence.applyIdentityPatch')}
+                      </Button>
+                    ) : null}
+                    {aiResult.identity_update.revision_evidence_id ? (
+                      <Button size="sm" variant="outline" disabled={aiLoading} onClick={() => void rollbackAIIdentity(aiTarget?.id || 0, aiResult.identity_update.revision_evidence_id || 0)}>
+                        {t('promptFilter.intelligence.rollbackIdentityPatch')}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={aiLoading} onClick={() => { setAITarget(null); setAIResult(null) }}>{t('common.close')}</Button>
+            <Button disabled={aiLoading || !aiTarget} onClick={() => void runAIAnalysis()}>
+              <Sparkles className="size-4" />
+              {aiLoading ? t('promptFilter.intelligence.aiAnalyzing') : t('promptFilter.intelligence.aiRunAnalysis')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={Boolean(evidenceDialog)} onOpenChange={(open) => { if (!open) setEvidenceDialog(null) }}>
         <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
           <DialogHeader>
@@ -1766,6 +1959,11 @@ function IntelligenceView() {
                 {evidence.sample_preview ? <p className="whitespace-pre-wrap break-words text-sm">{evidence.sample_preview}</p> : null}
                 {evidence.source_ref ? <p className="mt-2 break-all text-xs text-muted-foreground">{t('promptFilter.intelligence.sourceReference')}: {evidence.source_ref}</p> : null}
                 {Object.keys(evidence.metadata || {}).length ? <SoftCodeBlock className="mt-3">{JSON.stringify(evidence.metadata, null, 2)}</SoftCodeBlock> : null}
+                {evidence.source_kind === 'ai_identity_update' && evidenceDialog ? (
+                  <Button className="mt-3" size="sm" variant="outline" disabled={aiLoading} onClick={() => void rollbackAIIdentity(evidenceDialog.candidate.id, evidence.id)}>
+                    {t('promptFilter.intelligence.rollbackIdentityPatch')}
+                  </Button>
+                ) : null}
               </div>
             ))}
             {evidenceDialog && !evidenceDialog.evidence.length ? <div className="py-8 text-center text-muted-foreground">{t('promptFilter.intelligence.noEvidence')}</div> : null}
