@@ -310,6 +310,8 @@ func (db *DB) ensurePromptRiskEventsTable(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_incident ON prompt_risk_events(incident_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_api_key ON prompt_risk_events(api_key_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_account ON prompt_risk_events(account_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_request_match ON prompt_risk_events(request_correlation_id, subject_type, subject_key, event_kind) WHERE request_correlation_id<>''`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_fingerprint_match ON prompt_risk_events(prompt_fingerprint, subject_type, subject_key, created_at, event_kind) WHERE request_correlation_id='' AND prompt_fingerprint<>''`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_sources_processed ON prompt_risk_event_sources(processed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_identities_external ON prompt_risk_identities(platform, external_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_identities_updated ON prompt_risk_identities(updated_at)`,
@@ -656,29 +658,49 @@ func reconcilePromptRiskReviewForSubject(ctx context.Context, exec promptRiskEve
 	if requestID == "" && fingerprint == "" {
 		return nil
 	}
-	windowStart := signal.CreatedAt.Add(-10 * time.Minute)
-	windowEnd := signal.CreatedAt.Add(10 * time.Minute)
-	match := `(request_correlation_id<>'' AND $1<>'' AND request_correlation_id=$1) OR
-		(request_correlation_id='' AND $1='' AND prompt_fingerprint<>'' AND $2<>'' AND prompt_fingerprint=$2 AND created_at >= $3 AND created_at <= $4)`
 	if signal.EventKind == promptRiskEventReviewCleared {
+		if requestID != "" {
+			_, err := exec.ExecContext(ctx, `UPDATE prompt_risk_events SET
+				event_kind=$1, request_risk_score=0, evidence_confidence=95
+				WHERE subject_type=$2 AND subject_key=$3 AND event_kind IN ($4,$5)
+				AND request_correlation_id<>'' AND request_correlation_id=$6`, promptRiskEventLocalBlockCleared, subject.Type, subject.Key,
+				promptRiskEventLocalBlock, promptRiskEventLocalBlockUnverified, requestID)
+			return err
+		}
+		windowStart := signal.CreatedAt.Add(-10 * time.Minute)
+		windowEnd := signal.CreatedAt.Add(10 * time.Minute)
 		_, err := exec.ExecContext(ctx, `UPDATE prompt_risk_events SET
-			event_kind=$5, request_risk_score=0, evidence_confidence=95
-			WHERE subject_type=$6 AND subject_key=$7 AND event_kind IN ($8,$9) AND (`+match+`)`,
-			requestID, fingerprint, windowStart, windowEnd, promptRiskEventLocalBlockCleared, subject.Type, subject.Key,
-			promptRiskEventLocalBlock, promptRiskEventLocalBlockUnverified)
+			event_kind=$1, request_risk_score=0, evidence_confidence=95
+			WHERE subject_type=$2 AND subject_key=$3 AND event_kind IN ($4,$5)
+			AND request_correlation_id='' AND prompt_fingerprint<>'' AND prompt_fingerprint=$6
+			AND created_at >= $7 AND created_at <= $8`, promptRiskEventLocalBlockCleared, subject.Type, subject.Key,
+			promptRiskEventLocalBlock, promptRiskEventLocalBlockUnverified, fingerprint, windowStart, windowEnd)
 		return err
 	}
+	if requestID != "" {
+		_, err := exec.ExecContext(ctx, `UPDATE prompt_risk_events SET
+			event_kind=$1, request_risk_score=0, evidence_confidence=95
+			WHERE source_type=$2 AND source_id=$3 AND subject_type=$4 AND subject_key=$5
+			AND event_kind=$6 AND EXISTS (
+				SELECT 1 FROM prompt_risk_events cleared
+				WHERE cleared.subject_type=$4 AND cleared.subject_key=$5 AND cleared.event_kind=$7
+				AND cleared.request_correlation_id<>'' AND cleared.request_correlation_id=$8
+			)`, promptRiskEventLocalBlockCleared, signal.SourceType, signal.SourceID, subject.Type, subject.Key,
+			promptRiskEventLocalBlockUnverified, promptRiskEventReviewCleared, requestID)
+		return err
+	}
+	windowStart := signal.CreatedAt.Add(-10 * time.Minute)
+	windowEnd := signal.CreatedAt.Add(10 * time.Minute)
 	_, err := exec.ExecContext(ctx, `UPDATE prompt_risk_events SET
-		event_kind=$5, request_risk_score=0, evidence_confidence=95
-		WHERE source_type=$6 AND source_id=$7 AND subject_type=$8 AND subject_key=$9
-		AND event_kind=$10 AND EXISTS (
+		event_kind=$1, request_risk_score=0, evidence_confidence=95
+		WHERE source_type=$2 AND source_id=$3 AND subject_type=$4 AND subject_key=$5
+		AND event_kind=$6 AND EXISTS (
 			SELECT 1 FROM prompt_risk_events cleared
-			WHERE cleared.subject_type=$8 AND cleared.subject_key=$9 AND cleared.event_kind=$11 AND (
-				(cleared.request_correlation_id<>'' AND $1<>'' AND cleared.request_correlation_id=$1) OR
-				(cleared.request_correlation_id='' AND $1='' AND cleared.prompt_fingerprint<>'' AND $2<>'' AND cleared.prompt_fingerprint=$2 AND cleared.created_at >= $3 AND cleared.created_at <= $4)
-			)
-		)`, requestID, fingerprint, windowStart, windowEnd, promptRiskEventLocalBlockCleared,
-		signal.SourceType, signal.SourceID, subject.Type, subject.Key, promptRiskEventLocalBlockUnverified, promptRiskEventReviewCleared)
+			WHERE cleared.subject_type=$4 AND cleared.subject_key=$5 AND cleared.event_kind=$7
+			AND cleared.request_correlation_id='' AND cleared.prompt_fingerprint<>'' AND cleared.prompt_fingerprint=$8
+			AND cleared.created_at >= $9 AND cleared.created_at <= $10
+		)`, promptRiskEventLocalBlockCleared, signal.SourceType, signal.SourceID, subject.Type, subject.Key,
+		promptRiskEventLocalBlockUnverified, promptRiskEventReviewCleared, fingerprint, windowStart, windowEnd)
 	return err
 }
 
