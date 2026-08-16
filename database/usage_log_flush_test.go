@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -64,6 +65,44 @@ func TestFlushUsageLogsDrainsBeyondOneBatch(t *testing.T) {
 	}
 	if stats := db.GetUsageLogRuntimeStats(); stats.BufferLength != 0 {
 		t.Fatalf("BufferLength = %d，want 0", stats.BufferLength)
+	}
+}
+
+func TestSQLiteUsageLogFlushWaitsForUnifiedWriteLock(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	close(db.logStop)
+	db.logWg.Wait()
+	defer db.conn.Close()
+
+	db.SetUsageLogConfig(UsageLogModeFull, 10, maxUsageLogFlushIntervalSeconds)
+	insertUsageLogs(t, db, 1)
+	db.sqliteWriteSem <- struct{}{}
+	flushed := make(chan struct{})
+	go func() {
+		db.FlushUsageLogs()
+		close(flushed)
+	}()
+	select {
+	case <-flushed:
+		t.Fatal("FlushUsageLogs bypassed SQLite write lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-db.sqliteWriteSem
+	select {
+	case <-flushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("FlushUsageLogs did not resume after SQLite write lock release")
+	}
+	logs, err := db.ListRecentUsageLogs(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListRecentUsageLogs 返回错误: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("flushed logs = %d, want 1", len(logs))
 	}
 }
 

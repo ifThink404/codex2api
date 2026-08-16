@@ -1788,6 +1788,54 @@ func TestDeleteAccountGroupDoesNotBroadenScopedAPIKey(t *testing.T) {
 	}
 }
 
+func TestSQLiteAccountGroupMutationsWaitForUnifiedWriteLock(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "codex2api.db"))
+	if err != nil {
+		t.Fatalf("New(sqlite): %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	groupA, err := db.CreateAccountGroup(ctx, "lock-a", "", "", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatalf("CreateAccountGroup A: %v", err)
+	}
+	groupB, err := db.CreateAccountGroup(ctx, "lock-b", "", "", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatalf("CreateAccountGroup B: %v", err)
+	}
+	accountID, err := db.InsertAccount(ctx, "lock-account", "refresh-token", "")
+	if err != nil {
+		t.Fatalf("InsertAccount: %v", err)
+	}
+
+	assertBlocked := func(name string, operation func() error) {
+		t.Helper()
+		db.sqliteWriteSem <- struct{}{}
+		done := make(chan error, 1)
+		go func() { done <- operation() }()
+		select {
+		case err := <-done:
+			t.Fatalf("%s bypassed SQLite write lock: %v", name, err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		<-db.sqliteWriteSem
+		if err := <-done; err != nil {
+			t.Fatalf("%s after lock release: %v", name, err)
+		}
+	}
+
+	assertBlocked("SetAccountGroups", func() error {
+		return db.SetAccountGroups(ctx, accountID, []int64{groupA})
+	})
+	assertBlocked("BatchSetAccountGroups", func() error {
+		return db.BatchSetAccountGroups(ctx, []int64{accountID}, []int64{groupB})
+	})
+	assertBlocked("DeleteAccountGroup", func() error {
+		return db.DeleteAccountGroup(ctx, groupA, true)
+	})
+}
+
 func TestUsageLogsPersistEffectiveModel(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 
@@ -2682,6 +2730,59 @@ func TestSoftDeleteAccountMarksDeletedStatus(t *testing.T) {
 	}
 	if !deletedAt.Valid || deletedAt.String == "" {
 		t.Fatal("deleted_at 未写入")
+	}
+}
+
+func TestSQLiteSoftDeleteWaitsForUnifiedWriteLock(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "codex2api.db"))
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	singleID, err := db.InsertAccount(ctx, "queued-single-delete", "rt-single-delete", "")
+	if err != nil {
+		t.Fatalf("InsertAccount(single) 返回错误: %v", err)
+	}
+	batchID, err := db.InsertAccount(ctx, "queued-batch-delete", "rt-batch-delete", "")
+	if err != nil {
+		t.Fatalf("InsertAccount(batch) 返回错误: %v", err)
+	}
+
+	db.sqliteWriteSem <- struct{}{}
+	singleDone := make(chan error, 1)
+	go func() { singleDone <- db.SoftDeleteAccount(ctx, singleID) }()
+	select {
+	case err := <-singleDone:
+		t.Fatalf("SoftDeleteAccount bypassed SQLite write lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-db.sqliteWriteSem
+	if err := <-singleDone; err != nil {
+		t.Fatalf("SoftDeleteAccount after lock release: %v", err)
+	}
+
+	db.sqliteWriteSem <- struct{}{}
+	batchDone := make(chan error, 1)
+	go func() { batchDone <- db.BatchSoftDeleteAccounts(ctx, []int64{batchID}) }()
+	select {
+	case err := <-batchDone:
+		t.Fatalf("BatchSoftDeleteAccounts bypassed SQLite write lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-db.sqliteWriteSem
+	if err := <-batchDone; err != nil {
+		t.Fatalf("BatchSoftDeleteAccounts after lock release: %v", err)
+	}
+
+	var deletedCount int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts
+		WHERE id IN ($1,$2) AND status = 'deleted'`, singleID, batchID).Scan(&deletedCount); err != nil {
+		t.Fatalf("query deleted accounts: %v", err)
+	}
+	if deletedCount != 2 {
+		t.Fatalf("deleted count = %d, want 2", deletedCount)
 	}
 }
 

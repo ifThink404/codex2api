@@ -4036,7 +4036,9 @@ func (db *DB) flushLogBatch(drain bool) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // 增加超时时间
 	defer cancel()
 
-	if err := db.insertUsageLogBatch(ctx, batch); err != nil {
+	if err := db.withSQLiteWriteLock(ctx, func() error {
+		return db.insertUsageLogBatch(ctx, batch)
+	}); err != nil {
 		// 瞬时故障（连接断开、超时、死锁）原样放回缓冲区重试，一条都不能丢。
 		if !isUsageLogDataError(err) {
 			log.Printf("批量写入日志失败，已重新放回缓冲区等待重试: %v", err)
@@ -7149,38 +7151,40 @@ func (db *DB) BatchSetError(ctx context.Context, ids []int64, errorMsg string) e
 
 // SoftDeleteAccount 将账号标记为 deleted，保留数据用于审计和事件追溯。
 func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
-	tx, err := db.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return db.withSQLiteWriteLock(ctx, func() error {
+		tx, err := db.conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
 
-	query := `
-		UPDATE accounts
-		SET status = 'deleted',
-			error_message = '',
-			cooldown_reason = '',
-			cooldown_until = NULL,
-			deleted_at = CURRENT_TIMESTAMP,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND status <> 'deleted'
-	`
-	res, err := tx.ExecContext(ctx, query, id)
-	if err != nil {
-		return err
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return sql.ErrNoRows
-	}
-	// Keep the last group membership snapshot on the soft-deleted account.
-	// Usage reports need it to attribute historical requests after an account
-	// moves to the recycle bin. Active-account queries already exclude deleted
-	// accounts, while restoring the account reuses the retained memberships.
-	return tx.Commit()
+		query := `
+			UPDATE accounts
+			SET status = 'deleted',
+				error_message = '',
+				cooldown_reason = '',
+				cooldown_until = NULL,
+				deleted_at = CURRENT_TIMESTAMP,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = $1 AND status <> 'deleted'
+		`
+		res, err := tx.ExecContext(ctx, query, id)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return sql.ErrNoRows
+		}
+		// Keep the last group membership snapshot on the soft-deleted account.
+		// Usage reports need it to attribute historical requests after an account
+		// moves to the recycle bin. Active-account queries already exclude deleted
+		// accounts, while restoring the account reuses the retained memberships.
+		return tx.Commit()
+	})
 }
 
 // ListDeleted 获取回收站中的账号（被软删除、尚未彻底清除的账号）。
@@ -7346,37 +7350,39 @@ func (db *DB) PurgeDeletedAccounts(ctx context.Context) (int64, error) {
 
 // BatchSoftDeleteAccounts 批量软删除账号，分批执行避免 SQL 参数过多。
 func (db *DB) BatchSoftDeleteAccounts(ctx context.Context, ids []int64) error {
-	const batchSize = 500
-	for i := 0; i < len(ids); i += batchSize {
-		end := i + batchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		batch := ids[i:end]
+	return db.withSQLiteWriteLock(ctx, func() error {
+		const batchSize = 500
+		for i := 0; i < len(ids); i += batchSize {
+			end := i + batchSize
+			if end > len(ids) {
+				end = len(ids)
+			}
+			batch := ids[i:end]
 
-		placeholders := make([]string, len(batch))
-		args := make([]interface{}, 0, len(batch))
-		for j, id := range batch {
-			placeholders[j] = fmt.Sprintf("$%d", j+1)
-			args = append(args, id)
-		}
+			placeholders := make([]string, len(batch))
+			args := make([]interface{}, 0, len(batch))
+			for j, id := range batch {
+				placeholders[j] = fmt.Sprintf("$%d", j+1)
+				args = append(args, id)
+			}
 
-		query := fmt.Sprintf(
-			`UPDATE accounts
-			SET status = 'deleted',
-				error_message = '',
-				cooldown_reason = '',
-				cooldown_until = NULL,
-				deleted_at = CURRENT_TIMESTAMP,
-				updated_at = CURRENT_TIMESTAMP
-			WHERE status <> 'deleted' AND id IN (%s)`,
-			strings.Join(placeholders, ","),
-		)
-		if _, err := db.conn.ExecContext(ctx, query, args...); err != nil {
-			return fmt.Errorf("batch %d-%d failed: %w", i, end, err)
+			query := fmt.Sprintf(
+				`UPDATE accounts
+				SET status = 'deleted',
+					error_message = '',
+					cooldown_reason = '',
+					cooldown_until = NULL,
+					deleted_at = CURRENT_TIMESTAMP,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE status <> 'deleted' AND id IN (%s)`,
+				strings.Join(placeholders, ","),
+			)
+			if _, err := db.conn.ExecContext(ctx, query, args...); err != nil {
+				return fmt.Errorf("batch %d-%d failed: %w", i, end, err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // BatchInsertAccountEvents 批量插入账号事件。
