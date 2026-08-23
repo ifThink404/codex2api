@@ -52,6 +52,47 @@ func TestModelPricingOverride_MergeAndPrecedence(t *testing.T) {
 	}
 }
 
+func TestModelPricingOverride_ExactCodexAliasPrecedesCanonicalOverride(t *testing.T) {
+	t.Cleanup(func() { SetModelPricingOverrides(nil) })
+
+	// codex-auto-review is an internal alias whose intended billing is the
+	// public gpt-5.4 standard price. Keep a deliberately bad canonical override
+	// here to prove the alias-specific entry cannot be shadowed by it.
+	SetModelPricingOverrides(map[string]ModelPricingOverride{
+		"codex-auto-review": {Source: ModelPricingSourceSynced, Input: 2.5, CachedInput: 0.25, Output: 15},
+		"gpt-5.4":           {Source: ModelPricingSourceSynced, Input: 15, Output: 120},
+	})
+
+	pricing := GetModelPricing("codex-auto-review")
+	if pricing.InputPricePerMToken != 2.5 ||
+		pricing.CacheReadPricePerMToken != 0.25 ||
+		pricing.OutputPricePerMToken != 15 {
+		t.Fatalf("alias pricing = %.2f/%.2f/%.2f, want 2.5/0.25/15",
+			pricing.InputPricePerMToken,
+			pricing.CacheReadPricePerMToken,
+			pricing.OutputPricePerMToken)
+	}
+}
+
+func TestPricingManagementModelKeyPreservesIndependentAlias(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "codex-auto-review", want: "codex-auto-review"},
+		{model: "CODEX_AUTO_REVIEW", want: "codex-auto-review"},
+		{model: "gpt-5.4", want: "gpt-5.4"},
+		{model: "gpt-5.4-openai-compact", want: "gpt-5.4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := PricingManagementModelKey(tt.model); got != tt.want {
+				t.Fatalf("PricingManagementModelKey(%q) = %q, want %q", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseModelPricingOverridesJSON(t *testing.T) {
 	m, err := ParseModelPricingOverridesJSON(`{"gpt-5.4":{"source":"custom","input":3,"output":20},"gpt-x":{}}`)
 	if err != nil {
