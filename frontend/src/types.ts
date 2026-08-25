@@ -254,6 +254,7 @@ export interface AccountListSummary {
   unauthorized_24h: number
   rate_limited_1h: number
   timeout_15m: number
+  self_service_pending?: number
 }
 
 export interface AccountEmailDomainFacet {

@@ -984,6 +984,16 @@ func TestCodexNormalIncludesDisabledButSchedulingExcludesIt(t *testing.T) {
 	}
 }
 
+func TestSummarizeAccountListCountsSelfServicePending(t *testing.T) {
+	pending := &accountListSnapshotItem{Enabled: false, Tags: []string{selfServiceTag}}
+	otherDisabled := &accountListSnapshotItem{Enabled: false, Tags: []string{"manual"}}
+	approved := &accountListSnapshotItem{Enabled: true, Tags: []string{selfServiceTag}}
+	summary, _ := summarizeAccountList([]*accountListSnapshotItem{pending, otherDisabled, approved}, database.UpstreamChannelCodex)
+	if summary.SelfServicePending != 1 || summary.Disabled != 2 {
+		t.Fatalf("summary = %+v, want SelfServicePending=1 Disabled=2", summary)
+	}
+}
+
 func TestOverloadPausedCountsAsNormalNotRateLimitedOrScheduling(t *testing.T) {
 	item := &accountListSnapshotItem{
 		Status:           "overload_paused",
