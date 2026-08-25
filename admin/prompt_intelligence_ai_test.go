@@ -159,6 +159,28 @@ func TestPromptIntelligenceDoesNotSendModerationModelToChatEndpoint(t *testing.T
 	}
 }
 
+func TestPromptIntelligenceRejectsModerationsRequestModeBeforeChatCall(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+
+	handler := &Handler{}
+	_, _, err := handler.callPromptIntelligenceAI(context.Background(), promptIntelligenceAIAnalysisRequest{
+		Provider: promptIntelligenceAIProviderReview,
+	}, promptfilter.ReviewConfig{
+		Enabled: true, APIKey: "review-key", BaseURL: server.URL, Model: "custom-review-model",
+		Adapter: promptfilter.ReviewAdapterConfig{RequestMode: promptfilter.ReviewRequestModeModerations},
+	}, "system", "input")
+	if !errors.Is(err, errPromptIntelligenceRequiresChatModel) {
+		t.Fatalf("error=%v, want request-mode compatibility error", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("moderations request mode caused %d chat requests", calls.Load())
+	}
+}
+
 func TestPromptIntelligenceEvidenceInputIncludesDurableLearningBundle(t *testing.T) {
 	evidence := []*database.PromptRuleCandidateEvidence{{
 		SourceKind:    database.PromptRuleCandidateSourceUpstreamCyberPolicy,
