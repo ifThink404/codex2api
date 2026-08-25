@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -56,6 +57,9 @@ func TestOpenAIResponsesCodexClientMetadataModeLifecycle(t *testing.T) {
 
 	updatePath := fmt.Sprintf("/api/admin/accounts/%d/openai-responses", added.ID)
 	params := gin.Params{{Key: "id", Value: fmt.Sprintf("%d", added.ID)}}
+	handler.openAIResponsesBalanceCache = map[int64]openAIResponsesBalanceCacheEntry{
+		added.ID: {ExpiresAt: time.Now().Add(time.Minute)},
+	}
 	preserveRecorder := invokeOpenAIResponsesJSONHandler(t, http.MethodPut, updatePath, params, addOpenAIResponsesAccountReq{
 		Name:    "responses-relay",
 		BaseURL: "https://relay.example.com",
@@ -63,6 +67,9 @@ func TestOpenAIResponsesCodexClientMetadataModeLifecycle(t *testing.T) {
 	}, handler.UpdateOpenAIResponsesAccount)
 	if preserveRecorder.Code != http.StatusOK {
 		t.Fatalf("preserve update status = %d, want %d: %s", preserveRecorder.Code, http.StatusOK, preserveRecorder.Body.String())
+	}
+	if _, cached := handler.openAIResponsesBalanceCache[added.ID]; cached {
+		t.Fatal("successful account update retained a stale upstream balance cache entry")
 	}
 	assertOpenAIResponsesMetadataMode(t, db, store, added.ID, auth.CodexClientMetadataModeAlways)
 

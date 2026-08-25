@@ -35,6 +35,12 @@ type openAIResponsesBalanceResponse struct {
 	QueriedAt string  `json:"queried_at"`
 }
 
+func (h *Handler) invalidateOpenAIResponsesBalanceCache(id int64) {
+	h.openAIResponsesBalanceMu.Lock()
+	delete(h.openAIResponsesBalanceCache, id)
+	h.openAIResponsesBalanceMu.Unlock()
+}
+
 // GetOpenAIResponsesBalance queries the upstream platform with the API key that
 // is already stored on the account. The key is never returned to the browser.
 // GET /api/admin/accounts/:id/openai-responses/balance

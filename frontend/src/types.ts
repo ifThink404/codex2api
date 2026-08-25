@@ -37,7 +37,6 @@ export interface AccountUsageWindow {
   user_billed?: number
   model_counts?: Record<string, number>
   model_success_counts?: Record<string, number>
-  model_avg_first_token_ms?: Record<string, number>
 }
 
 export interface GrokProductUsage {
@@ -256,6 +255,7 @@ export interface AccountListSummary {
   unauthorized_24h: number
   rate_limited_1h: number
   timeout_15m: number
+  self_service_pending?: number
 }
 
 export interface AccountEmailDomainFacet {

@@ -1609,6 +1609,20 @@ export default function Accounts() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search]);
+  // ?pending=1 落到 Codex 账号页审核区（API Keys 门户卡片 / Grok 横幅共用）。
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("pending") !== "1") return;
+    const path = location.pathname.replace(/\/+$/, "");
+    if (path.endsWith("/accounts/grok") || path.endsWith("/accounts/invite")) {
+      navigate({ pathname: "/accounts", search: "?pending=1" }, { replace: true });
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      document.getElementById("pending-review")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname, location.search, navigate]);
   const normalizedPath = location.pathname.replace(/\/+$/, "");
   const providerView: "codex" | "grok" = normalizedPath.endsWith("/accounts/grok")
     ? "grok"
@@ -1935,6 +1949,9 @@ export default function Accounts() {
   );
   const [apiKeys, setAPIKeys] = useState<APIKeyRow[]>([]);
   const [lazyMode, setLazyMode] = useState(false);
+  const [accountPortalEnabled, setAccountPortalEnabled] = useState(false);
+  const [panelPendingCount, setPanelPendingCount] = useState(0);
+  const [grokSelfServicePending, setGrokSelfServicePending] = useState(0);
   // 导入/添加账号时直接绑定的分组（记住上次选择，添加弹窗与导入弹窗共用，与 allowDuplicate 同风格）。
   const {
     groupIds: importGroupIds,
@@ -2583,7 +2600,28 @@ export default function Accounts() {
       .then((response) => { if (!cancelled) setAllGroups(response.groups ?? []); })
       .catch(() => undefined);
     void api.getSettings()
-      .then((settings) => { if (!cancelled) setLazyMode(settings.lazy_mode); })
+      .then((settings) => {
+        if (cancelled) return;
+        setLazyMode(settings.lazy_mode);
+        setAccountPortalEnabled(Boolean(settings.public_account_portal_page_enabled));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [providerView]);
+
+  useEffect(() => {
+    if (providerView !== "grok") return;
+    let cancelled = false;
+    void api.getAccountsPage({
+      channel: "codex",
+      page: 1,
+      pageSize: 1,
+      status: "disabled",
+      tag: "self-service",
+    })
+      .then((response) => {
+        if (!cancelled) setGrokSelfServicePending(response.total ?? 0);
+      })
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, [providerView]);
@@ -2968,6 +3006,7 @@ export default function Accounts() {
     riskyAccounts: data.summary?.risky ?? 0,
     oauthAccounts: data.summary?.oauth ?? 0,
     apiKeyAccounts: data.summary?.api_key ?? 0,
+    selfServicePendingAccounts: data.summary?.self_service_pending ?? 0,
   };
   const {
     totalAccounts,
@@ -2988,7 +3027,17 @@ export default function Accounts() {
     riskyAccounts,
     oauthAccounts,
     apiKeyAccounts,
+    selfServicePendingAccounts,
   } = accountSummary;
+  const selfServicePendingCount = Math.max(selfServicePendingAccounts, panelPendingCount);
+  const pendingReviewRequested = new URLSearchParams(location.search).get("pending") === "1";
+  const showPendingReviewPanel = accountPortalEnabled || selfServicePendingCount > 0 || pendingReviewRequested;
+  const scrollToPendingReview = useCallback(() => {
+    document.getElementById("pending-review")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+  const handlePendingCountChange = useCallback((count: number) => {
+    setPanelPendingCount(count);
+  }, []);
 
   const allTags = data.facets.tags;
   const emailDomainStats = data.facets.email_domains;
@@ -5752,6 +5801,25 @@ export default function Accounts() {
     // key 触发渠道切换时整块内容淡入过渡，切换器由 headerSlot 常驻不闪。
     return (
       <div key="provider-grok" className="animate-channel-switch-in">
+        {grokSelfServicePending > 0 ? (
+          <button
+            type="button"
+            onClick={() => navigate("/accounts?pending=1")}
+            className="mb-3 flex w-full items-center gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/[0.06] px-3 py-2.5 text-left shadow-sm transition-colors hover:bg-amber-500/[0.1]"
+          >
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-300">
+              <Hourglass className="size-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold tracking-tight text-foreground">
+                {t("accounts.pendingReview.grokBanner", { count: grokSelfServicePending })}
+              </span>
+              <span className="block text-[11px] text-muted-foreground">
+                {t("accounts.pendingReview.jumpHint")}
+              </span>
+            </span>
+          </button>
+        ) : null}
         <GrokAccounts
           headerSlot={providerSwitcher}
           showOperationResults={showOperationResults}
@@ -6234,6 +6302,15 @@ export default function Accounts() {
               <span className="shrink-0 whitespace-nowrap text-[12px] font-semibold text-foreground">
                 {t("accounts.filter")}
               </span>
+              {showPendingReviewPanel ? (
+                <button
+                  type="button"
+                  onClick={scrollToPendingReview}
+                  className="shrink-0 whitespace-nowrap rounded-lg bg-amber-500/15 px-2.5 py-1.5 text-[12px] font-semibold text-amber-800 transition-colors hover:bg-amber-500/20 dark:text-amber-200"
+                >
+                  {t("accounts.pendingReview.chip", { count: selfServicePendingCount })}
+                </button>
+              ) : null}
               {(
                 [
                   ["all", t("accounts.filterAll"), totalAccounts],
@@ -6866,11 +6943,14 @@ export default function Accounts() {
             </div>
           )}
 
-          <PendingSelfServiceReviewPanel
-            onApprove={handleApprovePending}
-            onReject={handleRejectPending}
-            onSaveNote={handleSaveNote}
-          />
+          {showPendingReviewPanel ? (
+            <PendingSelfServiceReviewPanel
+              onApprove={handleApprovePending}
+              onReject={handleRejectPending}
+              onSaveNote={handleSaveNote}
+              onCountChange={handlePendingCountChange}
+            />
+          ) : null}
 
           <Card>
             <CardContent className="p-3 sm:p-4">
@@ -14549,11 +14629,9 @@ function UsageBar({
 function UsageWindowStat({
   label,
   detail,
-  apiAccount = false,
 }: {
   label: string;
   detail?: AccountRow["usage_5h_detail"];
-  apiAccount?: boolean;
 }) {
   const { t } = useTranslation();
   if (!detail || !hasUsageWindowDetail(detail)) return null;
@@ -14577,30 +14655,14 @@ function UsageWindowStat({
         </span>
       </div>
       {(accountBilledText || userBilledText) && (
-        <div
-          className={cn(
-            "pl-[46px] text-[10px]",
-            apiAccount
-              ? "flex flex-col items-start gap-0.5 font-medium"
-              : "flex items-center gap-1.5 text-muted-foreground/80",
-          )}
-        >
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/80 pl-[46px]">
           {accountBilledText && (
-            <span
-              className={cn(
-                apiAccount &&
-                  "text-emerald-700 dark:text-emerald-400",
-              )}
-            >
+            <span>
               {t("accounts.accountBilledLabel")}: ${accountBilledText}
             </span>
           )}
           {userBilledText && (
-            <span
-              className={cn(
-                apiAccount && "text-sky-700 dark:text-sky-400",
-              )}
-            >
+            <span>
               {t("accounts.userBilledLabel")}: ${userBilledText}
             </span>
           )}
@@ -14738,7 +14800,6 @@ function TodayStatsCell({ account }: { account: AccountRow }) {
           label: row.key === "unknown" ? t("accounts.unknownModel") : row.key,
           count: row.count,
           percent: row.percent,
-          avgFirstTokenMs: detail.model_avg_first_token_ms?.[row.key],
           successRate:
             typeof success === "number" && row.count > 0
               ? (success / row.count) * 100
@@ -14796,10 +14857,7 @@ function UsageCell({
       disabled={refreshing}
       title={t("accounts.refreshUsage")}
       aria-label={t("accounts.refreshUsage")}
-      className={cn(
-        "shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50",
-        account.openai_responses_api && "mr-6",
-      )}
+      className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
     >
       <RefreshCw className={`size-3 ${refreshing ? "animate-spin" : ""}`} />
     </button>
@@ -14854,11 +14912,7 @@ function UsageCell({
               detail={account.usage_5h_detail}
             />
           ) : (
-            <UsageWindowStat
-              label="5h"
-              detail={account.usage_5h_detail}
-              apiAccount={account.openai_responses_api}
-            />
+            <UsageWindowStat label="5h" detail={account.usage_5h_detail} />
           )}
           {sparkBar}
           {has7d ? (
@@ -14890,11 +14944,7 @@ function UsageCell({
               detail={account.usage_7d_detail}
             />
           ) : (
-            <UsageWindowStat
-              label={longWindowLabel}
-              detail={account.usage_7d_detail}
-              apiAccount={account.openai_responses_api}
-            />
+            <UsageWindowStat label={longWindowLabel} detail={account.usage_7d_detail} />
           )}
         </div>
         {refreshButton}
@@ -14914,11 +14964,7 @@ function UsageCell({
               detail={account.usage_7d_detail}
             />
           ) : (
-            <UsageWindowStat
-              label={longWindowLabel}
-              detail={account.usage_7d_detail}
-              apiAccount={account.openai_responses_api}
-            />
+            <UsageWindowStat label={longWindowLabel} detail={account.usage_7d_detail} />
           )}
         </div>
         {refreshButton}
@@ -15212,15 +15258,19 @@ function PendingSelfServiceReviewPanel({
   onApprove,
   onReject,
   onSaveNote,
+  onCountChange,
 }: {
   onApprove: (account: AccountRow) => Promise<void>;
   onReject: (account: AccountRow) => Promise<void>;
   onSaveNote: (account: AccountRow, note: string) => Promise<void>;
+  onCountChange?: (count: number) => void;
 }) {
   const { t } = useTranslation();
   const [pending, setPending] = useState<AccountRow[]>([]);
   const [pendingPage, setPendingPage] = useState(1);
   const [pendingTotal, setPendingTotal] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingPending, setLoadingPending] = useState(true);
   const pendingPageSize = 20;
   const loadPending = useCallback(async () => {
     try {
@@ -15233,19 +15283,33 @@ function PendingSelfServiceReviewPanel({
         sort: "created_at",
         order: "asc",
       });
+      const total = response.total ?? 0;
       setPending(response.accounts ?? []);
-      setPendingTotal(response.total ?? 0);
+      setPendingTotal(total);
+      setLoadError(null);
+      onCountChange?.(total);
       if (response.page !== pendingPage) setPendingPage(response.page);
-    } catch {
-      // This auxiliary panel must never block the account list.
+    } catch (error) {
+      setLoadError(getErrorMessage(error));
+    } finally {
+      setLoadingPending(false);
     }
-  }, [pendingPage]);
+  }, [onCountChange, pendingPage]);
   useEffect(() => { void loadPending(); }, [loadPending]);
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden) void loadPending();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [loadPending]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftNote, setDraftNote] = useState("");
   const [savingId, setSavingId] = useState<number | null>(null);
-
-  if (pending.length === 0) return null;
 
   const startEdit = (account: AccountRow) => {
     setEditingId(account.id);
@@ -15270,7 +15334,7 @@ function PendingSelfServiceReviewPanel({
   };
 
   return (
-    <Card className="border-amber-500/40 bg-amber-500/[0.04] shadow-sm">
+    <Card id="pending-review" className="border-amber-500/40 bg-amber-500/[0.04] shadow-sm scroll-mt-4">
       <CardContent className="p-3 sm:p-4">
         <div className="mb-3 flex items-center gap-2.5">
           <div className="flex size-9 items-center justify-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-300">
@@ -15287,6 +15351,19 @@ function PendingSelfServiceReviewPanel({
           </div>
         </div>
 
+        {loadingPending && pending.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+        ) : loadError ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-destructive">
+            <span>{t("accounts.pendingReview.loadFailed", { error: loadError })}</span>
+            <Button size="sm" variant="outline" onClick={() => void loadPending()}>
+              {t("common.retry")}
+            </Button>
+          </div>
+        ) : pending.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("accounts.pendingReview.empty")}</p>
+        ) : (
+        <>
         <div className="space-y-2">
           {pending.map((account) => {
             const editing = editingId === account.id;
@@ -15394,6 +15471,8 @@ function PendingSelfServiceReviewPanel({
             />
           </div>
         ) : null}
+        </>
+        )}
       </CardContent>
     </Card>
   );

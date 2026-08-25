@@ -1558,13 +1558,12 @@ type modelCooldownResponse struct {
 }
 
 type accountUsageWindow struct {
-	Requests             int64              `json:"requests"`
-	Tokens               int64              `json:"tokens"`
-	AccountBilled        float64            `json:"account_billed"`
-	UserBilled           float64            `json:"user_billed"`
-	ModelCounts          map[string]int64   `json:"model_counts,omitempty"`
-	ModelSuccessCounts   map[string]int64   `json:"model_success_counts,omitempty"`
-	ModelAvgFirstTokenMs map[string]float64 `json:"model_avg_first_token_ms,omitempty"`
+	Requests           int64            `json:"requests"`
+	Tokens             int64            `json:"tokens"`
+	AccountBilled      float64          `json:"account_billed"`
+	UserBilled         float64          `json:"user_billed"`
+	ModelCounts        map[string]int64 `json:"model_counts,omitempty"`
+	ModelSuccessCounts map[string]int64 `json:"model_success_counts,omitempty"`
 }
 
 func accountEmailDomain(email string) string {
@@ -3908,6 +3907,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, codexClientMetadataMode, req.ProxyURL)
 		h.store.ApplyAccountCustomHeaders(id, customHeaders)
 	}
+	h.invalidateOpenAIResponsesBalanceCache(id)
 	h.db.InsertAccountEventAsync(id, "updated", "manual_openai_responses")
 
 	writeMessage(c, http.StatusOK, "OpenAI Responses API 账号设置已更新")
