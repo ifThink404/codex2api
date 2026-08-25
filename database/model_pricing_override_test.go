@@ -63,14 +63,16 @@ func TestModelPricingOverride_ExactCodexAliasPrecedesCanonicalOverride(t *testin
 		"gpt-5.4":           {Source: ModelPricingSourceSynced, Input: 15, Output: 120},
 	})
 
-	pricing := GetModelPricing("codex-auto-review")
-	if pricing.InputPricePerMToken != 2.5 ||
-		pricing.CacheReadPricePerMToken != 0.25 ||
-		pricing.OutputPricePerMToken != 15 {
-		t.Fatalf("alias pricing = %.2f/%.2f/%.2f, want 2.5/0.25/15",
-			pricing.InputPricePerMToken,
-			pricing.CacheReadPricePerMToken,
-			pricing.OutputPricePerMToken)
+	for _, model := range []string{"codex-auto-review", "CODEX_AUTO_REVIEW", "codex auto review"} {
+		pricing := GetModelPricing(model)
+		if pricing.InputPricePerMToken != 2.5 ||
+			pricing.CacheReadPricePerMToken != 0.25 ||
+			pricing.OutputPricePerMToken != 15 {
+			t.Fatalf("%s alias pricing = %.2f/%.2f/%.2f, want 2.5/0.25/15", model,
+				pricing.InputPricePerMToken,
+				pricing.CacheReadPricePerMToken,
+				pricing.OutputPricePerMToken)
+		}
 	}
 }
 
@@ -81,6 +83,7 @@ func TestPricingManagementModelKeyPreservesIndependentAlias(t *testing.T) {
 	}{
 		{model: "codex-auto-review", want: "codex-auto-review"},
 		{model: "CODEX_AUTO_REVIEW", want: "codex-auto-review"},
+		{model: "codex auto review", want: "codex-auto-review"},
 		{model: "gpt-5.4", want: "gpt-5.4"},
 		{model: "gpt-5.4-openai-compact", want: "gpt-5.4"},
 	}

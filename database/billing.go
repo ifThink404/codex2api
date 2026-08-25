@@ -230,8 +230,9 @@ func GetModelPricing(model string) *ModelPricing {
 	// This matters for internal aliases such as codex-auto-review: it maps to
 	// gpt-5.4 for fallback pricing, but its own synced/custom price must not be
 	// shadowed by a stale gpt-5.4 override.
-	if normalized != canonical {
-		if ov, ok := lookupModelPricingOverride(normalized); ok {
+	aliasKey := PricingManagementModelKey(normalized)
+	if aliasKey != canonical {
+		if ov, ok := lookupModelPricingOverride(aliasKey); ok {
 			merged := *base
 			ov.applyNonZero(&merged)
 			return &merged
