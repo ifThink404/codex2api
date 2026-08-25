@@ -18,7 +18,17 @@
     "modelCooldownCleared": "已清除 {{model}} 的模型冷卻",
     "allModelCooldownsCleared": "已清除 {{count}} 條模型冷卻",
     "planWorkspaceId": "空間 ID：{{id}}",
-    "occupiedRequestsTooltip": "目前真實在途 {{active}}，佔用槽位 {{occupied}}（含 {{buffered}} 個會話緩衝槽）"
+    "occupiedRequestsTooltip": "目前真實在途 {{active}}，佔用槽位 {{occupied}}（含 {{buffered}} 個會話緩衝槽）",
+    "pendingReview": {
+      "title": "自助提交待審核",
+      "desc": "他人透過帳號自助入口提交、等待審核的帳號",
+      "count": "{{count}} 個待審核",
+      "chip": "待審核 {{count}}",
+      "jumpHint": "查看並批准或拒絕",
+      "empty": "目前沒有待審核的自助提交",
+      "loadFailed": "待審核列表載入失敗：{{error}}",
+      "grokBanner": "{{count}} 條 Codex 自助提交待審核"
+    }
   },
   "settings": {
     "modelCooldownTitle": "模型 429 冷卻策略",

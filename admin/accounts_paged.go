@@ -125,6 +125,7 @@ type accountListSummary struct {
 	Unauthorized24h      int `json:"unauthorized_24h"`
 	RateLimited1h        int `json:"rate_limited_1h"`
 	Timeout15m           int `json:"timeout_15m"`
+	SelfServicePending   int `json:"self_service_pending"`
 }
 
 type accountListDomainFacet struct {
@@ -1356,6 +1357,9 @@ func summarizeAccountList(items []*accountListSnapshotItem, channel string) (acc
 		}
 		if !item.Enabled {
 			summary.Disabled++
+			if containsString(item.Tags, selfServiceTag) {
+				summary.SelfServicePending++
+			}
 		}
 		if item.Locked {
 			summary.Locked++
