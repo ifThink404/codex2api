@@ -17,6 +17,14 @@ export type ModelPricingPreview = {
   expression: string
 }
 
+function hasRate(value: PricingPreviewRate | null): value is PricingPreviewRate {
+  return Boolean(value && (value.input > 0 || value.cached > 0 || value.output > 0))
+}
+
+function multiplyRate(value: PricingPreviewRate, multiplier: number): PricingPreviewRate {
+  return { input: value.input * multiplier, cached: value.cached * multiplier, output: value.output * multiplier }
+}
+
 function numberValue(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(parsed) ? parsed : 0
@@ -32,10 +40,6 @@ function rate(input: unknown, cached: unknown, output: unknown): PricingPreviewR
 
 function rateExpression(value: PricingPreviewRate): string {
   return `p * ${value.input} + c * ${value.output} + cr * ${value.cached}`
-}
-
-function hasRate(value: PricingPreviewRate | null): value is PricingPreviewRate {
-  return Boolean(value && (value.input > 0 || value.cached > 0 || value.output > 0))
 }
 
 export function buildModelPricingPreview(
@@ -87,4 +91,12 @@ export function buildModelPricingPreview(
     flexMultiplier: 0.5,
     expression,
   }
+}
+
+export function resolveModelPricingPreviewPriority(preview: ModelPricingPreview) {
+  const priority = preview.priority ?? (hasRate(preview.standard) ? multiplyRate(preview.standard, 2) : null)
+  const longPriority = preview.long
+    ? preview.longPriority ?? (hasRate(preview.long) ? multiplyRate(preview.long, 2) : null)
+    : null
+  return { priority, longPriority }
 }

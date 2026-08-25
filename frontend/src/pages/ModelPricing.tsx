@@ -32,6 +32,7 @@ import { getErrorMessage } from '../utils/error'
 import type { ModelPricingOverride, OfficialPricingSyncConfig } from '@/types'
 import {
   buildModelPricingPreview,
+  resolveModelPricingPreviewPriority,
   type PricingPreviewRate,
 } from '../lib/modelPricingPreview'
 
@@ -286,6 +287,7 @@ function PreviewRateCard({
 function BillingRulePreview({ pricing }: { pricing: ModelPricingOverride }) {
   const { t } = useTranslation()
   const preview = buildModelPricingPreview(pricing)
+  const priorityPreview = resolveModelPricingPreviewPriority(preview)
   const badge = preview.mode === 'tiered'
     ? t('settings.pricing.tiered')
     : t('settings.pricing.singleTier')
@@ -315,7 +317,7 @@ function BillingRulePreview({ pricing }: { pricing: ModelPricingOverride }) {
         <PreviewRateCard
           label={t('settings.pricing.standardRate')}
           rate={preview.standard}
-          hint="in / cached / out · USD/M"
+          hint={t('settings.pricing.rateOrderHint')}
         />
         {preview.long ? (
           <PreviewRateCard
@@ -327,18 +329,18 @@ function BillingRulePreview({ pricing }: { pricing: ModelPricingOverride }) {
             tone="primary"
           />
         ) : null}
-        {preview.priority ? (
+        {priorityPreview.priority ? (
           <PreviewRateCard
             label={t('settings.pricing.priorityRate')}
-            rate={preview.priority}
+            rate={priorityPreview.priority}
             hint={t('settings.pricing.priorityHint')}
             tone="warning"
           />
         ) : null}
-        {preview.longPriority ? (
+        {priorityPreview.longPriority ? (
           <PreviewRateCard
             label={t('settings.pricing.longPriorityRate')}
-            rate={preview.longPriority}
+            rate={priorityPreview.longPriority}
             hint={t('settings.pricing.longPriorityHint')}
             tone="warning"
           />

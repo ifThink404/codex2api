@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildModelPricingPreview } from './modelPricingPreview.ts'
+import { buildModelPricingPreview, resolveModelPricingPreviewPriority } from './modelPricingPreview.ts'
 
 test('single-tier models still receive a complete billing preview', () => {
   const preview = buildModelPricingPreview({
@@ -81,4 +81,21 @@ test('long-context priority uses its independent rates instead of a multiplier',
   assert.match(preview.expression, /long_priority/)
   assert.match(preview.expression, /p \* 25/)
   assert.doesNotMatch(preview.expression, /tier\("priority"[^)]*\) \* 2/)
+})
+
+test('priority preview falls back to 2x standard and long-context rates when omitted', () => {
+  const preview = buildModelPricingPreview({
+    input: 2.5,
+    cached_input: 0.25,
+    output: 15,
+    input_long: 5,
+    cached_input_long: 0.5,
+    output_long: 22.5,
+    long_context_threshold_tokens: 272000,
+  })
+
+  assert.deepEqual(resolveModelPricingPreviewPriority(preview), {
+    priority: { input: 5, cached: 0.5, output: 30 },
+    longPriority: { input: 10, cached: 1, output: 45 },
+  })
 })

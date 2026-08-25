@@ -3654,6 +3654,7 @@
       "singleTier": "单档计费",
       "tiered": "阶梯计费",
       "standardRate": "标准档",
+      "rateOrderHint": "输入 / 缓存 / 输出 · 美元/百万 Token",
       "longRate": "长上下文档",
       "priorityRate": "Priority 档",
       "longPriorityRate": "长上下文 · Priority 档",

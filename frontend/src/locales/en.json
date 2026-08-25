@@ -3654,6 +3654,7 @@
       "singleTier": "Single tier",
       "tiered": "Tiered",
       "standardRate": "Standard",
+      "rateOrderHint": "in / cached / out · USD/M",
       "longRate": "Long context",
       "priorityRate": "Priority",
       "longPriorityRate": "Long context · Priority",
