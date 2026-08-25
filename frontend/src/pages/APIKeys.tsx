@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import APIKeyTokenUsagePanel from "../components/APIKeyTokenUsagePanel";
 import ChipInput from "../components/ChipInput";
@@ -51,6 +52,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Check,
+  ClipboardCheck,
   Copy,
   CalendarClock,
   CircleDollarSign,
@@ -1857,8 +1859,9 @@ export default function APIKeys() {
                         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                           {t("apiKeys.publicAccountPortalDesc")}
                         </p>
-                        {publicAccountPortalPageEnabled ? (
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          {publicAccountPortalPageEnabled ? (
+                            <>
                             <code
                               className="min-w-0 max-w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-[12px] text-foreground"
                               title={accountPortalUrl}
@@ -1882,8 +1885,16 @@ export default function APIKeys() {
                               <ExternalLink className="size-3.5" />
                               {t("apiKeys.publicUsageOpen")}
                             </a>
-                          </div>
-                        ) : null}
+                            </>
+                          ) : null}
+                          <Link
+                            to="/accounts?pending=1"
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                          >
+                            <ClipboardCheck className="size-3.5" />
+                            {t("apiKeys.publicAccountPortalReview")}
+                          </Link>
+                        </div>
                       </div>
                       <Button
                         variant={

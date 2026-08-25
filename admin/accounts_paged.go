@@ -96,6 +96,7 @@ type accountListSnapshotItem struct {
 	CooldownUntil       time.Time
 	Window7dSeconds     int64
 	ActiveRequests      int64
+	OccupiedRequests    int64
 	DynamicConcurrency  int64
 	OpenAIResponses     bool
 	SearchText          string
@@ -124,6 +125,7 @@ type accountListSummary struct {
 	Unauthorized24h      int `json:"unauthorized_24h"`
 	RateLimited1h        int `json:"rate_limited_1h"`
 	Timeout15m           int `json:"timeout_15m"`
+	SelfServicePending   int `json:"self_service_pending"`
 }
 
 type accountListDomainFacet struct {
@@ -736,6 +738,7 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 			item.LastRateLimitedAt = runtimeSnapshot.LastRateLimitedAt
 			item.LastTimeoutAt = runtimeSnapshot.LastTimeoutAt
 			item.ActiveRequests = runtimeSnapshot.ActiveRequests
+			item.OccupiedRequests = runtimeSnapshot.OccupiedRequests
 			item.DynamicConcurrency = runtimeSnapshot.DynamicConcurrencyLimit
 			item.Reset5hAt = runtimeSnapshot.Reset5hAt
 			item.Reset7dAt = runtimeSnapshot.Reset7dAt
@@ -1354,6 +1357,9 @@ func summarizeAccountList(items []*accountListSnapshotItem, channel string) (acc
 		}
 		if !item.Enabled {
 			summary.Disabled++
+			if containsString(item.Tags, selfServiceTag) {
+				summary.SelfServicePending++
+			}
 		}
 		if item.Locked {
 			summary.Locked++

@@ -1333,6 +1333,8 @@ export default function Settings() {
     scheduler_mode: 'round_robin',
     affinity_mode: 'bounded',
     session_affinity_spread: false,
+    session_slot_buffer_enabled: false,
+    session_slot_buffer_seconds: 10,
     grok_affinity_mode: 'strict',
     grok_probe_enabled: false,
     grok_probe_interval_minutes: 30,
@@ -2439,6 +2441,26 @@ export default function Settings() {
                   <Switch
                     checked={settingsForm.session_affinity_spread}
                     onCheckedChange={(checked) => autoSaveBooleanField('session_affinity_spread', checked)}
+                  />
+                </SettingField>
+                <SettingField label={t('settings.sessionSlotBuffer')} description={t('settings.sessionSlotBufferDesc')} layout="switch">
+                  <Switch
+                    checked={settingsForm.session_slot_buffer_enabled}
+                    onCheckedChange={(checked) => autoSaveBooleanField('session_slot_buffer_enabled', checked)}
+                  />
+                </SettingField>
+                <SettingField
+                  label={t('settings.sessionSlotBufferSeconds')}
+                  description={t('settings.sessionSlotBufferSecondsDesc')}
+                  className={cn(!settingsForm.session_slot_buffer_enabled && 'opacity-60')}
+                >
+                  <DraftNumberInput
+                    min={1}
+                    max={60}
+                    disabled={!settingsForm.session_slot_buffer_enabled}
+                    value={settingsForm.session_slot_buffer_seconds}
+                    onValueChange={(value) => setSettingsForm(f => ({ ...f, session_slot_buffer_seconds: value }))}
+                    onValueCommit={(value) => void autoSaveSettingsPatch({ session_slot_buffer_seconds: value })}
                   />
                 </SettingField>
               </div>

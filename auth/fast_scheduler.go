@@ -540,10 +540,7 @@ func (s *FastScheduler) refreshEntryLocked(tier AccountHealthTier, idx int, disp
 }
 
 func (s *FastScheduler) Release(acc *Account) {
-	if acc == nil {
-		return
-	}
-	atomic.AddInt64(&acc.ActiveRequests, -1)
+	releaseOccupiedAccountSlot(acc)
 }
 
 func (s *FastScheduler) tryAcquireAccount(acc *Account, limit int64) bool {
@@ -666,7 +663,10 @@ func (a *Account) fastSchedulerSnapshotForSpark(baseLimit int64, now time.Time) 
 		baseConcurrencyEffective = a.effectiveBaseConcurrencyLocked(baseLimit)
 	}
 	limit := concurrencyLimitForTier(baseConcurrencyEffective, tier)
-	available := a.sparkDispatchEligibleLocked(now)
+	// sparkDispatchEligibleLocked 与 isAvailableLocked 一样只看锁内状态;
+	// DispatchPaused 是锁外原子标志,标准快照在这里显式补一道门,spark 必须
+	// 对齐,否则运维手动停调度或过载熔断置位的账号仍会被 spark 请求选中。
+	available := a.sparkDispatchEligibleLocked(now) && atomic.LoadInt32(&a.DispatchPaused) == 0
 	return tier, score, limit, proven, available
 }
 
@@ -740,15 +740,10 @@ func tryAcquireAccount(acc *Account, limit int64) bool {
 		return false
 	}
 
-	for {
-		current := atomic.LoadInt64(&acc.ActiveRequests)
-		if current >= limit {
-			return false
-		}
-		if atomic.CompareAndSwapInt64(&acc.ActiveRequests, current, current+1) {
-			atomic.AddInt64(&acc.TotalRequests, 1)
-			atomic.StoreInt64(&acc.LastUsedAt, time.Now().UnixNano())
-			return true
-		}
+	if !reserveOccupiedAccountSlot(acc, limit) {
+		return false
 	}
+	atomic.AddInt64(&acc.TotalRequests, 1)
+	atomic.StoreInt64(&acc.LastUsedAt, time.Now().UnixNano())
+	return true
 }

@@ -7,7 +7,8 @@ import (
 )
 
 type accountLiveItem struct {
-	ActiveRequests int64 `json:"active_requests"`
+	ActiveRequests   int64 `json:"active_requests"`
+	OccupiedRequests int64 `json:"occupied_requests"`
 }
 
 // GetAccountLiveState returns request-local runtime counters for the visible
@@ -30,7 +31,13 @@ func (h *Handler) GetAccountLiveState(c *gin.Context) {
 		if account == nil {
 			continue
 		}
-		live[id] = accountLiveItem{ActiveRequests: account.GetActiveRequests()}
+		live[id] = accountLiveItem{
+			ActiveRequests:   account.GetActiveRequests(),
+			OccupiedRequests: account.GetOccupiedRequests(),
+		}
 	}
-	c.JSON(http.StatusOK, gin.H{"accounts": live})
+	c.JSON(http.StatusOK, gin.H{
+		"accounts":                    live,
+		"session_slot_buffer_enabled": h.store.SessionSlotBufferEnabled(),
+	})
 }

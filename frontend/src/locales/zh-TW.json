@@ -24,6 +24,17 @@
     "apiBalanceTooltip": "來源：{{source}} · 更新於 {{time}}。點擊刷新。",
     "apiBalanceQueryUrl": "餘額查詢介面（可選）",
     "apiBalanceQueryUrlHint": "留空會自動嘗試 sub2api /v1/usage 與 New API 計費介面；也可填寫以 / 開頭的路徑或完整 http/https URL，查詢時會攜帶 API Key。"
+    "occupiedRequestsTooltip": "目前真實在途 {{active}}，佔用槽位 {{occupied}}（含 {{buffered}} 個會話緩衝槽）",
+    "pendingReview": {
+      "title": "自助提交待審核",
+      "desc": "他人透過帳號自助入口提交、等待審核的帳號",
+      "count": "{{count}} 個待審核",
+      "chip": "待審核 {{count}}",
+      "jumpHint": "查看並批准或拒絕",
+      "empty": "目前沒有待審核的自助提交",
+      "loadFailed": "待審核列表載入失敗：{{error}}",
+      "grokBanner": "{{count}} 條 Codex 自助提交待審核"
+    }
   },
   "settings": {
     "modelCooldownTitle": "模型 429 冷卻策略",
@@ -40,7 +51,11 @@
     "modelCooldownSeconds": "基礎時長",
     "modelCooldownSecondsDesc": "範圍 1–1800 秒。",
     "modelCooldownBackoff": "指數退避",
-    "modelCooldownBackoffDesc": "僅自適應模式生效。"
+    "modelCooldownBackoffDesc": "僅自適應模式生效。",
+    "sessionSlotBuffer": "會話並發槽緩衝",
+    "sessionSlotBufferDesc": "成功請求結束後，為原會話短暫保留帳號並發槽；同一會話可立即取回，其他新會話不能搶佔。失敗和重試仍立即釋放，正在執行的請求不會中斷。每次都產生新親和鍵的短請求也會佔用到期，因此緩衝時間越長，吞吐下降越明顯。預設關閉。",
+    "sessionSlotBufferSeconds": "緩衝時間（秒）",
+    "sessionSlotBufferSecondsDesc": "成功請求結束後保留槽位的時間，範圍 1–60 秒，預設 10 秒。儲存後立即生效，無需重啟。"
   },
   "promptFilter": {
     "views": {"profiles":"風險畫像","intelligence":"CY 學習審核"},

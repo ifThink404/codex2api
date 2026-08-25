@@ -3304,7 +3304,11 @@ func (h *Handler) Responses(c *gin.Context) {
 					h.store.ClearModelCooldown(account, attemptEffectiveModel)
 					h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 				}
-				h.store.Release(account)
+				if outcome.logStatusCode == http.StatusOK {
+					h.store.ReleaseForSession(account, affinityKey)
+				} else {
+					h.store.Release(account)
+				}
 				return
 			}
 
@@ -3591,7 +3595,11 @@ func (h *Handler) Responses(c *gin.Context) {
 				h.store.ConfirmResponsesAvailableSince(account, start)
 				h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 			}
-			h.store.Release(account)
+			if outcome.logStatusCode == http.StatusOK {
+				h.store.ReleaseForSession(account, affinityKey)
+			} else {
+				h.store.Release(account)
+			}
 			return
 		}
 
@@ -4331,7 +4339,11 @@ func (h *Handler) Responses(c *gin.Context) {
 			h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 		}
 		if !accountReleasedForOverflow {
-			h.store.Release(account)
+			if outcome.logStatusCode == http.StatusOK {
+				h.store.ReleaseForSession(account, affinityKey)
+			} else {
+				h.store.Release(account)
+			}
 		}
 		return
 	}
@@ -4731,7 +4743,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				BillingServiceTier:   usageTiers.BillingServiceTier,
 			})
 
-			h.store.Release(account)
+			h.store.ReleaseForSession(account, affinityKey)
 			contentType := resp.Header.Get("Content-Type")
 			if contentType == "" {
 				contentType = "application/json"
@@ -5020,7 +5032,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		})
 
 		h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
-		h.store.Release(account)
+		h.store.ReleaseForSession(account, affinityKey)
 		c.Data(http.StatusOK, "application/json", respBody)
 		return
 	}
@@ -5416,7 +5428,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				h.store.ClearModelCooldown(account, attemptEffectiveModel)
 				h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 			}
-			h.store.Release(account)
+			if outcome.logStatusCode == http.StatusOK {
+				h.store.ReleaseForSession(account, affinityKey)
+			} else {
+				h.store.Release(account)
+			}
 			return
 		}
 
@@ -5794,7 +5810,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			h.store.ClearModelCooldown(account, attemptEffectiveModel)
 			h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 		}
-		h.store.Release(account)
+		if outcome.logStatusCode == http.StatusOK {
+			h.store.ReleaseForSession(account, affinityKey)
+		} else {
+			h.store.Release(account)
+		}
 		return
 	}
 }

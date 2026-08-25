@@ -1075,7 +1075,11 @@ func (h *Handler) streamResponsesWSUpstream(
 		h.store.ConfirmResponsesAvailableSince(account, start)
 		h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 	}
-	h.store.Release(account)
+	if outcome.logStatusCode == http.StatusOK {
+		h.store.ReleaseForSession(account, affinityKey)
+	} else {
+		h.store.Release(account)
+	}
 
 	if errors.Is(writeErr, promptfilter.ErrOutputBlocked) {
 		apiErr := api.NewAPIError(api.ErrorCode("response_policy_violation"), "模型输出违反安全策略", api.ErrorTypeInvalidRequest)

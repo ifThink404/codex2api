@@ -454,12 +454,18 @@ export default function AccountDetailSheet({
                     detail={rateWindow ?? undefined}
                     errorMessage={account.error_message}
                   />
-                  {(account.active_requests ?? 0) > 0 && (
+                  {Math.max(account.active_requests ?? 0, account.occupied_requests ?? 0) > 0 && (
                     <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-blue-600 dark:text-blue-400">
                       <span className="size-1.5 animate-pulse rounded-full bg-blue-500" />
-                      {t("accounts.activeRequestsTooltip", {
-                        count: account.active_requests ?? 0,
-                      })}
+                      {account.session_slot_buffer_enabled === true
+                        ? t("accounts.occupiedRequestsTooltip", {
+                            active: account.active_requests ?? 0,
+                            occupied: account.occupied_requests ?? account.active_requests ?? 0,
+                            buffered: (account.occupied_requests ?? account.active_requests ?? 0) - (account.active_requests ?? 0),
+                          })
+                        : t("accounts.activeRequestsTooltip", {
+                            count: account.active_requests ?? 0,
+                          })}
                     </span>
                   )}
                   {account.enabled === false && (

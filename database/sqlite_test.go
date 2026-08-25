@@ -80,6 +80,53 @@ func TestSQLitePromptFilterColumnDefaultsRemainUpgradeCompatible(t *testing.T) {
 	if settings.CodexMinCLIVersion != "0.144.1" {
 		t.Fatalf("fresh SQLite minimum Codex CLI version = %q, want 0.144.1", settings.CodexMinCLIVersion)
 	}
+	if settings.SessionSlotBufferEnabled || settings.SessionSlotBufferSeconds != 10 {
+		t.Fatalf("session slot buffer defaults = enabled:%t seconds:%d, want false/10", settings.SessionSlotBufferEnabled, settings.SessionSlotBufferSeconds)
+	}
+}
+
+func TestSQLiteSessionSlotBufferSettingsRoundtrip(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "session-slot-buffer.db"))
+	if err != nil {
+		t.Fatalf("New(sqlite): %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	settings := &SystemSettings{
+		MaxConcurrency:           2,
+		TestConcurrency:          1,
+		TestModel:                "gpt-5.4",
+		SessionSlotBufferEnabled: true,
+		SessionSlotBufferSeconds: 17,
+	}
+	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateSystemSettings: %v", err)
+	}
+	got, err := db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings: %v", err)
+	}
+	if got == nil || !got.SessionSlotBufferEnabled || got.SessionSlotBufferSeconds != 17 {
+		t.Fatalf("session slot buffer = %#v, want enabled with 17 seconds", got)
+	}
+
+	for _, tc := range []struct {
+		input int
+		want  int
+	}{{0, 10}, {-5, 10}, {61, 60}} {
+		settings.SessionSlotBufferSeconds = tc.input
+		if err := db.UpdateSystemSettings(ctx, settings); err != nil {
+			t.Fatalf("UpdateSystemSettings(seconds=%d): %v", tc.input, err)
+		}
+		got, err := db.GetSystemSettings(ctx)
+		if err != nil {
+			t.Fatalf("GetSystemSettings(seconds=%d): %v", tc.input, err)
+		}
+		if got.SessionSlotBufferSeconds != tc.want {
+			t.Fatalf("seconds input %d normalized to %d, want %d", tc.input, got.SessionSlotBufferSeconds, tc.want)
+		}
+	}
 }
 
 func TestSQLiteAPIKeyLookupAndCount(t *testing.T) {

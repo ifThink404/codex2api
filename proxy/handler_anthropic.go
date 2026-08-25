@@ -533,7 +533,11 @@ func (h *Handler) Messages(c *gin.Context) {
 				h.store.ClearModelCooldown(account, attemptEffectiveModel)
 				h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 			}
-			h.store.Release(account)
+			if outcome.logStatusCode == http.StatusOK {
+				h.store.ReleaseForSession(account, affinityKey)
+			} else {
+				h.store.Release(account)
+			}
 			return
 		}
 
@@ -893,7 +897,11 @@ func (h *Handler) Messages(c *gin.Context) {
 			h.store.ClearModelCooldown(account, attemptEffectiveModel)
 			h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 		}
-		h.store.Release(account)
+		if outcome.logStatusCode == http.StatusOK {
+			h.store.ReleaseForSession(account, affinityKey)
+		} else {
+			h.store.Release(account)
+		}
 		return
 	}
 }
