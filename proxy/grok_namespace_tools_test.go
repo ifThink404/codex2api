@@ -661,9 +661,9 @@ func TestGrokFunctionToolRootSchemaNormalizedForUpstream(t *testing.T) {
 	if !union.Get("properties.action").Exists() || !union.Get("properties.batch").Exists() {
 		t.Fatalf("merged properties missing: %s", union.Raw)
 	}
-	required := union.Get("required").Array()
-	if len(required) != 1 || required[0].String() != "shared" {
-		t.Fatalf("required must keep only keys mandatory in every object branch, got %s", union.Get("required").Raw)
+	// 联合中含被丢弃的 null 分支(可空调用),分支侧 required 不得并入。
+	if union.Get("required").Exists() {
+		t.Fatalf("required must be dropped when a non-object branch was discarded, got %s", union.Get("required").Raw)
 	}
 	if union.Get("description").String() != "update automation" {
 		t.Fatalf("root description lost: %s", union.Raw)
@@ -698,5 +698,40 @@ func TestGrokFunctionToolObjectRootSchemaUntouched(t *testing.T) {
 	schema := gjson.GetBytes(result.Body, `tools.0.parameters`)
 	if schema.Get("type").String() != "object" || !schema.Get("properties.q").Exists() || schema.Get("required.0").String() != "q" {
 		t.Fatalf("compliant schema was altered: %s", schema.Raw)
+	}
+}
+
+// 真实事故形态(2026-08-26 用户回报):schema 根同时带 type:"object" 与 anyOf,
+// Grok 仍按联合根拒绝。归一必须以"根上出现 anyOf/oneOf/allOf"为准,不能因为
+// type 已是 object 就放行;根自身的 properties/required 要并进合并结果。
+func TestGrokFunctionToolObjectTypeWithUnionRootStillNormalized(t *testing.T) {
+	body := []byte(`{
+		"model":"grok-4.6",
+		"tools":[{"type":"function","name":"mcp__codex_app__automation_update","parameters":{
+			"type":"object",
+			"description":"update automation",
+			"properties":{"id":{"type":"string"}},
+			"required":["id"],
+			"anyOf":[
+				{"type":"object","properties":{"action":{"type":"string"}},"required":["action"]},
+				{"type":"null"}
+			]
+		}}],
+		"input":[{"type":"message","role":"user","content":"hi"}]
+	}`)
+	result := prepareGrokUpstreamBody(body)
+	schema := gjson.GetBytes(result.Body, `tools.0.parameters`)
+	if schema.Get("anyOf").Exists() || schema.Get("oneOf").Exists() {
+		t.Fatalf("union keyword survived at object-typed root: %s", schema.Raw)
+	}
+	if schema.Get("type").String() != "object" {
+		t.Fatalf("root type must stay object: %s", schema.Raw)
+	}
+	if !schema.Get("properties.id").Exists() || !schema.Get("properties.action").Exists() {
+		t.Fatalf("root and branch properties must both survive: %s", schema.Raw)
+	}
+	required := schema.Get("required").Array()
+	if len(required) != 1 || required[0].String() != "id" {
+		t.Fatalf("root required must be kept, branch-only keys dropped from union intersection: %s", schema.Get("required").Raw)
 	}
 }

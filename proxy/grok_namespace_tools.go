@@ -159,12 +159,29 @@ func mergeGrokUnionRootSchema(root map[string]any, branches []any, requireAll bo
 	if description, ok := root["description"].(string); ok && strings.TrimSpace(description) != "" {
 		merged["description"] = description
 	}
+	// 根自身可能就是 object schema(type:"object" 且额外挂了 anyOf/oneOf):它的
+	// properties/required 在任何分支下都成立,作为合并基底且 required 恒保留。
 	properties := map[string]any{}
+	rootRequired := map[string]bool{}
+	if rootProps, ok := root["properties"].(map[string]any); ok {
+		for key, value := range rootProps {
+			properties[key] = value
+		}
+	}
+	if list, ok := root["required"].([]any); ok {
+		for _, item := range list {
+			if key, ok := item.(string); ok {
+				rootRequired[key] = true
+			}
+		}
+	}
 	var required map[string]bool
 	objectBranches := 0
+	droppedNonObject := false
 	for _, rawBranch := range branches {
 		branch, ok := rawBranch.(map[string]any)
 		if !ok || !grokObjectishSchemaBranch(branch) {
+			droppedNonObject = true
 			continue
 		}
 		objectBranches++
@@ -202,15 +219,27 @@ func mergeGrokUnionRootSchema(root map[string]any, branches []any, requireAll bo
 			}
 		}
 	}
-	if objectBranches == 0 {
+	if objectBranches == 0 && len(properties) == 0 {
 		return grokPermissiveObjectSchema(root)
 	}
 	if len(properties) > 0 {
 		merged["properties"] = properties
 	}
-	if len(required) > 0 {
-		keys := make([]string, 0, len(required))
+	finalRequired := map[string]bool{}
+	for key := range rootRequired {
+		finalRequired[key] = true
+	}
+	// 联合里丢弃过非 object 分支(常见是 null,表示"可空调用")时,分支侧的
+	// required 不再并入:null 分支已不可表达,再强加必填会让模型无法发出
+	// 原本合法的空参调用。allOf(全部成立)不受此影响。
+	if requireAll || !droppedNonObject {
 		for key := range required {
+			finalRequired[key] = true
+		}
+	}
+	if len(finalRequired) > 0 {
+		keys := make([]string, 0, len(finalRequired))
+		for key := range finalRequired {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
@@ -230,6 +259,16 @@ func mergeGrokUnionRootSchema(root map[string]any, branches []any, requireAll bo
 func normalizeGrokToolParameterSchema(schema map[string]any) (map[string]any, bool) {
 	if schema == nil {
 		return schema, false
+	}
+	// 联合关键字优先于 type 判断:Grok 只要在根上看到 anyOf/oneOf 就按联合根
+	// 拒绝,即使同时声明了 type:"object"(2026-08-26 线上实测)。
+	for _, key := range []string{"anyOf", "oneOf"} {
+		if branches, ok := schema[key].([]any); ok && len(branches) > 0 {
+			return mergeGrokUnionRootSchema(schema, branches, false), true
+		}
+	}
+	if branches, ok := schema["allOf"].([]any); ok && len(branches) > 0 {
+		return mergeGrokUnionRootSchema(schema, branches, true), true
 	}
 	if typeList, ok := schema["type"].([]any); ok {
 		hasObject := false
@@ -254,14 +293,6 @@ func normalizeGrokToolParameterSchema(schema map[string]any) (map[string]any, bo
 			return schema, false
 		}
 		return grokPermissiveObjectSchema(schema), true
-	}
-	for _, key := range []string{"anyOf", "oneOf"} {
-		if branches, ok := schema[key].([]any); ok && len(branches) > 0 {
-			return mergeGrokUnionRootSchema(schema, branches, false), true
-		}
-	}
-	if branches, ok := schema["allOf"].([]any); ok && len(branches) > 0 {
-		return mergeGrokUnionRootSchema(schema, branches, true), true
 	}
 	if _, ok := schema["properties"]; ok {
 		out := make(map[string]any, len(schema)+1)
