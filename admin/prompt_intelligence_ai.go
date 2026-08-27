@@ -716,6 +716,9 @@ func (h *Handler) callPromptIntelligenceAI(ctx context.Context, request promptIn
 		if model == "" {
 			model = reviewCfg.Model
 		}
+		if strings.EqualFold(strings.TrimSpace(reviewCfg.Adapter.RequestMode), promptfilter.ReviewRequestModeModerations) {
+			return "", promptIntelligenceAICallAttribution{}, fmt.Errorf("%w：当前 Review 适配器配置为 Moderations 模式，请改回 Chat Completions", errPromptIntelligenceRequiresChatModel)
+		}
 		if promptIntelligenceModerationOnlyModel(model) {
 			return "", promptIntelligenceAICallAttribution{}, fmt.Errorf("%w：当前模型 %q 仅支持 Moderations，请切换到 DeepSeek 或其他 Chat 模型", errPromptIntelligenceRequiresChatModel, model)
 		}

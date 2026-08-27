@@ -486,6 +486,11 @@ const emptyFilters: LogFilters = {
   reviewResult: '',
 }
 
+const defaultLocalLogFilters: LogFilters = {
+  ...emptyFilters,
+  source: 'local_filter',
+}
+
 const defaultCustomRuleDraft: CustomRuleDraft = {
   name: '',
   pattern: '',
@@ -3733,12 +3738,13 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
   const [searchParams] = useSearchParams()
   const auditReference = searchParams.get('audit')?.trim() || ''
   const initialLogFilters = () => ({ ...emptyFilters, q: auditReference })
+  const initialLocalLogFilters = () => ({ ...defaultLocalLogFilters, q: auditReference })
   const [incidentDraftFilters, setIncidentDraftFilters] = useState<LogFilters>(initialLogFilters)
   const [incidentFilters, setIncidentFilters] = useState<LogFilters>(initialLogFilters)
   const [reviewDraftFilters, setReviewDraftFilters] = useState<LogFilters>(initialLogFilters)
   const [reviewFilters, setReviewFilters] = useState<LogFilters>(initialLogFilters)
-  const [localDraftFilters, setLocalDraftFilters] = useState<LogFilters>(initialLogFilters)
-  const [localFilters, setLocalFilters] = useState<LogFilters>(initialLogFilters)
+  const [localDraftFilters, setLocalDraftFilters] = useState<LogFilters>(initialLocalLogFilters)
+  const [localFilters, setLocalFilters] = useState<LogFilters>(initialLocalLogFilters)
   const [logPage, setLogPage] = useState(1)
   const [logPageSize, setLogPageSize] = usePersistedPageSize('prompt_filter_logs', 20, DEFAULT_PAGE_SIZE_OPTIONS)
   const [reviewPage, setReviewPage] = useState(1)
@@ -3763,12 +3769,12 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
   const [auditHealthLoading, setAuditHealthLoading] = useState(false)
   const [auditHealthError, setAuditHealthError] = useState<string | null>(null)
 
-  const loadLocalLogs = useCallback(async () => {
+  const loadLocalLogs = useCallback(async (pageOverride?: number) => {
     setLocalLoading(true)
     setLocalError(null)
     try {
       const result = await api.getPromptFilterLogs({
-        page: logPage,
+        page: pageOverride ?? logPage,
         pageSize: logPageSize,
         action: localFilters.action,
         source: localFilters.source,
@@ -3776,7 +3782,6 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
         model: localFilters.model,
         apiKeyId: localFilters.apiKeyId,
         q: localFilters.q,
-        reviewed: false,
       })
       setLogs(result.logs ?? [])
       setTotal(result.total ?? 0)
@@ -3787,12 +3792,12 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
     }
   }, [localFilters, logPage, logPageSize])
 
-  const loadReviewLogs = useCallback(async () => {
+  const loadReviewLogs = useCallback(async (pageOverride?: number) => {
     setReviewLoading(true)
     setReviewError(null)
     try {
       const result = await api.getPromptFilterLogs({
-        page: reviewPage,
+        page: pageOverride ?? reviewPage,
         pageSize: reviewPageSize,
         action: reviewFilters.action,
         endpoint: reviewFilters.endpoint,
@@ -3873,16 +3878,16 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
         return
       }
 
-      await api.clearPromptFilterLogs({ reviewed: section === 'review' })
+      await api.clearPromptFilterLogs(section === 'review' ? { reviewed: true } : { source: 'local_filter' })
+      // The two panels are projections of the same persisted rows. A reviewed
+      // local-filter row appears in both, so either cleanup must refresh both
+      // projections instead of leaving the other panel with stale records.
+      setLogPage(1)
+      setReviewPage(1)
+      await Promise.all([loadReviewLogs(1), loadLocalLogs(1)])
       if (section === 'review') {
-        setReviewLogs([])
-        setReviewTotal(0)
-        setReviewPage(1)
         showToast(t('promptFilter.reviewLogsCleared'))
       } else {
-        setLogs([])
-        setTotal(0)
-        setLogPage(1)
         showToast(t('promptFilter.localLogsCleared'))
       }
 
@@ -4007,7 +4012,7 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
               draftFilters={localDraftFilters}
               setDraftFilters={setLocalDraftFilters}
               onApply={() => { setLogPage(1); setLocalFilters(localDraftFilters) }}
-              onReset={() => { setLocalDraftFilters(emptyFilters); setLocalFilters(emptyFilters); setLogPage(1) }}
+              onReset={() => { setLocalDraftFilters(defaultLocalLogFilters); setLocalFilters(defaultLocalLogFilters); setLogPage(1) }}
               loading={localLoading}
               showAction
               showSource

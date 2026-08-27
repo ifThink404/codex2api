@@ -808,37 +808,36 @@ func cacheCompletedResponseWithOutputItems(owner string, expandedInputRaw []byte
 		return
 	}
 
-	// 仅在响应包含 Codex 工具调用时才缓存（普通对话无需 previous_response_id 展开）。
-	// image_generation_call / web_search_call 虽然也是 *_call 结尾，但不属于 call_id 工具续链体系。
+	// 仅在响应包含可安全回放的 Codex 工具调用时才缓存（普通对话无需
+	// previous_response_id 展开）。image_generation_call / web_search_call
+	// 虽然也是 *_call 结尾，但不属于 call_id 工具续链体系。
 	output := gjson.GetBytes(completedData, "response.output")
 	if !output.IsArray() && len(outputItems) == 0 {
 		return
 	}
-	completedHasToolCallContext := false
+	var replayableOutput []json.RawMessage
 	output.ForEach(func(_, item gjson.Result) bool {
-		if isCodexToolCallContextType(item.Get("type").String()) {
-			completedHasToolCallContext = true
-			return false
+		if replayable, ok := replayableCachedOutputItem(item); ok {
+			replayableOutput = append(replayableOutput, replayable)
 		}
 		return true
 	})
-	if !completedHasToolCallContext {
-		hasToolCallContext := false
+	if len(replayableOutput) == 0 {
 		for _, raw := range outputItems {
-			if isCodexToolCallContextType(gjson.GetBytes(raw, "type").String()) {
-				hasToolCallContext = true
-				break
+			if replayable, ok := replayableCachedOutputItem(gjson.ParseBytes(raw)); ok {
+				replayableOutput = append(replayableOutput, replayable)
 			}
 		}
-		if !hasToolCallContext {
-			return
-		}
+	}
+	if len(replayableOutput) == 0 {
+		return
 	}
 
 	var items []json.RawMessage
 
-	// 添加展开后的请求 input items
-	inputItems := gjson.ParseBytes(expandedInputRaw)
+	// 添加展开后的请求 input items。先成对移除参数被截断的普通
+	// function_call/function_call_output，避免缓存把毒历史延长到下一轮。
+	inputItems := gjson.ParseBytes(sanitizeResponseCacheInput(expandedInputRaw))
 	if inputItems.IsArray() {
 		inputItems.ForEach(func(_, v gjson.Result) bool {
 			if item, ok := replayableCachedInputItem(v); ok {
@@ -848,39 +847,79 @@ func cacheCompletedResponseWithOutputItems(owner string, expandedInputRaw []byte
 		})
 	}
 
-	// 添加响应 output 中真正需要续链的工具上下文；reasoning/message 等
-	// 服务端输出 item 带有 rs_/msg_ id，store=false 时回灌会触发 item not found。
-	output.ForEach(func(_, v gjson.Result) bool {
-		if item, ok := replayableCachedOutputItem(v); ok {
-			items = append(items, item)
-		}
-		return true
-	})
-	if !completedHasToolCallContext {
-		for _, raw := range outputItems {
-			if item, ok := replayableCachedOutputItem(gjson.ParseBytes(raw)); ok {
-				items = append(items, item)
-			}
-		}
-	}
+	// 添加响应 output 中真正需要续链且已验证的工具上下文；reasoning/message
+	// 等服务端输出 item 带有 rs_/msg_ id，store=false 时回灌会触发 item not found。
+	items = append(items, replayableOutput...)
 
 	if len(items) > 0 {
 		setResponseCache(owner, respID, items)
 	}
 }
 
+func sanitizeResponseCacheInput(raw []byte) []byte {
+	var input []any
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return raw
+	}
+	body := map[string]any{"input": input}
+	normalizeResponsesToolCallArgumentTypes(body)
+	if !sanitizeMalformedResponsesFunctionCalls(body) {
+		return raw
+	}
+	sanitized, err := json.Marshal(body["input"])
+	if err != nil {
+		return raw
+	}
+	return sanitized
+}
+
 func replayableCachedInputItem(item gjson.Result) (json.RawMessage, bool) {
 	if item.Get("type").String() == "reasoning" && item.Get("encrypted_content").Exists() {
 		return nil, false
 	}
-	return stripResponseItemID(json.RawMessage(item.Raw))
+	raw, ok := normalizeReplayableCachedFunctionCall(json.RawMessage(item.Raw))
+	if !ok {
+		return nil, false
+	}
+	return stripResponseItemID(raw)
 }
 
 func replayableCachedOutputItem(item gjson.Result) (json.RawMessage, bool) {
 	if !isCodexToolCallContextType(item.Get("type").String()) {
 		return nil, false
 	}
-	return stripResponseItemID(json.RawMessage(item.Raw))
+	raw, ok := normalizeReplayableCachedFunctionCall(json.RawMessage(item.Raw))
+	if !ok {
+		return nil, false
+	}
+	return stripResponseItemID(raw)
+}
+
+func normalizeReplayableCachedFunctionCall(raw json.RawMessage) (json.RawMessage, bool) {
+	if gjson.GetBytes(raw, "type").String() != "function_call" {
+		return raw, true
+	}
+	argumentValue := gjson.GetBytes(raw, "arguments")
+	arguments := ""
+	if argumentValue.Exists() && argumentValue.Type != gjson.Null {
+		if argumentValue.Type == gjson.String {
+			arguments = argumentValue.String()
+		} else {
+			arguments = argumentValue.Raw
+		}
+	}
+	normalized, valid := normalizeOrdinaryFunctionCallArguments(arguments)
+	if !valid {
+		return nil, false
+	}
+	if argumentValue.Type == gjson.String && normalized == arguments {
+		return raw, true
+	}
+	updated, err := sjson.SetBytes(raw, "arguments", normalized)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(updated), true
 }
 
 func stripResponseItemID(raw json.RawMessage) (json.RawMessage, bool) {

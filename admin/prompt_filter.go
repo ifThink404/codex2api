@@ -536,18 +536,28 @@ func (h *Handler) ClearPromptFilterLogs(c *gin.Context) {
 	defer cancel()
 	var err error
 	message := "Prompt 检查日志已清空；风险画像和上游 CY 事件已保留"
-	switch strings.ToLower(strings.TrimSpace(c.Query("reviewed"))) {
-	case "":
-		err = h.db.ClearPromptFilterLogs(ctx)
-	case "true", "reviewed":
-		err = h.db.ClearPromptFilterLogsByReviewStatus(ctx, true)
-		message = "外部模型复核历史已清空；风险画像已保留"
-	case "false", "not_reviewed":
-		err = h.db.ClearPromptFilterLogsByReviewStatus(ctx, false)
+	source := strings.ToLower(strings.TrimSpace(c.Query("source")))
+	if source != "" {
+		if source != "local_filter" {
+			writeError(c, http.StatusBadRequest, "source 仅支持 local_filter")
+			return
+		}
+		err = h.db.ClearPromptFilterLogsBySource(ctx, source)
 		message = "本地过滤与异步审计日志已清空；风险画像已保留"
-	default:
-		writeError(c, http.StatusBadRequest, "reviewed 必须为 true 或 false")
-		return
+	} else {
+		switch strings.ToLower(strings.TrimSpace(c.Query("reviewed"))) {
+		case "":
+			err = h.db.ClearPromptFilterLogs(ctx)
+		case "true", "reviewed":
+			err = h.db.ClearPromptFilterLogsByReviewStatus(ctx, true)
+			message = "外部模型复核历史已清空；风险画像已保留"
+		case "false", "not_reviewed":
+			err = h.db.ClearPromptFilterLogsByReviewStatus(ctx, false)
+			message = "本地过滤与异步审计日志已清空；风险画像已保留"
+		default:
+			writeError(c, http.StatusBadRequest, "reviewed 必须为 true 或 false")
+			return
+		}
 	}
 	if err != nil {
 		writeInternalError(c, err)

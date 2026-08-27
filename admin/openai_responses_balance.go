@@ -125,12 +125,21 @@ func resolveOpenAIResponsesBalanceQueryURL(baseURL, configured string) (string, 
 		return configured, err
 	}
 	ref, _ := url.Parse(configured)
-	if ref.IsAbs() {
-		return ref.String(), nil
-	}
 	base, err := url.Parse(baseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return "", fmt.Errorf("Base URL 不是合法 URL")
+	}
+	if ref.IsAbs() {
+		if ref.User != nil {
+			return "", fmt.Errorf("余额查询接口不能携带用户信息")
+		}
+		// 余额请求会携带账号 API Key 与 custom_headers。跨主机的自定义地址
+		// 等于把存储密钥送往任意第三方(该密钥被设计为永不回传浏览器),也
+		// 构成 SSRF 探测入口,因此绝对地址必须与 Base URL 同主机。
+		if !strings.EqualFold(ref.Hostname(), base.Hostname()) {
+			return "", fmt.Errorf("余额查询接口必须与 Base URL 同主机(%s),避免账号密钥发往第三方", base.Hostname())
+		}
+		return ref.String(), nil
 	}
 	base.Path = "/"
 	base.RawPath = ""

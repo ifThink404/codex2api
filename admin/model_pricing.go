@@ -197,20 +197,27 @@ func (h *Handler) ListModelPricing(c *gin.Context) {
 	for _, key := range keys {
 		seen[key] = struct{}{}
 	}
-	grokKeys := make([]string, 0)
-	for _, key := range collect(h.grokBillingModelIDs()) {
-		if _, ok := seen[key]; ok {
-			continue
+	dedup := func(ids []string) []string {
+		out := make([]string, 0)
+		for _, key := range collect(ids) {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, key)
 		}
-		seen[key] = struct{}{}
-		grokKeys = append(grokKeys, key)
+		return out
 	}
+	grokKeys := dedup(h.grokBillingModelIDs())
+	antigravityKeys := dedup(h.antigravityChannelModels())
 
 	// 新版本在前（gpt-5.6 > gpt-5.5 > gpt-5.4 …），避免字典序把旧模型顶到列表顶部。
 	// Grok 单独排序并整体排在 Codex 之后，避免两家版本号交叉穿插。
 	sortModelKeysNewestFirst(keys)
 	sortModelKeysNewestFirst(grokKeys)
+	sortModelKeysNewestFirst(antigravityKeys)
 	keys = append(keys, grokKeys...)
+	keys = append(keys, antigravityKeys...)
 
 	rows := make([]modelPricingRow, 0, len(keys))
 	for _, key := range keys {

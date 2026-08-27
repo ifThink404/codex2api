@@ -285,8 +285,12 @@ func (h *Handler) capturePromptFilterAuditContext(c *gin.Context) promptFilterAu
 		newAPIUserName = policyContext.Meta.UserName
 		newAPIUserEmail = policyContext.Meta.UserEmail
 		newAPIUserGroup = policyContext.Meta.UserGroup
-	} else if newAPIStatus == "unbound" {
-		sessionHash = hashRiskIdentity(promptSessionID(c))
+	} else {
+		// Conversation locking falls back to the Codex-local identity whenever a
+		// verified platform/session identity is unavailable. Audit correlation must
+		// make the same choice for optional unsigned bindings, disabled bindings,
+		// and failed optional verification—not only for completely unbound keys.
+		sessionHash = promptConversationLockFallbackSessionHash(c)
 	}
 	clientIP := input.ClientIP
 	if (newAPIStatus == "verified" || newAPIStatus == "signed_response") && strings.TrimSpace(policyContext.Identity.ClientIP) != "" {
@@ -498,6 +502,10 @@ func (h *Handler) logUpstreamCyberPolicy(c *gin.Context, endpoint string, model 
 	// storage failure must not turn a verified upstream CYB into an untracked one.
 	metadata, delegated := h.emitNewAPIUpstreamCyberPolicyDecision(c, endpoint, model, body)
 	if delegated {
+		// 明确的上游 CYB 始终保留会话锁与用户冷却；catch-all 不能把安全终态
+		// 降级成可透明轮换的中间失败。
+		// Explicit upstream CYB always retains the conversation lock and user
+		// cooldown; catch-all cannot downgrade this safety terminal.
 		metadata.ConversationLocked = h.lockPromptConversationAfterUpstreamCYB(c, endpoint, model, incidentID, metadata)
 		c.Set(newAPIUpstreamCyberDecisionContextKey, metadata)
 	} else {

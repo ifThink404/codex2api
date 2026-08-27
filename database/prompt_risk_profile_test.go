@@ -378,6 +378,20 @@ func TestPromptRiskProfilesPrioritizeAndFilterActiveConversationLocksBeforePagin
 	if err != nil || lockedTotal != 1 || len(lockedOnly) != 1 || lockedOnly[0].SubjectKey != lockedSession {
 		t.Fatalf("locked-only profiles total=%d items=%#v err=%v", lockedTotal, lockedOnly, err)
 	}
+
+	if _, err := db.conn.ExecContext(ctx, `DELETE FROM prompt_risk_events WHERE subject_type=$1 AND subject_key=$2`, PromptRiskSubjectSession, lockedSession); err != nil {
+		t.Fatalf("clear locked session risk history: %v", err)
+	}
+	lockOnlyProfile, lockOnlyTotal, err := db.ListPromptRiskProfiles(ctx, PromptRiskProfileQuery{
+		Page: 1, PageSize: 20, SubjectType: PromptRiskSubjectSession, ActiveLocksOnly: true,
+		ConversationLockTTL: 168 * time.Hour, UserCyberCooldownTTL: 30 * time.Minute,
+	})
+	if err != nil || lockOnlyTotal != 1 || len(lockOnlyProfile) != 1 {
+		t.Fatalf("lock-only profile total=%d items=%#v err=%v", lockOnlyTotal, lockOnlyProfile, err)
+	}
+	if lockOnlyProfile[0].SubjectKey != lockedSession || lockOnlyProfile[0].HasActivity || lockOnlyProfile[0].APIKeyID != 9 || lockOnlyProfile[0].RiskLevel != PromptRiskLevelLow {
+		t.Fatalf("lock-only profile metadata=%#v", lockOnlyProfile[0])
+	}
 }
 
 func TestPromptRiskScoringBandsAndHistoryGuardrail(t *testing.T) {

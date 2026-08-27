@@ -137,11 +137,19 @@ func grokPermissiveObjectSchema(root map[string]any) map[string]any {
 	return out
 }
 
-// grokObjectishSchemaBranch 判断联合分支是否可并入 object 根:显式 object,或
-// 未声明 type 但带 properties。
+// grokObjectishSchemaBranch 判断联合分支是否可并入 object 根:显式 object、
+// type 数组含 "object",或未声明 type 但带 properties。
 func grokObjectishSchemaBranch(branch map[string]any) bool {
 	if kind, ok := branch["type"].(string); ok {
 		return kind == "object"
+	}
+	if typeList, ok := branch["type"].([]any); ok {
+		for _, item := range typeList {
+			if kind, ok := item.(string); ok && kind == "object" {
+				return true
+			}
+		}
+		return false
 	}
 	if _, ok := branch["type"]; ok {
 		return false
@@ -150,22 +158,112 @@ func grokObjectishSchemaBranch(branch map[string]any) bool {
 	return hasProperties
 }
 
+// grokSchemaTypeListHasNonObject 报告 schema 的 type 数组里是否还有 object 之外
+// 的选项。折叠成单一 object 后这些选项不可表达,与丢弃非 object 联合分支适用
+// 同一条 required 放宽规则。
+func grokSchemaTypeListHasNonObject(schema map[string]any) bool {
+	typeList, ok := schema["type"].([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range typeList {
+		if kind, ok := item.(string); ok && kind != "object" {
+			return true
+		}
+	}
+	return false
+}
+
+// grokLookupLocalJSONPointer 在 schema 文档内解析 "#/..." 形式的本地 JSON
+// Pointer(含 ~0/~1 反转义),仅支持 map 路径——$defs/definitions 场景足够。
+func grokLookupLocalJSONPointer(document map[string]any, pointer string) (map[string]any, bool) {
+	if !strings.HasPrefix(pointer, "#/") {
+		return nil, false
+	}
+	current := any(document)
+	for _, rawToken := range strings.Split(strings.TrimPrefix(pointer, "#/"), "/") {
+		token := strings.ReplaceAll(strings.ReplaceAll(rawToken, "~1", "/"), "~0", "~")
+		node, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if current, ok = node[token]; !ok {
+			return nil, false
+		}
+	}
+	target, ok := current.(map[string]any)
+	return target, ok
+}
+
+// grokDerefSchemaBranch 展开联合分支上的本地 $ref 链(深度上限防循环引用):
+// Pydantic/Zod 常生成 anyOf:[{"$ref":"#/$defs/X"},{"type":"null"}] 形态,直接按
+// "非 object"丢弃会丢掉整个对象定义。$ref 之外的 sibling 键覆盖在解析结果上
+// (2020-12 允许 $ref 携带 sibling)。无 $ref 原样返回;解析失败返回 nil,由调用
+// 方按不可合并分支处理(行为与修复前一致,不会更糟)。
+func grokDerefSchemaBranch(document, branch map[string]any) map[string]any {
+	current := branch
+	for depth := 0; depth < 8; depth++ {
+		rawRef, exists := current["$ref"]
+		if !exists {
+			return current
+		}
+		refText, ok := rawRef.(string)
+		if !ok {
+			return nil
+		}
+		target, ok := grokLookupLocalJSONPointer(document, refText)
+		if !ok {
+			return nil
+		}
+		next := make(map[string]any, len(target)+len(current))
+		for key, value := range target {
+			next[key] = value
+		}
+		for key, value := range current {
+			if key != "$ref" {
+				next[key] = value
+			}
+		}
+		current = next
+	}
+	return nil
+}
+
 // mergeGrokUnionRootSchema 把 anyOf/oneOf/allOf 根合并成单一 object:
-// properties 取各 object 分支的并集(先到先得),required 按语义收敛——
+// properties 取各 object 分支的并集,同名属性 schema 不一致时按联合语义包成
+// 嵌套 anyOf(联合)或 allOf(交),不丢弃任何分支定义;required 按语义收敛——
 // 联合(任一分支成立)取交集,allOf(全部成立)取并集;非 object 分支丢弃。
-// 没有任何 object 分支时整体降级为宽松 object。
+// 根上的非联合 sibling 键($defs/definitions/additionalProperties 等)原样保留:
+// 分支属性里的 "$ref":"#/$defs/X" 依赖根级定义容器,丢掉会产生悬空引用,上游拿到
+// 不可解析的 schema 照样 400(PR #580 评审)。没有任何 object 分支时整体降级为
+// 宽松 object。
 func mergeGrokUnionRootSchema(root map[string]any, branches []any, requireAll bool) map[string]any {
-	merged := map[string]any{"type": "object"}
-	if description, ok := root["description"].(string); ok && strings.TrimSpace(description) != "" {
-		merged["description"] = description
+	merged := make(map[string]any, len(root)+1)
+	for key, value := range root {
+		switch key {
+		case "anyOf", "oneOf", "allOf", "type", "properties", "required":
+			// 联合关键字被消解;type/properties/required 由下方合并逻辑重建。
+			continue
+		}
+		merged[key] = value
+	}
+	merged["type"] = "object"
+	// 同名属性收集所有互异的分支定义(根定义在前),合并时再决定单值还是嵌套联合。
+	propertyVariants := map[string][]any{}
+	appendPropertyVariant := func(key string, value any) {
+		for _, existing := range propertyVariants[key] {
+			if reflect.DeepEqual(existing, value) {
+				return
+			}
+		}
+		propertyVariants[key] = append(propertyVariants[key], value)
 	}
 	// 根自身可能就是 object schema(type:"object" 且额外挂了 anyOf/oneOf):它的
 	// properties/required 在任何分支下都成立,作为合并基底且 required 恒保留。
-	properties := map[string]any{}
 	rootRequired := map[string]bool{}
 	if rootProps, ok := root["properties"].(map[string]any); ok {
 		for key, value := range rootProps {
-			properties[key] = value
+			appendPropertyVariant(key, value)
 		}
 	}
 	if list, ok := root["required"].([]any); ok {
@@ -179,10 +277,18 @@ func mergeGrokUnionRootSchema(root map[string]any, branches []any, requireAll bo
 	objectBranches := 0
 	droppedNonObject := false
 	for _, rawBranch := range branches {
-		branch, ok := rawBranch.(map[string]any)
-		if !ok || !grokObjectishSchemaBranch(branch) {
+		branch, _ := rawBranch.(map[string]any)
+		if branch != nil {
+			branch = grokDerefSchemaBranch(root, branch)
+		}
+		if branch == nil || !grokObjectishSchemaBranch(branch) {
 			droppedNonObject = true
 			continue
+		}
+		// 分支 type 数组还带 null 等非 object 选项时,这些选项在合并结果里不可
+		// 表达,视同丢弃过非 object 分支,触发同一条 required 放宽规则。
+		if grokSchemaTypeListHasNonObject(branch) {
+			droppedNonObject = true
 		}
 		objectBranches++
 		if _, has := merged["description"]; !has {
@@ -192,9 +298,7 @@ func mergeGrokUnionRootSchema(root map[string]any, branches []any, requireAll bo
 		}
 		if props, ok := branch["properties"].(map[string]any); ok {
 			for key, value := range props {
-				if _, exists := properties[key]; !exists {
-					properties[key] = value
-				}
+				appendPropertyVariant(key, value)
 			}
 		}
 		branchRequired := map[string]bool{}
@@ -219,10 +323,27 @@ func mergeGrokUnionRootSchema(root map[string]any, branches []any, requireAll bo
 			}
 		}
 	}
-	if objectBranches == 0 && len(properties) == 0 {
+	if objectBranches == 0 && len(propertyVariants) == 0 {
 		return grokPermissiveObjectSchema(root)
 	}
-	if len(properties) > 0 {
+	if len(propertyVariants) > 0 {
+		// 冲突属性按联合类型包成嵌套联合(嵌套联合 Grok 接受,只有根联合被拒):
+		// anyOf/oneOf 用 anyOf 保住每个判别分支(如 const:"create"/const:"update"),
+		// 不能先到先得地排除后续分支;allOf 用 allOf 保留全部约束。根定义在
+		// anyOf 场景下随之从"恒成立"放宽为"任一成立",符合本文件宁可放宽、
+		// 不禁止原本合法调用的降级方针。
+		unionKeyword := "anyOf"
+		if requireAll {
+			unionKeyword = "allOf"
+		}
+		properties := make(map[string]any, len(propertyVariants))
+		for key, variants := range propertyVariants {
+			if len(variants) == 1 {
+				properties[key] = variants[0]
+				continue
+			}
+			properties[key] = map[string]any{unionKeyword: variants}
+		}
 		merged["properties"] = properties
 	}
 	finalRequired := map[string]bool{}
@@ -286,6 +407,12 @@ func normalizeGrokToolParameterSchema(schema map[string]any) (map[string]any, bo
 			out[key] = value
 		}
 		out["type"] = "object"
+		// type:["object","null"] 与 anyOf:[object,{type:"null"}] 语义等价,折叠后
+		// 适用同一条规则:非 object 选项(常见是 null,表示可空参调用)不可表达时
+		// 放弃 required 强制,否则模型无法发出原本合法的空参调用。
+		if grokSchemaTypeListHasNonObject(schema) {
+			delete(out, "required")
+		}
 		return out, true
 	}
 	if kind, ok := schema["type"].(string); ok {
@@ -332,6 +459,16 @@ func normalizeGrokFunctionTool(tool map[string]any, name string) map[string]any 
 	if params, ok := converted["parameters"].(map[string]any); ok {
 		if normalized, changed := normalizeGrokToolParameterSchema(params); changed {
 			converted["parameters"] = normalized
+		}
+	} else if flag, ok := converted["parameters"].(bool); ok {
+		// JSON Schema 布尔形态:true=任意输入合法,false=任意输入非法。原样透传
+		// 都会命中上游 "root must be an object type"。true 降级为宽松 object;
+		// false 本就没有合法调用,给出空封闭 object(最接近的可表达形态),
+		// 参数校验仍由客户端兜底。
+		if flag {
+			converted["parameters"] = grokPermissiveObjectSchema(nil)
+		} else {
+			converted["parameters"] = map[string]any{"type": "object", "additionalProperties": false}
 		}
 	}
 	return converted
@@ -461,9 +598,21 @@ func rebuildGrokHistoryItem(item map[string]any, register grokAliasRegister) (ma
 		return item, false
 	}
 	// function_call 的 namespace 引用改写成扁平名，匹配已展平的工具声明。
+	renamed := false
 	if itemType == "function_call" {
 		if ns := strings.TrimSpace(grokNsStringField(item, "namespace")); ns != "" {
 			item["name"] = register(ns, strings.TrimSpace(grokNsStringField(item, "name")), false, false)
+		} else if name := strings.TrimSpace(grokNsStringField(item, "name")); name != "" {
+			if _, reserved := grokReservedUpstreamFunctionNames[name]; reserved {
+				// 声明侧把保留名挪到 _fn 别名(见 newGrokAliasRegister),历史
+				// 调用必须跟着改名:否则声明是 tool_search_fn、历史却引用
+				// tool_search,上游按保留名/未声明名拒绝,或与内置 tool_search
+				// 混淆。桥接工具的历史走 tool_search_call 分支,不会进到这里。
+				if alias := register("", name, false, false); alias != name {
+					item["name"] = alias
+					renamed = true
+				}
+			}
 		}
 	}
 	allowed := make(map[string]struct{}, len(fields))
@@ -478,7 +627,7 @@ func rebuildGrokHistoryItem(item map[string]any, register grokAliasRegister) (ma
 		}
 	}
 	if !changed {
-		return item, false
+		return item, renamed
 	}
 	rebuilt := make(map[string]any, len(fields))
 	for _, f := range fields {
@@ -772,6 +921,41 @@ func stripGrokUndecodableBlobs(body []byte) []byte {
 	return out
 }
 
+var grokResponsesToolCallIDPrefixes = []string{"fc_", "ctc_", "tsc_"}
+
+// retypeGrokResponsesToolCallItemID keeps a restored Responses item ID aligned
+// with its client-visible type. Grok-compatible relays answer the function form
+// with fc_* IDs; replaying that ID on custom_tool_call or tool_search_call is
+// rejected by strict Responses validators.
+func retypeGrokResponsesToolCallItemID(id, itemType string) string {
+	want := ""
+	switch itemType {
+	case "custom_tool_call":
+		want = "ctc_"
+	case "tool_search_call":
+		want = "tsc_"
+	case "function_call":
+		want = "fc_"
+	}
+	trimmed := strings.TrimSpace(id)
+	if want == "" || trimmed == "" || strings.HasPrefix(trimmed, want) {
+		return id
+	}
+	for _, known := range grokResponsesToolCallIDPrefixes {
+		if known != want && strings.HasPrefix(trimmed, known) {
+			return want + strings.TrimPrefix(trimmed, known)
+		}
+	}
+	return id
+}
+
+func retypeGrokResponsesToolCallItem(item map[string]any, itemType string) {
+	id := grokNsStringField(item, "id")
+	if retyped := retypeGrokResponsesToolCallItemID(id, itemType); retyped != id {
+		item["id"] = retyped
+	}
+}
+
 // reverseGrokNamespaceValue 递归把响应里任意 type:"function_call" 对象的扁平名反解回
 // 原始 {name, namespace}。返回是否发生改写。
 func reverseGrokNamespaceValue(value any, aliases map[string]grokNsIdentity) bool {
@@ -799,12 +983,14 @@ func reverseGrokNamespaceValue(value any, aliases map[string]grokNsIdentity) boo
 				}
 				if identity.ToolSearch {
 					typed["type"] = "tool_search_call"
+					retypeGrokResponsesToolCallItem(typed, "tool_search_call")
 					typed["execution"] = "client"
 					typed["arguments"] = grokToolSearchArguments(typed["arguments"])
 					delete(typed, "name")
 					delete(typed, "namespace")
 				} else if identity.Custom {
 					typed["type"] = "custom_tool_call"
+					retypeGrokResponsesToolCallItem(typed, "custom_tool_call")
 					typed["input"] = unwrapGrokCustomToolArguments(grokNsStringField(typed, "arguments"))
 					delete(typed, "arguments")
 				}
@@ -878,7 +1064,7 @@ func newGrokNamespaceReverser(body io.ReadCloser, streaming bool, aliases map[st
 			_ = pw.Close()
 			return
 		}
-		reverser := &grokStreamReverser{aliases: aliases, customItems: make(map[string]bool), toolSearchItems: make(map[string]bool), inputBytes: make(map[string]int)}
+		reverser := &grokStreamReverser{aliases: aliases, customItems: make(map[string]bool), toolSearchItems: make(map[string]bool), clientItemIDs: make(map[string]string), inputBytes: make(map[string]int)}
 		reader := bufio.NewReader(body)
 		for {
 			line, err := reader.ReadBytes('\n')
@@ -907,8 +1093,25 @@ type grokStreamReverser struct {
 	aliases         map[string]grokNsIdentity
 	customItems     map[string]bool
 	toolSearchItems map[string]bool
+	clientItemIDs   map[string]string
 	inputBytes      map[string]int
 	failed          bool
+}
+
+func (r *grokStreamReverser) rememberClientItemID(upstreamID, callID, itemType string) {
+	clientID := retypeGrokResponsesToolCallItemID(upstreamID, itemType)
+	if clientID == "" {
+		return
+	}
+	if r.clientItemIDs == nil {
+		r.clientItemIDs = make(map[string]string)
+	}
+	if upstreamID != "" {
+		r.clientItemIDs[upstreamID] = clientID
+	}
+	if callID != "" {
+		r.clientItemIDs[callID] = clientID
+	}
 }
 
 func (r *grokStreamReverser) rewriteLine(line []byte) []byte {
@@ -944,20 +1147,26 @@ func (r *grokStreamReverser) rewriteLine(line []byte) []byte {
 			name := grokNsStringField(item, "name")
 			identity, bridged := r.aliases[name]
 			if bridged && identity.Custom {
-				if id := grokNsStringField(item, "id"); id != "" {
+				id := grokNsStringField(item, "id")
+				callID := grokNsStringField(item, "call_id")
+				if id != "" {
 					r.customItems[id] = true
 				}
-				if callID := grokNsStringField(item, "call_id"); callID != "" {
+				if callID != "" {
 					r.customItems[callID] = true
 				}
+				r.rememberClientItemID(id, callID, "custom_tool_call")
 			}
 			if bridged && identity.ToolSearch {
-				if id := grokNsStringField(item, "id"); id != "" {
+				id := grokNsStringField(item, "id")
+				callID := grokNsStringField(item, "call_id")
+				if id != "" {
 					r.toolSearchItems[id] = true
 				}
-				if callID := grokNsStringField(item, "call_id"); callID != "" {
+				if callID != "" {
 					r.toolSearchItems[callID] = true
 				}
+				r.rememberClientItemID(id, callID, "tool_search_call")
 			}
 			reverseGrokNamespaceValue(item, r.aliases)
 		}
@@ -991,6 +1200,9 @@ func (r *grokStreamReverser) rewriteLine(line []byte) []byte {
 		}
 		if r.customItems[itemID] {
 			event["type"] = "response.custom_tool_call_input.done"
+			if clientID := r.clientItemIDs[itemID]; clientID != "" {
+				event["item_id"] = clientID
+			}
 			event["input"] = unwrapGrokCustomToolArguments(grokNsStringField(event, "arguments"))
 			delete(event, "arguments")
 		}

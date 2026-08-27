@@ -129,6 +129,39 @@ func TestSQLiteSessionSlotBufferSettingsRoundtrip(t *testing.T) {
 	}
 }
 
+func TestSQLiteModelsListReadLimitRoundTripAndFullUpdatePreservesValue(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "models-list-limit.db"))
+	if err != nil {
+		t.Fatalf("New(sqlite): %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	const want = int64(16 << 20)
+	if err := db.UpdateModelsListReadMaxBytes(ctx, want); err != nil {
+		t.Fatalf("UpdateModelsListReadMaxBytes: %v", err)
+	}
+	settings, err := db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings: %v", err)
+	}
+	if settings.ModelsListReadMaxBytes != want {
+		t.Fatalf("read limit = %d, want %d", settings.ModelsListReadMaxBytes, want)
+	}
+
+	settings.SiteName = "preserve-model-list-limit"
+	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateSystemSettings: %v", err)
+	}
+	settings, err = db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings after full update: %v", err)
+	}
+	if settings.ModelsListReadMaxBytes != want {
+		t.Fatalf("read limit after full update = %d, want %d", settings.ModelsListReadMaxBytes, want)
+	}
+}
+
 func TestSQLiteAPIKeyLookupAndCount(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 
@@ -878,6 +911,13 @@ func TestSQLiteListActiveByChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertAccount codex 返回错误: %v", err)
 	}
+	relayID, err := db.InsertAccountWithUpstream(ctx, "relay-one", "openai", "relay", map[string]interface{}{
+		"upstream_type": "openai_responses",
+		"api_key":       "relay-key",
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithUpstream relay 返回错误: %v", err)
+	}
 	grokID, err := db.InsertAccountWithUpstream(ctx, "grok-one", "xai", "oauth", map[string]interface{}{
 		"upstream_type": "grok",
 		"refresh_token": "rt-grok",
@@ -887,13 +927,22 @@ func TestSQLiteListActiveByChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertAccountWithUpstream grok 返回错误: %v", err)
 	}
+	antigravityID, err := db.InsertAccountWithUpstream(ctx, "antigravity-one", "google", "oauth", map[string]interface{}{
+		"upstream_type": "antigravity",
+		"refresh_token": "rt-antigravity",
+		"access_token":  "at-antigravity",
+		"email":         "antigravity@example.com",
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithUpstream antigravity 返回错误: %v", err)
+	}
 
 	all, err := db.ListActiveByChannel(ctx, "")
 	if err != nil {
 		t.Fatalf("ListActiveByChannel(\"\") 返回错误: %v", err)
 	}
-	if len(all) != 2 {
-		t.Fatalf("ListActiveByChannel(\"\") len = %d, want 2", len(all))
+	if len(all) != 4 {
+		t.Fatalf("ListActiveByChannel(\"\") len = %d, want 4", len(all))
 	}
 
 	grokRows, err := db.ListActiveByChannel(ctx, UpstreamChannelGrok)
@@ -908,8 +957,16 @@ func TestSQLiteListActiveByChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListActiveByChannel(codex) 返回错误: %v", err)
 	}
-	if len(codexRows) != 1 || codexRows[0].ID != codexID {
-		t.Fatalf("ListActiveByChannel(codex) = %+v, want id %d", codexRows, codexID)
+	if len(codexRows) != 2 || codexRows[0].ID != codexID || codexRows[1].ID != relayID {
+		t.Fatalf("ListActiveByChannel(codex) = %+v, want ids %d and %d", codexRows, codexID, relayID)
+	}
+
+	antigravityRows, err := db.ListActiveByChannel(ctx, UpstreamChannelAntigravity)
+	if err != nil {
+		t.Fatalf("ListActiveByChannel(antigravity) 返回错误: %v", err)
+	}
+	if len(antigravityRows) != 1 || antigravityRows[0].ID != antigravityID {
+		t.Fatalf("ListActiveByChannel(antigravity) = %+v, want id %d", antigravityRows, antigravityID)
 	}
 }
 
@@ -1473,6 +1530,7 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		IgnoreUsageLimitStatus:            true,
 		AutoResetCreditsEnabled:           true,
 		AutoResetCreditsBeforeExpiryMin:   75,
+		AutoActivate5hWindowEnabled:       true,
 	}); err != nil {
 		t.Fatalf("UpdateSystemSettings 返回错误: %v", err)
 	}
@@ -1504,6 +1562,9 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if settings.AutoResetCreditsBeforeExpiryMin != 75 {
 		t.Fatalf("AutoResetCreditsBeforeExpiryMin = %d, want 75", settings.AutoResetCreditsBeforeExpiryMin)
+	}
+	if !settings.AutoActivate5hWindowEnabled {
+		t.Fatal("AutoActivate5hWindowEnabled = false, want true")
 	}
 	if settings.TestContent != "say pong" {
 		t.Fatalf("TestContent = %q, want say pong", settings.TestContent)
@@ -1650,6 +1711,7 @@ func TestSQLitePartialBackgroundSettingsUpdatesPreserveAutoResetCredits(t *testi
 	settings := &SystemSettings{
 		AutoResetCreditsEnabled:         true,
 		AutoResetCreditsBeforeExpiryMin: 90,
+		AutoActivate5hWindowEnabled:     true,
 		ModelPricingOverrides:           `{"old":{"input":1}}`,
 		ModelPricingSyncURL:             "https://old.example/pricing.json",
 	}
@@ -1688,6 +1750,9 @@ func TestSQLitePartialBackgroundSettingsUpdatesPreserveAutoResetCredits(t *testi
 	}
 	if !got.AutoResetCreditsEnabled || got.AutoResetCreditsBeforeExpiryMin != 90 {
 		t.Fatalf("auto reset settings = (%v,%d), want (true,90)", got.AutoResetCreditsEnabled, got.AutoResetCreditsBeforeExpiryMin)
+	}
+	if !got.AutoActivate5hWindowEnabled {
+		t.Fatal("AutoActivate5hWindowEnabled = false, want true")
 	}
 	if got.CodexSyncedCLIVersion != "9.9.9" {
 		t.Fatalf("CodexSyncedCLIVersion = %q, want 9.9.9", got.CodexSyncedCLIVersion)
@@ -3873,6 +3938,7 @@ func TestPromptFilterLogsPersistReviewMetadata(t *testing.T) {
 		ReviewFlagged:        false,
 		ReviewError:          "temporary failure",
 		RequestCorrelationID: "298ee1bb-ad0f-4e96-8924-d34066def71e",
+		SessionHash:          "cb74e520ed6af73b8a9564cc",
 	}); err != nil {
 		t.Fatalf("InsertPromptFilterLog 返回错误: %v", err)
 	}
@@ -3912,6 +3978,14 @@ func TestPromptFilterLogsPersistReviewMetadata(t *testing.T) {
 	}
 	if auditReferenceTotal != 1 || len(byAuditReference) != 1 || byAuditReference[0].RequestCorrelationID != "298ee1bb-ad0f-4e96-8924-d34066def71e" {
 		t.Fatalf("audit reference search total=%d logs=%+v", auditReferenceTotal, byAuditReference)
+	}
+
+	bySessionHash, sessionHashTotal, err := db.ListPromptFilterLogsPage(ctx, PromptFilterLogQuery{Page: 1, PageSize: 10, Query: "cb74e520ed6af73b8a9564cc"})
+	if err != nil {
+		t.Fatalf("ListPromptFilterLogsPage(session hash) 返回错误: %v", err)
+	}
+	if sessionHashTotal != 1 || len(bySessionHash) != 1 || bySessionHash[0].SessionHash != "cb74e520ed6af73b8a9564cc" {
+		t.Fatalf("session hash search total=%d logs=%+v", sessionHashTotal, bySessionHash)
 	}
 
 	nearest, err := db.FindNearestPromptFilterLog(ctx, got.CreatedAt, "local_filter", "/v1/messages", 0, 5)
@@ -3989,6 +4063,23 @@ func TestPromptFilterReviewHistorySeparatesIntelligenceAndNullableScores(t *test
 	}
 	if localTotal != 1 || len(local) != 1 || local[0].Endpoint != "/v1/messages" {
 		t.Fatalf("local logs total=%d logs=%+v", localTotal, local)
+	}
+	allLocal, allLocalTotal, err := db.ListPromptFilterLogsPage(ctx, PromptFilterLogQuery{Page: 1, PageSize: 10, Source: "local_filter", ExcludeIntelligence: true})
+	if err != nil {
+		t.Fatalf("ListPromptFilterLogsPage(all local logs): %v", err)
+	}
+	if allLocalTotal != 4 || len(allLocal) != 4 {
+		t.Fatalf("all local logs total=%d len=%d, want 4", allLocalTotal, len(allLocal))
+	}
+	var foundReviewedBlock bool
+	for _, log := range allLocal {
+		if log.Action == "block" && log.Reviewed {
+			foundReviewedBlock = true
+			break
+		}
+	}
+	if !foundReviewedBlock {
+		t.Fatalf("all local logs did not include reviewed local block: %+v", allLocal)
 	}
 
 	intelligence, intelligenceTotal, err := db.ListPromptFilterLogsPage(ctx, PromptFilterLogQuery{Page: 1, PageSize: 10, Source: "intel_run", ExcludeIntelligence: true})

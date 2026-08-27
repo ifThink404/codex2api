@@ -154,9 +154,10 @@ func TestQueryOpenAIResponsesBalanceUsesAbsoluteConfiguredEndpoint(t *testing.T)
 	}))
 	defer absoluteServer.Close()
 
+	// 同主机(不同路径/端口形态)的绝对地址被采纳。
 	got, err := queryOpenAIResponsesBalance(
 		context.Background(),
-		"http://base.example/v1",
+		absoluteServer.URL+"/v1",
 		"sk-test",
 		"",
 		nil,
@@ -167,6 +168,28 @@ func TestQueryOpenAIResponsesBalanceUsesAbsoluteConfiguredEndpoint(t *testing.T)
 	}
 	if !hit.Load() || got.Balance != 6.5 || got.Unit != "USD" || got.Source != "custom" {
 		t.Fatalf("hit=%v got %#v", hit.Load(), got)
+	}
+
+	// 跨主机的绝对地址会带着账号密钥出站,必须整体拒绝且不发起请求。
+	hit.Store(false)
+	if _, err := queryOpenAIResponsesBalance(
+		context.Background(),
+		"http://base.example/v1",
+		"sk-test",
+		"",
+		nil,
+		absoluteServer.URL+"/absolute/balance",
+	); err == nil {
+		t.Fatal("expected cross-host balance URL to be rejected")
+	}
+	if hit.Load() {
+		t.Fatal("cross-host balance URL must not be requested at all")
+	}
+}
+
+func TestResolveOpenAIResponsesBalanceQueryURLRejectsUserinfo(t *testing.T) {
+	if _, err := resolveOpenAIResponsesBalanceQueryURL("https://relay.example/v1", "https://user:pass@relay.example/balance"); err == nil {
+		t.Fatal("expected absolute URL with userinfo to be rejected")
 	}
 }
 

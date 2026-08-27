@@ -329,6 +329,28 @@ func (db *DB) GetActivePromptConversationLockBySessionHash(ctx context.Context, 
 	return scanPromptConversationLock(db.conn.QueryRowContext(ctx, promptConversationLockSelect+` WHERE session_hash=$1 AND status='active' ORDER BY updated_at DESC LIMIT 1`, strings.ToLower(strings.TrimSpace(sessionHash))))
 }
 
+// HasActivePromptFingerprintReplayLocks reports whether any fingerprint replay
+// cooldown row is still live within ttl. The relay hot path uses it as a cheap
+// existence gate: deriving a replay fingerprint requires a full request
+// envelope build, which is wasted work while no cooldown exists anywhere.
+func (db *DB) HasActivePromptFingerprintReplayLocks(ctx context.Context, ttl time.Duration) (bool, error) {
+	if err := db.ensurePromptConversationLocksTable(ctx); err != nil {
+		return false, err
+	}
+	args := []any{PromptConversationLockIdentityFingerprintReplay}
+	query := `SELECT 1 FROM prompt_conversation_locks WHERE status='active' AND identity_kind=$1`
+	if ttl > 0 {
+		args = append(args, time.Now().UTC().Add(-ttl))
+		query += ` AND locked_at>$2`
+	}
+	var one int
+	err := db.conn.QueryRowContext(ctx, query+` LIMIT 1`, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (db *DB) GetActivePromptConversationLockBySessionHashWithTTL(ctx context.Context, sessionHash string, ttl time.Duration) (*PromptConversationLock, error) {
 	item, err := db.GetActivePromptConversationLockBySessionHash(ctx, sessionHash)
 	if err != nil || ttl <= 0 {

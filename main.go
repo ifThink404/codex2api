@@ -324,6 +324,7 @@ func main() {
 		log.Fatalf("启动响应缓存设置同步失败")
 	}
 	adminHandler.StartAutoResetCredits(backgroundCtx)
+	adminHandler.StartAutoActivate5hWindow(backgroundCtx)
 	// Grok 账号状态定期探测（默认关，由 grok 系统设置开关/间隔控制）
 	adminHandler.StartGrokStatusProbe(backgroundCtx)
 	// 官方结算用量按天快照：上游只保留 7 天，不落库就永久丢失，长期历史全靠这个任务。
@@ -595,6 +596,7 @@ func main() {
 		log.Printf("HTTP 服务优雅关闭超时: %v", err)
 	}
 	adminHandler.WaitAutoResetCredits()
+	adminHandler.WaitAutoActivate5hWindow()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()
 	store.Stop()

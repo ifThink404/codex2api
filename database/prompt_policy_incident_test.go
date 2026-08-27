@@ -371,6 +371,33 @@ func TestClearPromptFilterLogsByReviewStatusKeepsOtherLogSection(t *testing.T) {
 	}
 }
 
+func TestClearPromptFilterLogsBySourceKeepsOtherSources(t *testing.T) {
+	db := newPromptPolicySQLiteTestDB(t)
+	ctx := context.Background()
+	for _, input := range []*PromptFilterLogInput{
+		{Source: "local_filter", Action: "block"},
+		{Source: "local_filter", Action: "allow", Reviewed: true, ReviewModel: "review-model"},
+		{Source: "upstream_cyber_policy", Action: "block"},
+	} {
+		if err := db.InsertPromptFilterLog(ctx, input); err != nil {
+			t.Fatalf("InsertPromptFilterLog: %v", err)
+		}
+	}
+	if err := db.ClearPromptFilterLogsBySource(ctx, "local_filter"); err != nil {
+		t.Fatalf("clear local source logs: %v", err)
+	}
+	var localCount, upstreamCount int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompt_filter_logs WHERE source = 'local_filter'`).Scan(&localCount); err != nil {
+		t.Fatalf("count local source logs: %v", err)
+	}
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompt_filter_logs WHERE source = 'upstream_cyber_policy'`).Scan(&upstreamCount); err != nil {
+		t.Fatalf("count upstream source logs: %v", err)
+	}
+	if localCount != 0 || upstreamCount != 1 {
+		t.Fatalf("source clear crossed boundaries: local=%d upstream=%d", localCount, upstreamCount)
+	}
+}
+
 func TestLegacyPromptFilterLogMigratesWithoutInventingScores(t *testing.T) {
 	db := newPromptPolicySQLiteTestDB(t)
 	ctx := context.Background()

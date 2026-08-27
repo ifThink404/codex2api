@@ -107,6 +107,13 @@ func promptConversationSessionSignal(c *gin.Context) string {
 	return ""
 }
 
+// promptConversationLockFallbackSessionHash 统一 codex-local 降级身份的 session
+// hash 派生。锁表和审计日志必须使用同一条信号提取与指纹链路，后台才能用审计
+// 记录里的 session_hash 定位并解锁对应会话。
+func promptConversationLockFallbackSessionHash(c *gin.Context) string {
+	return hashRiskIdentity(promptSessionFingerprint32(promptConversationSessionSignal(c)))
+}
+
 func verifiedPromptConversationLockIdentity(c *gin.Context, policyContext verifiedNewAPIPolicyContext) (promptConversationLockIdentity, bool) {
 	if c == nil || !policyContext.MetaVerified {
 		return promptConversationLockIdentity{}, false
@@ -322,7 +329,7 @@ func promptConversationLockFallbackIdentity(c *gin.Context) (promptConversationL
 		Platform:           promptConversationLockFallbackPlatform,
 		NewAPIUserID:       subject,
 		SessionFingerprint: fingerprint,
-		SessionHash:        hashRiskIdentity(fingerprint),
+		SessionHash:        promptConversationLockFallbackSessionHash(c),
 	}, true
 }
 
@@ -421,7 +428,50 @@ func (h *Handler) resolvePromptConversationLockIdentity(c *gin.Context, cfg prom
 	return promptConversationLockFallbackIdentity(c)
 }
 
-func (h *Handler) activePromptConversationLock(c *gin.Context, cfg promptfilter.Config, signedBody []byte) (*database.PromptConversationLock, bool) {
+// 指纹重放冷却的存在性闸门:回退身份需要构建完整请求 envelope(全量 body
+// 遍历与脱敏),而绝大多数时间全局根本没有活动的指纹冷却。以短 TTL 缓存
+// "是否存在活动指纹锁"的结论,把每请求的 envelope 构建换成至多每 10 秒一次
+// 的轻量存在性查询。本实例新建指纹锁时立即置位;跨实例的新锁最多延迟一个
+// 闸门 TTL 才可见,对 best-effort 冷却可接受。
+const promptFingerprintReplayGateTTL = 10 * time.Second
+
+func (h *Handler) hasActiveFingerprintReplayLocks(ctx context.Context, cooldownTTL time.Duration) bool {
+	if h == nil || h.db == nil {
+		return false
+	}
+	now := time.Now()
+	h.fpReplayGateMu.Lock()
+	if !h.fpReplayGateAt.IsZero() && now.Sub(h.fpReplayGateAt) < promptFingerprintReplayGateTTL {
+		active := h.fpReplayGateActive
+		h.fpReplayGateMu.Unlock()
+		return active
+	}
+	h.fpReplayGateMu.Unlock()
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	active, err := h.db.HasActivePromptFingerprintReplayLocks(checkCtx, cooldownTTL)
+	if err != nil {
+		// 查询失败不缓存结论,并按"可能有锁"放行后续检查:冷却语义优先于省 CPU。
+		return true
+	}
+	h.fpReplayGateMu.Lock()
+	h.fpReplayGateAt = now
+	h.fpReplayGateActive = active
+	h.fpReplayGateMu.Unlock()
+	return active
+}
+
+func (h *Handler) markFingerprintReplayLockCreated() {
+	if h == nil {
+		return
+	}
+	h.fpReplayGateMu.Lock()
+	h.fpReplayGateAt = time.Now()
+	h.fpReplayGateActive = true
+	h.fpReplayGateMu.Unlock()
+}
+
+func (h *Handler) activePromptConversationLock(c *gin.Context, cfg promptfilter.Config, signedBody []byte, endpoint, model string) (*database.PromptConversationLock, bool) {
 	if h == nil || h.db == nil || c == nil || !cfg.Advanced.Enforcement.ConversationLockEnabled {
 		return nil, false
 	}
@@ -468,8 +518,8 @@ func (h *Handler) activePromptConversationLock(c *gin.Context, cfg promptfilter.
 	// 未接入签名 NewAPI 的部署只按 API Key + Codex 会话锁定当前会话；不应用
 	// 用户级冷却，避免共享 Key 下不同用户相互影响。
 	identity, ok := promptConversationLockFallbackIdentity(c)
-	if !ok {
-		identity, ok = h.promptConversationFingerprintReplayIdentity(c, signedBody, "", "")
+	if !ok && h.hasActiveFingerprintReplayLocks(c.Request.Context(), promptUserCyberCooldownTTL(cfg)) {
+		identity, ok = h.promptConversationFingerprintReplayIdentity(c, signedBody, endpoint, model)
 	}
 	if !ok {
 		return nil, false
@@ -604,6 +654,7 @@ func (h *Handler) lockPromptConversationAfterUnsignedUpstreamCYB(c *gin.Context,
 	lockTTL := promptConversationLockTTL(cfg)
 	if identity.Kind == database.PromptConversationLockIdentityFingerprintReplay {
 		lockTTL = promptUserCyberCooldownTTL(cfg)
+		h.markFingerprintReplayLockCreated()
 	}
 	h.cachePromptConversationLock(c.Request.Context(), item, lockTTL)
 	return item != nil && item.Status == database.PromptConversationLockStatusActive
@@ -670,7 +721,7 @@ func (h *Handler) lockPromptConversationOnLocalBlock(c *gin.Context, cfg promptf
 }
 
 func (h *Handler) rejectLockedPromptConversation(c *gin.Context, cfg promptfilter.Config, signedBody, responseBody []byte, endpoint, model string) bool {
-	item, locked := h.activePromptConversationLock(c, cfg, signedBody)
+	item, locked := h.activePromptConversationLock(c, cfg, signedBody, endpoint, model)
 	if !locked {
 		return false
 	}

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
@@ -134,20 +135,21 @@ type createAPIKeyResponse struct {
 }
 
 type opsOverviewResponse struct {
-	UpdatedAt      string              `json:"updated_at"`
-	UptimeSeconds  int64               `json:"uptime_seconds"`
-	DatabaseDriver string              `json:"database_driver"`
-	DatabaseLabel  string              `json:"database_label"`
-	CacheDriver    string              `json:"cache_driver"`
-	CacheLabel     string              `json:"cache_label"`
-	CPU            opsCPUResponse      `json:"cpu"`
-	Memory         opsMemoryResponse   `json:"memory"`
-	Runtime        opsRuntimeResponse  `json:"runtime"`
-	Requests       opsRequestsResponse `json:"requests"`
-	Postgres       opsDatabaseResponse `json:"postgres"`
-	Redis          opsRedisResponse    `json:"redis"`
-	Traffic        opsTrafficResponse  `json:"traffic"`
-	ResponseCache  opsResponseCache    `json:"response_cache"`
+	UpdatedAt      string                        `json:"updated_at"`
+	UptimeSeconds  int64                         `json:"uptime_seconds"`
+	DatabaseDriver string                        `json:"database_driver"`
+	DatabaseLabel  string                        `json:"database_label"`
+	CacheDriver    string                        `json:"cache_driver"`
+	CacheLabel     string                        `json:"cache_label"`
+	CPU            opsCPUResponse                `json:"cpu"`
+	Memory         opsMemoryResponse             `json:"memory"`
+	Runtime        opsRuntimeResponse            `json:"runtime"`
+	Requests       opsRequestsResponse           `json:"requests"`
+	Postgres       opsDatabaseResponse           `json:"postgres"`
+	Redis          opsRedisResponse              `json:"redis"`
+	Traffic        opsTrafficResponse            `json:"traffic"`
+	ResponseCache  opsResponseCache              `json:"response_cache"`
+	Scheduler      auth.SchedulerMetricsSnapshot `json:"scheduler"`
 }
 
 type opsCPUResponse struct {
@@ -156,14 +158,20 @@ type opsCPUResponse struct {
 }
 
 type opsMemoryResponse struct {
-	Percent           float64 `json:"percent"`
-	UsedBytes         uint64  `json:"used_bytes"`
-	TotalBytes        uint64  `json:"total_bytes"`
-	ProcessBytes      uint64  `json:"process_bytes"`
-	HeapAllocBytes    uint64  `json:"heap_alloc_bytes"`
-	HeapInuseBytes    uint64  `json:"heap_inuse_bytes"`
-	HeapReleasedBytes uint64  `json:"heap_released_bytes"`
-	NumGC             uint32  `json:"num_gc"`
+	Percent    float64 `json:"percent"`
+	UsedBytes  uint64  `json:"used_bytes"`
+	TotalBytes uint64  `json:"total_bytes"`
+	// ProcessBytes 是进程 RSS;Container* 是 cgroup 口径(含少量非堆开销),
+	// limit 为 0 表示容器未设内存上限,百分比按宿主总内存计算。
+	ProcessBytes        uint64  `json:"process_bytes"`
+	ContainerUsedBytes  uint64  `json:"container_used_bytes"`
+	ContainerLimitBytes uint64  `json:"container_limit_bytes"`
+	ContainerPercent    float64 `json:"container_percent"`
+	ContainerSource     string  `json:"container_source"`
+	HeapAllocBytes      uint64  `json:"heap_alloc_bytes"`
+	HeapInuseBytes      uint64  `json:"heap_inuse_bytes"`
+	HeapReleasedBytes   uint64  `json:"heap_released_bytes"`
+	NumGC               uint32  `json:"num_gc"`
 }
 
 type opsResponseCacheConfig struct {
