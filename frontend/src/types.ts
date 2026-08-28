@@ -164,6 +164,8 @@ export interface AccountRow {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_fingerprint_mode?: CodexFingerprintMode
+  claude_fingerprint_mode?: 'preserve' | 'force' | ''
+  timezone?: string
   custom_headers?: Record<string, string> | null
   health_tier?: string
   scheduler_score?: number
@@ -1158,6 +1160,8 @@ export interface UpdateAccountSchedulerRequest {
   scheduler_priority?: number | null
   custom_headers?: Record<string, string> | null
   codex_fingerprint_mode?: CodexFingerprintMode | null
+  claude_fingerprint_mode?: 'preserve' | 'force' | '' | null
+  timezone?: string | null
 }
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {
@@ -3462,4 +3466,11 @@ export interface ObservedInstructionsSample {
 
 export interface ObservedInstructionsResponse {
   samples: ObservedInstructionsSample[]
+}
+
+// ClaudeGlobalConfig 是系统设置里的 ClaudeCode 全局配置(全体 Claude 账号默认遵守)。
+export interface ClaudeGlobalConfig {
+  fingerprint_mode: 'preserve' | 'force' | ''
+  default_timezone: string
+  session_window_limit: number
 }

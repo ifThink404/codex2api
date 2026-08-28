@@ -131,6 +131,13 @@ func (h *Handler) buildAccountResponse(
 	if !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount {
 		codexFingerprintMode = auth.NormalizeCodexFingerprintMode(row.GetCredential(auth.CodexFingerprintModeCredentialKey))
 	}
+	// Claude Code 指纹收敛模式 + 绑定时区,仅 Claude OAuth 账号暴露。
+	claudeFingerprintMode := ""
+	accountTimezone := ""
+	if strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), auth.UpstreamClaude) {
+		claudeFingerprintMode = auth.NormalizeClaudeFingerprintMode(row.GetCredential(auth.ClaudeFingerprintModeCredentialKey))
+		accountTimezone = strings.TrimSpace(row.GetCredential("timezone"))
+	}
 	ignoreUsageLimitStatusOverride := row.GetCredentialOptionalBool("ignore_usage_limit_status_override")
 	ignoreUsageLimitStatusEffective := h.store.IgnoreUsageLimitStatus()
 	if ignoreUsageLimitStatusOverride != nil {
@@ -191,6 +198,8 @@ func (h *Handler) buildAccountResponse(
 		ModelMapping:             modelMapping,
 		CodexClientMetadataMode:  codexClientMetadataMode,
 		CodexFingerprintMode:     codexFingerprintMode,
+		ClaudeFingerprintMode:    claudeFingerprintMode,
+		Timezone:                 accountTimezone,
 		CustomHeaders:            customHeaders,
 		ProxyURL:                 row.ProxyURL,
 		Enabled:                  row.Enabled,

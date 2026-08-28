@@ -123,6 +123,12 @@ type Account struct {
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode string
+	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
+	// 收敛模式(preserve/force;空=跟随全局默认)。
+	ClaudeFingerprintMode string
+	// claudeSessionWindow 是 Claude 账号的全局默认并发会话窗口数(装载时从系统设置
+	// 快照,>0 时作为无账号级/分组覆盖时的基础并发回退)。
+	claudeSessionWindow int64
 	// Codex Agent Identity（auth_mode=agentIdentity）：不存 AT/RT，每次上游请求用
 	// agent_private_key(Ed25519, PKCS#8 base64) 动态签名。AgentTaskID 由 task 注册获得，
 	// 运行时缓存并落库(credentials.task_id)。
@@ -1109,6 +1115,10 @@ func (a *Account) effectiveBaseConcurrencyLocked(storeBaseLimit int64) int64 {
 	}
 	if a.groupBaseConcurrency > 0 {
 		return a.groupBaseConcurrency
+	}
+	// Claude 账号:无账号级/分组覆盖时回退到全局「并发会话窗口数」默认。
+	if a.claudeSessionWindow > 0 {
+		return a.claudeSessionWindow
 	}
 	if storeBaseLimit <= 0 {
 		return 1
@@ -3287,6 +3297,9 @@ type Store struct {
 	schedulerMode            atomic.Value // string: "round_robin" / "remaining_quota" / "fill_first"
 	affinityMode             atomic.Value // string: "bounded" / "off" / "strict"
 	affinitySpreadEnabled    atomic.Bool  // 新亲和键按 HRW 哈希散列选号(issue #484)
+	claudeFingerprintDefault atomic.Value // string: Claude 指纹模式全局默认（preserve/force;空=preserve）
+	claudeDefaultTimezone    atomic.Value // string: 导入 Claude 账号时的默认 IANA 时区
+	claudeSessionWindowLimit int64        // Claude 账号默认并发会话窗口数（0=用全局 maxConcurrency）
 	grokAffinityMode         atomic.Value // string: "follow" / "bounded" / "off" / "strict"（"follow"=跟随全局）
 	grokProbeEnabled         atomic.Bool  // 定期探测 Grok 账号状态是否开启（默认关）
 	grokProbeIntervalMin     atomic.Int64 // 定期探测间隔（分钟，默认 30，下限 grokProbeMinIntervalMinutes）
@@ -3800,6 +3813,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.SetAffinityMode(settings.AffinityMode)
 	s.SetSessionAffinitySpread(settings.SessionAffinitySpread)
 	s.SetGrokAffinityMode(grokAffinityModeFromConfig(settings.GrokConfig))
+	applyClaudeConfigToStore(s, settings.ClaudeConfig)
 	s.SetGrokProbeConfig(grokProbeConfigFromConfig(settings.GrokConfig))
 	s.SetGrokMaxRateLimitRetries(grokMaxRateLimitRetriesFromConfig(settings.GrokConfig))
 	s.SetGrokFollowUpEffortConfig(GrokFollowUpEffortConfigFromJSON(settings.GrokConfig))
@@ -5028,6 +5042,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	modelMapping := strings.TrimSpace(row.GetCredential("model_mapping"))
 	codexClientMetadataMode := NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode"))
 	codexFingerprintMode := NormalizeCodexFingerprintMode(row.GetCredential(CodexFingerprintModeCredentialKey))
+	claudeFingerprintMode := NormalizeClaudeFingerprintMode(row.GetCredential(ClaudeFingerprintModeCredentialKey))
 	isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamOpenAIResponses) && strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
 	isGrokAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamGrok) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
 	isAntigravityAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamAntigravity) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
@@ -5058,6 +5073,8 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ModelMapping:            modelMapping,
 		CodexClientMetadataMode: codexClientMetadataMode,
 		CodexFingerprintMode:    codexFingerprintMode,
+		ClaudeFingerprintMode:   claudeFingerprintMode,
+		claudeSessionWindow:     claudeSessionWindowForRow(upstreamType, s.ClaudeSessionWindowLimit()),
 	}
 	if account.CredentialGeneration <= 0 {
 		account.CredentialGeneration = 1

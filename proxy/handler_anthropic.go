@@ -392,9 +392,12 @@ func (h *Handler) Messages(c *gin.Context) {
 			// 直接把原始入站 body 透传到 api.anthropic.com/v1/messages；返回的响应
 			// 已是原生 Anthropic SSE，打上原生路由标记复用既有透传链路。
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
-				r, e := ExecuteClaudeMessagesRequest(upstreamCtx, account, rawBody, proxyURL, downstreamHeaders)
+				claudeFpMode := account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
+				r, e := ExecuteClaudeMessagesRequest(upstreamCtx, account, rawBody, proxyURL, downstreamHeaders, claudeFpMode)
 				if e == nil {
 					markClaudeNativeRoute(r)
+					// 每个响应(含 429)都带统一限流头:同步 5h/7d 窗口快照与冷却。
+					SyncClaudeUsageState(h.store, account, r)
 				}
 				return r, e
 			})

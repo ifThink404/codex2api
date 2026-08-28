@@ -119,7 +119,7 @@ func TestApplyClaudeMessagesHeaders_PreservesIncoming(t *testing.T) {
 	incoming.Set("user-agent", "claude-cli/9.9.9 (external, cli)")
 	incoming.Set("x-stainless-os", "MacOS")
 	fp := map[string]string{"User-Agent": "claude-cli/1.0.0 (external, cli)", "X-Stainless-OS": "Linux"}
-	applyClaudeMessagesHeaders(req, "tok", incoming, false, fp)
+	applyClaudeMessagesHeaders(req, "tok", incoming, false, fp, "")
 	// 入站真实客户端头应优先保留,不被指纹覆盖。
 	if req.Header.Get("User-Agent") != "claude-cli/9.9.9 (external, cli)" {
 		t.Fatalf("应保留入站 UA, got %s", req.Header.Get("User-Agent"))
@@ -139,7 +139,7 @@ func TestApplyClaudeMessagesHeaders_UsesFingerprintWhenAbsent(t *testing.T) {
 		"X-App":         "cli",
 		"X-Stainless-OS": "Linux",
 	}
-	applyClaudeMessagesHeaders(req, "tok", http.Header{}, false, fp)
+	applyClaudeMessagesHeaders(req, "tok", http.Header{}, false, fp, "")
 	if req.Header.Get("User-Agent") != "claude-cli/2.1.220 (external, cli)" {
 		t.Fatalf("缺入站头时应用指纹 UA, got %s", req.Header.Get("User-Agent"))
 	}
@@ -148,5 +148,21 @@ func TestApplyClaudeMessagesHeaders_UsesFingerprintWhenAbsent(t *testing.T) {
 	}
 	if req.Header.Get("Anthropic-Beta") == "" || !strings.Contains(req.Header.Get("Anthropic-Beta"), "oauth-2025-04-20") {
 		t.Fatal("anthropic-beta 应含 oauth")
+	}
+}
+
+func TestApplyClaudeMessagesHeaders_ForceOverridesIncoming(t *testing.T) {
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", nil)
+	incoming := http.Header{}
+	incoming.Set("user-agent", "claude-cli/9.9.9 (external, cli)")
+	incoming.Set("x-stainless-os", "MacOS")
+	fp := map[string]string{"User-Agent": "claude-cli/1.0.0 (external, cli)", "X-Stainless-OS": "Linux"}
+	applyClaudeMessagesHeaders(req, "tok", incoming, false, fp, "force")
+	// force 模式:账号指纹无条件覆盖入站身份头。
+	if req.Header.Get("User-Agent") != "claude-cli/1.0.0 (external, cli)" {
+		t.Fatalf("force 应用指纹 UA, got %s", req.Header.Get("User-Agent"))
+	}
+	if req.Header.Get("X-Stainless-Os") != "Linux" {
+		t.Fatalf("force 应用指纹 x-stainless-os, got %s", req.Header.Get("X-Stainless-Os"))
 	}
 }

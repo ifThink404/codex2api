@@ -76,6 +76,8 @@ type ClaudeTokenData struct {
 	AccountUUID      string
 	OrganizationUUID string
 	OrganizationName string
+	// PlanType 是由 profile 推导的订阅档位(pro / max-5x / max-20x / team / …)。
+	PlanType string
 	// ExpiresAt 是本次 access token 的过期时刻（本地时钟）。
 	ExpiresAt time.Time
 }
@@ -99,13 +101,49 @@ type claudeTokenResponse struct {
 // claudeOAuthProfile 映射 profile 端点的响应体。
 type claudeOAuthProfile struct {
 	Account struct {
-		UUID  string `json:"uuid"`
-		Email string `json:"email"`
+		UUID         string `json:"uuid"`
+		Email        string `json:"email"`
+		HasClaudeMax bool   `json:"has_claude_max"`
+		HasClaudePro bool   `json:"has_claude_pro"`
 	} `json:"account"`
 	Organization struct {
 		UUID string `json:"uuid"`
 		Name string `json:"name"`
+		// OrganizationType 是订阅档位判定主键(实测 2026-08):
+		// claude_pro / claude_max / claude_team / claude_enterprise / claude_free。
+		OrganizationType string `json:"organization_type"`
+		// RateLimitTier 区分 Max 档倍率(如含 "5x" / "20x")。
+		RateLimitTier string `json:"rate_limit_tier"`
 	} `json:"organization"`
+}
+
+// DeriveClaudePlanType 由 profile 推导展示用套餐档位:
+// pro / max-5x / max-20x / max / team / enterprise / free;无法判定时回退 "claude"。
+func DeriveClaudePlanType(p *claudeOAuthProfile) string {
+	if p == nil {
+		return "claude"
+	}
+	orgType := strings.ToLower(strings.TrimSpace(p.Organization.OrganizationType))
+	tier := strings.ToLower(strings.TrimSpace(p.Organization.RateLimitTier))
+	switch {
+	case strings.Contains(orgType, "max") || p.Account.HasClaudeMax:
+		if strings.Contains(tier, "20x") {
+			return "max-20x"
+		}
+		if strings.Contains(tier, "5x") {
+			return "max-5x"
+		}
+		return "max"
+	case strings.Contains(orgType, "enterprise"):
+		return "enterprise"
+	case strings.Contains(orgType, "team"):
+		return "team"
+	case strings.Contains(orgType, "pro") || p.Account.HasClaudePro:
+		return "pro"
+	case strings.Contains(orgType, "free"):
+		return "free"
+	}
+	return "claude"
 }
 
 // claudeAuthCodeExchangeRequest 是授权码交换请求体。字段顺序刻意对齐官方客户端在
@@ -333,6 +371,7 @@ func (o *ClaudeAuth) ExchangeCode(ctx context.Context, code, state, verifier str
 		if v := strings.TrimSpace(profile.Organization.Name); v != "" {
 			td.OrganizationName = v
 		}
+		td.PlanType = DeriveClaudePlanType(profile)
 	}
 	return td, nil
 }
@@ -382,6 +421,7 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 		td.AccountUUID = strings.TrimSpace(profile.Account.UUID)
 		td.OrganizationUUID = strings.TrimSpace(profile.Organization.UUID)
 		td.OrganizationName = strings.TrimSpace(profile.Organization.Name)
+		td.PlanType = DeriveClaudePlanType(profile)
 	}
 	return td, nil
 }

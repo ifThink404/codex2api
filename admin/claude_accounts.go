@@ -297,6 +297,14 @@ func (h *Handler) RefreshAllClaudeModels(c *gin.Context) {
 // insertClaudeAccount 把一份 Claude token 落库并加载进运行时池子(去重按 account_id)。
 // timezone 为空时不指定时区。会为该账号生成一套稳定的 Claude Code 指纹并随凭据落库,
 // 之后每次上游请求原样套用(见 proxy/claude_upstream.go)。
+// claudePlanOrDefault 取 profile 推导的档位,空则回退通用 "claude"。
+func claudePlanOrDefault(plan string) string {
+	if p := strings.TrimSpace(plan); p != "" {
+		return p
+	}
+	return "claude"
+}
+
 func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name, proxyURL, timezone string, td *auth.ClaudeTokenData, source string) {
 	email := strings.TrimSpace(td.Email)
 	accountUUID := strings.TrimSpace(td.AccountUUID)
@@ -306,6 +314,11 @@ func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name,
 	}
 	if name == "" {
 		name = "claude"
+	}
+
+	// 未显式指定时区时,回退到 ClaudeCode 全局默认(系统设置里配置)。
+	if strings.TrimSpace(timezone) == "" {
+		timezone = h.store.ClaudeDefaultTimezone()
 	}
 
 	// 生成稳定指纹(UA / x-app / x-stainless-*),存进 custom_headers 供请求期套用。
@@ -328,7 +341,7 @@ func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name,
 		"expires_at":     td.ExpiresAt.Format(time.RFC3339),
 		"email":          email,
 		"account_id":     accountUUID,
-		"plan_type":      "claude",
+		"plan_type":      claudePlanOrDefault(td.PlanType),
 		"custom_headers": customHeaders,
 		"timezone":       fingerprint.Timezone,
 	}
@@ -366,7 +379,7 @@ func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name,
 		ExpiresAt:     td.ExpiresAt,
 		AccountID:     accountUUID,
 		Email:         email,
-		PlanType:      "claude",
+		PlanType:      claudePlanOrDefault(td.PlanType),
 		CustomHeaders: customHeaders,
 		Models:        claudeModels,
 	})

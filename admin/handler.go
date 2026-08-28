@@ -924,6 +924,8 @@ func parseUsageChannel(c *gin.Context) string {
 		return database.UpstreamChannelGrok
 	case database.UpstreamChannelAntigravity:
 		return database.UpstreamChannelAntigravity
+	case database.UpstreamChannelClaude:
+		return database.UpstreamChannelClaude
 	}
 	return ""
 }
@@ -1152,6 +1154,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
 	api.GET("/settings", h.GetSettings)
 	api.PUT("/settings", h.UpdateSettings)
+	api.GET("/settings/claude-config", h.GetClaudeConfig)
+	api.PUT("/settings/claude-config", h.UpdateClaudeConfig)
 	api.GET("/settings/observed-instructions", h.GetObservedInstructions)
 	api.POST("/settings/background-upload", h.UploadBackgroundAsset)
 	api.POST("/settings/image-storage/test", h.TestImageStorageConnection)
@@ -1519,6 +1523,8 @@ type accountResponse struct {
 	ModelMapping                  string                      `json:"model_mapping,omitempty"`
 	CodexClientMetadataMode       string                      `json:"codex_client_metadata_mode,omitempty"`
 	CodexFingerprintMode          string                      `json:"codex_fingerprint_mode,omitempty"`
+	ClaudeFingerprintMode         string                      `json:"claude_fingerprint_mode,omitempty"`
+	Timezone                      string                      `json:"timezone,omitempty"`
 	CustomHeaders                 map[string]string           `json:"custom_headers,omitempty"`
 	HealthTier                    string                      `json:"health_tier"`
 	SchedulerScore                float64                     `json:"scheduler_score"`
@@ -1961,6 +1967,8 @@ type updateAccountSchedulerReq struct {
 	ProxyURL                json.RawMessage `json:"proxy_url"`
 	CustomHeaders           json.RawMessage `json:"custom_headers"`
 	CodexFingerprintMode    json.RawMessage `json:"codex_fingerprint_mode"`
+	ClaudeFingerprintMode   json.RawMessage `json:"claude_fingerprint_mode"`
+	Timezone                json.RawMessage `json:"timezone"`
 }
 
 type accountSchedulerUpdate struct {
@@ -1980,6 +1988,8 @@ type accountSchedulerUpdate struct {
 	ProxyURL                database.OptionalString
 	CustomHeaders           optionalCustomHeaders
 	CodexFingerprintMode    database.OptionalString
+	ClaudeFingerprintMode   database.OptionalString
+	Timezone                database.OptionalString
 	CredentialUpdates       map[string]interface{}
 }
 
@@ -2051,6 +2061,17 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	claudeFingerprintMode, err := parseOptionalStringField(req.ClaudeFingerprintMode, "claude_fingerprint_mode", validateClaudeFingerprintMode)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if claudeFingerprintMode.Set {
+		claudeFingerprintMode.Value = auth.NormalizeClaudeFingerprintMode(claudeFingerprintMode.Value)
+	}
+	timezoneField, err := parseOptionalStringField(req.Timezone, "timezone", validateAccountTimezone)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
 	if codexFingerprintMode.Set {
 		codexFingerprintMode.Value = auth.NormalizeCodexFingerprintMode(codexFingerprintMode.Value)
 	}
@@ -2060,6 +2081,12 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 	if codexFingerprintMode.Set {
 		credentialUpdates[auth.CodexFingerprintModeCredentialKey] = codexFingerprintMode.Value
+	}
+	if claudeFingerprintMode.Set {
+		credentialUpdates[auth.ClaudeFingerprintModeCredentialKey] = claudeFingerprintMode.Value
+	}
+	if timezoneField.Set {
+		credentialUpdates["timezone"] = strings.TrimSpace(timezoneField.Value)
 	}
 	if autoPause5hThreshold.Set {
 		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
@@ -2115,8 +2142,30 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ProxyURL:                proxyURL,
 		CustomHeaders:           customHeaders,
 		CodexFingerprintMode:    codexFingerprintMode,
+		ClaudeFingerprintMode:   claudeFingerprintMode,
+		Timezone:                timezoneField,
 		CredentialUpdates:       credentialUpdates,
 	}, nil
+}
+
+// validateClaudeFingerprintMode 允许空串(=跟随全局默认),其余必须是 preserve/force。
+func validateClaudeFingerprintMode(value string) error {
+	if auth.IsValidClaudeFingerprintMode(value) {
+		return nil
+	}
+	return fmt.Errorf("claude_fingerprint_mode must be one of: preserve, force")
+}
+
+// validateAccountTimezone 允许空串(=清除);非空必须是可加载的 IANA 时区。
+func validateAccountTimezone(value string) error {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return nil
+	}
+	if _, err := time.LoadLocation(v); err != nil {
+		return fmt.Errorf("timezone must be a valid IANA timezone, e.g. Asia/Shanghai")
+	}
+	return nil
 }
 
 // validateCodexFingerprintMode 允许空串（等价于默认档 off），其余必须是已知档位。
@@ -2143,7 +2192,9 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.SchedulerPriority.Set ||
 		u.ProxyURL.Set ||
 		u.CustomHeaders.Set ||
-		u.CodexFingerprintMode.Set
+		u.CodexFingerprintMode.Set ||
+		u.ClaudeFingerprintMode.Set ||
+		u.Timezone.Set
 }
 
 func optionalBoolFromPtr(value *bool) database.OptionalBool {
@@ -2374,6 +2425,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.CustomHeaders.Set {
 		h.store.ApplyAccountCustomHeaders(id, update.CustomHeaders.Values)
+	}
+	if update.ClaudeFingerprintMode.Set {
+		h.store.ApplyAccountClaudeFingerprintMode(id, update.ClaudeFingerprintMode.Value)
 	}
 	if update.CodexFingerprintMode.Set {
 		h.store.ApplyAccountCodexFingerprintMode(id, update.CodexFingerprintMode.Value)

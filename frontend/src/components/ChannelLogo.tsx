@@ -17,6 +17,7 @@ const ICON_URLS = import.meta.glob(
     "../../node_modules/@lobehub/icons-static-svg/icons/grok.svg",
     "../../node_modules/@lobehub/icons-static-svg/icons/antigravity-color.svg",
     "../../node_modules/@lobehub/icons-static-svg/icons/claudecode-color.svg",
+    "../../node_modules/@lobehub/icons-static-svg/icons/claude-color.svg",
   ],
   { eager: true, query: "?url", import: "default" },
 ) as Record<string, string>;
@@ -81,7 +82,7 @@ export default function ChannelLogo({
     const fileByChannel: Record<string, { file: string; alt: string }> = {
       codex: { file: "codex-color", alt: "Codex" },
       antigravity: { file: "antigravity-color", alt: "Antigravity" },
-      claude: { file: "claudecode-color", alt: "Claude" },
+      claude: { file: "claude-color", alt: "Claude" },
     };
     const meta = fileByChannel[channel];
     const src = URL_BY_FILE.get(meta.file);

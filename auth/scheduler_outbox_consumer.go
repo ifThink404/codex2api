@@ -488,6 +488,8 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.ModelMapping = src.ModelMapping
 	dst.CodexClientMetadataMode = src.CodexClientMetadataMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
+	dst.ClaudeFingerprintMode = src.ClaudeFingerprintMode
+	dst.claudeSessionWindow = src.claudeSessionWindow
 	dst.CodexAuthMode = src.CodexAuthMode
 	dst.AgentRuntimeID = src.AgentRuntimeID
 	dst.AgentPrivateKey = src.AgentPrivateKey

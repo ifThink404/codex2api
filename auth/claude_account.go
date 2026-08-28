@@ -95,6 +95,10 @@ func (s *Store) refreshClaudeAccount(ctx context.Context, acc *Account, forceRef
 	if strings.TrimSpace(td.Email) != "" {
 		updates["email"] = td.Email
 	}
+	// 订阅档位随 profile 变化(升降级)时同步更新。
+	if plan := strings.TrimSpace(td.PlanType); plan != "" {
+		updates["plan_type"] = plan
+	}
 	if strings.TrimSpace(td.AccountUUID) != "" {
 		updates["account_id"] = td.AccountUUID
 	}
@@ -116,6 +120,9 @@ func (s *Store) refreshClaudeAccount(ctx context.Context, acc *Account, forceRef
 	}
 	if strings.TrimSpace(td.AccountUUID) != "" {
 		acc.AccountID = td.AccountUUID
+	}
+	if plan := strings.TrimSpace(td.PlanType); plan != "" {
+		acc.PlanType = plan
 	}
 	if !cooldownActive {
 		acc.Status = StatusReady

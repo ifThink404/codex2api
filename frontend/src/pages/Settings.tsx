@@ -690,6 +690,95 @@ const SETTINGS_FIELD_GRID = 'grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2'
 const SETTINGS_FIELD_GRID_3 = 'grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-3'
 const SETTINGS_SWITCH_GRID = 'grid grid-cols-1 gap-3 sm:grid-cols-2'
 
+// ClaudeCodeSettingsCard 是 ClaudeCode 全局配置卡片(独立读写 /settings/claude-config)。
+// 全体 Claude 账号默认遵守;个体账号可在「账号管理 → 编辑账号」里覆盖。
+function ClaudeCodeSettingsCard() {
+  const { t } = useTranslation()
+  const { showToast } = useToast()
+  const [fingerprintMode, setFingerprintMode] = useState<'preserve' | 'force' | ''>('')
+  const [timezone, setTimezone] = useState('')
+  const [sessionWindow, setSessionWindow] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .getClaudeConfig()
+      .then((cfg) => {
+        if (cancelled) return
+        setFingerprintMode((cfg.fingerprint_mode as 'preserve' | 'force' | '') ?? '')
+        setTimezone(cfg.default_timezone ?? '')
+        setSessionWindow(cfg.session_window_limit ? String(cfg.session_window_limit) : '')
+      })
+      .catch(() => {
+        /* 读取失败保持默认空 */
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const save = useCallback(async () => {
+    setSaving(true)
+    try {
+      const n = Number(sessionWindow.trim())
+      await api.updateClaudeConfig({
+        fingerprint_mode: fingerprintMode,
+        default_timezone: timezone.trim(),
+        session_window_limit: Number.isFinite(n) && n > 0 ? Math.floor(n) : 0,
+      })
+      showToast(t('settings.claudeSaved'), 'success')
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }, [fingerprintMode, timezone, sessionWindow, showToast, t])
+
+  const selectCls =
+    'h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring'
+
+  return (
+    <SettingsCard
+      title={t('settings.claudeSettingsTitle')}
+      description={t('settings.claudeSettingsDesc')}
+      icon={<ChannelLogo channel="claude" size={16} />}
+      footer={
+        <div className="flex justify-end">
+          <Button onClick={() => void save()} disabled={loading || saving}>
+            {t('common.save')}
+          </Button>
+        </div>
+      }
+    >
+      <div className={SETTINGS_FIELD_GRID_3}>
+        <SettingField label={t('settings.claudeSessionWindow')} description={t('settings.claudeSessionWindowDesc')}>
+          <Input
+            value={sessionWindow}
+            onChange={(e) => setSessionWindow(e.target.value)}
+            placeholder={t('settings.claudeFollowGlobal')}
+            inputMode="numeric"
+          />
+        </SettingField>
+        <SettingField label={t('settings.claudeFingerprintMode')} description={t('settings.claudeFingerprintModeDesc')}>
+          <select className={selectCls} value={fingerprintMode} onChange={(e) => setFingerprintMode(e.target.value as 'preserve' | 'force' | '')}>
+            <option value="">{t('settings.claudeFpPreserve')}</option>
+            <option value="preserve">{t('settings.claudeFpPreserveExplicit')}</option>
+            <option value="force">{t('settings.claudeFpForce')}</option>
+          </select>
+        </SettingField>
+        <SettingField label={t('settings.claudeDefaultTimezone')} description={t('settings.claudeDefaultTimezoneDesc')}>
+          <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Asia/Shanghai" />
+        </SettingField>
+      </div>
+    </SettingsCard>
+  )
+}
+
 function SettingsCard({
   title,
   description,
@@ -2030,6 +2119,7 @@ export default function Settings() {
         { id: 'settings-overview', label: t('settings.nav.overview'), icon: <Activity className="size-4" /> },
         { id: 'settings-traffic', label: t('settings.nav.traffic'), icon: <Gauge className="size-4" /> },
         { id: 'settings-grok', label: t('settings.nav.grok'), icon: <ChannelLogo channel="grok" size={16} /> },
+        { id: 'settings-claude', label: t('settings.nav.claude'), icon: <ChannelLogo channel="claude" size={16} /> },
         { id: 'settings-runtime', label: t('settings.nav.runtime'), icon: <Wrench className="size-4" /> },
         { id: 'settings-storage', label: t('settings.nav.storage'), icon: <ImageIcon className="size-4" /> },
         { id: 'settings-appearance', label: t('settings.nav.appearance'), icon: <Palette className="size-4" /> },
@@ -3030,6 +3120,10 @@ export default function Settings() {
               </div>
             </div>
           </SettingsCard>
+          </SettingsSection>
+
+          <SettingsSection id="settings-claude" title={t('settings.nav.claude')} description={t('settings.nav.claudeDesc')} icon={<ChannelLogo channel="claude" size={16} />}>
+            <ClaudeCodeSettingsCard />
           </SettingsSection>
 
           <SettingsSection id="settings-runtime" title={t('settings.nav.runtime')} description={t('settings.nav.runtimeDesc')} icon={<Wrench className="size-4" />}>

@@ -1215,6 +1215,7 @@ func (db *DB) migrate(ctx context.Context) error {
 				site_logo          TEXT DEFAULT '',
 				background_config  TEXT DEFAULT '{}',
 				grok_config        TEXT DEFAULT '{}',
+				claude_config      TEXT DEFAULT '{}',
 				max_concurrency    INT DEFAULT 2,
 			global_rpm         INT DEFAULT 0,
 			test_model         VARCHAR(100) DEFAULT 'gpt-5.4',
@@ -1262,6 +1263,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS site_logo TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS background_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS grok_config TEXT DEFAULT '{}';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS claude_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS test_content TEXT DEFAULT 'hi';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS pg_max_conns INT DEFAULT 50;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS redis_pool_size INT DEFAULT 30;
@@ -2165,6 +2167,7 @@ type SystemSettings struct {
 	SiteLogo                           string
 	BackgroundConfig                   string // JSON: {"image":"...","opacity":18,"blur":0}
 	GrokConfig                         string // JSON: {"affinity_mode":"strict"}
+	ClaudeConfig                       string // JSON: {"fingerprint_mode":"preserve","default_timezone":"","session_window_limit":0}
 	MaxConcurrency                     int
 	GlobalRPM                          int
 	TestModel                          string
@@ -2522,7 +2525,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(session_slot_buffer_enabled, false),
 		       COALESCE(session_slot_buffer_seconds, 10),
 		       COALESCE(models_list_read_max_bytes, 8388608),
-		       COALESCE(auto_activate_5h_window_enabled, false)
+		       COALESCE(auto_activate_5h_window_enabled, false),
+		       COALESCE(claude_config, '{}')
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2602,6 +2606,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.SessionSlotBufferSeconds,
 		&s.ModelsListReadMaxBytes,
 		&s.AutoActivate5hWindowEnabled,
+		&s.ClaudeConfig,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -3229,6 +3234,26 @@ func normalizeAffinityMode(mode string) string {
 	default:
 		return "bounded"
 	}
+}
+
+// normalizeClaudeConfig 校验 claude_config JSON,非法或空则回落到默认 {}。
+func normalizeClaudeConfig(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !json.Valid([]byte(raw)) {
+		return "{}"
+	}
+	return raw
+}
+
+// UpdateClaudeConfig 定向更新 claude_config 单列(不回写整行设置,避免触碰大 UPSERT)。
+func (db *DB) UpdateClaudeConfig(ctx context.Context, raw string) error {
+	value := normalizeClaudeConfig(raw)
+	return db.withSQLiteWriteLock(ctx, func() error {
+		_, err := db.conn.ExecContext(ctx, `
+			INSERT INTO system_settings (id, claude_config) VALUES (1, $1)
+			ON CONFLICT (id) DO UPDATE SET claude_config = EXCLUDED.claude_config`, value)
+		return err
+	})
 }
 
 // normalizeGrokConfig 校验 grok_config JSON,非法或空则回落到默认 {}。

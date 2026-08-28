@@ -155,6 +155,16 @@ func (h *Handler) grokBillingModelIDs() []string {
 	return ids
 }
 
+// grokDefaultDisplayModelIDs 是定价页始终展示的 Grok 内置文本模型集(即使没有 Grok 账号),
+// 与 Codex 内置模型的常显行为对齐。取 OAuth 与 API Key 两套默认集的并集(后者为超集)。
+// 仅文本模型:定价页按 token 计费,媒体(生图/生视频)定价模型另计,不在此列。
+func grokDefaultDisplayModelIDs() []string {
+	ids := make([]string, 0, 8)
+	ids = append(ids, auth.GrokOAuthDefaultModelIDs()...)
+	ids = append(ids, auth.GrokAPIKeyDefaultModelIDs()...)
+	return ids
+}
+
 // modelPricingRow 是定价管理页每个规范模型的一行：当前生效价 + 来源。
 type modelPricingRow struct {
 	Model          string                        `json:"model"`
@@ -236,7 +246,9 @@ func (h *Handler) ListModelPricing(c *gin.Context) {
 		}
 		return out
 	}
-	grokKeys := dedup(h.grokBillingModelIDs())
+	// Grok 内置默认模型始终并入,使定价页像 Codex 内置模型一样常显 grok 家族,
+	// 即使当前没有任何 Grok 账号(官方同步的 grok 采集逻辑不受影响)。
+	grokKeys := dedup(append(h.grokBillingModelIDs(), grokDefaultDisplayModelIDs()...))
 	antigravityKeys := dedup(h.antigravityChannelModels())
 	claudeKeys := dedup(h.claudeChannelModels())
 

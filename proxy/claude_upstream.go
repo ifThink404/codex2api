@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/tidwall/gjson"
@@ -98,7 +100,7 @@ func markClaudeNativeRoute(resp *http.Response) {
 
 // ExecuteClaudeMessagesRequest 把入站 Anthropic Messages 请求透传给 Claude Code
 // OAuth 账号对应的上游,返回原始上游响应。
-func ExecuteClaudeMessagesRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header) (*http.Response, error) {
+func ExecuteClaudeMessagesRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header, fingerprintMode string) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -129,7 +131,7 @@ func ExecuteClaudeMessagesRequest(ctx context.Context, account *auth.Account, re
 	if err != nil {
 		return nil, ErrInternalError("创建 Claude 请求失败", err)
 	}
-	applyClaudeMessagesHeaders(req, accessToken, headers, stream, fingerprint)
+	applyClaudeMessagesHeaders(req, accessToken, headers, stream, fingerprint, fingerprintMode)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -143,14 +145,14 @@ func ExecuteClaudeMessagesRequest(ctx context.Context, account *auth.Account, re
 
 // applyClaudeMessagesHeaders 设置透传请求头。
 //
-// 指纹一致性策略:
-//   - 若入站是**真实 Claude Code 客户端**(自带 user-agent / x-stainless-* 身份头),
-//     原样保留其身份——它本身就是一致的,伪造反而破坏一致性。
-//   - 若入站缺该身份头(如 OpenAI SDK 等非原生客户端),用该账号绑定的稳定指纹补齐,
-//     使这个账号对外始终呈现同一套 Claude Code 身份。
+// 指纹一致性策略(由 fingerprintMode 决定,来自账号级覆盖 > 全局默认):
+//   - preserve(默认):入站真实 Claude Code 客户端的身份头优先保留,缺失才用账号
+//     绑定指纹补齐——它本身就是一致的,伪造反而破坏一致性。
+//   - force:无条件用账号绑定指纹覆盖入站身份头,保证该账号对 Anthropic 始终呈现
+//     同一套 Claude Code 身份(强制替换,防跨客户端指纹漂移)。
 //
 // fingerprint 为账号绑定指纹头(规范化头名→值),来自 credentials.custom_headers。
-func applyClaudeMessagesHeaders(req *http.Request, accessToken string, incoming http.Header, stream bool, fingerprint map[string]string) {
+func applyClaudeMessagesHeaders(req *http.Request, accessToken string, incoming http.Header, stream bool, fingerprint map[string]string, fingerprintMode string) {
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	// anthropic-version:优先保留入站真实客户端的值。
@@ -173,14 +175,21 @@ func applyClaudeMessagesHeaders(req *http.Request, accessToken string, incoming 
 	for k, v := range fingerprint {
 		fpLower[strings.ToLower(strings.TrimSpace(k))] = v
 	}
-	// 身份头:入站有则保留,无则用账号指纹补齐。
+	// force 模式:账号指纹优先,无条件覆盖入站身份头(有指纹才覆盖,避免抹成空)。
+	// preserve 模式:入站有则保留,无则用账号指纹补齐。
+	force := auth.NormalizeClaudeFingerprintMode(fingerprintMode) == auth.ClaudeFingerprintModeForce
 	for _, name := range auth.ClaudeIdentityHeaderNames {
+		fpVal := strings.TrimSpace(fpLower[name])
+		if force && fpVal != "" {
+			req.Header.Set(name, fpVal)
+			continue
+		}
 		if v := strings.TrimSpace(incoming.Get(name)); v != "" {
 			req.Header.Set(name, v)
 			continue
 		}
-		if v := strings.TrimSpace(fpLower[name]); v != "" {
-			req.Header.Set(name, v)
+		if fpVal != "" {
+			req.Header.Set(name, fpVal)
 		}
 	}
 	// 保底:连指纹都没有(老账号未生成指纹)时,给一个稳定的默认 UA,避免空 UA 破绽。
@@ -207,7 +216,7 @@ func claudeInvisibleRune(r rune) bool {
 	switch r {
 	case 0x200B, 0x200C, 0x200D, // zero-width space / non-joiner / joiner
 		0x2060, 0xFEFF, // word joiner / BOM (zero-width no-break space)
-		0x180E,                         // mongolian vowel separator
+		0x180E,                                 // mongolian vowel separator
 		0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // bidi embedding / override / pop
 		0x2066, 0x2067, 0x2068, 0x2069: // bidi isolates
 		return true
@@ -325,4 +334,93 @@ func injectClaudeCodeSystemPrompt(body []byte) []byte {
 		return out
 	}
 	return body
+}
+
+// ── Claude 统一限流头 → 账号用量快照 ─────────────────────────────────────────
+//
+// Anthropic 对 Claude Code OAuth 账号的每个响应都带统一限流头(实测 2026-08):
+//   anthropic-ratelimit-unified-5h-utilization: 0.01   ← 5h 滚动窗口利用率
+//   anthropic-ratelimit-unified-5h-reset:       1787943000 (unix 秒)
+//   anthropic-ratelimit-unified-7d-utilization: 0.0    ← 周窗口利用率
+//   anthropic-ratelimit-unified-7d-reset:       1788253200
+//   anthropic-ratelimit-unified-status:         allowed | rejected
+// 该族头为 0-1 小数约定(同响应的 fallback-percentage: 0.5 即 50%)。
+
+// claudeRatelimitHeaderPct 解析 utilization 头为百分数(0-100)。
+// 保守起见 >1.5 的值视作上游已改用百分数,不再 ×100,避免进度条爆表。
+func claudeRatelimitHeaderPct(v string) (float64, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 {
+		return 0, false
+	}
+	if f <= 1.5 {
+		f *= 100
+	}
+	if f > 100 {
+		f = 100
+	}
+	return f, true
+}
+
+// claudeRatelimitHeaderTime 解析 unix 秒时间戳头(如 *-reset)。
+func claudeRatelimitHeaderTime(v string) time.Time {
+	v = strings.TrimSpace(v)
+	sec, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0)
+}
+
+// SyncClaudeUsageState 解析 Claude 响应的统一限流头,把 5h/7d 窗口利用率与重置
+// 时刻写入与 Codex 同源的账号快照字段并持久化——管理页用量进度条/重置倒计时
+// 直接生效。429 或 unified-status=rejected 时按上游给的重置时刻精确冷却。
+// 持久化调用与 SyncCodexUsageState 同构:persist 在 ApplyUsageObservation 闭包内,
+// MarkResponsesPremium5hRateLimited 自带观察序,必须留在闭包外(usageSyncMu 不可重入)。
+func SyncClaudeUsageState(store *auth.Store, account *auth.Account, resp *http.Response) {
+	if account == nil || resp == nil || len(resp.Header) == 0 {
+		return
+	}
+	h := resp.Header
+	pct5h, ok5h := claudeRatelimitHeaderPct(h.Get("anthropic-ratelimit-unified-5h-utilization"))
+	reset5h := claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-5h-reset"))
+	pct7d, ok7d := claudeRatelimitHeaderPct(h.Get("anthropic-ratelimit-unified-7d-utilization"))
+	reset7d := claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-7d-reset"))
+
+	if ok5h || ok7d {
+		observedAt := time.Now()
+		account.ApplyUsageObservation(observedAt, func() {
+			if ok5h {
+				account.SetUsageSnapshot5hAt(pct5h, reset5h, observedAt)
+			}
+			if ok7d && !reset7d.IsZero() {
+				account.SetReset7dAt(reset7d)
+			}
+			if store == nil {
+				return
+			}
+			if ok7d {
+				store.PersistUsageSnapshot(account, pct7d)
+			} else if ok5h {
+				store.PersistUsageSnapshot5hOnly(account)
+			}
+		})
+	}
+
+	// 上游明确拒绝(配额耗尽)→ 以 5h 重置时刻为准记限流冷却;缺头退回统一 reset。
+	// 注意不匹配 overage-status(那是溢出计费开关,200 响应上也会是 rejected)。
+	if resp.StatusCode == http.StatusTooManyRequests ||
+		strings.EqualFold(strings.TrimSpace(h.Get("anthropic-ratelimit-unified-status")), "rejected") {
+		resetAt := reset5h
+		if resetAt.IsZero() {
+			resetAt = claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-reset"))
+		}
+		if store != nil {
+			store.MarkResponsesPremium5hRateLimited(account, resetAt)
+		}
+	}
 }

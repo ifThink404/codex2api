@@ -80,9 +80,12 @@ interface Props {
   // 官方统计同步成功后回调:列表页立刻用这次 7d 额度改徽章,
   // 并重拉 page-stats 对齐快照,不用等下一次翻页。
   onOfficialUsageRefreshed?: (patch: OfficialUsageRefreshPatch) => void
+  // 官方统计 tab 强制开关:Claude 等无 ChatGPT 官方结算链路的渠道传 false 隐藏;
+  // 缺省时按 supportsOfficialUsage(account) 自动判定。
+  officialUsage?: boolean
 }
 
-export default function AccountUsageModal({ account, onClose, onCreditsReset, showCreditSettings = true, initialPage, onOfficialUsageRefreshed }: Props) {
+export default function AccountUsageModal({ account, onClose, onCreditsReset, showCreditSettings = true, initialPage, onOfficialUsageRefreshed, officialUsage }: Props) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [data, setData] = useState<AccountUsageDetail | null>(null)
@@ -95,7 +98,7 @@ export default function AccountUsageModal({ account, onClose, onCreditsReset, sh
 
   // 官方结算统计只有 ChatGPT OAuth 账号能查（wham 端点属于 ChatGPT 后端）。
   // codex_at、Responses API 中转和 Grok 没有这条链路，不显示这个 tab。
-  const showOfficialUsage = supportsOfficialUsage(account)
+  const showOfficialUsage = officialUsage ?? supportsOfficialUsage(account)
 
   const [creditEnabled, setCreditEnabled] = useState(account.credit_enabled ?? false)
   const [creditSkipWindow, setCreditSkipWindow] = useState(account.credit_skip_usage_window ?? false)
@@ -256,6 +259,9 @@ function UsageStatsContent({
   onViewLogs: () => void
   showOfficialUsage: boolean
   onOfficialUsageRefreshed?: (patch: OfficialUsageRefreshPatch) => void
+  // 官方统计 tab 强制开关:Claude 等无 ChatGPT 官方结算链路的渠道传 false 隐藏;
+  // 缺省时按 supportsOfficialUsage(account) 自动判定。
+  officialUsage?: boolean
 }) {
   const { t } = useTranslation()
   const activeDays = Math.max(0, data.active_days || 0)
