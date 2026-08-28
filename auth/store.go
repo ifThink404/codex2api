@@ -590,6 +590,15 @@ func (a *Account) GetAccessToken() string {
 	return strings.TrimSpace(a.AccessToken)
 }
 
+func (a *Account) HasSessionToken() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return strings.TrimSpace(a.SessionToken) != ""
+}
+
 func (a *Account) GetCustomHeaders() map[string]string {
 	if a == nil {
 		return nil
@@ -3316,17 +3325,20 @@ type Store struct {
 
 // sessionAffinity 记录某个 sessionKey 当前粘附到哪个账号/代理。
 //
-// boundAt / requestCount 用于 bounded affinity 的逃逸条件:
-//   - 累计请求超过 maxAffinityRequests 后强制解绑,避免单账号被一直薅
-//   - 绑定时长超过 maxAffinityDuration 后同样解绑
+// lastUsedAt 用于 bounded affinity 的逃逸条件(issue #584):
+//   - 绑定空闲超过 sessionAffinityIdleEscape 后解绑,下次走完整挑号。活跃会话
+//     永不因此换号——上游 prompt cache 按账号生效,中途轮换等于整段上下文按
+//     未命中价重新计费;空闲超阈值后上游缓存本来已经过期,此时轮换才零代价。
 //   - 上层在选号时还会检查"绑定账号当前是否还健康",非 healthy 直接换号
 //
-// strict 模式不读这些字段(行为退化为旧实现);off 模式根本不进入这条路径。
+// boundAt / requestCount 仅作观测记录,不再参与逃逸判定。strict 模式不读逃逸
+// 字段(行为退化为旧实现);off 模式根本不进入这条路径。
 type sessionAffinity struct {
 	accountID    int64
 	proxyURL     string
 	boundAt      time.Time
 	requestCount int64
+	lastUsedAt   time.Time
 	expiresAt    time.Time
 }
 
@@ -3354,11 +3366,9 @@ const maxSessionSlotBuffer = 60 * time.Second
 // maxSessionBindings 会话粘性表的软上限。超限时在 bind 路径全量清一轮过期项。
 const maxSessionBindings = 65536
 
-// Bounded affinity 默认阈值。命中任一即触发解绑下次走完整挑号策略。
-const (
-	defaultMaxAffinityRequests = 50
-	defaultMaxAffinityDuration = 5 * time.Minute
-)
+// Bounded affinity 空闲逃逸默认阈值。上游 prompt cache 空闲约 5-10 分钟即被清理,
+// 取 10 分钟保证轮换只发生在缓存已死的边界上。
+const defaultAffinityIdleEscape = 10 * time.Minute
 
 // Affinity 模式常量。affinity_mode 系统设置使用以下值。
 const (
@@ -3393,6 +3403,22 @@ func sessionAffinityTTL() time.Duration {
 		return time.Duration(seconds) * time.Second
 	}
 	return defaultSessionAffinityTTL
+}
+
+// sessionAffinityIdleEscape 返回 bounded 模式的空闲逃逸阈值,可用
+// CODEX_SESSION_AFFINITY_IDLE_ESCAPE 覆盖(Duration 或纯秒数)。
+func sessionAffinityIdleEscape() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("CODEX_SESSION_AFFINITY_IDLE_ESCAPE"))
+	if raw == "" {
+		return defaultAffinityIdleEscape
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return defaultAffinityIdleEscape
 }
 
 func cooldownRuntimeContext() (context.Context, context.CancelFunc) {
@@ -6328,6 +6354,7 @@ func (s *Store) bindSessionAffinity(key string, account *Account, proxyURL strin
 		proxyURL:     proxyURL,
 		boundAt:      now,
 		requestCount: 0,
+		lastUsedAt:   now,
 		expiresAt:    now.Add(ttl),
 	}
 
@@ -6345,8 +6372,8 @@ func (s *Store) bindSessionAffinity(key string, account *Account, proxyURL strin
 			}
 		}
 	}
-	// 同账号的连续 Bind 视为复用,沿用 boundAt 与 requestCount 以保持 bounded 上限计数;
-	// 换账号时则按新绑定从 0 开始计。
+	// 同账号的连续 Bind 视为复用,沿用 boundAt 与 requestCount 保持观测连续性;
+	// 换账号时则按新绑定从 0 开始计。lastUsedAt 恒取当前时间(正在被使用)。
 	if existing, ok := s.sessionBindings[key]; ok && existing.accountID == account.DBID {
 		binding.boundAt = existing.boundAt
 		binding.requestCount = existing.requestCount
@@ -6424,9 +6451,8 @@ func (s *Store) NextForSession(key string, apiKeyID int64, exclude map[int64]boo
 // affinity_mode 决定粘性强度:
 //   - off:     永不读绑定,每次都走完整挑号策略
 //   - bounded (默认): 绑定有效但被以下任一条件解除
-//   - 累计请求超过 defaultMaxAffinityRequests (50)
-//   - 绑定时长超过 defaultMaxAffinityDuration (5min)
 //   - 绑定账号当前已不属于 healthy 桶 (warm/risky/banned)
+//   - 绑定空闲超过 sessionAffinityIdleEscape (默认 10min,上游缓存已过期)
 //   - strict:  完全沿用旧行为,只在 TTL 过期或显式 Unbind 时换号
 //
 // 解除发生时绕过 binding 走完整挑号策略(NextExcludingWithFilter),后续 BindSessionAffinity
@@ -6466,7 +6492,7 @@ func (s *Store) NextForContinuationWithDispatch(key string, apiKeyID int64, excl
 
 // nextForSessionWithFilter 是会话选号的统一实现。preserveBinding=true(续链请求)时
 // 语义收紧为"只认绑定账号"：
-//   - 忽略 affinity_mode=off 与 bounded 的全部逃逸条件（请求数/时长/健康档位）——
+//   - 忽略 affinity_mode=off 与 bounded 的全部逃逸条件（空闲/健康档位）——
 //     续链 id 只在创建它的账号上有效，换号必然 previous_response_not_found，
 //     所以这里刻意覆盖运营者的粘性配置；
 //   - 绑定账号当前取不到（超并发/冷却/被本次请求排除）时返回 nil 而不是回退到
@@ -6510,14 +6536,13 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 	}
 	if ok {
 		expired := !binding.expiresAt.After(now)
-		// bounded 模式下追加逃逸条件检查
+		// bounded 模式下追加逃逸条件检查:账号不健康,或绑定已空闲到上游
+		// prompt cache 必然过期。活跃会话不轮换(issue #584)。
 		escape := false
 		if mode == AffinityModeBounded && !preserveBinding {
-			if binding.requestCount >= defaultMaxAffinityRequests {
+			if !s.affinityAccountStillHealthy(binding.accountID) {
 				escape = true
-			} else if !binding.boundAt.IsZero() && now.Sub(binding.boundAt) >= defaultMaxAffinityDuration {
-				escape = true
-			} else if !s.affinityAccountStillHealthy(binding.accountID) {
+			} else if !binding.lastUsedAt.IsZero() && now.Sub(binding.lastUsedAt) >= sessionAffinityIdleEscape() {
 				escape = true
 			}
 		}
@@ -6527,10 +6552,11 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 		} else {
 			acc, capacityFull := s.takeByIDModeWithCapacity(binding.accountID, apiKeyID, exclude, filter, preserveBinding, key, policy)
 			if acc != nil {
-				// 命中粘性,记一次复用
+				// 命中粘性,记一次复用并刷新空闲时钟
 				s.sessionMu.Lock()
 				if current, exists := s.sessionBindings[key]; exists && current.accountID == binding.accountID {
 					current.requestCount++
+					current.lastUsedAt = now
 					s.sessionBindings[key] = current
 				}
 				s.sessionMu.Unlock()
@@ -6544,6 +6570,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
+				log.Printf("会话粘性容量溢出: key=%s 绑定账号=%d 并发满,本请求借用账号=%d(该请求预期上游缓存未命中)", key, binding.accountID, fallback.DBID)
 				return fallback, "", SessionAffinityGuard{preserveAccountID: binding.accountID}
 			}
 		}
@@ -6582,6 +6609,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
+				log.Printf("会话粘性容量溢出: key=%s 绑定账号=%d 并发满,本请求借用账号=%d(该请求预期上游缓存未命中)", key, binding.accountID, fallback.DBID)
 				return fallback, "", SessionAffinityGuard{preserveAccountID: binding.accountID}
 			}
 		}
@@ -6819,10 +6847,13 @@ func (s *Store) getCachedSessionAffinity(key string) (sessionAffinity, bool) {
 	if !ok || binding.AccountID == 0 {
 		return sessionAffinity{}, false
 	}
+	now := time.Now()
 	return sessionAffinity{
-		accountID: binding.AccountID,
-		proxyURL:  strings.TrimSpace(binding.ProxyURL),
-		expiresAt: time.Now().Add(sessionAffinityTTL()),
+		accountID:  binding.AccountID,
+		proxyURL:   strings.TrimSpace(binding.ProxyURL),
+		boundAt:    now,
+		lastUsedAt: now,
+		expiresAt:  now.Add(sessionAffinityTTL()),
 	}, true
 }
 

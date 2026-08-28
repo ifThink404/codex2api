@@ -67,6 +67,7 @@ import {
   LockKeyhole,
   Pencil,
   Plus,
+  Power,
   RotateCcw,
   Search,
   ShieldAlert,
@@ -79,8 +80,8 @@ import {
 
 type ExpireMode = "never" | "7" | "30" | "90" | "custom";
 type TokenLimitUnit = "token" | "k" | "m" | "b";
-type StatusFilter = "all" | "active" | "expired" | "quota_exhausted" | "expiring_soon";
-type APIKeyStatus = "active" | "expired" | "quota_exhausted";
+type StatusFilter = "all" | "active" | "expired" | "quota_exhausted" | "expiring_soon" | "disabled";
+type APIKeyStatus = "active" | "expired" | "quota_exhausted" | "disabled";
 type SortMode = "created_desc" | "last_used_desc" | "quota_usage_desc" | "name_asc";
 
 const KEY_REVEAL_MS = 30_000;
@@ -463,12 +464,14 @@ export default function APIKeys() {
       expired: 0,
       quota_exhausted: 0,
       expiring_soon: 0,
+      disabled: 0,
     };
     const now = Date.now();
     for (const keyRow of keys) {
       const status = getAPIKeyStatus(keyRow);
       if (status === "active") counts.active += 1;
       else if (status === "expired") counts.expired += 1;
+      else if (status === "disabled") counts.disabled += 1;
       else counts.quota_exhausted += 1;
 
       if (
@@ -492,6 +495,7 @@ export default function APIKeys() {
       if (statusFilter === "expired" && status !== "expired") return false;
       if (statusFilter === "quota_exhausted" && status !== "quota_exhausted")
         return false;
+      if (statusFilter === "disabled" && status !== "disabled") return false;
       if (statusFilter === "expiring_soon") {
         if (status !== "active" || !keyRow.expires_at) return false;
         const expiresAt = new Date(keyRow.expires_at).getTime();
@@ -781,6 +785,55 @@ export default function APIKeys() {
   };
 
   const [resettingIds, setResettingIds] = useState<Set<number>>(new Set());
+  const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
+
+  const handleToggleEnabled = async (keyRow: APIKeyRow) => {
+    const nextEnabled = getAPIKeyStatus(keyRow) === "disabled";
+    if (!nextEnabled) {
+      const confirmed = await confirm({
+        title: t("apiKeys.disableTitle"),
+        description: t("apiKeys.disableDesc"),
+        confirmText: t("apiKeys.disableConfirm"),
+        tone: "destructive",
+        confirmVariant: "destructive",
+      });
+      if (!confirmed) return;
+    }
+
+    setTogglingIds((prev) => new Set(prev).add(keyRow.id));
+    try {
+      await api.updateAPIKey(keyRow.id, { enabled: nextEnabled });
+      setData((current) => ({
+        ...current,
+        keys: current.keys.map((item) =>
+          item.id === keyRow.id
+            ? {
+                ...item,
+                enabled: nextEnabled,
+                status: nextEnabled ? undefined : "disabled",
+              }
+            : item,
+        ),
+      }));
+      showToast(
+        nextEnabled
+          ? t("apiKeys.enableSuccess")
+          : t("apiKeys.disableSuccess"),
+      );
+      void reloadSilently();
+    } catch (error) {
+      showToast(
+        `${t("apiKeys.toggleFailed")}: ${getErrorMessage(error)}`,
+        "error",
+      );
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(keyRow.id);
+        return next;
+      });
+    }
+  };
   const canResetAllQuotas = canStartAPIKeyBulkReset({
     keyCount: keys.length,
     resettingAll,
@@ -1305,6 +1358,11 @@ export default function APIKeys() {
                         t("apiKeys.status.quota_exhausted"),
                         statusCounts.quota_exhausted,
                       ],
+                      [
+                        "disabled",
+                        t("apiKeys.status.disabled"),
+                        statusCounts.disabled,
+                      ],
                     ] as const
                   ).map(([key, label, count]) => (
                     <button
@@ -1408,7 +1466,8 @@ export default function APIKeys() {
                         const isBusy =
                           resettingAll ||
                           deletingIds.has(keyRow.id) ||
-                          resettingIds.has(keyRow.id);
+                          resettingIds.has(keyRow.id) ||
+                          togglingIds.has(keyRow.id);
                         const displayKey = isVisible
                           ? keyRow.raw_key || keyRow.key
                           : keyRow.key;
@@ -1547,6 +1606,22 @@ export default function APIKeys() {
                                 variant="outline"
                                 size="sm"
                                 disabled={isBusy}
+                                onClick={() => void handleToggleEnabled(keyRow)}
+                                className="min-w-[6rem] flex-1"
+                              >
+                                {togglingIds.has(keyRow.id) ? (
+                                  <Loader2 className="size-3.5 animate-spin" />
+                                ) : (
+                                  <Power className="size-3.5" />
+                                )}
+                                {getAPIKeyStatus(keyRow) === "disabled"
+                                  ? t("apiKeys.enable")
+                                  : t("apiKeys.disable")}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={isBusy}
                                 onClick={() => startEditing(keyRow)}
                                 className="min-w-[6rem] flex-1"
                               >
@@ -1596,7 +1671,8 @@ export default function APIKeys() {
                             const isBusy =
                               resettingAll ||
                               deletingIds.has(keyRow.id) ||
-                              resettingIds.has(keyRow.id);
+                              resettingIds.has(keyRow.id) ||
+                              togglingIds.has(keyRow.id);
                             const displayKey = isVisible
                               ? keyRow.raw_key || keyRow.key
                               : keyRow.key;
@@ -1755,6 +1831,28 @@ export default function APIKeys() {
                                         <RotateCcw className="size-3.5" />
                                       )}
                                       {t("apiKeys.resetQuota")}
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        void handleToggleEnabled(keyRow)
+                                      }
+                                      title={
+                                        getAPIKeyStatus(keyRow) === "disabled"
+                                          ? t("apiKeys.enable")
+                                          : t("apiKeys.disable")
+                                      }
+                                    >
+                                      {togglingIds.has(keyRow.id) ? (
+                                        <Loader2 className="size-3.5 animate-spin" />
+                                      ) : (
+                                        <Power className="size-3.5" />
+                                      )}
+                                      {getAPIKeyStatus(keyRow) === "disabled"
+                                        ? t("apiKeys.enable")
+                                        : t("apiKeys.disable")}
                                     </Button>
                                     <Button
                                       variant="outline"
@@ -2847,6 +2945,9 @@ function toDateTimeLocalValue(value?: string | null) {
 }
 
 function getAPIKeyStatus(keyRow: APIKeyRow): APIKeyStatus {
+  if (keyRow.enabled === false || keyRow.status === "disabled") {
+    return "disabled";
+  }
   if (keyRow.status === "expired" || keyRow.status === "quota_exhausted") {
     return keyRow.status;
   }
@@ -2935,6 +3036,11 @@ function KeyStatusBadge({
     quota_exhausted: {
       dot: "bg-rose-500 animate-pulse",
       className: "border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+    },
+    disabled: {
+      dot: "bg-amber-500",
+      className:
+        "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300",
     },
   }[status];
 

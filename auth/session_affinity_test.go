@@ -220,8 +220,7 @@ func TestNextForContinuationPreservesBoundedAffinity(t *testing.T) {
 
 	store.sessionMu.Lock()
 	binding := store.sessionBindings["conversation-1"]
-	binding.boundAt = time.Now().Add(-defaultMaxAffinityDuration - time.Minute)
-	binding.requestCount = defaultMaxAffinityRequests
+	binding.lastUsedAt = time.Now().Add(-defaultAffinityIdleEscape - time.Minute)
 	store.sessionBindings["conversation-1"] = binding
 	store.sessionMu.Unlock()
 
@@ -237,11 +236,83 @@ func TestNextForContinuationPreservesBoundedAffinity(t *testing.T) {
 		t.Fatalf("continuation fell through to account %d when bound account was excluded", acc.DBID)
 	}
 
+	// 续链命中会刷新空闲时钟,重新置为空闲后普通请求才会逃逸换号。
+	store.sessionMu.Lock()
+	binding = store.sessionBindings["conversation-1"]
+	binding.lastUsedAt = time.Now().Add(-defaultAffinityIdleEscape - time.Minute)
+	store.sessionBindings["conversation-1"] = binding
+	store.sessionMu.Unlock()
+
 	acc, _ = store.NextForSessionWithFilter("conversation-1", 0, nil, nil)
 	if acc == nil || acc.DBID != fallback.DBID {
 		t.Fatalf("ordinary bounded request account = %#v, want fallback account %d", acc, fallback.DBID)
 	}
 	store.Release(acc)
+}
+
+func TestBoundedAffinityKeepsActiveBindingRegardlessOfAgeAndCount(t *testing.T) {
+	bound := &Account{DBID: 1, AccessToken: "tok-1"}
+	other := &Account{DBID: 2, AccessToken: "tok-2"}
+	other.SetSchedulerPriority(20)
+	store := &Store{
+		accounts:       []*Account{bound, other},
+		maxConcurrency: 2,
+	}
+	store.bindSessionAffinity("conversation-active", bound, "")
+
+	// 旧实现会在 50 次请求或绑定满 5 分钟后换号;活跃会话现在必须继续粘住。
+	store.sessionMu.Lock()
+	binding := store.sessionBindings["conversation-active"]
+	binding.boundAt = time.Now().Add(-time.Hour)
+	binding.requestCount = 10_000
+	binding.lastUsedAt = time.Now().Add(-30 * time.Second)
+	store.sessionBindings["conversation-active"] = binding
+	store.sessionMu.Unlock()
+
+	acc, _ := store.NextForSessionWithFilter("conversation-active", 0, nil, nil)
+	if acc == nil || acc.DBID != bound.DBID {
+		t.Fatalf("active bounded session account = %#v, want bound account %d", acc, bound.DBID)
+	}
+	store.Release(acc)
+
+	store.sessionMu.RLock()
+	updated := store.sessionBindings["conversation-active"]
+	store.sessionMu.RUnlock()
+	if !updated.lastUsedAt.After(binding.lastUsedAt) {
+		t.Fatal("sticky hit did not refresh lastUsedAt")
+	}
+}
+
+func TestBoundedAffinityEscapesAfterIdleGap(t *testing.T) {
+	bound := &Account{DBID: 1, AccessToken: "tok-1"}
+	other := &Account{DBID: 2, AccessToken: "tok-2"}
+	other.SetSchedulerPriority(20)
+	store := &Store{
+		accounts:       []*Account{bound, other},
+		maxConcurrency: 2,
+	}
+	store.bindSessionAffinity("conversation-idle", bound, "")
+
+	store.sessionMu.Lock()
+	binding := store.sessionBindings["conversation-idle"]
+	binding.lastUsedAt = time.Now().Add(-defaultAffinityIdleEscape - time.Minute)
+	store.sessionBindings["conversation-idle"] = binding
+	store.sessionMu.Unlock()
+
+	acc, _ := store.NextForSessionWithFilter("conversation-idle", 0, nil, nil)
+	if acc == nil {
+		t.Fatal("expected an account after idle escape")
+	}
+	defer store.Release(acc)
+	if acc.DBID != other.DBID {
+		t.Fatalf("idle escape account = %d, want re-picked account %d", acc.DBID, other.DBID)
+	}
+	store.sessionMu.RLock()
+	_, stillBound := store.sessionBindings["conversation-idle"]
+	store.sessionMu.RUnlock()
+	if stillBound {
+		t.Fatal("idle escape left the stale binding in place")
+	}
 }
 
 func TestNextForSessionFallsBackWhenBoundAccountExcluded(t *testing.T) {

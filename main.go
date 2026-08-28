@@ -208,6 +208,19 @@ func main() {
 		log.Fatalf("加载响应缓存设置失败: %v", err)
 	}
 	responseCacheCancel()
+	antigravityOAuthCtx, antigravityOAuthCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if raw, err := db.LoadAntigravityOAuthConfig(antigravityOAuthCtx); err != nil {
+		log.Printf("加载 Antigravity OAuth client 设置失败(继续以环境变量为准): %v", err)
+	} else if parsed, parseErr := auth.ParseAntigravityOAuthSettings(raw); parseErr != nil {
+		log.Printf("Antigravity OAuth client 设置解析失败(继续以环境变量为准,请在管理页重新保存): %v", parseErr)
+	} else {
+		auth.SetConfiguredAntigravityOAuth(parsed)
+		if len(parsed.Clients) > 0 {
+			log.Printf("Antigravity OAuth client 设置已加载: %d 个 client", len(parsed.Clients))
+		}
+	}
+	antigravityOAuthCancel()
+
 	appliedResponseCache := proxy.GetResponseCacheAppliedConfig()
 	log.Printf(
 		"响应缓存设置已加载: generation=%d total=%d entry=%d reconstruct=%d",

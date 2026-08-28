@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codex2api/cache"
+	"github.com/codex2api/database"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,6 +34,13 @@ const (
 	responseCacheMaxPerItem = 200  // 单条缓存最大 raw items 数
 	responseCacheMaxMarkers = 2000
 	responseCleanupInterval = 2 * time.Minute
+
+	// on_demand 写入策略下，owner 发过 previous_response_id 后保持写入资格的
+	// 滑动窗口。续链客户端逐轮续链（间隔秒级），1 小时足以覆盖会话间隙；
+	// 窗口过后闸门重新关闭，该 owner 的下一次续链会先未命中一次（与缓存
+	// TTL 过期后的行为一致），随后恢复写入。
+	responseCacheChainOwnerTTL  = time.Hour
+	responseCacheMaxChainOwners = 4096
 )
 
 // responseCacheOwner 生成响应上下文缓存的归属命名空间。
@@ -67,6 +75,7 @@ type responseCacheConfig struct {
 	maxEntries          int
 	ttl                 time.Duration
 	maxItems            int
+	writePolicy         string
 }
 
 func defaultResponseCacheConfig() responseCacheConfig {
@@ -77,6 +86,7 @@ func defaultResponseCacheConfig() responseCacheConfig {
 		maxEntries:          responseCacheMaxItems,
 		ttl:                 responseCacheTTL,
 		maxItems:            responseCacheMaxPerItem,
+		writePolicy:         database.DefaultResponseCacheWritePolicy,
 	}
 }
 
@@ -103,6 +113,10 @@ type ResponseCacheStats struct {
 	OversizeBypasses       uint64
 	OversizeRejections     uint64
 	KnownUnavailableErrors uint64
+	// SkippedWrites 是 on_demand 写入策略下因 owner 未续链而跳过的写入次数
+	// （本地与 Redis 一并跳过）；ChainOwners 是当前处于写入资格窗口内的 owner 数。
+	SkippedWrites uint64
+	ChainOwners   int
 }
 
 type responseCacheState struct {
@@ -111,12 +125,22 @@ type responseCacheState struct {
 	lru          *list.List
 	markers      map[string]*responseCacheMarker
 	markerLRU    *list.List
+	chainOwners  map[string]*responseCacheChainOwner
+	chainLRU     *list.List
 	config       responseCacheConfig
 	generation   int64
 	stats        ResponseCacheStats
 	runtimeCache cache.TokenCache
 	lastSyncAt   time.Time
 	lastSyncErr  string
+}
+
+// responseCacheChainOwner 记录某 owner 最近一次发起 previous_response_id 续链
+// 的到期时间，是 on_demand 写入策略的准入依据。
+type responseCacheChainOwner struct {
+	owner     string
+	expiresAt time.Time
+	element   *list.Element
 }
 
 type responseCacheLookupKind uint8
@@ -166,6 +190,8 @@ func init() {
 	respCache.lru = list.New()
 	respCache.markers = make(map[string]*responseCacheMarker)
 	respCache.markerLRU = list.New()
+	respCache.chainOwners = make(map[string]*responseCacheChainOwner)
+	respCache.chainLRU = list.New()
 	respCache.config = defaultResponseCacheConfig()
 	go respCacheCleanupLoop()
 }
@@ -195,6 +221,8 @@ func resetResponseCacheStateForTest(config responseCacheConfig) {
 	respCache.lru = list.New()
 	respCache.markers = make(map[string]*responseCacheMarker)
 	respCache.markerLRU = list.New()
+	respCache.chainOwners = make(map[string]*responseCacheChainOwner)
+	respCache.chainLRU = list.New()
 	respCache.config = config
 	respCache.generation = 0
 	respCache.stats = ResponseCacheStats{}
@@ -213,8 +241,68 @@ func configureResponseCacheForTest(config responseCacheConfig) {
 	respCache.mu.Unlock()
 }
 
-// setResponseCache 存储响应上下文（按 owner 命名空间隔离）
+// markResponseCacheChainOwnerLocked 把 owner 标记为"近期续链者"，续期滑动窗口。
+// 容量满时按 LRU 逐出最久未续链的 owner。
+func markResponseCacheChainOwnerLocked(owner string) {
+	if owner == "" {
+		owner = "anon"
+	}
+	expiresAt := time.Now().Add(responseCacheChainOwnerTTL)
+	if existing := respCache.chainOwners[owner]; existing != nil {
+		existing.expiresAt = expiresAt
+		respCache.chainLRU.MoveToFront(existing.element)
+		return
+	}
+	record := &responseCacheChainOwner{owner: owner, expiresAt: expiresAt}
+	record.element = respCache.chainLRU.PushFront(record)
+	respCache.chainOwners[owner] = record
+	for len(respCache.chainOwners) > responseCacheMaxChainOwners {
+		element := respCache.chainLRU.Back()
+		if element == nil {
+			break
+		}
+		oldest, _ := element.Value.(*responseCacheChainOwner)
+		removeResponseCacheChainOwnerLocked(oldest.owner)
+	}
+	respCache.stats.ChainOwners = len(respCache.chainOwners)
+}
+
+func removeResponseCacheChainOwnerLocked(owner string) {
+	record := respCache.chainOwners[owner]
+	if record == nil {
+		return
+	}
+	delete(respCache.chainOwners, owner)
+	if record.element != nil {
+		respCache.chainLRU.Remove(record.element)
+	}
+	respCache.stats.ChainOwners = len(respCache.chainOwners)
+}
+
+// responseCacheWriteAllowed 判断当前写入策略下 owner 是否有写入资格。
+// on_demand 下过期记录按不合格处理（惰性删除交给清理循环）。
+func responseCacheWriteAllowed(owner string) bool {
+	if owner == "" {
+		owner = "anon"
+	}
+	respCache.mu.RLock()
+	defer respCache.mu.RUnlock()
+	if respCache.config.writePolicy != database.ResponseCacheWritePolicyOnDemand {
+		return true
+	}
+	record := respCache.chainOwners[owner]
+	return record != nil && time.Now().Before(record.expiresAt)
+}
+
+// setResponseCache 存储响应上下文（按 owner 命名空间隔离）。
+// on_demand 写入策略下，未续链过的 owner 直接跳过（本地与 Redis 一并跳过）。
 func setResponseCache(owner, responseID string, items []json.RawMessage) {
+	if !responseCacheWriteAllowed(owner) {
+		respCache.mu.Lock()
+		respCache.stats.SkippedWrites++
+		respCache.mu.Unlock()
+		return
+	}
 	storeKey := responseCacheStoreKey(owner, responseID)
 	runtimeItems, _, _ := admitResponseCache(storeKey, items)
 
@@ -522,6 +610,9 @@ func getResponseCache(owner, responseID string) []json.RawMessage {
 func getResponseCacheResult(owner, responseID string) responseCacheLookupResult {
 	result := lookupResponseCacheResult(owner, responseID)
 	respCache.mu.Lock()
+	// 任何续链查询（无论命中与否）都赋予 owner 写入资格：这是 on_demand
+	// 写入策略的准入信号，命中率与之无关。
+	markResponseCacheChainOwnerLocked(owner)
 	if result.Kind == responseCacheLookupHit {
 		respCache.stats.Hits++
 		if result.Source == responseCacheSourceBackend {
@@ -690,6 +781,11 @@ func cleanupResponseCacheExpired(now time.Time) {
 	for key, marker := range respCache.markers {
 		if !now.Before(marker.expiresAt) {
 			respCache.removeMarkerLocked(key)
+		}
+	}
+	for owner, record := range respCache.chainOwners {
+		if !now.Before(record.expiresAt) {
+			removeResponseCacheChainOwnerLocked(owner)
 		}
 	}
 	respCache.mu.Unlock()
