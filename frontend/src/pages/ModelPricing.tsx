@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 
 import { api } from '@/api'
+import ChannelLogo from '../components/ChannelLogo'
 import ModelLogo from '../components/ModelLogo'
 import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
@@ -37,12 +38,26 @@ import {
 
 type Row = {
   model: string
+  channel?: string
   source: string
   pricing: ModelPricingOverride
   canonical_model?: string
   is_alias?: boolean
 }
 type SourceFilter = 'all' | 'custom' | 'synced' | 'default' | 'unsaved'
+type ChannelFilter = 'all' | 'codex' | 'grok' | 'antigravity' | 'claude'
+const CHANNEL_ORDER: Array<Exclude<ChannelFilter, 'all'>> = ['codex', 'grok', 'antigravity', 'claude']
+const CHANNEL_LABEL: Record<Exclude<ChannelFilter, 'all'>, string> = {
+  codex: 'Codex',
+  grok: 'Grok',
+  antigravity: 'Antigravity',
+  claude: 'Claude',
+}
+function rowChannel(r: Row): Exclude<ChannelFilter, 'all'> {
+  const c = (r.channel || '').toLowerCase()
+  if (c === 'grok' || c === 'antigravity' || c === 'claude') return c
+  return 'codex'
+}
 
 type FieldDef = {
   key: keyof ModelPricingOverride
@@ -439,6 +454,7 @@ export default function ModelPricing() {
   const [savingModel, setSavingModel] = useState('')
   const [query, setQuery] = useState('')
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>('all')
   const [syncOpen, setSyncOpen] = useState(false)
   const [expandedAdvanced, setExpandedAdvanced] = useState<Record<string, boolean>>({})
 
@@ -609,10 +625,19 @@ export default function ModelPricing() {
 
   const dirtyCount = counts.unsaved
 
+  // 各 provider(渠道)模型数量:仅当存在多于一个渠道时才显示渠道过滤条。
+  const channelCounts = useMemo(() => {
+    const m: Record<string, number> = { codex: 0, grok: 0, antigravity: 0, claude: 0 }
+    for (const r of rows) m[rowChannel(r)] += 1
+    return m
+  }, [rows])
+  const activeChannels = CHANNEL_ORDER.filter((c) => channelCounts[c] > 0)
+
   const filteredRows = useMemo(() => {
     const q = query.trim().toLowerCase()
     return rows
       .filter((r) => {
+        if (channelFilter !== 'all' && rowChannel(r) !== channelFilter) return false
         if (sourceFilter === 'unsaved') {
           if (!isDirty(drafts[r.model], r.pricing)) return false
         } else if (sourceFilter !== 'all' && r.source !== sourceFilter) {
@@ -623,7 +648,19 @@ export default function ModelPricing() {
       })
       .slice()
       .sort((a, b) => compareModelsNewestFirst(a.model, b.model))
-  }, [drafts, query, rows, sourceFilter])
+  }, [drafts, query, rows, sourceFilter, channelFilter])
+
+  // 当前视图下按 provider 分组(用于分组小标题)。
+  const groupedRows = useMemo(() => {
+    const groups = new Map<string, Row[]>()
+    for (const r of filteredRows) {
+      const c = rowChannel(r)
+      const arr = groups.get(c) || []
+      arr.push(r)
+      groups.set(c, arr)
+    }
+    return CHANNEL_ORDER.filter((c) => groups.has(c)).map((c) => ({ channel: c, rows: groups.get(c)! }))
+  }, [filteredRows])
 
   const sourceFilters: Array<{ id: SourceFilter; label: string; count: number }> = [
     { id: 'all', label: t('settings.pricing.filterAll'), count: counts.total },
@@ -889,6 +926,56 @@ export default function ModelPricing() {
                 </Button>
               </div>
 
+              {activeChannels.length > 1 ? (
+                <div
+                  className="flex max-w-full gap-0.5 overflow-x-auto rounded-xl bg-muted/50 p-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                  role="tablist"
+                  aria-label="provider"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={channelFilter === 'all'}
+                    onClick={() => setChannelFilter('all')}
+                    className={cn(
+                      'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-all',
+                      channelFilter === 'all' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {t('settings.pricing.filterAll')}
+                    <span className="tabular-nums rounded-md bg-background/60 px-1 py-px text-[10px] font-bold text-muted-foreground">
+                      {counts.total}
+                    </span>
+                  </button>
+                  {activeChannels.map((c) => {
+                    const active = channelFilter === c
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => setChannelFilter(c)}
+                        className={cn(
+                          'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-all',
+                          active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                        )}
+                      >
+                        <ChannelLogo channel={c} size={14} />
+                        {CHANNEL_LABEL[c]}
+                        <span
+                          className={cn(
+                            'tabular-nums rounded-md px-1 py-px text-[10px] font-bold',
+                            active ? 'bg-primary/10 text-primary' : 'bg-background/60 text-muted-foreground',
+                          )}
+                        >
+                          {channelCounts[c]}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
               <div
                 className="flex max-w-full gap-0.5 overflow-x-auto rounded-xl bg-muted/50 p-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 role="tablist"
@@ -937,7 +1024,7 @@ export default function ModelPricing() {
               isEmpty
               emptyTitle={t('settings.pricing.emptyTitle')}
               emptyDescription={
-                query || sourceFilter !== 'all'
+                query || sourceFilter !== 'all' || channelFilter !== 'all'
                   ? t('settings.pricing.emptyFiltered')
                   : t('settings.pricing.emptyDesc')
               }
@@ -960,7 +1047,16 @@ export default function ModelPricing() {
                 ) : null}
               </div>
 
-              {filteredRows.map((r) => {
+              {groupedRows.map((group) => (
+                <div key={group.channel} className="space-y-3.5">
+                  {channelFilter === 'all' && activeChannels.length > 1 ? (
+                    <div className="flex items-center gap-2 px-1 pt-1.5">
+                      <ChannelLogo channel={group.channel} size={16} />
+                      <span className="text-xs font-semibold text-foreground/80">{CHANNEL_LABEL[group.channel]}</span>
+                      <span className="tabular-nums text-[10px] font-medium text-muted-foreground">{group.rows.length}</span>
+                    </div>
+                  ) : null}
+                  {group.rows.map((r) => {
                 const draft = drafts[r.model] ?? {}
                 const dirty = isDirty(draft, r.pricing)
                 const advDirty = isAdvancedDirty(draft, r.pricing)
@@ -1170,7 +1266,9 @@ export default function ModelPricing() {
                     </div>
                   </article>
                 )
-              })}
+                  })}
+                </div>
+              ))}
             </div>
           )}
         </div>

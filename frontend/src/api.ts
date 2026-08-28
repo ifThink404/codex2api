@@ -1321,6 +1321,7 @@ export const api = {
     request<{
       models: Array<{
         model: string
+        channel?: string
         source: string
         pricing: ModelPricingOverride
         canonical_model?: string
