@@ -8321,6 +8321,11 @@ func (h *Handler) supportedModelIDs(ctx context.Context) []string {
 				}
 				declared = antigravityPublicModelsForAccount(account)
 			}
+			// Claude Code OAuth 账号:账号维度暴露 claude 模型,使其进入 /v1/models
+			// 且被 resolveAnthropicModel 视为已知模型(保持原生路由,不降级为 Codex)。
+			if account.IsClaudeOAuth() {
+				declared = DefaultClaudeModelIDsForAccount(account)
+			}
 			// 未声明 models 白名单的 Grok 账号：补默认 Grok 模型集，让 grok-4.5 等
 			// 出现在 /v1/models（否则下游客户端拉不到可用的 Grok 模型名）。
 			if len(declared) == 0 && account.IsGrokAPI() {

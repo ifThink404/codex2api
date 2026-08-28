@@ -39,6 +39,30 @@ const (
 // 与官方客户端一致)。
 const claudeCodeSystemBlockJSON = `{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}`
 
+// defaultClaudeModelIDs 是未设白名单时对外暴露的当前 Claude 模型集(别名形式,
+// Anthropic 侧会解析到带日期的具体版本)。模型演进时可在此维护,或用账号 Models
+// 白名单 / 定价页覆盖。
+var defaultClaudeModelIDs = []string{
+	"claude-opus-4-5",
+	"claude-sonnet-4-5",
+	"claude-haiku-4-5",
+}
+
+// DefaultClaudeModelIDsForAccount 返回该 Claude 账号对外可见的模型:优先账号 Models
+// 白名单,否则用当前默认集。用于 /v1/models 账号维度暴露。
+func DefaultClaudeModelIDsForAccount(account *auth.Account) []string {
+	if account == nil {
+		return nil
+	}
+	account.Mu().RLock()
+	whitelist := append([]string(nil), account.Models...)
+	account.Mu().RUnlock()
+	if len(whitelist) > 0 {
+		return whitelist
+	}
+	return append([]string(nil), defaultClaudeModelIDs...)
+}
+
 // claudeAccountSupportsModel 判断 Claude Code OAuth 账号能否服务指定模型。
 // 若账号设置了显式 Models 白名单,以白名单为准;否则默认放行 claude-* 模型。
 func claudeAccountSupportsModel(account *auth.Account, model string) bool {

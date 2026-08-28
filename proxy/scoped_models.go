@@ -27,6 +27,7 @@ const (
 	modelBackingGrok
 	modelBackingRelay
 	modelBackingAntigravity
+	modelBackingClaude
 )
 
 type scopedModelRecord struct {
@@ -76,6 +77,8 @@ func scopedModelOwner(record *scopedModelRecord) string {
 		return "openai"
 	case modelBackingAntigravity:
 		return "google"
+	case modelBackingClaude:
+		return "anthropic"
 	default:
 		return "codex2api"
 	}
@@ -219,6 +222,14 @@ func (h *Handler) scopedModelRecords(ctx context.Context, row *database.APIKeyRo
 			models := antigravityPublicModelsForAccount(account)
 			for _, id := range models {
 				addScopedModel(records, id, modelBackingAntigravity, time.Time{}, false)
+				addTarget(id)
+			}
+
+		case account.IsClaudeOAuth():
+			// Claude Code OAuth 账号:账号维度暴露 claude 模型(owner=anthropic),
+			// 供下游客户端发现;调度/透传由 claude 原生路径处理。
+			for _, id := range DefaultClaudeModelIDsForAccount(account) {
+				addScopedModel(records, id, modelBackingClaude, time.Time{}, false)
 				addTarget(id)
 			}
 

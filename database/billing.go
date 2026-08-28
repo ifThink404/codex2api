@@ -499,7 +499,11 @@ func claudeFamilyPricing(model string) *ModelPricing {
 	case strings.Contains(model, "sonnet"):
 		return &ModelPricing{InputPricePerMToken: 3.0, OutputPricePerMToken: 15.0}
 	case strings.Contains(model, "haiku"):
-		if strings.Contains(model, "3-5") || strings.Contains(model, "3.5") {
+		// 3.5 与 4.x Haiku 均为 $1/$5;仅初代 claude-3-haiku 为 $0.25/$1.25。
+		if strings.Contains(model, "3-5") || strings.Contains(model, "3.5") ||
+			strings.Contains(model, "4-5") || strings.Contains(model, "4.5") ||
+			strings.Contains(model, "4-6") || strings.Contains(model, "4.6") ||
+			strings.Contains(model, "4-7") || strings.Contains(model, "4.7") {
 			return &ModelPricing{InputPricePerMToken: 1.0, OutputPricePerMToken: 5.0}
 		}
 		return &ModelPricing{InputPricePerMToken: 0.25, OutputPricePerMToken: 1.25}
