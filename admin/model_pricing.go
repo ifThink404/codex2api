@@ -158,10 +158,38 @@ func (h *Handler) grokBillingModelIDs() []string {
 // modelPricingRow 是定价管理页每个规范模型的一行：当前生效价 + 来源。
 type modelPricingRow struct {
 	Model          string                        `json:"model"`
-	Source         string                        `json:"source"` // custom / synced / default
+	Channel        string                        `json:"channel"` // codex / grok / antigravity / claude —— 供前端按 provider 分组
+	Source         string                        `json:"source"`  // custom / synced / default
 	Pricing        database.ModelPricingOverride `json:"pricing"`
 	CanonicalModel string                        `json:"canonical_model,omitempty"`
 	IsAlias        bool                          `json:"is_alias,omitempty"`
+}
+
+// claudeChannelModels 返回定价页要展示的 Claude 模型:各 Claude 账号可见模型的并集。
+// 没有 Claude 账号时返回空,纯 Codex/其它部署的定价页不受影响。
+func (h *Handler) claudeChannelModels() []string {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	for _, account := range h.store.Accounts() {
+		if account == nil || !account.IsClaudeOAuth() {
+			continue
+		}
+		for _, model := range proxy.DefaultClaudeModelIDsForAccount(account) {
+			key := strings.ToLower(strings.TrimSpace(model))
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			models = append(models, model)
+		}
+	}
+	return models
 }
 
 func modelPricingManagementKeys(ids []string) []string {
@@ -210,26 +238,32 @@ func (h *Handler) ListModelPricing(c *gin.Context) {
 	}
 	grokKeys := dedup(h.grokBillingModelIDs())
 	antigravityKeys := dedup(h.antigravityChannelModels())
+	claudeKeys := dedup(h.claudeChannelModels())
 
-	// 新版本在前（gpt-5.6 > gpt-5.5 > gpt-5.4 …），避免字典序把旧模型顶到列表顶部。
-	// Grok 单独排序并整体排在 Codex 之后，避免两家版本号交叉穿插。
+	// 每个渠道内按新版本在前排序；渠道之间整体拼接,避免版本号交叉穿插。
 	sortModelKeysNewestFirst(keys)
 	sortModelKeysNewestFirst(grokKeys)
 	sortModelKeysNewestFirst(antigravityKeys)
-	keys = append(keys, grokKeys...)
-	keys = append(keys, antigravityKeys...)
+	sortModelKeysNewestFirst(claudeKeys)
 
-	rows := make([]modelPricingRow, 0, len(keys))
-	for _, key := range keys {
-		canonicalModel := database.PricingAliasTarget(key)
-		rows = append(rows, modelPricingRow{
-			Model:          key,
-			Source:         database.ModelPricingSourceFor(key),
-			Pricing:        database.ModelPricingOverrideFromPricing(database.GetModelPricing(key), database.ModelPricingSourceFor(key)),
-			CanonicalModel: canonicalModel,
-			IsAlias:        canonicalModel != "",
-		})
+	rows := make([]modelPricingRow, 0, len(keys)+len(grokKeys)+len(antigravityKeys)+len(claudeKeys))
+	appendRows := func(modelKeys []string, channel string) {
+		for _, key := range modelKeys {
+			canonicalModel := database.PricingAliasTarget(key)
+			rows = append(rows, modelPricingRow{
+				Model:          key,
+				Channel:        channel,
+				Source:         database.ModelPricingSourceFor(key),
+				Pricing:        database.ModelPricingOverrideFromPricing(database.GetModelPricing(key), database.ModelPricingSourceFor(key)),
+				CanonicalModel: canonicalModel,
+				IsAlias:        canonicalModel != "",
+			})
+		}
 	}
+	appendRows(keys, database.UpstreamChannelCodex)
+	appendRows(grokKeys, database.UpstreamChannelGrok)
+	appendRows(antigravityKeys, database.UpstreamChannelAntigravity)
+	appendRows(claudeKeys, database.UpstreamChannelClaude)
 
 	syncURL := ""
 	if s, err := h.db.GetSystemSettings(ctx); err == nil && s != nil {
