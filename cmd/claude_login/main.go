@@ -108,6 +108,7 @@ func runExchange(sessionPath, rawCode, proxy, outPath string) {
 	td, err := client.ExchangeCode(ctx, code, state, session.Verifier)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "换取 token 失败: %v\n", err)
+		diagnoseClaudeLoginError(err)
 		os.Exit(1)
 	}
 	fmt.Println(">> 登录成功！账号身份：")
@@ -172,6 +173,27 @@ func extractCode(input string) (code, stateOverride string) {
 	}
 	// 裸串：交给 ExchangeCode 自行按 # 拆分 state。
 	return input, ""
+}
+
+// diagnoseClaudeLoginError 按报错内容给出可能原因,便于快速定位。
+func diagnoseClaudeLoginError(err error) {
+	msg := strings.ToLower(err.Error())
+	fmt.Fprintln(os.Stderr, "\n—— 诊断提示 ——")
+	switch {
+	case strings.Contains(msg, "cloudflare") || strings.Contains(msg, "just a moment") || strings.Contains(msg, "<html") || strings.Contains(msg, "attention required"):
+		fmt.Fprintln(os.Stderr, "疑似被 Cloudflare 拦截。请改用 -proxy 走一个干净的住宅/机场代理重试,例如:")
+		fmt.Fprintln(os.Stderr, "  go run ./cmd/claude_login -code \"<回调URL>\" -proxy http://127.0.0.1:7890")
+	case strings.Contains(msg, "invalid_grant") || strings.Contains(msg, "code") && strings.Contains(msg, "expired"):
+		fmt.Fprintln(os.Stderr, "授权码无效或已过期(常见:重复运行了第一步导致 session/verifier 与 code 不匹配,或 code 用过一次)。")
+		fmt.Fprintln(os.Stderr, "请重新执行第一步 `go run ./cmd/claude_login` 生成新 URL,授权后立刻用新 code 执行第二步。")
+	case strings.Contains(msg, "invalid_client") || strings.Contains(msg, "unauthorized_client") || strings.Contains(msg, "redirect_uri"):
+		fmt.Fprintln(os.Stderr, "client_id / redirect_uri 被拒。若确认参数无误,可能是 Anthropic 侧调整,请反馈完整报错。")
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") || strings.Contains(msg, "no such host") || strings.Contains(msg, "connection refused") || strings.Contains(msg, "tls"):
+		fmt.Fprintln(os.Stderr, "网络/TLS 层失败。请检查能否直连 platform.claude.com,或加 -proxy 走代理重试。")
+	default:
+		fmt.Fprintln(os.Stderr, "未能自动归类。请把上面这行完整报错发给我以便定位。")
+	}
+	fmt.Fprintln(os.Stderr, "————————————")
 }
 
 func safePrefix(s string, n int) string {

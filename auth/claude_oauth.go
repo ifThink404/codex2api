@@ -120,20 +120,77 @@ type claudeAuthCodeExchangeRequest struct {
 }
 
 // ClaudeAuth 封装 Claude OAuth 登录/刷新所需的 HTTP 客户端。
-// 通过 uTLS 指纹客户端出站，规避 Anthropic 域名上的 Cloudflare 指纹拦截。
+//
+// 采用主/备双客户端 + 自动回退:
+//   - primary:uTLS 浏览器指纹客户端,规避 Anthropic 域名上的 Cloudflare 指纹拦截;
+//   - fallback:标准 http 客户端(ALPN 自动协商 h1/h2,兼容性更好)。
+// 当 primary 出现传输错误或被判定为挑战(403)时,自动改用 fallback 重试。这样无论
+// 拦截来自指纹、强制 h2 还是网络层,都能提高登录/刷新成功率。
 type ClaudeAuth struct {
-	httpClient *http.Client
+	primary  *http.Client
+	fallback *http.Client
 }
 
 // NewClaudeAuth 创建一个 Claude OAuth 客户端。proxyURL 为空时走直连。
 func NewClaudeAuth(proxyURL string) *ClaudeAuth {
-	client := buildUTLSHTTPClient(strings.TrimSpace(proxyURL))
-	if client == nil {
-		client = &http.Client{Timeout: claudeOAuthHTTPTimeout}
-	} else if client.Timeout == 0 {
-		client.Timeout = claudeOAuthHTTPTimeout
+	proxyURL = strings.TrimSpace(proxyURL)
+	primary := buildUTLSHTTPClient(proxyURL)
+	if primary == nil {
+		primary = buildPlainClaudeOAuthClient(proxyURL)
+	} else if primary.Timeout == 0 {
+		primary.Timeout = claudeOAuthHTTPTimeout
 	}
-	return &ClaudeAuth{httpClient: client}
+	return &ClaudeAuth{primary: primary, fallback: buildPlainClaudeOAuthClient(proxyURL)}
+}
+
+// buildPlainClaudeOAuthClient 构建标准(非 uTLS)代理感知 HTTP 客户端,用作回退。
+func buildPlainClaudeOAuthClient(proxyURL string) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.TrimSpace(proxyURL) != "" {
+		_ = ConfigureTransportProxy(tr, proxyURL, nil)
+	}
+	return &http.Client{Transport: tr, Timeout: claudeOAuthHTTPTimeout}
+}
+
+// doWithFallback 用 primary 发送请求;传输错误或 403 挑战时,用 fallback 以全新请求
+// 重试。bodyBytes 为请求体(GET 传 nil);decorate 用于附加 Authorization 等额外头。
+func (o *ClaudeAuth) doWithFallback(ctx context.Context, method, url string, bodyBytes []byte, decorate func(*http.Request)) (*http.Response, error) {
+	build := func() (*http.Request, error) {
+		var body io.Reader
+		if bodyBytes != nil {
+			body = bytes.NewReader(bodyBytes)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, url, body)
+		if err != nil {
+			return nil, err
+		}
+		applyClaudeOAuthAxiosHeaders(req)
+		if decorate != nil {
+			decorate(req)
+		}
+		return req, nil
+	}
+
+	req, err := build()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := o.primary.Do(req)
+	if err == nil && resp.StatusCode != http.StatusForbidden {
+		return resp, nil
+	}
+	// primary 传输失败或被 403 挑战 → 用标准客户端重试。
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	retryReq, buildErr := build()
+	if buildErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, buildErr
+	}
+	return o.fallback.Do(retryReq)
 }
 
 // GenerateClaudePKCE 生成一对 PKCE 校验码（S256）。
@@ -337,14 +394,9 @@ func (o *ClaudeAuth) FetchProfile(ctx context.Context, accessToken string) (*cla
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ClaudeOAuthProfileURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建 profile 请求失败: %w", err)
-	}
-	applyClaudeOAuthAxiosHeaders(req)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := o.httpClient.Do(req)
+	resp, err := o.doWithFallback(ctx, http.MethodGet, ClaudeOAuthProfileURL, nil, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("profile 请求失败: %w", err)
 	}
@@ -369,13 +421,7 @@ func (o *ClaudeAuth) FetchProfile(ctx context.Context, accessToken string) (*cla
 
 // doClaudeOAuthPost 发送一个 axios 伪装的 OAuth POST，返回解码后的响应体与状态码。
 func (o *ClaudeAuth) doClaudeOAuthPost(ctx context.Context, endpoint string, jsonBody []byte) ([]byte, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, 0, fmt.Errorf("创建 OAuth 请求失败: %w", err)
-	}
-	applyClaudeOAuthAxiosHeaders(req)
-
-	resp, err := o.httpClient.Do(req)
+	resp, err := o.doWithFallback(ctx, http.MethodPost, endpoint, jsonBody, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("OAuth 请求失败: %w", err)
 	}
@@ -398,8 +444,10 @@ func applyClaudeOAuthAxiosHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "axios/1.15.2")
 	req.Header.Set("Accept-Encoding", "gzip, compress, deflate, br")
-	req.Header.Set("Connection", "close")
-	req.Close = true
+	// 注意:本模块的 HTTP 客户端是 HTTP/2(buildUTLSHTTPClient 强制 h2)。HTTP/2
+	// 协议禁止 Connection / Keep-Alive 等逐跳头,设置它们会让 Go 的 http2 transport
+	// 直接以 "invalid Connection request header" 拒发请求(登录/刷新全失败)。因此这里
+	// 不设置 Connection: close 也不置 req.Close——h2 本就不携带这些头。
 }
 
 // readClaudeOAuthResponseBody 读取并按 Content-Encoding 解码响应体。
