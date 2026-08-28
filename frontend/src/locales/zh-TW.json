@@ -1111,6 +1111,8 @@
     "authUrlFailed": "產生授權連結失敗",
     "exchangeFailed": "換取 token 失敗",
     "deleteConfirm": "確認刪除該 Claude 帳號？",
-    "timezonePlaceholder": "時區,如 Asia/Shanghai(留空=不指定)"
+    "timezonePlaceholder": "時區,如 Asia/Shanghai(留空=不指定)",
+    "refreshModels": "重新整理模型",
+    "modelsRefreshed": "已更新可用模型（{{count}} 個）"
   }
 }

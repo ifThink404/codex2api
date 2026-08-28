@@ -5379,6 +5379,8 @@
     "authUrlFailed": "生成授权链接失败",
     "exchangeFailed": "换取 token 失败",
     "deleteConfirm": "确认删除该 Claude 账号？",
-    "timezonePlaceholder": "时区,如 Asia/Shanghai(留空=不指定)"
+    "timezonePlaceholder": "时区,如 Asia/Shanghai(留空=不指定)",
+    "refreshModels": "刷新模型",
+    "modelsRefreshed": "已更新可用模型（{{count}} 个）"
   }
 }

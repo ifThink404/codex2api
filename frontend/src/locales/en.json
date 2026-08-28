@@ -5379,6 +5379,8 @@
     "authUrlFailed": "Failed to generate auth link",
     "exchangeFailed": "Token exchange failed",
     "deleteConfirm": "Delete this Claude account?",
-    "timezonePlaceholder": "Timezone, e.g. Asia/Shanghai (empty = none)"
+    "timezonePlaceholder": "Timezone, e.g. Asia/Shanghai (empty = none)",
+    "refreshModels": "Refresh models",
+    "modelsRefreshed": "Updated available models ({{count}})"
   }
 }

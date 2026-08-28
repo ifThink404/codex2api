@@ -748,6 +748,11 @@ export const api = {
       body: JSON.stringify(data),
       timeoutMs: 20_000,
     }),
+  refreshClaudeModels: (id: number) =>
+    request<{ message: string; models: string[]; count: number }>(`/accounts/${id}/claude/models`, {
+      method: 'POST',
+      timeoutMs: 30_000,
+    }),
   batchUpdateGrokModels: (data: BatchUpdateGrokModelsRequest) =>
     request<BatchUpdateGrokModelsResponse>('/accounts/grok/batch-models', {
       method: 'POST',
@@ -1344,12 +1349,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ url: url ?? '' }),
     }),
-	updateOfficialPricingSyncConfig: (config: Pick<OfficialPricingSyncConfig, 'enabled' | 'interval_minutes' | 'include_openai' | 'include_grok'>) =>
+	updateOfficialPricingSyncConfig: (config: Pick<OfficialPricingSyncConfig, 'enabled' | 'interval_minutes' | 'include_openai' | 'include_grok' | 'include_claude'>) =>
 		request<OfficialPricingSyncConfig>('/model-pricing/official-sync/config', {
 			method: 'PUT',
 			body: JSON.stringify(config),
 		}),
-	syncOfficialModelPricing: (sources: { include_openai: boolean; include_grok: boolean }) =>
+	syncOfficialModelPricing: (sources: { include_openai: boolean; include_grok: boolean; include_claude?: boolean }) =>
 		request<OfficialPricingSyncResult>('/model-pricing/official-sync', {
 			method: 'POST',
 			body: JSON.stringify(sources),

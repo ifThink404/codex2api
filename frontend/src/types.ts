@@ -2978,6 +2978,7 @@ export interface OfficialPricingSyncConfig {
 	interval_minutes: number
 	include_openai: boolean
 	include_grok: boolean
+	include_claude: boolean
 	last_attempt_at?: string
 	last_success_at?: string
 	last_error?: string

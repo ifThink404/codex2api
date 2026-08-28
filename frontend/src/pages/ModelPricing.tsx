@@ -450,6 +450,7 @@ export default function ModelPricing() {
     interval_minutes: 1440,
     include_openai: true,
     include_grok: true,
+    include_claude: true,
   })
   const [savingModel, setSavingModel] = useState('')
   const [query, setQuery] = useState('')
@@ -591,6 +592,7 @@ export default function ModelPricing() {
       const result = await api.syncOfficialModelPricing({
         include_openai: officialConfig.include_openai,
         include_grok: officialConfig.include_grok,
+        include_claude: officialConfig.include_claude,
       })
       showToast(t('settings.pricing.officialSyncDone', { applied: result.applied, skipped: result.skipped }))
       await load()
@@ -787,7 +789,7 @@ export default function ModelPricing() {
 									<a href={officialXAIUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">xAI <ArrowUpRight className="size-3" /></a>
 								</div>
 							</div>
-							<Button className="shrink-0" onClick={() => void syncOfficial()} disabled={officialSyncing || (!officialConfig.include_openai && !officialConfig.include_grok)}>
+							<Button className="shrink-0" onClick={() => void syncOfficial()} disabled={officialSyncing || (!officialConfig.include_openai && !officialConfig.include_grok && !officialConfig.include_claude)}>
 								{officialSyncing ? <Loader2 className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}
 								{officialSyncing ? t('settings.pricing.syncing') : t('settings.pricing.officialSyncNow')}
 							</Button>
@@ -800,6 +802,10 @@ export default function ModelPricing() {
 							<label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/80 px-3 py-2.5">
 								<span className="text-sm font-medium">xAI / Grok</span>
 								<Switch checked={officialConfig.include_grok} onCheckedChange={(checked) => setOfficialConfig((cfg) => ({ ...cfg, include_grok: checked }))} />
+							</label>
+							<label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/80 px-3 py-2.5">
+								<span className="inline-flex items-center gap-1.5 text-sm font-medium"><ChannelLogo channel="claude" size={14} />Anthropic / Claude</span>
+								<Switch checked={officialConfig.include_claude} onCheckedChange={(checked) => setOfficialConfig((cfg) => ({ ...cfg, include_claude: checked }))} />
 							</label>
 						</div>
 						<div className="mt-3 flex flex-col gap-3 rounded-lg border border-border bg-background/80 p-3 sm:flex-row sm:items-center">
@@ -821,7 +827,7 @@ export default function ModelPricing() {
 									onChange={(event) => setOfficialConfig((cfg) => ({ ...cfg, interval_minutes: Number(event.target.value) }))}
 								/>
 							</label>
-							<Button variant="outline" size="sm" onClick={() => void saveOfficialConfig()} disabled={officialSaving || (!officialConfig.include_openai && !officialConfig.include_grok)}>
+							<Button variant="outline" size="sm" onClick={() => void saveOfficialConfig()} disabled={officialSaving || (!officialConfig.include_openai && !officialConfig.include_grok && !officialConfig.include_claude)}>
 								{officialSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
 								{t('common.save')}
 							</Button>

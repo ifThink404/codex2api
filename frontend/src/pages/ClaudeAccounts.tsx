@@ -113,6 +113,19 @@ export default function ClaudeAccounts({
     [reload, showToast],
   );
 
+  const handleRefreshModels = useCallback(
+    async (acc: AccountRow) => {
+      try {
+        const res = await api.refreshClaudeModels(acc.id);
+        showToast(t("claude.modelsRefreshed", { count: res.count }));
+        void reload();
+      } catch (error) {
+        showToast(getErrorMessage(error), "error");
+      }
+    },
+    [reload, showToast, t],
+  );
+
   return (
     <div>
       <PageHeader
@@ -165,6 +178,13 @@ export default function ClaudeAccounts({
                   onClick={() => void handleRefresh(acc)}
                 >
                   {t("common.refresh")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void handleRefreshModels(acc)}
+                >
+                  {t("claude.refreshModels")}
                 </Button>
                 <Button
                   variant="ghost"
