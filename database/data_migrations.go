@@ -267,7 +267,7 @@ func (db *DB) migrateWorkspaceIdentityV3(ctx context.Context, tx *sql.Tx) error 
 			)
 			if workspaceID != "" && strings.EqualFold(tokenEmail, email) {
 				account.credentials["workspace_id"] = workspaceID
-				encoded, err := json.Marshal(account.credentials)
+				encoded, err := json.Marshal(encryptSensitiveCredentials(account.credentials))
 				if err != nil {
 					return err
 				}
