@@ -207,6 +207,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			last_reset_at TIMESTAMP NULL,
 			allowed_group_ids TEXT DEFAULT '[]',
 			expires_at TIMESTAMP NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE IF NOT EXISTS api_key_scope_counters (
@@ -253,6 +254,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					background_config TEXT DEFAULT '{}',
 					grok_config TEXT DEFAULT '{}',
 					claude_config TEXT DEFAULT '{}',
+					antigravity_oauth_config TEXT DEFAULT '{}',
+					subscription_upgrades_enabled INTEGER,
 					max_concurrency INTEGER DEFAULT 2,
 				global_rpm INTEGER DEFAULT 0,
 				test_model TEXT DEFAULT 'gpt-5.4',
@@ -343,6 +346,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					response_cache_local_max_bytes INTEGER NOT NULL DEFAULT 67108864,
 					response_cache_local_max_entry_bytes INTEGER NOT NULL DEFAULT 8388608,
 					response_cache_reconstruct_max_bytes INTEGER NOT NULL DEFAULT 67108864,
+					response_cache_write_policy TEXT NOT NULL DEFAULT 'always',
 					response_cache_config_generation INTEGER NOT NULL DEFAULT 1,
 					relay_model_cooldown_mode TEXT NOT NULL DEFAULT 'off',
 					relay_model_cooldown_seconds INTEGER NOT NULL DEFAULT 2,
@@ -554,6 +558,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"api_keys", "allowed_group_ids", "TEXT DEFAULT '[]'"},
 		{"api_keys", "limits", "TEXT DEFAULT '{}'"},
 		{"api_keys", "expires_at", "TIMESTAMP NULL"},
+		{"api_keys", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"account_groups", "description", "TEXT DEFAULT ''"},
 		{"account_groups", "color", "TEXT DEFAULT ''"},
 		{"account_groups", "sort_order", "INTEGER DEFAULT 0"},
@@ -567,6 +572,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "background_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "grok_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "claude_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "antigravity_oauth_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "subscription_upgrades_enabled", "INTEGER"},
 		{"system_settings", "test_content", "TEXT DEFAULT 'hi'"},
 		{"system_settings", "pg_max_conns", "INTEGER DEFAULT 50"},
 		{"system_settings", "redis_pool_size", "INTEGER DEFAULT 30"},
@@ -626,6 +633,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "response_cache_local_max_bytes", "INTEGER NOT NULL DEFAULT 67108864"},
 		{"system_settings", "response_cache_local_max_entry_bytes", "INTEGER NOT NULL DEFAULT 8388608"},
 		{"system_settings", "response_cache_reconstruct_max_bytes", "INTEGER NOT NULL DEFAULT 67108864"},
+		{"system_settings", "response_cache_write_policy", "TEXT NOT NULL DEFAULT 'always'"},
 		{"system_settings", "response_cache_config_generation", "INTEGER NOT NULL DEFAULT 1"},
 		{"system_settings", "relay_model_cooldown_mode", "TEXT NOT NULL DEFAULT 'off'"},
 		{"system_settings", "relay_model_cooldown_seconds", "INTEGER NOT NULL DEFAULT 2"},
@@ -803,6 +811,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 	}
 	if err := db.installSchedulerOutboxTriggers(ctx); err != nil {
 		return fmt.Errorf("install scheduler outbox triggers: %w", err)
+	}
+	if err := db.ensureSubscriptionUpgradeSchema(ctx); err != nil {
+		return err
 	}
 
 	return db.runDataMigrationsWithTimeout()

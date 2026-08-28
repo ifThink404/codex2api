@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.8.5 - 2026-08-27
+
+### Features
+
+- **Administrators can run guarded Plus-to-Pro subscription upgrades (PR #583 by @Cd1s, disabled by default).** Quote-first admin APIs enforce exact amount caps, keep a durable idempotency journal across the paid path, submit payment at most once per account, and expose reauthentication readiness before any money moves. Hardening on top of the contribution: the enable switch moves out of the startup environment into the admin settings page (a stored value is authoritative and the environment can no longer re-enable it), the per-account lock is taken before quote resolution so two requests sharing a quote but carrying different idempotency keys cannot double-pay, post-payment journal writes and verification detach from the request context so a client disconnect cannot strand the one record that matters, only 401 counts as credential invalidation (a Cloudflare 403 falls to `verification_pending` instead of a misleading "payment accepted, credentials revoked"), a partial unique index on submitting rows guards against cross-instance double submission, the minor-unit factor is derived from the currency so zero-decimal currencies such as JPY are not displayed 100x off, and a strictly read-only `/verify` reconciliation endpoint releases operations stranded mid-submission without ever repeating the paid POST.
+- **Antigravity OAuth clients are managed from the system settings page.** Clients persist in a dedicated settings column read and written by its own small UPDATE, so an unrelated settings save can never clobber them. Environment-provided clients stay read-only and win on key collision, the built-in official Desktop client remains the fallback when nothing is configured, client secrets are never echoed back to the browser, and submitting an empty secret keeps the stored one.
+
+### Fixes
+
+- **Active sessions no longer rotate accounts mid-conversation, preserving the upstream prompt cache (#584, reported by @a1073185067).** Bounded session affinity forced a re-pick after 50 requests or 5 minutes since first bind — and the clock never reset while the conversation stayed active — so long agent tasks lost their bound account mid-task and every follow-up message after a completed task landed on a different account, re-ingesting the entire context at the uncached rate. Rotation now happens only when the bound account turns unhealthy or the session has been idle past `CODEX_SESSION_AFFINITY_IDLE_ESCAPE` (default 10 minutes), by which point the upstream prompt cache has already expired and rotation is free. Sticky and continuation hits refresh the idle clock, and capacity-spillover borrows are logged since they imply an expected cache miss for that single request.
+
 ## v2.8.4 - 2026-08-27
 
 ### Features

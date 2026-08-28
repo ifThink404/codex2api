@@ -13,33 +13,71 @@ import (
 	"time"
 )
 
-func TestAntigravityOAuthClientsRequireExplicitConfiguration(t *testing.T) {
+// resetConfiguredAntigravityOAuth 清空系统设置侧的 OAuth client 配置并在测试
+// 结束时保持清空，避免包级 atomic 状态串到其他用例。
+func resetConfiguredAntigravityOAuth(t *testing.T) {
+	t.Helper()
+	SetConfiguredAntigravityOAuth(AntigravityOAuthSettings{})
+	t.Cleanup(func() { SetConfiguredAntigravityOAuth(AntigravityOAuthSettings{}) })
+}
+
+func TestAntigravityOAuthClientsFallBackToOfficialDesktopClient(t *testing.T) {
 	t.Setenv(antigravityOAuthClientsEnv, "")
 	t.Setenv(antigravityActiveOAuthClientEnv, "")
-	clients, active := antigravityOAuthClients()
-	if len(clients) != 0 || active != "" {
-		t.Fatalf("clients/active = %#v/%q, want empty explicit configuration", clients, active)
+	resetConfiguredAntigravityOAuth(t)
+	clients, active := effectiveAntigravityOAuthClients()
+	if len(clients) != 1 || active != AntigravityDefaultOAuthClientKey {
+		t.Fatalf("clients/active = %#v/%q, want built-in official", clients, active)
+	}
+	if clients[0].ClientID != AntigravityDefaultOAuthClientID || clients[0].ClientSecret != AntigravityDefaultOAuthClientSecret {
+		t.Fatalf("built-in client = %#v", clients[0])
+	}
+	if !UsingBuiltinAntigravityOAuth() {
+		t.Fatal("UsingBuiltinAntigravityOAuth() = false, want true when nothing is configured")
 	}
 	client := newAntigravityClient(http.DefaultClient, AntigravityEndpoints{})
-	_, _, err := client.BuildOAuthAuthorizationURL(
+	gotURL, info, err := client.BuildOAuthAuthorizationURL(
 		"http://127.0.0.1:43123/oauth-callback", "state-123", "challenge-456", "",
 	)
-	if err == nil || !strings.Contains(err.Error(), antigravityOAuthClientsEnv) {
-		t.Fatalf("missing configuration error = %v", err)
+	if err != nil {
+		t.Fatalf("BuildOAuthAuthorizationURL() error: %v", err)
+	}
+	if info.Key != AntigravityDefaultOAuthClientKey || info.ClientID != AntigravityDefaultOAuthClientID {
+		t.Fatalf("info = %+v", info)
+	}
+	if !strings.Contains(gotURL, "client_id="+url.QueryEscape(AntigravityDefaultOAuthClientID)) {
+		t.Fatalf("authorization URL missing official client_id: %s", gotURL)
 	}
 }
 
 func TestAntigravityOAuthClientsLoadConfiguredEntriesAndDefaultToFirst(t *testing.T) {
 	t.Setenv(antigravityOAuthClientsEnv, "primary|client-id|client-secret;backup|backup-id|backup-secret")
 	t.Setenv(antigravityActiveOAuthClientEnv, "")
-	clients, active := antigravityOAuthClients()
+	resetConfiguredAntigravityOAuth(t)
+	clients, active := effectiveAntigravityOAuthClients()
 	if len(clients) != 2 || active != "primary" {
 		t.Fatalf("clients/active = %#v/%q", clients, active)
 	}
 	t.Setenv(antigravityActiveOAuthClientEnv, "BACKUP")
-	_, active = antigravityOAuthClients()
+	_, active = effectiveAntigravityOAuthClients()
 	if active != "backup" {
 		t.Fatalf("active = %q, want backup", active)
+	}
+}
+
+func TestAntigravityOAuthCandidatesAppendOfficialDesktopClient(t *testing.T) {
+	client := &AntigravityClient{
+		oauth: []antigravityOAuthClient{{Key: "custom", ClientID: "custom-id", ClientSecret: "custom-secret"}},
+	}
+	got := client.oauthCandidates(AntigravityCredential{RefreshToken: "rt"})
+	if len(got) != 2 || got[0].Key != "custom" || got[1].Key != AntigravityDefaultOAuthClientKey {
+		t.Fatalf("candidates = %#v", got)
+	}
+	// 已配置 official key 时不再重复追加内置条目。
+	client.oauth = append(client.oauth, builtinAntigravityOAuthClient())
+	got = client.oauthCandidates(AntigravityCredential{RefreshToken: "rt"})
+	if len(got) != 2 || got[1].ClientID != AntigravityDefaultOAuthClientID {
+		t.Fatalf("deduped candidates = %#v", got)
 	}
 }
 

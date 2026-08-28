@@ -7,7 +7,7 @@ import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { HealthResponse, ModelInfo, SiteBranding, SystemSettings } from '../types'
+import type { AntigravityOAuthClientSetting, HealthResponse, ModelInfo, SiteBranding, SystemSettings } from '../types'
 import { countPayloadRules } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
 import { DEFAULT_CLAUDE_MODEL_MAP } from '../lib/modelMapping'
@@ -128,6 +128,7 @@ const RESPONSE_CACHE_BUDGET_KEYS = [
   'response_cache_local_max_bytes',
   'response_cache_local_max_entry_bytes',
   'response_cache_reconstruct_max_bytes',
+  'response_cache_write_policy',
 ] as const satisfies ReadonlyArray<keyof SystemSettings>
 const DEFAULT_CODEX_UA_CONFIG: Required<CodexUserAgentConfig> = {
   raw_user_agent: '',
@@ -202,6 +203,7 @@ const normalizeResponseCacheSettings = (settings: SystemSettings): SystemSetting
   response_cache_reconstruct_max_bytes: Number.isFinite(settings.response_cache_reconstruct_max_bytes)
     ? settings.response_cache_reconstruct_max_bytes
     : DEFAULT_RESPONSE_CACHE_RECONSTRUCT_BYTES,
+  response_cache_write_policy: settings.response_cache_write_policy === 'on_demand' ? 'on_demand' : 'always',
   response_cache_config_generation: Number.isFinite(settings.response_cache_config_generation)
     ? settings.response_cache_config_generation
     : 0,
@@ -1377,6 +1379,10 @@ export default function Settings() {
     { label: t('settings.modelCooldownModeFixed'), value: 'fixed' },
     { label: t('settings.modelCooldownModeAdaptive'), value: 'adaptive' },
   ]
+  const responseCacheWritePolicyOptions = [
+    { label: t('settings.responseCache.writePolicyAlways'), value: 'always' },
+    { label: t('settings.responseCache.writePolicyOnDemand'), value: 'on_demand' },
+  ]
   const affinityModeOptions = [
     { label: t('settings.affinityModeBounded'), value: 'bounded' },
     { label: t('settings.affinityModeOff'), value: 'off' },
@@ -1468,6 +1474,8 @@ export default function Settings() {
     auto_clean_full_usage: false,
     proxy_pool_enabled: false,
     fast_scheduler_enabled: false,
+    subscription_upgrades_enabled: false,
+    subscription_upgrades_env_default: false,
     scheduler_engine: 'legacy',
     auto_reset_credits_enabled: false,
     auto_reset_credits_before_expiry_min: 60,
@@ -1529,6 +1537,7 @@ export default function Settings() {
     response_cache_local_max_bytes: DEFAULT_RESPONSE_CACHE_TOTAL_BYTES,
     response_cache_local_max_entry_bytes: DEFAULT_RESPONSE_CACHE_ENTRY_BYTES,
     response_cache_reconstruct_max_bytes: DEFAULT_RESPONSE_CACHE_RECONSTRUCT_BYTES,
+    response_cache_write_policy: 'always',
     response_cache_config_generation: 0,
     relay_model_cooldown_mode: 'off',
     relay_model_cooldown_seconds: 2,
@@ -1773,6 +1782,62 @@ export default function Settings() {
       [field]: value,
     } as Partial<SystemSettings>)
   }, [autoSaveSettingsPatch])
+
+  // ===== Antigravity OAuth client 配置(草稿态 + 显式保存;secret 不回显,留空 = 沿用已保存值) =====
+  const [agOAuthDraft, setAgOAuthDraft] = useState<{ rows: AntigravityOAuthClientSetting[]; activeKey: string } | null>(null)
+  const [agOAuthSaving, setAgOAuthSaving] = useState(false)
+  const agOAuthServer = useMemo(() => ({
+    rows: (settingsForm.antigravity_oauth_clients ?? []).map(client => ({ ...client, client_secret: '' })),
+    activeKey: settingsForm.antigravity_oauth_client_key ?? '',
+  }), [settingsForm.antigravity_oauth_clients, settingsForm.antigravity_oauth_client_key])
+  const agOAuth = agOAuthDraft ?? agOAuthServer
+  const agOAuthDirty = agOAuthDraft !== null
+  const updateAgOAuthRow = (index: number, patch: Partial<AntigravityOAuthClientSetting>) => {
+    setAgOAuthDraft({
+      ...agOAuth,
+      rows: agOAuth.rows.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    })
+  }
+  const removeAgOAuthRow = (index: number) => {
+    setAgOAuthDraft({ ...agOAuth, rows: agOAuth.rows.filter((_, i) => i !== index) })
+  }
+  const addAgOAuthRow = () => {
+    setAgOAuthDraft({
+      ...agOAuth,
+      rows: [...agOAuth.rows, { key: '', client_id: '', client_secret: '', has_secret: false }],
+    })
+  }
+  const saveAgOAuth = async () => {
+    setAgOAuthSaving(true)
+    try {
+      const activeKey = agOAuth.activeKey.trim().toLowerCase()
+      const updated = await api.updateSettings({
+        antigravity_oauth_clients: agOAuth.rows.map(row => ({
+          key: row.key.trim().toLowerCase(),
+          client_id: row.client_id.trim(),
+          client_secret: (row.client_secret ?? '').trim(),
+        })),
+        // 活跃 key 指向的条目被删掉时自动回落「第一个」,避免整次保存被后端校验拒绝。
+        antigravity_oauth_client_key: agOAuth.rows.some(row => row.key.trim().toLowerCase() === activeKey) ? activeKey : '',
+      })
+      commitSettingsForm({
+        ...settingsFormRef.current,
+        antigravity_oauth_clients: updated.antigravity_oauth_clients,
+        antigravity_oauth_client_key: updated.antigravity_oauth_client_key,
+        antigravity_oauth_env_clients: updated.antigravity_oauth_env_clients,
+        antigravity_oauth_client_key_env_override: updated.antigravity_oauth_client_key_env_override,
+        antigravity_oauth_active_key_effective: updated.antigravity_oauth_active_key_effective,
+        antigravity_oauth_using_builtin: updated.antigravity_oauth_using_builtin,
+        antigravity_oauth_builtin_client: updated.antigravity_oauth_builtin_client,
+      })
+      setAgOAuthDraft(null)
+      showToast(t('settings.antigravityOAuth.saved'), 'success')
+    } catch (error) {
+      showToast(`${t('settings.antigravityOAuth.saveFailed')}: ${getErrorMessage(error)}`, 'error')
+    } finally {
+      setAgOAuthSaving(false)
+    }
+  }
 
   const updateResponseCacheBudget = (
     field: keyof ResponseCacheBudgetMiB,
@@ -2120,6 +2185,7 @@ export default function Settings() {
         { id: 'settings-traffic', label: t('settings.nav.traffic'), icon: <Gauge className="size-4" /> },
         { id: 'settings-grok', label: t('settings.nav.grok'), icon: <ChannelLogo channel="grok" size={16} /> },
         { id: 'settings-claude', label: t('settings.nav.claude'), icon: <ChannelLogo channel="claude" size={16} /> },
+        { id: 'settings-antigravity', label: t('settings.nav.antigravity'), icon: <ChannelLogo channel="antigravity" size={16} /> },
         { id: 'settings-runtime', label: t('settings.nav.runtime'), icon: <Wrench className="size-4" /> },
         { id: 'settings-storage', label: t('settings.nav.storage'), icon: <ImageIcon className="size-4" /> },
         { id: 'settings-appearance', label: t('settings.nav.appearance'), icon: <Palette className="size-4" /> },
@@ -2729,6 +2795,30 @@ export default function Settings() {
             </SettingField>
           </SettingsCard>
 
+          <SettingsCard
+            title={t('settings.subscriptionUpgradesTitle')}
+            description={t('settings.subscriptionUpgradesDesc')}
+            icon={<ShieldAlert className="size-4" />}
+          >
+            <SettingsCollapsibleNote title={t('settings.subscriptionUpgradesWarningTitle')}>
+              {t('settings.subscriptionUpgradesWarningNote')}
+            </SettingsCollapsibleNote>
+            <SettingField
+              label={t('settings.subscriptionUpgradesEnabled')}
+              description={
+                settingsForm.subscription_upgrades_env_default
+                  ? t('settings.subscriptionUpgradesEnabledEnvDesc')
+                  : t('settings.subscriptionUpgradesEnabledDesc')
+              }
+              layout="switch"
+            >
+              <Switch
+                checked={Boolean(settingsForm.subscription_upgrades_enabled)}
+                onCheckedChange={(checked) => autoSaveBooleanField('subscription_upgrades_enabled', checked)}
+              />
+            </SettingField>
+          </SettingsCard>
+
           <SettingsCard title={t('settings.schedulingStrategy')} icon={<Layers className="size-4" />}>
             <div className="grid auto-rows-min items-start gap-4 lg:grid-cols-2">
               <div className="h-fit space-y-3 rounded-xl border border-border/60 bg-muted/10 p-3.5">
@@ -3126,6 +3216,116 @@ export default function Settings() {
             <ClaudeCodeSettingsCard />
           </SettingsSection>
 
+          <SettingsSection id="settings-antigravity" title={t('settings.nav.antigravity')} description={t('settings.nav.antigravityDesc')} icon={<ChannelLogo channel="antigravity" size={16} />}>
+          <SettingsCard
+            title={t('settings.antigravityOAuth.title')}
+            description={t('settings.antigravityOAuth.description')}
+            icon={<Shield className="size-4" />}
+          >
+            <div className="space-y-4">
+              {(settingsForm.antigravity_oauth_env_clients?.length ?? 0) > 0 && (
+                <div className="space-y-1.5 rounded-md border border-dashed border-border/70 p-3 text-xs text-muted-foreground">
+                  <div>{t('settings.antigravityOAuth.envClientsHint')}</div>
+                  {settingsForm.antigravity_oauth_env_clients?.map(client => (
+                    <div key={client.key} className="flex items-center gap-2 font-mono">
+                      <Badge variant="outline" className="text-[11px]">{client.key}</Badge>
+                      <span className="truncate">{client.client_id}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {settingsForm.antigravity_oauth_using_builtin && settingsForm.antigravity_oauth_builtin_client && (
+                <div className="space-y-1.5 rounded-md border border-dashed border-border/70 p-3 text-xs text-muted-foreground">
+                  <div>{t('settings.antigravityOAuth.builtinHint')}</div>
+                  <div className="flex items-center gap-2 font-mono">
+                    <Badge variant="outline" className="text-[11px]">{settingsForm.antigravity_oauth_builtin_client.key}</Badge>
+                    <span className="truncate">{settingsForm.antigravity_oauth_builtin_client.client_id}</span>
+                  </div>
+                </div>
+              )}
+              {agOAuth.rows.length === 0 ? (
+                <div className="text-sm text-muted-foreground">{t('settings.antigravityOAuth.empty')}</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="hidden gap-2 text-xs text-muted-foreground sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,2fr)_2rem]">
+                    <span>{t('settings.antigravityOAuth.key')}</span>
+                    <span>{t('settings.antigravityOAuth.clientId')}</span>
+                    <span>{t('settings.antigravityOAuth.clientSecret')}</span>
+                    <span />
+                  </div>
+                  {agOAuth.rows.map((row, index) => (
+                    <div key={index} className="grid items-center gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,2fr)_2rem]">
+                      <Input
+                        value={row.key}
+                        placeholder={t('settings.antigravityOAuth.keyPlaceholder')}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => updateAgOAuthRow(index, { key: e.target.value })}
+                      />
+                      <Input
+                        value={row.client_id}
+                        placeholder={t('settings.antigravityOAuth.clientIdPlaceholder')}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => updateAgOAuthRow(index, { client_id: e.target.value })}
+                      />
+                      <Input
+                        type="password"
+                        autoComplete="new-password"
+                        value={row.client_secret ?? ''}
+                        placeholder={row.has_secret ? t('settings.antigravityOAuth.secretKeepPlaceholder') : t('settings.antigravityOAuth.secretRequiredPlaceholder')}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => updateAgOAuthRow(index, { client_secret: e.target.value })}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t('common.delete')}
+                        onClick={() => removeAgOAuthRow(index)}
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button variant="outline" size="sm" onClick={addAgOAuthRow}>
+                {t('settings.antigravityOAuth.addClient')}
+              </Button>
+              <div className={SETTINGS_FIELD_GRID_3}>
+                <SettingField
+                  label={t('settings.antigravityOAuth.activeKey')}
+                  description={
+                    settingsForm.antigravity_oauth_client_key_env_override
+                      ? t('settings.antigravityOAuth.activeKeyEnvOverride', {
+                          value: settingsForm.antigravity_oauth_active_key_effective || '',
+                        })
+                      : t('settings.antigravityOAuth.activeKeyDesc')
+                  }
+                >
+                  <Select
+                    value={agOAuth.activeKey}
+                    disabled={settingsForm.antigravity_oauth_client_key_env_override}
+                    onValueChange={(value: string) => setAgOAuthDraft({ ...agOAuth, activeKey: value })}
+                    options={[
+                      { label: t('settings.antigravityOAuth.activeKeyAuto'), value: '' },
+                      ...agOAuth.rows
+                        .map(row => row.key.trim().toLowerCase())
+                        .filter(key => key !== '')
+                        .map(key => ({ label: key, value: key })),
+                    ]}
+                  />
+                </SettingField>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={() => void saveAgOAuth()} disabled={!agOAuthDirty || agOAuthSaving}>
+                  {agOAuthSaving ? t('common.saving') : t('common.save')}
+                </Button>
+                {agOAuthDirty && !agOAuthSaving && (
+                  <Button variant="ghost" size="sm" onClick={() => setAgOAuthDraft(null)}>
+                    {t('common.cancel')}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </SettingsCard>
+          </SettingsSection>
+
           <SettingsSection id="settings-runtime" title={t('settings.nav.runtime')} description={t('settings.nav.runtimeDesc')} icon={<Wrench className="size-4" />}>
           <SettingsCard
             title={t('settings.responseCache.title')}
@@ -3189,6 +3389,17 @@ export default function Settings() {
                   {responseCacheValidationMessage}
                 </p>
               ) : null}
+
+              <SettingField
+                label={t('settings.responseCache.writePolicy')}
+                description={t('settings.responseCache.writePolicyDesc')}
+              >
+                <SegmentedPillGroup
+                  value={settingsForm.response_cache_write_policy}
+                  onChange={(value) => autoSaveStringField('response_cache_write_policy', value)}
+                  options={responseCacheWritePolicyOptions}
+                />
+              </SettingField>
 
               {/* 可视化预算分配比例条 (Memory Allocation Bar) */}
               <div className="rounded-xl border border-border/70 bg-muted/20 p-3.5 space-y-2.5">

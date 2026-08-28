@@ -48,6 +48,8 @@ export type CodexClientMetadataMode = 'auto' | 'always' | 'off'
 export type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
 export type ModelCooldownMode = 'off' | 'fixed' | 'adaptive'
 
+export type ResponseCacheWritePolicy = 'always' | 'on_demand'
+
 export interface StatsChannelCounts {
   total: number
   available: number
@@ -1425,12 +1427,14 @@ export interface OpsOverviewResponse {
       local_max_bytes: number
       local_max_entry_bytes: number
       reconstruct_max_bytes: number
+      write_policy?: ResponseCacheWritePolicy
     }
     applied_config: {
       generation: number
       local_max_bytes: number
       local_max_entry_bytes: number
       reconstruct_max_bytes: number
+      write_policy?: ResponseCacheWritePolicy
     }
     entries: number
     max_entries: number
@@ -1448,6 +1452,8 @@ export interface OpsOverviewResponse {
     oversize_bypasses: number
     oversize_rejections: number
     known_unavailable_errors: number
+    skipped_writes?: number
+    chain_owners?: number
     last_config_sync_at: ISODateString | ''
     last_config_sync_error: string
   }
@@ -1634,6 +1640,14 @@ export interface PromptFilterPatternQuarantine {
   message: string
 }
 
+/** Antigravity OAuth client 条目：GET 视图带 has_secret 不含 client_secret；PUT 提交带 client_secret（留空 = 沿用已保存值）。 */
+export interface AntigravityOAuthClientSetting {
+  key: string
+  client_id: string
+  has_secret?: boolean
+  client_secret?: string
+}
+
 export interface SystemSettings {
   site_name: string
   site_logo: string
@@ -1669,6 +1683,8 @@ export interface SystemSettings {
   auto_activate_5h_window_enabled: boolean
   proxy_pool_enabled: boolean
   fast_scheduler_enabled: boolean
+  subscription_upgrades_enabled: boolean
+  subscription_upgrades_env_default: boolean
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
   codex_request_compression: boolean
@@ -1715,6 +1731,20 @@ export interface SystemSettings {
   grok_oauth_client_id_env_override?: boolean
   /** 实际生效的 client_id（只读，后端下发）。 */
   grok_oauth_client_id_effective?: string
+  /** 系统设置里的 Antigravity OAuth client 列表；GET 不回显 client_secret（has_secret 标记），PUT 时 client_secret 留空表示沿用已保存值。 */
+  antigravity_oauth_clients?: AntigravityOAuthClientSetting[]
+  /** 系统设置里指定的活跃 client key（空 = 用第一个）。 */
+  antigravity_oauth_client_key?: string
+  /** 环境变量 ANTIGRAVITY_OAUTH_CLIENTS 注入的条目（只读，同 key 冲突时以环境变量为准）。 */
+  antigravity_oauth_env_clients?: AntigravityOAuthClientSetting[]
+  /** 环境变量 ANTIGRAVITY_OAUTH_CLIENT_KEY 是否正压着活跃 key 设置（只读）。 */
+  antigravity_oauth_client_key_env_override?: boolean
+  /** 实际生效的活跃 client key（只读，后端下发）。 */
+  antigravity_oauth_active_key_effective?: string
+  /** 未配置环境变量/系统设置时，当前使用内置官方 Desktop client。 */
+  antigravity_oauth_using_builtin?: boolean
+  /** 内置官方 client 的公开视图（不含 secret）。 */
+  antigravity_oauth_builtin_client?: AntigravityOAuthClientSetting
   max_retries: number
   max_rate_limit_retries: number
   retry_interval_ms: number
@@ -1735,6 +1765,7 @@ export interface SystemSettings {
   response_cache_local_max_bytes: number
   response_cache_local_max_entry_bytes: number
   response_cache_reconstruct_max_bytes: number
+  response_cache_write_policy: ResponseCacheWritePolicy
   readonly response_cache_config_generation: number
   relay_model_cooldown_mode: ModelCooldownMode
   relay_model_cooldown_seconds: number
@@ -3129,7 +3160,8 @@ export interface APIKeyRow {
   reset_count: number
   last_reset_at?: ISODateString | null
   expires_at?: ISODateString | null
-  status?: 'active' | 'expired' | 'quota_exhausted'
+  status?: 'active' | 'expired' | 'quota_exhausted' | 'disabled'
+  enabled?: boolean
   allowed_group_ids?: number[]
   limits?: APIKeyLimits
   window_usage?: APIKeyWindowUsage
@@ -3194,6 +3226,7 @@ export interface UpdateAPIKeyRequest {
   expires_in_days?: number
   allowed_group_ids?: number[]
   limits?: APIKeyLimits
+  enabled?: boolean
 }
 
 export interface PublicAPIKeyUsageKey {

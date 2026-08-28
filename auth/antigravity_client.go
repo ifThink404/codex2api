@@ -25,7 +25,22 @@ const (
 	antigravityActiveOAuthClientEnv = "ANTIGRAVITY_OAUTH_CLIENT_KEY"
 	antigravityUserAgentEnv         = "ANTIGRAVITY_USER_AGENT"
 	antigravityResponseLimit        = 4 << 20
+
+	// 官方 Antigravity 桌面端的 Desktop OAuth client。Google 把 secret 打进安装包，
+	// 社区（sub2api / opencode / jcode）普遍当公开凭据内置。环境变量与系统设置
+	// 都未配置时回落到这一套，账号页可以直接「开始授权」。
+	AntigravityDefaultOAuthClientKey    = "official"
+	AntigravityDefaultOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+	AntigravityDefaultOAuthClientSecret = "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"
 )
+
+func builtinAntigravityOAuthClient() antigravityOAuthClient {
+	return antigravityOAuthClient{
+		Key:          AntigravityDefaultOAuthClientKey,
+		ClientID:     AntigravityDefaultOAuthClientID,
+		ClientSecret: AntigravityDefaultOAuthClientSecret,
+	}
+}
 
 var DefaultAntigravityEndpoints = AntigravityEndpoints{
 	TokenURL:    "https://oauth2.googleapis.com/token",
@@ -195,7 +210,7 @@ func NewAntigravityClient(proxyURL string) (*AntigravityClient, error) {
 }
 
 func newAntigravityClient(httpClient *http.Client, endpoints AntigravityEndpoints) *AntigravityClient {
-	clients, activeKey := antigravityOAuthClients()
+	clients, activeKey := effectiveAntigravityOAuthClients()
 	userAgent := strings.TrimSpace(os.Getenv(antigravityUserAgentEnv))
 	if userAgent == "" {
 		userAgent = fmt.Sprintf("antigravity/1.11.3 %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -210,7 +225,7 @@ func newAntigravityClient(httpClient *http.Client, endpoints AntigravityEndpoint
 	}
 }
 
-func antigravityOAuthClients() ([]antigravityOAuthClient, string) {
+func antigravityOAuthClientsFromEnv() []antigravityOAuthClient {
 	clients := make([]antigravityOAuthClient, 0)
 	for _, entry := range strings.Split(os.Getenv(antigravityOAuthClientsEnv), ";") {
 		parts := strings.Split(entry, "|")
@@ -236,16 +251,16 @@ func antigravityOAuthClients() ([]antigravityOAuthClient, string) {
 			clients = append(clients, candidate)
 		}
 	}
-	active := strings.ToLower(strings.TrimSpace(os.Getenv(antigravityActiveOAuthClientEnv)))
-	if active == "" && len(clients) > 0 {
-		active = clients[0].Key
-	}
-	return clients, active
+	return clients
+}
+
+func antigravityActiveOAuthKeyFromEnv() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv(antigravityActiveOAuthClientEnv)))
 }
 
 func (c *AntigravityClient) resolveOAuthClient(clientKey string) (antigravityOAuthClient, error) {
 	if len(c.oauth) == 0 {
-		return antigravityOAuthClient{}, fmt.Errorf("no Antigravity OAuth clients configured; set %s", antigravityOAuthClientsEnv)
+		return antigravityOAuthClient{}, fmt.Errorf("no Antigravity OAuth clients configured; add one in the admin settings page or set %s", antigravityOAuthClientsEnv)
 	}
 	clientKey = strings.ToLower(strings.TrimSpace(clientKey))
 	if clientKey == "" {
@@ -540,6 +555,9 @@ func (c *AntigravityClient) oauthCandidates(credential AntigravityCredential) []
 	for _, client := range c.oauth {
 		push(client)
 	}
+	// 导入的官方桌面端 refresh_token 往往没有自带 client 凭据；自定义 client
+	// 刷新失败时再试一次内置官方 Desktop client。
+	push(builtinAntigravityOAuthClient())
 	return result
 }
 

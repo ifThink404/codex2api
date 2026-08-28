@@ -1165,9 +1165,10 @@ func (h *Handler) resolveAPIKey(key string) (*database.APIKeyRow, bool, error) {
 	}
 	if h.configKeys[key] {
 		return &database.APIKeyRow{
-			ID:   0,
-			Name: "config",
-			Key:  key,
+			ID:      0,
+			Name:    "config",
+			Key:     key,
+			Enabled: true,
 		}, true, nil
 	}
 	if row, ok := h.resolveAPIKeyFromRuntimeCache(key); ok {
@@ -1215,10 +1216,12 @@ func (h *Handler) resolveAPIKeyFromRuntimeCache(key string) (*database.APIKeyRow
 	if record.ID <= 0 {
 		return nil, false
 	}
+	// 运行时缓存只收录无任何访问约束的 key（含 enabled=true），此处可安全回填。
 	return &database.APIKeyRow{
 		ID:        record.ID,
 		Name:      record.Name,
 		Key:       key,
+		Enabled:   true,
 		CreatedAt: record.CreatedAt,
 	}, true
 }
@@ -2989,6 +2992,13 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 			security.SecurityAuditLog("AUTH_FAILED", fmt.Sprintf("path=%s ip=%s key=%s", c.Request.URL.Path, c.ClientIP(), maskedKey))
 			// Use standardized error format from api package
 			api.SendError(c, api.ErrInvalidAPIKey)
+			c.Abort()
+			return
+		}
+		if !apiKeyRow.Enabled {
+			maskedKey := security.MaskAPIKey(key)
+			security.SecurityAuditLog("AUTH_FAILED_DISABLED_KEY", fmt.Sprintf("path=%s ip=%s key=%s", c.Request.URL.Path, c.ClientIP(), maskedKey))
+			api.SendError(c, api.NewAPIError(api.ErrCodeInvalidAuth, "API key is disabled", api.ErrorTypeAuthentication))
 			c.Abort()
 			return
 		}

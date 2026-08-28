@@ -61,6 +61,46 @@ func TestAntigravityOAuthClaimIsOneShotAndStateExact(t *testing.T) {
 	}
 }
 
+func TestStartAntigravityOAuthUsesBuiltinOfficialClientWhenUnconfigured(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_OAUTH_CLIENTS", "")
+	t.Setenv("ANTIGRAVITY_OAUTH_CLIENT_KEY", "")
+	auth.SetConfiguredAntigravityOAuth(auth.AntigravityOAuthSettings{})
+	t.Cleanup(func() { auth.SetConfiguredAntigravityOAuth(auth.AntigravityOAuthSettings{}) })
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	h := &Handler{db: db}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/antigravity/oauth/start", strings.NewReader(`{"name":"oauth-builtin"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.StartAntigravityOAuth(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		SessionID string `json:"session_id"`
+		AuthURL   string `json:"auth_url"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := globalAntigravityOAuthSessions.get(payload.SessionID)
+	if !ok {
+		t.Fatalf("session %q was not stored", payload.SessionID)
+	}
+	t.Cleanup(func() {
+		globalAntigravityOAuthSessions.remove(payload.SessionID)
+		closeAntigravityOAuthListener(session)
+	})
+	authURL, err := url.Parse(payload.AuthURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authURL.Query().Get("client_id"); got != auth.AntigravityDefaultOAuthClientID {
+		t.Fatalf("client_id = %q, want official desktop client", got)
+	}
+}
+
 func TestStartAntigravityOAuthCreatesStateBoundPKCESession(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_OAUTH_CLIENTS", "test|test-client|test-secret")
 	gin.SetMode(gin.TestMode)
