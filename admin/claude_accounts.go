@@ -247,6 +247,53 @@ func (h *Handler) RefreshClaudeModels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已更新可用模型", "models": models, "count": len(models)})
 }
 
+// RefreshAllClaudeModels 为所有 Claude 账号重新拉取真实可用模型(定价页"模型目录"用)。
+// 路由 POST /accounts/claude/models/refresh。
+func (h *Handler) RefreshAllClaudeModels(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+	rows, err := h.db.ListActiveByChannel(ctx, database.UpstreamChannelClaude)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	refreshed, failed := 0, 0
+	allModels := map[string]struct{}{}
+	for _, row := range rows {
+		accessToken := strings.TrimSpace(row.GetCredential("access_token"))
+		if accessToken == "" {
+			failed++
+			continue
+		}
+		models, ferr := auth.NewClaudeAuth(strings.TrimSpace(row.ProxyURL)).FetchModels(ctx, accessToken)
+		if ferr != nil || len(models) == 0 {
+			failed++
+			continue
+		}
+		if err := h.db.UpdateCredentials(ctx, row.ID, map[string]interface{}{"models": models}); err != nil {
+			failed++
+			continue
+		}
+		if h.store != nil {
+			if acc := h.store.FindByID(row.ID); acc != nil {
+				acc.Mu().Lock()
+				acc.Models = append([]string(nil), models...)
+				acc.Mu().Unlock()
+			}
+		}
+		for _, m := range models {
+			allModels[m] = struct{}{}
+		}
+		refreshed++
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":     "已刷新 Claude 账号可用模型",
+		"refreshed":   refreshed,
+		"failed":      failed,
+		"model_count": len(allModels),
+	})
+}
+
 // insertClaudeAccount 把一份 Claude token 落库并加载进运行时池子(去重按 account_id)。
 // timezone 为空时不指定时区。会为该账号生成一套稳定的 Claude Code 指纹并随凭据落库,
 // 之后每次上游请求原样套用(见 proxy/claude_upstream.go)。

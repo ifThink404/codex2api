@@ -120,7 +120,14 @@
       "flexRate": "Flex 檔",
       "flexHint": "標準價格 × 0.5",
       "expressionPreview": "階梯運算式預覽",
-      "aliasOf": "獨立別名 · 回退 {{model}}"
+      "aliasOf": "獨立別名 · 回退 {{model}}",
+      "catalogTitle": "模型目錄",
+      "catalogSearch": "搜尋模型…",
+      "catalogCount": "共 {{count}} 個模型",
+      "catalogRefresh": "重新整理帳號模型",
+      "catalogRefreshed": "已重新整理,可用模型共 {{count}} 個",
+      "catalogMarkSeen": "標記已讀",
+      "newBadge": "新"
     },
     "continuousRetryCategoryStream": "串流內 error 事件 / 串流讀取失敗",
     "continuousRetryMaxDuration": "最長重試時間（秒）",

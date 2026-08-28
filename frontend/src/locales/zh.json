@@ -4082,7 +4082,14 @@
         "custom": "自定义",
         "synced": "已同步",
         "default": "代码默认"
-      }
+      },
+      "catalogTitle": "模型目录",
+      "catalogSearch": "搜索模型…",
+      "catalogCount": "共 {{count}} 个模型",
+      "catalogRefresh": "刷新账号模型",
+      "catalogRefreshed": "已刷新,可用模型共 {{count}} 个",
+      "catalogMarkSeen": "标记已读",
+      "newBadge": "新"
     },
     "modelRegistryDesc": "同步 OpenAI 官方 Codex 模型页，合并到本地模型列表。",
     "modelsEnabled": "启用模型",

@@ -753,6 +753,11 @@ export const api = {
       method: 'POST',
       timeoutMs: 30_000,
     }),
+  refreshAllClaudeModels: () =>
+    request<{ message: string; refreshed: number; failed: number; model_count: number }>('/accounts/claude/models/refresh', {
+      method: 'POST',
+      timeoutMs: 60_000,
+    }),
   batchUpdateGrokModels: (data: BatchUpdateGrokModelsRequest) =>
     request<BatchUpdateGrokModelsResponse>('/accounts/grok/batch-models', {
       method: 'POST',

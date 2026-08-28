@@ -4082,7 +4082,14 @@
         "custom": "Custom",
         "synced": "Synced",
         "default": "Default"
-      }
+      },
+      "catalogTitle": "Model catalog",
+      "catalogSearch": "Search models…",
+      "catalogCount": "{{count}} models",
+      "catalogRefresh": "Refresh account models",
+      "catalogRefreshed": "Refreshed, {{count}} models available",
+      "catalogMarkSeen": "Mark seen",
+      "newBadge": "NEW"
     },
     "modelRegistryDesc": "Sync the official OpenAI Codex models page and merge it into the local model list.",
     "modelsEnabled": "Enabled Models",

@@ -21,6 +21,7 @@ import {
 import { api } from '@/api'
 import ChannelLogo from '../components/ChannelLogo'
 import ModelLogo from '../components/ModelLogo'
+import Modal from '../components/Modal'
 import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
 import { StatTile } from '../components/StatTile'
@@ -57,6 +58,26 @@ function rowChannel(r: Row): Exclude<ChannelFilter, 'all'> {
   const c = (r.channel || '').toLowerCase()
   if (c === 'grok' || c === 'antigravity' || c === 'claude') return c
   return 'codex'
+}
+// 已见过的模型集(localStorage):用于给新出现的模型打"新"标。首次加载会播种、不标新。
+const SEEN_MODELS_KEY = 'model-pricing-seen-models-v1'
+function readSeenModels(): Set<string> | null {
+  if (typeof window === 'undefined') return new Set()
+  const raw = window.localStorage.getItem(SEEN_MODELS_KEY)
+  if (raw == null) return null
+  try {
+    return new Set((JSON.parse(raw) as string[]).map((m) => m.toLowerCase()))
+  } catch {
+    return new Set()
+  }
+}
+function writeSeenModels(models: string[]) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(SEEN_MODELS_KEY, JSON.stringify(models.map((m) => m.toLowerCase())))
+  } catch {
+    // ignore
+  }
 }
 
 type FieldDef = {
@@ -429,6 +450,124 @@ function BillingRulePreview({ pricing }: { pricing: ModelPricingOverride }) {
   )
 }
 
+// ModelCatalogModal 是"模型目录"弹窗:按 provider 分组、可搜索、点击某模型直接定位到
+// 价格行;可刷新账号真实可用模型;新出现的模型标"新",便于快速锁定。
+function ModelCatalogModal({
+  open,
+  onClose,
+  rows,
+  newModels,
+  query,
+  onQueryChange,
+  onJump,
+  onRefresh,
+  refreshing,
+  onAcknowledge,
+}: {
+  open: boolean
+  onClose: () => void
+  rows: Row[]
+  newModels: Set<string>
+  query: string
+  onQueryChange: (v: string) => void
+  onJump: (model: string) => void
+  onRefresh: () => void
+  refreshing: boolean
+  onAcknowledge: () => void
+}) {
+  const { t } = useTranslation()
+  const q = query.trim().toLowerCase()
+  const groups = useMemo(() => {
+    const map = new Map<string, Row[]>()
+    for (const r of rows) {
+      if (q && !r.model.toLowerCase().includes(q)) continue
+      const c = rowChannel(r)
+      const arr = map.get(c) || []
+      arr.push(r)
+      map.set(c, arr)
+    }
+    for (const arr of map.values()) arr.sort((a, b) => compareModelsNewestFirst(a.model, b.model))
+    return CHANNEL_ORDER.filter((c) => map.has(c)).map((c) => ({ channel: c, rows: map.get(c)! }))
+  }, [rows, q])
+
+  return (
+    <Modal
+      show={open}
+      onClose={onClose}
+      title={t('settings.pricing.catalogTitle')}
+      contentClassName="sm:max-w-[640px]"
+      footer={
+        <div className="flex w-full items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">
+            {t('settings.pricing.catalogCount', { count: rows.length })}
+          </span>
+          <div className="flex items-center gap-2">
+            {newModels.size > 0 ? (
+              <Button variant="ghost" size="sm" onClick={onAcknowledge}>
+                {t('settings.pricing.catalogMarkSeen')}
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={onRefresh} disabled={refreshing}>
+              {refreshing ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
+              {t('settings.pricing.catalogRefresh')}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            placeholder={t('settings.pricing.catalogSearch')}
+            className="pl-8"
+          />
+        </div>
+        {groups.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.pricing.emptyFiltered')}</p>
+        ) : (
+          groups.map((group) => (
+            <div key={group.channel} className="space-y-1">
+              <div className="flex items-center gap-1.5 px-1 pt-1">
+                <ChannelLogo channel={group.channel} size={14} />
+                <span className="text-xs font-semibold text-foreground/80">{CHANNEL_LABEL[group.channel]}</span>
+                <span className="text-[10px] text-muted-foreground">{group.rows.length}</span>
+              </div>
+              <div className="grid gap-1 sm:grid-cols-2">
+                {group.rows.map((r) => {
+                  const isNew = newModels.has(r.model.toLowerCase())
+                  return (
+                    <button
+                      key={r.model}
+                      type="button"
+                      onClick={() => onJump(r.model)}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-border/70 bg-background/60 px-2.5 py-1.5 text-left transition-colors hover:border-primary/40 hover:bg-accent/50"
+                    >
+                      <span className="truncate font-mono text-[12px] text-foreground">{r.model}</span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        {isNew ? (
+                          <span className="rounded-full bg-rose-500/15 px-1.5 py-0.5 text-[9px] font-bold text-rose-600 ring-1 ring-inset ring-rose-500/25 dark:text-rose-300">
+                            {t('settings.pricing.newBadge')}
+                          </span>
+                        ) : null}
+                        <span className="tabular-nums text-[11px] text-muted-foreground">
+                          ${formatPriceDisplay(normalizePrice(r.pricing.input))}/${formatPriceDisplay(normalizePrice(r.pricing.output))}
+                        </span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </Modal>
+  )
+}
+
 export default function ModelPricing() {
   const { t } = useTranslation()
   const { showToast } = useToast()
@@ -456,6 +595,11 @@ export default function ModelPricing() {
   const [query, setQuery] = useState('')
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>('all')
+  const [catalogOpen, setCatalogOpen] = useState(false)
+  const [catalogQuery, setCatalogQuery] = useState('')
+  const [jumpedModel, setJumpedModel] = useState('')
+  const [refreshingModels, setRefreshingModels] = useState(false)
+  const [seenBump, setSeenBump] = useState(0)
   const [syncOpen, setSyncOpen] = useState(false)
   const [expandedAdvanced, setExpandedAdvanced] = useState<Record<string, boolean>>({})
 
@@ -664,6 +808,57 @@ export default function ModelPricing() {
     return CHANNEL_ORDER.filter((c) => groups.has(c)).map((c) => ({ channel: c, rows: groups.get(c)! }))
   }, [filteredRows])
 
+  // 新模型集:localStorage 里没见过的模型。首次加载(localStorage 为空)时播种、不标新。
+  const newModels = useMemo(() => {
+    const set = new Set<string>()
+    if (rows.length === 0) return set
+    const seen = readSeenModels()
+    if (seen === null) return set
+    for (const r of rows) {
+      if (!seen.has(r.model.toLowerCase())) set.add(r.model.toLowerCase())
+    }
+    return set
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, seenBump])
+
+  useEffect(() => {
+    // 首次加载后播种"已见"集,使后续新出现的模型才被标"新"。
+    if (rows.length > 0 && readSeenModels() === null) {
+      writeSeenModels(rows.map((r) => r.model))
+    }
+  }, [rows])
+
+  const jumpToModel = useCallback((model: string) => {
+    setCatalogOpen(false)
+    setChannelFilter('all')
+    setSourceFilter('all')
+    setQuery('')
+    setJumpedModel(model.toLowerCase())
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`pricing-row-${model.toLowerCase()}`)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      window.setTimeout(() => setJumpedModel(''), 2200)
+    })
+  }, [])
+
+  const refreshCatalogModels = useCallback(async () => {
+    setRefreshingModels(true)
+    try {
+      const res = await api.refreshAllClaudeModels()
+      showToast(t('settings.pricing.catalogRefreshed', { count: res.model_count }))
+      await load()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setRefreshingModels(false)
+    }
+  }, [load, showToast, t])
+
+  const acknowledgeNewModels = useCallback(() => {
+    writeSeenModels(rows.map((r) => r.model))
+    setSeenBump((n) => n + 1)
+  }, [rows])
+
   const sourceFilters: Array<{ id: SourceFilter; label: string; count: number }> = [
     { id: 'all', label: t('settings.pricing.filterAll'), count: counts.total },
     { id: 'custom', label: t('settings.pricing.source.custom'), count: counts.custom },
@@ -684,17 +879,45 @@ export default function ModelPricing() {
         description={t('settings.pricing.desc')}
         onRefresh={() => void load()}
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5"
-            onClick={() => setSyncOpen((v) => !v)}
-          >
-            <CloudDownload className="size-3.5" />
-            {t('settings.pricing.syncTitle')}
-            <ChevronDown className={cn('size-3.5 transition-transform', syncOpen && 'rotate-180')} />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => { setCatalogQuery(''); setCatalogOpen(true) }}
+            >
+              <ChevronsUpDown className="size-3.5" />
+              {t('settings.pricing.catalogTitle')}
+              {newModels.size > 0 ? (
+                <span className="ml-0.5 inline-flex min-w-4 items-center justify-center rounded-full bg-rose-500/90 px-1 text-[10px] font-bold text-white">
+                  {newModels.size}
+                </span>
+              ) : null}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setSyncOpen((v) => !v)}
+            >
+              <CloudDownload className="size-3.5" />
+              {t('settings.pricing.syncTitle')}
+              <ChevronDown className={cn('size-3.5 transition-transform', syncOpen && 'rotate-180')} />
+            </Button>
+          </div>
         }
+      />
+      <ModelCatalogModal
+        open={catalogOpen}
+        onClose={() => setCatalogOpen(false)}
+        rows={rows}
+        newModels={newModels}
+        query={catalogQuery}
+        onQueryChange={setCatalogQuery}
+        onJump={jumpToModel}
+        onRefresh={() => void refreshCatalogModels()}
+        refreshing={refreshingModels}
+        onAcknowledge={acknowledgeNewModels}
       />
 
       <StateShell
@@ -1081,9 +1304,11 @@ export default function ModelPricing() {
                 return (
                   <article
                     key={r.model}
+                    id={`pricing-row-${r.model.toLowerCase()}`}
                     className={cn(
-                      'group/card relative overflow-hidden rounded-xl border bg-card shadow-sm transition-all hover:border-border',
+                      'group/card relative overflow-hidden rounded-xl border bg-card shadow-sm transition-all hover:border-border scroll-mt-24',
                       dirty ? 'border-amber-500/30' : 'border-border/80',
+                      jumpedModel === r.model.toLowerCase() && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
                     )}
                   >
                     <div className="p-4 sm:p-5">
@@ -1096,6 +1321,11 @@ export default function ModelPricing() {
                               <h4 className="truncate font-mono text-[15px] font-semibold tracking-tight text-foreground sm:text-base">
                                 {r.model}
                               </h4>
+                              {newModels.has(r.model.toLowerCase()) ? (
+                                <span className="inline-flex items-center rounded-full bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-bold text-rose-600 ring-1 ring-inset ring-rose-500/25 dark:text-rose-300">
+                                  {t('settings.pricing.newBadge')}
+                                </span>
+                              ) : null}
                               {r.is_alias && r.canonical_model ? (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-bold text-violet-700 ring-1 ring-inset ring-violet-500/20 dark:text-violet-300">
                                   {t('settings.pricing.aliasOf', {
