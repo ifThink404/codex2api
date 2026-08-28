@@ -14,7 +14,9 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -196,6 +198,55 @@ func (h *Handler) ImportClaudeToken(c *gin.Context) {
 	h.insertClaudeAccount(c, ctx, req.Name, proxyURL, req.Timezone, td, "manual_claude_import")
 }
 
+// RefreshClaudeModels 重新拉取指定 Claude 账号真实可用的模型并落库(动态维护,
+// 不用重新导入)。路由 POST /accounts/:id/claude/models。
+func (h *Handler) RefreshClaudeModels(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效的账号 ID")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	row, err := h.db.GetAccountByID(ctx, id)
+	if err != nil {
+		writeError(c, http.StatusNotFound, "账号不存在")
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), auth.UpstreamClaude) {
+		writeError(c, http.StatusBadRequest, "该账号不是 Claude 账号")
+		return
+	}
+	accessToken := strings.TrimSpace(row.GetCredential("access_token"))
+	if accessToken == "" {
+		writeError(c, http.StatusBadRequest, "账号缺少 access_token,请先刷新或重新导入")
+		return
+	}
+	models, ferr := auth.NewClaudeAuth(strings.TrimSpace(row.ProxyURL)).FetchModels(ctx, accessToken)
+	if ferr != nil {
+		writeError(c, http.StatusBadGateway, "拉取可用模型失败: "+ferr.Error())
+		return
+	}
+	if len(models) == 0 {
+		writeError(c, http.StatusBadGateway, "未拉到任何可用模型")
+		return
+	}
+	if err := h.db.UpdateCredentials(ctx, id, map[string]interface{}{"models": models}); err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	// 直接更新内存账号的 Models,即时生效(LoadAccountByID 对已存在账号是 no-op)。
+	if h.store != nil {
+		if acc := h.store.FindByID(id); acc != nil {
+			acc.Mu().Lock()
+			acc.Models = append([]string(nil), models...)
+			acc.Mu().Unlock()
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已更新可用模型", "models": models, "count": len(models)})
+}
+
 // insertClaudeAccount 把一份 Claude token 落库并加载进运行时池子(去重按 account_id)。
 // timezone 为空时不指定时区。会为该账号生成一套稳定的 Claude Code 指纹并随凭据落库,
 // 之后每次上游请求原样套用(见 proxy/claude_upstream.go)。
@@ -214,16 +265,28 @@ func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name,
 	fingerprint := auth.GenerateClaudeFingerprint(timezone)
 	customHeaders := fingerprint.Headers()
 
+	// 动态拉取该账号**真实可用**的模型(Anthropic /v1/models),存进 credentials.models;
+	// 失败不阻断导入(DefaultClaudeModelIDsForAccount 会回退到内置兜底集)。
+	var claudeModels []string
+	if models, ferr := auth.NewClaudeAuth(proxyURL).FetchModels(ctx, td.AccessToken); ferr == nil && len(models) > 0 {
+		claudeModels = models
+	} else if ferr != nil {
+		log.Printf("拉取 Claude 账号可用模型失败(将用兜底集): %v", ferr)
+	}
+
 	credentials := map[string]interface{}{
-		"upstream_type": auth.UpstreamClaude,
-		"access_token":  td.AccessToken,
-		"refresh_token": td.RefreshToken,
-		"expires_at":    td.ExpiresAt.Format(time.RFC3339),
-		"email":         email,
-		"account_id":    accountUUID,
-		"plan_type":     "claude",
+		"upstream_type":  auth.UpstreamClaude,
+		"access_token":   td.AccessToken,
+		"refresh_token":  td.RefreshToken,
+		"expires_at":     td.ExpiresAt.Format(time.RFC3339),
+		"email":          email,
+		"account_id":     accountUUID,
+		"plan_type":      "claude",
 		"custom_headers": customHeaders,
 		"timezone":       fingerprint.Timezone,
+	}
+	if len(claudeModels) > 0 {
+		credentials["models"] = claudeModels
 	}
 	// 查重与插入置于同一临界区，避免并发导入同一账号各插一条（TOCTOU）。
 	// 复用 antigravity/grok 相同的合并去重锁，跨 provider 一致。
@@ -258,6 +321,7 @@ func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name,
 		Email:         email,
 		PlanType:      "claude",
 		CustomHeaders: customHeaders,
+		Models:        claudeModels,
 	})
 
 	h.db.InsertAccountEventAsync(id, "added", source)

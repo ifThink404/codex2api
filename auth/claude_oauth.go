@@ -419,6 +419,71 @@ func (o *ClaudeAuth) FetchProfile(ctx context.Context, accessToken string) (*cla
 	return &profile, nil
 }
 
+// ClaudeModelsListURL 是 Anthropic 官方模型列表端点(返回该凭据真实可用的模型)。
+const ClaudeModelsListURL = "https://api.anthropic.com/v1/models"
+
+// FetchModels 用 access token 拉取该账号**真实可用**的模型 ID 列表(动态发现,
+// 不写死)。分页拉全(has_more/last_id)。失败时由调用方回退到内置兜底集。
+func (o *ClaudeAuth) FetchModels(ctx context.Context, accessToken string) ([]string, error) {
+	if strings.TrimSpace(accessToken) == "" {
+		return nil, fmt.Errorf("缺少 access token")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ids := make([]string, 0, 16)
+	seen := map[string]struct{}{}
+	afterID := ""
+	for page := 0; page < 10; page++ { // 上限保护,正常一两页即可拉全
+		url := ClaudeModelsListURL + "?limit=100"
+		if afterID != "" {
+			url += "&after_id=" + afterID
+		}
+		resp, err := o.doWithFallback(ctx, http.MethodGet, url, nil, func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+			req.Header.Set("anthropic-version", "2023-06-01")
+			req.Header.Set("anthropic-beta", ClaudeOAuthBeta)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("拉取 Claude 模型列表失败: %w", err)
+		}
+		body, readErr := readClaudeOAuthResponseBody(resp)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("读取模型列表响应失败: %w", readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("获取模型列表失败 (status %d): %s", resp.StatusCode, string(body))
+		}
+		var parsed struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+			HasMore bool   `json:"has_more"`
+			LastID  string `json:"last_id"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, fmt.Errorf("解析模型列表失败: %w", err)
+		}
+		for _, m := range parsed.Data {
+			id := strings.TrimSpace(m.ID)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[strings.ToLower(id)]; ok {
+				continue
+			}
+			seen[strings.ToLower(id)] = struct{}{}
+			ids = append(ids, id)
+		}
+		if !parsed.HasMore || strings.TrimSpace(parsed.LastID) == "" {
+			break
+		}
+		afterID = parsed.LastID
+	}
+	return ids, nil
+}
+
 // doClaudeOAuthPost 发送一个 axios 伪装的 OAuth POST，返回解码后的响应体与状态码。
 func (o *ClaudeAuth) doClaudeOAuthPost(ctx context.Context, endpoint string, jsonBody []byte) ([]byte, int, error) {
 	resp, err := o.doWithFallback(ctx, http.MethodPost, endpoint, jsonBody, nil)
