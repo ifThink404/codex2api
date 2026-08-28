@@ -103,6 +103,24 @@ func (h *Handler) applyMessagesModelMapping(codexBody []byte, supportedModels []
 	return codexBody
 }
 
+// hasNativeClaudeAccountForModel 判断池中是否有能服务该模型的 Claude Code OAuth
+// 账号(据此决定 /v1/messages 是走原生 claude 透传还是 Codex 翻译兜底)。
+func (h *Handler) hasNativeClaudeAccountForModel(model string) bool {
+	if h == nil || h.store == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	for _, account := range h.store.Accounts() {
+		if account != nil && account.IsClaudeOAuth() && claudeAccountSupportsModel(account, model) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveMessagesRoutingBody 用廉价 stub 完成模型映射与 effort/tier 提取，
 // 避免在选号前把整段 Anthropic messages 转成有损 Codex Responses。
 func (h *Handler) resolveMessagesRoutingBody(rawBody []byte, requestedModel string, supportedModels []string) []byte {
@@ -111,6 +129,12 @@ func (h *Handler) resolveMessagesRoutingBody(rawBody []byte, requestedModel stri
 		mappingJSON = h.store.GetModelMapping()
 	}
 	mapped := resolveAnthropicModel(requestedModel, mappingJSON, supportedModels)
+	// 原生 Claude 路由:若存在能服务该模型的 Claude Code OAuth 账号,则保持原生
+	// 模型 ID,交由 claude 账号原生透传;否则维持既有 Codex 翻译兜底(claude-* →
+	// gpt-5.4),不影响没有 claude 账号、靠 Codex 服务 /v1/messages 的用户。
+	if h.hasNativeClaudeAccountForModel(requestedModel) {
+		mapped = strings.TrimSpace(requestedModel)
+	}
 	stub, err := sjson.SetBytes([]byte(`{}`), "model", mapped)
 	if err != nil {
 		stub = []byte(`{"model":"` + mapped + `"}`)
