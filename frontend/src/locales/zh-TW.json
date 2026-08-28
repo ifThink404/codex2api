@@ -1120,6 +1120,20 @@
     "deleteConfirm": "確認刪除該 Claude 帳號？",
     "timezonePlaceholder": "時區,如 Asia/Shanghai(留空=不指定)",
     "refreshModels": "重新整理模型",
-    "modelsRefreshed": "已更新可用模型（{{count}} 個）"
+    "modelsRefreshed": "已更新可用模型（{{count}} 個）",
+    "emptyFiltered": "沒有符合篩選的帳號",
+    "schedulingView": "排程檢視",
+    "searchPlaceholder": "搜尋信箱、名稱或模型…",
+    "modelCount": "{{count}} 個模型",
+    "statAll": "全部",
+    "statNormal": "正常",
+    "statRateLimited": "限流",
+    "statAbnormal": "異常",
+    "statError": "錯誤",
+    "statDisabled": "已停用",
+    "statLocked": "已鎖定",
+    "healthHealthy": "健康",
+    "healthWarm": "預熱",
+    "healthRisky": "風險"
   }
 }

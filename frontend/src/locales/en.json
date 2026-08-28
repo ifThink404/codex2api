@@ -5388,6 +5388,20 @@
     "deleteConfirm": "Delete this Claude account?",
     "timezonePlaceholder": "Timezone, e.g. Asia/Shanghai (empty = none)",
     "refreshModels": "Refresh models",
-    "modelsRefreshed": "Updated available models ({{count}})"
+    "modelsRefreshed": "Updated available models ({{count}})",
+    "emptyFiltered": "No accounts match the filter",
+    "schedulingView": "Scheduling",
+    "searchPlaceholder": "Search email, name or model…",
+    "modelCount": "{{count}} models",
+    "statAll": "All",
+    "statNormal": "Normal",
+    "statRateLimited": "Rate-limited",
+    "statAbnormal": "Abnormal",
+    "statError": "Error",
+    "statDisabled": "Disabled",
+    "statLocked": "Locked",
+    "healthHealthy": "Healthy",
+    "healthWarm": "Warm",
+    "healthRisky": "Risky"
   }
 }

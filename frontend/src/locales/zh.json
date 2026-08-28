@@ -5388,6 +5388,20 @@
     "deleteConfirm": "确认删除该 Claude 账号？",
     "timezonePlaceholder": "时区,如 Asia/Shanghai(留空=不指定)",
     "refreshModels": "刷新模型",
-    "modelsRefreshed": "已更新可用模型（{{count}} 个）"
+    "modelsRefreshed": "已更新可用模型（{{count}} 个）",
+    "emptyFiltered": "没有符合筛选的账号",
+    "schedulingView": "调度视图",
+    "searchPlaceholder": "搜索邮箱、名称或模型…",
+    "modelCount": "{{count}} 个模型",
+    "statAll": "全部",
+    "statNormal": "正常",
+    "statRateLimited": "限流",
+    "statAbnormal": "异常",
+    "statError": "错误",
+    "statDisabled": "已禁用",
+    "statLocked": "已锁定",
+    "healthHealthy": "健康",
+    "healthWarm": "预热",
+    "healthRisky": "风险"
   }
 }

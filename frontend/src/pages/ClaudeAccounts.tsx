@@ -1,10 +1,56 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
 import type { ProxyRow } from "../api";
-import type { AccountRow, ClaudeImportTokenRequest } from "../types";
+import type {
+  AccountRow,
+  AccountListSummary,
+  ClaudeImportTokenRequest,
+} from "../types";
+
+type ClaudeStatusFilter =
+  | "all"
+  | "normal"
+  | "rate_limited"
+  | "abnormal"
+  | "error"
+  | "disabled"
+  | "locked";
+
+// rowMatchesStatus 按筛选项判断账号是否命中(与后端 summary 计数口径对齐)。
+function rowMatchesStatus(acc: AccountRow, filter: ClaudeStatusFilter): boolean {
+  const s = (acc.status || "").toLowerCase();
+  switch (filter) {
+    case "all":
+      return true;
+    case "rate_limited":
+      return s.includes("rate") || s === "cooldown";
+    case "abnormal":
+      return s === "unauthorized" || s === "error" || s === "banned";
+    case "error":
+      return s === "error";
+    case "disabled":
+      return acc.enabled === false;
+    case "locked":
+      return Boolean(acc.locked);
+    case "normal":
+      return (
+        acc.enabled !== false &&
+        !acc.locked &&
+        (s === "active" || s === "ready" || s === "normal" || s === "")
+      );
+    default:
+      return true;
+  }
+}
+
+// claudeUsagePct 取用量百分比(0-100),无则 null。
+function claudeUsagePct(v: unknown): number | null {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.round(n)) : null;
+}
 import { ProxyPoolSelect } from "../components/ProxyPoolSelect";
 import ChannelLogo from "../components/ChannelLogo";
 import Modal from "../components/Modal";
@@ -12,6 +58,7 @@ import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { useToast } from "../hooks/useToast";
 import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import { getErrorMessage } from "../utils/error";
@@ -43,9 +90,12 @@ export default function ClaudeAccounts({
   const { confirm, confirmDialog } = useConfirmDialog();
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
+  const [summary, setSummary] = useState<AccountListSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [proxyPool, setProxyPool] = useState<ProxyRow[]>([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<ClaudeStatusFilter>("all");
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -58,6 +108,7 @@ export default function ClaudeAccounts({
         order: "desc",
       });
       setAccounts(res.accounts ?? []);
+      setSummary(res.summary ?? null);
     } catch (error) {
       showToast(getErrorMessage(error), "error");
     } finally {
@@ -126,6 +177,45 @@ export default function ClaudeAccounts({
     [reload, showToast, t],
   );
 
+  const filteredAccounts = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return accounts.filter((acc) => {
+      if (!rowMatchesStatus(acc, statusFilter)) return false;
+      if (!q) return true;
+      return (
+        (acc.email || "").toLowerCase().includes(q) ||
+        (acc.name || "").toLowerCase().includes(q) ||
+        (acc.models || []).some((m) => m.toLowerCase().includes(q))
+      );
+    });
+  }, [accounts, query, statusFilter]);
+
+  // 状态筛选项 + 计数(优先用后端 summary,回退到本地统计)。
+  const statChips = useMemo(() => {
+    const localCount = (f: ClaudeStatusFilter) =>
+      accounts.filter((a) => rowMatchesStatus(a, f)).length;
+    const s = summary;
+    const chips: Array<{ id: ClaudeStatusFilter; label: string; count: number; tone?: string }> = [
+      { id: "all", label: t("claude.statAll"), count: s?.total ?? accounts.length },
+      { id: "normal", label: t("claude.statNormal"), count: s?.normal ?? localCount("normal"), tone: "text-emerald-600 dark:text-emerald-400" },
+      { id: "rate_limited", label: t("claude.statRateLimited"), count: s?.rate_limited ?? localCount("rate_limited"), tone: "text-amber-600 dark:text-amber-400" },
+      { id: "abnormal", label: t("claude.statAbnormal"), count: s?.abnormal ?? localCount("abnormal"), tone: "text-rose-600 dark:text-rose-400" },
+      { id: "error", label: t("claude.statError"), count: s?.error ?? localCount("error"), tone: "text-rose-600 dark:text-rose-400" },
+      { id: "disabled", label: t("claude.statDisabled"), count: s?.disabled ?? localCount("disabled") },
+      { id: "locked", label: t("claude.statLocked"), count: s?.locked ?? localCount("locked") },
+    ];
+    return chips;
+  }, [accounts, summary, t]);
+
+  const healthChips = useMemo(() => {
+    const s = summary;
+    return [
+      { label: t("claude.healthHealthy"), count: s?.healthy ?? 0, dot: "bg-emerald-500" },
+      { label: t("claude.healthWarm"), count: s?.warm ?? 0, dot: "bg-amber-500" },
+      { label: t("claude.healthRisky"), count: s?.risky ?? 0, dot: "bg-rose-500" },
+    ];
+  }, [summary, t]);
+
   return (
     <div>
       <PageHeader
@@ -140,6 +230,53 @@ export default function ClaudeAccounts({
         }
       />
 
+      {/* 统计 + 调度视图 + 搜索 */}
+      {accounts.length > 0 || summary ? (
+        <div className="mb-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {statChips.map((chip) => {
+              const active = statusFilter === chip.id;
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => setStatusFilter(chip.id)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition-colors",
+                    active
+                      ? "border-primary/40 bg-primary/10 text-primary"
+                      : "border-border bg-muted/40 text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <span className={cn(!active && chip.tone)}>{chip.label}</span>
+                  <span className="tabular-nums rounded-md bg-background/60 px-1 text-[10px] font-bold">
+                    {chip.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              {t("claude.schedulingView")}
+            </span>
+            {healthChips.map((h) => (
+              <span key={h.label} className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <span className={cn("size-1.5 rounded-full", h.dot)} />
+                {h.label}
+                <span className="tabular-nums font-semibold text-foreground">{h.count}</span>
+              </span>
+            ))}
+          </div>
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("claude.searchPlaceholder")}
+            className="max-w-md"
+          />
+        </div>
+      ) : null}
+
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">
           {t("common.loading")}
@@ -148,54 +285,83 @@ export default function ClaudeAccounts({
         <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
           {t("claude.empty")}
         </div>
+      ) : filteredAccounts.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-muted-foreground">
+          {t("claude.emptyFiltered")}
+        </div>
       ) : (
         <div className="space-y-2">
-          {accounts.map((acc) => (
-            <div
-              key={acc.id}
-              className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card p-3"
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <ChannelLogo channel="claude" size={20} />
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-foreground">
-                    {acc.email || acc.name || `#${acc.id}`}
+          {filteredAccounts.map((acc) => {
+            const pct5h = claudeUsagePct(acc.usage_percent_5h);
+            const pct7d = claudeUsagePct(acc.usage_percent_7d);
+            const modelCount = (acc.models || []).length;
+            const cooldownReason = (acc.status || "").toLowerCase().includes("rate")
+              ? acc.error_message
+              : "";
+            return (
+              <div
+                key={acc.id}
+                className="flex flex-col gap-2.5 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <ChannelLogo channel="claude" size={20} />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {acc.email || acc.name || `#${acc.id}`}
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {acc.plan_type || "claude"}
+                      {modelCount > 0 ? ` · ${t("claude.modelCount", { count: modelCount })}` : ""}
+                      {acc.proxy_url ? ` · ${acc.proxy_url}` : ""}
+                    </div>
                   </div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    {acc.plan_type || "claude"}
-                    {acc.proxy_url ? ` · ${acc.proxy_url}` : ""}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  {/* 5h / 7d 用量 */}
+                  {pct5h !== null || pct7d !== null ? (
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {pct5h !== null ? (
+                        <span className="inline-flex items-center gap-1">
+                          5h
+                          <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
+                            <span
+                              className={cn("block h-full rounded-full", pct5h >= 90 ? "bg-rose-500" : pct5h >= 70 ? "bg-amber-500" : "bg-emerald-500")}
+                              style={{ width: `${pct5h}%` }}
+                            />
+                          </span>
+                          <span className="tabular-nums">{pct5h}%</span>
+                        </span>
+                      ) : null}
+                      {pct7d !== null ? (
+                        <span className="inline-flex items-center gap-1">
+                          7d
+                          <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
+                            <span
+                              className={cn("block h-full rounded-full", pct7d >= 90 ? "bg-rose-500" : pct7d >= 70 ? "bg-amber-500" : "bg-emerald-500")}
+                              style={{ width: `${pct7d}%` }}
+                            />
+                          </span>
+                          <span className="tabular-nums">{pct7d}%</span>
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <StatusBadge status={acc.status} errorMessage={acc.error_message} detail={cooldownReason} />
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="ghost" size="sm" onClick={() => void handleRefresh(acc)}>
+                      {t("common.refresh")}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => void handleRefreshModels(acc)}>
+                      {t("claude.refreshModels")}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => void handleDelete(acc)}>
+                      {t("common.delete")}
+                    </Button>
                   </div>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <StatusBadge
-                  status={acc.status}
-                  errorMessage={acc.error_message}
-                />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => void handleRefresh(acc)}
-                >
-                  {t("common.refresh")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => void handleRefreshModels(acc)}
-                >
-                  {t("claude.refreshModels")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => void handleDelete(acc)}
-                >
-                  {t("common.delete")}
-                </Button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
