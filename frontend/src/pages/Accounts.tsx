@@ -12,6 +12,7 @@ import OperationResultsModal from "../components/OperationResultsModal";
 import { cn } from "@/lib/utils";
 import GrokAccounts from "./GrokAccounts";
 import AntigravityAccounts from "./AntigravityAccounts";
+import ClaudeAccounts from "./ClaudeAccounts";
 import { mergeAccountLiveState, useAccountLiveState } from "../hooks/useAccountLiveState";
 import PageHeader from "../components/PageHeader";
 import { CompactStat } from "../components/CompactStat";
@@ -1631,7 +1632,9 @@ export default function Accounts() {
     ? "grok"
     : normalizedPath.endsWith("/accounts/antigravity")
       ? "antigravity"
-      : "codex";
+      : normalizedPath.endsWith("/accounts/claude")
+        ? "claude"
+        : "codex";
   const setProviderView = useCallback(
     (view: UpstreamChannel) => {
       navigate(
@@ -1639,7 +1642,9 @@ export default function Accounts() {
           ? "/accounts/grok"
           : view === "antigravity"
             ? "/accounts/antigravity"
-            : "/accounts",
+            : view === "claude"
+              ? "/accounts/claude"
+              : "/accounts",
       );
     },
     [navigate],
@@ -5800,12 +5805,12 @@ export default function Accounts() {
   // 滑块动画 + 品牌 logo，与仪表盘渠道过滤器视觉一致。
   // useMemo 保持引用稳定,否则每轮渲染的新元素会击穿独立账号页的 memo 边界。
   const providerSwitcher = useMemo(() => (
-    <div className="relative grid w-full max-w-[480px] grid-cols-3 items-center rounded-lg border border-border bg-muted/40 p-0.5">
+    <div className="relative grid w-full max-w-[560px] grid-cols-4 items-center rounded-lg border border-border bg-muted/40 p-0.5">
       <span
         aria-hidden
-        className="absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/3)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
+        className="absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/4)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
         style={{
-          transform: `translateX(${providerView === "grok" ? 100 : providerView === "antigravity" ? 200 : 0}%)`,
+          transform: `translateX(${providerView === "grok" ? 100 : providerView === "antigravity" ? 200 : providerView === "claude" ? 300 : 0}%)`,
         }}
       />
       {(
@@ -5813,6 +5818,7 @@ export default function Accounts() {
           ["codex", t("accounts.providerViewCodex")],
           ["grok", t("accounts.providerViewGrok")],
           ["antigravity", t("accounts.providerViewAntigravity")],
+          ["claude", t("accounts.providerViewClaude")],
         ] as const
       ).map(([key, label]) => (
         <button
@@ -5872,6 +5878,14 @@ export default function Accounts() {
     return (
       <div key="provider-antigravity" className="animate-channel-switch-in">
         <AntigravityAccounts headerSlot={providerSwitcher} />
+      </div>
+    );
+  }
+
+  if (providerView === "claude") {
+    return (
+      <div key="provider-claude" className="animate-channel-switch-in">
+        <ClaudeAccounts headerSlot={providerSwitcher} />
       </div>
     );
   }

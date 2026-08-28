@@ -493,6 +493,11 @@ func relayAccountSupportsModel(account *auth.Account, model string) bool {
 	if account == nil {
 		return false
 	}
+	// Claude Code OAuth 账号服务 claude-* 模型；显式 Models 白名单优先收窄。
+	// 该分支对所有非 claude 账号恒不进入，保持既有准入行为不变。
+	if account.IsClaudeOAuth() {
+		return claudeAccountSupportsModel(account, model)
+	}
 	if account.IsAntigravityAPI() {
 		if !account.AntigravityDispatchEnabled() {
 			return false

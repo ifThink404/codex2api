@@ -79,6 +79,10 @@ import type {
   ModelsResponse,
   OAuthExchangeResponse,
   OAuthURLResponse,
+  ClaudeAuthURLResponse,
+  ClaudeExchangeCodeRequest,
+  ClaudeImportTokenRequest,
+  ClaudeAddAccountResponse,
   OpsErrorSummary,
   OpsOverviewResponse,
   PromptFilterLog,
@@ -722,6 +726,27 @@ export const api = {
   cancelAntigravityOAuth: (sessionId: string) =>
     request<void>(`/accounts/antigravity/oauth/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
+    }),
+  // Claude Code OAuth：第一步取授权 URL（服务端暂存 state→verifier）。
+  generateClaudeAuthURL: () =>
+    request<ClaudeAuthURLResponse>('/accounts/claude/oauth/auth-url', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeoutMs: 15_000,
+    }),
+  // 第二步：用 state+code 换取 token 并入库（可选从代理池分配代理）。
+  exchangeClaudeOAuthCode: (data: ClaudeExchangeCodeRequest) =>
+    request<ClaudeAddAccountResponse>('/accounts/claude/oauth/exchange-code', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 90_000,
+    }),
+  // CLI 直导：吃 cmd/claude_login -out 产出的 token JSON。
+  importClaudeToken: (data: ClaudeImportTokenRequest) =>
+    request<ClaudeAddAccountResponse>('/accounts/claude/import', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 20_000,
     }),
   batchUpdateGrokModels: (data: BatchUpdateGrokModelsRequest) =>
     request<BatchUpdateGrokModelsResponse>('/accounts/grok/batch-models', {

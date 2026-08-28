@@ -1,0 +1,270 @@
+package admin
+
+// Claude Code(Anthropic)OAuth 账号的后台导入端点。
+//
+// 提供两条导入路径:
+//   1. 网页 OAuth 两步式:
+//        POST /accounts/claude/oauth/auth-url      → 返回授权 URL + state
+//        POST /accounts/claude/oauth/exchange-code → 用 state+code 换 token 并入库
+//      服务端用一个带 TTL 的内存表按 state 暂存 verifier。
+//   2. CLI 直导:
+//        POST /accounts/claude/import              → 直接吃 cmd/claude_login -out 产出的
+//        token JSON(access_token/refresh_token/...)入库,无需服务端 OAuth 往返。
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
+	"github.com/codex2api/security"
+	"github.com/gin-gonic/gin"
+)
+
+// claudeOAuthPending 暂存一次登录的 state→verifier(带 TTL)。
+type claudeOAuthPending struct {
+	verifier  string
+	createdAt time.Time
+}
+
+var (
+	claudeOAuthMu      sync.Mutex
+	claudeOAuthPendMap = map[string]claudeOAuthPending{}
+)
+
+const claudeOAuthSessionTTL = 15 * time.Minute
+
+func claudeOAuthPut(state, verifier string) {
+	claudeOAuthMu.Lock()
+	defer claudeOAuthMu.Unlock()
+	// 顺带清理过期项,避免内存无限增长。
+	now := time.Now()
+	for k, v := range claudeOAuthPendMap {
+		if now.Sub(v.createdAt) > claudeOAuthSessionTTL {
+			delete(claudeOAuthPendMap, k)
+		}
+	}
+	claudeOAuthPendMap[state] = claudeOAuthPending{verifier: verifier, createdAt: now}
+}
+
+func claudeOAuthTake(state string) (string, bool) {
+	claudeOAuthMu.Lock()
+	defer claudeOAuthMu.Unlock()
+	p, ok := claudeOAuthPendMap[state]
+	if !ok {
+		return "", false
+	}
+	delete(claudeOAuthPendMap, state)
+	if time.Since(p.createdAt) > claudeOAuthSessionTTL {
+		return "", false
+	}
+	return p.verifier, true
+}
+
+// GenerateClaudeAuthURL 发起一次 Claude OAuth 登录,返回授权 URL 与 state。
+func (h *Handler) GenerateClaudeAuthURL(c *gin.Context) {
+	session, err := auth.StartClaudeLogin()
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	claudeOAuthPut(session.State, session.Verifier)
+	c.JSON(http.StatusOK, gin.H{
+		"auth_url": session.AuthURL,
+		"state":    session.State,
+	})
+}
+
+type exchangeClaudeCodeReq struct {
+	State string `json:"state"`
+	Code  string `json:"code"`
+	Name  string `json:"name"`
+	// ProxyURL 指定固定代理;留空且 UseProxyPool=true 时从代理池自动取一个。
+	ProxyURL     string `json:"proxy_url"`
+	UseProxyPool bool   `json:"use_proxy_pool"`
+	// Timezone 账号绑定的 IANA 时区(如 Asia/Shanghai),用于指纹一致性;空=不指定。
+	Timezone string `json:"timezone"`
+}
+
+// resolveClaudeLoginProxy 决定本次登录/导入使用并固定到账号的代理:
+// 显式 proxy_url 优先;否则若 use_proxy_pool=true 则从代理池轮询取一个。
+// 返回的代理会同时用于 OAuth 交换、后续刷新与推理出站,保证 IP 一致(防风控)。
+func (h *Handler) resolveClaudeLoginProxy(rawURL string, usePool bool) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL != "" {
+		if err := security.ValidateProxyURL(rawURL); err != nil {
+			return "", err
+		}
+		return rawURL, nil
+	}
+	if usePool && h.store != nil {
+		return strings.TrimSpace(h.store.NextProxy()), nil
+	}
+	return "", nil
+}
+
+// ExchangeClaudeOAuthCode 用 state+code 换取 token 并把账号写入池子。
+func (h *Handler) ExchangeClaudeOAuthCode(c *gin.Context) {
+	var req exchangeClaudeCodeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	req.Name = security.SanitizeInput(req.Name)
+	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
+	req.State = strings.TrimSpace(req.State)
+	req.Code = strings.TrimSpace(req.Code)
+	if req.State == "" || req.Code == "" {
+		writeError(c, http.StatusBadRequest, "state 与 code 均为必填")
+		return
+	}
+	proxyURL, err := h.resolveClaudeLoginProxy(req.ProxyURL, req.UseProxyPool)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "代理URL无效")
+		return
+	}
+	verifier, ok := claudeOAuthTake(req.State)
+	if !ok {
+		writeError(c, http.StatusBadRequest, "登录会话已过期或不存在，请重新获取授权 URL")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+
+	client := auth.NewClaudeAuth(proxyURL)
+	td, err := client.ExchangeCode(ctx, req.Code, req.State, verifier)
+	if err != nil {
+		writeError(c, http.StatusBadGateway, "换取 token 失败: "+err.Error())
+		return
+	}
+	h.insertClaudeAccount(c, ctx, req.Name, proxyURL, req.Timezone, td, "manual_claude_oauth")
+}
+
+type importClaudeTokenReq struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	Email        string `json:"email"`
+	AccountID    string `json:"account_id"`
+	ExpiresAt    string `json:"expires_at"`
+	Name         string `json:"name"`
+	ProxyURL     string `json:"proxy_url"`
+	UseProxyPool bool   `json:"use_proxy_pool"`
+	Timezone     string `json:"timezone"`
+}
+
+// ImportClaudeToken 直接吃 cmd/claude_login -out 产出的 token JSON 入库。
+func (h *Handler) ImportClaudeToken(c *gin.Context) {
+	var req importClaudeTokenReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	req.Name = security.SanitizeInput(req.Name)
+	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
+	req.AccessToken = strings.TrimSpace(req.AccessToken)
+	req.RefreshToken = strings.TrimSpace(req.RefreshToken)
+	if req.AccessToken == "" || req.RefreshToken == "" {
+		writeError(c, http.StatusBadRequest, "access_token 与 refresh_token 均为必填")
+		return
+	}
+	proxyURL, err := h.resolveClaudeLoginProxy(req.ProxyURL, req.UseProxyPool)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "代理URL无效")
+		return
+	}
+	expiresAt := time.Now().Add(30 * time.Minute)
+	if strings.TrimSpace(req.ExpiresAt) != "" {
+		if parsed, perr := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt)); perr == nil {
+			expiresAt = parsed
+		}
+	}
+	td := &auth.ClaudeTokenData{
+		AccessToken:  req.AccessToken,
+		RefreshToken: req.RefreshToken,
+		Email:        strings.TrimSpace(req.Email),
+		AccountUUID:  strings.TrimSpace(req.AccountID),
+		ExpiresAt:    expiresAt,
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	h.insertClaudeAccount(c, ctx, req.Name, proxyURL, req.Timezone, td, "manual_claude_import")
+}
+
+// insertClaudeAccount 把一份 Claude token 落库并加载进运行时池子(去重按 account_id)。
+// timezone 为空时不指定时区。会为该账号生成一套稳定的 Claude Code 指纹并随凭据落库,
+// 之后每次上游请求原样套用(见 proxy/claude_upstream.go)。
+func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name, proxyURL, timezone string, td *auth.ClaudeTokenData, source string) {
+	email := strings.TrimSpace(td.Email)
+	accountUUID := strings.TrimSpace(td.AccountUUID)
+
+	if name == "" {
+		name = email
+	}
+	if name == "" {
+		name = "claude"
+	}
+
+	// 生成稳定指纹(UA / x-app / x-stainless-*),存进 custom_headers 供请求期套用。
+	fingerprint := auth.GenerateClaudeFingerprint(timezone)
+	customHeaders := fingerprint.Headers()
+
+	credentials := map[string]interface{}{
+		"upstream_type": auth.UpstreamClaude,
+		"access_token":  td.AccessToken,
+		"refresh_token": td.RefreshToken,
+		"expires_at":    td.ExpiresAt.Format(time.RFC3339),
+		"email":         email,
+		"account_id":    accountUUID,
+		"plan_type":     "claude",
+		"custom_headers": customHeaders,
+		"timezone":       fingerprint.Timezone,
+	}
+	// 查重与插入置于同一临界区，避免并发导入同一账号各插一条（TOCTOU）。
+	// 复用 antigravity/grok 相同的合并去重锁，跨 provider 一致。
+	h.mergeDuplicateMu.Lock()
+	if accountUUID != "" {
+		if rows, listErr := h.db.ListActiveByChannel(ctx, database.UpstreamChannelClaude); listErr == nil {
+			for _, row := range rows {
+				if strings.EqualFold(strings.TrimSpace(row.GetCredential("account_id")), accountUUID) {
+					h.mergeDuplicateMu.Unlock()
+					writeError(c, http.StatusConflict, fmt.Sprintf("Claude 账号已存在 (id=%d)", row.ID))
+					return
+				}
+			}
+		}
+	}
+	id, err := h.db.InsertAccountWithUpstream(ctx, name, "anthropic", auth.UpstreamClaude, credentials, proxyURL)
+	h.mergeDuplicateMu.Unlock()
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+
+	h.store.AddAccount(&auth.Account{
+		DBID:          id,
+		ProxyURL:      proxyURL,
+		HealthTier:    auth.HealthTierHealthy,
+		UpstreamType:  auth.UpstreamClaude,
+		AccessToken:   td.AccessToken,
+		RefreshToken:  td.RefreshToken,
+		ExpiresAt:     td.ExpiresAt,
+		AccountID:     accountUUID,
+		Email:         email,
+		PlanType:      "claude",
+		CustomHeaders: customHeaders,
+	})
+
+	h.db.InsertAccountEventAsync(id, "added", source)
+	security.SecurityAuditLog("CLAUDE_ACCOUNT_ADDED", fmt.Sprintf("account_id=%d ip=%s", id, c.ClientIP()))
+	c.JSON(http.StatusOK, gin.H{
+		"message": "成功添加 Claude 账号",
+		"id":      id,
+		"email":   email,
+	})
+}

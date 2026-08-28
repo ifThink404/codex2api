@@ -1703,6 +1703,7 @@ const (
 	UpstreamChannelCodex       = "codex"
 	UpstreamChannelGrok        = "grok"
 	UpstreamChannelAntigravity = "antigravity"
+	UpstreamChannelClaude      = "claude"
 )
 
 // ResolveUpstreamChannel 归一 Key 的上游渠道限定；未知值一律视为不限（auto）。
@@ -1714,6 +1715,8 @@ func (l APIKeyLimits) ResolveUpstreamChannel() string {
 		return UpstreamChannelGrok
 	case UpstreamChannelAntigravity:
 		return UpstreamChannelAntigravity
+	case UpstreamChannelClaude:
+		return UpstreamChannelClaude
 	}
 	return UpstreamChannelAuto
 }
@@ -1726,9 +1729,11 @@ func accountChannelFilterSQL(channel, upstreamTypeExpr string) string {
 		return ` AND ` + upstreamTypeExpr + ` = 'grok'`
 	case UpstreamChannelAntigravity:
 		return ` AND ` + upstreamTypeExpr + ` = 'antigravity'`
+	case UpstreamChannelClaude:
+		return ` AND ` + upstreamTypeExpr + ` = 'claude'`
 	case UpstreamChannelCodex:
 		// Blank legacy rows and OpenAI Responses relays remain in the Codex view.
-		return ` AND ` + upstreamTypeExpr + ` NOT IN ('grok', 'antigravity')`
+		return ` AND ` + upstreamTypeExpr + ` NOT IN ('grok', 'antigravity', 'claude')`
 	default:
 		return ""
 	}

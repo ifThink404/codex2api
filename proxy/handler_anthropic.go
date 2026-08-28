@@ -363,7 +363,18 @@ func (h *Handler) Messages(c *gin.Context) {
 		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
 		var resp *http.Response
 		var reqErr error
-		if isRelayAccount {
+		if account.IsClaudeOAuth() {
+			// Claude Code OAuth 账号本身说 Anthropic Messages API：不翻译成 Codex，
+			// 直接把原始入站 body 透传到 api.anthropic.com/v1/messages；返回的响应
+			// 已是原生 Anthropic SSE，打上原生路由标记复用既有透传链路。
+			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+				r, e := ExecuteClaudeMessagesRequest(upstreamCtx, account, rawBody, proxyURL, downstreamHeaders)
+				if e == nil {
+					markClaudeNativeRoute(r)
+				}
+				return r, e
+			})
+		} else if isRelayAccount {
 			upstreamBody := routingBody
 			if !account.IsGrokAPI() {
 				var translateErr error

@@ -10893,6 +10893,11 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 	if acc.IsGrokAPI() {
 		return s.refreshGrokAccount(ctx, acc, forceRefresh)
 	}
+	// Claude Code OAuth 账号走 platform.claude.com 的 RT 刷新，请求体与端点均与
+	// ChatGPT 不同，单独处理。对所有非 claude 账号此分支恒不进入。
+	if acc.IsClaudeOAuth() {
+		return s.refreshClaudeAccount(ctx, acc, forceRefresh)
+	}
 	acc.mu.RLock()
 	rt := acc.RefreshToken
 	st := acc.SessionToken

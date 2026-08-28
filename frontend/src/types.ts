@@ -1,6 +1,41 @@
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
 export type ISODateString = string
-export type UpstreamChannel = 'codex' | 'grok' | 'antigravity'
+export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
+
+/** Claude Code OAuth：第一步返回授权 URL 与 state。 */
+export interface ClaudeAuthURLResponse {
+  auth_url: string
+  state: string
+}
+
+/** Claude Code OAuth：第二步用 state+code 换取 token 并入库。 */
+export interface ClaudeExchangeCodeRequest {
+  state: string
+  code: string
+  name?: string
+  proxy_url?: string
+  use_proxy_pool?: boolean
+  timezone?: string
+}
+
+/** Claude Code：直接导入 cmd/claude_login 产出的 token JSON。 */
+export interface ClaudeImportTokenRequest {
+  access_token: string
+  refresh_token: string
+  email?: string
+  account_id?: string
+  expires_at?: string
+  name?: string
+  proxy_url?: string
+  use_proxy_pool?: boolean
+  timezone?: string
+}
+
+export interface ClaudeAddAccountResponse {
+  message: string
+  id: number
+  email?: string
+}
 
 export interface ToastState {
   msg: string

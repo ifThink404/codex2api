@@ -1044,6 +1044,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/grok/import", h.BatchImportGrokAccounts)
 	api.POST("/accounts/grok/oauth/auth-url", h.GenerateGrokAuthURL)        // 兼容旧客户端
 	api.POST("/accounts/grok/oauth/exchange-code", h.ExchangeGrokOAuthCode) // 兼容旧客户端
+	api.POST("/accounts/claude/oauth/auth-url", h.GenerateClaudeAuthURL)
+	api.POST("/accounts/claude/oauth/exchange-code", h.ExchangeClaudeOAuthCode)
+	api.POST("/accounts/claude/import", h.ImportClaudeToken)
 	api.POST("/accounts/antigravity", h.AddAntigravityAccount)
 	api.POST("/accounts/antigravity/models", h.FetchAntigravityModels)
 	api.POST("/accounts/antigravity/batch-models", h.BatchUpdateAntigravityModels)
