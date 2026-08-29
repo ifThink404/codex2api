@@ -199,9 +199,15 @@ func TestTriggerDispatchStateReconcileAsyncThrottledReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("database.New: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	store := NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 1})
+	// Store.Init starts the scheduler outbox consumer. Stop it before closing
+	// the database so its final poll cannot recreate WAL/SHM files after
+	// testing.T has begun removing the temporary directory.
+	t.Cleanup(func() {
+		store.Stop()
+		_ = db.Close()
+	})
 	if err := store.Init(ctx); err != nil {
 		t.Fatalf("Store.Init: %v", err)
 	}
