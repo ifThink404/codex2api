@@ -11,6 +11,12 @@ import type { AntigravityOAuthClientSetting, HealthResponse, ModelInfo, SiteBran
 import { countPayloadRules } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
 import { DEFAULT_CLAUDE_MODEL_MAP } from '../lib/modelMapping'
+import {
+  CLAUDE_TIMEZONE_CUSTOM,
+  CLAUDE_TIMEZONE_OPTIONS,
+  claudeTimezoneLabel,
+  findClaudeTimezoneOption,
+} from '../lib/claudeAccountOptions'
 import { buildWritableSettingsPayload } from '../lib/settingsPayload'
 import {
   buildContinuousRetryCatchAllPatch,
@@ -699,6 +705,7 @@ function ClaudeCodeSettingsCard() {
   const { showToast } = useToast()
   const [fingerprintMode, setFingerprintMode] = useState<'preserve' | 'force' | ''>('')
   const [timezone, setTimezone] = useState('')
+  const [timezoneCustom, setTimezoneCustom] = useState(false)
   const [sessionWindow, setSessionWindow] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -711,6 +718,7 @@ function ClaudeCodeSettingsCard() {
         if (cancelled) return
         setFingerprintMode((cfg.fingerprint_mode as 'preserve' | 'force' | '') ?? '')
         setTimezone(cfg.default_timezone ?? '')
+        setTimezoneCustom(Boolean(cfg.default_timezone && !findClaudeTimezoneOption(cfg.default_timezone)))
         setSessionWindow(cfg.session_window_limit ? String(cfg.session_window_limit) : '')
       })
       .catch(() => {
@@ -774,7 +782,27 @@ function ClaudeCodeSettingsCard() {
           </select>
         </SettingField>
         <SettingField label={t('settings.claudeDefaultTimezone')} description={t('settings.claudeDefaultTimezoneDesc')}>
-          <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Asia/Shanghai" />
+          <div className="space-y-1.5">
+            <Select
+              value={timezoneCustom ? CLAUDE_TIMEZONE_CUSTOM : (findClaudeTimezoneOption(timezone)?.value ?? (timezone ? CLAUDE_TIMEZONE_CUSTOM : ''))}
+              onValueChange={(value) => {
+                if (value === CLAUDE_TIMEZONE_CUSTOM) {
+                  setTimezoneCustom(true)
+                  if (findClaudeTimezoneOption(timezone)) setTimezone('')
+                  return
+                }
+                setTimezoneCustom(false)
+                setTimezone(value)
+              }}
+              options={[
+                { value: '', label: t('settings.claudeTimezoneUnset') },
+                ...CLAUDE_TIMEZONE_OPTIONS,
+                { value: CLAUDE_TIMEZONE_CUSTOM, label: t('settings.claudeTimezoneCustom') },
+              ]}
+            />
+            {timezoneCustom ? <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Asia/Shanghai" /> : null}
+            {timezone ? <p className="text-[10px] text-muted-foreground">{claudeTimezoneLabel(timezone)}</p> : null}
+          </div>
         </SettingField>
       </div>
     </SettingsCard>

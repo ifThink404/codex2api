@@ -82,6 +82,8 @@ import type {
   ClaudeAuthURLResponse,
   ClaudeExchangeCodeRequest,
   ClaudeImportTokenRequest,
+  ClaudeCredentialExportEntry,
+  ClaudeImportBundleResponse,
   ClaudeAddAccountResponse,
   OpsErrorSummary,
   OpsOverviewResponse,
@@ -749,6 +751,21 @@ export const api = {
       body: JSON.stringify(data),
       timeoutMs: 20_000,
     }),
+  /** Import a versioned Claude credential object or bundle. */
+  importClaudeCredentialBundle: (
+    data: ClaudeCredentialExportEntry | ClaudeCredentialExportEntry[] | { accounts: ClaudeCredentialExportEntry[] },
+  ) =>
+    request<ClaudeAddAccountResponse | ClaudeImportBundleResponse>('/accounts/claude/import', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 120_000,
+    }),
+  /** Download one Claude JSON credential or a ZIP for multiple accounts. */
+  exportClaudeAccounts: (ids?: number[], filter: 'all' | 'healthy' = 'all', format: 'auto' | 'json' | 'zip' = 'auto') => {
+    const params = new URLSearchParams({ filter, format })
+    if (ids && ids.length > 0) params.set('ids', ids.join(','))
+    return requestNamedBlob(`/accounts/claude/export?${params.toString()}`)
+  },
   refreshClaudeModels: (id: number) =>
     request<{ message: string; models: string[]; count: number }>(`/accounts/${id}/claude/models`, {
       method: 'POST',

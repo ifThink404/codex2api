@@ -147,6 +147,7 @@ func (h *Handler) buildAccountResponse(
 	modelMapping := ""
 	var customHeaders map[string]string
 	var allowedAPIKeyIDs []int64
+	claudeUserAgent := ""
 	// 工作区 ID 不是密钥:Team/K12 徽章悬停要显示空间 ID。当前页
 	// ListActiveByIDs 已带完整凭据;custom_headers 只用来算生效空间,
 	// 摘要响应仍会剥掉原文。
@@ -156,7 +157,21 @@ func (h *Handler) buildAccountResponse(
 	effectiveWorkspaceID := openaiidentity.EffectiveWorkspaceID(tokenWorkspaceID, headers)
 	if includeDetails {
 		modelMapping = row.GetCredential("model_mapping")
-		customHeaders = headers
+		if isClaudeAccount {
+			// Claude detail responses may be consumed by admin tooling, but must
+			// never expose arbitrary historical custom headers such as
+			// Authorization/Cookie/x-api-key. Keep only the provider identity
+			// headers needed to inspect the stable fingerprint.
+			customHeaders = claudeExportFingerprintHeaders(headers)
+			for name, value := range customHeaders {
+				if strings.EqualFold(strings.TrimSpace(name), "user-agent") {
+					claudeUserAgent = strings.TrimSpace(value)
+					break
+				}
+			}
+		} else {
+			customHeaders = headers
+		}
 		allowedAPIKeyIDs = row.GetCredentialInt64Slice("allowed_api_key_ids")
 	}
 	resp := accountResponse{
@@ -201,6 +216,7 @@ func (h *Handler) buildAccountResponse(
 		CodexClientMetadataMode:  codexClientMetadataMode,
 		CodexFingerprintMode:     codexFingerprintMode,
 		ClaudeFingerprintMode:    claudeFingerprintMode,
+		ClaudeUserAgent:          claudeUserAgent,
 		Timezone:                 accountTimezone,
 		CustomHeaders:            customHeaders,
 		ProxyURL:                 row.ProxyURL,

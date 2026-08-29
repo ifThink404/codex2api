@@ -776,8 +776,30 @@ token。
 
 #### POST /api/admin/accounts/claude/import
 
-直接导入 `cmd/claude_login -out` 生成的 JSON。`access_token` 与 `refresh_token`
-必填；导入成功后同样会进入后台采样队列。
+直接导入 `cmd/claude_login -out` 生成的 JSON，或下面导出端点生成的 version 1
+Claude 凭据。`access_token` 与 `refresh_token` 必填；同时接受单对象、对象数组和
+`{"accounts":[...]}`。单对象保持历史 `{message,id,email}` 响应，批量导入返回
+`total`、`imported`、`failed` 与逐账号 `items/warnings`。`auth_kind` 仅允许
+`oauth`，模型列表仅允许 `claude-*`。
+
+导入文件可恢复账号名称、代理、时区、标签、启用状态、账号级指纹模式和受限身份头。
+分组使用 `group_refs: [{"name":"...","channel":"claude"}]` 按名称映射；不会复用
+另一实例的数字分组 ID，不存在的组会作为 warning 返回且不会自动创建。锁定、冷却和
+历史用量属于目标实例运行状态，不随凭据迁移。
+
+#### GET /api/admin/accounts/claude/export
+
+导出管理员专用的完整 Claude OAuth 凭据。`ids=1,2` 可精确选择账号，省略时导出全部；
+`filter=all|healthy` 控制是否只包含当前健康账号；`format=auto|json|zip` 控制输出格式
+（默认 auto：单条 JSON、多条 ZIP；`format=json` 可得到可直接再次导入的对象数组）。响应设置 `Content-Disposition`、实际数量
+`X-Export-Count`、`Cache-Control: no-store, max-age=0`、`Pragma: no-cache` 和
+`X-Content-Type-Options: nosniff`。
+
+version 1 文档包含 `type=claude`、`auth_kind=oauth`、access/refresh token、账号 ID、
+过期时间、套餐、模型、代理、时区、`claude_fingerprint_mode`、标签、启用状态及
+`group_refs`。`fingerprint_headers` 只允许 `User-Agent`、`X-App` 和
+`X-Stainless-*` 身份头；任意 `Authorization`、Cookie、API Key 或其它自定义头均不会
+进入导出文件。下载内容为明文高敏凭据，下载后应立即加密保存或在迁移完成后删除。
 
 #### POST /api/admin/accounts/:id/claude/models
 
@@ -811,6 +833,9 @@ PATCH 端点保存。
 `claude_usage_probe_at` / `claude_usage_probe_error`。缺少上游用量头时仍记录采样
 时间；失败不会把未知用量伪造成 `0%`。
 
+Claude 账号详情还会返回脱敏的 `claude_user_agent` 指纹摘要；不会返回 OAuth token，
+也不会把任意自定义请求头暴露给管理页面。
+
 #### POST /api/admin/accounts/:id/models/probe
 
 只读并发探测账号可见的 `claude-*` 文本模型，返回 `available` 与逐模型
@@ -827,7 +852,9 @@ PATCH 端点保存。
 
 读取或更新 Claude 全局默认配置：`fingerprint_mode`（`preserve`/`force`）、
 `default_timezone` 与 `session_window_limit`。账号级调度设置可覆盖这些默认值；
-更新会热应用到运行时，不会改变已有 OAuth 凭据。
+更新会热应用到运行时且不会改变 OAuth token。`force` 会把最终 User-Agent 与
+X-Stainless 身份头收敛为账号绑定指纹；显式修改账号时区会轮换该账号的身份指纹，
+最终上游 User-Agent 会写入 UsageLog 审计字段。
 
 ### Antigravity credential and state administration
 

@@ -31,6 +31,37 @@ export interface ClaudeImportTokenRequest {
   timezone?: string
 }
 
+/** Versioned, provider-scoped Claude OAuth export. Secret-bearing fields are
+ * only returned by the administrator-only Claude export endpoint. */
+export interface ClaudeCredentialExportEntry extends ClaudeImportTokenRequest {
+  type: 'claude'
+  version: number
+  auth_kind: 'oauth'
+  plan_type?: string
+  models?: string[]
+  claude_fingerprint_mode?: 'preserve' | 'force' | ''
+  claude_user_agent?: string
+  fingerprint_headers?: Record<string, string>
+  tags?: string[]
+  group_refs?: Array<{ name: string; channel: 'claude' }>
+  enabled?: boolean
+}
+
+export interface ClaudeImportBundleItem {
+  id?: number
+  email?: string
+  ok: boolean
+  error?: string
+  warnings?: string[]
+}
+
+export interface ClaudeImportBundleResponse {
+  total: number
+  imported: number
+  failed: number
+  items: ClaudeImportBundleItem[]
+}
+
 export interface ClaudeAddAccountResponse {
   message: string
   id: number

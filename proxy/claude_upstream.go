@@ -123,6 +123,10 @@ func ExecuteClaudeMessagesRequest(ctx context.Context, account *auth.Account, re
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A retry can reuse the request context. Clear any previous attempt's
+	// observation before building this attempt so a transport failure cannot
+	// make UsageLog attribute the old upstream User-Agent to the new request.
+	resetUpstreamUserAgentAudit(ctx)
 	if account == nil {
 		return nil, ErrNoAvailableAccount()
 	}
@@ -199,8 +203,17 @@ func applyClaudeMessagesHeaders(req *http.Request, accessToken string, incoming 
 	force := auth.NormalizeClaudeFingerprintMode(fingerprintMode) == auth.ClaudeFingerprintModeForce
 	for _, name := range auth.ClaudeIdentityHeaderNames {
 		fpVal := strings.TrimSpace(fpLower[name])
-		if force && fpVal != "" {
-			req.Header.Set(name, fpVal)
+		if force {
+			// Legacy accounts may contain only a partial fingerprint. In force
+			// mode every identity header must still be deterministic; otherwise
+			// the missing field would inherit a different downstream client and
+			// silently defeat the stable-account contract.
+			if fpVal == "" {
+				fpVal = defaultClaudeIdentityHeader(name)
+			}
+			if fpVal != "" {
+				req.Header.Set(name, fpVal)
+			}
 			continue
 		}
 		if v := strings.TrimSpace(incoming.Get(name)); v != "" {
@@ -214,6 +227,38 @@ func applyClaudeMessagesHeaders(req *http.Request, accessToken string, incoming 
 	// 保底:连指纹都没有(老账号未生成指纹)时,给一个稳定的默认 UA,避免空 UA 破绽。
 	if strings.TrimSpace(req.Header.Get("User-Agent")) == "" {
 		req.Header.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
+	}
+	// Keep Claude on the same request-scoped User-Agent audit path as Codex,
+	// Grok, and WebSocket transports. Record only the final sanitized header
+	// after preserve/force resolution so the Usage page can show whether the
+	// upstream identity was actually rewritten.
+	RecordUpstreamUserAgent(req.Context(), req.Header.Get("User-Agent"))
+}
+
+// defaultClaudeIdentityHeader is a deterministic compatibility fallback for
+// legacy accounts whose persisted fingerprint predates one of the current
+// Claude Code identity headers. It is deliberately a fixed, provider-shaped
+// value rather than a per-request random value, so force mode cannot drift.
+func defaultClaudeIdentityHeader(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "user-agent":
+		return "claude-cli/2.1.220 (external, cli)"
+	case "x-app":
+		return "cli"
+	case "x-stainless-lang":
+		return "js"
+	case "x-stainless-package-version":
+		return "0.68.0"
+	case "x-stainless-os":
+		return "Linux"
+	case "x-stainless-arch":
+		return "x64"
+	case "x-stainless-runtime":
+		return "node"
+	case "x-stainless-runtime-version":
+		return "v22.11.0"
+	default:
+		return ""
 	}
 }
 
