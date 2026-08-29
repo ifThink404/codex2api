@@ -4299,6 +4299,7 @@
     "bindKindAll": "All types",
     "bindKindCodex": "Codex",
     "bindKindGrok": "Grok",
+    "bindKindClaude": "Claude",
     "bindSelectVisible": "Select visible",
     "bindSelectionSummary": "{{selected}} selected · showing {{shown}} / {{total}}",
     "bindLoadingAccounts": "Loading accounts…",
@@ -4567,11 +4568,13 @@
       "upstreamChannelCodex": "Codex",
       "upstreamChannelGrok": "Grok",
       "upstreamChannelAntigravity": "Antigravity",
+      "upstreamChannelClaude": "Claude",
       "upstreamChannelHint": {
         "auto": "No restriction: requests are routed by model to Codex, Grok, or Antigravity accounts.",
         "codex": "This key only dispatches to Codex accounts; Grok and Antigravity accounts are excluded.",
         "grok": "This key only dispatches to Grok accounts. Account mappings are applied first, then the target must be in the visible catalog or conservative defaults; an explicit model list narrows that set.",
-        "antigravity": "This key only dispatches to Google Antigravity accounts and uses the Gemini catalog."
+        "antigravity": "This key only dispatches to Google Antigravity accounts and uses the Gemini catalog.",
+        "claude": "This key only dispatches to Claude accounts and uses the Claude model catalog."
       },
       "upstreamChannelAutoTab": "Auto",
       "sectionScope": "Group / account budgets",
@@ -5467,6 +5470,13 @@
     "statScheduling": "Scheduling",
     "statBanned": "Banned",
     "statUnsampled": "Unsampled",
+    "lastSample": "Last sample",
+    "samplingState": {
+      "sampled": "Sampled",
+      "unsampled": "Unsampled",
+      "error": "Sampling failed",
+      "notSampled": "No sample yet"
+    },
     "healthBanned": "Banned",
     "planAll": "All plans",
     "authAll": "All",

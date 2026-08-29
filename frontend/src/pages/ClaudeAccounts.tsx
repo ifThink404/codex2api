@@ -1328,7 +1328,32 @@ function ClaudeAccountRow({
           <div className="flex flex-wrap items-center justify-center gap-1">
             <StatusBadge status={acc.status} errorMessage={acc.error_message} detail={cooldownReason} />
             <LiveCountdown until={acc.cooldown_until} label={t("claude.resetIn")} />
+            {acc.claude_api ? (
+              <span
+                className={cn(
+                  "inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
+                  acc.claude_usage_probe_error
+                    ? "bg-rose-50 text-rose-700 ring-rose-600/20 dark:bg-rose-950 dark:text-rose-300"
+                    : acc.claude_usage_probe_at
+                      ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-300"
+                      : "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-950 dark:text-amber-300",
+                )}
+                title={acc.claude_usage_probe_error || t("claude.samplingState.notSampled")}
+              >
+                {acc.claude_usage_probe_error
+                  ? t("claude.samplingState.error")
+                  : acc.claude_usage_probe_at
+                    ? t("claude.samplingState.sampled")
+                    : t("claude.samplingState.unsampled")}
+              </span>
+            ) : null}
           </div>
+          {acc.claude_api ? (
+            <div className="text-[10px] text-muted-foreground" title={acc.claude_usage_probe_error || undefined}>
+              {t("claude.lastSample")}: {acc.claude_usage_probe_at ? formatRelativeShort(acc.claude_usage_probe_at, t) : t("claude.samplingState.notSampled")}
+              {acc.claude_usage_probe_error ? ` · ${acc.claude_usage_probe_error}` : ""}
+            </div>
+          ) : null}
           <AccountHealthBar buckets={healthBuckets} />
         </div>
       </td>

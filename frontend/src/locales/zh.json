@@ -4299,6 +4299,7 @@
     "bindKindAll": "全部类型",
     "bindKindCodex": "Codex",
     "bindKindGrok": "Grok",
+    "bindKindClaude": "Claude",
     "bindSelectVisible": "全选当前列表",
     "bindSelectionSummary": "已选 {{selected}} · 显示 {{shown}} / 共 {{total}}",
     "bindLoadingAccounts": "正在加载账号…",
@@ -4567,11 +4568,13 @@
       "upstreamChannelCodex": "Codex",
       "upstreamChannelGrok": "Grok",
       "upstreamChannelAntigravity": "Antigravity",
+      "upstreamChannelClaude": "Claude",
       "upstreamChannelHint": {
         "auto": "不限渠道：请求按模型路由到 Codex、Grok 或 Antigravity 账号。",
         "codex": "该 Key 只调度 Codex 账号，不会使用 Grok 或 Antigravity 账号。",
         "grok": "该 Key 只调度 Grok 账号；先应用账号模型映射，再要求目标位于可见目录或保守默认集，显式模型列表只会进一步收窄。",
-        "antigravity": "该 Key 只调度 Google Antigravity 账号，并使用 Gemini 模型目录。"
+        "antigravity": "该 Key 只调度 Google Antigravity 账号，并使用 Gemini 模型目录。",
+        "claude": "该 Key 只调度 Claude 账号，并使用 Claude 模型目录。"
       },
       "upstreamChannelAutoTab": "自动",
       "sectionScope": "分组 / 账号预算",
@@ -5467,6 +5470,13 @@
     "statScheduling": "调度中",
     "statBanned": "封禁",
     "statUnsampled": "未采样",
+    "lastSample": "最后采样",
+    "samplingState": {
+      "sampled": "已采样",
+      "unsampled": "未采样",
+      "error": "采样失败",
+      "notSampled": "暂无采样"
+    },
     "healthBanned": "封禁",
     "planAll": "全部套餐",
     "authAll": "全部",
