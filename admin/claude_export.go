@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/codex2api/auth"
@@ -578,8 +579,8 @@ func normalizeClaudeImportTags(tags []string) ([]string, error) {
 		if value == "" {
 			continue
 		}
-		if utf8.RuneCountInString(value) > 40 {
-			return nil, errors.New("tags contains an item longer than 40 characters")
+		if err := validateClaudeImportMetadata(value, "tags", 40); err != nil {
+			return nil, err
 		}
 		key := strings.ToLower(value)
 		if _, exists := seen[key]; exists {
@@ -592,6 +593,21 @@ func normalizeClaudeImportTags(tags []string) ([]string, error) {
 		return nil, errors.New("tags contains more than 32 items")
 	}
 	return out, nil
+}
+
+func validateClaudeImportMetadata(value, field string, maxRunes int) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid UTF-8", field)
+	}
+	if maxRunes > 0 && utf8.RuneCountInString(value) > maxRunes {
+		return fmt.Errorf("%s exceeds %d characters", field, maxRunes)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || r == 0x7f {
+			return fmt.Errorf("%s contains a control character", field)
+		}
+	}
+	return nil
 }
 
 func normalizeClaudeImportModels(models []string) ([]string, error) {
@@ -635,8 +651,8 @@ func normalizeClaudeGroupRefs(refs []claudeGroupRef) ([]claudeGroupRef, error) {
 		if name == "" {
 			continue
 		}
-		if utf8.RuneCountInString(name) > 80 {
-			return nil, errors.New("group_refs contains a name longer than 80 characters")
+		if err := validateClaudeImportMetadata(name, "group_refs.name", 80); err != nil {
+			return nil, err
 		}
 		channel := strings.TrimSpace(ref.Channel)
 		if channel == "" {
@@ -676,6 +692,20 @@ func claudeImportDocumentFromWire(raw claudeImportWire) (claudeImportDocument, e
 	refreshToken := strings.TrimSpace(raw.RefreshToken)
 	if accessToken == "" || refreshToken == "" {
 		return claudeImportDocument{}, errors.New("Claude credential requires access_token and refresh_token")
+	}
+	for _, metadata := range []struct {
+		field    string
+		value    string
+		maxRunes int
+	}{
+		{field: "email", value: strings.TrimSpace(raw.Email), maxRunes: 320},
+		{field: "name", value: strings.TrimSpace(raw.Name), maxRunes: 120},
+		{field: "account_id", value: strings.TrimSpace(raw.AccountID), maxRunes: 128},
+		{field: "plan_type", value: strings.TrimSpace(raw.PlanType), maxRunes: 80},
+	} {
+		if err := validateClaudeImportMetadata(metadata.value, metadata.field, metadata.maxRunes); err != nil {
+			return claudeImportDocument{}, err
+		}
 	}
 	timezone := strings.TrimSpace(raw.Timezone)
 	if err := validateAccountTimezone(timezone); err != nil {
