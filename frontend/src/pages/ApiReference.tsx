@@ -1274,6 +1274,7 @@ curl --request POST \\
       "plan_type": "team",
       "status": "active",
       "models": ["claude-haiku-4-5", "claude-sonnet-4-5"],
+      "claude_user_agent": "claude-cli/<version> (external, cli)",
       "claude_usage_probe_at": "2026-08-30T01:23:45Z",
       "usage_percent_5h": 12.5,
       "usage_percent_7d": 8.2
@@ -1359,8 +1360,8 @@ curl --request POST \\
         path="/api/admin/accounts/claude/import"
         title={copy('导入 Claude Token JSON', 'Import Claude token JSON')}
         description={copy(
-          '导入 cmd/claude_login -out 产出的凭据。access_token 与 refresh_token 必填；凭据仅放在请求体中，不要写入 URL、日志或工单。',
-          'Import credentials produced by cmd/claude_login -out. access_token and refresh_token are required; keep credentials in the request body and never place them in URLs, logs, or tickets.',
+          '导入 cmd/claude_login 或 Claude 专用导出端点生成的凭据。支持单对象、数组和 accounts bundle；会恢复标签、分组名称映射、时区与稳定指纹。access_token 与 refresh_token 必填。',
+          'Import credentials produced by cmd/claude_login or the Claude export endpoint. Single objects, arrays, and accounts bundles restore tags, name-based group mappings, timezone, and the stable fingerprint. access_token and refresh_token are required.',
         )}
         apiKey={firstKey}
         baseUrl={baseUrl}
@@ -1396,6 +1397,44 @@ curl --request POST \\
 }` },
           { code: 400, body: `{"error":"access_token 与 refresh_token 均为必填"}` },
           { code: 409, body: `{"error":"Claude 账号已存在 (id=42)"}` },
+        ]}
+      />
+
+      <EndpointDoc
+        id="claude-export"
+        method="GET"
+        path="/api/admin/accounts/claude/export"
+        title={copy('导出 Claude 完整凭据', 'Export complete Claude credentials')}
+        description={copy(
+          '管理员专用高敏下载。ids 可精确选择账号，filter=healthy 只导出健康账号；format=auto|json|zip 控制 JSON/ZIP 输出。仅携带 Claude 身份头，不导出 Authorization、Cookie、API Key 或实例内分组 ID。',
+          'Admin-only secret download. ids selects exact accounts, filter=healthy limits the export to healthy accounts, and format=auto|json|zip selects JSON or ZIP output. Only Claude identity headers are included—never Authorization, Cookie, API keys, or instance-local group IDs.',
+        )}
+        apiKey={firstKey}
+        baseUrl={baseUrl}
+        allKeys={allKeys}
+        curlExample={`curl --request GET \\
+  --url '${baseUrl}/api/admin/accounts/claude/export?ids=42&filter=all&format=json' \\
+  --header 'X-Admin-Key: <admin_secret>' \\
+  --output claude-account.json`}
+        responseExamples={[
+          { code: 200, body: `{
+  "type": "claude",
+  "version": 1,
+  "auth_kind": "oauth",
+  "email": "user@example.com",
+  "access_token": "<access-token>",
+  "refresh_token": "<refresh-token>",
+  "account_id": "<anthropic-account-id>",
+  "timezone": "Asia/Shanghai",
+  "claude_fingerprint_mode": "force",
+  "fingerprint_headers": {
+    "User-Agent": "claude-cli/<version> (external, cli)"
+  },
+  "tags": ["production"],
+  "group_refs": [{"name":"Claude production","channel":"claude"}],
+  "enabled": true
+}` },
+          { code: 404, body: `{"error":"no exportable Claude accounts"}` },
         ]}
       />
 

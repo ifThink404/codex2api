@@ -299,12 +299,13 @@ export default function AccountDetailSheet({
         account.openai_responses_api ||
         (isGrok && account.grok_auth_kind !== "oauth")),
   );
-  // auth.json / 额度券是 Codex 订阅路径专属，Grok/Claude 不展示。
-  const showAuthJson = Boolean(account && !isGrok && !isClaude);
+  // 凭据导出由各 provider 自己决定格式；Claude 使用专用安全导出端点，
+  // Grok 仍由其专用页面处理。旧的 Codex auth.json 行为保持不变。
+  const showAuthJson = Boolean(account && !isGrok);
   const showResetCredits = Boolean(account && !isGrok && !isClaude);
   const authJsonDisabled = Boolean(
     account &&
-      (authJsonExporting || account.at_only || account.openai_responses_api || isClaude),
+      (authJsonExporting || (!isClaude && (account.at_only || account.openai_responses_api))),
   );
   const resetCredits = account?.rate_limit_reset_credits ?? 0;
   const healthLabel = (() => {
@@ -904,7 +905,7 @@ export default function AccountDetailSheet({
                   onClick={onGenerateAuthJson}
                 >
                   <FileJson className="size-3.5" />
-                  {t("accounts.actionAuthJson")}
+                  {isClaude ? t("claude.exportCredential") : t("accounts.actionAuthJson")}
                 </Button>
               )}
               <Button

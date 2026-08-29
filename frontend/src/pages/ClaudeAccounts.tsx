@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   X,
@@ -20,9 +20,12 @@ import {
   Loader2,
   FlaskConical,
   SlidersHorizontal,
+  Download,
+  Upload,
 } from "lucide-react";
 
 import { api, getAdminKey } from "../api";
+import type { NamedBlob } from "../api";
 import type { ProxyRow } from "../api";
 import type {
   AccountRow,
@@ -31,7 +34,7 @@ import type {
   AccountEmailDomainFacet,
   AccountPageStatsItem,
   AccountHealthBucket,
-  ClaudeImportTokenRequest,
+  ClaudeCredentialExportEntry,
 } from "../types";
 import AccountUsageModal from "../components/AccountUsageModal";
 import AccountDetailSheet from "../components/AccountDetailSheet";
@@ -43,6 +46,7 @@ import AccountQuotaDistributionChart from "../components/AccountQuotaDistributio
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
 import type { AccountAnalysisResponse } from "../types";
 import { ProxyField } from "../components/ProxyField";
+import ChipInput from "../components/ChipInput";
 import { AccountGroupManagerModal, ACCOUNT_GROUP_COLORS } from "../components/AccountGroupManagerModal";
 import { Select } from "../components/ui/select";
 import ChannelLogo from "../components/ChannelLogo";
@@ -67,6 +71,12 @@ import { useToast } from "../hooks/useToast";
 import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import { getErrorMessage } from "../utils/error";
 import { getAccountStatusBadgeStatus } from "../lib/usageFormat";
+import {
+  CLAUDE_TIMEZONE_CUSTOM,
+  CLAUDE_TIMEZONE_OPTIONS,
+  claudeTimezoneLabel,
+  findClaudeTimezoneOption,
+} from "../lib/claudeAccountOptions";
 
 const FALLBACK_GROUP_COLOR = "#2563eb";
 function normalizeGroupColor(color?: string): string {
@@ -162,6 +172,20 @@ async function maybeOfferSaveProxyToPool(
   } catch (error) {
     showToast(getErrorMessage(error), "error");
   }
+}
+
+// downloadNamedBlob 处理管理员凭据导出。文件名只信任后端的安全响应头，
+// 缺省时使用固定回退名；对象 URL 使用后立即回收，避免大号池导出长期占内存。
+function downloadNamedBlob(payload: NamedBlob, fallbackName: string): void {
+  const objectURL = URL.createObjectURL(payload.blob)
+  const anchor = document.createElement("a")
+  anchor.href = objectURL
+  anchor.download = payload.filename || fallbackName
+  anchor.rel = "noopener"
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectURL), 1000)
 }
 
 // avatarInitial 头像首字母。
@@ -411,6 +435,9 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   const [groups, setGroups] = useState<AccountGroup[]>([]);
 
   const [showAdd, setShowAdd] = useState(false);
+  const [addInitialTab, setAddInitialTab] = useState<"oauth" | "import">("oauth");
+  const [exporting, setExporting] = useState(false);
+  const [authJsonExportingIds, setAuthJsonExportingIds] = useState<Set<number>>(new Set());
   const [showManageGroups, setShowManageGroups] = useState(false);
   const [assignTarget, setAssignTarget] = useState<AccountRow | null>(null);
   const [usageTarget, setUsageTarget] = useState<AccountRow | null>(null);
@@ -999,6 +1026,46 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
 
   // ── 批量操作 ──────────────────────────────────────────────
   const selectedIds = useMemo(() => Array.from(selected), [selected]);
+
+  const handleExport = useCallback(async (scope: "all" | "healthy" | "selected") => {
+    if (scope === "selected" && selectedIds.length === 0) return;
+    const ids = scope === "selected" ? selectedIds : undefined;
+    const ok = await confirm({
+      title: scope === "selected" ? t("claude.exportSelectedConfirmTitle") : t("claude.exportConfirmTitle"),
+      description: scope === "selected"
+        ? t("claude.exportSelectedConfirmDescription", { count: selectedIds.length })
+        : t("claude.exportConfirmDescription"),
+    });
+    if (!ok) return;
+    setExporting(true);
+    try {
+      const result = await api.exportClaudeAccounts(ids, scope === "healthy" ? "healthy" : "all");
+      downloadNamedBlob(result, "codex2api-claude-credentials.json");
+      showToast(t("claude.exportSuccess", { count: result.count ?? (ids?.length || 1) }), "success");
+    } catch (error) {
+      showToast(t("claude.exportFailed") + ": " + getErrorMessage(error), "error");
+    } finally {
+      setExporting(false);
+    }
+  }, [confirm, selectedIds, showToast, t]);
+
+  const handleExportOne = useCallback(async (account: AccountRow) => {
+    setAuthJsonExportingIds((current) => new Set(current).add(account.id));
+    try {
+      const result = await api.exportClaudeAccounts([account.id], "all");
+      downloadNamedBlob(result, `claude-account-${account.id}.json`);
+      showToast(t("claude.exportSuccess", { count: result.count ?? 1 }), "success");
+    } catch (error) {
+      showToast(t("claude.exportFailed") + ": " + getErrorMessage(error), "error");
+    } finally {
+      setAuthJsonExportingIds((current) => {
+        const next = new Set(current);
+        next.delete(account.id);
+        return next;
+      });
+    }
+  }, [showToast, t]);
+
   const toggleSelect = useCallback((id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -1114,10 +1181,36 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
             <Button variant="outline" size="sm" onClick={() => void handleRefreshAllModels()}>
               {t("claude.refreshAllModels")}
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={exporting}
+              onClick={() => void handleExport(selectedIds.length > 0 ? "selected" : "all")}
+            >
+              <Download className="size-3.5" />
+              {exporting ? t("claude.exporting") : selectedIds.length > 0 ? t("claude.exportSelected") : t("claude.exportAll")}
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setShowManageGroups(true)}>
               {t("claude.manageGroups")}
             </Button>
-            <Button onClick={() => setShowAdd(true)}>{t("claude.addAccount")}</Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAddInitialTab("import");
+                setShowAdd(true);
+              }}
+            >
+              <Upload className="size-3.5" />
+              {t("claude.importCredentials")}
+            </Button>
+            <Button
+              onClick={() => {
+                setAddInitialTab("oauth");
+                setShowAdd(true);
+              }}
+            >
+              {t("claude.addAccount")}
+            </Button>
           </div>
         }
       />
@@ -1482,6 +1575,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         <ClaudeAddModal
           proxies={proxyPool}
           groups={claudeGroups}
+          initialTab={addInitialTab}
           onClose={() => setShowAdd(false)}
           onAdded={() => {
             setShowAdd(false);
@@ -1531,6 +1625,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         <EditAccountModal
           account={editTarget}
           proxies={proxyPool}
+          tagOptions={tags}
           onClose={() => setEditTarget(null)}
           onSaved={() => {
             setEditTarget(null);
@@ -1586,7 +1681,8 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.subscriptionPlan")}</span><span>{(() => { const badge = claudePlanBadge(detailTarget.plan_type || "claude"); return <span className={badge.cls}>{badge.label}</span>; })()}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.subscriptionExpires")}</span><span className="text-right">{formatShortDateTime(detailTarget.subscription_expires_at)?.label ?? t("claude.metadataUnknown")}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.fingerprintModeLabel")}</span><span className="text-right">{detailTarget.claude_fingerprint_mode === "force" ? t("claude.fpForce") : detailTarget.claude_fingerprint_mode === "preserve" ? t("claude.fpPreserve") : t("claude.fpFollowGlobal")}</span></div>
-                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.timezoneLabel")}</span><span className="text-right">{detailTarget.timezone || t("claude.metadataUnknown")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.timezoneLabel")}</span><span className="max-w-[250px] text-right">{detailTarget.timezone ? claudeTimezoneLabel(detailTarget.timezone) : t("claude.metadataUnknown")}</span></div>
+                <div className="flex items-start justify-between gap-3"><span className="shrink-0 text-muted-foreground">{t("claude.upstreamUserAgent")}</span><span className="max-w-[260px] break-all text-right font-mono text-[10px]">{detailTarget.claude_user_agent || t("claude.uaNotConfigured")}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.modelsLabel")}</span><span className="max-w-[230px] text-right">{detailTarget.models?.length ? t("claude.modelsWhitelistCount", { count: normalizeClaudeModelList(detailTarget.models).length }) : t("claude.modelsWhitelistAll")}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.lastSample")}</span><span title={detailTarget.claude_usage_probe_at ? formatShortDateTime(detailTarget.claude_usage_probe_at)?.title : undefined}>{detailTarget.claude_usage_probe_at ? formatRelativeShort(detailTarget.claude_usage_probe_at, t) : t("claude.samplingState.notSampled")}</span></div>
                 {detailTarget.claude_usage_probe_error ? <div className="break-words text-rose-600 dark:text-rose-300">{detailTarget.claude_usage_probe_error}</div> : null}
@@ -1598,7 +1694,8 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
           onUsage={() => { setUsageTarget(detailTarget); closeDetail(); }}
           onTest={() => { closeDetail(); setTestingTarget(detailTarget); }}
           onRefresh={() => void handleRefresh(detailTarget)}
-          onGenerateAuthJson={() => undefined}
+          authJsonExporting={authJsonExportingIds.has(detailTarget.id)}
+          onGenerateAuthJson={() => void handleExportOne(detailTarget)}
           onToggleEnabled={() => void handleToggleEnabled(detailTarget)}
           onToggleLock={() => void handleToggleLock(detailTarget)}
           onResetStatus={() => void handleResetStatus(detailTarget)}
@@ -2207,11 +2304,13 @@ function AssignGroupsModal({
 function EditAccountModal({
   account,
   proxies,
+  tagOptions,
   onClose,
   onSaved,
 }: {
   account: AccountRow;
   proxies: ProxyRow[];
+  tagOptions: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -2219,7 +2318,7 @@ function EditAccountModal({
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
   const [proxyUrl, setProxyUrl] = useState(account.proxy_url ?? "");
-  const [tags, setTags] = useState((account.tags ?? []).join(", "));
+  const [tags, setTags] = useState<string[]>(account.tags ?? []);
   const [priority, setPriority] = useState(
     account.scheduler_priority != null ? String(account.scheduler_priority) : "",
   );
@@ -2239,6 +2338,9 @@ function EditAccountModal({
     (account.claude_fingerprint_mode as "" | "preserve" | "force") ?? "",
   );
   const [timezone, setTimezone] = useState(account.timezone ?? "");
+  const [timezoneCustom, setTimezoneCustom] = useState(
+    Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
+  );
   const [busy, setBusy] = useState(false);
 
   const parseNum = (v: string): number | null => {
@@ -2253,10 +2355,7 @@ function EditAccountModal({
     try {
       await api.updateAccountScheduler(account.id, {
         proxy_url: proxyUrl.trim() || null,
-        tags: tags
-          .split(/[,，]/)
-          .map((s) => s.trim())
-          .filter(Boolean),
+        tags,
         scheduler_priority: parseNum(priority),
         score_bias_override: parseNum(scoreBias),
         base_concurrency_override: parseNum(concurrency),
@@ -2286,6 +2385,14 @@ function EditAccountModal({
 
   const selectCls =
     "h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring";
+  const timezoneChoice = timezoneCustom
+    ? CLAUDE_TIMEZONE_CUSTOM
+    : findClaudeTimezoneOption(timezone)?.value ?? (timezone.trim() ? CLAUDE_TIMEZONE_CUSTOM : "");
+  const timezoneOptions = [
+    { value: "", label: t("claude.timezoneUnset") },
+    ...CLAUDE_TIMEZONE_OPTIONS,
+    { value: CLAUDE_TIMEZONE_CUSTOM, label: t("claude.timezoneCustom") },
+  ];
 
   return (
     <Modal
@@ -2327,7 +2434,25 @@ function EditAccountModal({
           )}
           {field(
             t("claude.timezoneLabelEdit"),
-            <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Asia/Shanghai" />,
+            <div className="space-y-1.5">
+              <Select
+                value={timezoneChoice}
+                onValueChange={(value) => {
+                  if (value === CLAUDE_TIMEZONE_CUSTOM) {
+                    setTimezoneCustom(true);
+                    if (findClaudeTimezoneOption(timezone)) setTimezone("");
+                    return;
+                  }
+                  setTimezoneCustom(false);
+                  setTimezone(value);
+                }}
+                options={timezoneOptions}
+              />
+              {timezoneCustom ? (
+                <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Asia/Shanghai" />
+              ) : null}
+              {timezone ? <p className="text-[10px] text-muted-foreground">{claudeTimezoneLabel(timezone)}</p> : null}
+            </div>,
             t("claude.timezoneHint"),
           )}
         </div>
@@ -2369,7 +2494,13 @@ function EditAccountModal({
         {/* 标签 */}
         {field(
           t("claude.tagsLabel"),
-          <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t("claude.tagsPlaceholder")} />,
+          <ChipInput
+            value={tags}
+            onChange={setTags}
+            options={tagOptions}
+            placeholder={t("claude.tagsPlaceholder")}
+            maxVisible={8}
+          />,
         )}
       </div>
       {confirmDialog}
@@ -2711,23 +2842,26 @@ function ClaudeTestModal({
 function ClaudeAddModal({
   proxies,
   groups,
+  initialTab = "oauth",
   onClose,
   onAdded,
 }: {
   proxies: ProxyRow[];
   groups: AccountGroup[];
+  initialTab?: "oauth" | "import";
   onClose: () => void;
   onAdded: () => void;
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
-  const [tab, setTab] = useState<"oauth" | "import">("oauth");
+  const [tab, setTab] = useState<"oauth" | "import">(initialTab);
 
   const [proxyUrl, setProxyUrl] = useState("");
   const [useProxyPool, setUseProxyPool] = useState(false);
   const [name, setName] = useState("");
   const [timezone, setTimezone] = useState("");
+  const [timezoneCustom, setTimezoneCustom] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [groupIds, setGroupIds] = useState<Set<number>>(new Set());
 
@@ -2735,6 +2869,7 @@ function ClaudeAddModal({
   const [state, setState] = useState("");
   const [callback, setCallback] = useState("");
   const [tokenJson, setTokenJson] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const toggleGroup = useCallback((id: number) => {
     setGroupIds((prev) => {
@@ -2797,32 +2932,66 @@ function ClaudeAddModal({
   }, [callback, name, onAdded, proxyUrl, proxies, confirm, showToast, state, t, timezone, useProxyPool, applyGroups]);
 
   const submitImport = useCallback(async () => {
-    let parsed: Partial<ClaudeImportTokenRequest>;
+    let parsed: Record<string, unknown> | unknown[];
     try {
-      parsed = JSON.parse(tokenJson) as Partial<ClaudeImportTokenRequest>;
+      const decoded = JSON.parse(tokenJson) as unknown;
+      if (!decoded || typeof decoded !== "object") throw new Error("object required");
+      parsed = decoded as Record<string, unknown> | unknown[];
     } catch {
       showToast(t("claude.invalidJson"), "error");
       return;
     }
-    if (!parsed.access_token || !parsed.refresh_token) {
+    const documents = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed.accounts)
+        ? parsed.accounts
+        : [parsed];
+    const firstDocument = documents[0];
+    if (!firstDocument || typeof firstDocument !== "object" || Array.isArray(firstDocument)
+      || typeof (firstDocument as Record<string, unknown>).access_token !== "string"
+      || typeof (firstDocument as Record<string, unknown>).refresh_token !== "string") {
       showToast(t("claude.invalidJson"), "error");
       return;
     }
+    const hasImportedProxy = documents.some((document) =>
+      Boolean(document && typeof document === "object" && !Array.isArray(document)
+        && typeof (document as Record<string, unknown>).proxy_url === "string"
+        && String((document as Record<string, unknown>).proxy_url).trim()),
+    );
+    if (hasImportedProxy && !useProxyPool && !proxyUrl.trim()) {
+      const keepImportedProxy = await confirm({
+        title: t("claude.importProxyConfirmTitle"),
+        description: t("claude.importProxyConfirmDescription"),
+      });
+      if (!keepImportedProxy) return;
+    }
     setSubmitting(true);
     try {
-      const res = await api.importClaudeToken({
-        access_token: parsed.access_token,
-        refresh_token: parsed.refresh_token,
-        email: parsed.email,
-        account_id: parsed.account_id,
-        expires_at: parsed.expires_at,
-        name: name.trim() || undefined,
-        proxy_url: useProxyPool ? undefined : proxyUrl.trim() || undefined,
-        use_proxy_pool: useProxyPool || undefined,
-        timezone: timezone.trim() || undefined,
-      });
-      await applyGroups(res?.id);
-      showToast(t("claude.added"), "success");
+      const selectedGroupRefs = groups
+        .filter((group) => groupIds.has(group.id))
+        .map((group) => ({ name: group.name, channel: "claude" as const }));
+      const applyOverrides = (document: unknown): ClaudeCredentialExportEntry => {
+        const source = document as Record<string, unknown>;
+        return {
+          ...source,
+          name: name.trim() || source.name,
+          proxy_url: useProxyPool ? undefined : proxyUrl.trim() || source.proxy_url,
+          use_proxy_pool: useProxyPool || undefined,
+          timezone: timezone.trim() || source.timezone,
+          ...(selectedGroupRefs.length > 0 && !Array.isArray(source.group_refs)
+            ? { group_refs: selectedGroupRefs }
+            : {}),
+        } as unknown as ClaudeCredentialExportEntry;
+      };
+      const payload = Array.isArray(parsed)
+        ? documents.map(applyOverrides)
+        : Array.isArray(parsed.accounts)
+          ? { ...parsed, accounts: documents.map(applyOverrides) }
+          : applyOverrides(parsed);
+      const res = await api.importClaudeCredentialBundle(payload);
+      const imported = "imported" in res ? res.imported : ("id" in res && res.id ? 1 : 0);
+      await applyGroups("id" in res ? res.id : undefined);
+      showToast(imported > 0 ? t("claude.added") : t("claude.importNothingAdded"), imported > 0 ? "success" : "warning");
       if (!useProxyPool) await maybeOfferSaveProxyToPool(proxyUrl, proxies, confirm, showToast, t);
       onAdded();
     } catch (error) {
@@ -2830,7 +2999,24 @@ function ClaudeAddModal({
     } finally {
       setSubmitting(false);
     }
-  }, [name, onAdded, proxyUrl, proxies, confirm, showToast, t, timezone, tokenJson, useProxyPool, applyGroups]);
+  }, [groups, groupIds, name, onAdded, proxyUrl, proxies, confirm, showToast, t, timezone, tokenJson, useProxyPool, applyGroups]);
+
+  const handleImportFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      showToast(t("claude.importFileTooLarge"), "error");
+      return;
+    }
+    try {
+      setTokenJson(await file.text());
+      setTab("import");
+      showToast(t("claude.importFileLoaded"), "info");
+    } catch (error) {
+      showToast(t("claude.invalidJson") + ": " + getErrorMessage(error), "error");
+    }
+  }, [showToast, t]);
 
   const commonFields = (
     <div className="space-y-2">
@@ -2840,7 +3026,27 @@ function ClaudeAddModal({
         {t("claude.useProxyPool")}
       </label>
       <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("claude.namePlaceholder")} />
-      <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder={t("claude.timezonePlaceholder")} />
+      <div className="space-y-1">
+        <Select
+          value={timezoneCustom ? CLAUDE_TIMEZONE_CUSTOM : (findClaudeTimezoneOption(timezone)?.value ?? (timezone.trim() ? CLAUDE_TIMEZONE_CUSTOM : ""))}
+          onValueChange={(value) => {
+            if (value === CLAUDE_TIMEZONE_CUSTOM) {
+              setTimezoneCustom(true);
+              if (findClaudeTimezoneOption(timezone)) setTimezone("");
+              return;
+            }
+            setTimezoneCustom(false);
+            setTimezone(value);
+          }}
+          options={[
+            { value: "", label: t("claude.timezoneUnset") },
+            ...CLAUDE_TIMEZONE_OPTIONS,
+            { value: CLAUDE_TIMEZONE_CUSTOM, label: t("claude.timezoneCustom") },
+          ]}
+        />
+        {findClaudeTimezoneOption(timezone) ? <p className="text-[10px] text-muted-foreground">{claudeTimezoneLabel(timezone)}</p> : null}
+        {timezoneCustom ? <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder={t("claude.timezonePlaceholder")} /> : null}
+      </div>
       {groups.length > 0 ? (
         <div className="space-y-1">
           <span className="text-xs font-semibold text-muted-foreground">{t("claude.filterGroup")}</span>
@@ -2865,6 +3071,13 @@ function ClaudeAddModal({
             })}
           </div>
         </div>
+      ) : null}
+      <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+      {tab === "import" ? (
+        <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+          <Upload className="size-3.5" />
+          {t("claude.chooseCredentialFile")}
+        </Button>
       ) : null}
     </div>
   );
