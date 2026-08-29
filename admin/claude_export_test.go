@@ -499,6 +499,17 @@ func TestImportClaudeTokenArrayPreservesMetadataAndDeduplicates(t *testing.T) {
 	if duplicate.Code != http.StatusConflict {
 		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
 	}
+
+	// The provider account identifier can change independently of a refresh
+	// token.  The token must still prevent a second active account from being
+	// created under a different account_id.
+	sameRefreshToken := httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(sameRefreshToken)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/claude/import", strings.NewReader(`{"type":"claude","access_token":"at-two-new","refresh_token":"rt-two","account_id":"acct-two-rotated","models":["claude-sonnet-4-5"]}`))
+	h.ImportClaudeToken(c)
+	if sameRefreshToken.Code != http.StatusConflict {
+		t.Fatalf("same refresh token status=%d body=%s", sameRefreshToken.Code, sameRefreshToken.Body.String())
+	}
 }
 
 func TestClaudeImportPartialFingerprintHeadersAreCompleted(t *testing.T) {
