@@ -1399,6 +1399,10 @@ export default function Settings() {
     { label: t('settings.grokFollowUpEffortMedium'), value: 'medium' },
     { label: t('settings.grokFollowUpEffortHigh'), value: 'high' },
   ]
+  const grokQualityGuardOnExhaustedOptions = [
+    { label: t('settings.grokQualityGuardFailClosed'), value: 'fail_closed' },
+    { label: t('settings.grokQualityGuardFailOpen'), value: 'fail_open' },
+  ]
   const clientCompatOptions = [
     { label: t('settings.clientCompatPreserve'), value: 'preserve' },
     { label: t('settings.clientCompatAuto'), value: 'auto' },
@@ -1517,6 +1521,11 @@ export default function Settings() {
     grok_follow_up_effort_enabled: false,
     grok_follow_up_tool_effort: 'medium',
     grok_follow_up_small_effort: 'low',
+    grok_quality_guard_enabled: false,
+    grok_quality_guard_max_attempts: 6,
+    grok_quality_guard_hold_timeout_sec: 30,
+    grok_quality_guard_on_exhausted: 'fail_closed',
+    grok_quality_guard_account_cooldown_hours: 12,
     grok_oauth_client_id: '',
     max_retries: 2,
     max_rate_limit_retries: 1,
@@ -3180,6 +3189,90 @@ export default function Settings() {
                     disabled={!settingsForm.grok_follow_up_effort_enabled}
                     onValueChange={(value) => autoSaveStringField('grok_follow_up_small_effort', value)}
                     options={grokFollowUpEffortOptions}
+                  />
+                </SettingField>
+              </div>
+              <div className={SETTINGS_SWITCH_GRID}>
+                <SettingField label={t('settings.grokQualityGuardEnabled')} description={t('settings.grokQualityGuardEnabledDesc')} layout="switch">
+                  <Switch
+                    checked={settingsForm.grok_quality_guard_enabled}
+                    onCheckedChange={(checked) => autoSaveBooleanField('grok_quality_guard_enabled', checked)}
+                  />
+                </SettingField>
+              </div>
+              <div className={SETTINGS_FIELD_GRID_3}>
+                <SettingField
+                  label={t('settings.grokQualityGuardMaxAttempts')}
+                  description={t('settings.grokQualityGuardMaxAttemptsDesc')}
+                  suffix={t('settings.unit.times')}
+                >
+                  <DraftNumberInput
+                    min={1}
+                    max={20}
+                    step={1}
+                    integer
+                    emptyValue={6}
+                    disabled={!settingsForm.grok_quality_guard_enabled}
+                    value={settingsForm.grok_quality_guard_max_attempts ?? 6}
+                    onValueChange={(value) => {
+                      setSettingsForm(f => ({ ...f, grok_quality_guard_max_attempts: value }))
+                    }}
+                    onValueCommit={(value) => {
+                      const v = value < 1 ? 1 : value
+                      void autoSaveSettingsPatch({ grok_quality_guard_max_attempts: v })
+                    }}
+                  />
+                </SettingField>
+                <SettingField
+                  label={t('settings.grokQualityGuardHoldTimeout')}
+                  description={t('settings.grokQualityGuardHoldTimeoutDesc')}
+                  suffix={t('settings.unit.sec')}
+                >
+                  <DraftNumberInput
+                    min={5}
+                    max={300}
+                    step={5}
+                    integer
+                    emptyValue={30}
+                    disabled={!settingsForm.grok_quality_guard_enabled}
+                    value={settingsForm.grok_quality_guard_hold_timeout_sec ?? 30}
+                    onValueChange={(value) => {
+                      setSettingsForm(f => ({ ...f, grok_quality_guard_hold_timeout_sec: value }))
+                    }}
+                    onValueCommit={(value) => {
+                      const v = value < 5 ? 5 : value
+                      void autoSaveSettingsPatch({ grok_quality_guard_hold_timeout_sec: v })
+                    }}
+                  />
+                </SettingField>
+                <SettingField
+                  label={t('settings.grokQualityGuardCooldownHours')}
+                  description={t('settings.grokQualityGuardCooldownHoursDesc')}
+                  suffix={t('settings.unit.hour')}
+                >
+                  <DraftNumberInput
+                    min={1}
+                    max={168}
+                    step={1}
+                    integer
+                    emptyValue={12}
+                    disabled={!settingsForm.grok_quality_guard_enabled}
+                    value={settingsForm.grok_quality_guard_account_cooldown_hours ?? 12}
+                    onValueChange={(value) => {
+                      setSettingsForm(f => ({ ...f, grok_quality_guard_account_cooldown_hours: value }))
+                    }}
+                    onValueCommit={(value) => {
+                      const v = value < 1 ? 1 : value
+                      void autoSaveSettingsPatch({ grok_quality_guard_account_cooldown_hours: v })
+                    }}
+                  />
+                </SettingField>
+                <SettingField label={t('settings.grokQualityGuardOnExhausted')} description={t('settings.grokQualityGuardOnExhaustedDesc')}>
+                  <Select
+                    value={settingsForm.grok_quality_guard_on_exhausted || 'fail_closed'}
+                    disabled={!settingsForm.grok_quality_guard_enabled}
+                    onValueChange={(value) => autoSaveStringField('grok_quality_guard_on_exhausted', value)}
+                    options={grokQualityGuardOnExhaustedOptions}
                   />
                 </SettingField>
               </div>

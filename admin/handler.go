@@ -8578,6 +8578,11 @@ type settingsResponse struct {
 	GrokFollowUpEffortEnabled           bool   `json:"grok_follow_up_effort_enabled"`
 	GrokFollowUpToolEffort              string `json:"grok_follow_up_tool_effort"`
 	GrokFollowUpSmallEffort             string `json:"grok_follow_up_small_effort"`
+	GrokQualityGuardEnabled             bool   `json:"grok_quality_guard_enabled"`
+	GrokQualityGuardMaxAttempts         int    `json:"grok_quality_guard_max_attempts"`
+	GrokQualityGuardHoldTimeoutSec      int    `json:"grok_quality_guard_hold_timeout_sec"`
+	GrokQualityGuardOnExhausted         string `json:"grok_quality_guard_on_exhausted"`
+	GrokQualityGuardCooldownHours       int    `json:"grok_quality_guard_account_cooldown_hours"`
 	GrokOAuthClientID                   string `json:"grok_oauth_client_id"`
 	// GrokOAuthClientIDEnvOverride 为 true 时，环境变量 GROK_OAUTH_CLIENT_ID 正压着上面这个设置，
 	// 前端据此提示「当前以环境变量为准」。GrokOAuthClientIDEffective 是实际生效值。
@@ -8749,6 +8754,11 @@ type updateSettingsReq struct {
 	GrokFollowUpEffortEnabled           *bool                            `json:"grok_follow_up_effort_enabled"`
 	GrokFollowUpToolEffort              *string                          `json:"grok_follow_up_tool_effort"`
 	GrokFollowUpSmallEffort             *string                          `json:"grok_follow_up_small_effort"`
+	GrokQualityGuardEnabled             *bool                            `json:"grok_quality_guard_enabled"`
+	GrokQualityGuardMaxAttempts         *int                             `json:"grok_quality_guard_max_attempts"`
+	GrokQualityGuardHoldTimeoutSec      *int                             `json:"grok_quality_guard_hold_timeout_sec"`
+	GrokQualityGuardOnExhausted         *string                          `json:"grok_quality_guard_on_exhausted"`
+	GrokQualityGuardCooldownHours       *int                             `json:"grok_quality_guard_account_cooldown_hours"`
 	GrokOAuthClientID                   *string                          `json:"grok_oauth_client_id"`
 	AntigravityOAuthClients             *[]antigravityOAuthClientPayload `json:"antigravity_oauth_clients"`
 	AntigravityOAuthClientKey           *string                          `json:"antigravity_oauth_client_key"`
@@ -9333,8 +9343,8 @@ func currentAntigravityOAuthSettingsView() antigravityOAuthSettingsView {
 	}
 }
 
-// encodeGrokConfig 把 Grok 会话粘性模式 + 定期探测 + 限流重试 + 续轮思考配置编码成 grok_config JSON 落库。
-func encodeGrokConfig(affinityMode string, probeEnabled bool, probeIntervalMinutes int, maxRateLimitRetries int, oauthClientID string, followUp auth.GrokFollowUpEffortConfig) string {
+// encodeGrokConfig 把 Grok 会话粘性模式 + 定期探测 + 限流重试 + 续轮思考 + 降智检测配置编码成 grok_config JSON 落库。
+func encodeGrokConfig(affinityMode string, probeEnabled bool, probeIntervalMinutes int, maxRateLimitRetries int, oauthClientID string, followUp auth.GrokFollowUpEffortConfig, qualityGuard auth.GrokQualityGuardConfig) string {
 	mode := strings.TrimSpace(affinityMode)
 	switch mode {
 	case auth.AffinityModeFollow, auth.AffinityModeBounded, auth.AffinityModeOff, auth.AffinityModeStrict:
@@ -9351,15 +9361,21 @@ func encodeGrokConfig(affinityMode string, probeEnabled bool, probeIntervalMinut
 		maxRateLimitRetries = 0
 	}
 	followUp = auth.NormalizeGrokFollowUpEffortConfig(followUp)
+	qualityGuard = auth.NormalizeGrokQualityGuardConfig(qualityGuard)
 	b, err := json.Marshal(map[string]any{
-		"affinity_mode":            mode,
-		"probe_enabled":            probeEnabled,
-		"probe_interval_minutes":   probeIntervalMinutes,
-		"max_rate_limit_retries":   maxRateLimitRetries,
-		"oauth_client_id":          auth.NormalizeGrokOAuthClientID(oauthClientID),
-		"follow_up_effort_enabled": followUp.Enabled,
-		"follow_up_tool_effort":    followUp.ToolEffort,
-		"follow_up_small_effort":   followUp.SmallEffort,
+		"affinity_mode":                        mode,
+		"probe_enabled":                        probeEnabled,
+		"probe_interval_minutes":               probeIntervalMinutes,
+		"max_rate_limit_retries":               maxRateLimitRetries,
+		"oauth_client_id":                      auth.NormalizeGrokOAuthClientID(oauthClientID),
+		"follow_up_effort_enabled":             followUp.Enabled,
+		"follow_up_tool_effort":                followUp.ToolEffort,
+		"follow_up_small_effort":               followUp.SmallEffort,
+		"quality_guard_enabled":                qualityGuard.Enabled,
+		"quality_guard_max_attempts":           qualityGuard.MaxAttempts,
+		"quality_guard_hold_timeout_sec":       qualityGuard.HoldTimeoutSec,
+		"quality_guard_on_exhausted":           qualityGuard.OnExhausted,
+		"quality_guard_account_cooldown_hours": qualityGuard.AccountCooldownHours,
 	})
 	if err != nil {
 		return `{"affinity_mode":"strict"}`
@@ -9566,6 +9582,11 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		GrokFollowUpEffortEnabled:           h.store.GrokFollowUpEffortConfig().Enabled,
 		GrokFollowUpToolEffort:              h.store.GrokFollowUpEffortConfig().ToolEffort,
 		GrokFollowUpSmallEffort:             h.store.GrokFollowUpEffortConfig().SmallEffort,
+		GrokQualityGuardEnabled:             h.store.GrokQualityGuardConfig().Enabled,
+		GrokQualityGuardMaxAttempts:         h.store.GrokQualityGuardConfig().MaxAttempts,
+		GrokQualityGuardHoldTimeoutSec:      h.store.GrokQualityGuardConfig().HoldTimeoutSec,
+		GrokQualityGuardOnExhausted:         h.store.GrokQualityGuardConfig().OnExhausted,
+		GrokQualityGuardCooldownHours:       h.store.GrokQualityGuardConfig().AccountCooldownHours,
 		GrokOAuthClientID:                   auth.ConfiguredGrokOAuthClientID(),
 		GrokOAuthClientIDEnvOverride:        auth.GrokOAuthClientIDFromEnv() != "",
 		GrokOAuthClientIDEffective:          auth.EffectiveGrokOAuthClientID(),
@@ -10452,6 +10473,29 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: grok_follow_up_effort enabled=%v tool=%s small=%s", cfg.Enabled, cfg.ToolEffort, cfg.SmallEffort)
 	}
 
+	if req.GrokQualityGuardEnabled != nil || req.GrokQualityGuardMaxAttempts != nil || req.GrokQualityGuardHoldTimeoutSec != nil || req.GrokQualityGuardOnExhausted != nil || req.GrokQualityGuardCooldownHours != nil {
+		cfg := h.store.GrokQualityGuardConfig()
+		if req.GrokQualityGuardEnabled != nil {
+			cfg.Enabled = *req.GrokQualityGuardEnabled
+		}
+		if req.GrokQualityGuardMaxAttempts != nil {
+			cfg.MaxAttempts = *req.GrokQualityGuardMaxAttempts
+		}
+		if req.GrokQualityGuardHoldTimeoutSec != nil {
+			cfg.HoldTimeoutSec = *req.GrokQualityGuardHoldTimeoutSec
+		}
+		if req.GrokQualityGuardOnExhausted != nil {
+			cfg.OnExhausted = *req.GrokQualityGuardOnExhausted
+		}
+		if req.GrokQualityGuardCooldownHours != nil {
+			cfg.AccountCooldownHours = *req.GrokQualityGuardCooldownHours
+		}
+		h.store.SetGrokQualityGuardConfig(cfg)
+		applied := h.store.GrokQualityGuardConfig()
+		log.Printf("设置已更新: grok_quality_guard enabled=%v max_attempts=%d hold_timeout=%ds on_exhausted=%s cooldown=%dh",
+			applied.Enabled, applied.MaxAttempts, applied.HoldTimeoutSec, applied.OnExhausted, applied.AccountCooldownHours)
+	}
+
 	// client_id 会拼进授权 URL 与 token 表单，含空白/控制字符或超长的直接拒绝，
 	// 而不是静默归一化成空——那样用户会以为存上了，实际仍在用默认值。
 	if req.GrokOAuthClientID != nil {
@@ -11083,7 +11127,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		PublicAccountPortalPageEnabled:      publicAccountPortalPageEnabled,
 		ImageStorageConfig:                  imgConfigJSON,
 		BackgroundConfig:                    encodeBackgroundConfig(bgCfg),
-		GrokConfig:                          encodeGrokConfig(h.store.GetGrokAffinityMode(), h.store.GrokProbeEnabled(), h.store.GrokProbeIntervalMinutes(), h.store.GrokMaxRateLimitRetries(), auth.ConfiguredGrokOAuthClientID(), h.store.GrokFollowUpEffortConfig()),
+		GrokConfig:                          encodeGrokConfig(h.store.GetGrokAffinityMode(), h.store.GrokProbeEnabled(), h.store.GrokProbeIntervalMinutes(), h.store.GrokMaxRateLimitRetries(), auth.ConfiguredGrokOAuthClientID(), h.store.GrokFollowUpEffortConfig(), h.store.GrokQualityGuardConfig()),
 		AutoPause5hThreshold:                h.store.GetGlobalAutoPause5hThreshold(),
 		AutoPause7dThreshold:                h.store.GetGlobalAutoPause7dThreshold(),
 		AutoPause5hGuardBandPercent:         h.store.GetAutoPause5hGuardBandPercent(),
@@ -11354,6 +11398,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		GrokFollowUpEffortEnabled:           h.store.GrokFollowUpEffortConfig().Enabled,
 		GrokFollowUpToolEffort:              h.store.GrokFollowUpEffortConfig().ToolEffort,
 		GrokFollowUpSmallEffort:             h.store.GrokFollowUpEffortConfig().SmallEffort,
+		GrokQualityGuardEnabled:             h.store.GrokQualityGuardConfig().Enabled,
+		GrokQualityGuardMaxAttempts:         h.store.GrokQualityGuardConfig().MaxAttempts,
+		GrokQualityGuardHoldTimeoutSec:      h.store.GrokQualityGuardConfig().HoldTimeoutSec,
+		GrokQualityGuardOnExhausted:         h.store.GrokQualityGuardConfig().OnExhausted,
+		GrokQualityGuardCooldownHours:       h.store.GrokQualityGuardConfig().AccountCooldownHours,
 		MaxRetries:                          h.store.GetMaxRetries(),
 		MaxRateLimitRetries:                 h.store.GetMaxRateLimitRetries(),
 		RetryIntervalMS:                     h.store.GetRetryIntervalMS(),

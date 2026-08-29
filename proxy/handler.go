@@ -3797,6 +3797,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	capacityShedRetries := map[int64]int{}
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
+	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
@@ -4150,6 +4151,29 @@ func (h *Handler) Responses(c *gin.Context) {
 					return
 				}
 				h.sendFinalUpstreamError(c, resp.StatusCode, errBody)
+				return
+			}
+			// Grok 降智检测:拿到 200 后先扣流判定,缺思考即丢弃响应换号(issue #587)。
+			// 默认关闭;放行时 resp.Body 已替换为无损前缀回放,后续转发字节级不变。
+			switch h.applyGrokQualityGuard(c, grokQualityGuardArgs{
+				Ctx: c.Request.Context(), Account: account, Resp: resp,
+				Inbound: GrokProtocolResponses, IsStream: isStream,
+				Endpoint: "/v1/responses", UpstreamPath: upstreamEndpoint,
+				LogModel: logModel, EffectiveModel: attemptLogEffectiveModel,
+				GateModel: attemptEffectiveModel, ReasoningEffort: reasoningEffort,
+				RawBody: rawBody, UpstreamBody: upstreamBody,
+				Start: start, Attempt: attempt, Attempts: &grokQualityAttempts,
+			}) {
+			case grokQualityGuardRetry:
+				stopTTFTGuard()
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				retryExclusions.MarkHard(account.ID())
+				continue
+			case grokQualityGuardFailClosed:
+				stopTTFTGuard()
+				h.store.Release(account)
+				h.sendGrokNativeHTTPError(c, GrokProtocolResponses, grokQualityDegradedOutcome())
 				return
 			}
 			// Catch-all streaming may need to discard this entire attempt after a
@@ -6521,6 +6545,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	capacityShedRetries := map[int64]int{}
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
+	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
@@ -6797,6 +6822,28 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 
 		SyncCodexUsageState(h.store, account, resp)
+		// Grok 降智检测:拿到 200 后先扣流判定,缺思考即丢弃响应换号(issue #587)。
+		switch h.applyGrokQualityGuard(c, grokQualityGuardArgs{
+			Ctx: c.Request.Context(), Account: account, Resp: resp,
+			Inbound: GrokProtocolChatCompletions, IsStream: isStream,
+			Endpoint: "/v1/chat/completions", UpstreamPath: upstreamEndpoint,
+			LogModel: logModel, EffectiveModel: attemptLogEffectiveModel,
+			GateModel: attemptEffectiveModel, ReasoningEffort: reasoningEffort,
+			RawBody: rawBody, ResponsesBody: codexBody,
+			Start: start, Attempt: attempt, Attempts: &grokQualityAttempts,
+		}) {
+		case grokQualityGuardRetry:
+			ttftGuard.Stop()
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			retryExclusions.MarkHard(account.ID())
+			continue
+		case grokQualityGuardFailClosed:
+			ttftGuard.Stop()
+			h.store.Release(account)
+			h.sendGrokNativeHTTPError(c, GrokProtocolChatCompletions, grokQualityDegradedOutcome())
+			return
+		}
 		if isGrokNativeRouteResponse(resp) {
 			downstreamFlusher, _ := c.Writer.(http.Flusher)
 			streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)

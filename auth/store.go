@@ -3342,6 +3342,7 @@ type Store struct {
 	grokProbeIntervalMin     atomic.Int64 // 定期探测间隔（分钟，默认 30，下限 grokProbeMinIntervalMinutes）
 	grokMaxRateLimitRetry    atomic.Int64 // Grok 请求限流(429)专属换号重试上限（0=跟随全局）
 	grokFollowUpEffort       atomic.Value // GrokFollowUpEffortConfig
+	grokQualityGuard         atomic.Value // GrokQualityGuardConfig（降智检测,issue #587）
 	modelCooldownSettings    atomic.Value // database.ModelCooldownSettings
 	promptFilterConfig       atomic.Value // promptFilterConfigState
 	sessionMu                sync.RWMutex
@@ -3871,6 +3872,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.SetGrokProbeConfig(grokProbeConfigFromConfig(settings.GrokConfig))
 	s.SetGrokMaxRateLimitRetries(grokMaxRateLimitRetriesFromConfig(settings.GrokConfig))
 	s.SetGrokFollowUpEffortConfig(GrokFollowUpEffortConfigFromJSON(settings.GrokConfig))
+	s.SetGrokQualityGuardConfig(GrokQualityGuardConfigFromJSON(settings.GrokConfig))
 	SetConfiguredGrokOAuthClientID(grokOAuthClientIDFromConfig(settings.GrokConfig))
 	if settings.ModelMapping != "" {
 		s.modelMapping.Store(settings.ModelMapping)
@@ -7872,6 +7874,19 @@ func (s *Store) GrokFollowUpEffortConfig() GrokFollowUpEffortConfig {
 		return v
 	}
 	return DefaultGrokFollowUpEffortConfig()
+}
+
+// SetGrokQualityGuardConfig 热更新 Grok 降智检测配置（归一化后存储）。
+func (s *Store) SetGrokQualityGuardConfig(cfg GrokQualityGuardConfig) {
+	s.grokQualityGuard.Store(NormalizeGrokQualityGuardConfig(cfg))
+}
+
+// GrokQualityGuardConfig 返回 Grok 降智检测配置（默认关闭）。
+func (s *Store) GrokQualityGuardConfig() GrokQualityGuardConfig {
+	if v, ok := s.grokQualityGuard.Load().(GrokQualityGuardConfig); ok {
+		return v
+	}
+	return DefaultGrokQualityGuardConfig()
 }
 
 // SetGrokMaxRateLimitRetries 热更新 Grok 专属限流重试上限（<0 视为 0=跟随全局）。

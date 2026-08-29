@@ -465,6 +465,7 @@ func (h *Handler) Messages(c *gin.Context) {
 
 	capacityShedRetries := map[int64]int{}
 	var affinityGuard auth.SessionAffinityGuard
+	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
@@ -801,6 +802,28 @@ func (h *Handler) Messages(c *gin.Context) {
 				return
 			}
 			sendAnthropicError(c, resp.StatusCode, errType, msg)
+			return
+		}
+		// Grok 降智检测:拿到 200 后先扣流判定,缺思考即丢弃响应换号(issue #587)。
+		switch h.applyGrokQualityGuard(c, grokQualityGuardArgs{
+			Ctx: c.Request.Context(), Account: account, Resp: resp,
+			Inbound: GrokProtocolMessages, IsStream: isStream,
+			Endpoint: "/v1/messages", UpstreamPath: upstreamEndpoint,
+			LogModel: model, EffectiveModel: attemptEffectiveModel,
+			GateModel: attemptEffectiveModel, ReasoningEffort: reasoningEffort,
+			RawBody: rawBody,
+			Start:   start, Attempt: attempt, Attempts: &grokQualityAttempts,
+		}) {
+		case grokQualityGuardRetry:
+			ttftGuard.Stop()
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			retryExclusions.MarkHard(account.ID())
+			continue
+		case grokQualityGuardFailClosed:
+			ttftGuard.Stop()
+			h.store.Release(account)
+			h.sendGrokNativeHTTPError(c, GrokProtocolMessages, grokQualityDegradedOutcome())
 			return
 		}
 		if isGrokNativeRouteResponse(resp) {

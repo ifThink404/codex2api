@@ -1730,6 +1730,11 @@ export interface SystemSettings {
   grok_follow_up_effort_enabled?: boolean
   grok_follow_up_tool_effort?: string
   grok_follow_up_small_effort?: string
+  grok_quality_guard_enabled?: boolean
+  grok_quality_guard_max_attempts?: number
+  grok_quality_guard_hold_timeout_sec?: number
+  grok_quality_guard_on_exhausted?: string
+  grok_quality_guard_account_cooldown_hours?: number
   grok_oauth_client_id?: string
   /** 环境变量 GROK_OAUTH_CLIENT_ID 是否正压着上面的设置（只读，后端下发）。 */
   grok_oauth_client_id_env_override?: boolean
