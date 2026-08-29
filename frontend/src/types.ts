@@ -178,6 +178,8 @@ export interface AccountRow {
   antigravity_auth_kind?: 'oauth' | 'api_key' | string
   agent_identity?: boolean
   grok_auth_kind?: string
+  /** Safe, allowlisted User-Agent observed/generated for Claude upstream calls. */
+  claude_user_agent?: string
   grok_plan?: GrokPlanInfo
   grok_billing?: GrokBillingDetail
   // 上游逐请求返回的配额余量(x-ratelimit-* 头),运行时快照
