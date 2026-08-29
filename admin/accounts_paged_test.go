@@ -557,6 +557,15 @@ func TestBuildAccountQuotaAnalysisExcludesErrorFromUnsampled(t *testing.T) {
 	}
 }
 
+func TestBuildAccountQuotaAnalysisTreatsClaudePlanAsFiveHourEligible(t *testing.T) {
+	item := &accountListSnapshotItem{PlanType: "claude-max-5x", UsagePercent5h: 42, UsagePercent5hOK: true,
+		UsagePercent7d: 61, UsagePercent7dOK: true, Row: &database.AccountRow{Credentials: map[string]interface{}{"upstream_type": auth.UpstreamClaude}}}
+	got := buildAccountQuotaAnalysis([]*accountListSnapshotItem{item}, "5h")
+	if got.Total != 1 || got.Sampled != 1 || got.AverageUsed == nil || *got.AverageUsed != 42 {
+		t.Fatalf("Claude 5h quota = %+v, want sampled Claude account", got)
+	}
+}
+
 func TestCombineAccountStatsState(t *testing.T) {
 	if got := combineAccountStatsState("ready", "stale"); got != "stale" {
 		t.Fatalf("ready+stale=%q", got)

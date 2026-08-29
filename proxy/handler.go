@@ -378,15 +378,33 @@ func (h *Handler) applyUpstreamChannelFilter(c *gin.Context, effectiveModel stri
 		return combine(grokChannelAccountFilter(effectiveModel))
 	case database.UpstreamChannelAntigravity:
 		return combine(antigravityChannelAccountFilter(effectiveModel))
+	case database.UpstreamChannelClaude:
+		return combine(claudeChannelAccountFilter(effectiveModel))
 	case database.UpstreamChannelCodex:
 		return func(account *auth.Account) bool {
-			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() {
+			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() {
 				return false
 			}
 			return filter == nil || filter(account)
 		}
 	}
 	return filter
+}
+
+func claudeChannelAccountFilter(model string) auth.AccountFilter {
+	model = strings.TrimSpace(model)
+	return func(account *auth.Account) bool {
+		return account != nil && account.IsClaudeOAuth() &&
+			!account.IsModelRateLimited(model) && claudeAccountSupportsModel(account, model)
+	}
+}
+
+// excludeClaudeAccountsFilter fences the native-Messages-only Claude provider
+// from OpenAI Responses and Chat Completions routes.
+func excludeClaudeAccountsFilter(filter auth.AccountFilter) auth.AccountFilter {
+	return func(account *auth.Account) bool {
+		return account != nil && !account.IsClaudeOAuth() && (filter == nil || filter(account))
+	}
 }
 
 // grokChannelAccountFilter 是 grok 渠道 Key 的账号过滤器：仅 Grok 账号；
@@ -1328,6 +1346,8 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 					input.Channel = database.UpstreamChannelGrok
 				case acc.IsAntigravityAPI():
 					input.Channel = database.UpstreamChannelAntigravity
+				case acc.IsClaudeOAuth():
+					input.Channel = database.UpstreamChannelClaude
 				}
 			}
 		}
@@ -3720,6 +3740,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
 	}
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
+	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -6454,6 +6475,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeAntigravityAccountsFilter(accountFilter)
+	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)

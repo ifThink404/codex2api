@@ -24,6 +24,59 @@ func TestProbeUsageSnapshotRejectsAntigravity(t *testing.T) {
 	}
 }
 
+func TestProbeUsageSnapshotClaudeUsesAnthropicMessagesOnly(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	account := &auth.Account{DBID: 77, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	store.AddAccount(account)
+	called := false
+	h := &Handler{store: store, executeClaudeUsageProbe: func(_ context.Context, acc *auth.Account, body []byte) (*http.Response, error) {
+		called = true
+		if acc != account || !strings.Contains(string(body), `"max_tokens":1`) {
+			t.Fatalf("unexpected Claude probe request: account=%p body=%s", acc, body)
+		}
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"msg_probe"}`))}
+		resp.Header.Set("anthropic-ratelimit-unified-5h-utilization", "0.25")
+		resp.Header.Set("anthropic-ratelimit-unified-5h-reset", "4102444800")
+		resp.Header.Set("anthropic-ratelimit-unified-7d-utilization", "0.4")
+		resp.Header.Set("anthropic-ratelimit-unified-7d-reset", "4103049600")
+		return resp, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err != nil {
+		t.Fatalf("ProbeUsageSnapshot() error = %v", err)
+	}
+	if !called {
+		t.Fatal("Claude probe callback was not called")
+	}
+	if got := account.UsagePercent5h; got != 25 {
+		t.Fatalf("5h usage = %v, want 25", got)
+	}
+	if got := account.UsagePercent7d; got != 40 {
+		t.Fatalf("7d usage = %v, want 40", got)
+	}
+}
+
+func TestProbeUsageSnapshotClaudePersistsRejectedFiveHourLimit(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	account := &auth.Account{DBID: 78, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	store.AddAccount(account)
+	h := &Handler{store: store, executeClaudeUsageProbe: func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"type":"rate_limit_error"}}`))}
+		resp.Header.Set("anthropic-ratelimit-unified-5h-utilization", "1")
+		resp.Header.Set("anthropic-ratelimit-unified-5h-reset", "4102444800")
+		resp.Header.Set("anthropic-ratelimit-unified-status", "rejected")
+		return resp, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err == nil {
+		t.Fatal("Claude 429 probe should return an error to the queue")
+	}
+	if got := account.RuntimeStatus(); got != "rate_limited" && got != "cooldown" && got != auth.ResponsesRateLimitedCooldownReason {
+		t.Fatalf("Claude rejected status = %q, want a rate-limited cooldown", got)
+	}
+	if !account.UsagePercent5hValid || account.UsagePercent5h != 100 {
+		t.Fatalf("Claude 5h snapshot = (%v, %t), want 100%% valid", account.UsagePercent5h, account.UsagePercent5hValid)
+	}
+}
+
 func TestShouldMarkUsageProbeAccountError(t *testing.T) {
 	tests := []struct {
 		name       string

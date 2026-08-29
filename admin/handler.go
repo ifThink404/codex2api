@@ -45,21 +45,24 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	store                  *auth.Store
-	cache                  cache.TokenCache
-	db                     *database.DB
-	cacheCfgStore          responseCacheSettingsStore
-	rateLimiter            *proxy.RateLimiter
-	systemUpdate           *systemUpdater
-	systemUpdateOnce       sync.Once
-	refreshAccount         func(context.Context, int64) error
-	probeUsage             func(context.Context, *auth.Account) error
-	activate5hWindow       func(context.Context, *auth.Account) error
-	executeUsageProbe      usageProbeRequestFunc
-	syncAccountPlanOnReset func(context.Context, *auth.Account) error
-	queryResetCredits      func(context.Context, *auth.Account, string) (*proxy.WhamResetCreditsList, *http.Response, error)
-	consumeResetCredit     func(context.Context, *auth.Account, string, string) (*proxy.WhamResetResult, *http.Response, error)
-	queryWhamDailyUsage    func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyUsageResponse, *http.Response, error)
+	store            *auth.Store
+	cache            cache.TokenCache
+	db               *database.DB
+	cacheCfgStore    responseCacheSettingsStore
+	rateLimiter      *proxy.RateLimiter
+	systemUpdate     *systemUpdater
+	systemUpdateOnce sync.Once
+	refreshAccount   func(context.Context, int64) error
+	probeUsage       func(context.Context, *auth.Account) error
+	// executeClaudeUsageProbe is injectable for tests; production uses the
+	// provider-native Anthropic Messages request directly.
+	executeClaudeUsageProbe func(context.Context, *auth.Account, []byte) (*http.Response, error)
+	activate5hWindow        func(context.Context, *auth.Account) error
+	executeUsageProbe       usageProbeRequestFunc
+	syncAccountPlanOnReset  func(context.Context, *auth.Account) error
+	queryResetCredits       func(context.Context, *auth.Account, string) (*proxy.WhamResetCreditsList, *http.Response, error)
+	consumeResetCredit      func(context.Context, *auth.Account, string, string) (*proxy.WhamResetResult, *http.Response, error)
+	queryWhamDailyUsage     func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyUsageResponse, *http.Response, error)
 	// 列表 page-stats 发现当前页缺少官方结算快照时，按账号做即时回补；
 	// last/in-flight 避免翻页或前端重试把同一号打爆上游，failedAt 给持续
 	// 失败的账号更长的冷却，syncedOnce 记录「成功同步过但上游没有数据」
@@ -1404,6 +1407,7 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 		database.UpstreamChannelCodex:       {},
 		database.UpstreamChannelGrok:        {},
 		database.UpstreamChannelAntigravity: {},
+		database.UpstreamChannelClaude:      {},
 	}
 	counts.total = len(rows)
 	for _, row := range rows {
@@ -1418,6 +1422,8 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 			channel = database.UpstreamChannelGrok
 		} else if strings.EqualFold(upstreamType, auth.UpstreamAntigravity) {
 			channel = database.UpstreamChannelAntigravity
+		} else if strings.EqualFold(upstreamType, auth.UpstreamClaude) {
+			channel = database.UpstreamChannelClaude
 		}
 		usingCredits := false
 		acc := runtimeByID[row.ID]
@@ -1431,6 +1437,8 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 			usingCredits = acc.UsingCredits()
 			if acc.IsGrokAPI() {
 				channel = database.UpstreamChannelGrok
+			} else if acc.IsClaudeOAuth() {
+				channel = database.UpstreamChannelClaude
 			}
 		}
 		perChannel := channelCounts[channel]
@@ -11730,6 +11738,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 	catalog, _ := proxy.ListModelCatalog(c.Request.Context(), h.db)
 	catalog.GrokModels = h.grokChannelModels()
 	catalog.AntigravityModels = h.antigravityChannelModels()
+	catalog.ClaudeModels = h.claudeChannelModels()
 	c.JSON(http.StatusOK, catalog)
 }
 

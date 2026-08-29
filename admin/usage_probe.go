@@ -63,6 +63,12 @@ func (h *Handler) ProbeUsageSnapshot(ctx context.Context, account *auth.Account)
 	if account == nil {
 		return nil
 	}
+	// Claude Code OAuth credentials are Anthropic-only. Never send them to the
+	// ChatGPT WHAM or Responses probe: those endpoints use a different token
+	// issuer and a false 401 would incorrectly quarantine a valid account.
+	if account.IsClaudeOAuth() {
+		return h.probeUsageViaClaudeMessages(ctx, account)
+	}
 	if account.IsAntigravityAPI() {
 		return errors.New("Antigravity 账号请使用专用配额刷新，不能执行 Codex wham 探针")
 	}
@@ -120,6 +126,56 @@ func (h *Handler) ProbeUsageSnapshot(ctx context.Context, account *auth.Account)
 
 	// 2) Fallback: 原有的 /responses 最小探针
 	return h.probeUsageViaResponses(ctx, account)
+}
+
+// probeUsageViaClaudeMessages sends a bounded, non-streaming Anthropic Messages
+// request and records the unified 5h/7d rate-limit headers. A probe failure is
+// returned to the import queue but does not itself ban the account; only an
+// explicit rejected/rate-limit response is reflected by SyncClaudeUsageState.
+func (h *Handler) probeUsageViaClaudeMessages(ctx context.Context, account *auth.Account) error {
+	if account == nil {
+		return nil
+	}
+	model := "claude-haiku-4-5"
+	if models := proxy.DefaultClaudeModelIDsForAccount(account); len(models) > 0 && strings.TrimSpace(models[0]) != "" {
+		model = strings.TrimSpace(models[0])
+	}
+	body := []byte(fmt.Sprintf(`{"model":%q,"max_tokens":1,"messages":[{"role":"user","content":"ping"}],"stream":false}`, model))
+	var (
+		resp *http.Response
+		err  error
+	)
+	if h != nil && h.executeClaudeUsageProbe != nil {
+		resp, err = h.executeClaudeUsageProbe(ctx, account, body)
+	} else {
+		proxyURL := ""
+		fingerprintMode := ""
+		if h != nil && h.store != nil {
+			proxyURL = h.store.ResolveProxyForAccount(account)
+			fingerprintMode = account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
+		}
+		resp, err = proxy.ExecuteClaudeMessagesRequest(ctx, account, body, proxyURL, nil, fingerprintMode)
+	}
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return errors.New("Claude Messages probe returned nil response")
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if h != nil && h.store != nil {
+		proxy.SyncClaudeUsageState(h.store, account, resp)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Do not mark unauthorized here: OAuth token failures need corroboration
+		// from real Claude traffic, while rate-limit state was already synced.
+		return fmt.Errorf("Claude Messages probe returned status %d", resp.StatusCode)
+	}
+	if h != nil && h.store != nil {
+		h.store.ReportRequestSuccess(account, 0)
+	}
+	return nil
 }
 
 // probeUsageViaWham 通过 /backend-api/wham/usage 拉取用量，

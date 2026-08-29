@@ -2958,7 +2958,7 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	if a.usageProbeInFlight || a.AccessToken == "" || a.Status == StatusError {
 		return false
 	}
-	if a.isRelayStyleLocked() {
+	if a.isRelayStyleLocked() && !a.isClaudeOAuthLocked() {
 		return false // wham 探针是 ChatGPT 专属；中转/Grok 账号没有该端点
 	}
 	if a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
@@ -2969,7 +2969,7 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	// 因此用独立的 resetCreditsProbedAt 判断它是否过期。否则活跃账号的用量快照被
 	// 业务流量持续刷新，会让用量看起来一直"新鲜"，从而长期不触发 wham 探针、
 	// 重置次数迟迟探测不出来。
-	resetCreditsStale := a.resetCreditsProbedAt.IsZero() || now.Sub(a.resetCreditsProbedAt) > maxAge
+	resetCreditsStale := !a.isClaudeOAuthLocked() && (a.resetCreditsProbedAt.IsZero() || now.Sub(a.resetCreditsProbedAt) > maxAge)
 
 	if a.premium5hRateLimitedLocked(now) {
 		// premium 5h 限流期间仍允许 wham 刷新重置次数；是否补 Responses
@@ -8796,11 +8796,15 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 			return false
 		}
 	case database.UpstreamChannelCodex:
-		if acc.IsGrokAPI() || acc.IsAntigravityAPI() {
+		if acc.IsGrokAPI() || acc.IsAntigravityAPI() || acc.IsClaudeOAuth() {
 			return false
 		}
 	case database.UpstreamChannelAntigravity:
 		if !acc.IsAntigravityAPI() {
+			return false
+		}
+	case database.UpstreamChannelClaude:
+		if !acc.IsClaudeOAuth() {
 			return false
 		}
 	}

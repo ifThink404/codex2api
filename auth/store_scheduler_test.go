@@ -488,6 +488,20 @@ func TestNeedsUsageProbeAllowsReadyAccount(t *testing.T) {
 	}
 }
 
+func TestNeedsUsageProbeAllowsClaudeAndRefreshesStaleSnapshot(t *testing.T) {
+	acc := &Account{UpstreamType: UpstreamClaude, AccessToken: "claude-token", Status: StatusReady}
+	if !acc.NeedsUsageProbe(10 * time.Minute) {
+		t.Fatal("Claude account should be eligible for an initial usage probe")
+	}
+	acc.SetUsageSnapshot5hAt(12, time.Now(), time.Now())
+	acc.SetReset7dAt(time.Now().Add(24 * time.Hour))
+	acc.UsagePercent7dValid = true
+	acc.UsageUpdatedAt = time.Now()
+	if acc.NeedsUsageProbe(10 * time.Minute) {
+		t.Fatal("Claude account with fresh snapshots should not be probed again")
+	}
+}
+
 func TestNeedsUsageProbeRefreshesStaleResetCreditsDespiteFreshUsage(t *testing.T) {
 	now := time.Now()
 	// 核心修复：账号用量快照很新鲜（活跃账号被业务流量持续刷新），

@@ -1482,3 +1482,16 @@ func accountListSubscriptionPlan(plan string) bool {
 		return false
 	}
 }
+
+// accountList5hQuotaEligible keeps provider-specific subscription semantics in
+// one place. Claude OAuth plans (pro/max-5x/max-20x/team) expose a rolling 5h
+// window even though they are not Codex plan names.
+func accountList5hQuotaEligible(item *accountListSnapshotItem) bool {
+	if item == nil {
+		return false
+	}
+	if item.Row != nil && strings.EqualFold(strings.TrimSpace(item.Row.GetCredential("upstream_type")), auth.UpstreamClaude) {
+		return strings.TrimSpace(item.PlanType) != ""
+	}
+	return accountListSubscriptionPlan(item.PlanType)
+}

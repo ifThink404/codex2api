@@ -385,6 +385,9 @@ func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name,
 	})
 
 	h.db.InsertAccountEventAsync(id, "added", source)
+	// Keep Claude imports on the bounded warmup queue. ProbeUsageSnapshot routes
+	// this account to Anthropic Messages and never to WHAM/Responses.
+	h.scheduleImportedAccountWarmup(h.store.FindByID(id), id, source)
 	security.SecurityAuditLog("CLAUDE_ACCOUNT_ADDED", fmt.Sprintf("account_id=%d ip=%s", id, c.ClientIP()))
 	c.JSON(http.StatusOK, gin.H{
 		"message": "成功添加 Claude 账号",
