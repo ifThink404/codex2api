@@ -502,6 +502,16 @@ func TestNeedsUsageProbeAllowsClaudeAndRefreshesStaleSnapshot(t *testing.T) {
 	}
 }
 
+func TestSetAPIKeyUpstreamChannelAcceptsClaude(t *testing.T) {
+	store := NewStore(nil, nil, nil)
+	defer store.Stop()
+
+	store.SetAPIKeyUpstreamChannel(42, " Claude ")
+	if got := store.APIKeyUpstreamChannel(42); got != database.UpstreamChannelClaude {
+		t.Fatalf("API key upstream channel = %q, want %q", got, database.UpstreamChannelClaude)
+	}
+}
+
 func TestNeedsUsageProbeRefreshesStaleResetCreditsDespiteFreshUsage(t *testing.T) {
 	now := time.Now()
 	// 核心修复：账号用量快照很新鲜（活跃账号被业务流量持续刷新），
