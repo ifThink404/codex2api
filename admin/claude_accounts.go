@@ -542,7 +542,11 @@ func (h *Handler) createClaudeAccount(ctx context.Context, name, proxyURL, timez
 			h.mergeDuplicateMu.Unlock()
 			return claudeAccountCreateResult{}, &claudeAccountCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("Claude 账号已存在 (id=%d)", row.ID)}
 		}
-		if accountUUID == "" && strings.TrimSpace(row.GetCredential("refresh_token")) == strings.TrimSpace(td.RefreshToken) {
+		// A refresh token is itself a stable credential identity. Check it even
+		// when the provider also supplied an account_id; providers may rotate or
+		// omit that identifier while leaving the same refresh token valid.
+		if refreshToken := strings.TrimSpace(td.RefreshToken); refreshToken != "" &&
+			strings.TrimSpace(row.GetCredential("refresh_token")) == refreshToken {
 			h.mergeDuplicateMu.Unlock()
 			return claudeAccountCreateResult{}, &claudeAccountCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("Claude 凭据已存在 (id=%d)", row.ID)}
 		}
