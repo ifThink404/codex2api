@@ -577,6 +577,16 @@ func TestClaudeBatchImportCanSkipPerAccountModelFetch(t *testing.T) {
 	}
 }
 
+func TestClaudeImportWarmupSkipsExplicitlyDisabledAccounts(t *testing.T) {
+	disabled := false
+	if shouldScheduleClaudeImportWarmup(&claudeAccountImportOptions{Enabled: &disabled}) {
+		t.Fatal("explicitly disabled Claude imports must not schedule a warmup probe")
+	}
+	if !shouldScheduleClaudeImportWarmup(&claudeAccountImportOptions{}) {
+		t.Fatal("legacy/unspecified Claude imports should retain warmup behavior")
+	}
+}
+
 func TestClaudeCreateMetadataFailureReturnsCommittedWarning(t *testing.T) {
 	db := newTestAdminDB(t)
 	h := &Handler{db: db}

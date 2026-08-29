@@ -413,6 +413,10 @@ func claudePlanOrDefault(plan string) string {
 	return "claude"
 }
 
+func shouldScheduleClaudeImportWarmup(opts *claudeAccountImportOptions) bool {
+	return opts == nil || opts.Enabled == nil || *opts.Enabled
+}
+
 func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name, proxyURL, timezone string, td *auth.ClaudeTokenData, source string) {
 	created, err := h.createClaudeAccount(ctx, name, proxyURL, timezone, td, source, nil)
 	if err != nil {
@@ -595,7 +599,7 @@ func (h *Handler) createClaudeAccount(ctx context.Context, name, proxyURL, timez
 	h.db.InsertAccountEventAsync(id, "added", source)
 	// Keep Claude imports on the bounded warmup queue. ProbeUsageSnapshot routes
 	// this account to Anthropic Messages and never to WHAM/Responses.
-	if h.store != nil {
+	if h.store != nil && shouldScheduleClaudeImportWarmup(opts) {
 		h.scheduleImportedAccountWarmup(h.store.FindByID(id), id, source)
 	}
 	return claudeAccountCreateResult{ID: id, Email: email, Warnings: warnings}, nil
