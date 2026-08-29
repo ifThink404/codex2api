@@ -587,6 +587,32 @@ func TestClaudeImportWarmupSkipsExplicitlyDisabledAccounts(t *testing.T) {
 	}
 }
 
+func TestNormalizeClaudeImportTagsRejectsControlCharacters(t *testing.T) {
+	for _, value := range []string{"line\nbreak", "null\x00byte", "unit\x1fsep"} {
+		if _, err := normalizeClaudeImportTags([]string{value}); err == nil {
+			t.Fatalf("tags value %q with control character was accepted", value)
+		}
+	}
+}
+
+func TestClaudeImportMetadataRejectsControlCharactersAndOversizedValues(t *testing.T) {
+	base := `{"type":"claude","access_token":"at-meta","refresh_token":"rt-meta","models":["claude-haiku-4-5"]}`
+	for field, value := range map[string]string{
+		"email":      "bad\nemail@example.com",
+		"account_id": "acct\x00bad",
+		"plan_type":  "plan\x1fbad",
+	} {
+		raw := strings.TrimSuffix(base, "}") + ",\"" + field + "\":\"" + value + "\"}"
+		if _, err := parseClaudeImportDocuments([]byte(raw)); err == nil {
+			t.Fatalf("metadata field %s accepted control character", field)
+		}
+	}
+	oversized := strings.TrimSuffix(base, "}") + ",\"plan_type\":\"" + strings.Repeat("x", 81) + "\"}"
+	if _, err := parseClaudeImportDocuments([]byte(oversized)); err == nil {
+		t.Fatal("oversized plan_type was accepted")
+	}
+}
+
 func TestClaudeCreateMetadataFailureReturnsCommittedWarning(t *testing.T) {
 	db := newTestAdminDB(t)
 	h := &Handler{db: db}
