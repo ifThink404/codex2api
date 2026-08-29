@@ -143,6 +143,21 @@ func TestSummarizeDashboardAccountsIncludesClaudeChannel(t *testing.T) {
 	}
 }
 
+func TestSummarizeDashboardAccountsTreatsSuccessfulClaudeProbeWithoutQuotaHeadersAsSampled(t *testing.T) {
+	row := &database.AccountRow{ID: 100, Status: "active", Enabled: true, Credentials: map[string]interface{}{
+		"upstream_type":                      auth.UpstreamClaude,
+		auth.ClaudeUsageProbeAtCredentialKey: "2026-08-29T05:00:00Z",
+	}}
+	acc := &auth.Account{DBID: 100, UpstreamType: auth.UpstreamClaude, AccessToken: "claude", Status: auth.StatusReady}
+	got, channels := summarizeDashboardAccounts([]*database.AccountRow{row}, []*auth.Account{acc})
+	if got.normal != 1 || got.rateLimited != 0 || got.abnormal != 0 {
+		t.Fatalf("dashboard counts = %+v, want successful Claude probe counted as normal", got)
+	}
+	if channels[database.UpstreamChannelClaude].normal != 1 {
+		t.Fatalf("Claude channel counts = %+v", channels[database.UpstreamChannelClaude])
+	}
+}
+
 func TestClaudeChannelModelsReturnsAccountCatalog(t *testing.T) {
 	store := auth.NewStore(nil, nil, nil)
 	store.AddAccount(&auth.Account{DBID: 100, UpstreamType: auth.UpstreamClaude, AccessToken: "claude", Models: []string{"claude-sonnet-4-5", "claude-opus-4-5"}})

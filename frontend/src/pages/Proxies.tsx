@@ -326,7 +326,7 @@ export default function Proxies() {
   const [bindSubmitting, setBindSubmitting] = useState(false);
 
   const [showBalance, setShowBalance] = useState(false);
-  const [balanceChannel, setBalanceChannel] = useState<"" | "codex" | "grok">("grok");
+  const [balanceChannel, setBalanceChannel] = useState<"" | "codex" | "grok" | "claude">("grok");
   const [balanceMode, setBalanceMode] = useState<"unbound" | "all">("unbound");
   const [balanceMaxPerProxy, setBalanceMaxPerProxy] = useState("");
   const [balanceSubmitting, setBalanceSubmitting] = useState(false);
@@ -1660,6 +1660,7 @@ export default function Proxies() {
                 [
                   ["grok", t("proxies.bindKindGrok")],
                   ["codex", t("proxies.bindKindCodex")],
+                  ["claude", t("proxies.bindKindClaude")],
                   ["", t("proxies.bindKindAll")],
                 ] as const
               ).map(([key, label]) => (

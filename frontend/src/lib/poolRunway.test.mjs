@@ -53,6 +53,10 @@ test("Claude Max plans participate in native 5h burn prediction", () => {
   );
 });
 
+test("Claude free tier does not claim a premium 5h window", () => {
+  assert.equal(isClaudeUsagePlan("free"), false);
+});
+
 test("getAccountWindowMs uses monthly seconds for team long window", () => {
   const monthly = baseAccount({
     usage_window_7d_kind: "monthly",

@@ -51,6 +51,14 @@ func TestResponsesFilterRejectsClaudeProtocol(t *testing.T) {
 	}
 }
 
+func TestResponsesCompactFilterRejectsClaudeProtocol(t *testing.T) {
+	claude := &auth.Account{DBID: 6, UpstreamType: auth.UpstreamClaude, AccessToken: "claude", Models: []string{"claude-sonnet-4-5"}}
+	filter := accountFilterForCompactResponsesModelWithOriginal("claude-sonnet-4-5", "claude-sonnet-4-5", true)
+	if filter(claude) {
+		t.Fatal("Responses Compact admitted Claude native Messages account")
+	}
+}
+
 func TestResponsesFilterAdmitsAntigravityInLazyMode(t *testing.T) {
 	account := &auth.Account{
 		DBID: 4, UpstreamType: auth.UpstreamAntigravity, AccessToken: "google-token",

@@ -379,7 +379,7 @@ export default function Dashboard() {
                     key={key}
                     className="inline-flex items-center gap-1.5 rounded-full bg-muted/80 px-3 py-1 font-semibold text-foreground ring-1 ring-border/50"
                     title={t('dashboard.heroChannelTitle', {
-                      // channel: key === 'claude' 'Claude' (Claude provider identity)
+                      // Preserve the provider identity in the tooltip for every channel.
                       channel: key === 'claude' ? 'Claude' : key === 'grok' ? 'Grok' : key === 'antigravity' ? 'Antigravity' : 'Codex',
                       available: counts.available,
                       total: counts.total,

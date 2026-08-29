@@ -62,6 +62,7 @@ func (h *Handler) buildAccountResponse(
 	isOpenAIResponsesAccount := strings.EqualFold(upstreamType, auth.UpstreamOpenAIResponses)
 	isGrokAccount := strings.EqualFold(upstreamType, auth.UpstreamGrok)
 	isAntigravityAccount := strings.EqualFold(upstreamType, auth.UpstreamAntigravity)
+	isClaudeAccount := strings.EqualFold(upstreamType, auth.UpstreamClaude)
 	antigravityAuthKind := ""
 	if isAntigravityAccount {
 		if strings.TrimSpace(row.GetCredential("api_key")) != "" {
@@ -128,7 +129,7 @@ func (h *Handler) buildAccountResponse(
 	}
 	// 指纹收敛只作用于 Codex 官方出站路径，中转/Grok 账号不暴露该字段。
 	codexFingerprintMode := ""
-	if !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount {
+	if !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount {
 		codexFingerprintMode = auth.NormalizeCodexFingerprintMode(row.GetCredential(auth.CodexFingerprintModeCredentialKey))
 	}
 	// Claude Code 指纹收敛模式 + 绑定时区,仅 Claude OAuth 账号暴露。
@@ -172,7 +173,7 @@ func (h *Handler) buildAccountResponse(
 		SubscriptionExpiresAt:    row.GetCredential("subscription_expires_at"),
 		Status:                   row.Status,
 		ErrorMessage:             row.ErrorMessage,
-		ATOnly:                   !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
+		ATOnly:                   !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
 		CreditEnabled:            row.CreditEnabled,
 		CreditSkipUsageWindow:    row.CreditSkipUsageWindow,
 		SkipWarmTier:             row.SkipWarmTier,
@@ -181,6 +182,7 @@ func (h *Handler) buildAccountResponse(
 		OpenAIResponsesAPI:       isOpenAIResponsesAccount,
 		GrokAPI:                  isGrokAccount,
 		AntigravityAPI:           isAntigravityAccount,
+		ClaudeAPI:                isClaudeAccount,
 		AntigravityAuthKind:      antigravityAuthKind,
 		AgentIdentity:            isAgentIdentityCredentialRow(row),
 		GrokAuthKind:             grokAuthKind,
@@ -215,6 +217,8 @@ func (h *Handler) buildAccountResponse(
 		UpdatedAt:                row.UpdatedAt.Format(time.RFC3339),
 		CodexUsageUpdatedAt:      row.GetCredential("codex_usage_updated_at"),
 		Codex5HUsageUpdatedAt:    row.GetCredential("codex_5h_usage_updated_at"),
+		ClaudeUsageProbeAt:       row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey),
+		ClaudeUsageProbeError:    row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey),
 		UsageLimitOverride:       ignoreUsageLimitStatusOverride,
 		UsageLimitEffective:      ignoreUsageLimitStatusEffective,
 	}

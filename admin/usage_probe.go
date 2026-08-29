@@ -13,6 +13,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -132,13 +133,46 @@ func (h *Handler) ProbeUsageSnapshot(ctx context.Context, account *auth.Account)
 // request and records the unified 5h/7d rate-limit headers. A probe failure is
 // returned to the import queue but does not itself ban the account; only an
 // explicit rejected/rate-limit response is reflected by SyncClaudeUsageState.
-func (h *Handler) probeUsageViaClaudeMessages(ctx context.Context, account *auth.Account) error {
+func (h *Handler) probeUsageViaClaudeMessages(ctx context.Context, account *auth.Account) (probeErr error) {
 	if account == nil {
 		return nil
 	}
+	defer func() {
+		// Count failed/metadata-free attempts for freshness as well. This is a
+		// bounded backoff marker, not a quota observation; it prevents a failed
+		// provider probe from being retried on every scheduler sweep.
+		account.MarkClaudeUsageObservation(time.Now())
+		h.recordClaudeUsageProbe(account, probeErr)
+	}()
 	model := "claude-haiku-4-5"
-	if models := proxy.DefaultClaudeModelIDsForAccount(account); len(models) > 0 && strings.TrimSpace(models[0]) != "" {
-		model = strings.TrimSpace(models[0])
+	if models := proxy.DefaultClaudeModelIDsForAccount(account); len(models) > 0 {
+		// Prefer a Haiku alias for the bounded probe so an account catalog
+		// ordered by premium models does not spend an Opus request merely to
+		// populate quota metadata.
+		foundHaiku := false
+		for _, candidate := range models {
+			if strings.Contains(strings.ToLower(candidate), "haiku") && strings.TrimSpace(candidate) != "" {
+				model = strings.TrimSpace(candidate)
+				foundHaiku = true
+				break
+			}
+		}
+		if !foundHaiku {
+			for _, candidate := range models {
+				candidate = strings.TrimSpace(candidate)
+				if strings.HasPrefix(strings.ToLower(candidate), "claude-") {
+					model = candidate
+					break
+				}
+			}
+		}
+	} else {
+		account.Mu().RLock()
+		explicitInvalidCatalog := len(account.Models) > 0
+		account.Mu().RUnlock()
+		if explicitInvalidCatalog {
+			return errors.New("Claude 账号模型白名单没有有效的 claude-* 模型")
+		}
 	}
 	body := []byte(fmt.Sprintf(`{"model":%q,"max_tokens":1,"messages":[{"role":"user","content":"ping"}],"stream":false}`, model))
 	var (
@@ -163,7 +197,10 @@ func (h *Handler) probeUsageViaClaudeMessages(ctx context.Context, account *auth
 		return errors.New("Claude Messages probe returned nil response")
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if readErr != nil {
+		return fmt.Errorf("读取 Claude Messages probe 响应失败: %w", readErr)
+	}
 	if h != nil && h.store != nil {
 		proxy.SyncClaudeUsageState(h.store, account, resp)
 	}
@@ -172,10 +209,53 @@ func (h *Handler) probeUsageViaClaudeMessages(ctx context.Context, account *auth
 		// from real Claude traffic, while rate-limit state was already synced.
 		return fmt.Errorf("Claude Messages probe returned status %d", resp.StatusCode)
 	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return fmt.Errorf("Claude Messages probe returned an empty body")
+	}
+	// Anthropic normally uses a non-2xx status for errors, but a proxy or
+	// compatibility layer may wrap a native error in HTTP 200. Do not mark
+	// such a response as a successful sample.
+	if !gjson.ValidBytes(body) {
+		return fmt.Errorf("Claude Messages probe returned an invalid JSON payload")
+	}
+	typeName := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "type").String()))
+	if typeName == "error" {
+		return fmt.Errorf("Claude Messages probe returned an error payload")
+	}
+	if typeName != "message" {
+		return fmt.Errorf("Claude Messages probe returned an invalid message payload")
+	}
 	if h != nil && h.store != nil {
 		h.store.ReportRequestSuccess(account, 0)
 	}
 	return nil
+}
+
+// recordClaudeUsageProbe persists only the outcome metadata needed by the
+// account-management UI. It never changes account health/cooldown state and a
+// persistence failure is intentionally best-effort: sampling must not block
+// request routing or turn a valid OAuth token into an error account.
+func (h *Handler) recordClaudeUsageProbe(account *auth.Account, probeErr error) {
+	if h == nil || h.db == nil || account == nil || account.DBID <= 0 {
+		return
+	}
+	fields := map[string]interface{}{
+		auth.ClaudeUsageProbeAtCredentialKey:    time.Now().UTC().Format(time.RFC3339),
+		auth.ClaudeUsageProbeErrorCredentialKey: "",
+	}
+	if probeErr != nil {
+		fields[auth.ClaudeUsageProbeErrorCredentialKey] = security.SafeTruncate(security.SanitizeLog(strings.TrimSpace(probeErr.Error())), 300)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.db.UpdateCredentials(ctx, account.DBID, fields); err != nil {
+		log.Printf("[账号 %d] 持久化 Claude 用量采样状态失败: %v", account.DBID, err)
+		return
+	}
+	// The paged account list is projection-backed and may be cached for up to
+	// 30s on large pools. Expire only the Claude snapshot so the next silent
+	// poll observes this attempt without disturbing Codex/Grok pages.
+	h.invalidateClaudeCatalogCaches()
 }
 
 // probeUsageViaWham 通过 /backend-api/wham/usage 拉取用量，

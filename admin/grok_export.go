@@ -267,12 +267,17 @@ func grokExportDownloadName(count int, ext string) string {
 }
 
 // accountRowToExportEntry 按平台分派导出形态：Grok/xAI 账号走 Grok CLI 超集形态，
-// 其余走 CPA(codex) 形态。
+// 传统 Codex 账号走 CPA 形态。Claude OAuth 不进入这个通用导出端点：其 token
+// 不是 Codex auth.json，误导出为 type:"codex" 会导致回灌协议错误并扩大凭据暴露面。
 //
 // 通用导出端点原先对所有账号硬编码 type:"codex"，Grok 账号既被标错类型、又丢掉
 // client_id / token_endpoint / oidc_issuer / principal_* —— 导出的文件回灌必然失败
 // （导入侧对 client_id 是硬要求）。这里按平台分派修掉该问题。
 func accountRowToExportEntry(row *database.AccountRow) (any, bool) {
+	if row != nil && (strings.EqualFold(strings.TrimSpace(row.Platform), "anthropic") ||
+		strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), auth.UpstreamClaude)) {
+		return nil, false
+	}
 	if isGrokAccountRow(row) {
 		entry, ok := grokAccountRowToExportEntry(row)
 		if !ok {

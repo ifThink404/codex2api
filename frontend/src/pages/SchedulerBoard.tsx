@@ -104,6 +104,8 @@ export default function SchedulerBoard() {
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize))
   const currentPage = Math.min(page, totalPages)
   const pagedAccounts = spotlightAccounts
+  const selectedTotal = data.summary?.total ?? 0
+  const selectedAvailable = data.summary?.active ?? 0
 
   // 筛选/排序变更时重置页码
   useEffect(() => {
@@ -167,7 +169,7 @@ export default function SchedulerBoard() {
           <>
             <div className="mb-6 grid grid-cols-2 gap-2.5 sm:gap-4 xl:grid-cols-4">
               <StatTile label={t('scheduler.totalAccounts')} value={formatNumber(data.summary?.total ?? 0)} />
-              <StatTile label={t('scheduler.availableAccounts')} value={`${overview.runtime.available_accounts} / ${overview.runtime.total_accounts}`} />
+              <StatTile label={t('scheduler.availableAccounts')} value={`${selectedAvailable} / ${selectedTotal}`} />
               <StatTile label="Healthy + Warm" value={formatNumber(schedulerCounts.healthy + schedulerCounts.warm)} />
               <StatTile label={t('scheduler.highRiskAccounts')} value={formatNumber(schedulerCounts.risky + schedulerCounts.banned)} />
             </div>
@@ -180,10 +182,10 @@ export default function SchedulerBoard() {
                     <p className="mt-1 text-sm text-muted-foreground">{t('scheduler.globalViewDesc')}</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <SchedulerPill label="Healthy" value={schedulerCounts.healthy} tone="success" />
-                    <SchedulerPill label="Warm" value={schedulerCounts.warm} tone="warning" />
-                    <SchedulerPill label="Risky" value={schedulerCounts.risky} tone="danger" />
-                    <SchedulerPill label="Banned" value={schedulerCounts.banned} tone="neutral" />
+                    <SchedulerPill label={t('scheduler.healthHealthy')} value={schedulerCounts.healthy} tone="success" />
+                    <SchedulerPill label={t('scheduler.healthWarm')} value={schedulerCounts.warm} tone="warning" />
+                    <SchedulerPill label={t('scheduler.healthRisky')} value={schedulerCounts.risky} tone="danger" />
+                    <SchedulerPill label={t('scheduler.healthBanned')} value={schedulerCounts.banned} tone="neutral" />
                   </div>
                 </div>
 
@@ -209,7 +211,7 @@ export default function SchedulerBoard() {
                 </div>
 
                 <div className="mt-5 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/75 p-3 sm:px-4 sm:py-3">
-                  <span className="text-[12px] font-semibold text-muted-foreground">Channel</span>
+                  <span className="text-[12px] font-semibold text-muted-foreground">{t('scheduler.channel')}</span>
                   <div className="w-full sm:w-[180px]">
                     <Select
                       value={channel}
@@ -225,10 +227,10 @@ export default function SchedulerBoard() {
                       options={[
                         { label: t('scheduler.filterAllRisk'), value: 'all' },
                         { label: t('scheduler.filterAll'), value: 'everything' },
-                        { label: 'Healthy', value: 'healthy' },
-                        { label: 'Warm', value: 'warm' },
-                        { label: 'Risky', value: 'risky' },
-                        { label: 'Banned', value: 'banned' },
+                        { label: t('scheduler.healthHealthy'), value: 'healthy' },
+                        { label: t('scheduler.healthWarm'), value: 'warm' },
+                        { label: t('scheduler.healthRisky'), value: 'risky' },
+                        { label: t('scheduler.healthBanned'), value: 'banned' },
                       ]}
                     />
                   </div>

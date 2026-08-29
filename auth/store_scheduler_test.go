@@ -502,6 +502,20 @@ func TestNeedsUsageProbeAllowsClaudeAndRefreshesStaleSnapshot(t *testing.T) {
 	}
 }
 
+func TestNeedsUsageProbeClaudeUsesNativeObservationFreshnessWithoutQuotaHeaders(t *testing.T) {
+	acc := &Account{UpstreamType: UpstreamClaude, AccessToken: "claude-token", Status: StatusReady}
+	acc.MarkClaudeUsageObservation(time.Now())
+	if acc.NeedsUsageProbe(10 * time.Minute) {
+		t.Fatal("a recent native Claude observation without quota headers should suppress a duplicate probe")
+	}
+
+	stale := &Account{UpstreamType: UpstreamClaude, AccessToken: "claude-token", Status: StatusReady,
+		usageObservedAt: time.Now().Add(-11 * time.Minute)}
+	if !stale.NeedsUsageProbe(10 * time.Minute) {
+		t.Fatal("a stale native Claude observation should trigger a refresh probe")
+	}
+}
+
 func TestSetAPIKeyUpstreamChannelAcceptsClaude(t *testing.T) {
 	store := NewStore(nil, nil, nil)
 	defer store.Stop()

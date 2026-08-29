@@ -16,6 +16,7 @@
 - [管理 API](#管理-api)
   - [统计接口](#统计接口)
   - [账号管理](#账号管理) — 添加 RT / AT 账号、批量导入、导出、迁移
+  - [Claude OAuth 与原生 Messages](#claude-oauth-与原生-messages) — 导入、采样、模型与指纹配置
   - [用量统计](#用量统计)
   - [API Key 管理](#api-key-管理)
   - [系统设置](#系统设置)
@@ -34,7 +35,7 @@
 
 Codex2API 提供兼容 OpenAI 风格的 API 接口，同时包含完整的管理后台 API。
 
-Anthropic `/v1/messages` 仅将官方 `speed:"fast"` 映射为上游 Codex `service_tier:"priority"`；Anthropic 请求侧 `service_tier`（Priority Tier）不在此映射范围内。用量日志的 `service_tier` / `fast` 过滤反映该解析结果。
+Anthropic `/v1/messages` 在没有可用 Claude OAuth 账号时，才将官方 `speed:"fast"` 映射为上游 Codex `service_tier:"priority"`；Claude OAuth 账号优先走原生 Anthropic Messages 透传，不经过该转换。Anthropic 请求侧 `service_tier`（Priority Tier）不在此映射范围内。用量日志的 `service_tier` / `fast` 过滤反映该解析结果。
 
 **Service Tier 语义说明**：请求侧 `fast` / `priority` 会统一以 `priority` 转发上游，其余取值（`auto`/`default`/`flex`/`scale` 等）不转发。用量日志区分三个字段：`requested_service_tier`（客户端请求意图）、`actual_service_tier`（上游回传 Tier，原样取自 `response.completed.response.service_tier`）、`billing_service_tier`（计费采用值，由 Tier 计费策略 `BillingTierPolicy` 决定）。默认 `actual` 以请求 Tier 为上限：上游只可用更便宜档位降低计费，不能把未请求 Fast 的调用抬升为 Fast，也不能用未知档位改变计费；`requested` 始终按请求意图计费。注意：在 ChatGPT OAuth / Codex backend 路径上，Fast 由上游服务端路由处理，`service_tier` 不是端到端可校验字段——上游回传 `default` 并不代表 Fast 未生效（openai/codex#14204 官方说明；#494 的交错 A/B 实测在回传 `default` 时仍有约 1.5× 生成吞吐提升）。因此"上游回传 Tier"仅反映上游申报值，不能单独用于判断加速是否生效。
 
@@ -754,6 +755,79 @@ Grok 账号编辑页支持账号级模型映射，可让只请求 GPT 模型名�
   "models": ["grok-4.5"]
 }
 ```
+
+### Claude OAuth 与原生 Messages
+
+Claude Code OAuth 账号使用原生 Anthropic Messages 上游，不会进入 Codex WHAM
+或 Responses 探针。以下端点均受现有 `X-Admin-Key` 管理鉴权保护；请求示例中的
+Token、授权码和账号 ID 仅为占位符，服务端不会在响应或日志中回显 access/refresh
+token。
+
+#### POST /api/admin/accounts/claude/oauth/auth-url
+
+创建一次性 PKCE 登录会话，返回授权地址与 `state`。`state` 默认 15 分钟有效且只能
+兑换一次。
+
+#### POST /api/admin/accounts/claude/oauth/exchange-code
+
+使用 `state` 与回调 `code` 换取 Claude OAuth 凭据并入库。可选 `proxy_url`、
+`use_proxy_pool`、`timezone` 和 `name`；入库后会异步执行一次受控原生 Messages
+用量采样。
+
+#### POST /api/admin/accounts/claude/import
+
+直接导入 `cmd/claude_login -out` 生成的 JSON。`access_token` 与 `refresh_token`
+必填；导入成功后同样会进入后台采样队列。
+
+#### POST /api/admin/accounts/:id/claude/models
+
+刷新单个 Claude 账号的上游模型目录并保存到账号凭据。该操作只接受 Claude OAuth
+账号，返回 `models` 与 `count`。
+
+#### POST /api/admin/accounts/claude/models/refresh
+
+批量刷新启用的 Claude 账号模型目录，返回 `refreshed`、`failed` 和去重后的
+`model_count`。单账号失败不会回滚其他成功结果。
+
+#### POST /api/admin/accounts/:id/models/sync-upstream
+
+只读拉取指定 Claude 账号的上游模型目录，不覆盖账号白名单。确认后可用下面的
+PATCH 端点保存。
+
+#### PATCH /api/admin/accounts/:id/models
+
+设置账号级 Claude 模型白名单。非空数组只能包含 `claude-*` 模型；传空数组清除
+覆盖，恢复按账号目录/默认目录准入。服务端会拒绝跨 provider 的模型名。
+
+```json
+{
+  "models": ["claude-haiku-4-5", "claude-sonnet-4-5"]
+}
+```
+
+#### POST /api/admin/accounts/:id/usage/refresh
+
+执行一次有界的原生 Messages 用量探针，返回 5 小时/7 天窗口、重置时间和
+`claude_usage_probe_at` / `claude_usage_probe_error`。缺少上游用量头时仍记录采样
+时间；失败不会把未知用量伪造成 `0%`。
+
+#### POST /api/admin/accounts/:id/models/probe
+
+只读并发探测账号可见的 `claude-*` 文本模型，返回 `available` 与逐模型
+`outcome`（`available`、`unsupported`、`throttled`、`error`）。模型探测不会写入
+账号冷却、错误或调度状态；追加 `?stream=true` 可接收 SSE 进度。
+
+#### GET /api/admin/accounts/:id/test
+
+执行一次手动原生 Messages 测连并以 SSE 返回 `test_start`、`content`、`error`、
+`test_complete`。与只读模型探测不同，手动测连会同步真实账号的用量/限流与错误
+状态；上游明确 rejected/耗尽时不会被“成功”结果清除。
+
+#### GET/PUT /api/admin/settings/claude-config
+
+读取或更新 Claude 全局默认配置：`fingerprint_mode`（`preserve`/`force`）、
+`default_timezone` 与 `session_window_limit`。账号级调度设置可覆盖这些默认值；
+更新会热应用到运行时，不会改变已有 OAuth 凭据。
 
 ### Antigravity credential and state administration
 

@@ -61,7 +61,7 @@ export default function ChannelFilter({
         className,
       )}
     >
-      {/* 滑块指示器：等宽四格，translateX 过渡到选中项 */}
+      {/* 滑块指示器：等宽五格，translateX 过渡到选中项 */}
       <span
         aria-hidden
         className="absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/5)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"

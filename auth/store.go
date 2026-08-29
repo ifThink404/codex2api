@@ -2109,6 +2109,17 @@ func (a *Account) SetUsageSnapshot(pct float64, updatedAt time.Time) {
 	a.UsageUpdatedAt = updatedAt
 }
 
+// MarkClaudeUsageObservation records a native Claude response (or a bounded
+// probe attempt) even when Anthropic omits unified quota headers. The timestamp
+// participates only in Claude probe freshness; it never fabricates a 5h/7d
+// percentage and therefore cannot make an unmeasured account look quota-safe.
+func (a *Account) MarkClaudeUsageObservation(observedAt time.Time) bool {
+	if a == nil || !a.IsClaudeOAuth() {
+		return false
+	}
+	return a.ApplyUsageObservation(observedAt, func() {})
+}
+
 // GetUsagePercent7d 获取 7d 用量百分比
 func (a *Account) GetUsagePercent7d() (float64, bool) {
 	a.mu.RLock()
@@ -2963,6 +2974,23 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	}
 	if a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
 		return false // token 失效，wham 也会 401，探针无意义
+	}
+	// Claude uses the native Messages endpoint rather than WHAM and may legally
+	// omit both unified quota windows. In that case the shared 7d validity bits
+	// remain false by design; use the provider observation timestamp to avoid
+	// sending a paid probe on every background sweep. A cooldown that has just
+	// expired is still worth one confirmation probe.
+	if a.isClaudeOAuthLocked() {
+		if a.Status == StatusCooldown && !a.CooldownUtil.IsZero() && !now.Before(a.CooldownUtil) {
+			return true
+		}
+		if a.UsagePercent5hValid && !a.Reset5hAt.IsZero() && !a.Reset5hAt.After(now) && a.UsageUpdatedAt5h.Before(a.Reset5hAt) {
+			return true
+		}
+		if a.UsagePercent7dValid && !a.Reset7dAt.IsZero() && !a.Reset7dAt.After(now) && a.UsageUpdatedAt.Before(a.Reset7dAt) {
+			return true
+		}
+		return a.usageObservedAt.IsZero() || now.Sub(a.usageObservedAt) > maxAge
 	}
 
 	// 「主动重置次数」只能由 wham 探针刷新（普通 /responses 流量不携带该字段），
@@ -5101,6 +5129,17 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CodexFingerprintMode:    codexFingerprintMode,
 		ClaudeFingerprintMode:   claudeFingerprintMode,
 		claudeSessionWindow:     claudeSessionWindowForRow(upstreamType, s.ClaudeSessionWindowLimit()),
+	}
+	if strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamClaude) {
+		if observedRaw := strings.TrimSpace(row.GetCredential(ClaudeUsageProbeAtCredentialKey)); observedRaw != "" {
+			if observedAt, parseErr := time.Parse(time.RFC3339, observedRaw); parseErr == nil {
+				// This is only a freshness hint; quota validity remains false until
+				// an actual Anthropic response supplies a window header.
+				account.MarkClaudeUsageObservation(observedAt)
+			} else {
+				log.Printf("[账号 %d] 解析 claude_usage_probe_at 失败: %v", row.ID, parseErr)
+			}
+		}
 	}
 	if account.CredentialGeneration <= 0 {
 		account.CredentialGeneration = 1

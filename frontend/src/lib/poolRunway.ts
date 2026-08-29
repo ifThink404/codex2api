@@ -621,7 +621,7 @@ export function isPremiumUsagePlan(planType?: string): boolean {
 /** Claude OAuth 的订阅档位，按 profile 归一化后的 plan_type 匹配。 */
 export function isClaudeUsagePlan(planType?: string): boolean {
   const normalized = normalizePlanType(planType)
-  return ['claude', 'free', 'pro', 'max', 'max-5x', 'max-20x', 'team', 'enterprise', 'business'].includes(normalized) || normalized.startsWith('claude-')
+  return ['claude', 'pro', 'max', 'max-5x', 'max-20x', 'team', 'enterprise', 'business'].includes(normalized) || normalized.startsWith('claude-')
 }
 
 export const POOL_RUNWAY_LOW_CONFIDENCE_THRESHOLD = LOW_CONFIDENCE_THRESHOLD

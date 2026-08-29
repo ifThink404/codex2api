@@ -199,6 +199,7 @@ func (h *Handler) claudeChannelModels() []string {
 			models = append(models, model)
 		}
 	}
+	sort.Strings(models)
 	return models
 }
 

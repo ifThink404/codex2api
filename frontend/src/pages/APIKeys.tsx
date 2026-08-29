@@ -3831,12 +3831,18 @@ const CLAUDE_PLAN_FILTER_OPTIONS = [
   "max-20x",
   "team",
   "enterprise",
+  "business",
 ] as const;
 
 const PLAN_FILTER_OPTIONS = [
   ...CODEX_PLAN_FILTER_OPTIONS,
   ...GROK_PLAN_FILTER_OPTIONS.filter(
     (plan) => !(CODEX_PLAN_FILTER_OPTIONS as readonly string[]).includes(plan),
+  ),
+  ...CLAUDE_PLAN_FILTER_OPTIONS.filter(
+    (plan) =>
+      !(CODEX_PLAN_FILTER_OPTIONS as readonly string[]).includes(plan) &&
+      !(GROK_PLAN_FILTER_OPTIONS as readonly string[]).includes(plan),
   ),
 ];
 

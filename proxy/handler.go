@@ -459,7 +459,7 @@ func accountFilterForCompactResponsesModelWithOriginal(originalModel string, eff
 	return func(account *auth.Account) bool {
 		// Grok/Antigravity 上游都没有 Responses compact 适配器。尤其不能让
 		// Antigravity Google bearer 落入官方 Codex executor。
-		if account.IsGrokAPI() || account.IsAntigravityAPI() {
+		if account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() {
 			return false
 		}
 		return inner(account)
@@ -568,7 +568,7 @@ func (h *Handler) modelSupportedByAccountMapping(model string) bool {
 		return false
 	}
 	for _, account := range h.store.Accounts() {
-		if account == nil || !account.IsRelayStyle() {
+		if account == nil || !account.IsRelayStyle() || account.IsClaudeOAuth() {
 			continue
 		}
 		if account.IsAntigravityAPI() {
@@ -588,6 +588,12 @@ func (h *Handler) modelSupportedByAccountMapping(model string) bool {
 func (h *Handler) modelValidator(supportedModels []string) api.ValidationRule {
 	validModels := make(map[string]bool, len(supportedModels))
 	for _, model := range supportedModels {
+		// Native Claude model IDs belong exclusively to /v1/messages. A
+		// configured Claude->Codex mapping is applied before validation, so a
+		// successfully mapped request arrives here under its Codex target ID.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-") {
+			continue
+		}
 		validModels[model] = true
 	}
 	return func(value gjson.Result, path string) *api.ValidationError {
@@ -2415,11 +2421,11 @@ func responseFailedStatusCodeWithEvidence(payload []byte) (int, bool) {
 		return http.StatusTooManyRequests, true
 	case strings.Contains(codeOrType, "rate_limit"):
 		return http.StatusTooManyRequests, true
-	case strings.Contains(codeOrType, "unauthorized") || strings.Contains(codeOrType, "invalid_api_key"):
+	case strings.Contains(codeOrType, "unauthorized") || strings.Contains(codeOrType, "authentication") || strings.Contains(codeOrType, "invalid_api_key") || strings.Contains(codeOrType, "invalid_token"):
 		return http.StatusUnauthorized, true
 	case strings.Contains(codeOrType, "payment"):
 		return http.StatusPaymentRequired, true
-	case strings.Contains(codeOrType, "forbidden"):
+	case strings.Contains(codeOrType, "forbidden") || strings.Contains(codeOrType, "permission"):
 		return http.StatusForbidden, true
 	case strings.Contains(codeOrType, "previous_response_not_found"):
 		return http.StatusBadRequest, true
@@ -5671,6 +5677,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 中转账号会命中上游自身的 /responses/compact，使仅接入中转的用户也能压缩（issue #174）。
 	accountFilter := accountFilterForCompactResponsesModelWithOriginal(routingModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
 	}
@@ -8379,7 +8386,7 @@ func (h *Handler) supportedModelIDs(ctx context.Context) []string {
 				models = append(models, model)
 			}
 			aliases := accountModelMappingAliases(account)
-			if account.IsAntigravityAPI() {
+			if account.IsAntigravityAPI() || account.IsClaudeOAuth() {
 				aliases = nil
 			}
 			for _, alias := range aliases {

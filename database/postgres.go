@@ -1695,7 +1695,8 @@ type APIKeyLimits struct {
 	//   - ""/auto: 不限（默认，按模型路由）
 	//   - codex:   仅 Codex OAuth / OpenAI Responses 中转账号
 	//   - grok:    仅 Grok 账号（此时不再要求账号声明模型，直接透传请求模型）
-	//   - antigravity: 预留的 Antigravity 管理渠道；推理适配完成前 fail closed
+	//   - antigravity: Antigravity 管理渠道
+	//   - claude:      仅 Claude OAuth / Anthropic Messages 账号
 	UpstreamChannel string `json:"upstream_channel,omitempty"`
 	// ScopeLimits 是「该 Key × 某账号分组 / 某账号」维度的用量上限（issue #439）。
 	// 与上面的 Cost/Token 限额不同，它只统计该 Key 打到对应 scope 的用量，超额后默认
@@ -4775,7 +4776,7 @@ type TrafficSnapshot struct {
 // 当 rangeStart 为零值时回落到"今日"(本地 0 点起),与历史行为一致;
 // 当传入显式区间时,today_* 字段语义变为"该区间内的统计",total_* 字段始终是全量累计。
 // rangeEnd 为零值表示"至今"。
-// GetUsageStats 聚合用量统计。channel 非空（codex/grok）时按渠道过滤；
+// GetUsageStats 聚合用量统计。channel 非空（codex/grok/antigravity/claude）时按渠道过滤；
 // 渠道视图下的「累计」只覆盖现存 usage_logs（清空日志前的 baseline 无渠道维度，不计入）。
 func (db *DB) GetUsageStats(ctx context.Context, rangeStart, rangeEnd time.Time, channel string) (*UsageStats, error) {
 	return db.getUsageStats(ctx, rangeStart, rangeEnd, channel, true)

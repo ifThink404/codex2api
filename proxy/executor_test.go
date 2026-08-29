@@ -286,6 +286,22 @@ func TestClassifyResponseFailedOutcomeDeterministicClientErrors(t *testing.T) {
 	}
 }
 
+func TestClassifyResponseFailedOutcomeAnthropicAuthAndPermissionErrors(t *testing.T) {
+	for _, tc := range []struct {
+		typ  string
+		want int
+	}{
+		{typ: "authentication_error", want: http.StatusUnauthorized},
+		{typ: "invalid_token", want: http.StatusUnauthorized},
+		{typ: "permission_error", want: http.StatusForbidden},
+	} {
+		payload := []byte(`{"type":"error","error":{"type":"` + tc.typ + `","message":"failure"}}`)
+		if got := classifyResponseFailedOutcome(payload).logStatusCode; got != tc.want {
+			t.Errorf("error type %s: status = %d, want %d", tc.typ, got, tc.want)
+		}
+	}
+}
+
 func TestShouldRecyclePooledClient(t *testing.T) {
 	tests := []struct {
 		name string

@@ -91,6 +91,20 @@ func TestGrokAccountRowToExportEntryOAuth(t *testing.T) {
 	}
 }
 
+func TestAccountRowToExportEntrySkipsClaudeOAuth(t *testing.T) {
+	row := &database.AccountRow{
+		Platform: "anthropic",
+		Credentials: map[string]interface{}{
+			"upstream_type": auth.UpstreamClaude,
+			"access_token":  "claude-access",
+			"refresh_token": "claude-refresh",
+		},
+	}
+	if entry, ok := accountRowToExportEntry(row); ok || entry != nil {
+		t.Fatalf("generic Codex export must skip Claude OAuth, entry=%#v ok=%v", entry, ok)
+	}
+}
+
 // TestGrokExportRoundTripsThroughImporter 是补字段这个决策的验证点：
 // 导出的文件必须能被 ParseGrokAuthJSON 解回来，且 client_id 不依赖 access_token
 // 的 JWT claims —— AT 过期或缺失时也要能凭 refresh_token 继续刷新。

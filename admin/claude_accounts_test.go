@@ -1,6 +1,66 @@
 package admin
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
+)
+
+func TestValidateAccountModelsForClaude(t *testing.T) {
+	claude := &auth.Account{UpstreamType: auth.UpstreamClaude}
+	if err := validateAccountModelsForAccount(claude, []string{"claude-sonnet-4-5", "claude-haiku-4-5"}); err != nil {
+		t.Fatalf("valid Claude models rejected: %v", err)
+	}
+	if err := validateAccountModelsForAccount(claude, []string{"gpt-5.4"}); err == nil {
+		t.Fatal("non-Claude model must be rejected for Claude account")
+	}
+	if err := validateAccountModelsForAccount(claude, nil); err != nil {
+		t.Fatalf("empty Claude allowlist should clear the override: %v", err)
+	}
+	if err := validateAccountModelsForAccount(&auth.Account{UpstreamType: auth.UpstreamOpenAIResponses}, []string{"gpt-5.4"}); err != nil {
+		t.Fatalf("non-Claude account model list changed semantics: %v", err)
+	}
+}
+
+func TestBuildAccountResponseMarksClaudeProvider(t *testing.T) {
+	row := &database.AccountRow{
+		ID:      901,
+		Name:    "claude-test",
+		Status:  "active",
+		Enabled: true,
+		Credentials: map[string]interface{}{
+			"upstream_type":                         auth.UpstreamClaude,
+			"access_token":                          "claude-token",
+			"plan_type":                             "claude",
+			"codex_fingerprint_mode":                "full",
+			auth.ClaudeUsageProbeAtCredentialKey:    "2026-08-29T05:00:00Z",
+			auth.ClaudeUsageProbeErrorCredentialKey: "",
+		},
+	}
+	response := (&Handler{store: auth.NewStore(nil, nil, nil)}).buildAccountResponse(row, nil, nil, nil, nil, false)
+	if !response.ClaudeAPI {
+		t.Fatal("Claude account response must carry claude_api=true")
+	}
+	if response.ATOnly {
+		t.Fatal("Claude account must not be mislabeled as Codex AT-only")
+	}
+	if response.CodexFingerprintMode != "" {
+		t.Fatalf("Claude account leaked Codex fingerprint mode %q", response.CodexFingerprintMode)
+	}
+	if response.ClaudeUsageProbeAt != "2026-08-29T05:00:00Z" || response.ClaudeUsageProbeError != "" {
+		t.Fatalf("Claude sampling metadata = at=%q error=%q", response.ClaudeUsageProbeAt, response.ClaudeUsageProbeError)
+	}
+}
+
+func TestClaudeImportedProbeDoesNotEnterCodexIdentityMerge(t *testing.T) {
+	if shouldMergeImportedIdentity(&auth.Account{UpstreamType: auth.UpstreamClaude, AccessToken: "claude"}) {
+		t.Fatal("Claude imports must not enter Codex workspace duplicate merge")
+	}
+	if !shouldMergeImportedIdentity(&auth.Account{UpstreamType: auth.UpstreamOpenAIResponses, AccessToken: "relay"}) {
+		t.Fatal("non-Claude, non-Agent imports should retain identity merge behavior")
+	}
+}
 
 func TestClaudeOAuthPutTake_OneTimeUse(t *testing.T) {
 	claudeOAuthPut("state-a", "verifier-a")

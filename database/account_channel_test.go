@@ -16,6 +16,7 @@ func TestAPIKeyLimitsResolveUpstreamChannel(t *testing.T) {
 		{name: "codex", in: " CODEX ", want: UpstreamChannelCodex},
 		{name: "grok", in: "Grok", want: UpstreamChannelGrok},
 		{name: "antigravity", in: " Antigravity ", want: UpstreamChannelAntigravity},
+		{name: "claude", in: " Claude ", want: UpstreamChannelClaude},
 		{name: "unknown", in: "other", want: UpstreamChannelAuto},
 	}
 	for _, tt := range tests {
@@ -78,6 +79,16 @@ func TestSQLiteListAccountListProjectionByChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert antigravity account: %v", err)
 	}
+	claudeID, err := db.InsertAccountWithUpstream(ctx, "claude", "anthropic", "oauth", map[string]interface{}{
+		"upstream_type":            "claude",
+		"access_token":             "claude-secret",
+		"claude_usage_probe_at":    "2026-08-29T05:00:00Z",
+		"claude_usage_probe_error": "",
+		"models":                   []string{"claude-sonnet-4-5"},
+	}, "")
+	if err != nil {
+		t.Fatalf("insert Claude account: %v", err)
+	}
 
 	tests := []struct {
 		channel string
@@ -86,6 +97,7 @@ func TestSQLiteListAccountListProjectionByChannel(t *testing.T) {
 		{channel: UpstreamChannelCodex, wantID: codexID},
 		{channel: UpstreamChannelGrok, wantID: grokID},
 		{channel: UpstreamChannelAntigravity, wantID: antigravityID},
+		{channel: UpstreamChannelClaude, wantID: claudeID},
 	}
 	for _, tt := range tests {
 		t.Run(tt.channel, func(t *testing.T) {
@@ -98,6 +110,9 @@ func TestSQLiteListAccountListProjectionByChannel(t *testing.T) {
 			}
 			if tt.channel == UpstreamChannelAntigravity && (rows[0].GetCredential("avatar_url") == "" || !rows[0].GetCredentialBool("verified_email") || rows[0].GetCredential("project_id") != "project-1" || rows[0].GetCredential("antigravity_sync_error") != "sync failed" || rows[0].GetCredential("antigravity_sync_warning") == "" || rows[0].GetCredential("antigravity_permissions") == "" || rows[0].GetCredential("antigravity_quota") == "") {
 				t.Fatalf("Antigravity projection omitted control-plane status fields: %#v", rows[0].Credentials)
+			}
+			if tt.channel == UpstreamChannelClaude && (rows[0].GetCredential("claude_usage_probe_at") == "" || rows[0].GetCredential("claude_usage_probe_error") != "" || len(rows[0].GetCredentialStringSlice("models")) != 1) {
+				t.Fatalf("Claude projection omitted sampling metadata: %#v", rows[0].Credentials)
 			}
 		})
 	}

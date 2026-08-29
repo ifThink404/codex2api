@@ -106,6 +106,15 @@ Rate limits are returned in response headers:
 | `/api/admin/accounts/:id/refresh` | POST | 手动刷新 AT |
 | `/api/admin/accounts/:id/test` | GET | 测试账号连接 |
 | `/api/admin/accounts/:id/usage` | GET | 查看账号用量 |
+| `/api/admin/accounts/claude/oauth/auth-url` | POST | 生成 Claude OAuth PKCE 授权 URL |
+| `/api/admin/accounts/claude/oauth/exchange-code` | POST | 兑换 Claude OAuth code 并入库 |
+| `/api/admin/accounts/claude/import` | POST | 导入 Claude Token JSON |
+| `/api/admin/accounts/:id/claude/models` | POST | 刷新单个 Claude 上游模型目录 |
+| `/api/admin/accounts/claude/models/refresh` | POST | 批量刷新 Claude 模型目录 |
+| `/api/admin/accounts/:id/models/sync-upstream` | POST | 只读预览账号上游模型目录 |
+| `/api/admin/accounts/:id/models` | PATCH | 设置账号级 Claude `claude-*` 模型白名单 |
+| `/api/admin/accounts/:id/usage/refresh` | POST | 执行 Claude 原生用量采样 |
+| `/api/admin/accounts/:id/models/probe` | POST | 只读探测 Claude 模型能力 |
 | `/api/admin/accounts/batch-test` | POST | 批量测试连接（SSE） |
 | `/api/admin/accounts/export` | GET | 导出账号 |
 | `/api/admin/accounts/migrate` | POST | 从远程实例迁移账号（SSE） |
@@ -140,6 +149,7 @@ Rate limits are returned in response headers:
 | `/api/admin/settings` | PUT | 更新系统设置 |
 | `/api/admin/models` | GET | 获取支持模型列表 |
 | `/api/admin/models/sync` | POST | 从 OpenAI 官方 Codex 模型页同步模型注册表 |
+| `/api/admin/settings/claude-config` | GET/PUT | Claude 指纹、时区和会话窗口默认配置 |
 
 **用量统计:**
 
