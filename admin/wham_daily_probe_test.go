@@ -119,6 +119,10 @@ func TestWhamDailyUsageBackfillEligibleSkipsRelayGrokAndCodexAT(t *testing.T) {
 	if whamDailyUsageBackfillEligible(&auth.Account{DBID: 4, AccessToken: "at-opaque"}) {
 		t.Fatal("codex_at account should be skipped")
 	}
+	claude := &auth.Account{DBID: 5, AccessToken: "claude-token", RefreshToken: "claude-refresh", UpstreamType: auth.UpstreamClaude}
+	if whamDailyUsageBackfillEligible(claude) {
+		t.Fatal("Claude account must not use the ChatGPT WHAM daily usage endpoint")
+	}
 }
 
 func TestWhamDailyUsageDueTargetsPrunesRemovedAccounts(t *testing.T) {

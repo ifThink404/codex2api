@@ -57,12 +57,14 @@
       "upstreamChannelCodex": "Codex",
       "upstreamChannelGrok": "Grok",
       "upstreamChannelAntigravity": "Antigravity",
+      "upstreamChannelClaude": "Claude",
       "upstreamChannelAutoTab": "自動",
       "upstreamChannelHint": {
-        "auto": "不限渠道：請求依模型路由到 Codex、Grok 或 Antigravity 帳號。",
-        "codex": "此 Key 只調度 Codex 帳號，不會使用 Grok 或 Antigravity 帳號。",
+        "auto": "不限渠道：請求依模型路由到 Codex、Grok、Antigravity 或 Claude 帳號。",
+        "codex": "此 Key 只調度 Codex 帳號，不會使用其他渠道帳號。",
         "grok": "此 Key 只調度 Grok 帳號，並使用該渠道的模型目錄。",
-        "antigravity": "此 Key 只調度 Google Antigravity 帳號，並使用 Gemini 模型目錄。"
+        "antigravity": "此 Key 只調度 Google Antigravity 帳號，並使用 Gemini 模型目錄。",
+        "claude": "此 Key 只調度 Claude 帳號，並使用 Claude 模型目錄。"
       }
     }
   },
@@ -92,6 +94,10 @@
     "apiBalanceQueryUrl": "餘額查詢介面（可選）",
     "apiBalanceQueryUrlHint": "留空會自動嘗試 sub2api /v1/usage 與 New API 計費介面；也可填寫以 / 開頭的路徑或與 Base URL 同主機的完整 http/https URL。查詢時會攜帶 API Key，因此不允許跨主機位址。",
     "occupiedRequestsTooltip": "目前真實在途 {{active}}，佔用槽位 {{occupied}}（含 {{buffered}} 個會話緩衝槽）",
+    "activeRequestsTooltip": "目前正在處理 {{count}} 個請求",
+    "testConnection": "測試連線",
+    "testConnectionTitle": "測試連線 - {{account}}",
+    "openDetail": "查看詳情",
     "pendingReview": {
       "title": "自助提交待審核",
       "desc": "他人透過帳號自助入口提交、等待審核的帳號",
@@ -1108,7 +1114,20 @@
     }
   },
   "proxies": {
-    "idle": "空閒"
+    "idle": "空閒",
+    "bindKindClaude": "Claude",
+    "accountKind": {
+      "codex": "Codex",
+      "grok": "Grok",
+      "antigravity": "Antigravity",
+      "claude": "Claude",
+      "openai": "OpenAI",
+      "agent": "Agent",
+      "at": "AT"
+    }
+  },
+  "scheduler": {
+    "channel": "渠道"
   },
   "claude": {
     "title": "Claude 帳號",
@@ -1135,6 +1154,9 @@
     "exchangeFailed": "換取 token 失敗",
     "deleteConfirm": "確認刪除該 Claude 帳號？",
     "timezonePlaceholder": "時區,如 Asia/Shanghai(留空=不指定)",
+    "actionRefresh": "重新整理 Claude Token",
+    "providerTitle": "Claude / Anthropic",
+    "providerProtocol": "Messages API",
     "refreshModels": "重新整理模型",
     "modelsRefreshed": "已更新可用模型（{{count}} 個）",
     "emptyFiltered": "沒有符合篩選的帳號",
@@ -1154,6 +1176,13 @@
     "statScheduling": "排程中",
     "statBanned": "封鎖",
     "statUnsampled": "未取樣",
+    "lastSample": "最後取樣",
+    "samplingState": {
+      "sampled": "已取樣",
+      "unsampled": "未取樣",
+      "error": "取樣失敗",
+      "notSampled": "尚無取樣"
+    },
     "healthBanned": "封鎖",
     "planAll": "全部方案",
     "authAll": "全部",
@@ -1184,6 +1213,7 @@
     "clearSelection": "取消選擇",
     "refreshAllModels": "重新整理全部模型",
     "allModelsRefreshed": "已重新整理全部帳號模型",
+    "allModelsRefreshedSummary": "已重新整理 {{refreshed}} 個帳號，失敗 {{failed}} 個，共發現 {{model_count}} 個模型",
     "usage5h": "5小時",
     "usage7d": "7天",
     "todayLabel": "今日",
@@ -1247,7 +1277,34 @@
     "authUrlCopied": "已複製授權連結",
     "copyLink": "複製連結",
     "saveProxyToPoolTitle": "該代理未在代理管理中,是否存入以便重用?",
-    "saveProxyToPoolDone": "已存入代理管理"
+    "saveProxyToPoolDone": "已存入代理管理",
+    "modelsWhitelistAction": "模型白名單",
+    "modelsWhitelistTitle": "設定 Claude 模型白名單",
+    "modelsWhitelistDescription": "僅接受 claude-* 原生模型。留空表示該帳號可調度上游回傳的全部 Claude 模型；設定後只會把列出的模型請求派給此帳號。",
+    "modelsWhitelistVersionHint": "儲存前會校驗帳號詳情版本；帳號重新整理或更換 token 後請先重新載入。",
+    "modelsWhitelistPlaceholder": "claude-sonnet-4-5, claude-haiku-4-5",
+    "modelsWhitelistAdd": "新增",
+    "modelsWhitelistSync": "從上游同步",
+    "modelsWhitelistSyncing": "同步中…",
+    "modelsWhitelistSyncDone": "已合併上游 {{count}} 個 Claude 模型",
+    "modelsWhitelistSyncEmpty": "上游沒有回傳可用的 Claude 模型",
+    "modelsWhitelistSyncFailed": "同步上游模型失敗：{{error}}",
+    "modelsWhitelistInvalid": "已忽略非 Claude 模型：{{models}}",
+    "modelsWhitelistCount": "已允許 {{count}} 個 Claude 模型",
+    "modelsWhitelistAll": "全部 Claude 模型",
+    "modelsWhitelistAllHint": "白名單為空：帳號可調度上游回傳的全部 Claude 模型。",
+    "modelsWhitelistClear": "清空",
+    "modelsWhitelistClearSave": "儲存並清空白名單",
+    "modelsWhitelistRemove": "移除 {{model}}",
+    "modelsWhitelistReload": "重新載入",
+    "modelsWhitelistConflict": "帳號詳情已變更，本次儲存已停止並載入最新模型列表。",
+    "modelsWhitelistNotClaude": "帳號已不是 Claude OAuth，無法編輯 Claude 白名單。",
+    "modelsWhitelistResponseInvalid": "伺服器回傳了非 Claude 模型，未完成本次儲存。",
+    "modelsWhitelistSaveFailed": "儲存 Claude 模型白名單失敗：{{error}}",
+    "subscriptionPlan": "訂閱方案",
+    "subscriptionExpires": "訂閱到期",
+    "timezoneLabel": "綁定時區",
+    "metadataUnknown": "未知"
   },
   "accountGroups": {
     "manageTitle": "管理分組",

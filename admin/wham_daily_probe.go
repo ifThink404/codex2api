@@ -241,7 +241,10 @@ func whamDailyUsageBackfillEligible(account *auth.Account) bool {
 	if account == nil || account.DBID <= 0 {
 		return false
 	}
-	if account.IsOpenAIResponsesAPI() || account.IsGrokAPI() {
+	// WHAM is a ChatGPT-only control-plane endpoint. Claude OAuth credentials
+	// belong to Anthropic Messages and must never be sent to WHAM (even though
+	// they carry an access token and are relay-style accounts).
+	if account.IsOpenAIResponsesAPI() || account.IsGrokAPI() || account.IsClaudeOAuth() {
 		return false
 	}
 	if isCodexATAccount(account) {

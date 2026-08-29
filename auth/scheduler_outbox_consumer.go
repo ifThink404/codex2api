@@ -527,6 +527,9 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.Reset5hAt = src.Reset5hAt
 	dst.UsageUpdatedAt = src.UsageUpdatedAt
 	dst.UsageUpdatedAt5h = src.UsageUpdatedAt5h
+	if src.usageObservedAt.After(dst.usageObservedAt) {
+		dst.usageObservedAt = src.usageObservedAt
+	}
 	dst.UsagePercentSpark = src.UsagePercentSpark
 	dst.UsagePercentSparkValid = src.UsagePercentSparkValid
 	dst.ResetSparkAt = src.ResetSparkAt

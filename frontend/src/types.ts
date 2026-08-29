@@ -143,6 +143,7 @@ export interface AccountRow {
   openai_responses_api?: boolean
   grok_api?: boolean
   antigravity_api?: boolean
+  claude_api?: boolean
   antigravity_auth_kind?: 'oauth' | 'api_key' | string
   agent_identity?: boolean
   grok_auth_kind?: string
@@ -167,6 +168,8 @@ export interface AccountRow {
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_fingerprint_mode?: CodexFingerprintMode
   claude_fingerprint_mode?: 'preserve' | 'force' | ''
+  claude_usage_probe_at?: ISODateString
+  claude_usage_probe_error?: string
   timezone?: string
   custom_headers?: Record<string, string> | null
   health_tier?: string
@@ -598,6 +601,7 @@ export interface RecycleBinAccountRow {
   at_only?: boolean
   access_token_type?: string
   openai_responses_api?: boolean
+  claude_api?: boolean
   base_url?: string
   models?: string[]
   created_at: ISODateString
@@ -2706,6 +2710,8 @@ export interface ModelsResponse {
   antigravity_models?: string[]
   // Grok 渠道账号声明模型的并集;渠道选 grok 时模型下拉用这份
   grok_models?: string[]
+  // Claude 渠道账号声明模型的并集;渠道选 claude 时模型下拉用这份
+  claude_models?: string[]
   items?: ModelInfo[]
   last_synced_at?: string
   source_url: string

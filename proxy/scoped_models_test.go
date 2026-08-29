@@ -229,6 +229,24 @@ func TestScopedModelsIncludeAntigravityAccounts(t *testing.T) {
 	}
 }
 
+func TestScopedModelsClaudeOnlyKeyDoesNotExposeCodexAliases(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+	defer store.Stop()
+	store.SetModelMapping(`{"client-alias":"claude-sonnet-4-5"}`)
+	store.AddAccount(&auth.Account{
+		DBID: 100, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady,
+		Models: []string{"claude-sonnet-4-5"},
+	})
+	handler := NewHandler(store, nil, nil, nil)
+	models := listScopedModelsForTest(t, handler, &database.APIKeyRow{ID: 8, Limits: database.APIKeyLimits{UpstreamChannel: database.UpstreamChannelClaude}})
+	if _, _, ok := scopedModelByID(models, "claude-sonnet-4-5"); !ok {
+		t.Fatalf("Claude native model missing from Claude-only catalog: %+v", models)
+	}
+	if _, _, ok := scopedModelByID(models, "client-alias"); ok {
+		t.Fatalf("Codex/global alias leaked into Claude-only catalog: %+v", models)
+	}
+}
+
 func TestScopedModelsDeclaredListCannotOverrideCatalogVisibility(t *testing.T) {
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
 	account := &auth.Account{DBID: 1, UpstreamType: auth.UpstreamGrok, APIKey: "xai", Models: []string{"declared-only", "hidden", "visible"}}

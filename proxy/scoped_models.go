@@ -250,7 +250,8 @@ func (h *Handler) scopedModelRecords(ctx context.Context, row *database.APIKeyRo
 	// Antigravity-only keys intentionally expose exactly the native logical
 	// surface. Global/OpenAI aliases and synthesized effort aliases belong to
 	// other providers and would make Cockpit's catalog diverge again.
-	if row.Limits.ResolveUpstreamChannel() != database.UpstreamChannelAntigravity {
+	channel := row.Limits.ResolveUpstreamChannel()
+	if channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude {
 		// Global exact aliases are visible only when their concrete target is
 		// routeable in this key's account snapshot. Wildcards are patterns, not
 		// model IDs, and therefore never appear in /v1/models.

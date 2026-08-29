@@ -24,6 +24,157 @@ func TestProbeUsageSnapshotRejectsAntigravity(t *testing.T) {
 	}
 }
 
+func TestProbeUsageSnapshotClaudeUsesAnthropicMessagesOnly(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	account := &auth.Account{DBID: 77, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	account.Models = []string{"claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"}
+	store.AddAccount(account)
+	called := false
+	h := &Handler{store: store, executeClaudeUsageProbe: func(_ context.Context, acc *auth.Account, body []byte) (*http.Response, error) {
+		called = true
+		if acc != account || !strings.Contains(string(body), `"model":"claude-haiku-4-5"`) || !strings.Contains(string(body), `"max_tokens":1`) {
+			t.Fatalf("unexpected Claude probe request: account=%p body=%s", acc, body)
+		}
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"type":"message","id":"msg_probe","content":[{"type":"text","text":"ok"}]}`))}
+		resp.Header.Set("anthropic-ratelimit-unified-5h-utilization", "0.25")
+		resp.Header.Set("anthropic-ratelimit-unified-5h-reset", "4102444800")
+		resp.Header.Set("anthropic-ratelimit-unified-7d-utilization", "0.4")
+		resp.Header.Set("anthropic-ratelimit-unified-7d-reset", "4103049600")
+		return resp, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err != nil {
+		t.Fatalf("ProbeUsageSnapshot() error = %v", err)
+	}
+	if !called {
+		t.Fatal("Claude probe callback was not called")
+	}
+	if got := account.UsagePercent5h; got != 25 {
+		t.Fatalf("5h usage = %v, want 25", got)
+	}
+	if got := account.UsagePercent7d; got != 40 {
+		t.Fatalf("7d usage = %v, want 40", got)
+	}
+}
+
+func TestProbeUsageSnapshotClaudePersistsRejectedFiveHourLimit(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	account := &auth.Account{DBID: 78, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	store.AddAccount(account)
+	h := &Handler{store: store, executeClaudeUsageProbe: func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"type":"rate_limit_error"}}`))}
+		resp.Header.Set("anthropic-ratelimit-unified-5h-utilization", "1")
+		resp.Header.Set("anthropic-ratelimit-unified-5h-reset", "4102444800")
+		resp.Header.Set("anthropic-ratelimit-unified-status", "rejected")
+		return resp, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err == nil {
+		t.Fatal("Claude 429 probe should return an error to the queue")
+	}
+	if got := account.RuntimeStatus(); got != "rate_limited" && got != "cooldown" && got != auth.ResponsesRateLimitedCooldownReason {
+		t.Fatalf("Claude rejected status = %q, want a rate-limited cooldown", got)
+	}
+	if !account.UsagePercent5hValid || account.UsagePercent5h != 100 {
+		t.Fatalf("Claude 5h snapshot = (%v, %t), want 100%% valid", account.UsagePercent5h, account.UsagePercent5hValid)
+	}
+}
+
+func TestProbeUsageSnapshotClaudeDoesNotClearRejectedStatusOnHTTP200(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	account := &auth.Account{DBID: 79, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	store.AddAccount(account)
+	h := &Handler{store: store, executeClaudeUsageProbe: func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"type":"message","content":[{"type":"text","text":"ok"}]}`))}
+		resp.Header.Set("anthropic-ratelimit-unified-5h-utilization", "1")
+		resp.Header.Set("anthropic-ratelimit-unified-5h-reset", "4102444800")
+		resp.Header.Set("anthropic-ratelimit-unified-status", "rejected")
+		return resp, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err != nil {
+		t.Fatalf("ProbeUsageSnapshot() error = %v", err)
+	}
+	if got := account.RuntimeStatus(); got != auth.ResponsesRateLimitedCooldownReason {
+		t.Fatalf("Claude rejected status after HTTP 200 = %q, want %q", got, auth.ResponsesRateLimitedCooldownReason)
+	}
+}
+
+func TestProbeUsageSnapshotClaudePersistsSamplingMetadata(t *testing.T) {
+	db := newTestAdminDB(t)
+	ctx := context.Background()
+	id, err := db.InsertAccountWithUpstream(ctx, "claude-sampling", "anthropic", "oauth", map[string]interface{}{
+		"upstream_type": "claude",
+		"access_token":  "claude-token",
+		"refresh_token": "claude-refresh",
+	}, "")
+	if err != nil {
+		t.Fatalf("insert Claude account: %v", err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{DBID: id, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	store.AddAccount(account)
+	h := &Handler{store: store, db: db, executeClaudeUsageProbe: func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"type":"message","content":[{"type":"text","text":"ok"}]}`))}, nil
+	}}
+	if err := h.ProbeUsageSnapshot(ctx, account); err != nil {
+		t.Fatalf("successful Claude probe: %v", err)
+	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("read successful probe metadata: %v", err)
+	}
+	if row.GetCredential("claude_usage_probe_at") == "" || row.GetCredential("claude_usage_probe_error") != "" {
+		t.Fatalf("successful probe metadata = at=%q error=%q", row.GetCredential("claude_usage_probe_at"), row.GetCredential("claude_usage_probe_error"))
+	}
+
+	h.executeClaudeUsageProbe = func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`upstream failed`))}, nil
+	}
+	if err := h.ProbeUsageSnapshot(ctx, account); err == nil {
+		t.Fatal("failed Claude probe should return an error")
+	}
+	row, err = db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("read failed probe metadata: %v", err)
+	}
+	if row.GetCredential("claude_usage_probe_at") == "" || row.GetCredential("claude_usage_probe_error") == "" {
+		t.Fatalf("failed probe metadata = at=%q error=%q", row.GetCredential("claude_usage_probe_at"), row.GetCredential("claude_usage_probe_error"))
+	}
+}
+
+func TestProbeUsageSnapshotClaudeRejectsHTTP200ErrorPayload(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{DBID: 80, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	store.AddAccount(account)
+	h := &Handler{store: store, executeClaudeUsageProbe: func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"message":"wrapped failure"}}`)),
+		}, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err == nil {
+		t.Fatal("HTTP 200 native error payload must fail the Claude sample")
+	}
+}
+
+func TestProbeUsageSnapshotClaudeRejectsHTTP200NonMessagePayload(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{DBID: 81, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	store.AddAccount(account)
+	h := &Handler{store: store, executeClaudeUsageProbe: func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err == nil {
+		t.Fatal("HTTP 200 non-message payload must not count as a successful Claude sample")
+	}
+}
+
 func TestShouldMarkUsageProbeAccountError(t *testing.T) {
 	tests := []struct {
 		name       string

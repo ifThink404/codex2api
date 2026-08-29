@@ -100,6 +100,9 @@ type accountListSnapshotItem struct {
 	DynamicConcurrency  int64
 	OpenAIResponses     bool
 	Antigravity         bool
+	Claude              bool
+	ClaudeUsageProbeAt  string
+	ClaudeUsageProbeErr string
 	SearchText          string
 }
 
@@ -244,7 +247,7 @@ func (h *Handler) resolveAccountOperationSelector(ctx context.Context, selector 
 				continue
 			}
 		}
-		if selector.SubscriptionUnlocked && (!accountListSubscriptionPlan(item.PlanType) || item.Locked) {
+		if selector.SubscriptionUnlocked && !accountListSubscriptionUnlocked(item, channel) {
 			continue
 		}
 		ids = append(ids, item.ID)
@@ -573,6 +576,7 @@ func isAccountListDeletePath(method, path string) bool {
 // 的读路径会把变更前的统计卡/筛选计数原样返回给变更后的第一次刷新。
 func (h *Handler) invalidateAccountSnapshotCaches() {
 	h.accountCachesGen.Add(1)
+	h.claudeAccountCachesGen.Add(1)
 	h.accountListCacheMu.Lock()
 	h.accountListCache = nil
 	h.accountListCacheMu.Unlock()
@@ -629,6 +633,7 @@ func (h *Handler) pruneAccountsFromSnapshotCaches(ids []int64) {
 
 func (h *Handler) rebuildAccountListSnapshot(ctx context.Context, channel string) (*accountListSnapshot, error) {
 	gen := h.accountCachesGen.Load()
+	claudeGen := h.claudeAccountCachesGen.Load()
 	rows, err := h.db.ListAccountListProjection(ctx, channel)
 	if err != nil {
 		return nil, err
@@ -658,14 +663,21 @@ func (h *Handler) rebuildAccountListSnapshot(ctx context.Context, channel string
 	}
 	snapshot.ExpiresAt = snapshot.BuiltAt.Add(snapshotTTL)
 	snapshot.Summary, snapshot.Facets = summarizeAccountList(items, channel)
-	h.installAccountListSnapshot(channel, snapshot, gen)
+	h.installAccountListSnapshot(channel, snapshot, gen, claudeGen)
 	return snapshot, nil
 }
 
 // installAccountListSnapshot 只在代数未漂移时入缓存:读库期间发生过账号
 // 变更的快照可能早于变更,返回给当前调用方无妨,但不能留给后续请求。
-func (h *Handler) installAccountListSnapshot(channel string, snapshot *accountListSnapshot, gen uint64) {
+func (h *Handler) installAccountListSnapshot(channel string, snapshot *accountListSnapshot, gen uint64, claudeGens ...uint64) {
 	if h.accountCachesGen.Load() != gen {
+		return
+	}
+	claudeGen := h.claudeAccountCachesGen.Load()
+	if len(claudeGens) > 0 {
+		claudeGen = claudeGens[0]
+	}
+	if channel == database.UpstreamChannelClaude && h.claudeAccountCachesGen.Load() != claudeGen {
 		return
 	}
 	h.accountListCacheMu.Lock()
@@ -681,6 +693,7 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 	isGrok := strings.EqualFold(upstreamType, auth.UpstreamGrok)
 	isAntigravity := strings.EqualFold(upstreamType, auth.UpstreamAntigravity)
 	isOpenAIResponses := strings.EqualFold(upstreamType, auth.UpstreamOpenAIResponses)
+	isClaude := strings.EqualFold(upstreamType, auth.UpstreamClaude)
 	email := row.GetCredential("email")
 	if isOpenAIResponses && email == "" {
 		email = row.GetCredential("base_url")
@@ -707,7 +720,9 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 		Enabled: row.Enabled, Locked: row.Locked, PlanType: planType, GrokAuthKind: grokAuthKind,
 		Email: email, EmailDomain: accountEmailDomain(email), Tags: append([]string(nil), row.Tags...),
 		SchedulerPriority: valueOrZero(accountSchedulerPriority(row)), OpenAIResponses: isOpenAIResponses,
-		Antigravity: isAntigravity,
+		Antigravity: isAntigravity, Claude: isClaude,
+		ClaudeUsageProbeAt:  row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey),
+		ClaudeUsageProbeErr: row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey),
 	}
 	if row.CooldownUntil.Valid {
 		item.CooldownUntil = row.CooldownUntil.Time
@@ -786,6 +801,11 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 			item.PlanType, item.GrokPlanCategory, row.ErrorMessage, row.ProxyURL, strings.Join(groupLabels, " "))
 	} else if isAntigravity {
 		searchParts = append(searchParts, item.PlanType, row.GetCredential("project_id"), row.GetCredential("antigravity_sync_error"), strings.Join(groupLabels, " "))
+	} else if isClaude {
+		searchParts = append(searchParts,
+			strings.Join(row.GetCredentialStringSlice("models"), " "), row.GetCredential("base_url"),
+			item.PlanType, row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey), row.ErrorMessage,
+			row.ProxyURL, strings.Join(groupLabels, " "))
 	}
 	item.SearchText = strings.ToLower(strings.Join(searchParts, " "))
 	return item
@@ -1046,6 +1066,14 @@ func (h *Handler) storeRequestCountCache(channel string, counts map[int64]*datab
 // expireAccountListSnapshot 把指定渠道的列表快照标记为过期,但保留内容:
 // 读路径仍按 stale-while-revalidate 先返回旧值,只是下一次读取会立刻触发重建。
 func (h *Handler) expireAccountListSnapshot(channel string) {
+	// Invalidate in-flight rebuilds as well as the cached TTL. A probe may
+	// finish while an older projection query is still running; without a new
+	// generation that stale query could reinstall the pre-probe metadata.
+	if channel == database.UpstreamChannelClaude {
+		h.claudeAccountCachesGen.Add(1)
+	} else {
+		h.accountCachesGen.Add(1)
+	}
 	h.accountListCacheMu.Lock()
 	if cached := h.accountListCache[channel]; cached != nil {
 		cached.ExpiresAt = time.Time{}
@@ -1185,7 +1213,12 @@ func accountListUnsampled(item *accountListSnapshotItem) bool {
 		return false
 	}
 	// k12 等 team 型工作区可能只返回 5h 窗口：任一窗口有数据即算已采样。
-	return !item.UsagePercent5hOK && !item.UsagePercent7dOK
+	if item.UsagePercent5hOK || item.UsagePercent7dOK {
+		return false
+	}
+	// Claude 的 native Messages 端点可能合法地省略统一配额头；一次成功
+	// 的 provider-native probe 仍代表账号已采样，只是配额未知。
+	return item.ClaudeUsageProbeAt == "" || item.ClaudeUsageProbeErr != ""
 }
 
 func accountListNormal(item *accountListSnapshotItem) bool {
@@ -1392,6 +1425,9 @@ func summarizeAccountList(items []*accountListSnapshotItem, channel string) (acc
 		if item.GrokAuthKind == auth.GrokAuthKindAPIKey {
 			summary.APIKey++
 		}
+		if item.Claude {
+			summary.OAuth++
+		}
 		if channel == database.UpstreamChannelCodex {
 			if item.OpenAIResponses {
 				summary.APIKey++
@@ -1399,7 +1435,7 @@ func summarizeAccountList(items []*accountListSnapshotItem, channel string) (acc
 				summary.OAuth++
 			}
 		}
-		if channel == database.UpstreamChannelCodex && accountListSubscriptionPlan(item.PlanType) && !item.Locked {
+		if accountListSubscriptionUnlocked(item, channel) {
 			summary.SubscriptionUnlocked++
 		}
 		if !item.LastUnauthorizedAt.IsZero() && now.Sub(item.LastUnauthorizedAt) <= 24*time.Hour {
@@ -1481,4 +1517,43 @@ func accountListSubscriptionPlan(plan string) bool {
 	default:
 		return false
 	}
+}
+
+// accountListSubscriptionUnlocked applies the subscription filter using the
+// provider's own plan vocabulary. Codex and Claude expose different plan
+// names, while relay/auxiliary providers have no subscription semantics in
+// this list. Keeping the channel check here prevents a generic selector from
+// accidentally treating another provider's plan as a Codex entitlement.
+func accountListSubscriptionUnlocked(item *accountListSnapshotItem, channel string) bool {
+	if item == nil || item.Locked {
+		return false
+	}
+	switch channel {
+	case database.UpstreamChannelCodex:
+		return accountListSubscriptionPlan(item.PlanType)
+	case database.UpstreamChannelClaude:
+		return accountList5hQuotaEligible(item)
+	default:
+		return false
+	}
+}
+
+// accountList5hQuotaEligible keeps provider-specific subscription semantics in
+// one place. Claude OAuth plans (pro/max-5x/max-20x/team) expose a rolling 5h
+// window even though they are not Codex plan names.
+func accountList5hQuotaEligible(item *accountListSnapshotItem) bool {
+	if item == nil {
+		return false
+	}
+	if item.Claude || (item.Row != nil && strings.EqualFold(strings.TrimSpace(item.Row.GetCredential("upstream_type")), auth.UpstreamClaude)) {
+		plan := strings.ToLower(strings.TrimSpace(item.PlanType))
+		switch plan {
+		case "claude", "pro", "max", "max-5x", "max-20x", "team", "enterprise", "business",
+			"claude-pro", "claude-max", "claude-max-5x", "claude-max-20x", "claude-team", "claude-enterprise", "claude-business":
+			return true
+		default:
+			return false
+		}
+	}
+	return accountListSubscriptionPlan(item.PlanType)
 }

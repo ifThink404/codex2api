@@ -5801,7 +5801,7 @@ export default function Accounts() {
     [],
   );
 
-  // 三个账号视图共用同一切换器（独立页面通过 headerSlot 注入）。
+  // 四个账号视图共用同一切换器（独立页面通过 headerSlot 注入）。
   // 滑块动画 + 品牌 logo，与仪表盘渠道过滤器视觉一致。
   // useMemo 保持引用稳定,否则每轮渲染的新元素会击穿独立账号页的 memo 边界。
   const providerSwitcher = useMemo(() => (
@@ -10302,7 +10302,9 @@ export default function Accounts() {
                                     ? "bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
                                     : group.channel === "antigravity"
                                       ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                                      : "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+                                      : group.channel === "claude"
+                                        ? "bg-orange-50 text-orange-700 dark:bg-orange-950 dark:text-orange-300"
+                                        : "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300"
                                 }`}
                               >
                                 <ChannelLogo channel={group.channel} size={11} />
@@ -10310,7 +10312,9 @@ export default function Accounts() {
                                   ? t("accounts.providerViewGrok")
                                   : group.channel === "antigravity"
                                     ? t("accounts.providerViewAntigravity")
-                                    : t("accounts.providerViewCodex")}
+                                    : group.channel === "claude"
+                                      ? t("accounts.providerViewClaude")
+                                      : t("accounts.providerViewCodex")}
                               </span>
                               <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
                                 {t("accounts.groupMembers")}{" "}
@@ -10404,7 +10408,7 @@ export default function Accounts() {
                       return (
                         <>
                           <div className="flex gap-2">
-                            {(["codex", "grok", "antigravity"] as const).map((channel) => (
+                            {(["codex", "grok", "antigravity", "claude"] as const).map((channel) => (
                               <button
                                 key={channel}
                                 type="button"
@@ -10426,7 +10430,9 @@ export default function Accounts() {
                                   ? t("accounts.providerViewGrok")
                                   : channel === "antigravity"
                                     ? t("accounts.providerViewAntigravity")
-                                    : t("accounts.providerViewCodex")}
+                                    : channel === "claude"
+                                      ? t("accounts.providerViewClaude")
+                                      : t("accounts.providerViewCodex")}
                               </button>
                             ))}
                           </div>
@@ -11369,9 +11375,11 @@ function RecycleBinView({
                         </TableCell>
                         <TableCell>
                           <Badge variant="secondary">
-                            {row.openai_responses_api
-                              ? t("accounts.recycleBinTypeRelay")
-                              : t("accounts.recycleBinTypeOauth")}
+                            {row.claude_api
+                              ? t("accounts.providerViewClaude")
+                              : row.openai_responses_api
+                                ? t("accounts.recycleBinTypeRelay")
+                                : t("accounts.recycleBinTypeOauth")}
                           </Badge>
                         </TableCell>
                         <TableCell>
@@ -11566,6 +11574,7 @@ function recycleBinRowToAccountRow(row: RecycleBinAccountRow): AccountRow {
     plan_type: row.plan_type,
     status: "deleted",
     openai_responses_api: row.openai_responses_api,
+    claude_api: row.claude_api,
     base_url: row.base_url,
     models: row.models,
     proxy_url: "",
@@ -14231,8 +14240,9 @@ function TestConnectionModal({
     onSettledRef.current();
   }, []);
 
+  const isClaudeAccount = Boolean(account.claude_api);
   // Grok 与 openai_responses 同属"账号自带模型清单"的 relay 风格账号，
-  // 测试模型选择逻辑一致（用 account.models 而非上游 /v1/models 全量）。
+  // Claude 也使用账号级原生 Messages 模型清单，但走独立分支。
   const isOpenAIResponsesAccount = Boolean(
     account.openai_responses_api || account.grok_api,
   );
@@ -14242,9 +14252,9 @@ function TestConnectionModal({
       uniqueTestModels(
         modelOptions,
         selectedModel,
-        !isOpenAIResponsesAccount,
+        !isOpenAIResponsesAccount && !isClaudeAccount,
       ).map((item) => ({ label: item, value: item })),
-    [isOpenAIResponsesAccount, modelOptions, selectedModel],
+    [isClaudeAccount, isOpenAIResponsesAccount, modelOptions, selectedModel],
   );
 
   useEffect(() => {
@@ -14254,6 +14264,20 @@ function TestConnectionModal({
       try {
         const settings = await api.getSettings();
         if (!active) return;
+
+        if (isClaudeAccount) {
+          const accountModels = (account.models ?? []).filter(
+            (model) => isConnectionTestModel(model) && model.toLowerCase().startsWith("claude-"),
+          );
+          const fallbackModels = uniqueTestModels(
+            accountModels.length > 0 ? accountModels : ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+            undefined,
+            false,
+          );
+          setModelOptions(fallbackModels);
+          setSelectedModel((current) => current || fallbackModels[0] || "");
+          return;
+        }
 
         if (isOpenAIResponsesAccount) {
           const accountModels = (account.models ?? []).filter(
@@ -14298,7 +14322,18 @@ function TestConnectionModal({
         );
       } catch {
         if (!active) return;
-        if (isOpenAIResponsesAccount) {
+        if (isClaudeAccount) {
+          const accountModels = (account.models ?? []).filter(
+            (model) => isConnectionTestModel(model) && model.toLowerCase().startsWith("claude-"),
+          );
+          const fallbackModels = uniqueTestModels(
+            accountModels.length > 0 ? accountModels : ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+            undefined,
+            false,
+          );
+          setModelOptions(fallbackModels);
+          setSelectedModel((current) => current || fallbackModels[0] || "");
+        } else if (isOpenAIResponsesAccount) {
           const accountModels = (account.models ?? []).filter(
             isConnectionTestModel,
           );
@@ -14330,7 +14365,7 @@ function TestConnectionModal({
     return () => {
       active = false;
     };
-  }, [account.model_mapping, account.models, isOpenAIResponsesAccount]);
+  }, [account.claude_api, account.model_mapping, account.models, isClaudeAccount, isOpenAIResponsesAccount]);
 
   useEffect(() => {
     if (!modelOptionsReady || !selectedModel) return;

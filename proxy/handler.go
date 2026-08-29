@@ -378,15 +378,33 @@ func (h *Handler) applyUpstreamChannelFilter(c *gin.Context, effectiveModel stri
 		return combine(grokChannelAccountFilter(effectiveModel))
 	case database.UpstreamChannelAntigravity:
 		return combine(antigravityChannelAccountFilter(effectiveModel))
+	case database.UpstreamChannelClaude:
+		return combine(claudeChannelAccountFilter(effectiveModel))
 	case database.UpstreamChannelCodex:
 		return func(account *auth.Account) bool {
-			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() {
+			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() {
 				return false
 			}
 			return filter == nil || filter(account)
 		}
 	}
 	return filter
+}
+
+func claudeChannelAccountFilter(model string) auth.AccountFilter {
+	model = strings.TrimSpace(model)
+	return func(account *auth.Account) bool {
+		return account != nil && account.IsClaudeOAuth() &&
+			!account.IsModelRateLimited(model) && claudeAccountSupportsModel(account, model)
+	}
+}
+
+// excludeClaudeAccountsFilter fences the native-Messages-only Claude provider
+// from OpenAI Responses and Chat Completions routes.
+func excludeClaudeAccountsFilter(filter auth.AccountFilter) auth.AccountFilter {
+	return func(account *auth.Account) bool {
+		return account != nil && !account.IsClaudeOAuth() && (filter == nil || filter(account))
+	}
 }
 
 // grokChannelAccountFilter 是 grok 渠道 Key 的账号过滤器：仅 Grok 账号；
@@ -441,7 +459,7 @@ func accountFilterForCompactResponsesModelWithOriginal(originalModel string, eff
 	return func(account *auth.Account) bool {
 		// Grok/Antigravity 上游都没有 Responses compact 适配器。尤其不能让
 		// Antigravity Google bearer 落入官方 Codex executor。
-		if account.IsGrokAPI() || account.IsAntigravityAPI() {
+		if account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() {
 			return false
 		}
 		return inner(account)
@@ -550,7 +568,7 @@ func (h *Handler) modelSupportedByAccountMapping(model string) bool {
 		return false
 	}
 	for _, account := range h.store.Accounts() {
-		if account == nil || !account.IsRelayStyle() {
+		if account == nil || !account.IsRelayStyle() || account.IsClaudeOAuth() {
 			continue
 		}
 		if account.IsAntigravityAPI() {
@@ -570,6 +588,12 @@ func (h *Handler) modelSupportedByAccountMapping(model string) bool {
 func (h *Handler) modelValidator(supportedModels []string) api.ValidationRule {
 	validModels := make(map[string]bool, len(supportedModels))
 	for _, model := range supportedModels {
+		// Native Claude model IDs belong exclusively to /v1/messages. A
+		// configured Claude->Codex mapping is applied before validation, so a
+		// successfully mapped request arrives here under its Codex target ID.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-") {
+			continue
+		}
 		validModels[model] = true
 	}
 	return func(value gjson.Result, path string) *api.ValidationError {
@@ -1328,6 +1352,8 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 					input.Channel = database.UpstreamChannelGrok
 				case acc.IsAntigravityAPI():
 					input.Channel = database.UpstreamChannelAntigravity
+				case acc.IsClaudeOAuth():
+					input.Channel = database.UpstreamChannelClaude
 				}
 			}
 		}
@@ -2395,11 +2421,11 @@ func responseFailedStatusCodeWithEvidence(payload []byte) (int, bool) {
 		return http.StatusTooManyRequests, true
 	case strings.Contains(codeOrType, "rate_limit"):
 		return http.StatusTooManyRequests, true
-	case strings.Contains(codeOrType, "unauthorized") || strings.Contains(codeOrType, "invalid_api_key"):
+	case strings.Contains(codeOrType, "unauthorized") || strings.Contains(codeOrType, "authentication") || strings.Contains(codeOrType, "invalid_api_key") || strings.Contains(codeOrType, "invalid_token"):
 		return http.StatusUnauthorized, true
 	case strings.Contains(codeOrType, "payment"):
 		return http.StatusPaymentRequired, true
-	case strings.Contains(codeOrType, "forbidden"):
+	case strings.Contains(codeOrType, "forbidden") || strings.Contains(codeOrType, "permission"):
 		return http.StatusForbidden, true
 	case strings.Contains(codeOrType, "previous_response_not_found"):
 		return http.StatusBadRequest, true
@@ -3720,6 +3746,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
 	}
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
+	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -5650,6 +5677,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 中转账号会命中上游自身的 /responses/compact，使仅接入中转的用户也能压缩（issue #174）。
 	accountFilter := accountFilterForCompactResponsesModelWithOriginal(routingModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
 	}
@@ -6454,6 +6482,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeAntigravityAccountsFilter(accountFilter)
+	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
@@ -8357,7 +8386,7 @@ func (h *Handler) supportedModelIDs(ctx context.Context) []string {
 				models = append(models, model)
 			}
 			aliases := accountModelMappingAliases(account)
-			if account.IsAntigravityAPI() {
+			if account.IsAntigravityAPI() || account.IsClaudeOAuth() {
 				aliases = nil
 			}
 			for _, alias := range aliases {

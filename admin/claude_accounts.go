@@ -223,7 +223,7 @@ func (h *Handler) RefreshClaudeModels(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "账号缺少 access_token,请先刷新或重新导入")
 		return
 	}
-	models, ferr := auth.NewClaudeAuth(strings.TrimSpace(row.ProxyURL)).FetchModels(ctx, accessToken)
+	models, ferr := auth.NewClaudeAuth(h.resolveClaudeModelProxy(id, row.ProxyURL)).FetchModels(ctx, accessToken)
 	if ferr != nil {
 		writeError(c, http.StatusBadGateway, "拉取可用模型失败: "+ferr.Error())
 		return
@@ -244,6 +244,7 @@ func (h *Handler) RefreshClaudeModels(c *gin.Context) {
 			acc.Mu().Unlock()
 		}
 	}
+	h.invalidateClaudeCatalogCaches()
 	c.JSON(http.StatusOK, gin.H{"message": "已更新可用模型", "models": models, "count": len(models)})
 }
 
@@ -265,7 +266,7 @@ func (h *Handler) RefreshAllClaudeModels(c *gin.Context) {
 			failed++
 			continue
 		}
-		models, ferr := auth.NewClaudeAuth(strings.TrimSpace(row.ProxyURL)).FetchModels(ctx, accessToken)
+		models, ferr := auth.NewClaudeAuth(h.resolveClaudeModelProxy(row.ID, row.ProxyURL)).FetchModels(ctx, accessToken)
 		if ferr != nil || len(models) == 0 {
 			failed++
 			continue
@@ -286,12 +287,42 @@ func (h *Handler) RefreshAllClaudeModels(c *gin.Context) {
 		}
 		refreshed++
 	}
+	if refreshed > 0 {
+		h.invalidateClaudeCatalogCaches()
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "已刷新 Claude 账号可用模型",
 		"refreshed":   refreshed,
 		"failed":      failed,
 		"model_count": len(allModels),
 	})
+}
+
+// resolveClaudeModelProxy mirrors the request path's proxy precedence for
+// control-plane model discovery: an account-level/managed group proxy wins,
+// then the row's persisted proxy is used as a safe fallback when the account
+// is not currently present in the runtime store.
+func (h *Handler) resolveClaudeModelProxy(id int64, fallback string) string {
+	if h != nil && h.store != nil {
+		if account := h.store.FindByID(id); account != nil {
+			if resolved := strings.TrimSpace(h.store.ResolveProxyForAccount(account)); resolved != "" {
+				return resolved
+			}
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func (h *Handler) invalidateClaudeCatalogCaches() {
+	if h == nil {
+		return
+	}
+	h.expireAccountListSnapshot(database.UpstreamChannelClaude)
+	h.accountAnalysisCacheMu.Lock()
+	if h.accountAnalysisCache != nil {
+		delete(h.accountAnalysisCache, database.UpstreamChannelClaude)
+	}
+	h.accountAnalysisCacheMu.Unlock()
 }
 
 // insertClaudeAccount 把一份 Claude token 落库并加载进运行时池子(去重按 account_id)。
@@ -385,6 +416,9 @@ func (h *Handler) insertClaudeAccount(c *gin.Context, ctx context.Context, name,
 	})
 
 	h.db.InsertAccountEventAsync(id, "added", source)
+	// Keep Claude imports on the bounded warmup queue. ProbeUsageSnapshot routes
+	// this account to Anthropic Messages and never to WHAM/Responses.
+	h.scheduleImportedAccountWarmup(h.store.FindByID(id), id, source)
 	security.SecurityAuditLog("CLAUDE_ACCOUNT_ADDED", fmt.Sprintf("account_id=%d ip=%s", id, c.ClientIP()))
 	c.JSON(http.StatusOK, gin.H{
 		"message": "成功添加 Claude 账号",

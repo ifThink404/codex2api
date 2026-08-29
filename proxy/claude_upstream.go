@@ -17,6 +17,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,8 +51,9 @@ var defaultClaudeModelIDs = []string{
 	"claude-haiku-4-5",
 }
 
-// DefaultClaudeModelIDsForAccount 返回该 Claude 账号对外可见的模型:优先账号 Models
-// 白名单,否则用当前默认集。用于 /v1/models 账号维度暴露。
+// DefaultClaudeModelIDsForAccount 返回该 Claude 账号对外可见的原生模型:优先
+// 账号 Models 白名单,否则用当前默认集。历史/误配的非 claude-* 条目必须在
+// 目录源头过滤,避免 /v1/models 发布一个调度器随后必然拒绝的模型。
 func DefaultClaudeModelIDsForAccount(account *auth.Account) []string {
 	if account == nil {
 		return nil
@@ -60,7 +62,21 @@ func DefaultClaudeModelIDsForAccount(account *auth.Account) []string {
 	whitelist := append([]string(nil), account.Models...)
 	account.Mu().RUnlock()
 	if len(whitelist) > 0 {
-		return whitelist
+		visible := make([]string, 0, len(whitelist))
+		seen := make(map[string]struct{}, len(whitelist))
+		for _, model := range whitelist {
+			model = strings.TrimSpace(model)
+			key := strings.ToLower(model)
+			if !strings.HasPrefix(key, "claude-") {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			visible = append(visible, model)
+		}
+		return visible
 	}
 	return append([]string(nil), defaultClaudeModelIDs...)
 }
@@ -73,6 +89,9 @@ func claudeAccountSupportsModel(account *auth.Account, model string) bool {
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
+		return false
+	}
+	if !strings.HasPrefix(strings.ToLower(model), "claude-") {
 		return false
 	}
 	account.Mu().RLock()
@@ -354,7 +373,7 @@ func claudeRatelimitHeaderPct(v string) (float64, bool) {
 		return 0, false
 	}
 	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f < 0 {
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
 		return 0, false
 	}
 	if f <= 1.5 {
@@ -370,10 +389,24 @@ func claudeRatelimitHeaderPct(v string) (float64, bool) {
 func claudeRatelimitHeaderTime(v string) time.Time {
 	v = strings.TrimSpace(v)
 	sec, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || sec <= 0 {
-		return time.Time{}
+	if err == nil && sec > 0 {
+		// Some compatible gateways serialize epoch milliseconds instead of the
+		// Anthropic epoch-seconds contract. Normalize that form and reject
+		// implausible values so a malformed header cannot create a multi-century
+		// account cooldown.
+		if sec > 100_000_000_000 {
+			sec /= 1000
+		}
+		if sec >= 946684800 && sec <= 4102444800 { // 2000-01-01 .. 2100-01-01
+			return time.Unix(sec, 0)
+		}
 	}
-	return time.Unix(sec, 0)
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano} {
+		if parsed, parseErr := time.Parse(layout, v); parseErr == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 // SyncClaudeUsageState 解析 Claude 响应的统一限流头,把 5h/7d 窗口利用率与重置
@@ -382,17 +415,26 @@ func claudeRatelimitHeaderTime(v string) time.Time {
 // 持久化调用与 SyncCodexUsageState 同构:persist 在 ApplyUsageObservation 闭包内,
 // MarkResponsesPremium5hRateLimited 自带观察序,必须留在闭包外(usageSyncMu 不可重入)。
 func SyncClaudeUsageState(store *auth.Store, account *auth.Account, resp *http.Response) {
-	if account == nil || resp == nil || len(resp.Header) == 0 {
+	if account == nil || resp == nil {
 		return
 	}
 	h := resp.Header
+	if h == nil {
+		h = make(http.Header)
+	}
 	pct5h, ok5h := claudeRatelimitHeaderPct(h.Get("anthropic-ratelimit-unified-5h-utilization"))
 	reset5h := claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-5h-reset"))
 	pct7d, ok7d := claudeRatelimitHeaderPct(h.Get("anthropic-ratelimit-unified-7d-utilization"))
 	reset7d := claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-7d-reset"))
+	observedAt := time.Now()
+	if !ok5h && !ok7d {
+		// A valid native response without quota metadata is still evidence that
+		// the token was observed. Record freshness without inventing a quota
+		// percentage, otherwise the scheduler would repeat a paid probe forever.
+		account.MarkClaudeUsageObservation(observedAt)
+	}
 
 	if ok5h || ok7d {
-		observedAt := time.Now()
 		account.ApplyUsageObservation(observedAt, func() {
 			if ok5h {
 				account.SetUsageSnapshot5hAt(pct5h, reset5h, observedAt)
@@ -409,18 +451,82 @@ func SyncClaudeUsageState(store *auth.Store, account *auth.Account, resp *http.R
 				store.PersistUsageSnapshot5hOnly(account)
 			}
 		})
+		// A 7d-only unified response is still authoritative for the long
+		// window, and therefore also authoritative evidence that a previously
+		// cached 5h window is absent. Use the same observation timestamp so a
+		// newer concurrent response wins and cannot be erased by this cleanup.
+		if ok7d && !ok5h && store != nil {
+			if _, hasStale5h := account.GetUsagePercent5h(); hasStale5h {
+				store.ClearAbsentUsageSnapshot5hAt(account, observedAt)
+			}
+		}
 	}
 
-	// 上游明确拒绝(配额耗尽)→ 以 5h 重置时刻为准记限流冷却;缺头退回统一 reset。
+	// 上游拒绝(429 / unified-status=rejected)时,必须**按真实耗尽的窗口精确归因**,
+	// 否则会把通用/边缘/周窗口的限流一律误标成「5h 窗口 100% 耗尽」并长时间冷却。
 	// 注意不匹配 overage-status(那是溢出计费开关,200 响应上也会是 rejected)。
-	if resp.StatusCode == http.StatusTooManyRequests ||
-		strings.EqualFold(strings.TrimSpace(h.Get("anthropic-ratelimit-unified-status")), "rejected") {
-		resetAt := reset5h
-		if resetAt.IsZero() {
-			resetAt = claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-reset"))
-		}
-		if store != nil {
+	rejected := resp.StatusCode == http.StatusTooManyRequests ||
+		strings.EqualFold(strings.TrimSpace(h.Get("anthropic-ratelimit-unified-status")), "rejected")
+	if rejected && store != nil {
+		claim := strings.ToLower(strings.TrimSpace(h.Get("anthropic-ratelimit-unified-representative-claim")))
+		fiveHourExhausted := (ok5h && pct5h >= 100) || claim == "five_hour" || claim == "five-hour" || claim == "5h"
+		sevenDayExhausted := (ok7d && pct7d >= 100) || claim == "seven_day" || claim == "seven-day" || claim == "7d"
+		switch {
+		case sevenDayExhausted:
+			// 周窗口耗尽:记到 7d 窗口(冷却到 7d 重置),不动 5h。上面已按 7d-utilization
+			// 持久化;若上游只给了 representative-claim 而无 utilization,则补写 7d=100。
+			if !(ok7d && pct7d >= 100) {
+				r7 := reset7d
+				if r7.IsZero() {
+					r7 = claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-reset"))
+				}
+				account.ApplyUsageObservation(time.Now(), func() {
+					account.SetUsageSnapshot(100, time.Now())
+					if !r7.IsZero() {
+						account.SetReset7dAt(r7)
+					}
+					store.PersistUsageSnapshot(account, 100)
+				})
+			}
+			store.MarkUsage7dRateLimited(account)
+		case fiveHourExhausted:
+			// 5h 窗口确实耗尽:标 5h 限流,冷却到 5h 重置。
+			resetAt := reset5h
+			if resetAt.IsZero() {
+				resetAt = claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-reset"))
+			}
 			store.MarkResponsesPremium5hRateLimited(account, resetAt)
+		default:
+			// 无任何窗口耗尽信号(通用/边缘/IP 限流,如 rate_limit_error,常无 unified 头)→
+			// 只做短退避,绝不标 5h=100%。优先用 Retry-After,否则给保守默认。
+			store.MarkCooldown(account, claudeGenericRateLimitBackoff(h), "rate_limited")
 		}
 	}
+}
+
+// claudeGenericRateLimitBackoff 返回通用限流(非窗口耗尽)的短冷却时长:
+// 优先取 Retry-After(秒或 HTTP-date),否则默认 1 分钟;上限 15 分钟避免误封过久。
+func claudeGenericRateLimitBackoff(h http.Header) time.Duration {
+	const def = time.Minute
+	const max = 15 * time.Minute
+	ra := strings.TrimSpace(h.Get("Retry-After"))
+	if ra == "" {
+		return def
+	}
+	if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+		d := time.Duration(secs) * time.Second
+		if d > max {
+			return max
+		}
+		return d
+	}
+	if t, err := http.ParseTime(ra); err == nil {
+		if d := time.Until(t); d > 0 {
+			if d > max {
+				return max
+			}
+			return d
+		}
+	}
+	return def
 }

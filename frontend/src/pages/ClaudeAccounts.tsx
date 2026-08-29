@@ -15,9 +15,14 @@ import {
   Trash2,
   Columns3,
   Plus,
+  CheckCircle,
+  XCircle,
+  Loader2,
+  FlaskConical,
+  SlidersHorizontal,
 } from "lucide-react";
 
-import { api } from "../api";
+import { api, getAdminKey } from "../api";
 import type { ProxyRow } from "../api";
 import type {
   AccountRow,
@@ -29,6 +34,7 @@ import type {
   ClaudeImportTokenRequest,
 } from "../types";
 import AccountUsageModal from "../components/AccountUsageModal";
+import AccountDetailSheet from "../components/AccountDetailSheet";
 import AccountHealthBar from "../components/AccountHealthBar";
 import RequestCountPills from "../components/RequestCountPills";
 import { CompactStat } from "../components/CompactStat";
@@ -47,14 +53,20 @@ import Pagination from "../components/Pagination";
 import AccountGroupFilterSelect, {
   EMPTY_ACCOUNT_GROUP_FILTER,
   isAccountGroupFilterEmpty,
+  pruneAccountGroupFilter,
 } from "../components/AccountGroupFilterSelect";
 import type { AccountGroupFilterValue } from "../components/AccountGroupFilterSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import {
+  accountStateTableRowClass,
+  renderAccountStateOverlay,
+} from "../components/AccountStateOverlay";
 import { useToast } from "../hooks/useToast";
 import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import { getErrorMessage } from "../utils/error";
+import { getAccountStatusBadgeStatus } from "../lib/usageFormat";
 
 const FALLBACK_GROUP_COLOR = "#2563eb";
 function normalizeGroupColor(color?: string): string {
@@ -81,8 +93,9 @@ function extractCode(input: string): string {
 // claudeUsagePct 取用量百分比(0-100)。后端解析 Anthropic 统一限流头后,
 // usage_percent_5h/7d 为真实窗口利用率;null/undefined 表示尚无上游观测。
 function claudeUsagePct(v: unknown): number | null {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) && n >= 0 ? Math.min(100, n) : null;
+	if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) return null;
+	const n = typeof v === "number" ? v : Number(v);
+	return Number.isFinite(n) && n >= 0 ? Math.min(100, n) : null;
 }
 
 function usageTone(pct: number): string {
@@ -174,11 +187,51 @@ function claudePlanBadge(plan: string): { label: string; cls: string } {
       return { label: "Team", cls: `${base} bg-sky-50 text-sky-700 ring-sky-600/20 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-400/20` };
     case "enterprise":
       return { label: "Enterprise", cls: `${base} bg-indigo-50 text-indigo-700 ring-indigo-600/20 dark:bg-indigo-950 dark:text-indigo-300 dark:ring-indigo-400/20` };
+    case "business":
+      return { label: "Business", cls: `${base} bg-indigo-50 text-indigo-700 ring-indigo-600/20 dark:bg-indigo-950 dark:text-indigo-300 dark:ring-indigo-400/20` };
     case "free":
       return { label: "Free", cls: `${base} bg-zinc-100 text-zinc-600 ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-400 dark:ring-zinc-500/20` };
     default:
       return { label: plan, cls: `${base} bg-purple-50 text-purple-700 ring-purple-600/20 dark:bg-purple-950 dark:text-purple-300 dark:ring-purple-400/20` };
   }
+}
+
+// Claude 模型白名单边界：该页面只允许原生 Claude 模型，不能把其它
+// provider 的模型误写入 Claude 账号。后端 endpoint 仍会做通用名称校验，
+// 这里再做一次 provider-aware 过滤，避免管理端误配导致调度边界漂移。
+const CLAUDE_MODEL_ID_RE = /^claude-[a-z0-9][a-z0-9._-]*$/i;
+
+function isClaudeModelID(value: unknown): value is string {
+  return typeof value === "string" && CLAUDE_MODEL_ID_RE.test(value.trim());
+}
+
+function normalizeClaudeModelList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!isClaudeModelID(value)) continue;
+    const model = value.trim();
+    const key = model.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(model);
+  }
+  return result;
+}
+
+function parseClaudeModelTokens(raw: string): { accepted: string[]; rejected: string[] } {
+  const accepted: string[] = [];
+  const rejected: string[] = [];
+  for (const token of raw.split(/[\s,，、]+/).map((item) => item.trim()).filter(Boolean)) {
+    if (isClaudeModelID(token)) accepted.push(token);
+    else rejected.push(token);
+  }
+  return { accepted: normalizeClaudeModelList(accepted), rejected };
+}
+
+function mergeClaudeModelLists(...lists: unknown[]): string[] {
+  return normalizeClaudeModelList(lists.flatMap((list) => Array.isArray(list) ? list : []));
 }
 
 // 状态过滤项 → 后端 status 参数。
@@ -322,6 +375,26 @@ function UsageWindow({
   );
 }
 
+function ClaudeConcurrencyBadge({ acc }: { acc: AccountRow }) {
+  const { t } = useTranslation();
+  const active = Math.max(0, acc.active_requests ?? 0);
+  const occupied = Math.max(active, acc.occupied_requests ?? active);
+  if (occupied === 0) return null;
+  const buffered = occupied - active;
+  const showOccupied = acc.session_slot_buffer_enabled === true;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-blue-700 ring-1 ring-inset ring-blue-500/20 dark:bg-blue-950 dark:text-blue-300"
+      title={showOccupied
+        ? t("accounts.occupiedRequestsTooltip", { active, occupied, buffered })
+        : t("accounts.activeRequestsTooltip", { count: active })}
+    >
+      <span className="size-1.5 animate-pulse rounded-full bg-blue-500" aria-hidden />
+      {showOccupied ? `${active}/${occupied}` : active}
+    </span>
+  );
+}
+
 export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -333,6 +406,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   const [domains, setDomains] = useState<AccountEmailDomainFacet[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [proxyPool, setProxyPool] = useState<ProxyRow[]>([]);
   const [groups, setGroups] = useState<AccountGroup[]>([]);
 
@@ -341,27 +415,54 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   const [assignTarget, setAssignTarget] = useState<AccountRow | null>(null);
   const [usageTarget, setUsageTarget] = useState<AccountRow | null>(null);
   const [editTarget, setEditTarget] = useState<AccountRow | null>(null);
+  const [modelsTarget, setModelsTarget] = useState<AccountRow | null>(null);
+  const [detailTarget, setDetailTarget] = useState<AccountRow | null>(null);
+  const [testingTarget, setTestingTarget] = useState<AccountRow | null>(null);
+  const detailAbortRef = useRef<AbortController | null>(null);
+  const detailRequestSeqRef = useRef(0);
+  useEffect(() => () => detailAbortRef.current?.abort(), []);
   // page-stats 独立拉取:分页基础行不含 5h/7d/今日 的网关侧用量明细,单独补齐(与 Codex 页同构)。
   const [pageStats, setPageStats] = useState<Record<string, AccountPageStatsItem>>({});
   const [pageStatsToken, setPageStatsToken] = useState(0);
+  const [liveState, setLiveState] = useState<Record<string, { active_requests: number; occupied_requests: number }>>({});
+  const [liveSessionSlotBufferEnabled, setLiveSessionSlotBufferEnabled] = useState(false);
   // 健康状态条(近 200 分钟成败分桶,与 Codex 卡片同源接口)。
   const [healthBars, setHealthBars] = useState<Record<string, AccountHealthBucket[]>>({});
   // 额度分布 + 限流恢复分析(号池模式面板,与 Codex 同源接口/组件)。
   const [analysis, setAnalysis] = useState<AccountAnalysisResponse | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(true);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
 
   const loadAnalysis = useCallback(async () => {
+    if (!showAnalysis) return;
+    analysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    setAnalysisLoading(true);
+    setAnalysisError(null);
     try {
-      const res = await api.getAccountAnalysis("claude");
-      setAnalysis(res);
-    } catch {
-      /* 分析面板失败不阻断列表 */
+      const res = await api.getAccountAnalysis("claude", controller.signal);
+      if (!controller.signal.aborted) setAnalysis(res);
+    } catch (error) {
+      if (!controller.signal.aborted) setAnalysisError(getErrorMessage(error));
+    } finally {
+      if (analysisAbortRef.current === controller) {
+        analysisAbortRef.current = null;
+        setAnalysisLoading(false);
+      }
     }
-  }, []);
+  }, [showAnalysis]);
 
+  const samplingSignature = useMemo(
+    () => accounts.map((acc) => `${acc.id}:${acc.claude_usage_probe_at ?? ""}:${acc.claude_usage_probe_error ?? ""}`).join("|"),
+    [accounts],
+  );
   useEffect(() => {
     void loadAnalysis();
-  }, [loadAnalysis]);
+    return () => analysisAbortRef.current?.abort();
+  }, [loadAnalysis, samplingSignature]);
 
   // 过滤 / 排序 / 分页
   const [search, setSearch] = useState("");
@@ -387,6 +488,8 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   }, [visibleCols]);
   const [knownPlans, setKnownPlans] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const reloadAbortRef = useRef<AbortController | null>(null);
+  const reloadGenerationRef = useRef(0);
 
   // 搜索防抖
   useEffect(() => {
@@ -411,9 +514,13 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
     }
   }, []);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const reload = useCallback(async (options?: { silent?: boolean }) => {
+    reloadAbortRef.current?.abort();
+    if (!options?.silent) setLoading(true);
+    if (!options?.silent) setLoadError(null);
     const controller = new AbortController();
+    reloadAbortRef.current = controller;
+    const generation = ++reloadGenerationRef.current;
     try {
       const { sort, order } = SORT_MAP[sortKey];
       const res = await api.getAccountsPage(
@@ -436,8 +543,9 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         },
         controller.signal,
       );
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || generation !== reloadGenerationRef.current) return;
       const rows = res.accounts ?? [];
+      setLoadError(null);
       setAccounts(rows);
       setSummary(res.summary ?? null);
       setTags(res.facets?.tags ?? []);
@@ -451,9 +559,13 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         return set.size === prev.length ? prev : Array.from(set);
       });
     } catch (error) {
-      if (!controller.signal.aborted) showToast(getErrorMessage(error), "error");
+      if (!controller.signal.aborted && generation === reloadGenerationRef.current) {
+        const message = getErrorMessage(error);
+        setLoadError(message);
+        if (!options?.silent) showToast(message, "error");
+      }
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!options?.silent && !controller.signal.aborted && generation === reloadGenerationRef.current) setLoading(false);
     }
   }, [
     page,
@@ -472,7 +584,164 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
 
   useEffect(() => {
     void reload();
+    return () => reloadAbortRef.current?.abort();
   }, [reload]);
+
+  // 导入接口只负责入队，首轮 native Messages 采样在后台完成。对仍未
+  // 采样的 Claude 账号做有限次数静默轮询，让页面自动显示采样结果，同时
+  // 避免无限刷新或在后台标签页持续制造请求。
+  const pendingSamplingKey = useMemo(
+    () => accounts
+      .filter((acc) => acc.claude_api && !acc.claude_usage_probe_at && !acc.claude_usage_probe_error)
+      .map((acc) => acc.id)
+      .join(","),
+    [accounts],
+  );
+  useEffect(() => {
+    if (!pendingSamplingKey) return undefined;
+    let attempts = 0;
+    let requestInFlight = false;
+    const maxAttempts = 20;
+    const samplingPollTimer = window.setInterval(() => {
+      if (attempts >= maxAttempts) {
+        window.clearInterval(samplingPollTimer);
+        return;
+      }
+      if (document.visibilityState === "hidden") return;
+      if (requestInFlight) return;
+      attempts += 1;
+      requestInFlight = true;
+      void reload({ silent: true }).finally(() => {
+        requestInFlight = false;
+      });
+    }, 3000);
+    return () => window.clearInterval(samplingPollTimer);
+  }, [pendingSamplingKey, reload]);
+
+  const mergeLiveStateIntoAccount = useCallback((account: AccountRow): AccountRow => {
+    const live = liveState[String(account.id)];
+    return live
+      ? {
+          ...account,
+          active_requests: live.active_requests,
+          occupied_requests: live.occupied_requests,
+          session_slot_buffer_enabled: liveSessionSlotBufferEnabled,
+        }
+      : account;
+  }, [liveSessionSlotBufferEnabled, liveState]);
+
+  useEffect(() => {
+    if (!detailTarget) return;
+    const live = liveState[String(detailTarget.id)];
+    if (!live) return;
+    setDetailTarget((current) => current && current.id === detailTarget.id
+      ? {
+          ...current,
+          active_requests: live.active_requests,
+          occupied_requests: live.occupied_requests,
+          session_slot_buffer_enabled: liveSessionSlotBufferEnabled,
+        }
+      : current);
+  }, [detailTarget?.id, liveSessionSlotBufferEnabled, liveState]);
+
+  const refreshOpenDetail = useCallback(async (id: number) => {
+    if (detailTarget?.id !== id) return;
+    detailAbortRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+    const requestSeq = ++detailRequestSeqRef.current;
+    try {
+      const detail = await api.getAccount(id, controller.signal);
+      if (!controller.signal.aborted && requestSeq === detailRequestSeqRef.current) {
+        setDetailTarget((current) => current?.id === id ? mergeLiveStateIntoAccount(detail) : current);
+      }
+    } catch {
+      // The list refresh remains authoritative if the optional detail refresh fails.
+    } finally {
+      if (detailAbortRef.current === controller) detailAbortRef.current = null;
+    }
+  }, [detailTarget?.id, mergeLiveStateIntoAccount]);
+
+  const openDetail = useCallback(async (acc: AccountRow) => {
+    detailAbortRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+    const requestSeq = ++detailRequestSeqRef.current;
+    setDetailTarget(mergeLiveStateIntoAccount(acc));
+    try {
+      const detail = await api.getAccount(acc.id, controller.signal);
+      if (!controller.signal.aborted && requestSeq === detailRequestSeqRef.current) {
+        setDetailTarget(mergeLiveStateIntoAccount(detail));
+      }
+    } catch {
+      // 列表行本身已包含安全的基础信息，详情请求失败时仍可查看。
+    } finally {
+      if (detailAbortRef.current === controller) detailAbortRef.current = null;
+    }
+  }, [mergeLiveStateIntoAccount]);
+
+  const closeDetail = useCallback(() => {
+    detailAbortRef.current?.abort();
+    detailRequestSeqRef.current += 1;
+    setDetailTarget(null);
+  }, []);
+
+  // 模型白名单编辑始终从详情接口读取最新代际，避免用户在列表停留期间
+  // 账号刷新/换 token 后把旧配置覆盖回去。Modal 内保存时还会做一次
+  // updated_at 乐观并发校验，后端 endpoint 只负责持久化已过滤的模型名。
+  const openModelsEditor = useCallback(async (acc: AccountRow) => {
+    try {
+      const detail = await api.getAccount(acc.id);
+      if (detail.claude_api !== true) {
+        throw new Error(t("claude.modelsWhitelistNotClaude"));
+      }
+      setModelsTarget(detail);
+    } catch (error) {
+      showToast(getErrorMessage(error), "error");
+    }
+  }, [showToast, t]);
+
+  const handleSaveDetailCooldownPolicy = useCallback(async (account: AccountRow, data: {
+    mode: "off" | "fixed" | "adaptive" | null;
+    seconds: number | null;
+    backoff_enabled: boolean | null;
+  }) => {
+    try {
+      await api.updateAccountModelCooldownPolicy(account.id, data);
+      showToast(t("accounts.modelCooldownPolicySaved"), "success");
+      await refreshOpenDetail(account.id);
+      void reload();
+    } catch (error) {
+      showToast(getErrorMessage(error), "error");
+    }
+  }, [refreshOpenDetail, reload, showToast, t]);
+
+  const handleClearDetailCooldown = useCallback(async (account: AccountRow, model: string) => {
+    try {
+      await api.clearAccountModelCooldown(account.id, model);
+      showToast(t("accounts.modelCooldownCleared", { model }), "success");
+      await refreshOpenDetail(account.id);
+      void reload();
+    } catch (error) {
+      showToast(getErrorMessage(error), "error");
+    }
+  }, [refreshOpenDetail, reload, showToast, t]);
+
+  const handleClearAllDetailCooldowns = useCallback(async (account: AccountRow) => {
+    try {
+      const result = await api.clearAllAccountModelCooldowns(account.id);
+      showToast(t("accounts.allModelCooldownsCleared", { count: result.cleared }), "success");
+      await refreshOpenDetail(account.id);
+      void reload();
+    } catch (error) {
+      showToast(getErrorMessage(error), "error");
+    }
+  }, [refreshOpenDetail, reload, showToast, t]);
+
+  const handleClaudeTestSettled = useCallback(() => {
+    void reload({ silent: true });
+    void loadAnalysis();
+  }, [loadAnalysis, reload]);
 
   // 拉取当前页账号的网关侧用量明细(req/tok/$,5h/7d/今日窗口)。
   const accountIDsKey = useMemo(() => accounts.map((a) => a.id).join(","), [accounts]);
@@ -493,17 +762,77 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
     return () => controller.abort();
   }, [accountIDsKey, pageStatsToken]);
 
+  // 当前页会话占用是易变状态，单独轻量轮询，避免把整页账号快照频繁
+  // 重拉；切页/卸载时立即取消，保证旧页数据不会覆盖新页。
+  useEffect(() => {
+    if (!accountIDsKey) {
+      setLiveState({});
+      setLiveSessionSlotBufferEnabled(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    let active = true;
+    let requestInFlight = false;
+    let requestSeq = 0;
+    const ids = accountIDsKey.split(",").map(Number);
+    const loadLiveState = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
+      const currentSeq = ++requestSeq;
+      try {
+        const res = await api.getAccountLiveState(ids, controller.signal);
+        if (active && !controller.signal.aborted && currentSeq === requestSeq) {
+          setLiveState(res.accounts ?? {});
+          setLiveSessionSlotBufferEnabled(res.session_slot_buffer_enabled === true);
+        }
+      } catch {
+        // 实时状态失败不阻断账号列表，保留上一次快照。
+      } finally {
+        requestInFlight = false;
+      }
+    };
+    void loadLiveState();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadLiveState();
+    }, 5000);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [accountIDsKey]);
+
   // 刷新单个账号用量:触发上游探针(有则)+ 重拉本页 page-stats 明细。
   const handleRefreshUsage = useCallback(
     async (acc: AccountRow) => {
       try {
-        await api.refreshAccountUsage(acc.id);
-      } catch {
-        /* 探针失败照样重拉现有快照 */
+        const refreshed = await api.refreshAccountUsage(acc.id);
+        setAccounts((prev) =>
+          prev.map((row) =>
+            row.id === acc.id
+              ? {
+                  ...row,
+                  ...(refreshed.usage_percent_5h !== undefined ? { usage_percent_5h: refreshed.usage_percent_5h } : {}),
+                  ...(refreshed.usage_percent_7d !== undefined ? { usage_percent_7d: refreshed.usage_percent_7d } : {}),
+                  ...(refreshed.reset_5h_at ? { reset_5h_at: refreshed.reset_5h_at } : {}),
+                  ...(refreshed.reset_7d_at ? { reset_7d_at: refreshed.reset_7d_at } : {}),
+                  ...(row.claude_api && refreshed.claude_usage_probe_at
+                    ? {
+                        claude_usage_probe_at: refreshed.claude_usage_probe_at,
+                        claude_usage_probe_error: refreshed.claude_usage_probe_error,
+                      }
+                    : {}),
+                }
+              : row,
+          ),
+        );
+      } catch (error) {
+        showToast(getErrorMessage(error), "error");
       }
       setPageStatsToken((v) => v + 1);
+      void reload({ silent: true });
     },
-    [],
+    [reload, showToast],
   );
 
   // 健康状态条数据。
@@ -530,16 +859,24 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   const displayRows = useMemo(() => {
     return accounts.map((acc) => {
       const stats = pageStats[String(acc.id)];
-      if (!stats) return acc;
+      const live = liveState[String(acc.id)];
+      if (!stats && !live) return acc;
       const merged = { ...acc };
-      if (!merged.usage_5h_detail && stats.usage_5h_detail) merged.usage_5h_detail = stats.usage_5h_detail;
-      if (!merged.usage_7d_detail && stats.usage_7d_detail) merged.usage_7d_detail = stats.usage_7d_detail;
-      if (!merged.usage_today_detail && stats.usage_today_detail) merged.usage_today_detail = stats.usage_today_detail;
-      if (merged.official_usd == null && stats.official_usd != null) merged.official_usd = stats.official_usd;
-      if (merged.official_usd_7d == null && stats.official_usd_7d != null) merged.official_usd_7d = stats.official_usd_7d;
+      if (live) {
+        merged.active_requests = live.active_requests;
+        merged.occupied_requests = live.occupied_requests;
+        merged.session_slot_buffer_enabled = liveSessionSlotBufferEnabled;
+      }
+      if (stats) {
+        if (!merged.usage_5h_detail && stats.usage_5h_detail) merged.usage_5h_detail = stats.usage_5h_detail;
+        if (!merged.usage_7d_detail && stats.usage_7d_detail) merged.usage_7d_detail = stats.usage_7d_detail;
+        if (!merged.usage_today_detail && stats.usage_today_detail) merged.usage_today_detail = stats.usage_today_detail;
+        if (merged.official_usd == null && stats.official_usd != null) merged.official_usd = stats.official_usd;
+        if (merged.official_usd_7d == null && stats.official_usd_7d != null) merged.official_usd_7d = stats.official_usd_7d;
+      }
       return merged;
     });
-  }, [accounts, pageStats]);
+  }, [accounts, liveSessionSlotBufferEnabled, liveState, pageStats]);
 
   useEffect(() => {
     void reloadGroups();
@@ -556,6 +893,10 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       cancelled = true;
     };
   }, [reloadGroups]);
+
+  useEffect(() => {
+    setGroupFilter((current) => pruneAccountGroupFilter(current, claudeGroups));
+  }, [claudeGroups]);
 
   // ── 账号操作 ──────────────────────────────────────────────
   const handleDelete = useCallback(
@@ -579,12 +920,13 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
     async (acc: AccountRow) => {
       try {
         await api.refreshAccount(acc.id);
+        await refreshOpenDetail(acc.id);
         void reload();
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [reload, showToast],
+    [refreshOpenDetail, reload, showToast],
   );
 
   const handleRefreshModels = useCallback(
@@ -592,19 +934,20 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       try {
         const res = await api.refreshClaudeModels(acc.id);
         showToast(t("claude.modelsRefreshed", { count: res.count }));
+        await refreshOpenDetail(acc.id);
         void reload();
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [reload, showToast, t],
+    [refreshOpenDetail, reload, showToast, t],
   );
 
-  const handleRefreshAllModels = useCallback(async () => {
-    try {
-      await api.refreshAllClaudeModels();
-      showToast(t("claude.allModelsRefreshed"), "success");
-      void reload();
+	const handleRefreshAllModels = useCallback(async () => {
+		try {
+			const result = await api.refreshAllClaudeModels();
+			showToast(t("claude.allModelsRefreshedSummary", result), result.failed > 0 ? "warning" : "success");
+			void reload();
     } catch (error) {
       showToast(getErrorMessage(error), "error");
     }
@@ -616,12 +959,13 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       try {
         await api.toggleAccountEnabled(acc.id, next);
         showToast(next ? t("claude.enabledToast") : t("claude.disabledToast"), "success");
+        await refreshOpenDetail(acc.id);
         void reload();
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [reload, showToast, t],
+    [refreshOpenDetail, reload, showToast, t],
   );
 
   const handleToggleLock = useCallback(
@@ -630,12 +974,13 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       try {
         await api.toggleAccountLock(acc.id, next);
         showToast(next ? t("claude.lockedToast") : t("claude.unlockedToast"), "success");
+        await refreshOpenDetail(acc.id);
         void reload();
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [reload, showToast, t],
+    [refreshOpenDetail, reload, showToast, t],
   );
 
   const handleResetStatus = useCallback(
@@ -643,12 +988,13 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       try {
         await api.resetAccountStatus(acc.id);
         showToast(t("claude.statusReset"), "success");
+        await refreshOpenDetail(acc.id);
         void reload();
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [reload, showToast, t],
+    [refreshOpenDetail, reload, showToast, t],
   );
 
   // ── 批量操作 ──────────────────────────────────────────────
@@ -716,11 +1062,11 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
     return ["all", ...plans];
   }, [knownPlans]);
 
-  // Claude 账号本就全部走 OAuth;后端 oauth 计数为 grok 专用逻辑,这里按语义直接取 total。
+  // Claude 账号当前只支持 OAuth；不展示一个永远为 0 的 API Key 筛选，避免
+  // 运营误以为 Claude API Key 可以走同一原生链路。
   const authTabs: Array<{ id: AuthFilter; label: string; count?: number }> = [
     { id: "all", label: t("claude.authAll") },
     { id: "oauth", label: t("claude.authOAuth"), count: summary?.oauth || summary?.total || 0 },
-    { id: "api_key", label: t("claude.authApiKey"), count: summary?.api_key ?? 0 },
   ];
 
   const filtersActive =
@@ -756,8 +1102,9 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       <PageHeader
         title={t("claude.title")}
         description={t("claude.subtitle")}
+        hideTitle={Boolean(headerSlot)}
         titleAdornment={headerSlot}
-        onRefresh={() => void reload()}
+        onRefresh={() => { void reload(); void loadAnalysis(); }}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowAnalysis((v) => !v)}>
@@ -841,6 +1188,15 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
             showProbe={false}
           />
           <AccountRateLimitRecoveryChart analysis={analysis} compact className="min-w-0" />
+        </div>
+      ) : showAnalysis ? (
+        <div className="mb-4 rounded-xl border border-dashed border-border bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
+          {analysisLoading ? t("common.loading") : analysisError ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="break-words">{analysisError}</span>
+              <Button variant="outline" size="sm" onClick={() => void loadAnalysis()}>{t("common.retry")}</Button>
+            </div>
+          ) : t("common.loading")}
         </div>
       ) : null}
 
@@ -1023,8 +1379,19 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       ) : null}
 
       {/* 账号列表 */}
-      {loading ? (
+      {loadError && accounts.length > 0 ? (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+          <span className="break-words">{loadError}</span>
+          <Button variant="outline" size="sm" onClick={() => void reload()}>{t("common.retry")}</Button>
+        </div>
+      ) : null}
+      {loading && accounts.length === 0 ? (
         <div className="py-16 text-center text-sm text-muted-foreground">{t("common.loading")}</div>
+      ) : loadError && accounts.length === 0 ? (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 py-12 text-center text-sm text-rose-700 dark:text-rose-300">
+          <div>{loadError}</div>
+          <Button className="mt-3" variant="outline" size="sm" onClick={() => void reload()}>{t("common.retry")}</Button>
+        </div>
       ) : total === 0 && !filtersActive ? (
         <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
           {t("claude.empty")}
@@ -1082,7 +1449,10 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
                   onAssignGroups={() => setAssignTarget(acc)}
                   onUsage={() => setUsageTarget(acc)}
                   onUsageRefreshed={() => handleRefreshUsage(acc)}
+                  onOpenDetail={() => void openDetail(acc)}
+                  onTest={() => setTestingTarget(acc)}
                   onEdit={() => setEditTarget(acc)}
+                  onEditModels={() => void openModelsEditor(acc)}
                   onDelete={() => void handleDelete(acc)}
                 />
               ))}
@@ -1169,6 +1539,85 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         />
       ) : null}
 
+      {modelsTarget ? (
+        <ClaudeModelsModal
+          account={modelsTarget}
+          onClose={() => setModelsTarget(null)}
+          onSaved={() => {
+            setModelsTarget(null);
+            void reload({ silent: true });
+            if (detailTarget?.id === modelsTarget.id) void refreshOpenDetail(modelsTarget.id);
+          }}
+        />
+      ) : null}
+
+      {detailTarget ? (
+        <AccountDetailSheet
+          account={detailTarget}
+          groups={(detailTarget.group_ids ?? []).map((id) => groupMap.get(id)).filter(Boolean) as AccountGroup[]}
+          healthBuckets={healthBars[String(detailTarget.id)]}
+          usageSlot={
+            <div className="space-y-1 rounded-xl border border-border bg-card p-3">
+              <UsageWindow label={t("claude.usage5h")} pct={claudeUsagePct(detailTarget.usage_percent_5h)} reset={detailTarget.reset_5h_at} resetLabel={t("claude.resetIn")} detail={detailTarget.usage_5h_detail} />
+              <UsageWindow label={t("claude.usage7d")} pct={claudeUsagePct(detailTarget.usage_percent_7d)} reset={detailTarget.reset_7d_at} resetLabel={t("claude.resetIn")} detail={detailTarget.usage_7d_detail} />
+            </div>
+          }
+          providerSlot={
+            <section className="space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t("claude.providerTitle")}</h3>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="h-7 text-[11px]"
+                  onClick={() => {
+                    const target = detailTarget;
+                    closeDetail();
+                    void openModelsEditor(target);
+                  }}
+                >
+                  <SlidersHorizontal className="size-3" />
+                  {t("claude.modelsWhitelistAction")}
+                </Button>
+              </div>
+              <div className="space-y-2 rounded-xl border border-orange-200/70 bg-orange-50/50 p-3 text-xs dark:border-orange-900/60 dark:bg-orange-950/20">
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.authOAuth")}</span><span className="font-medium">{t("claude.providerProtocol")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.subscriptionPlan")}</span><span>{(() => { const badge = claudePlanBadge(detailTarget.plan_type || "claude"); return <span className={badge.cls}>{badge.label}</span>; })()}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.subscriptionExpires")}</span><span className="text-right">{formatShortDateTime(detailTarget.subscription_expires_at)?.label ?? t("claude.metadataUnknown")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.fingerprintModeLabel")}</span><span className="text-right">{detailTarget.claude_fingerprint_mode === "force" ? t("claude.fpForce") : detailTarget.claude_fingerprint_mode === "preserve" ? t("claude.fpPreserve") : t("claude.fpFollowGlobal")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.timezoneLabel")}</span><span className="text-right">{detailTarget.timezone || t("claude.metadataUnknown")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.modelsLabel")}</span><span className="max-w-[230px] text-right">{detailTarget.models?.length ? t("claude.modelsWhitelistCount", { count: normalizeClaudeModelList(detailTarget.models).length }) : t("claude.modelsWhitelistAll")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.lastSample")}</span><span title={detailTarget.claude_usage_probe_at ? formatShortDateTime(detailTarget.claude_usage_probe_at)?.title : undefined}>{detailTarget.claude_usage_probe_at ? formatRelativeShort(detailTarget.claude_usage_probe_at, t) : t("claude.samplingState.notSampled")}</span></div>
+                {detailTarget.claude_usage_probe_error ? <div className="break-words text-rose-600 dark:text-rose-300">{detailTarget.claude_usage_probe_error}</div> : null}
+              </div>
+            </section>
+          }
+          onClose={closeDetail}
+          onEdit={() => { setEditTarget(detailTarget); closeDetail(); }}
+          onUsage={() => { setUsageTarget(detailTarget); closeDetail(); }}
+          onTest={() => { closeDetail(); setTestingTarget(detailTarget); }}
+          onRefresh={() => void handleRefresh(detailTarget)}
+          onGenerateAuthJson={() => undefined}
+          onToggleEnabled={() => void handleToggleEnabled(detailTarget)}
+          onToggleLock={() => void handleToggleLock(detailTarget)}
+          onResetStatus={() => void handleResetStatus(detailTarget)}
+          onSaveModelCooldownPolicy={(data) => void handleSaveDetailCooldownPolicy(detailTarget, data)}
+          onClearModelCooldown={(model) => void handleClearDetailCooldown(detailTarget, model)}
+          onClearAllModelCooldowns={() => void handleClearAllDetailCooldowns(detailTarget)}
+          onResetCredits={() => undefined}
+          onDelete={() => { closeDetail(); void handleDelete(detailTarget); }}
+        />
+      ) : null}
+
+      {testingTarget ? (
+        <ClaudeTestModal
+          account={testingTarget}
+          onClose={() => setTestingTarget(null)}
+          onSettled={handleClaudeTestSettled}
+        />
+      ) : null}
+
       {confirmDialog}
     </div>
   );
@@ -1192,7 +1641,10 @@ function ClaudeAccountRow({
   onAssignGroups,
   onUsage,
   onUsageRefreshed,
+  onOpenDetail,
+  onTest,
   onEdit,
+  onEditModels,
   onDelete,
 }: {
   acc: AccountRow;
@@ -1211,7 +1663,10 @@ function ClaudeAccountRow({
   onAssignGroups: () => void;
   onUsage: () => void;
   onUsageRefreshed: () => void | Promise<void>;
+  onOpenDetail: () => void;
+  onTest: () => void;
   onEdit: () => void;
+  onEditModels: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
@@ -1233,6 +1688,7 @@ function ClaudeAccountRow({
     <tr
       className={cn(
         "border-b border-border/60 align-middle transition-colors last:border-b-0 hover:bg-muted/30",
+        accountStateTableRowClass(acc),
         selected && "bg-primary/5",
         disabled && "opacity-60",
       )}
@@ -1256,10 +1712,18 @@ function ClaudeAccountRow({
             <ChannelLogo channel="claude" size={20} />
           </span>
           <div className="min-w-0">
-            <div className="break-all text-[13px] font-medium leading-snug text-foreground" title={acc.email || acc.name}>
+            <button
+              type="button"
+              className="break-all text-left text-[13px] font-medium leading-snug text-foreground hover:text-primary"
+              title={t("accounts.openDetail")}
+              onClick={onOpenDetail}
+            >
               {acc.email || acc.name || `#${acc.id}`}
-            </div>
+            </button>
             <div className="mt-0.5 flex flex-wrap items-center gap-1">
+              <span className="rounded bg-muted/70 px-1 py-0.5 font-mono text-[10px] text-muted-foreground">ID {acc.id}</span>
+              {acc.models?.length ? <span className="rounded bg-orange-500/10 px-1 py-0.5 text-[10px] text-orange-700 dark:text-orange-300">{t("claude.modelCount", { count: acc.models.length })}</span> : null}
+              {acc.last_used_at ? <span className="text-[10px] text-muted-foreground/70">{t("claude.lastUsed")}: {formatRelativeShort(acc.last_used_at, t)}</span> : null}
               {!hideDomainTags && acc.email_domain ? (
                 <span className="rounded bg-muted/70 px-1 py-0.5 text-[10px] text-muted-foreground">@{acc.email_domain}</span>
               ) : null}
@@ -1325,11 +1789,45 @@ function ClaudeAccountRow({
       {columns.status ? (
       <td className="min-w-[170px] px-2 py-3">
         <div className="flex flex-col items-center space-y-1.5">
-          <div className="flex flex-wrap items-center justify-center gap-1">
-            <StatusBadge status={acc.status} errorMessage={acc.error_message} detail={cooldownReason} />
-            <LiveCountdown until={acc.cooldown_until} label={t("claude.resetIn")} />
-          </div>
-          <AccountHealthBar buckets={healthBuckets} />
+          {renderAccountStateOverlay(acc, t, {
+            compact: true,
+            markerOnly: true,
+            onRecover: acc.status === "overload_paused" ? onResetStatus : undefined,
+          }) ?? (
+            <>
+              <div className="flex flex-wrap items-center justify-center gap-1">
+				<StatusBadge status={getAccountStatusBadgeStatus(acc)} errorMessage={acc.error_message} detail={cooldownReason} />
+                <LiveCountdown until={acc.cooldown_until} label={t("claude.resetIn")} />
+                <ClaudeConcurrencyBadge acc={acc} />
+                {acc.claude_api ? (
+              <span
+                className={cn(
+                  "inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
+                  acc.claude_usage_probe_error
+                    ? "bg-rose-50 text-rose-700 ring-rose-600/20 dark:bg-rose-950 dark:text-rose-300"
+                    : acc.claude_usage_probe_at
+                      ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-300"
+                      : "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-950 dark:text-amber-300",
+                )}
+                title={acc.claude_usage_probe_error || t("claude.samplingState.notSampled")}
+              >
+                {acc.claude_usage_probe_error
+                  ? t("claude.samplingState.error")
+                  : acc.claude_usage_probe_at
+                    ? t("claude.samplingState.sampled")
+                    : t("claude.samplingState.unsampled")}
+              </span>
+                ) : null}
+              </div>
+              {acc.claude_api ? (
+                <div className="text-[10px] text-muted-foreground" title={acc.claude_usage_probe_error || undefined}>
+                  {t("claude.lastSample")}: {acc.claude_usage_probe_at ? formatRelativeShort(acc.claude_usage_probe_at, t) : t("claude.samplingState.notSampled")}
+                  {acc.claude_usage_probe_error ? ` · ${acc.claude_usage_probe_error}` : ""}
+                </div>
+              ) : null}
+              <AccountHealthBar buckets={healthBuckets} />
+            </>
+          )}
         </div>
       </td>
       ) : null}
@@ -1411,6 +1909,12 @@ function ClaudeAccountRow({
           </button>
           <button type="button" className={iconBtn} onClick={onUsage} title={t("accounts.actionUsageDetail")} aria-label={t("accounts.actionUsageDetail")}>
             <BarChart3 className="size-3.5" />
+          </button>
+          <button type="button" className={iconBtn} onClick={onTest} title={t("accounts.testConnection")} aria-label={t("accounts.testConnection")}>
+            <FlaskConical className="size-3.5" />
+          </button>
+          <button type="button" className={iconBtn} onClick={onEditModels} title={t("claude.modelsWhitelistAction")} aria-label={t("claude.modelsWhitelistAction")}>
+            <SlidersHorizontal className="size-3.5" />
           </button>
           <button type="button" className={iconBtn} onClick={onRefreshModels} title={t("claude.refreshModels")} aria-label={t("claude.refreshModels")}>
             <RefreshCw className="size-3.5" />
@@ -1873,7 +2377,337 @@ function EditAccountModal({
   );
 }
 
+// ClaudeModelsModal 仅编辑 Claude 原生模型白名单。前端先做 provider-aware
+// 过滤，后端 endpoint 也会做同样的命名空间校验；保存前重新读取详情并以 updated_at
+// 作为当前账号凭据代际的乐观锁，避免旧 token/旧目录覆盖新状态。
+function ClaudeModelsModal({
+  account,
+  onClose,
+  onSaved,
+}: {
+  account: AccountRow;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const { showToast } = useToast();
+  const [models, setModels] = useState(() => normalizeClaudeModelList(account.models));
+  const [input, setInput] = useState("");
+  const [inputError, setInputError] = useState("");
+  const [conflict, setConflict] = useState("");
+  const [baseUpdatedAt, setBaseUpdatedAt] = useState(account.updated_at);
+  const [syncing, setSyncing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const addModels = useCallback(() => {
+    const parsed = parseClaudeModelTokens(input);
+    if (parsed.accepted.length > 0) {
+      setModels((current) => mergeClaudeModelLists(current, parsed.accepted));
+    }
+    setInputError(parsed.rejected.length > 0
+      ? t("claude.modelsWhitelistInvalid", { models: parsed.rejected.join(", ") })
+      : "");
+    if (parsed.accepted.length > 0 || parsed.rejected.length > 0) setInput("");
+  }, [input, t]);
+
+  const reloadLatest = useCallback(async () => {
+    setSaving(true);
+    try {
+      const latest = await api.getAccount(account.id);
+      if (latest.claude_api !== true) {
+        setConflict(t("claude.modelsWhitelistNotClaude"));
+        return;
+      }
+      setModels(normalizeClaudeModelList(latest.models));
+      setBaseUpdatedAt(latest.updated_at);
+      setConflict("");
+      setInputError("");
+    } catch (error) {
+      setConflict(getErrorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }, [account.id, t]);
+
+  const syncUpstream = useCallback(async () => {
+    setSyncing(true);
+    setInputError("");
+    try {
+      const result = await api.syncAccountModelsUpstream(account.id);
+      const upstream = normalizeClaudeModelList(result.models);
+      if (upstream.length === 0) {
+        setInputError(t("claude.modelsWhitelistSyncEmpty"));
+      } else {
+        setModels((current) => mergeClaudeModelLists(current, upstream));
+        showToast(t("claude.modelsWhitelistSyncDone", { count: upstream.length }), "success");
+      }
+    } catch (error) {
+      setInputError(t("claude.modelsWhitelistSyncFailed", { error: getErrorMessage(error) }));
+    } finally {
+      setSyncing(false);
+    }
+  }, [account.id, showToast, t]);
+
+  const save = useCallback(async () => {
+    if (saving || syncing) return;
+    setSaving(true);
+    setConflict("");
+    try {
+      const latest = await api.getAccount(account.id);
+      if (latest.id !== account.id || latest.claude_api !== true) {
+        setConflict(t("claude.modelsWhitelistNotClaude"));
+        return;
+      }
+      if (baseUpdatedAt && latest.updated_at && latest.updated_at !== baseUpdatedAt) {
+        setModels(normalizeClaudeModelList(latest.models));
+        setBaseUpdatedAt(latest.updated_at);
+        setConflict(t("claude.modelsWhitelistConflict"));
+        return;
+      }
+      const requested = normalizeClaudeModelList(models);
+      const result = await api.updateAccountModels(account.id, requested);
+      // Treat an unexpected provider model in a server response as a failed
+      // write from the UI perspective; never present it as a Claude whitelist.
+      const returned = normalizeClaudeModelList(result.models);
+      const rawReturned = Array.isArray(result.models) ? result.models : [];
+      if (rawReturned.some((value) => !isClaudeModelID(value))) {
+        setConflict(t("claude.modelsWhitelistResponseInvalid"));
+        return;
+      }
+      setModels(returned);
+      onSaved();
+    } catch (error) {
+      showToast(t("claude.modelsWhitelistSaveFailed", { error: getErrorMessage(error) }), "error");
+    } finally {
+      setSaving(false);
+    }
+  }, [account.id, baseUpdatedAt, models, onSaved, saving, showToast, syncing, t]);
+
+  return (
+    <Modal
+      show
+      onClose={() => { if (!saving && !syncing) onClose(); }}
+      title={t("claude.modelsWhitelistTitle")}
+      contentClassName="sm:max-w-[620px]"
+      footer={
+        <div className="flex w-full justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving || syncing}>{t("common.cancel")}</Button>
+          <Button type="button" onClick={() => void save()} disabled={saving || syncing}>
+            {saving ? t("common.saving") : models.length === 0 ? t("claude.modelsWhitelistClearSave") : t("common.save")}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <div className="rounded-lg border border-orange-200/70 bg-orange-50/50 p-3 text-xs dark:border-orange-900/60 dark:bg-orange-950/20">
+          <div className="font-semibold text-foreground">{account.email || account.name || `#${account.id}`}</div>
+          <p className="mt-1 leading-relaxed text-muted-foreground">{t("claude.modelsWhitelistDescription")}</p>
+          <p className="mt-1 font-mono text-[10px] text-muted-foreground/70">{t("claude.modelsWhitelistVersionHint")}</p>
+        </div>
+
+        {conflict ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+            <span className="break-words">{conflict}</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => void reloadLatest()} disabled={saving || syncing}>{t("claude.modelsWhitelistReload")}</Button>
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2">
+          <Input
+            className="min-w-[220px] flex-1"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addModels(); } }}
+            placeholder={t("claude.modelsWhitelistPlaceholder")}
+            disabled={saving || syncing}
+          />
+          <Button type="button" variant="outline" onClick={addModels} disabled={!input.trim() || saving || syncing}>
+            <Plus className="size-3.5" />
+            {t("claude.modelsWhitelistAdd")}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => void syncUpstream()} disabled={saving || syncing}>
+            <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+            {syncing ? t("claude.modelsWhitelistSyncing") : t("claude.modelsWhitelistSync")}
+          </Button>
+        </div>
+        {inputError ? <p className="break-words text-xs text-rose-600 dark:text-rose-300">{inputError}</p> : null}
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span>{models.length === 0 ? t("claude.modelsWhitelistAll") : t("claude.modelsWhitelistCount", { count: models.length })}</span>
+            {models.length > 0 ? <button type="button" className="hover:text-foreground" onClick={() => setModels([])} disabled={saving || syncing}>{t("claude.modelsWhitelistClear")}</button> : null}
+          </div>
+          {models.length > 0 ? (
+            <div className="flex max-h-52 flex-wrap gap-1.5 overflow-y-auto rounded-lg border border-border bg-muted/10 p-2.5">
+              {models.map((model) => (
+                <span key={model.toLowerCase()} className="inline-flex items-center gap-1 rounded-md border border-border bg-background py-1 pl-2 pr-1 text-[12px]">
+                  <span className="font-mono text-foreground">{model}</span>
+                  <button type="button" className="inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setModels((current) => current.filter((item) => item.toLowerCase() !== model.toLowerCase()))} disabled={saving || syncing} aria-label={t("claude.modelsWhitelistRemove", { model })}>
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-border bg-muted/20 px-3 py-3 text-sm text-muted-foreground">{t("claude.modelsWhitelistAllHint")}</div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ── 添加账号弹窗:网页 OAuth 两步式 / 导入 token JSON ──────
+type ClaudeTestEvent = {
+  type: "test_start" | "content" | "test_complete" | "error";
+  model?: string;
+  text?: string;
+  error?: string;
+  success?: boolean;
+};
+
+function ClaudeTestModal({
+  account,
+  onClose,
+  onSettled,
+}: {
+  account: AccountRow;
+  onClose: () => void;
+  onSettled: () => void;
+}) {
+  const { t } = useTranslation();
+	const [status, setStatus] = useState<"connecting" | "streaming" | "success" | "error">("connecting");
+	const [output, setOutput] = useState<string[]>([]);
+	const [errorMessage, setErrorMessage] = useState("");
+	const settledRef = useRef(false);
+	const onSettledRef = useRef(onSettled);
+	onSettledRef.current = onSettled;
+	const modelOptions = (account.models ?? []).filter((item) => item.trim().toLowerCase().startsWith("claude-"));
+  if (modelOptions.length === 0) modelOptions.push("claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5");
+  const [selectedModel, setSelectedModel] = useState(modelOptions[0]);
+  const model = selectedModel;
+
+	const markSettled = useCallback(() => {
+		if (settledRef.current) return;
+		settledRef.current = true;
+		onSettledRef.current();
+	}, []);
+
+  useEffect(() => {
+    setStatus("connecting");
+    setOutput([]);
+    setErrorMessage("");
+    settledRef.current = false;
+    const controller = new AbortController();
+    const run = async () => {
+      try {
+        const query = new URLSearchParams({ model });
+        const response = await fetch(`/api/admin/accounts/${account.id}/test?${query.toString()}`, {
+          signal: controller.signal,
+          headers: getAdminKey() ? { "X-Admin-Key": getAdminKey() } : {},
+		});
+		if (!response.ok) {
+			const body = await response.text();
+			let message = `HTTP ${response.status}`;
+			try {
+				const parsed = JSON.parse(body) as { error?: string | { message?: string } };
+				if (typeof parsed.error === "string") message = parsed.error;
+				else if (parsed.error?.message) message = parsed.error.message;
+			} catch {
+				if (body.trim()) message = body.trim().slice(0, 500);
+			}
+			setStatus("error");
+			setErrorMessage(`${t("accounts.testFailed")}: ${message}`);
+			markSettled();
+          return;
+        }
+		const reader = response.body?.getReader();
+		if (!reader) throw new Error(t("accounts.browserStreamingUnsupported"));
+		const decoder = new TextDecoder();
+		let buffer = "";
+		let receivedTerminalEvent = false;
+        const process = (lines: string[]) => {
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data: ")) continue;
+            try {
+              const event = JSON.parse(trimmed.slice(6)) as ClaudeTestEvent;
+              if (event.type === "test_start") setStatus("streaming");
+              if (event.type === "content" && event.text) setOutput((prev) => [...prev, event.text!]);
+				if (event.type === "test_complete") {
+					receivedTerminalEvent = true;
+					setStatus(event.success ? "success" : "error");
+					if (!event.success) setErrorMessage(t("accounts.testFailed"));
+				}
+				if (event.type === "error") {
+					receivedTerminalEvent = true;
+					setStatus("error");
+					setErrorMessage(event.error || t("accounts.unknownError"));
+				}
+            } catch {
+              // Ignore comments/partial SSE frames.
+            }
+          }
+        };
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            buffer += decoder.decode();
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          process(lines);
+		}
+		if (buffer.trim()) process([buffer]);
+		// The server invalidates its account snapshot in a handler defer after
+		// the terminal event. Refresh only once the SSE stream has closed.
+		if (receivedTerminalEvent) {
+			markSettled();
+		} else {
+			setStatus("error");
+			setErrorMessage(t("accounts.connectionEndedUnexpectedly"));
+          markSettled();
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setStatus("error");
+        setErrorMessage(error instanceof Error ? error.message : t("accounts.connectionFailed"));
+        markSettled();
+      }
+    };
+    void run();
+    return () => controller.abort();
+  }, [account.id, markSettled, model, t]);
+
+  const StatusIcon = status === "success" ? CheckCircle : status === "error" ? XCircle : Loader2;
+  return (
+    <Modal
+      show
+      title={`${t("accounts.testConnectionTitle", { account: account.email || account.name || `#${account.id}` })} · Claude`}
+      onClose={onClose}
+      footer={<Button onClick={onClose}>{t("common.close")}</Button>}
+    >
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 text-sm">
+          <StatusIcon className={cn("size-4", status === "connecting" || status === "streaming" ? "animate-spin text-blue-500" : status === "success" ? "text-emerald-500" : "text-rose-500")} />
+          <span>{status === "connecting" ? t("accounts.connecting") : status === "streaming" ? t("accounts.receivingResponse") : status === "success" ? t("accounts.testSuccess") : t("accounts.testFailed")}</span>
+          <Select
+            compact
+            className="ml-auto w-48"
+            value={model}
+            onValueChange={setSelectedModel}
+            options={modelOptions.map((item) => ({ value: item, label: item }))}
+          />
+        </div>
+        {errorMessage ? <div className="break-words rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">{errorMessage}</div> : null}
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/30 p-3 text-xs leading-relaxed">{output.join("") || (status === "success" ? t("accounts.testSuccess") : t("common.loading"))}</pre>
+      </div>
+    </Modal>
+  );
+}
+
 function ClaudeAddModal({
   proxies,
   groups,
