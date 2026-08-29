@@ -601,6 +601,7 @@ export interface RecycleBinAccountRow {
   at_only?: boolean
   access_token_type?: string
   openai_responses_api?: boolean
+  claude_api?: boolean
   base_url?: string
   models?: string[]
   created_at: ISODateString

@@ -191,10 +191,13 @@ const DEFAULT_ANTIGRAVITY_MODEL_OPTIONS = [
   "gemini-2.5-pro",
   "gemini-2.5-flash",
 ];
+// Keep this fallback in lockstep with proxy.defaultClaudeModelIDs. The
+// server catalog normally wins; these aliases are only used when no
+// Claude account has populated a catalog yet.
 const DEFAULT_CLAUDE_MODEL_OPTIONS = [
-  "claude-sonnet-4-20250514",
-  "claude-opus-4-20250514",
-  "claude-3-7-sonnet-latest",
+  "claude-opus-4-5",
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5",
 ];
 
 function accountGroupsForUpstreamChannel(
@@ -3816,6 +3819,20 @@ const GROK_PLAN_FILTER_OPTIONS = [
   "supergrok_plus",
 ] as const;
 
+// Claude OAuth profiles expose these normalized plan keys. Keep them
+// separate from the Codex/Grok plan allowlist so a Claude-bound API key
+// cannot accidentally be configured with an unrelated plan.
+const CLAUDE_PLAN_FILTER_OPTIONS = [
+  "claude",
+  "free",
+  "pro",
+  "max",
+  "max-5x",
+  "max-20x",
+  "team",
+  "enterprise",
+] as const;
+
 const PLAN_FILTER_OPTIONS = [
   ...CODEX_PLAN_FILTER_OPTIONS,
   ...GROK_PLAN_FILTER_OPTIONS.filter(
@@ -3826,6 +3843,7 @@ const PLAN_FILTER_OPTIONS = [
 function planOptionsForChannel(channel: UpstreamChannel): readonly string[] {
   if (channel === "codex") return CODEX_PLAN_FILTER_OPTIONS;
   if (channel === "grok") return GROK_PLAN_FILTER_OPTIONS;
+  if (channel === "claude") return CLAUDE_PLAN_FILTER_OPTIONS;
   return PLAN_FILTER_OPTIONS;
 }
 

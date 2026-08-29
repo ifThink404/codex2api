@@ -11369,9 +11369,11 @@ function RecycleBinView({
                         </TableCell>
                         <TableCell>
                           <Badge variant="secondary">
-                            {row.openai_responses_api
-                              ? t("accounts.recycleBinTypeRelay")
-                              : t("accounts.recycleBinTypeOauth")}
+                            {row.claude_api
+                              ? t("accounts.providerViewClaude")
+                              : row.openai_responses_api
+                                ? t("accounts.recycleBinTypeRelay")
+                                : t("accounts.recycleBinTypeOauth")}
                           </Badge>
                         </TableCell>
                         <TableCell>
@@ -11566,6 +11568,7 @@ function recycleBinRowToAccountRow(row: RecycleBinAccountRow): AccountRow {
     plan_type: row.plan_type,
     status: "deleted",
     openai_responses_api: row.openai_responses_api,
+    claude_api: row.claude_api,
     base_url: row.base_url,
     models: row.models,
     proxy_url: "",
