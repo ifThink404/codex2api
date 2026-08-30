@@ -3129,7 +3129,7 @@
       "legacy_unknown": "历史不可还原"
     },
     "newapiPolicyStatus": {
-      "unbound": "NewAPI 未绑定",
+      "unbound": "NewAPI 身份未绑定 · 仍执行全局 Prompt 检查",
       "binding_disabled": "NewAPI 绑定已停用",
       "unsigned_request": "NewAPI 请求未签名",
       "verification_failed": "NewAPI 验签失败",
@@ -4253,11 +4253,12 @@
     "claudeAllowedBetaHeaders": "额外允许的 Beta Header",
     "claudeAllowedBetaHeadersDesc": "逗号分隔；OAuth 必需 Header 始终保留，未列出的客户端 Beta 默认丢弃。",
     "claudeMaxOutputTokens": "最大输出 Token",
-    "claudeMaxOutputTokensDesc": "单次 Claude 请求上限，范围 1–131072。",
+    "claudeUnlimitedPlaceholder": "0 = 不限制（以上游模型能力为准）",
+    "claudeMaxOutputTokensDesc": "0 表示不设网关上限；非 0 为单次请求上限，最终仍受上游模型限制。",
     "claudeMaxToolCount": "最大工具数量",
-    "claudeMaxToolCountDesc": "单次请求允许的工具数量，范围 1–64。",
+    "claudeMaxToolCountDesc": "0 表示不设网关工具数量上限；非 0 用于运营侧资源保护。",
     "claudeMaxToolSchemaBytes": "工具 Schema 上限",
-    "claudeMaxToolSchemaBytesDesc": "所有工具定义的总字节数，范围 1–1048576。"
+    "claudeMaxToolSchemaBytesDesc": "0 表示不设网关 Schema 上限；请求体仍受系统大小和上游限制。"
   },
   "proxies": {
     "filterAll": "全部代理",
@@ -4462,6 +4463,13 @@
     "deleteKeyDesc": "删除后，所有使用该密钥的客户端都会立即失去访问权限。",
     "confirmDelete": "确认删除",
     "securityTitle": "调用鉴权",
+    "promptFilterScopeGlobal": "Prompt：继承全局检查",
+    "promptFilterScopeLocal": "Prompt：仅本地规则",
+    "promptFilterScopeOff": "Prompt：已关闭",
+    "promptFilterScopeUnknown": "Prompt：状态未知",
+    "promptFilterIdentityBound": "NewAPI：已配置绑定",
+    "promptFilterIdentityRequired": "NewAPI：要求签名",
+    "promptFilterIdentityUnbound": "NewAPI：未绑定身份（仍执行 Prompt）",
     "keyAuthNote": "未设置密钥时 API 无需鉴权。添加第一个密钥后，所有 /v1/* 请求需携带 Authorization: Bearer sk-xxx。",
     "publicUsageDesc": "公开 /key-usage 自助页允许用户用自己的 API Key 查看用量。",
     "publicUsageEnabled": "自助页已公开",

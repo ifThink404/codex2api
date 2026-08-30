@@ -74,6 +74,51 @@ func TestNormalizeClaudeRequestBodyRejectsResourceLimits(t *testing.T) {
 	}
 }
 
+func TestNormalizeClaudeRequestBodyDefaultsDoNotCapSub2APIRequests(t *testing.T) {
+	tools := strings.Repeat(`{"name":"tool","input_schema":{"type":"object"}},`, 24)
+	tools = strings.TrimSuffix(tools, ",")
+	body := []byte(`{"model":"claude-opus-4-7","max_tokens":13100,"messages":[],"tools":[` + tools + `]}`)
+	out, err := normalizeClaudeRequestBody(body, auth.DefaultClaudeSecurityConfig())
+	if err != nil {
+		t.Fatalf("Sub2API-compatible request was rejected: %v", err)
+	}
+	if got := gjson.GetBytes(out, "max_tokens").Int(); got != 13100 {
+		t.Fatalf("max_tokens = %d, want 13100", got)
+	}
+	if got := len(gjson.GetBytes(out, "tools").Array()); got != 24 {
+		t.Fatalf("tool count = %d, want 24", got)
+	}
+}
+
+func TestNormalizeClaudeRequestBodyNormalizesLegacyMaxTokensAlias(t *testing.T) {
+	out, err := normalizeClaudeRequestBody([]byte(`{"model":"claude-opus-4-7","max_tokens_to_sample":13100,"messages":[]}`), auth.DefaultClaudeSecurityConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(out, "max_tokens").Int(); got != 13100 {
+		t.Fatalf("max_tokens = %d, want 13100", got)
+	}
+	if gjson.GetBytes(out, "max_tokens_to_sample").Exists() {
+		t.Fatalf("legacy max_tokens_to_sample should not reach Anthropic: %s", out)
+	}
+}
+
+func TestNormalizeClaudeRequestBodyDropsUnsupportedContextManagement(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-7","max_tokens":13100,"messages":[],"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`)
+	out, err := normalizeClaudeRequestBody(body, auth.DefaultClaudeSecurityConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(out, "context_management").Exists() {
+		t.Fatalf("context_management is rejected by the Claude OAuth endpoint: %s", out)
+	}
+	for _, field := range []string{"thinking", "output_config"} {
+		if !gjson.GetBytes(out, field).Exists() {
+			t.Fatalf("supported field %s was removed: %s", field, out)
+		}
+	}
+}
+
 func TestMergeAnthropicBetaUsesRequiredAndAllowlist(t *testing.T) {
 	incoming := http.Header{}
 	incoming.Set("anthropic-beta", "unknown-beta, approved-beta, oauth-2025-04-20")

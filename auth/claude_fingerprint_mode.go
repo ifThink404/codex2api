@@ -20,7 +20,8 @@ const (
 const ClaudeFingerprintModeCredentialKey = "claude_fingerprint_mode"
 
 // ClaudeSecurityConfig 是 ClaudeCode 出站请求的安全边界。
-// 布尔字段默认 false（默认过滤敏感字段）；数值字段为 0 时使用安全默认值。
+// 布尔字段默认 false（默认过滤敏感字段）；数值字段为 0 时表示不设置
+// Codex2API 应用层上限，仍受请求体、整数和 Anthropic 上游能力约束。
 // AllowedBetaHeaders 只允许额外的 Beta token，OAuth 必需 token 由 proxy 始终注入。
 type ClaudeSecurityConfig struct {
 	AllowServiceTier      bool     `json:"allow_service_tier"`
@@ -33,23 +34,10 @@ type ClaudeSecurityConfig struct {
 	MaxToolSchemaBytes    int64    `json:"max_tool_schema_bytes"`
 }
 
-const (
-	defaultClaudeMaxOutputTokens    int64 = 8192
-	defaultClaudeMaxToolCount             = 16
-	defaultClaudeMaxToolSchemaBytes int64 = 128 * 1024
-	maxClaudeMaxOutputTokens        int64 = 131072
-	maxClaudeMaxToolCount                 = 64
-	maxClaudeMaxToolSchemaBytes     int64 = 1024 * 1024
-)
-
-// DefaultClaudeSecurityConfig returns the secure defaults used when an older
-// installation has no Claude security fields persisted yet.
+// DefaultClaudeSecurityConfig returns compatibility-safe defaults used when an
+// older installation has no Claude resource-limit fields persisted yet.
 func DefaultClaudeSecurityConfig() ClaudeSecurityConfig {
-	return ClaudeSecurityConfig{
-		MaxOutputTokens:    defaultClaudeMaxOutputTokens,
-		MaxToolCount:       defaultClaudeMaxToolCount,
-		MaxToolSchemaBytes: defaultClaudeMaxToolSchemaBytes,
-	}
+	return ClaudeSecurityConfig{}
 }
 
 func validClaudeBetaToken(value string) bool {
@@ -66,26 +54,18 @@ func validClaudeBetaToken(value string) bool {
 }
 
 // NormalizeClaudeSecurityConfig canonicalizes operator-provided values and
-// clamps resource limits so a malformed system setting cannot disable the
-// safety boundary or create an unbounded upstream request.
+// keeps zero as the explicit "no application cap" sentinel. Negative values
+// are never meaningful and normalize to that same sentinel. Integer and body
+// size guards remain enforced at the request boundary.
 func NormalizeClaudeSecurityConfig(cfg ClaudeSecurityConfig) ClaudeSecurityConfig {
-	if cfg.MaxOutputTokens <= 0 {
-		cfg.MaxOutputTokens = defaultClaudeMaxOutputTokens
+	if cfg.MaxOutputTokens < 0 {
+		cfg.MaxOutputTokens = 0
 	}
-	if cfg.MaxOutputTokens > maxClaudeMaxOutputTokens {
-		cfg.MaxOutputTokens = maxClaudeMaxOutputTokens
+	if cfg.MaxToolCount < 0 {
+		cfg.MaxToolCount = 0
 	}
-	if cfg.MaxToolCount <= 0 {
-		cfg.MaxToolCount = defaultClaudeMaxToolCount
-	}
-	if cfg.MaxToolCount > maxClaudeMaxToolCount {
-		cfg.MaxToolCount = maxClaudeMaxToolCount
-	}
-	if cfg.MaxToolSchemaBytes <= 0 {
-		cfg.MaxToolSchemaBytes = defaultClaudeMaxToolSchemaBytes
-	}
-	if cfg.MaxToolSchemaBytes > maxClaudeMaxToolSchemaBytes {
-		cfg.MaxToolSchemaBytes = maxClaudeMaxToolSchemaBytes
+	if cfg.MaxToolSchemaBytes < 0 {
+		cfg.MaxToolSchemaBytes = 0
 	}
 	allowed := make([]string, 0, len(cfg.AllowedBetaHeaders))
 	seen := make(map[string]struct{}, len(cfg.AllowedBetaHeaders))

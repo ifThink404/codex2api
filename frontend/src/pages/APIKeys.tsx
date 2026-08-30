@@ -30,6 +30,7 @@ import type {
   APIKeyScopeSummaryItem,
   APIKeyRow,
   APIKeyWindowUsage,
+  PromptFilterNewAPIBinding,
   SystemSettings,
 } from "../types";
 import { canStartAPIKeyBulkReset } from "../lib/apiKeyOperationState";
@@ -325,7 +326,7 @@ export default function APIKeys() {
   }, []);
 
   const loadKeys = useCallback(async () => {
-    const [keysResponse, groupsResponse, modelsResponse, settingsResponse] = await Promise.all([
+    const [keysResponse, groupsResponse, modelsResponse, settingsResponse, promptBindingsResponse] = await Promise.all([
       api.getAPIKeys(),
       api.listAccountGroups().catch(() => ({ groups: [] })),
       api
@@ -337,6 +338,7 @@ export default function APIKeys() {
         claude_models?: string[];
       }>,
       api.getSettings().catch((): SystemSettings | null => null),
+      api.getPromptFilterNewAPIBindings().catch(() => ({ bindings: [] as PromptFilterNewAPIBinding[] })),
     ]);
     return {
       keys: keysResponse.keys ?? [],
@@ -346,6 +348,7 @@ export default function APIKeys() {
       antigravityModelOptions: modelsResponse.antigravity_models ?? [],
       claudeModelOptions: modelsResponse.claude_models ?? [],
       settings: settingsResponse,
+      promptBindings: promptBindingsResponse.bindings ?? [],
     };
   }, []);
 
@@ -357,6 +360,7 @@ export default function APIKeys() {
     antigravityModelOptions: string[];
     claudeModelOptions: string[];
     settings: SystemSettings | null;
+    promptBindings: PromptFilterNewAPIBinding[];
   }>({
     initialData: {
       keys: [],
@@ -366,12 +370,17 @@ export default function APIKeys() {
       antigravityModelOptions: [],
       claudeModelOptions: [],
       settings: null,
+      promptBindings: [],
     },
     load: loadKeys,
   });
   const keys = data.keys;
   const groups = data.groups;
   const modelOptions = data.modelOptions;
+  const promptBindingsByKey = useMemo(
+    () => new Map(data.promptBindings.map((binding) => [binding.api_key_id, binding])),
+    [data.promptBindings],
+  );
 
   // scope 预算概览单独拉：它需要跨 Key 的用量聚合，不该拖慢 Key 列表本身。
   const anyScopeBudget = keys.some(
@@ -1518,6 +1527,7 @@ export default function APIKeys() {
                                     t={t}
                                   />
                                   <KeyChannelBadge keyRow={keyRow} t={t} />
+                                  <APIKeyPromptPolicyBadge binding={promptBindingsByKey.get(keyRow.id)} />
                                   <KeyScopeBudgetBadge
                                     items={scopeSummary[String(keyRow.id)]}
                                     t={t}
@@ -1726,6 +1736,7 @@ export default function APIKeys() {
                                         t={t}
                                       />
                                       <KeyChannelBadge keyRow={keyRow} t={t} />
+                                      <APIKeyPromptPolicyBadge binding={promptBindingsByKey.get(keyRow.id)} />
                                       <KeyScopeBudgetBadge
                                         items={scopeSummary[String(keyRow.id)]}
                                         t={t}
@@ -3188,6 +3199,54 @@ function KeyChannelBadge({
       <Waypoints className="size-3" />
       {t("apiKeys.limits.upstreamChannelAutoTab")}
     </Badge>
+  );
+}
+
+// APIKeyPromptPolicyBadge separates the effective Prompt policy from the
+// optional NewAPI identity binding. An unbound key still follows the global
+// Prompt Filter; the badge makes that explicit instead of implying bypass.
+function APIKeyPromptPolicyBadge({
+  binding,
+}: {
+  binding?: PromptFilterNewAPIBinding;
+}) {
+  const { t } = useTranslation();
+  const scope = binding?.prompt_filter_scope ?? "inherit";
+  const scopeLabel =
+    scope === "off"
+      ? t("apiKeys.promptFilterScopeOff")
+      : scope === "local_only"
+        ? t("apiKeys.promptFilterScopeLocal")
+        : t("apiKeys.promptFilterScopeGlobal");
+  const identityLabel = binding
+    ? binding.require_signed_identity
+      ? t("apiKeys.promptFilterIdentityRequired")
+      : t("apiKeys.promptFilterIdentityBound")
+    : t("apiKeys.promptFilterIdentityUnbound");
+  return (
+    <span className="inline-flex max-w-full flex-wrap items-center gap-1">
+      <Badge
+        variant="outline"
+        className={cn(
+          "max-w-full truncate border-transparent bg-sky-500/10 px-1.5 py-0 text-[10px] font-semibold text-sky-700 dark:text-sky-300",
+          scope === "off" && "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+          scope === "local_only" && "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        )}
+        title={scopeLabel}
+      >
+        {scopeLabel}
+      </Badge>
+      <Badge
+        variant="outline"
+        className={cn(
+          "max-w-full truncate border-transparent bg-muted/70 px-1.5 py-0 text-[10px] font-medium text-muted-foreground",
+          !binding && "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        )}
+        title={identityLabel}
+      >
+        {identityLabel}
+      </Badge>
+    </span>
   );
 }
 

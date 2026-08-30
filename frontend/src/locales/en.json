@@ -3129,7 +3129,7 @@
       "legacy_unknown": "Legacy unknown"
     },
     "newapiPolicyStatus": {
-      "unbound": "NewAPI unbound",
+      "unbound": "NewAPI identity unbound · global Prompt still runs",
       "binding_disabled": "NewAPI binding disabled",
       "unsigned_request": "NewAPI request unsigned",
       "verification_failed": "NewAPI verification failed",
@@ -4253,11 +4253,12 @@
     "claudeAllowedBetaHeaders": "Additional allowed Beta headers",
     "claudeAllowedBetaHeadersDesc": "Comma-separated; the OAuth-required header is always kept, other client Beta tokens are dropped unless listed.",
     "claudeMaxOutputTokens": "Maximum output tokens",
-    "claudeMaxOutputTokensDesc": "Per-request Claude limit, from 1 to 131072.",
+    "claudeUnlimitedPlaceholder": "0 = no gateway cap (upstream model still applies)",
+    "claudeMaxOutputTokensDesc": "0 means no gateway cap; non-zero sets a per-request cap, still bounded by the upstream model.",
     "claudeMaxToolCount": "Maximum tool count",
-    "claudeMaxToolCountDesc": "Maximum tools allowed per request, from 1 to 64.",
+    "claudeMaxToolCountDesc": "0 means no gateway tool-count cap; non-zero protects operator resources.",
     "claudeMaxToolSchemaBytes": "Tool schema limit",
-    "claudeMaxToolSchemaBytesDesc": "Total bytes for all tool definitions, from 1 to 1048576."
+    "claudeMaxToolSchemaBytesDesc": "0 means no gateway schema cap; request and upstream limits still apply."
   },
   "proxies": {
     "filterAll": "All Proxies",
@@ -4462,6 +4463,13 @@
     "deleteKeyDesc": "After deletion, all clients using this key will immediately lose access.",
     "confirmDelete": "Confirm Delete",
     "securityTitle": "Request Authentication",
+    "promptFilterScopeGlobal": "Prompt: global policy",
+    "promptFilterScopeLocal": "Prompt: local rules only",
+    "promptFilterScopeOff": "Prompt: disabled",
+    "promptFilterScopeUnknown": "Prompt: scope unknown",
+    "promptFilterIdentityBound": "NewAPI: binding configured",
+    "promptFilterIdentityRequired": "NewAPI: signature required",
+    "promptFilterIdentityUnbound": "NewAPI: identity unbound (Prompt still runs)",
     "keyAuthNote": "API requires no auth without keys. After adding the first key, all /v1/* requests need Authorization: Bearer sk-xxx.",
     "publicUsageDesc": "The public /key-usage portal lets users view usage with their own API key.",
     "publicUsageEnabled": "Portal public",

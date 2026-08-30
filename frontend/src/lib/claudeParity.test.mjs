@@ -10,6 +10,7 @@ const proxies = readFileSync(new URL('../pages/Proxies.tsx', import.meta.url), '
 const accountsPage = readFileSync(new URL('../pages/Accounts.tsx', import.meta.url), 'utf8')
 const scheduler = readFileSync(new URL('../pages/SchedulerBoard.tsx', import.meta.url), 'utf8')
 const claude = readFileSync(new URL('../pages/ClaudeAccounts.tsx', import.meta.url), 'utf8')
+const settings = readFileSync(new URL('../pages/Settings.tsx', import.meta.url), 'utf8')
 const docs = readFileSync(new URL('../pages/Docs.tsx', import.meta.url), 'utf8')
 const guide = readFileSync(new URL('../pages/Guide.tsx', import.meta.url), 'utf8')
 const apiReference = readFileSync(new URL('../pages/ApiReference.tsx', import.meta.url), 'utf8')
@@ -76,6 +77,22 @@ test('Claude model whitelist stays provider-scoped and uses optimistic detail va
 
 test('Claude default refresh keeps deterministic account order', () => {
   assert.match(claude, /default:\s*\{\s*sort:\s*undefined,\s*order:\s*['"]asc['"]\s*\}/)
+})
+
+test('Claude security limits default to upstream-compatible unlimited mode', () => {
+  const start = settings.indexOf('function ClaudeCodeSettingsCard')
+  const end = settings.indexOf('\nfunction SettingsCard', start)
+  assert.ok(start >= 0 && end > start)
+  const card = settings.slice(start, end)
+  assert.match(card, /maxOutputTokens, setMaxOutputTokens\] = useState\('0'\)/)
+  assert.match(card, /max_output_tokens: Number\.isFinite\(maxOutputValue\)/)
+  assert.match(card, /claudeUnlimitedPlaceholder/)
+})
+
+test('API key rows expose Prompt scope separately from NewAPI identity binding', () => {
+  assert.match(apiKeys, /getPromptFilterNewAPIBindings/)
+  assert.match(apiKeys, /promptBindings/)
+  assert.match(apiKeys, /promptFilterScope|newapiPolicyStatus/i)
 })
 
 test('Claude disabled rows use the shared account-state table treatment', () => {

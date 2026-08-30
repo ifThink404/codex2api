@@ -712,9 +712,9 @@ function ClaudeCodeSettingsCard() {
   const [allowSpeed, setAllowSpeed] = useState(false)
   const [allowSafetyIdentifier, setAllowSafetyIdentifier] = useState(false)
   const [allowedBetaHeaders, setAllowedBetaHeaders] = useState('')
-  const [maxOutputTokens, setMaxOutputTokens] = useState('8192')
-  const [maxToolCount, setMaxToolCount] = useState('16')
-  const [maxToolSchemaBytes, setMaxToolSchemaBytes] = useState('131072')
+  const [maxOutputTokens, setMaxOutputTokens] = useState('0')
+  const [maxToolCount, setMaxToolCount] = useState('0')
+  const [maxToolSchemaBytes, setMaxToolSchemaBytes] = useState('0')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -733,9 +733,9 @@ function ClaudeCodeSettingsCard() {
         setAllowSpeed(Boolean(cfg.allow_speed))
         setAllowSafetyIdentifier(Boolean(cfg.allow_safety_identifier))
         setAllowedBetaHeaders((cfg.allowed_beta_headers ?? []).join(', '))
-        setMaxOutputTokens(String(cfg.max_output_tokens || 8192))
-        setMaxToolCount(String(cfg.max_tool_count || 16))
-        setMaxToolSchemaBytes(String(cfg.max_tool_schema_bytes || 131072))
+        setMaxOutputTokens(String(cfg.max_output_tokens ?? 0))
+        setMaxToolCount(String(cfg.max_tool_count ?? 0))
+        setMaxToolSchemaBytes(String(cfg.max_tool_schema_bytes ?? 0))
       })
       .catch(() => {
         /* 读取失败保持默认空 */
@@ -752,6 +752,9 @@ function ClaudeCodeSettingsCard() {
     setSaving(true)
     try {
       const n = Number(sessionWindow.trim())
+      const maxOutputValue = Number(maxOutputTokens.trim())
+      const maxToolValue = Number(maxToolCount.trim())
+      const maxToolSchemaValue = Number(maxToolSchemaBytes.trim())
       await api.updateClaudeConfig({
         fingerprint_mode: fingerprintMode,
         default_timezone: timezone.trim(),
@@ -761,9 +764,9 @@ function ClaudeCodeSettingsCard() {
         allow_speed: allowSpeed,
         allow_safety_identifier: allowSafetyIdentifier,
         allowed_beta_headers: allowedBetaHeaders.split(',').map((item) => item.trim()).filter(Boolean),
-        max_output_tokens: Number(maxOutputTokens) || 8192,
-        max_tool_count: Number(maxToolCount) || 16,
-        max_tool_schema_bytes: Number(maxToolSchemaBytes) || 131072,
+        max_output_tokens: Number.isFinite(maxOutputValue) && maxOutputValue >= 0 ? Math.floor(maxOutputValue) : 0,
+        max_tool_count: Number.isFinite(maxToolValue) && maxToolValue >= 0 ? Math.floor(maxToolValue) : 0,
+        max_tool_schema_bytes: Number.isFinite(maxToolSchemaValue) && maxToolSchemaValue >= 0 ? Math.floor(maxToolSchemaValue) : 0,
       })
       showToast(t('settings.claudeSaved'), 'success')
     } catch (error) {
@@ -854,13 +857,13 @@ function ClaudeCodeSettingsCard() {
               <Input value={allowedBetaHeaders} onChange={(event) => setAllowedBetaHeaders(event.target.value)} placeholder="token-efficient-tools-2025-02-19" />
             </SettingField>
             <SettingField label={t('settings.claudeMaxOutputTokens')} description={t('settings.claudeMaxOutputTokensDesc')}>
-              <Input value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} inputMode="numeric" />
+              <Input value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} inputMode="numeric" min={0} type="number" placeholder={t('settings.claudeUnlimitedPlaceholder')} />
             </SettingField>
             <SettingField label={t('settings.claudeMaxToolCount')} description={t('settings.claudeMaxToolCountDesc')}>
-              <Input value={maxToolCount} onChange={(event) => setMaxToolCount(event.target.value)} inputMode="numeric" />
+              <Input value={maxToolCount} onChange={(event) => setMaxToolCount(event.target.value)} inputMode="numeric" min={0} type="number" />
             </SettingField>
             <SettingField label={t('settings.claudeMaxToolSchemaBytes')} description={t('settings.claudeMaxToolSchemaBytesDesc')}>
-              <Input value={maxToolSchemaBytes} onChange={(event) => setMaxToolSchemaBytes(event.target.value)} inputMode="numeric" />
+              <Input value={maxToolSchemaBytes} onChange={(event) => setMaxToolSchemaBytes(event.target.value)} inputMode="numeric" min={0} type="number" />
             </SettingField>
           </div>
         </div>

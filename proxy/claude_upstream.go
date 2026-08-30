@@ -37,6 +37,10 @@ const (
 	claudeAnthropicVersion = "2023-06-01"
 	// claudeCodeSystemPreamble 是 OAuth 凭据要求的首个 system 块文本。
 	claudeCodeSystemPreamble = "You are Claude Code, Anthropic's official CLI for Claude."
+	// Sub2API protects integer conversion with math.MaxInt32/2. Keep the same
+	// protocol-level guard while leaving normal model-specific limits to the
+	// upstream provider (and the optional operator cap below).
+	claudeMaxTokensProtocolLimit int64 = math.MaxInt32 / 2
 )
 
 // claudeCodeSystemBlockJSON 是注入到 system 数组首位的块(带 ephemeral 缓存标记,
@@ -372,13 +376,63 @@ func normalizeClaudeRequestBody(body []byte, cfg auth.ClaudeSecurityConfig) ([]b
 			}
 		}
 	}
-	if maxTokens := gjson.GetBytes(out, "max_tokens"); maxTokens.Exists() {
-		value, parseErr := strconv.ParseInt(strings.TrimSpace(maxTokens.Raw), 10, 64)
-		if maxTokens.Type != gjson.Number || parseErr != nil || value < 0 {
-			return nil, fmt.Errorf("max_tokens must be a non-negative integer")
+	// Sub2API accepts the legacy max_tokens_to_sample alias. Anthropic's
+	// Messages endpoint expects max_tokens, so normalize the alias before the
+	// request reaches Prompt Filter or the upstream. A conflicting pair is
+	// rejected instead of silently choosing one value.
+	legacyMaxTokens := gjson.GetBytes(out, "max_tokens_to_sample")
+	currentMaxTokens := gjson.GetBytes(out, "max_tokens")
+	if legacyMaxTokens.Exists() {
+		if legacyMaxTokens.Type == gjson.Null {
+			var err error
+			out, err = sjson.DeleteBytes(out, "max_tokens_to_sample")
+			if err != nil {
+				return nil, fmt.Errorf("remove null max_tokens_to_sample: %w", err)
+			}
+		} else if currentMaxTokens.Exists() {
+			legacyValue, legacyErr := parseClaudeMaxTokens(legacyMaxTokens, cfg)
+			currentValue, currentErr := parseClaudeMaxTokens(currentMaxTokens, cfg)
+			if legacyErr != nil {
+				return nil, legacyErr
+			}
+			if currentErr != nil {
+				return nil, currentErr
+			}
+			if legacyValue != currentValue {
+				return nil, fmt.Errorf("max_tokens and max_tokens_to_sample must match")
+			}
+			var err error
+			out, err = sjson.DeleteBytes(out, "max_tokens_to_sample")
+			if err != nil {
+				return nil, fmt.Errorf("remove max_tokens_to_sample: %w", err)
+			}
+		} else {
+			var err error
+			out, err = sjson.SetRawBytes(out, "max_tokens", []byte(legacyMaxTokens.Raw))
+			if err != nil {
+				return nil, fmt.Errorf("normalize max_tokens_to_sample: %w", err)
+			}
+			out, err = sjson.DeleteBytes(out, "max_tokens_to_sample")
+			if err != nil {
+				return nil, fmt.Errorf("remove max_tokens_to_sample: %w", err)
+			}
 		}
-		if value > cfg.MaxOutputTokens {
-			return nil, fmt.Errorf("max_tokens exceeds ClaudeCode safety limit (%d)", cfg.MaxOutputTokens)
+	}
+	if maxTokens := gjson.GetBytes(out, "max_tokens"); maxTokens.Exists() {
+		if _, err := parseClaudeMaxTokens(maxTokens, cfg); err != nil {
+			return nil, err
+		}
+	}
+	// Claude Code currently sends context_management for its own stateful
+	// client, but the OAuth Messages endpoint rejects it with
+	// "Extra inputs are not permitted". It is not representable by the
+	// stateless gateway, so drop it while preserving all standard Messages
+	// controls (thinking/output_config/output_format/metadata/tools/etc.).
+	if gjson.GetBytes(out, "context_management").Exists() {
+		var err error
+		out, err = sjson.DeleteBytes(out, "context_management")
+		if err != nil {
+			return nil, fmt.Errorf("remove unsupported context_management: %w", err)
 		}
 	}
 	tools := gjson.GetBytes(out, "tools")
@@ -387,18 +441,33 @@ func normalizeClaudeRequestBody(body []byte, cfg auth.ClaudeSecurityConfig) ([]b
 			return nil, fmt.Errorf("tools must be an array")
 		}
 		items := tools.Array()
-		if len(items) > cfg.MaxToolCount {
+		if cfg.MaxToolCount > 0 && len(items) > cfg.MaxToolCount {
 			return nil, fmt.Errorf("tools exceeds ClaudeCode safety limit (%d)", cfg.MaxToolCount)
 		}
 		var schemaBytes int64
 		for _, item := range items {
 			schemaBytes += int64(len(item.Raw))
-			if schemaBytes > cfg.MaxToolSchemaBytes {
+			if cfg.MaxToolSchemaBytes > 0 && schemaBytes > cfg.MaxToolSchemaBytes {
 				return nil, fmt.Errorf("tool schema exceeds ClaudeCode safety limit (%d bytes)", cfg.MaxToolSchemaBytes)
 			}
 		}
 	}
 	return out, nil
+}
+
+func parseClaudeMaxTokens(result gjson.Result, cfg auth.ClaudeSecurityConfig) (int64, error) {
+	value, parseErr := strconv.ParseInt(strings.TrimSpace(result.Raw), 10, 64)
+	if result.Type != gjson.Number || parseErr != nil || value < 0 {
+		return 0, fmt.Errorf("max_tokens must be a non-negative integer")
+	}
+	if value > claudeMaxTokensProtocolLimit {
+		return 0, fmt.Errorf("max_tokens exceeds Claude protocol limit (%d)", claudeMaxTokensProtocolLimit)
+	}
+	cfg = auth.NormalizeClaudeSecurityConfig(cfg)
+	if cfg.MaxOutputTokens > 0 && value > cfg.MaxOutputTokens {
+		return 0, fmt.Errorf("max_tokens exceeds ClaudeCode safety limit (%d)", cfg.MaxOutputTokens)
+	}
+	return value, nil
 }
 
 // prepareClaudeRequestBody is the canonical body used by both Prompt Filter
