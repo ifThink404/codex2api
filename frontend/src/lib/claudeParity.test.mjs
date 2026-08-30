@@ -16,6 +16,7 @@ const apiReference = readFileSync(new URL('../pages/ApiReference.tsx', import.me
 const docsContent = readFileSync(new URL('../pages/docs/docsContent.ts', import.meta.url), 'utf8')
 const quickStartTools = readFileSync(new URL('../pages/docs/quickStartTools.ts', import.meta.url), 'utf8')
 const types = readFileSync(new URL('../types.ts', import.meta.url), 'utf8')
+const styles = readFileSync(new URL('../index.css', import.meta.url), 'utf8')
 const zh = JSON.parse(readFileSync(new URL('../locales/zh.json', import.meta.url), 'utf8'))
 
 test('shared usage channel filter exposes Claude and persists it', () => {
@@ -71,6 +72,15 @@ test('Claude model whitelist stays provider-scoped and uses optimistic detail va
   assert.match(claude, /latest\.claude_api !== true/)
   assert.match(claude, /modelsWhitelistConflict/)
   assert.equal(typeof zh.claude?.modelsWhitelistTitle, 'string')
+})
+
+test('Claude default refresh keeps deterministic account order', () => {
+  assert.match(claude, /default:\s*\{\s*sort:\s*undefined,\s*order:\s*['"]asc['"]\s*\}/)
+})
+
+test('Claude disabled rows use the shared account-state table treatment', () => {
+  assert.match(styles, /\.account-state-table-row > \[data-slot="table-cell"\],\s*\.account-state-table-row > td/)
+  assert.match(styles, /\.account-state-table-row > \[data-slot="table-cell"\] > :not\(\.account-state-overlay--marker-only\),\s*\.account-state-table-row > td > :not\(\.account-state-overlay--marker-only\)/)
 })
 
 test('Claude detail metadata exposes safe operational fields without credentials', () => {

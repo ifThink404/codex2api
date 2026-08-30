@@ -16,14 +16,17 @@ type claudeGlobalConfigDTO struct {
 	FingerprintMode    string `json:"fingerprint_mode"`     // preserve / force(空=preserve)
 	DefaultTimezone    string `json:"default_timezone"`     // 导入 Claude 账号的默认 IANA 时区
 	SessionWindowLimit int64  `json:"session_window_limit"` // 默认并发会话窗口数(0=跟随全局)
+	auth.ClaudeSecurityConfig
 }
 
 // GetClaudeConfig 返回当前 ClaudeCode 全局配置(取自运行时 Store 访问器)。
 func (h *Handler) GetClaudeConfig(c *gin.Context) {
+	security := h.store.ClaudeSecurityConfig()
 	c.JSON(http.StatusOK, claudeGlobalConfigDTO{
-		FingerprintMode:    h.store.ClaudeFingerprintModeDefault(),
-		DefaultTimezone:    h.store.ClaudeDefaultTimezone(),
-		SessionWindowLimit: h.store.ClaudeSessionWindowLimit(),
+		FingerprintMode:      h.store.ClaudeFingerprintModeDefault(),
+		DefaultTimezone:      h.store.ClaudeDefaultTimezone(),
+		SessionWindowLimit:   h.store.ClaudeSessionWindowLimit(),
+		ClaudeSecurityConfig: security,
 	})
 }
 
@@ -54,11 +57,13 @@ func (h *Handler) UpdateClaudeConfig(c *gin.Context) {
 	if window > 1000 {
 		window = 1000
 	}
+	security := auth.NormalizeClaudeSecurityConfig(req.ClaudeSecurityConfig)
 
 	cfg := auth.ClaudeConfig{
-		FingerprintMode:    mode,
-		DefaultTimezone:    tz,
-		SessionWindowLimit: window,
+		FingerprintMode:      mode,
+		DefaultTimezone:      tz,
+		SessionWindowLimit:   window,
+		ClaudeSecurityConfig: security,
 	}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
@@ -74,11 +79,20 @@ func (h *Handler) UpdateClaudeConfig(c *gin.Context) {
 	h.store.SetClaudeFingerprintModeDefault(mode)
 	h.store.SetClaudeDefaultTimezone(tz)
 	h.store.SetClaudeSessionWindowLimit(window)
+	h.store.SetClaudeSecurityConfig(security)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":              "已保存 ClaudeCode 全局配置",
-		"fingerprint_mode":     mode,
-		"default_timezone":     tz,
-		"session_window_limit": window,
+		"message":                 "已保存 ClaudeCode 全局配置",
+		"fingerprint_mode":        mode,
+		"default_timezone":        tz,
+		"session_window_limit":    window,
+		"allow_service_tier":      security.AllowServiceTier,
+		"allow_inference_geo":     security.AllowInferenceGeo,
+		"allow_speed":             security.AllowSpeed,
+		"allow_safety_identifier": security.AllowSafetyIdentifier,
+		"allowed_beta_headers":    security.AllowedBetaHeaders,
+		"max_output_tokens":       security.MaxOutputTokens,
+		"max_tool_count":          security.MaxToolCount,
+		"max_tool_schema_bytes":   security.MaxToolSchemaBytes,
 	})
 }

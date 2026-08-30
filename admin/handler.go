@@ -11860,7 +11860,11 @@ func (h *Handler) ListModels(c *gin.Context) {
 	catalog, _ := proxy.ListModelCatalog(c.Request.Context(), h.db)
 	catalog.GrokModels = h.grokChannelModels()
 	catalog.AntigravityModels = h.antigravityChannelModels()
-	catalog.ClaudeModels = h.claudeChannelModels()
+	// The request-facing catalog must not advertise models contributed only by
+	// disabled/banned accounts or models currently marked credits_required.
+	// Keep claudeChannelModels for pricing/history, where those entries remain
+	// useful to operators.
+	catalog.ClaudeModels = h.claudeAvailableChannelModels()
 	c.JSON(http.StatusOK, catalog)
 }
 

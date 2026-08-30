@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/codex2api/auth"
@@ -190,6 +191,46 @@ func (h *Handler) claudeChannelModels() []string {
 		for _, model := range proxy.DefaultClaudeModelIDsForAccount(account) {
 			key := strings.ToLower(strings.TrimSpace(model))
 			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			models = append(models, model)
+		}
+	}
+	sort.Strings(models)
+	return models
+}
+
+// claudeAvailableChannelModels returns models from enabled, non-banned Claude
+// accounts for request-facing catalogs. Pricing/history still use
+// claudeChannelModels so a disabled account cannot make an unusable model
+// selectable while its historical cost data remains visible to administrators.
+func (h *Handler) claudeAvailableChannelModels() []string {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	for _, account := range h.store.Accounts() {
+		if account == nil || !account.IsClaudeOAuth() ||
+			atomic.LoadInt32(&account.Disabled) != 0 ||
+			atomic.LoadInt32(&account.DispatchPaused) != 0 {
+			continue
+		}
+		account.Mu().RLock()
+		status := account.Status
+		tier := account.HealthTier
+		account.Mu().RUnlock()
+		if status == auth.StatusError || tier == auth.HealthTierBanned {
+			continue
+		}
+		for _, model := range proxy.DefaultClaudeModelIDsForAccount(account) {
+			model = strings.TrimSpace(model)
+			key := strings.ToLower(model)
+			if key == "" || account.IsModelRateLimited(model) {
 				continue
 			}
 			if _, ok := seen[key]; ok {

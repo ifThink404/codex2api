@@ -86,8 +86,24 @@ func (h *Handler) applyClaudeNativeFailureCooldown(account *auth.Account, outcom
 	if h == nil || h.store == nil || account == nil || !account.IsClaudeOAuth() || len(outcome.failurePayload) == 0 || outcome.logStatusCode == http.StatusOK {
 		return outcome
 	}
-	decision := h.applyResponseFailedCooldown(account, outcome.failurePayload, resp, model)
+	// Anthropic may encode a billing entitlement failure inside an otherwise
+	// successful native SSE response. The shared response.failed handler would
+	// otherwise apply account-level 429 semantics and make every other Claude
+	// model unavailable. Keep this deterministic model-level rejection aligned
+	// with the ordinary HTTP 429 path.
 	lowerPayload := strings.ToLower(string(outcome.failurePayload))
+	billingStatus := outcome.logStatusCode
+	// A compatibility relay can omit both status_code and rate_limit_error from
+	// a response.failed frame while retaining the precise billing message. Treat
+	// that shape as a synthetic 429 for entitlement classification only.
+	if billingStatus != http.StatusTooManyRequests && strings.Contains(lowerPayload, "usage credits") && strings.Contains(lowerPayload, "required") {
+		billingStatus = http.StatusTooManyRequests
+	}
+	if HandleClaudeModelBillingRejection(h.store, account, model, billingStatus, responseFailedErrorBody(outcome.failurePayload)) {
+		outcome.failureKind = "rate_limited_model"
+		return outcome
+	}
+	decision := h.applyResponseFailedCooldown(account, outcome.failurePayload, resp, model)
 	if decision.ResetAt.IsZero() && !claudeHasAuthoritativeQuotaCooldown(account) && (outcome.logStatusCode == http.StatusTooManyRequests || strings.Contains(lowerPayload, "rate_limit") || strings.Contains(lowerPayload, "overloaded")) {
 		// Relay model cooldown is intentionally optional. Keep a bounded account
 		// backoff for native Anthropic rate_limit/overloaded frames even in that mode.
@@ -379,18 +395,29 @@ func (h *Handler) Messages(c *gin.Context) {
 		rejectAnthropicMessagesRequest(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Request body too large")
 		return
 	}
+	// Keep the ingress body immutable for NewAPI signature verification, but
+	// canonicalize the Claude payload before model routing and Prompt Filter so
+	// the reviewed user-controlled bytes are the same bytes sent upstream. The
+	// native OAuth transport adds only its fixed trusted Claude Code preamble
+	// after this point; fallback Codex/relay routes never receive that preamble.
+	claudeSecurityConfig := h.store.ClaudeSecurityConfig()
+	canonicalBody, canonicalErr := normalizeClaudeRequestBody(rawBody, claudeSecurityConfig)
+	if canonicalErr != nil {
+		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", canonicalErr.Error())
+		return
+	}
 
 	// 基本验证
-	model := gjson.GetBytes(rawBody, "model").String()
+	model := gjson.GetBytes(canonicalBody, "model").String()
 	if model == "" {
 		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
-	if !gjson.GetBytes(rawBody, "messages").Exists() {
+	if !gjson.GetBytes(canonicalBody, "messages").Exists() {
 		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", "messages is required")
 		return
 	}
-	if h.inspectPromptFilterAnthropic(c, rawBody, "/v1/messages", model) {
+	if h.inspectPromptFilterAnthropic(c, canonicalBody, "/v1/messages", model) {
 		return
 	}
 
@@ -402,7 +429,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	// Grok 账号选中后再走一次 TranslateAnthropicToResponsesForGrok；
 	// Codex / OpenAI 中转仍按需翻译成 Codex-safe Responses。
 	supportedModels := h.supportedModelIDs(c.Request.Context())
-	routingBody := h.resolveMessagesRoutingBodyForRequest(c, rawBody, model, supportedModels)
+	routingBody := h.resolveMessagesRoutingBodyForRequest(c, canonicalBody, model, supportedModels)
 	originalModel := model
 	effectiveModel := effectiveRequestModel(routingBody, model)
 	if isMediaOnlyModel(effectiveModel) {
@@ -559,15 +586,15 @@ func (h *Handler) Messages(c *gin.Context) {
 			// Claude Code OAuth 账号本身说 Anthropic Messages API：不翻译成 Codex，
 			// 直接把原始入站 body 透传到 api.anthropic.com/v1/messages；返回的响应
 			// 已是原生 Anthropic SSE，打上原生路由标记复用既有透传链路。
-			claudeRequestBody := rawBody
+			claudeRequestBody := canonicalBody
 			if nativeModel := h.resolveNativeClaudeRequestModel(c, model); nativeModel != "" && !strings.EqualFold(nativeModel, model) {
-				if rewritten, rewriteErr := sjson.SetBytes(rawBody, "model", nativeModel); rewriteErr == nil {
+				if rewritten, rewriteErr := sjson.SetBytes(canonicalBody, "model", nativeModel); rewriteErr == nil {
 					claudeRequestBody = rewritten
 				}
 			}
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				claudeFpMode := account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
-				r, e := ExecuteClaudeMessagesRequest(upstreamCtx, account, claudeRequestBody, proxyURL, downstreamHeaders, claudeFpMode)
+				r, e := ExecuteClaudeMessagesRequest(upstreamCtx, account, claudeRequestBody, proxyURL, downstreamHeaders, claudeFpMode, claudeSecurityConfig)
 				if e == nil {
 					markClaudeNativeRoute(r)
 				}
@@ -577,7 +604,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			upstreamBody := routingBody
 			if !account.IsGrokAPI() {
 				var translateErr error
-				upstreamBody, translateErr = h.translateAnthropicMessagesToCodexOnce(&codexTranslation, rawBody, supportedModels)
+				upstreamBody, translateErr = h.translateAnthropicMessagesToCodexOnce(&codexTranslation, canonicalBody, supportedModels)
 				if translateErr != nil {
 					ttftGuard.Stop()
 					h.store.Release(account)
@@ -593,10 +620,10 @@ func (h *Handler) Messages(c *gin.Context) {
 				attemptEffectiveModel = mappedModel
 			}
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
-				return ExecuteRelayStyleProtocolRequest(upstreamCtx, account, GrokProtocolMessages, rawBody, upstreamBody, proxyURL, downstreamHeaders)
+				return ExecuteRelayStyleProtocolRequest(upstreamCtx, account, GrokProtocolMessages, canonicalBody, upstreamBody, proxyURL, downstreamHeaders)
 			})
 		} else {
-			codexBody, translateErr := h.translateAnthropicMessagesToCodexOnce(&codexTranslation, rawBody, supportedModels)
+			codexBody, translateErr := h.translateAnthropicMessagesToCodexOnce(&codexTranslation, canonicalBody, supportedModels)
 			if translateErr != nil {
 				ttftGuard.Stop()
 				h.store.Release(account)
@@ -718,7 +745,13 @@ func (h *Handler) Messages(c *gin.Context) {
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
-			syncAnthropicUsageStateForAccount(h.store, account, resp)
+			// Claude 的 429 credits_required 是模型级计费门槛:只冷却该模型,不按账号级限流处理
+			// (否则会连累该号的其它可用模型)。命中则跳过账号级用量/限流同步。
+			if account.IsClaudeOAuth() && HandleClaudeModelBillingRejection(h.store, account, attemptEffectiveModel, resp.StatusCode, errBody) {
+				log.Printf("Claude 模型 %s 需购买 usage credits(credits_required),已对该模型冷却 %s(不影响账号其它模型)", attemptEffectiveModel, claudeCreditsRequiredCooldown)
+			} else {
+				syncAnthropicUsageStateForAccount(h.store, account, resp)
+			}
 			h.store.Release(account)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)

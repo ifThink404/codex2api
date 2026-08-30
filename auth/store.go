@@ -3336,6 +3336,7 @@ type Store struct {
 	affinitySpreadEnabled    atomic.Bool  // 新亲和键按 HRW 哈希散列选号(issue #484)
 	claudeFingerprintDefault atomic.Value // string: Claude 指纹模式全局默认（preserve/force;空=preserve）
 	claudeDefaultTimezone    atomic.Value // string: 导入 Claude 账号时的默认 IANA 时区
+	claudeSecurityConfig     atomic.Value // ClaudeSecurityConfig: ClaudeCode 出站安全策略
 	claudeSessionWindowLimit int64        // Claude 账号默认并发会话窗口数（0=用全局 maxConcurrency）
 	grokAffinityMode         atomic.Value // string: "follow" / "bounded" / "off" / "strict"（"follow"=跟随全局）
 	grokProbeEnabled         atomic.Bool  // 定期探测 Grok 账号状态是否开启（默认关）

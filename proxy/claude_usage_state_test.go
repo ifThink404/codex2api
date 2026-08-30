@@ -259,3 +259,91 @@ func TestDefaultClaudeModelIDsFiltersInvalidAndDuplicateEntries(t *testing.T) {
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
+
+// credits_required(模型级计费门槛)→ 只冷却该模型,不冷却账号。
+func TestHandleClaudeModelBillingRejection_CreditsRequired_ModelLevel(t *testing.T) {
+	store := newSyncTestStore()
+	acc := &auth.Account{UpstreamType: auth.UpstreamClaude}
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for this model.","details":{"error_code":"credits_required","model":"claude-fable-5","can_user_purchase_credits":true}}}`)
+
+	handled := HandleClaudeModelBillingRejection(store, acc, "claude-fable-5", http.StatusTooManyRequests, body)
+	if !handled {
+		t.Fatal("credits_required 应被识别并处理为模型级冷却")
+	}
+	// 账号本身不应进入冷却(其它模型仍可用)。
+	if acc.Status == auth.StatusCooldown {
+		t.Fatalf("credits_required 不应冷却整个账号,status=%v", acc.Status)
+	}
+	if pct, ok := acc.GetUsagePercent5h(); ok && pct >= 100 {
+		t.Fatalf("credits_required 不应把 5h 置 100,pct=%v", pct)
+	}
+	// 被拒模型应处于冷却。
+	if !acc.IsModelRateLimited("claude-fable-5") {
+		t.Fatal("claude-fable-5 应被标记为模型级冷却")
+	}
+	// 其它模型不受影响。
+	if acc.IsModelRateLimited("claude-haiku-4-5-20251001") {
+		t.Fatal("其它模型不应受 credits_required 影响")
+	}
+	t.Log("credits_required: 仅 fable-5 冷却, 账号与其它模型不受影响")
+}
+
+// 非 credits_required 的普通 429 → HandleClaudeModelBillingRejection 不处理(交给账号级同步)。
+func TestHandleClaudeModelBillingRejection_OtherError_NotHandled(t *testing.T) {
+	store := newSyncTestStore()
+	acc := &auth.Account{UpstreamType: auth.UpstreamClaude}
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}`)
+	if HandleClaudeModelBillingRejection(store, acc, "claude-haiku-4-5-20251001", http.StatusTooManyRequests, body) {
+		t.Fatal("普通限流不应被当作 credits_required 处理")
+	}
+}
+
+func TestHandleClaudeModelBillingRejection_MessageOnly(t *testing.T) {
+	store := newSyncTestStore()
+	defer store.Stop()
+	acc := &auth.Account{UpstreamType: auth.UpstreamClaude}
+	body := []byte(`{"error":{"type":"rate_limit_error","message":"Usage credits are required for this model.","model":"claude-fable-5"}}`)
+	if !HandleClaudeModelBillingRejection(store, acc, "claude-fable-5", http.StatusTooManyRequests, body) {
+		t.Fatal("message-only usage credits response should be handled as model-level rejection")
+	}
+	if !acc.IsModelRateLimited("claude-fable-5") || acc.HasActiveCooldown() {
+		t.Fatal("message-only usage credits response must only cool down the model")
+	}
+}
+
+func TestClaudeNativeCreditsRequiredIsModelScoped(t *testing.T) {
+	store := newSyncTestStore()
+	defer store.Stop()
+	acc := &auth.Account{DBID: 91, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	outcome := streamOutcome{
+		logStatusCode:  http.StatusTooManyRequests,
+		failurePayload: []byte(`{"type":"response.failed","response":{"status_code":429,"error":{"type":"rate_limit_error","message":"Usage credits are required for this model.","details":{"error_code":"credits_required","model":"claude-fable-5"}}}}`),
+	}
+	got := (&Handler{store: store}).applyClaudeNativeFailureCooldown(acc, outcome, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, "claude-fable-5")
+	if acc.HasActiveCooldown() || acc.RuntimeStatus() == "rate_limited" {
+		t.Fatalf("native credits_required must not cool down account: status=%q", acc.RuntimeStatus())
+	}
+	if !acc.IsModelRateLimited("claude-fable-5") {
+		t.Fatal("native credits_required should cool down only Fable 5")
+	}
+	if got.failureKind != "rate_limited_model" {
+		t.Fatalf("native credits_required failure kind = %q, want rate_limited_model", got.failureKind)
+	}
+}
+
+func TestClaudeNativeCreditsRequiredWithoutStatusEvidenceIsModelScoped(t *testing.T) {
+	store := newSyncTestStore()
+	defer store.Stop()
+	acc := &auth.Account{DBID: 92, UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	outcome := streamOutcome{
+		logStatusCode:  http.StatusInternalServerError,
+		failurePayload: []byte(`{"type":"response.failed","response":{"error":{"message":"Usage credits are required for this model.","model":"claude-fable-5"}}}`),
+	}
+	got := (&Handler{store: store}).applyClaudeNativeFailureCooldown(acc, outcome, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, "claude-fable-5")
+	if acc.HasActiveCooldown() || !acc.IsModelRateLimited("claude-fable-5") {
+		t.Fatalf("message-only native billing failure must be model scoped: status=%q", acc.RuntimeStatus())
+	}
+	if got.failureKind != "rate_limited_model" {
+		t.Fatalf("message-only native billing failure kind = %q, want rate_limited_model", got.failureKind)
+	}
+}

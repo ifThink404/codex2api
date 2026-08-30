@@ -160,11 +160,38 @@ func TestSummarizeDashboardAccountsTreatsSuccessfulClaudeProbeWithoutQuotaHeader
 
 func TestClaudeChannelModelsReturnsAccountCatalog(t *testing.T) {
 	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
 	store.AddAccount(&auth.Account{DBID: 100, UpstreamType: auth.UpstreamClaude, AccessToken: "claude", Models: []string{"claude-sonnet-4-5", "claude-opus-4-5"}})
 	h := &Handler{store: store}
 	models := h.claudeChannelModels()
 	if len(models) != 2 || !slices.Contains(models, "claude-sonnet-4-5") || !slices.Contains(models, "claude-opus-4-5") {
 		t.Fatalf("Claude model catalog = %v, want account models", models)
+	}
+}
+
+func TestClaudeAvailableChannelModelsFiltersDisabledAndModelCooldown(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	enabled := &auth.Account{
+		DBID:         101,
+		UpstreamType: auth.UpstreamClaude,
+		AccessToken:  "claude-enabled",
+		Models:       []string{"claude-fable-5", "claude-sonnet-5"},
+	}
+	enabled.SetModelCooldownUntil("claude-fable-5", "credits_required", time.Now().Add(time.Hour))
+	disabled := &auth.Account{
+		DBID:         102,
+		UpstreamType: auth.UpstreamClaude,
+		AccessToken:  "claude-disabled",
+		Models:       []string{"claude-fable-5"},
+	}
+	atomic.StoreInt32(&disabled.DispatchPaused, 1)
+	store.AddAccount(enabled)
+	store.AddAccount(disabled)
+	h := &Handler{store: store}
+	models := h.claudeAvailableChannelModels()
+	if len(models) != 1 || models[0] != "claude-sonnet-5" {
+		t.Fatalf("request-facing Claude models = %v, want only enabled cooldown-free model", models)
 	}
 }
 

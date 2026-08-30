@@ -10,6 +10,7 @@ import {
   Pencil,
   ExternalLink,
   RefreshCw,
+  RotateCcw,
   Lock,
   MoreHorizontal,
   Trash2,
@@ -65,6 +66,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
   accountStateTableRowClass,
+  resolveAccountOverlayKind,
   renderAccountStateOverlay,
 } from "../components/AccountStateOverlay";
 import { useToast } from "../hooks/useToast";
@@ -275,8 +277,11 @@ type AuthFilter = "all" | "oauth" | "api_key";
 type HealthTier = "healthy" | "warm" | "risky" | "banned";
 
 type SortKey = "default" | "group" | "priority" | "usage" | "requests" | "today";
-const SORT_MAP: Record<SortKey, { sort: NonNullable<Parameters<typeof api.getAccountsPage>[0]["sort"]>; order: "asc" | "desc" }> = {
-  default: { sort: "updated_at", order: "desc" },
+const SORT_MAP: Record<SortKey, { sort: NonNullable<Parameters<typeof api.getAccountsPage>[0]["sort"]> | undefined; order: "asc" | "desc" }> = {
+  // An explicit updated_at sort is unstable because sampling/refresh updates
+  // that timestamp. Omitting sort uses the backend's deterministic ID order,
+  // matching Codex and keeping rows in place after refresh.
+  default: { sort: undefined, order: "asc" },
   group: { sort: "group", order: "asc" },
   priority: { sort: "scheduler_priority", order: "desc" },
   usage: { sort: "usage", order: "desc" },
@@ -1777,6 +1782,7 @@ function ClaudeAccountRow({
   const billed7d = typeof acc.usage_7d_detail?.account_billed === "number" ? acc.usage_7d_detail.account_billed : 0;
   const todayBilled = typeof today?.account_billed === "number" ? today.account_billed : 0;
   const created = formatShortDateTime(acc.created_at);
+  const tableOverlayKind = resolveAccountOverlayKind(acc);
 
   const iconBtn =
     "inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
@@ -1787,18 +1793,39 @@ function ClaudeAccountRow({
         "border-b border-border/60 align-middle transition-colors last:border-b-0 hover:bg-muted/30",
         accountStateTableRowClass(acc),
         selected && "bg-primary/5",
-        disabled && "opacity-60",
       )}
     >
       {/* 勾选 */}
       <td className="px-3 py-3">
-        <input
-          type="checkbox"
-          className="size-3.5 cursor-pointer accent-primary"
-          checked={selected}
-          onChange={onToggleSelect}
-          aria-label={acc.email || acc.name}
-        />
+        <div className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            className="size-3.5 cursor-pointer accent-primary"
+            checked={selected}
+            onChange={onToggleSelect}
+            aria-label={acc.email || acc.name}
+          />
+          {!columns.status && tableOverlayKind ? (
+            <span className="sr-only">
+              {tableOverlayKind === "disabled" ? t("accounts.disabledOverlay") : t("accounts.overloadOverlay")}
+            </span>
+          ) : null}
+          {!columns.status && tableOverlayKind === "overload" ? (
+            <button
+              type="button"
+              className="inline-flex size-7 items-center justify-center rounded-md text-orange-700 transition-colors hover:bg-orange-500/10 dark:text-orange-300"
+              title={t("accounts.overloadRecover")}
+              aria-label={t("accounts.overloadRecover")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onResetStatus();
+              }}
+            >
+              <RotateCcw className="size-3.5" />
+            </button>
+          ) : null}
+        </div>
       </td>
       {/* 序号 */}
       <td className="px-2 py-3 text-center font-mono text-xs text-muted-foreground">{no}</td>
@@ -2523,6 +2550,16 @@ function ClaudeModelsModal({
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [models, setModels] = useState(() => normalizeClaudeModelList(account.models));
+  // 模型级冷却映射(来自 model_cooldowns):区分「需购买 credits」与「限流中」。
+  // credits_required 是套餐不含该模型的计费门槛(如 Pro 用 fable-5),非临时限流。
+  const cooldownByModel = useMemo(() => {
+    const map = new Map<string, { reason: string; credits: boolean }>();
+    for (const cd of account.model_cooldowns ?? []) {
+      const reason = (cd.reason || "").toLowerCase();
+      map.set(cd.model.toLowerCase(), { reason: cd.reason, credits: reason.includes("credit") });
+    }
+    return map;
+  }, [account.model_cooldowns]);
   const [input, setInput] = useState("");
   const [inputError, setInputError] = useState("");
   const [conflict, setConflict] = useState("");
@@ -2670,14 +2707,30 @@ function ClaudeModelsModal({
           </div>
           {models.length > 0 ? (
             <div className="flex max-h-52 flex-wrap gap-1.5 overflow-y-auto rounded-lg border border-border bg-muted/10 p-2.5">
-              {models.map((model) => (
-                <span key={model.toLowerCase()} className="inline-flex items-center gap-1 rounded-md border border-border bg-background py-1 pl-2 pr-1 text-[12px]">
-                  <span className="font-mono text-foreground">{model}</span>
-                  <button type="button" className="inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setModels((current) => current.filter((item) => item.toLowerCase() !== model.toLowerCase()))} disabled={saving || syncing} aria-label={t("claude.modelsWhitelistRemove", { model })}>
-                    <X className="size-3" />
-                  </button>
-                </span>
-              ))}
+              {models.map((model) => {
+                const cd = cooldownByModel.get(model.toLowerCase());
+                return (
+                  <span key={model.toLowerCase()} className="inline-flex items-center gap-1 rounded-md border border-border bg-background py-1 pl-2 pr-1 text-[12px]">
+                    <span className="font-mono text-foreground">{model}</span>
+                    {cd?.credits ? (
+                      <span className="inline-flex items-center rounded bg-amber-500/15 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400" title={t("claude.modelNeedsCreditsHint")}>
+                        {t("claude.modelNeedsCredits")}
+                      </span>
+                    ) : cd ? (
+                      <span className="inline-flex items-center rounded bg-rose-500/15 px-1 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-400" title={cd.reason}>
+                        {t("claude.modelRateLimited")}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center rounded bg-emerald-500/12 px-1 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                        {t("claude.modelAvailable")}
+                      </span>
+                    )}
+                    <button type="button" className="inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setModels((current) => current.filter((item) => item.toLowerCase() !== model.toLowerCase()))} disabled={saving || syncing} aria-label={t("claude.modelsWhitelistRemove", { model })}>
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                );
+              })}
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-border bg-muted/20 px-3 py-3 text-sm text-muted-foreground">{t("claude.modelsWhitelistAllHint")}</div>
@@ -2713,10 +2766,30 @@ function ClaudeTestModal({
 	const settledRef = useRef(false);
 	const onSettledRef = useRef(onSettled);
 	onSettledRef.current = onSettled;
-	const modelOptions = (account.models ?? []).filter((item) => item.trim().toLowerCase().startsWith("claude-"));
-  if (modelOptions.length === 0) modelOptions.push("claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5");
-  const [selectedModel, setSelectedModel] = useState(modelOptions[0]);
-  const model = selectedModel;
+	const modelOptions = useMemo(() => {
+		const blockedForCredits = new Set(
+			(account.model_cooldowns ?? [])
+				.filter((cooldown) => (cooldown.reason || "").toLowerCase().includes("credit"))
+				.map((cooldown) => cooldown.model.toLowerCase()),
+		);
+		const configured = (account.models ?? []).filter((item) => {
+			const normalized = item.trim().toLowerCase();
+			return normalized.startsWith("claude-") && !blockedForCredits.has(normalized);
+		});
+		return configured.length > 0
+			? configured
+			: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"].filter(
+					(model) => !blockedForCredits.has(model),
+				);
+	}, [account.model_cooldowns, account.models]);
+	const [selectedModel, setSelectedModel] = useState(modelOptions[0] || "");
+	const model = selectedModel;
+
+	useEffect(() => {
+		if (!modelOptions.includes(selectedModel)) {
+			setSelectedModel(modelOptions[0] || "");
+		}
+	}, [modelOptions, selectedModel]);
 
 	const markSettled = useCallback(() => {
 		if (settledRef.current) return;
@@ -2724,8 +2797,9 @@ function ClaudeTestModal({
 		onSettledRef.current();
 	}, []);
 
-  useEffect(() => {
-    setStatus("connecting");
+	useEffect(() => {
+		if (!model) return;
+		setStatus("connecting");
     setOutput([]);
     setErrorMessage("");
     settledRef.current = false;
@@ -2810,7 +2884,7 @@ function ClaudeTestModal({
     };
     void run();
     return () => controller.abort();
-  }, [account.id, markSettled, model, t]);
+	}, [account.id, markSettled, model, t]);
 
   const StatusIcon = status === "success" ? CheckCircle : status === "error" ? XCircle : Loader2;
   return (
@@ -2824,13 +2898,15 @@ function ClaudeTestModal({
         <div className="flex items-center gap-2 text-sm">
           <StatusIcon className={cn("size-4", status === "connecting" || status === "streaming" ? "animate-spin text-blue-500" : status === "success" ? "text-emerald-500" : "text-rose-500")} />
           <span>{status === "connecting" ? t("accounts.connecting") : status === "streaming" ? t("accounts.receivingResponse") : status === "success" ? t("accounts.testSuccess") : t("accounts.testFailed")}</span>
-          <Select
-            compact
-            className="ml-auto w-48"
-            value={model}
-            onValueChange={setSelectedModel}
-            options={modelOptions.map((item) => ({ value: item, label: item }))}
-          />
+	          {modelOptions.length > 0 ? (
+	            <Select
+	              compact
+	              className="ml-auto w-48"
+	              value={model}
+	              onValueChange={setSelectedModel}
+	              options={modelOptions.map((item) => ({ value: item, label: item }))}
+	            />
+	          ) : null}
         </div>
         {errorMessage ? <div className="break-words rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">{errorMessage}</div> : null}
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/30 p-3 text-xs leading-relaxed">{output.join("") || (status === "success" ? t("accounts.testSuccess") : t("common.loading"))}</pre>

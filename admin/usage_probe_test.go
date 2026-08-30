@@ -13,6 +13,7 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
+	"github.com/tidwall/gjson"
 )
 
 func TestProbeUsageSnapshotRejectsAntigravity(t *testing.T) {
@@ -53,6 +54,63 @@ func TestProbeUsageSnapshotClaudeUsesAnthropicMessagesOnly(t *testing.T) {
 	}
 	if got := account.UsagePercent7d; got != 40 {
 		t.Fatalf("7d usage = %v, want 40", got)
+	}
+}
+
+func TestSelectClaudeUsageProbeModelSkipsFableWhenCheaperModelExists(t *testing.T) {
+	account := &auth.Account{
+		UpstreamType: auth.UpstreamClaude,
+		Models:       []string{"claude-fable-5", "claude-sonnet-5", "claude-opus-4-7"},
+	}
+	model, err := selectClaudeUsageProbeModel(account)
+	if err != nil || model != "claude-sonnet-5" {
+		t.Fatalf("probe model=(%q,%v), want sonnet instead of credits-gated Fable", model, err)
+	}
+}
+
+func TestSelectClaudeUsageProbeModelSkipsActiveModelCooldown(t *testing.T) {
+	account := &auth.Account{
+		UpstreamType: auth.UpstreamClaude,
+		Models:       []string{"claude-haiku-4-5", "claude-sonnet-5"},
+	}
+	account.SetModelCooldownUntil("claude-haiku-4-5", "credits_required", time.Now().Add(time.Hour))
+	model, err := selectClaudeUsageProbeModel(account)
+	if err != nil || model != "claude-sonnet-5" {
+		t.Fatalf("probe model=(%q,%v), want cooldown-free sonnet", model, err)
+	}
+}
+
+func TestProbeUsageSnapshotClaudeCreditsRequiredDoesNotCooldownAccount(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{
+		DBID:         82,
+		UpstreamType: auth.UpstreamClaude,
+		AccessToken:  "claude-token",
+		Status:       auth.StatusReady,
+		Models:       []string{"claude-fable-5", "claude-sonnet-5"},
+	}
+	store.AddAccount(account)
+	calledModel := ""
+	h := &Handler{store: store, executeClaudeUsageProbe: func(_ context.Context, _ *auth.Account, body []byte) (*http.Response, error) {
+		calledModel = gjson.GetBytes(body, "model").String()
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"rate_limit_error","message":"Usage credits are required for this model.","details":{"error_code":"credits_required","model":"claude-sonnet-5"}}}`)),
+		}, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err == nil || !strings.Contains(err.Error(), "usage credits") {
+		t.Fatalf("credits_required probe error=%v, want explicit usage credits error", err)
+	}
+	if calledModel != "claude-sonnet-5" {
+		t.Fatalf("probe selected model %q, want to skip Fable", calledModel)
+	}
+	if account.HasActiveCooldown() || account.RuntimeStatus() == "rate_limited" {
+		t.Fatalf("credits_required probe must not cool down account: status=%q", account.RuntimeStatus())
+	}
+	if !account.IsModelRateLimited("claude-sonnet-5") {
+		t.Fatal("credits_required probe should set a model-level cooldown")
 	}
 }
 
@@ -155,6 +213,35 @@ func TestProbeUsageSnapshotClaudeRejectsHTTP200ErrorPayload(t *testing.T) {
 	}}
 	if err := h.ProbeUsageSnapshot(context.Background(), account); err == nil {
 		t.Fatal("HTTP 200 native error payload must fail the Claude sample")
+	}
+}
+
+func TestProbeUsageSnapshotClaudeCreditsRequiredWrappedInHTTP200(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{
+		DBID:         83,
+		UpstreamType: auth.UpstreamClaude,
+		AccessToken:  "claude-token",
+		Status:       auth.StatusReady,
+		Models:       []string{"claude-sonnet-5"},
+	}
+	store.AddAccount(account)
+	h := &Handler{store: store, executeClaudeUsageProbe: func(context.Context, *auth.Account, []byte) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"message":"Usage credits are required for this model.","details":{"error_code":"credits_required","model":"claude-sonnet-5"}}}`)),
+		}, nil
+	}}
+	if err := h.ProbeUsageSnapshot(context.Background(), account); err == nil || !strings.Contains(err.Error(), "usage credits") {
+		t.Fatalf("wrapped credits_required probe error=%v", err)
+	}
+	if account.HasActiveCooldown() || account.RuntimeStatus() == "rate_limited" {
+		t.Fatalf("wrapped credits_required must not cool down account: status=%q", account.RuntimeStatus())
+	}
+	if !account.IsModelRateLimited("claude-sonnet-5") {
+		t.Fatal("wrapped credits_required should cool down only the model")
 	}
 }
 

@@ -119,7 +119,7 @@ func TestClaudeConnectionStreamFailureAppliesShortCooldown(t *testing.T) {
 	defer store.Stop()
 	account := &auth.Account{UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
 	h := &Handler{store: store}
-	applyClaudeConnectionStreamFailure(h, account, "rate_limited", "slow down", &http.Response{Header: make(http.Header)})
+	applyClaudeConnectionStreamFailure(h, account, "claude-haiku-4-5", "rate_limited", "slow down", &http.Response{Header: make(http.Header)})
 	if !account.HasActiveCooldown() {
 		t.Fatal("body-only Claude rate limit from a connection test must apply a cooldown")
 	}
@@ -130,7 +130,7 @@ func TestClaudeConnectionStreamAuthFailureAppliesUnauthorizedCooldown(t *testing
 	defer store.Stop()
 	account := &auth.Account{UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
 	h := &Handler{store: store}
-	applyClaudeConnectionStreamFailure(h, account, "failed", "invalid token", nil)
+	applyClaudeConnectionStreamFailure(h, account, "claude-haiku-4-5", "failed", "invalid token", nil)
 	reason, _ := account.GetCooldownSnapshot()
 	if reason != "unauthorized" {
 		t.Fatalf("Claude auth failure cooldown reason = %q, want unauthorized", reason)
@@ -150,10 +150,41 @@ func TestClaudeConnectionStreamRateLimitDoesNotReplacePreciseWindow(t *testing.T
 	resp := &http.Response{StatusCode: http.StatusOK, Header: headers}
 	proxy.SyncClaudeUsageState(store, account, resp)
 	_, before := account.GetCooldownSnapshot()
-	applyClaudeConnectionStreamFailure(&Handler{store: store}, account, "rate_limited", "slow down", resp)
+	applyClaudeConnectionStreamFailure(&Handler{store: store}, account, "claude-haiku-4-5", "rate_limited", "slow down", resp)
 	reason, after := account.GetCooldownSnapshot()
 	if reason != auth.ResponsesRateLimitedCooldownReason || after.Before(before.Add(-time.Second)) || after.After(before.Add(time.Second)) {
 		t.Fatalf("connection test replaced precise Claude cooldown: reason=%q before=%v after=%v", reason, before, after)
+	}
+}
+
+func TestClaudeConnectionCreditsRequiredIsModelScoped(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	if handled := syncClaudeTestUsageState(store, account, "claude-fable-5", &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     make(http.Header),
+	}, []byte(`{"error":{"type":"rate_limit_error","message":"Usage credits are required for this model.","details":{"error_code":"credits_required","model":"claude-fable-5"}}}`)); !handled {
+		t.Fatal("credits_required HTTP failure should be handled as a model-level result")
+	}
+	if account.HasActiveCooldown() || account.RuntimeStatus() == "rate_limited" {
+		t.Fatalf("credits_required must not cool down the account: status=%q", account.RuntimeStatus())
+	}
+	if !account.IsModelRateLimited("claude-fable-5") {
+		t.Fatal("credits_required should cool down only Fable 5")
+	}
+}
+
+func TestClaudeConnectionStreamCreditsRequiredIsModelScoped(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{UpstreamType: auth.UpstreamClaude, AccessToken: "claude-token", Status: auth.StatusReady}
+	applyClaudeConnectionStreamFailure(&Handler{store: store}, account, "claude-fable-5", "rate_limited", "Usage credits are required for this model.", &http.Response{Header: make(http.Header)})
+	if account.HasActiveCooldown() || account.RuntimeStatus() == "rate_limited" {
+		t.Fatalf("stream credits_required must not cool down the account: status=%q", account.RuntimeStatus())
+	}
+	if !account.IsModelRateLimited("claude-fable-5") {
+		t.Fatal("stream credits_required should cool down only Fable 5")
 	}
 }
 
@@ -200,5 +231,44 @@ func TestConnectionTestModelForClaudeUsesNativeCatalog(t *testing.T) {
 	model, err := h.connectionTestModelForAccount(context.Background(), account, "")
 	if err != nil || model != "claude-haiku-4-5" {
 		t.Fatalf("Claude connection test model = (%q, %v), want cheapest Haiku model", model, err)
+	}
+}
+
+func TestConnectionTestModelForClaudeRejectsStaleRuntimeModel(t *testing.T) {
+	db := newTestAdminDB(t)
+	ctx := context.Background()
+	id, err := db.InsertAccountWithUpstream(ctx, "claude-stale", "anthropic", "oauth", map[string]interface{}{
+		"upstream_type": "claude",
+		"access_token":  "claude-token",
+		"refresh_token": "claude-refresh",
+		"models":        []string{"claude-sonnet-5"},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	defer store.Stop()
+	account := &auth.Account{
+		DBID:         id,
+		UpstreamType: auth.UpstreamClaude,
+		AccessToken:  "claude-token",
+		Models:       []string{"claude-fable-5", "claude-sonnet-5"},
+	}
+	store.AddAccount(account)
+	h := &Handler{store: store, db: db}
+	if _, err := h.connectionTestModelForAccount(ctx, account, "claude-fable-5"); err == nil || !strings.Contains(err.Error(), "持久化模型") {
+		t.Fatalf("stale runtime Fable model error = %v, want persisted catalog rejection", err)
+	}
+}
+
+func TestConnectionTestModelForClaudeSkipsModelCooldown(t *testing.T) {
+	account := &auth.Account{
+		UpstreamType: auth.UpstreamClaude,
+		Models:       []string{"claude-haiku-4-5", "claude-sonnet-5"},
+	}
+	account.SetModelCooldownUntil("claude-haiku-4-5", "credits_required", time.Now().Add(time.Hour))
+	model, err := (&Handler{}).connectionTestModelForAccount(context.Background(), account, "")
+	if err != nil || model != "claude-sonnet-5" {
+		t.Fatalf("default Claude connection test model=(%q,%v), want cooldown-free sonnet", model, err)
 	}
 }
