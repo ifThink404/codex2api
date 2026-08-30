@@ -52,6 +52,13 @@
     "notProbed": "未驗證"
   },
   "apiKeys": {
+    "promptFilterScopeGlobal": "Prompt：沿用全域檢查",
+    "promptFilterScopeLocal": "Prompt：僅本地規則",
+    "promptFilterScopeOff": "Prompt：已關閉",
+    "promptFilterScopeUnknown": "Prompt：範圍未知",
+    "promptFilterIdentityBound": "NewAPI：已設定綁定",
+    "promptFilterIdentityRequired": "NewAPI：要求簽名",
+    "promptFilterIdentityUnbound": "NewAPI：未綁定身分（仍執行 Prompt）",
     "limits": {
       "upstreamChannelAuto": "自動（依模型路由）",
       "upstreamChannelCodex": "Codex",
@@ -198,11 +205,12 @@
     "claudeAllowedBetaHeaders": "額外允許的 Beta Header",
     "claudeAllowedBetaHeadersDesc": "逗號分隔；OAuth 必需 Header 始終保留，未列出的客戶端 Beta 預設丟棄。",
     "claudeMaxOutputTokens": "最大輸出 Token",
-    "claudeMaxOutputTokensDesc": "單次 Claude 請求上限，範圍 1–131072。",
+    "claudeUnlimitedPlaceholder": "0 = 不限制（以上游模型能力為準）",
+    "claudeMaxOutputTokensDesc": "0 表示不設閘道上限；非 0 為單次請求上限，最終仍受上游模型限制。",
     "claudeMaxToolCount": "最大工具數量",
-    "claudeMaxToolCountDesc": "單次請求允許的工具數量，範圍 1–64。",
+    "claudeMaxToolCountDesc": "0 表示不設閘道工具數量上限；非 0 用於營運側資源保護。",
     "claudeMaxToolSchemaBytes": "工具 Schema 上限",
-    "claudeMaxToolSchemaBytesDesc": "所有工具定義的總位元組數，範圍 1–1048576。"
+    "claudeMaxToolSchemaBytesDesc": "0 表示不設閘道 Schema 上限；請求體仍受系統大小與上游限制。"
   },
   "promptFilter": {
     "views": {
@@ -762,7 +770,7 @@
       "legacy_unknown": "歷史無法還原"
     },
     "newapiPolicyStatus": {
-      "unbound": "NewAPI 未綁定",
+      "unbound": "NewAPI 身分未綁定 · 仍執行全域 Prompt 檢查",
       "binding_disabled": "NewAPI 綁定已停用",
       "unsigned_request": "NewAPI 請求未簽名",
       "verification_failed": "NewAPI 驗簽失敗",

@@ -1692,8 +1692,8 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
         path="/api/admin/settings/claude-config"
         title={copy('读取 Claude 全局配置', 'Read Claude global settings')}
         description={copy(
-          '读取 ClaudeCode 全局指纹模式、默认时区、并发会话窗口和出口安全边界。个体账号可在账号调度设置中覆盖这些默认值。',
-          'Read the ClaudeCode global fingerprint mode, default timezone, session window, and egress security boundary. Individual accounts may override these defaults in account scheduling settings.',
+          '读取 ClaudeCode 全局指纹模式、默认时区、并发会话窗口和出口安全边界。资源限制字段为 0 时表示不设网关上限；个体账号可在账号调度设置中覆盖其它默认值。',
+          'Read the ClaudeCode global fingerprint mode, default timezone, session window, and egress security boundary. A resource-limit field of 0 means no gateway cap; individual accounts may override other defaults in account scheduling settings.',
         )}
         apiKey={firstKey}
         baseUrl={baseUrl}
@@ -1711,9 +1711,9 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
   "allow_speed": false,
   "allow_safety_identifier": false,
   "allowed_beta_headers": [],
-  "max_output_tokens": 8192,
-  "max_tool_count": 16,
-  "max_tool_schema_bytes": 131072
+  "max_output_tokens": 0,
+  "max_tool_count": 0,
+  "max_tool_schema_bytes": 0
 }` },
         ]}
       />
@@ -1724,8 +1724,8 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
         path="/api/admin/settings/claude-config"
         title={copy('更新 Claude 全局配置', 'Update Claude global settings')}
         description={copy(
-          '保存 ClaudeCode 的默认指纹、时区、并发窗口和出口安全策略，并立即热更新运行时 Store。安全字段默认过滤；fingerprint_mode 仅支持 preserve 或 force；并发 0 表示跟随全局默认。',
-          'Save ClaudeCode fingerprint, timezone, session window, and egress security defaults and apply them immediately. Sensitive fields are filtered by default; fingerprint_mode accepts preserve or force; session_window_limit 0 follows the global default.',
+          '保存 ClaudeCode 的默认指纹、时区、并发窗口和出口安全策略，并立即热更新运行时 Store。安全字段默认过滤；fingerprint_mode 仅支持 preserve 或 force；资源限制字段 0 表示不设网关上限，仍受请求体和上游模型限制。',
+          'Save ClaudeCode fingerprint, timezone, session window, and egress security defaults and apply them immediately. Sensitive fields are filtered by default; fingerprint_mode accepts preserve or force; resource-limit fields set to 0 mean no gateway cap and still respect request-body and upstream model limits.',
         )}
         apiKey={firstKey}
         baseUrl={baseUrl}
@@ -1739,9 +1739,9 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
   "allow_speed": false,
   "allow_safety_identifier": false,
   "allowed_beta_headers": [],
-  "max_output_tokens": 8192,
-  "max_tool_count": 16,
-  "max_tool_schema_bytes": 131072
+  "max_output_tokens": 0,
+  "max_tool_count": 0,
+  "max_tool_schema_bytes": 0
 }`}
         curlExample={`curl --request PUT \\
   --url ${baseUrl}/api/admin/settings/claude-config \\
@@ -1756,9 +1756,9 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
   "allow_speed": false,
   "allow_safety_identifier": false,
   "allowed_beta_headers": [],
-  "max_output_tokens": 8192,
-  "max_tool_count": 16,
-  "max_tool_schema_bytes": 131072
+  "max_output_tokens": 0,
+  "max_tool_count": 0,
+  "max_tool_schema_bytes": 0
 }'`}
         responseExamples={[
           { code: 200, body: `{
@@ -1771,9 +1771,9 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
   "allow_speed": false,
   "allow_safety_identifier": false,
   "allowed_beta_headers": [],
-  "max_output_tokens": 8192,
-  "max_tool_count": 16,
-  "max_tool_schema_bytes": 131072
+  "max_output_tokens": 0,
+  "max_tool_count": 0,
+  "max_tool_schema_bytes": 0
 }` },
           { code: 400, body: `{"error":"fingerprint_mode must be one of: preserve, force"}` },
         ]}

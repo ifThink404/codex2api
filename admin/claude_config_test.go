@@ -21,11 +21,11 @@ func TestGetClaudeConfigReturnsSecurityDefaults(t *testing.T) {
 	if recorder.Code != 200 {
 		t.Fatalf("status = %d", recorder.Code)
 	}
-	if got := gjson.GetBytes(recorder.Body.Bytes(), "max_output_tokens").Int(); got != 8192 {
-		t.Fatalf("max_output_tokens = %d, want 8192", got)
+	if got := gjson.GetBytes(recorder.Body.Bytes(), "max_output_tokens").Int(); got != 0 {
+		t.Fatalf("max_output_tokens = %d, want 0 (unlimited application cap)", got)
 	}
-	if got := gjson.GetBytes(recorder.Body.Bytes(), "max_tool_count").Int(); got != 16 {
-		t.Fatalf("max_tool_count = %d, want 16", got)
+	if got := gjson.GetBytes(recorder.Body.Bytes(), "max_tool_count").Int(); got != 0 {
+		t.Fatalf("max_tool_count = %d, want 0 (unlimited application cap)", got)
 	}
 	if got := gjson.GetBytes(recorder.Body.Bytes(), "allow_service_tier").Bool(); got {
 		t.Fatal("service_tier should be denied by default")
