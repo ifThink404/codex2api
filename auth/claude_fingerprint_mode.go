@@ -19,6 +19,91 @@ const (
 // ClaudeFingerprintModeCredentialKey 是该模式在账号 credentials 中的存储键。
 const ClaudeFingerprintModeCredentialKey = "claude_fingerprint_mode"
 
+// ClaudeSecurityConfig 是 ClaudeCode 出站请求的安全边界。
+// 布尔字段默认 false（默认过滤敏感字段）；数值字段为 0 时使用安全默认值。
+// AllowedBetaHeaders 只允许额外的 Beta token，OAuth 必需 token 由 proxy 始终注入。
+type ClaudeSecurityConfig struct {
+	AllowServiceTier      bool     `json:"allow_service_tier"`
+	AllowInferenceGeo     bool     `json:"allow_inference_geo"`
+	AllowSpeed            bool     `json:"allow_speed"`
+	AllowSafetyIdentifier bool     `json:"allow_safety_identifier"`
+	AllowedBetaHeaders    []string `json:"allowed_beta_headers"`
+	MaxOutputTokens       int64    `json:"max_output_tokens"`
+	MaxToolCount          int      `json:"max_tool_count"`
+	MaxToolSchemaBytes    int64    `json:"max_tool_schema_bytes"`
+}
+
+const (
+	defaultClaudeMaxOutputTokens    int64 = 8192
+	defaultClaudeMaxToolCount             = 16
+	defaultClaudeMaxToolSchemaBytes int64 = 128 * 1024
+	maxClaudeMaxOutputTokens        int64 = 131072
+	maxClaudeMaxToolCount                 = 64
+	maxClaudeMaxToolSchemaBytes     int64 = 1024 * 1024
+)
+
+// DefaultClaudeSecurityConfig returns the secure defaults used when an older
+// installation has no Claude security fields persisted yet.
+func DefaultClaudeSecurityConfig() ClaudeSecurityConfig {
+	return ClaudeSecurityConfig{
+		MaxOutputTokens:    defaultClaudeMaxOutputTokens,
+		MaxToolCount:       defaultClaudeMaxToolCount,
+		MaxToolSchemaBytes: defaultClaudeMaxToolSchemaBytes,
+	}
+}
+
+func validClaudeBetaToken(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (i > 0 && strings.ContainsRune("._-", r)) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// NormalizeClaudeSecurityConfig canonicalizes operator-provided values and
+// clamps resource limits so a malformed system setting cannot disable the
+// safety boundary or create an unbounded upstream request.
+func NormalizeClaudeSecurityConfig(cfg ClaudeSecurityConfig) ClaudeSecurityConfig {
+	if cfg.MaxOutputTokens <= 0 {
+		cfg.MaxOutputTokens = defaultClaudeMaxOutputTokens
+	}
+	if cfg.MaxOutputTokens > maxClaudeMaxOutputTokens {
+		cfg.MaxOutputTokens = maxClaudeMaxOutputTokens
+	}
+	if cfg.MaxToolCount <= 0 {
+		cfg.MaxToolCount = defaultClaudeMaxToolCount
+	}
+	if cfg.MaxToolCount > maxClaudeMaxToolCount {
+		cfg.MaxToolCount = maxClaudeMaxToolCount
+	}
+	if cfg.MaxToolSchemaBytes <= 0 {
+		cfg.MaxToolSchemaBytes = defaultClaudeMaxToolSchemaBytes
+	}
+	if cfg.MaxToolSchemaBytes > maxClaudeMaxToolSchemaBytes {
+		cfg.MaxToolSchemaBytes = maxClaudeMaxToolSchemaBytes
+	}
+	allowed := make([]string, 0, len(cfg.AllowedBetaHeaders))
+	seen := make(map[string]struct{}, len(cfg.AllowedBetaHeaders))
+	for _, raw := range cfg.AllowedBetaHeaders {
+		token := strings.ToLower(strings.TrimSpace(raw))
+		if !validClaudeBetaToken(token) {
+			continue
+		}
+		if _, exists := seen[token]; exists {
+			continue
+		}
+		seen[token] = struct{}{}
+		allowed = append(allowed, token)
+	}
+	cfg.AllowedBetaHeaders = allowed
+	return cfg
+}
+
 // NormalizeClaudeFingerprintMode 归一化模式取值;空/非法值归一为空串(跟随全局)。
 func NormalizeClaudeFingerprintMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -83,6 +168,30 @@ func (s *Store) ClaudeDefaultTimezone() string {
 	return ""
 }
 
+// SetClaudeSecurityConfig publishes an immutable copy of the Claude egress
+// policy to request handlers without taking a lock on the first-token path.
+func (s *Store) SetClaudeSecurityConfig(cfg ClaudeSecurityConfig) {
+	if s == nil {
+		return
+	}
+	cfg = NormalizeClaudeSecurityConfig(cfg)
+	cfg.AllowedBetaHeaders = append([]string(nil), cfg.AllowedBetaHeaders...)
+	s.claudeSecurityConfig.Store(cfg)
+}
+
+// ClaudeSecurityConfig returns the current Claude egress policy. A missing
+// legacy setting is treated as the secure default configuration.
+func (s *Store) ClaudeSecurityConfig() ClaudeSecurityConfig {
+	if s == nil {
+		return DefaultClaudeSecurityConfig()
+	}
+	if value, ok := s.claudeSecurityConfig.Load().(ClaudeSecurityConfig); ok {
+		value.AllowedBetaHeaders = append([]string(nil), value.AllowedBetaHeaders...)
+		return NormalizeClaudeSecurityConfig(value)
+	}
+	return DefaultClaudeSecurityConfig()
+}
+
 // SetClaudeSessionWindowLimit 设置 Claude 账号默认并发会话窗口数(<=0 归 0=跟随全局)。
 func (s *Store) SetClaudeSessionWindowLimit(n int64) {
 	if n < 0 {
@@ -122,6 +231,13 @@ type ClaudeConfig struct {
 	FingerprintMode    string `json:"fingerprint_mode"`     // preserve / force(空=preserve)
 	DefaultTimezone    string `json:"default_timezone"`     // 导入账号默认 IANA 时区
 	SessionWindowLimit int64  `json:"session_window_limit"` // 默认并发会话窗口数(0=跟随全局 maxConcurrency)
+	ClaudeSecurityConfig
+}
+
+// SecurityConfig extracts the flattened Claude security fields from the
+// persisted system setting while keeping the legacy top-level fields intact.
+func (c ClaudeConfig) SecurityConfig() ClaudeSecurityConfig {
+	return NormalizeClaudeSecurityConfig(c.ClaudeSecurityConfig)
 }
 
 // ParseClaudeConfig 解析 claude_config JSON;空/非法回落到零值(即全部默认)。
@@ -137,6 +253,7 @@ func ParseClaudeConfig(raw string) ClaudeConfig {
 	if cfg.SessionWindowLimit < 0 {
 		cfg.SessionWindowLimit = 0
 	}
+	cfg.ClaudeSecurityConfig = NormalizeClaudeSecurityConfig(cfg.ClaudeSecurityConfig)
 	return cfg
 }
 
@@ -146,4 +263,5 @@ func applyClaudeConfigToStore(s *Store, raw string) {
 	s.SetClaudeFingerprintModeDefault(cfg.FingerprintMode)
 	s.SetClaudeDefaultTimezone(cfg.DefaultTimezone)
 	s.SetClaudeSessionWindowLimit(cfg.SessionWindowLimit)
+	s.SetClaudeSecurityConfig(cfg.SecurityConfig())
 }

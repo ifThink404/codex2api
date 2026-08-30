@@ -280,6 +280,7 @@ func (h *Handler) probeClaudeAccountModel(ctx context.Context, account *auth.Acc
 		h.store.ResolveProxyForAccount(account),
 		nil,
 		account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()),
+		h.store.ClaudeSecurityConfig(),
 	)
 	if err != nil {
 		if msg, ok := batchTestContextFailure(probeCtx, err); ok {
@@ -299,6 +300,13 @@ func (h *Handler) probeClaudeAccountModel(ctx context.Context, account *auth.Acc
 	case http.StatusOK:
 		return readClaudeProbeStream(probeCtx, resp)
 	case http.StatusTooManyRequests:
+		body, _ := readBatchTestErrorBody(probeCtx, resp.Body)
+		lowerBody := strings.ToLower(string(body))
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.details.error_code").String()), "credits_required") ||
+			strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()), "credits_required") ||
+			(strings.Contains(lowerBody, "usage credits") && strings.Contains(lowerBody, "required")) {
+			return modelProbeUnsupported, "上游模型需要 usage credits，当前账号套餐不可用"
+		}
 		return modelProbeThrottled, "上游返回 429 限流"
 	case http.StatusBadRequest, http.StatusForbidden:
 		body, _ := readBatchTestErrorBody(probeCtx, resp.Body)

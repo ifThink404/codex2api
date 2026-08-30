@@ -3550,4 +3550,12 @@ export interface ClaudeGlobalConfig {
   fingerprint_mode: 'preserve' | 'force' | ''
   default_timezone: string
   session_window_limit: number
+  allow_service_tier: boolean
+  allow_inference_geo: boolean
+  allow_speed: boolean
+  allow_safety_identifier: boolean
+  allowed_beta_headers: string[]
+  max_output_tokens: number
+  max_tool_count: number
+  max_tool_schema_bytes: number
 }

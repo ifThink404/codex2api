@@ -4239,7 +4239,25 @@
     "claudeDefaultTimezoneDesc": "导入新 Claude 账号时的默认 IANA 时区;显示 UTC 加减与城市;留空=不指定。",
     "claudeTimezoneUnset": "不绑定时区",
     "claudeTimezoneCustom": "自定义 IANA 时区",
-    "claudeSaved": "已保存 ClaudeCode 全局配置"
+    "claudeSaved": "已保存 ClaudeCode 全局配置",
+    "claudeSecurityTitle": "Claude 出站安全边界",
+    "claudeSecurityDesc": "即使开启请求透传，也默认过滤敏感字段，并限制工具和输出规模。",
+    "claudeAllowServiceTier": "允许 service_tier",
+    "claudeAllowServiceTierDesc": "允许下游请求切换服务等级；可能影响计费。",
+    "claudeAllowInferenceGeo": "允许 inference_geo",
+    "claudeAllowInferenceGeoDesc": "允许下游指定推理区域；请确认符合数据驻留要求。",
+    "claudeAllowSpeed": "允许 speed",
+    "claudeAllowSpeedDesc": "允许下游切换 Claude 推理速度模式。",
+    "claudeAllowSafetyIdentifier": "允许 safety_identifier",
+    "claudeAllowSafetyIdentifierDesc": "允许把安全标识透传给上游；默认关闭以减少隐私暴露。",
+    "claudeAllowedBetaHeaders": "额外允许的 Beta Header",
+    "claudeAllowedBetaHeadersDesc": "逗号分隔；OAuth 必需 Header 始终保留，未列出的客户端 Beta 默认丢弃。",
+    "claudeMaxOutputTokens": "最大输出 Token",
+    "claudeMaxOutputTokensDesc": "单次 Claude 请求上限，范围 1–131072。",
+    "claudeMaxToolCount": "最大工具数量",
+    "claudeMaxToolCountDesc": "单次请求允许的工具数量，范围 1–64。",
+    "claudeMaxToolSchemaBytes": "工具 Schema 上限",
+    "claudeMaxToolSchemaBytesDesc": "所有工具定义的总字节数，范围 1–1048576。"
   },
   "proxies": {
     "filterAll": "全部代理",
@@ -5639,7 +5657,11 @@
     "timezoneLabel": "绑定时区",
     "upstreamUserAgent": "上游 User-Agent",
     "uaNotConfigured": "未生成账号指纹",
-    "metadataUnknown": "未知"
+    "metadataUnknown": "未知",
+    "modelNeedsCredits": "需 credits",
+    "modelNeedsCreditsHint": "该模型需购买 usage credits(套餐不含),当前不可用",
+    "modelRateLimited": "限流中",
+    "modelAvailable": "可用"
   },
   "accountGroups": {
     "manageTitle": "管理分组",

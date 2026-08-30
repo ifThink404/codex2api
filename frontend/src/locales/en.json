@@ -4239,7 +4239,25 @@
     "claudeDefaultTimezoneDesc": "Default IANA timezone for new Claude accounts, shown with its UTC offset and city; empty = unset.",
     "claudeTimezoneUnset": "No bound timezone",
     "claudeTimezoneCustom": "Custom IANA timezone",
-    "claudeSaved": "ClaudeCode global config saved"
+    "claudeSaved": "ClaudeCode global config saved",
+    "claudeSecurityTitle": "Claude egress security boundary",
+    "claudeSecurityDesc": "Sensitive fields stay filtered and tool/output sizes stay bounded even when request passthrough is enabled.",
+    "claudeAllowServiceTier": "Allow service_tier",
+    "claudeAllowServiceTierDesc": "Allow downstream requests to switch service tier; this may affect billing.",
+    "claudeAllowInferenceGeo": "Allow inference_geo",
+    "claudeAllowInferenceGeoDesc": "Allow downstream requests to select an inference region; verify data residency requirements.",
+    "claudeAllowSpeed": "Allow speed",
+    "claudeAllowSpeedDesc": "Allow downstream requests to switch Claude inference speed.",
+    "claudeAllowSafetyIdentifier": "Allow safety_identifier",
+    "claudeAllowSafetyIdentifierDesc": "Allow forwarding a safety identifier; disabled by default to reduce privacy exposure.",
+    "claudeAllowedBetaHeaders": "Additional allowed Beta headers",
+    "claudeAllowedBetaHeadersDesc": "Comma-separated; the OAuth-required header is always kept, other client Beta tokens are dropped unless listed.",
+    "claudeMaxOutputTokens": "Maximum output tokens",
+    "claudeMaxOutputTokensDesc": "Per-request Claude limit, from 1 to 131072.",
+    "claudeMaxToolCount": "Maximum tool count",
+    "claudeMaxToolCountDesc": "Maximum tools allowed per request, from 1 to 64.",
+    "claudeMaxToolSchemaBytes": "Tool schema limit",
+    "claudeMaxToolSchemaBytesDesc": "Total bytes for all tool definitions, from 1 to 1048576."
   },
   "proxies": {
     "filterAll": "All Proxies",
@@ -5639,7 +5657,11 @@
     "timezoneLabel": "Bound timezone",
     "upstreamUserAgent": "Upstream User-Agent",
     "uaNotConfigured": "No account fingerprint",
-    "metadataUnknown": "Unknown"
+    "metadataUnknown": "Unknown",
+    "modelNeedsCredits": "Needs credits",
+    "modelNeedsCreditsHint": "This model requires purchased usage credits (not covered by the plan); currently unavailable",
+    "modelRateLimited": "Rate-limited",
+    "modelAvailable": "Available"
   },
   "accountGroups": {
     "manageTitle": "Manage groups",

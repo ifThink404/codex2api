@@ -67,7 +67,9 @@ func TestInjectClaudeCodeSystemPrompt_PreservesOtherFields(t *testing.T) {
 func TestMergeAnthropicBeta(t *testing.T) {
 	h := http.Header{}
 	h.Set("anthropic-beta", "foo-1, bar-2")
-	got := mergeAnthropicBeta(h)
+	cfg := auth.DefaultClaudeSecurityConfig()
+	cfg.AllowedBetaHeaders = []string{"foo-1", "bar-2"}
+	got := mergeAnthropicBetaWithConfig(h, cfg)
 	// 必须包含 oauth beta 且入站的两个 beta 都在
 	for _, want := range []string{"oauth-2025-04-20", "foo-1", "bar-2"} {
 		if !strings.Contains(got, want) {
@@ -79,7 +81,7 @@ func TestMergeAnthropicBeta(t *testing.T) {
 func TestMergeAnthropicBeta_Dedup(t *testing.T) {
 	h := http.Header{}
 	h.Set("anthropic-beta", "oauth-2025-04-20")
-	got := mergeAnthropicBeta(h)
+	got := mergeAnthropicBetaWithConfig(h, auth.DefaultClaudeSecurityConfig())
 	if strings.Count(got, "oauth-2025-04-20") != 1 {
 		t.Fatalf("oauth beta 应去重, got=%s", got)
 	}

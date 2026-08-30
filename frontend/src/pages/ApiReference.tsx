@@ -1692,8 +1692,8 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
         path="/api/admin/settings/claude-config"
         title={copy('读取 Claude 全局配置', 'Read Claude global settings')}
         description={copy(
-          '读取 ClaudeCode 全局指纹模式、默认时区和并发会话窗口。个体账号可在账号调度设置中覆盖这些默认值。',
-          'Read the ClaudeCode global fingerprint mode, default timezone, and session window. Individual accounts may override these defaults in account scheduling settings.',
+          '读取 ClaudeCode 全局指纹模式、默认时区、并发会话窗口和出口安全边界。个体账号可在账号调度设置中覆盖这些默认值。',
+          'Read the ClaudeCode global fingerprint mode, default timezone, session window, and egress security boundary. Individual accounts may override these defaults in account scheduling settings.',
         )}
         apiKey={firstKey}
         baseUrl={baseUrl}
@@ -1705,7 +1705,15 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
           { code: 200, body: `{
   "fingerprint_mode": "preserve",
   "default_timezone": "Asia/Shanghai",
-  "session_window_limit": 0
+  "session_window_limit": 0,
+  "allow_service_tier": false,
+  "allow_inference_geo": false,
+  "allow_speed": false,
+  "allow_safety_identifier": false,
+  "allowed_beta_headers": [],
+  "max_output_tokens": 8192,
+  "max_tool_count": 16,
+  "max_tool_schema_bytes": 131072
 }` },
         ]}
       />
@@ -1716,8 +1724,8 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
         path="/api/admin/settings/claude-config"
         title={copy('更新 Claude 全局配置', 'Update Claude global settings')}
         description={copy(
-          '保存 ClaudeCode 的默认指纹模式、时区和并发窗口，并立即热更新运行时 Store。fingerprint_mode 仅支持 preserve 或 force；并发 0 表示跟随全局默认。',
-          'Save ClaudeCode defaults for fingerprint mode, timezone, and session window and apply them to the runtime immediately. fingerprint_mode accepts preserve or force; session_window_limit 0 follows the global default.',
+          '保存 ClaudeCode 的默认指纹、时区、并发窗口和出口安全策略，并立即热更新运行时 Store。安全字段默认过滤；fingerprint_mode 仅支持 preserve 或 force；并发 0 表示跟随全局默认。',
+          'Save ClaudeCode fingerprint, timezone, session window, and egress security defaults and apply them immediately. Sensitive fields are filtered by default; fingerprint_mode accepts preserve or force; session_window_limit 0 follows the global default.',
         )}
         apiKey={firstKey}
         baseUrl={baseUrl}
@@ -1725,7 +1733,15 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
         defaultBody={`{
   "fingerprint_mode": "preserve",
   "default_timezone": "Asia/Shanghai",
-  "session_window_limit": 0
+  "session_window_limit": 0,
+  "allow_service_tier": false,
+  "allow_inference_geo": false,
+  "allow_speed": false,
+  "allow_safety_identifier": false,
+  "allowed_beta_headers": [],
+  "max_output_tokens": 8192,
+  "max_tool_count": 16,
+  "max_tool_schema_bytes": 131072
 }`}
         curlExample={`curl --request PUT \\
   --url ${baseUrl}/api/admin/settings/claude-config \\
@@ -1734,14 +1750,30 @@ data: {"type":"error","error":"Claude 上游返回了有效响应，但账号仍
   --data '{
   "fingerprint_mode": "preserve",
   "default_timezone": "Asia/Shanghai",
-  "session_window_limit": 0
+  "session_window_limit": 0,
+  "allow_service_tier": false,
+  "allow_inference_geo": false,
+  "allow_speed": false,
+  "allow_safety_identifier": false,
+  "allowed_beta_headers": [],
+  "max_output_tokens": 8192,
+  "max_tool_count": 16,
+  "max_tool_schema_bytes": 131072
 }'`}
         responseExamples={[
           { code: 200, body: `{
   "message": "已保存 ClaudeCode 全局配置",
   "fingerprint_mode": "preserve",
   "default_timezone": "Asia/Shanghai",
-  "session_window_limit": 0
+  "session_window_limit": 0,
+  "allow_service_tier": false,
+  "allow_inference_geo": false,
+  "allow_speed": false,
+  "allow_safety_identifier": false,
+  "allowed_beta_headers": [],
+  "max_output_tokens": 8192,
+  "max_tool_count": 16,
+  "max_tool_schema_bytes": 131072
 }` },
           { code: 400, body: `{"error":"fingerprint_mode must be one of: preserve, force"}` },
         ]}

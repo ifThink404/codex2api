@@ -184,7 +184,25 @@
     "claudeDefaultTimezoneDesc": "匯入新 Claude 帳號時的預設 IANA 時區;顯示 UTC 加減與城市;留空=不指定。",
     "claudeTimezoneUnset": "不綁定時區",
     "claudeTimezoneCustom": "自訂 IANA 時區",
-    "claudeSaved": "已儲存 ClaudeCode 全域配置"
+    "claudeSaved": "已儲存 ClaudeCode 全域配置",
+    "claudeSecurityTitle": "Claude 出站安全邊界",
+    "claudeSecurityDesc": "即使開啟請求透傳，也預設過濾敏感欄位，並限制工具與輸出規模。",
+    "claudeAllowServiceTier": "允許 service_tier",
+    "claudeAllowServiceTierDesc": "允許下游請求切換服務等級；可能影響計費。",
+    "claudeAllowInferenceGeo": "允許 inference_geo",
+    "claudeAllowInferenceGeoDesc": "允許下游指定推理區域；請確認符合資料駐留要求。",
+    "claudeAllowSpeed": "允許 speed",
+    "claudeAllowSpeedDesc": "允許下游切換 Claude 推理速度模式。",
+    "claudeAllowSafetyIdentifier": "允許 safety_identifier",
+    "claudeAllowSafetyIdentifierDesc": "允許把安全標識透傳給上游；預設關閉以減少隱私暴露。",
+    "claudeAllowedBetaHeaders": "額外允許的 Beta Header",
+    "claudeAllowedBetaHeadersDesc": "逗號分隔；OAuth 必需 Header 始終保留，未列出的客戶端 Beta 預設丟棄。",
+    "claudeMaxOutputTokens": "最大輸出 Token",
+    "claudeMaxOutputTokensDesc": "單次 Claude 請求上限，範圍 1–131072。",
+    "claudeMaxToolCount": "最大工具數量",
+    "claudeMaxToolCountDesc": "單次請求允許的工具數量，範圍 1–64。",
+    "claudeMaxToolSchemaBytes": "工具 Schema 上限",
+    "claudeMaxToolSchemaBytesDesc": "所有工具定義的總位元組數，範圍 1–1048576。"
   },
   "promptFilter": {
     "views": {
@@ -1327,7 +1345,11 @@
     "timezoneLabel": "綁定時區",
     "upstreamUserAgent": "上游 User-Agent",
     "uaNotConfigured": "未生成帳號指紋",
-    "metadataUnknown": "未知"
+    "metadataUnknown": "未知",
+    "modelNeedsCredits": "需 credits",
+    "modelNeedsCreditsHint": "該模型需購買 usage credits(方案不含),目前不可用",
+    "modelRateLimited": "限流中",
+    "modelAvailable": "可用"
   },
   "accountGroups": {
     "manageTitle": "管理分組",

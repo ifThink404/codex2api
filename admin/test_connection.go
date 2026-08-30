@@ -150,7 +150,7 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	var resp *http.Response
 	var reqErr error
 	if isClaudeAccount {
-		resp, reqErr = proxy.ExecuteClaudeMessagesRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), c.Request.Header.Clone(), account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()))
+		resp, reqErr = proxy.ExecuteClaudeMessagesRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), c.Request.Header.Clone(), account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeSecurityConfig())
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else {
@@ -405,11 +405,17 @@ func (h *Handler) handleClaudeConnectionTest(
 	if isTransient {
 		usageStore = nil
 	}
-	proxy.SyncClaudeUsageState(usageStore, account, resp)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		message := fmt.Sprintf("上游返回 %d: %s", resp.StatusCode, truncate(string(body), 500))
-		if !isTransient {
+		creditsRequired := false
+		if account.IsClaudeOAuth() {
+			creditsRequired = syncClaudeTestUsageState(usageStore, account, testModel, resp, body)
+			if creditsRequired {
+				message = fmt.Sprintf("上游模型 %s 需要 usage credits，当前账号套餐不可用", testModel)
+			}
+		}
+		if !isTransient && !creditsRequired {
 			switch resp.StatusCode {
 			case http.StatusUnauthorized:
 				h.store.MarkCooldownWithError(account, 24*time.Hour, "unauthorized", message)
@@ -431,6 +437,9 @@ func (h *Handler) handleClaudeConnectionTest(
 		sendTestEvent(c, testEvent{Type: "error", Error: message})
 		return
 	}
+	if account.IsClaudeOAuth() {
+		proxy.SyncClaudeUsageState(usageStore, account, resp)
+	}
 	status, detail := readClaudeMessagesStream(c.Request.Context(), resp, func(text string) {
 		if strings.TrimSpace(text) != "" {
 			sendTestEvent(c, testEvent{Type: "content", Text: text})
@@ -438,7 +447,7 @@ func (h *Handler) handleClaudeConnectionTest(
 	})
 	if status != "success" {
 		if !isTransient {
-			applyClaudeConnectionStreamFailure(h, account, status, detail, resp)
+			applyClaudeConnectionStreamFailure(h, account, testModel, status, detail, resp)
 		}
 		if status == "rate_limited" && transientOutcome != nil && isTransient {
 			*transientOutcome = "rate_limited"
@@ -483,12 +492,15 @@ func (h *Handler) handleClaudeConnectionTest(
 // applyClaudeConnectionStreamFailure makes a body-only native error visible to
 // the account scheduler. Anthropic may return HTTP 200 with an SSE error event,
 // so the ordinary HTTP status handlers cannot establish a short cooldown.
-func applyClaudeConnectionStreamFailure(h *Handler, account *auth.Account, status, detail string, resp *http.Response) {
+func applyClaudeConnectionStreamFailure(h *Handler, account *auth.Account, model, status, detail string, resp *http.Response) {
 	if h == nil || h.store == nil || account == nil || !account.IsClaudeOAuth() {
 		return
 	}
 	switch status {
 	case "rate_limited":
+		if claudeConnectionDetailRequiresCredits(h.store, account, model, detail) {
+			return
+		}
 		// The caller already synchronized response headers before consuming the
 		// stream. Never replace a precise 5h/7d cooldown with the generic one
 		// minute fallback when those headers were authoritative.
@@ -508,6 +520,29 @@ func applyClaudeConnectionStreamFailure(h *Handler, account *auth.Account, statu
 			h.store.MarkCooldownWithError(account, 5*time.Minute, "unauthorized", "Claude 测试返回授权失败: "+truncate(detail, 300))
 		}
 	}
+}
+
+// syncClaudeTestUsageState keeps connection tests from turning a model-level
+// credits_required response into an account-level cooldown. It returns true
+// only when the response was handled as a model entitlement failure.
+func syncClaudeTestUsageState(store *auth.Store, account *auth.Account, model string, resp *http.Response, body []byte) bool {
+	if store == nil || account == nil || !account.IsClaudeOAuth() || resp == nil {
+		return false
+	}
+	if proxy.HandleClaudeModelBillingRejection(store, account, model, resp.StatusCode, body) {
+		return true
+	}
+	proxy.SyncClaudeUsageState(store, account, resp)
+	return false
+}
+
+func claudeConnectionDetailRequiresCredits(store *auth.Store, account *auth.Account, model, detail string) bool {
+	lower := strings.ToLower(strings.TrimSpace(detail))
+	if !strings.Contains(lower, "credits_required") && !strings.Contains(lower, "usage credits") {
+		return false
+	}
+	body := []byte(fmt.Sprintf(`{"error":{"details":{"error_code":"credits_required","model":%q}}}`, strings.TrimSpace(model)))
+	return proxy.HandleClaudeModelBillingRejection(store, account, model, http.StatusTooManyRequests, body)
 }
 
 func claudeResponseHasUsageLimitSignal(resp *http.Response) bool {
@@ -781,6 +816,27 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 	if account != nil && account.IsClaudeOAuth() {
 		models := claudeProbeModelIDs(account)
 		if requested != "" {
+			if h != nil && h.db != nil && account.DBID > 0 {
+				row, err := h.db.GetAccountByID(ctx, account.DBID)
+				if err == nil && row != nil {
+					persistedModels := row.GetCredentialStringSlice("models")
+					if len(persistedModels) > 0 {
+						persistedMatch := false
+						for _, persisted := range persistedModels {
+							if strings.EqualFold(strings.TrimSpace(persisted), requested) {
+								persistedMatch = true
+								break
+							}
+						}
+						if !persistedMatch {
+							return "", fmt.Errorf("该 Claude 账号的持久化模型清单不支持测试模型: %s", requested)
+						}
+					}
+				}
+			}
+			if account.IsModelRateLimited(requested) {
+				return "", fmt.Errorf("该 Claude 模型当前不可用（模型级冷却）: %s", requested)
+			}
 			for _, model := range models {
 				if strings.EqualFold(strings.TrimSpace(model), requested) {
 					return strings.TrimSpace(model), nil
@@ -792,11 +848,16 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 			return "", fmt.Errorf("该 Claude 账号没有可用于测试的文本模型")
 		}
 		for _, candidate := range models {
-			if strings.Contains(strings.ToLower(candidate), "haiku") {
+			if !account.IsModelRateLimited(candidate) && strings.Contains(strings.ToLower(candidate), "haiku") {
 				return strings.TrimSpace(candidate), nil
 			}
 		}
-		return strings.TrimSpace(models[0]), nil
+		for _, candidate := range models {
+			if !account.IsModelRateLimited(candidate) {
+				return strings.TrimSpace(candidate), nil
+			}
+		}
+		return "", fmt.Errorf("该 Claude 账号的文本模型均处于模型级冷却")
 	}
 	if account == nil || !account.IsRelayStyle() {
 		if requested == "" {
@@ -1287,7 +1348,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	var resp *http.Response
 	var err error
 	if acc.IsClaudeOAuth() {
-		resp, err = proxy.ExecuteClaudeMessagesRequest(testCtx, acc, buildClaudeConnectionTestPayload(h.store, testModel), h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()))
+		resp, err = proxy.ExecuteClaudeMessagesRequest(testCtx, acc, buildClaudeConnectionTestPayload(h.store, testModel), h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeSecurityConfig())
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
@@ -1311,7 +1372,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 			proxy.SyncClaudeUsageState(h.store, acc, resp)
 			status, msg := readClaudeMessagesStream(testCtx, resp, nil)
 			if status != "success" {
-				applyClaudeConnectionStreamFailure(h, acc, status, msg, resp)
+				applyClaudeConnectionStreamFailure(h, acc, testModel, status, msg, resp)
 			}
 			if status == "rate_limited" {
 				return "rate_limited", msg
@@ -1359,6 +1420,9 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		// Grok 走 relay 但有 free-usage-exhausted 语义，须交给 Apply429Cooldown 识别耗尽
 		// （→ 24h usage_limited + 落权威用量快照），不能并入 relay 的 1 分钟 rate_limited。
 		if acc.IsClaudeOAuth() {
+			if proxy.HandleClaudeModelBillingRejection(h.store, acc, testModel, resp.StatusCode, body) {
+				return "rate_limited", fmt.Sprintf("上游模型 %s 需要 usage credits，当前账号套餐不可用", testModel)
+			}
 			proxy.SyncClaudeUsageState(h.store, acc, resp)
 		} else if acc.IsRelayStyle() && !acc.IsGrokAPI() {
 			h.store.MarkCooldown(acc, time.Minute, "rate_limited")
@@ -1419,7 +1483,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	var resp *http.Response
 	var err error
 	if acc.IsClaudeOAuth() {
-		resp, err = proxy.ExecuteClaudeMessagesRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()))
+		resp, err = proxy.ExecuteClaudeMessagesRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeSecurityConfig())
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {

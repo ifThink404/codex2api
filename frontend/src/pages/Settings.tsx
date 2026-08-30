@@ -707,6 +707,14 @@ function ClaudeCodeSettingsCard() {
   const [timezone, setTimezone] = useState('')
   const [timezoneCustom, setTimezoneCustom] = useState(false)
   const [sessionWindow, setSessionWindow] = useState('')
+  const [allowServiceTier, setAllowServiceTier] = useState(false)
+  const [allowInferenceGeo, setAllowInferenceGeo] = useState(false)
+  const [allowSpeed, setAllowSpeed] = useState(false)
+  const [allowSafetyIdentifier, setAllowSafetyIdentifier] = useState(false)
+  const [allowedBetaHeaders, setAllowedBetaHeaders] = useState('')
+  const [maxOutputTokens, setMaxOutputTokens] = useState('8192')
+  const [maxToolCount, setMaxToolCount] = useState('16')
+  const [maxToolSchemaBytes, setMaxToolSchemaBytes] = useState('131072')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -720,6 +728,14 @@ function ClaudeCodeSettingsCard() {
         setTimezone(cfg.default_timezone ?? '')
         setTimezoneCustom(Boolean(cfg.default_timezone && !findClaudeTimezoneOption(cfg.default_timezone)))
         setSessionWindow(cfg.session_window_limit ? String(cfg.session_window_limit) : '')
+        setAllowServiceTier(Boolean(cfg.allow_service_tier))
+        setAllowInferenceGeo(Boolean(cfg.allow_inference_geo))
+        setAllowSpeed(Boolean(cfg.allow_speed))
+        setAllowSafetyIdentifier(Boolean(cfg.allow_safety_identifier))
+        setAllowedBetaHeaders((cfg.allowed_beta_headers ?? []).join(', '))
+        setMaxOutputTokens(String(cfg.max_output_tokens || 8192))
+        setMaxToolCount(String(cfg.max_tool_count || 16))
+        setMaxToolSchemaBytes(String(cfg.max_tool_schema_bytes || 131072))
       })
       .catch(() => {
         /* 读取失败保持默认空 */
@@ -740,6 +756,14 @@ function ClaudeCodeSettingsCard() {
         fingerprint_mode: fingerprintMode,
         default_timezone: timezone.trim(),
         session_window_limit: Number.isFinite(n) && n > 0 ? Math.floor(n) : 0,
+        allow_service_tier: allowServiceTier,
+        allow_inference_geo: allowInferenceGeo,
+        allow_speed: allowSpeed,
+        allow_safety_identifier: allowSafetyIdentifier,
+        allowed_beta_headers: allowedBetaHeaders.split(',').map((item) => item.trim()).filter(Boolean),
+        max_output_tokens: Number(maxOutputTokens) || 8192,
+        max_tool_count: Number(maxToolCount) || 16,
+        max_tool_schema_bytes: Number(maxToolSchemaBytes) || 131072,
       })
       showToast(t('settings.claudeSaved'), 'success')
     } catch (error) {
@@ -747,7 +771,7 @@ function ClaudeCodeSettingsCard() {
     } finally {
       setSaving(false)
     }
-  }, [fingerprintMode, timezone, sessionWindow, showToast, t])
+  }, [allowInferenceGeo, allowSafetyIdentifier, allowServiceTier, allowSpeed, allowedBetaHeaders, fingerprintMode, maxOutputTokens, maxToolCount, maxToolSchemaBytes, sessionWindow, showToast, t, timezone])
 
   const selectCls =
     'h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring'
@@ -805,6 +829,42 @@ function ClaudeCodeSettingsCard() {
           </div>
         </SettingField>
       </div>
+      <details className="mt-4 rounded-lg border border-primary/20 bg-primary/5">
+        <summary className="cursor-pointer px-3 py-2.5 text-sm font-semibold text-foreground">
+          {t('settings.claudeSecurityTitle')}
+        </summary>
+        <div className="space-y-4 border-t border-primary/10 px-3 pb-3 pt-3">
+          <p className="text-xs leading-relaxed text-muted-foreground">{t('settings.claudeSecurityDesc')}</p>
+          <div className={SETTINGS_SWITCH_GRID}>
+            <SettingField label={t('settings.claudeAllowServiceTier')} description={t('settings.claudeAllowServiceTierDesc')} layout="switch">
+              <Switch checked={allowServiceTier} onCheckedChange={setAllowServiceTier} />
+            </SettingField>
+            <SettingField label={t('settings.claudeAllowInferenceGeo')} description={t('settings.claudeAllowInferenceGeoDesc')} layout="switch">
+              <Switch checked={allowInferenceGeo} onCheckedChange={setAllowInferenceGeo} />
+            </SettingField>
+            <SettingField label={t('settings.claudeAllowSpeed')} description={t('settings.claudeAllowSpeedDesc')} layout="switch">
+              <Switch checked={allowSpeed} onCheckedChange={setAllowSpeed} />
+            </SettingField>
+            <SettingField label={t('settings.claudeAllowSafetyIdentifier')} description={t('settings.claudeAllowSafetyIdentifierDesc')} layout="switch">
+              <Switch checked={allowSafetyIdentifier} onCheckedChange={setAllowSafetyIdentifier} />
+            </SettingField>
+          </div>
+          <div className={SETTINGS_FIELD_GRID}>
+            <SettingField label={t('settings.claudeAllowedBetaHeaders')} description={t('settings.claudeAllowedBetaHeadersDesc')}>
+              <Input value={allowedBetaHeaders} onChange={(event) => setAllowedBetaHeaders(event.target.value)} placeholder="token-efficient-tools-2025-02-19" />
+            </SettingField>
+            <SettingField label={t('settings.claudeMaxOutputTokens')} description={t('settings.claudeMaxOutputTokensDesc')}>
+              <Input value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} inputMode="numeric" />
+            </SettingField>
+            <SettingField label={t('settings.claudeMaxToolCount')} description={t('settings.claudeMaxToolCountDesc')}>
+              <Input value={maxToolCount} onChange={(event) => setMaxToolCount(event.target.value)} inputMode="numeric" />
+            </SettingField>
+            <SettingField label={t('settings.claudeMaxToolSchemaBytes')} description={t('settings.claudeMaxToolSchemaBytesDesc')}>
+              <Input value={maxToolSchemaBytes} onChange={(event) => setMaxToolSchemaBytes(event.target.value)} inputMode="numeric" />
+            </SettingField>
+          </div>
+        </div>
+      </details>
     </SettingsCard>
   )
 }
