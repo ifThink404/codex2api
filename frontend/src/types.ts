@@ -3237,6 +3237,83 @@ export interface PromptFilterNewAPIBindingsResponse {
   bindings: PromptFilterNewAPIBinding[]
 }
 
+// Proxy risk scoring is an optional, reference-only observation. It never
+// changes proxy enablement or request routing.
+export interface ProxyRiskScoreSnapshot {
+  id: number
+  proxy_id: number
+  profile_id: number
+  provider: string
+  resolved_ip: string
+  score: number | null
+  risk_level: string
+  recommendation: string
+  proxy_type?: string
+  is_vpn: boolean
+  is_tor: boolean
+  is_datacenter: boolean
+  is_blacklisted: boolean
+  blacklist_sources?: string[]
+  isp?: string
+  country?: string
+  latency_ms: number
+  status: string
+  error?: string
+  features_json?: string
+  raw_response_json?: string
+  checked_at: ISODateString
+  expires_at?: ISODateString | null
+}
+
+export interface ProxyRiskScoringProfile {
+  id: number
+  name: string
+  provider: string
+  engine?: string
+  enabled: boolean
+  priority: number
+  scamalytics_host: string
+  scamalytics_user: string
+  scamalytics_key_configured?: boolean
+  scamalytics_key_masked?: string
+  timeout_seconds: number
+  concurrency: number
+  request_delay_ms: number
+  cache_ttl_seconds: number
+  max_checks_per_job: number
+  daily_check_limit: number
+  credit_reserve: number
+  allow_force_refresh: boolean
+  resolve_hostnames: boolean
+  allow_private_targets: boolean
+  docs_url: string
+  tutorial_url: string
+  daily_used_date?: string
+  daily_used_count?: number
+  credits_remaining?: number | null
+  credits_used?: number | null
+  credit_reset_at?: ISODateString | null
+  last_quota_checked_at?: ISODateString | null
+  last_error?: string
+  created_at: ISODateString
+  updated_at: ISODateString
+}
+
+export interface ProxyRiskScoringJob {
+  job_id: string
+  profile_id: number
+  status: string
+  total: number
+  done: number
+  success: number
+  failed: number
+  skipped: number
+  cache_hits: number
+  error?: string
+  created_at: ISODateString
+  updated_at: ISODateString
+}
+
 export interface CreatePromptFilterNewAPIBindingRequest {
   api_key_id: number
   platform_code: string

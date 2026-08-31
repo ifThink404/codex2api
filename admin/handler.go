@@ -77,6 +77,8 @@ type Handler struct {
 	reloadProxyPoolFn          func() error
 	proxyBatchEventSender      func(*gin.Context, proxyBatchTestEvent) bool
 	proxyBatchTestMu           sync.Mutex
+	proxyRiskJobsMu            sync.RWMutex
+	proxyRiskJobs              map[string]*proxyRiskScoringJob
 	cpuSampler                 *cpuSampler
 	memReader                  memStatsReader
 	startedAt                  time.Time
@@ -977,6 +979,7 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 		chartCacheData:            make(map[string]*chartCacheEntry),
 		accountListCache:          make(map[string]*accountListSnapshot),
 		accountAnalysisCache:      make(map[string]*accountAnalysisCacheEntry),
+		proxyRiskJobs:             make(map[string]*proxyRiskScoringJob),
 		subscriptionUpgradeQuotes: make(map[string]subscriptionUpgradeQuoteRecord),
 		subscriptionUpgradeClientFactory: func(account *auth.Account, proxyURL string) subscriptionUpgradeUpstream {
 			return proxy.NewChatGPTSubscriptionUpgradeClient(account, proxyURL)
@@ -1269,6 +1272,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/proxies/test", h.TestProxy)
 	api.POST("/proxies/test-all", h.TestAllProxies)
 	api.POST("/proxies/auto-balance", h.AutoBalanceProxies)
+	api.GET("/proxy-risk-scoring/profiles", h.ListProxyRiskScoringProfiles)
+	api.POST("/proxy-risk-scoring/profiles", h.CreateProxyRiskScoringProfile)
+	api.PATCH("/proxy-risk-scoring/profiles/:profile_id", h.UpdateProxyRiskScoringProfile)
+	api.DELETE("/proxy-risk-scoring/profiles/:profile_id", h.DeleteProxyRiskScoringProfile)
+	api.POST("/proxy-risk-scoring/profiles/:profile_id/test", h.TestProxyRiskScoringProfile)
+	api.POST("/proxies/risk-score", h.StartProxyRiskScoringJob)
+	api.GET("/proxies/risk-score/jobs/:job_id", h.GetProxyRiskScoringJob)
+	api.POST("/proxies/risk-score/jobs/:job_id/cancel", h.CancelProxyRiskScoringJob)
+	api.GET("/proxies/:id/risk-score", h.GetProxyRiskScore)
+	api.GET("/proxies/:id/risk-score/history", h.ListProxyRiskScoreHistory)
 
 	// OAuth 授权流程
 	api.POST("/oauth/generate-auth-url", h.GenerateOAuthURL)

@@ -94,6 +94,9 @@ import type {
 	PromptPolicyIncidentsResponse,
   PromptFilterNewAPIBinding,
   PromptFilterNewAPIBindingsResponse,
+  ProxyRiskScoreSnapshot,
+  ProxyRiskScoringProfile,
+  ProxyRiskScoringJob,
   PromptFilterRulePatternTestResponse,
   PromptFilterRulesResponse,
   PromptFilterTestResponse,
@@ -1465,6 +1468,26 @@ export const api = {
     request<AutoBalanceProxiesResult>('/proxies/auto-balance', { method: 'POST', body: JSON.stringify(data) }),
   testProxy: (url: string, id?: number, lang?: string) =>
     request<ProxyTestResult>('/proxies/test', { method: 'POST', body: JSON.stringify({ url, id, lang }) }),
+  listProxyRiskScoringProfiles: () =>
+    request<{ profiles: ProxyRiskScoringProfile[] }>('/proxy-risk-scoring/profiles'),
+  createProxyRiskScoringProfile: (data: Partial<ProxyRiskScoringProfile> & { scamalytics_key?: string }) =>
+    request<ProxyRiskScoringProfile>('/proxy-risk-scoring/profiles', { method: 'POST', body: JSON.stringify(data) }),
+  updateProxyRiskScoringProfile: (id: number, data: Partial<ProxyRiskScoringProfile> & { scamalytics_key?: string }) =>
+    request<ProxyRiskScoringProfile>(`/proxy-risk-scoring/profiles/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteProxyRiskScoringProfile: (id: number) =>
+    request<MessageResponse>(`/proxy-risk-scoring/profiles/${id}`, { method: 'DELETE' }),
+  testProxyRiskScoringProfile: (id: number) =>
+    request<{ success: boolean; latency_ms?: number; score?: number | null; risk_level?: string; credits_remaining?: number | null; snapshot?: ProxyRiskScoreSnapshot | null; message?: string; error?: string }>(`/proxy-risk-scoring/profiles/${id}/test`, { method: 'POST' }),
+  startProxyRiskScoringJob: (data: { profile_id?: number; proxy_ids?: number[]; force?: boolean }) =>
+    request<ProxyRiskScoringJob>('/proxies/risk-score', { method: 'POST', body: JSON.stringify(data) }),
+  getProxyRiskScoringJob: (id: string) =>
+    request<ProxyRiskScoringJob>(`/proxies/risk-score/jobs/${encodeURIComponent(id)}`),
+  cancelProxyRiskScoringJob: (id: string) =>
+    request<MessageResponse>(`/proxies/risk-score/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  getProxyRiskScore: (id: number) =>
+    request<ProxyRiskScoreSnapshot | { score: null; status: 'unscored' }>(`/proxies/${id}/risk-score`),
+  getProxyRiskScoreHistory: (id: number, profileId: number, page = 1, pageSize = 20) =>
+    request<{ items: ProxyRiskScoreSnapshot[]; total: number; page: number; page_size: number }>(`/proxies/${id}/risk-score/history?profile_id=${profileId}&page=${page}&page_size=${pageSize}`),
   // OAuth
   generateOAuthURL: (data: { proxy_url?: string; redirect_uri?: string }) =>
     request<OAuthURLResponse>('/oauth/generate-auth-url', { method: 'POST', body: JSON.stringify(data) }),
@@ -1486,6 +1509,7 @@ export interface ProxyRow {
   test_status: 'untested' | 'success' | 'error'
   /** 绑定到该代理的账号数(服务端聚合,前端免拉全量账号)。 */
   bound_count: number
+  risk_score?: ProxyRiskScoreSnapshot | null
 }
 
 export interface AutoBalanceProxiesResult {
