@@ -78,6 +78,9 @@ func TestReconcileDispatchStateReloadsChangedResponsesIdentity(t *testing.T) {
 	if err := store.Init(ctx); err != nil {
 		t.Fatalf("Store.Init: %v", err)
 	}
+	// Init 启动的 outbox 消费者会异步投影下面这条更新,抢在显式对账之前把
+	// 变更吃掉。这里测的是对账路径本身,先停掉后台消费者保证判定确定。
+	store.Stop()
 	acc := store.FindByID(accountID)
 	if acc == nil {
 		t.Fatal("runtime account missing after Init")
@@ -127,6 +130,10 @@ func TestApplyOpenAIResponsesConfigUsesPersistedAPIKeySemantics(t *testing.T) {
 	if err := store.Init(ctx); err != nil {
 		t.Fatalf("Store.Init: %v", err)
 	}
+	// 清空 api_key 后该行不再能构造运行时账号,Init 启动的 outbox 消费者一旦
+	// 先于下面的调用轮询到这条更新就会把账号摘掉,ApplyOpenAIResponsesConfig
+	// 随之返回 false。这里测的是同步应用路径,先停掉后台消费者。
+	store.Stop()
 	if err := db.UpdateOpenAIResponsesAccount(ctx, accountID, "relay", map[string]interface{}{
 		"models": []string{"gpt-5.6", "gpt-5.6-mini"},
 	}, ""); err != nil {

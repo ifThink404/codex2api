@@ -332,7 +332,10 @@ func TestAntigravityResponsesLargeMixedToolsKeepOrdinaryHiUsable(t *testing.T) {
 	}
 }
 
-func TestAntigravityResponsesIgnoresAutomaticFunctionToolsByDefault(t *testing.T) {
+// Silently dropping declarations still ships the tool-describing system
+// instruction upstream, so the model answers with a call it was never allowed
+// to declare and the turn dies as MALFORMED_FUNCTION_CALL (issue #595).
+func TestAntigravityResponsesForwardsFunctionToolsByDefault(t *testing.T) {
 	t.Setenv(antigravityFunctionToolsEnv, "")
 	got, err := responsesToGeminiInternal([]byte(`{
 		"input":"hi",
@@ -343,8 +346,32 @@ func TestAntigravityResponsesIgnoresAutomaticFunctionToolsByDefault(t *testing.T
 		t.Fatal(err)
 	}
 	request := got["request"].(map[string]any)
+	tools, ok := request["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("function declarations were dropped by default: %#v", request)
+	}
+	declarations := tools[0].(map[string]any)["functionDeclarations"].([]any)
+	if len(declarations) != 1 || declarations[0].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("functionDeclarations = %#v", declarations)
+	}
+	if mode := request["toolConfig"].(map[string]any)["functionCallingConfig"].(map[string]any)["mode"]; mode != "AUTO" {
+		t.Fatalf("function calling mode = %#v", mode)
+	}
+}
+
+func TestAntigravityResponsesFunctionToolsRemainPinnableOff(t *testing.T) {
+	t.Setenv(antigravityFunctionToolsEnv, "false")
+	got, err := responsesToGeminiInternal([]byte(`{
+		"input":"hi",
+		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+		"tool_choice":"auto"
+	}`), "project", "gemini-3.6-flash-tiered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := got["request"].(map[string]any)
 	if _, ok := request["tools"]; ok {
-		t.Fatalf("experimental function declarations were enabled by default: %#v", request)
+		t.Fatalf("explicitly disabled bridge still forwarded declarations: %#v", request)
 	}
 	contents := request["contents"].([]any)
 	if len(contents) != 1 || extractGeminiRequestText(contents[0]) != "hi" {
@@ -353,7 +380,7 @@ func TestAntigravityResponsesIgnoresAutomaticFunctionToolsByDefault(t *testing.T
 }
 
 func TestAntigravityResponsesRejectsForcedToolsWhileBridgeDisabled(t *testing.T) {
-	t.Setenv(antigravityFunctionToolsEnv, "")
+	t.Setenv(antigravityFunctionToolsEnv, "false")
 	_, err := responsesToGeminiInternal([]byte(`{
 		"input":"hi",
 		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
@@ -361,6 +388,30 @@ func TestAntigravityResponsesRejectsForcedToolsWhileBridgeDisabled(t *testing.T)
 	}`), "project", "gemini-3.6-flash-tiered")
 	if err == nil || !strings.Contains(err.Error(), "forced function tools") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// Codex and the Anthropic bridge echo reasoning items back as history. They
+// carry no Gemini-representable payload, but rejecting them would 400 every
+// multi-turn tool conversation (issue #595).
+func TestAntigravityResponsesSkipsEchoedReasoningItems(t *testing.T) {
+	got, err := responsesToGeminiInternal([]byte(`{
+		"input":[
+			{"type":"message","role":"user","content":"look it up"},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking"}],"encrypted_content":"gAAAAopaque"},
+			{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"query\":\"value\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"found"}
+		]
+	}`), "project", "gemini-3-flash-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := got["request"].(map[string]any)["contents"].([]any)
+	if len(contents) != 3 {
+		t.Fatalf("reasoning item was not skipped cleanly: %#v", contents)
+	}
+	if contents[1].(map[string]any)["role"] != "model" || contents[2].(map[string]any)["role"] != "user" {
+		t.Fatalf("tool round trip lost its roles: %#v", contents)
 	}
 }
 

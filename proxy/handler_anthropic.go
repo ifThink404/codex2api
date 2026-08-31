@@ -452,7 +452,6 @@ func (h *Handler) Messages(c *gin.Context) {
 	accountFilter := accountFilterForResponsesModel(effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
-	accountFilter = excludeAntigravityAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
@@ -482,6 +481,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
 	var wsHTTPFallback websocketHTTPFallbackState
+	antigravityRefreshRetried := map[int64]bool{}
 
 	var lastUpstreamCancel context.CancelFunc
 	defer func() {
@@ -552,6 +552,9 @@ func (h *Handler) Messages(c *gin.Context) {
 		} else if isRelayAccount {
 			upstreamEndpoint = relayUpstreamEndpointForProtocol(account, GrokProtocolMessages, attemptEffectiveModel)
 		}
+		if account.IsAntigravityAPI() {
+			upstreamEndpoint = antigravityUpstreamEndpoint(true)
+		}
 
 		apiKey := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		apiKey = strings.TrimSpace(apiKey)
@@ -616,13 +619,24 @@ func (h *Handler) Messages(c *gin.Context) {
 					return
 				}
 			}
-			if mappedBody, mappedModel, ok := h.applyAccountModelMappingToBody(upstreamBody, account); ok {
-				upstreamBody = mappedBody
-				attemptEffectiveModel = mappedModel
+			if account.IsAntigravityAPI() {
+				// Messages 入站已翻译成 Responses 形态，正是 Antigravity 适配器的入参；
+				// 回程走下面的 Responses→Messages 翻译（issue #595）。该翻译只吃
+				// SSE——翻译恒置 stream:true，非流式客户端也是在网关侧聚合的，
+				// 所以上游一律取流，不跟随下游 stream 标志。
+				// Antigravity 只认原生公共模型 ID，不做别名映射。
+				resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+					return ExecuteAntigravityResponsesRequest(upstreamCtx, account, attemptEffectiveModel, upstreamBody, true, proxyURL)
+				})
+			} else {
+				if mappedBody, mappedModel, ok := h.applyAccountModelMappingToBody(upstreamBody, account); ok {
+					upstreamBody = mappedBody
+					attemptEffectiveModel = mappedModel
+				}
+				resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+					return ExecuteRelayStyleProtocolRequest(upstreamCtx, account, GrokProtocolMessages, canonicalBody, upstreamBody, proxyURL, downstreamHeaders)
+				})
 			}
-			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
-				return ExecuteRelayStyleProtocolRequest(upstreamCtx, account, GrokProtocolMessages, canonicalBody, upstreamBody, proxyURL, downstreamHeaders)
-			})
 		} else {
 			codexBody, translateErr := h.translateAnthropicMessagesToCodexOnce(&codexTranslation, canonicalBody, supportedModels)
 			if translateErr != nil {
@@ -742,6 +756,19 @@ func (h *Handler) Messages(c *gin.Context) {
 			if continuousRetryCommitExpired(c, continuousRetryProtocolAnthropic) {
 				h.store.Release(account)
 				return
+			}
+			// Antigravity 的 401 是过期 access token，刷新后同号重试一次即可恢复
+			// （与 /v1/responses 一致）。
+			if resp.StatusCode == http.StatusUnauthorized && account.IsAntigravityAPI() && account.AntigravityAuthKind() == auth.AntigravityAuthKindOAuth && !antigravityRefreshRetried[account.ID()] {
+				antigravityRefreshRetried[account.ID()] = true
+				if refreshErr := h.store.RefreshAntigravityAccount(c.Request.Context(), account); refreshErr == nil {
+					h.store.Release(account)
+					h.store.UnbindSessionAffinity(affinityKey, account.ID())
+					log.Printf("Antigravity OAuth token refreshed after upstream 401 (account=%d, endpoint=/v1/messages)", account.ID())
+					continue
+				} else {
+					log.Printf("Antigravity OAuth refresh failed after upstream 401 (account=%d, endpoint=/v1/messages): %v", account.ID(), refreshErr)
+				}
 			}
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)

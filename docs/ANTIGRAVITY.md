@@ -4,7 +4,7 @@
 
 ## Overview
 
-Codex2API can manage Google Antigravity accounts as a dedicated upstream channel and expose their models through the OpenAI-compatible `/v1/responses` and `/v1/models` surfaces. Antigravity accounts are isolated from Codex and Grok account groups and can be selected explicitly with an API key whose upstream channel is `antigravity`.
+Codex2API can manage Google Antigravity accounts as a dedicated upstream channel and expose their models through the OpenAI-compatible `/v1/responses`, `/v1/chat/completions`, `/v1/messages`, and `/v1/models` surfaces. Antigravity accounts are isolated from Codex and Grok account groups and can be selected explicitly with an API key whose upstream channel is `antigravity`.
 
 Two credential shapes are supported:
 
@@ -67,7 +67,15 @@ Account groups are channel-isolated: an Antigravity account can only join an Ant
 
 ## Supported gateway endpoints
 
-Antigravity inference is currently admitted only through `/v1/responses`; its models are exposed through `/v1/models` and the Codex model manifest. `/v1/responses/compact`, `/v1/chat/completions`, and `/v1/messages` explicitly exclude Antigravity accounts because no compatible adapter exists for those transports. The official Codex executors also reject Antigravity credentials before any network request as a provider-boundary safeguard.
+Antigravity inference is admitted through `/v1/responses`, `/v1/chat/completions`, and `/v1/messages`; its models are exposed through `/v1/models` and the Codex model manifest. Chat and Messages translate their inbound body into a Responses payload before dispatch, which is exactly what the `v1internal` adapter consumes, so all three transports share one admission gate and one adapter. `/v1/responses/compact` still excludes Antigravity accounts because no compaction adapter exists, and the official Codex executors reject Antigravity credentials before any network request as a provider-boundary safeguard.
+
+## Function tools
+
+Responses function tools are bridged into Gemini `functionDeclarations`. Dropping them is not a safe degradation: the upstream still receives the system instruction describing those tools, answers with a call it was never allowed to declare, and terminates the turn as `MALFORMED_FUNCTION_CALL`. Built-in Codex tools (web search, image generation, computer use) have no `v1internal` equivalent and are still ignored. Operators can pin the bridge off for diagnostics, which makes a `tool_choice` that forces a function fail closed with a 400 instead:
+
+```bash
+ANTIGRAVITY_FUNCTION_TOOLS_ENABLED=false
+```
 
 ## API Key Interactions request assumption
 

@@ -259,6 +259,14 @@ func ExecuteAntigravityResponsesRequest(ctx context.Context, account *auth.Accou
 	}
 }
 
+// antigravityUpstreamEndpoint is the usage-log path for a Cloud Code call.
+func antigravityUpstreamEndpoint(stream bool) string {
+	if stream {
+		return "/v1internal:streamGenerateContent"
+	}
+	return "/v1internal:generateContent"
+}
+
 // antigravityHTTPClient keeps one native HTTP/1.1 connection pool per account
 // and effective proxy. The official client reuses its daily Cloud Code
 // connection; sharing a short-lived generic client loses that routing affinity.
@@ -489,6 +497,14 @@ func responsesToGeminiInternal(raw []byte, project, model string) (map[string]an
 				addParts("user", []any{map[string]any{"functionResponse": map[string]any{
 					"name": name, "response": map[string]any{"result": output}, "id": callID,
 				}}})
+			case "reasoning":
+				// Codex and the Anthropic bridge echo previous reasoning items
+				// back as conversation history. Their payload is an opaque
+				// Codex-lineage blob with no Gemini contents equivalent, and the
+				// tool-call thought signature is already stubbed separately, so
+				// carrying the turn forward without them is correct. Rejecting
+				// the request would break every multi-turn tool conversation.
+				continue
 			case "additional_tools":
 				// Codex may include this Responses input item as a client-side
 				// capability envelope. The actual callable tools, when supported,
@@ -734,12 +750,18 @@ func antigravityGeminiSupportsFunctionTools(model string) bool {
 	}
 }
 
+// antigravityGeminiFunctionToolsEnabled reports whether Responses function
+// tools are bridged into Gemini functionDeclarations. Dropping them is not a
+// safe degradation: the upstream still receives the agent system instruction
+// describing those tools, emits a call it was never allowed to declare, and
+// terminates the turn with MALFORMED_FUNCTION_CALL. The bridge is on by
+// default; operators can still pin it off for diagnostics.
 func antigravityGeminiFunctionToolsEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(antigravityFunctionToolsEnv))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
+	case "0", "false", "no", "off":
 		return false
+	default:
+		return true
 	}
 }
 

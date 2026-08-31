@@ -1771,18 +1771,18 @@ func excludeRelayAccountsFilter(inner auth.AccountFilter) auth.AccountFilter {
 	}
 }
 
-func relayOnlyAccountFilter(inner auth.AccountFilter) auth.AccountFilter {
+func excludeAntigravityAccountsFilter(inner auth.AccountFilter) auth.AccountFilter {
 	return func(account *auth.Account) bool {
-		if account == nil || !account.IsRelayStyle() {
+		if account == nil || account.IsAntigravityAPI() {
 			return false
 		}
 		return inner == nil || inner(account)
 	}
 }
 
-func excludeAntigravityAccountsFilter(inner auth.AccountFilter) auth.AccountFilter {
+func relayOnlyAccountFilter(inner auth.AccountFilter) auth.AccountFilter {
 	return func(account *auth.Account) bool {
-		if account == nil || account.IsAntigravityAPI() {
+		if account == nil || !account.IsRelayStyle() {
 			return false
 		}
 		return inner == nil || inner(account)
@@ -4002,7 +4002,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					if err != nil {
 						log.Printf("[antigravity] forwarding failed account=%d: %v", account.ID(), err)
 					}
-					upstreamEndpoint = "/v1internal:" + map[bool]string{true: "streamGenerateContent", false: "generateContent"}[isStream]
+					upstreamEndpoint = antigravityUpstreamEndpoint(isStream)
 					return resp, err
 				}
 				return ExecuteRelayStyleProtocolRequest(upstreamCtx, account, GrokProtocolResponses, rawBody, upstreamBody, proxyURL, downstreamHeaders)
@@ -6539,7 +6539,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	accountFilter := accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
-	accountFilter = excludeAntigravityAccountsFilter(accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
@@ -6566,6 +6565,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
 	var wsHTTPFallback websocketHTTPFallbackState
+	antigravityRefreshRetried := map[int64]bool{}
 
 	// 上游 ctx 生命周期：每次 attempt 开始前用新的 drainable ctx 替换，
 	// defer 兜底确保函数退出时上游被释放。
@@ -6648,6 +6648,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		if isRelayAccount {
 			upstreamEndpoint = relayUpstreamEndpointForProtocol(account, GrokProtocolChatCompletions, attemptEffectiveModel)
 		}
+		if account.IsAntigravityAPI() {
+			upstreamEndpoint = antigravityUpstreamEndpoint(true)
+		}
 
 		// 提取 API Key 用于设备指纹稳定化
 		apiKey := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
@@ -6687,7 +6690,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
 		var resp *http.Response
 		var reqErr error
-		if isRelayAccount {
+		if account.IsAntigravityAPI() {
+			// Chat 入站已在上面翻译成 Responses 形态，正是 Antigravity 适配器的入参；
+			// 回程走下面的 Responses→Chat 翻译（issue #595）。该翻译只吃 SSE——
+			// TranslateRequest 恒置 stream:true，非流式客户端也是在网关侧聚合的，
+			// 所以上游一律取流，不跟随下游 stream 标志。
+			// Antigravity 只认原生公共模型 ID，账号级 OpenAI 别名不参与映射。
+			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+				return ExecuteAntigravityResponsesRequest(upstreamCtx, account, attemptEffectiveModel, codexBody, true, proxyURL)
+			})
+		} else if isRelayAccount {
 			upstreamBody := codexBody
 			if mappedBody, mappedModel, ok := h.applyAccountModelMappingToBodyForModels(upstreamBody, account, logModel, effectiveModel); ok {
 				upstreamBody = mappedBody
@@ -6796,6 +6808,19 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if continuousRetryCommitExpired(c, continuousRetryProtocolChat) {
 				h.store.Release(account)
 				return
+			}
+			// Antigravity 的 401 是过期 access token，刷新后同号重试一次即可恢复；
+			// 不刷新会把可用账号当成鉴权失败换掉（与 /v1/responses 一致）。
+			if resp.StatusCode == http.StatusUnauthorized && account.IsAntigravityAPI() && account.AntigravityAuthKind() == auth.AntigravityAuthKindOAuth && !antigravityRefreshRetried[account.ID()] {
+				antigravityRefreshRetried[account.ID()] = true
+				if refreshErr := h.store.RefreshAntigravityAccount(c.Request.Context(), account); refreshErr == nil {
+					h.store.Release(account)
+					h.store.UnbindSessionAffinity(affinityKey, account.ID())
+					log.Printf("Antigravity OAuth token refreshed after upstream 401 (account=%d, endpoint=/v1/chat/completions)", account.ID())
+					continue
+				} else {
+					log.Printf("Antigravity OAuth refresh failed after upstream 401 (account=%d, endpoint=/v1/chat/completions): %v", account.ID(), refreshErr)
+				}
 			}
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
