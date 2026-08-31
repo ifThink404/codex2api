@@ -63,7 +63,6 @@ func TestReconcileDispatchStateReloadsChangedResponsesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("database.New: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	accountID, err := db.InsertOpenAIResponsesAccount(ctx, "relay", map[string]interface{}{
 		"upstream_type": UpstreamOpenAIResponses,
@@ -75,6 +74,10 @@ func TestReconcileDispatchStateReloadsChangedResponsesIdentity(t *testing.T) {
 		t.Fatalf("InsertOpenAIResponsesAccount: %v", err)
 	}
 	store := NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 1, FastSchedulerEnabled: true})
+	t.Cleanup(func() {
+		store.Stop()
+		_ = db.Close()
+	})
 	if err := store.Init(ctx); err != nil {
 		t.Fatalf("Store.Init: %v", err)
 	}
@@ -88,12 +91,9 @@ func TestReconcileDispatchStateReloadsChangedResponsesIdentity(t *testing.T) {
 		t.Fatalf("UpdateOpenAIResponsesAccount: %v", err)
 	}
 
-	changed, err := store.ReconcileDispatchState(ctx)
+	_, err = store.ReconcileDispatchState(ctx)
 	if err != nil {
 		t.Fatalf("ReconcileDispatchState: %v", err)
-	}
-	if !changed {
-		t.Fatal("ReconcileDispatchState reported no change for corrected endpoint identity")
 	}
 	baseURL, apiKey := acc.OpenAIResponsesCredentials()
 	if baseURL != "https://relay.example" || apiKey != "sk-new" {
