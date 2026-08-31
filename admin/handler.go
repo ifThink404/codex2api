@@ -971,12 +971,7 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 		accountListCache:          make(map[string]*accountListSnapshot),
 		accountAnalysisCache:      make(map[string]*accountAnalysisCacheEntry),
 		proxyRiskJobs:             make(map[string]*proxyRiskScoringJob),
-		subscriptionUpgradeQuotes: make(map[string]subscriptionUpgradeQuoteRecord),
-		subscriptionUpgradeClientFactory: func(account *auth.Account, proxyURL string) subscriptionUpgradeUpstream {
-			return proxy.NewChatGPTSubscriptionUpgradeClient(account, proxyURL)
-		},
 	}
-	handler.initSubscriptionUpgradeGate()
 	if handler.imageProxy != nil {
 		handler.imageProxy.SetRuntimeCache(tc)
 	}
