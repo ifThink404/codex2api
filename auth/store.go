@@ -9928,7 +9928,11 @@ func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Dur
 
 	switch kind {
 	case "unauthorized":
-		acc.LastUnauthorizedAt = now
+		// The account cooldown path owns LastUnauthorizedAt so it can
+		// distinguish a first 401 from a repeated one. HTTP handlers record
+		// failure metrics before applying that cooldown; updating the timestamp
+		// here would make the current failure look like a prior failure and
+		// incorrectly select the 24-hour backoff.
 		acc.HealthTier = HealthTierBanned
 	case "timeout":
 		acc.LastTimeoutAt = now

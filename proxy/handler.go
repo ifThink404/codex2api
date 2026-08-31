@@ -7949,7 +7949,7 @@ func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, b
 			}
 			h.store.RemoveAccount(account.ID())
 		} else {
-			h.store.MarkCooldown(account, 5*time.Minute, "unauthorized")
+			h.store.MarkCooldownWithError(account, 5*time.Minute, "unauthorized", upstreamAccountErrorMessage(statusCode, body))
 		}
 	case http.StatusPaymentRequired, http.StatusForbidden:
 		if statusCode == http.StatusForbidden && IsAgentRuntimeDeletedError(body) {

@@ -3863,6 +3863,35 @@ func TestAgentRuntimeDeleted403MarksAccountBanned(t *testing.T) {
 	}
 }
 
+func TestApplyCooldownForModelUnauthorizedUsesPreviousFailureWindowAndDetail(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	defer store.Stop()
+
+	account := &auth.Account{
+		DBID:        42,
+		AccessToken: "at",
+		Status:      auth.StatusReady,
+		HealthTier:  auth.HealthTierHealthy,
+	}
+	handler := &Handler{store: store}
+	body := []byte(`{"error":{"type":"authentication_error","message":"OAuth access token has been revoked."}}`)
+
+	// HTTP handlers record failure metrics before applying the account
+	// cooldown. The cooldown policy must still see this as the first offense.
+	store.ReportRequestFailure(account, "unauthorized", 10*time.Millisecond)
+	handler.applyCooldownForModel(account, http.StatusUnauthorized, body, &http.Response{Header: make(http.Header)}, "claude-opus-4-8")
+
+	if _, until := account.GetCooldownSnapshot(); time.Until(until) < 5*time.Hour+59*time.Minute || time.Until(until) > 6*time.Hour {
+		t.Fatalf("first unauthorized cooldown should use the 6h window, remaining=%s", time.Until(until))
+	}
+	account.Mu().RLock()
+	errorMessage := account.ErrorMsg
+	account.Mu().RUnlock()
+	if !strings.Contains(errorMessage, "OAuth access token has been revoked") {
+		t.Fatalf("ErrorMsg = %q, want upstream authentication detail", errorMessage)
+	}
+}
+
 func TestSendFinalUpstreamError_UsageLimitRewrites429(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
