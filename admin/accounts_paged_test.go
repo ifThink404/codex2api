@@ -50,6 +50,9 @@ func newPagedAccountsHandler(t *testing.T) (*Handler, []int64, []int64) {
 	if err := store.Init(ctx); err != nil {
 		t.Fatalf("store.Init: %v", err)
 	}
+	// Store.Init starts the scheduler outbox consumer. Stop it before the
+	// database cleanup so a late poll cannot outlive the test database.
+	t.Cleanup(func() { store.Stop() })
 	tokenCache := cache.NewMemory(1)
 	t.Cleanup(func() { _ = tokenCache.Close() })
 	return NewHandler(store, db, tokenCache, nil, ""), codexIDs, grokIDs
