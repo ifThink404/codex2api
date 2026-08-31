@@ -104,7 +104,8 @@ jobs:
         include:
           - name: admin-a-l
           - name: admin-m-z
-          - name: database
+          - name: database-a-l
+          - name: database-m-z
           - name: proxy
           - name: promptfilter
           - name: rest
