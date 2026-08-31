@@ -4229,8 +4229,8 @@ func TestApply429CooldownSparkUsageLimitDoesNotMarkAccount(t *testing.T) {
 		&http.Response{Header: make(http.Header)},
 		"gpt-5.3-codex-spark",
 	)
-	if decision.Scope != rateLimitScopeAccount {
-		t.Fatalf("decision.Scope = %q, want account", decision.Scope)
+	if decision.Scope != rateLimitScopeModel || decision.Reason != "spark_usage_limit" || decision.Model != "gpt-5.3-codex-spark" {
+		t.Fatalf("decision = %#v, want Spark model-scoped usage limit", decision)
 	}
 	pct, resetAt, ok := account.GetUsageSnapshotSpark()
 	if !ok || pct != 100 {
@@ -4248,6 +4248,200 @@ func TestApply429CooldownSparkUsageLimitDoesNotMarkAccount(t *testing.T) {
 	if pct5h, ok := account.GetUsagePercent5h(); !ok || pct5h != 40 {
 		t.Fatalf("main 5h snapshot = (%v, %v), want unchanged 40", pct5h, ok)
 	}
+}
+
+func TestApply429CooldownSparkUsageLimitDoesNotApplyFreePlanMetadata(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: 203, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
+
+	decision := Apply429Cooldown(
+		store,
+		account,
+		[]byte(`{"error":{"type":"usage_limit_reached","plan_type":"free","resets_in_seconds":1800}}`),
+		nil,
+		"gpt-5.3-codex-spark",
+	)
+
+	if decision.Scope != rateLimitScopeModel || decision.Reason != "spark_usage_limit" {
+		t.Fatalf("decision = %#v, want Spark model-scoped usage limit", decision)
+	}
+	if got := account.GetPlanType(); got != "pro" {
+		t.Fatalf("plan_type = %q, want unchanged pro", got)
+	}
+	if _, ok := account.GetUsagePercent7d(); ok {
+		t.Fatal("Spark usage metadata must not create a main 7d usage snapshot")
+	}
+	if pct, _, ok := account.GetUsageSnapshotSpark(); !ok || pct != 100 {
+		t.Fatalf("Spark snapshot = (%v, %v), want 100", pct, ok)
+	}
+}
+
+func TestApplyResponseFailedSemantic429IgnoresOuterHeadersForOrdinaryModel(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: 204, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
+	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
+	handler := &Handler{store: store}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+	resp.Header.Set("x-codex-primary-used-percent", "100")
+	resp.Header.Set("x-codex-primary-window-minutes", "10080")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "7200")
+	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_exceeded","message":"slow down"}}}`)
+
+	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.4")
+
+	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited" {
+		t.Fatalf("decision = %#v, want ordinary semantic 429 account fallback", decision)
+	}
+	if !account.HasActiveCooldown() || account.GetCooldownReason() != auth.ResponsesRateLimitedCooldownReason {
+		t.Fatal("ordinary semantic 429 should retain the existing short account cooldown")
+	}
+	if account.IsPremium5hRateLimited() {
+		t.Fatal("outer HTTP 200 headers must not create a premium 5h cooldown")
+	}
+	if pct5h, ok := account.GetUsagePercent5h(); !ok || pct5h != 40 {
+		t.Fatalf("main 5h snapshot = (%v, %v), want unchanged 40", pct5h, ok)
+	}
+	if account.IsModelRateLimited("gpt-5.4") {
+		t.Fatal("ordinary semantic 429 should not be rewritten as a model cooldown")
+	}
+}
+
+func TestApplyResponseFailedSemantic429KeepsExplicitModelCapacityScoped(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: 209, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
+	handler := &Handler{store: store}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+	resp.Header.Set("x-codex-primary-used-percent", "100")
+	resp.Header.Set("x-codex-primary-window-minutes", "10080")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "7200")
+	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_exceeded","message":"Selected model is at capacity"}}}`)
+
+	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.4")
+
+	if decision.Scope != rateLimitScopeModel || decision.Reason != "model_capacity" || decision.Model != "gpt-5.4" {
+		t.Fatalf("decision = %#v, want model-scoped capacity cooldown", decision)
+	}
+	if !account.IsModelRateLimited("gpt-5.4") {
+		t.Fatal("explicit model capacity should cool only the requested model")
+	}
+	if account.HasActiveCooldown() || account.IsPremium5hRateLimited() {
+		t.Fatal("explicit model capacity must not cool the whole account")
+	}
+}
+
+func TestApplyResponseFailedSemantic429SparkUsesTransientModelCooldown(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: 205, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
+	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
+	handler := &Handler{store: store}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+	resp.Header.Set("x-codex-primary-used-percent", "40")
+	resp.Header.Set("x-codex-primary-window-minutes", "10080")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "7200")
+	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_exceeded","message":"slow down"}}}`)
+
+	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.3-codex-spark")
+
+	if decision.Scope != rateLimitScopeModel || decision.Reason != "rate_limited_model" {
+		t.Fatalf("decision = %#v, want transient Spark model cooldown", decision)
+	}
+	if !account.IsModelRateLimited("gpt-5.3-codex-spark") {
+		t.Fatal("transient Spark 429 should apply the configured model cooldown policy")
+	}
+	if decision.Cooldown < 4*time.Minute || decision.Cooldown > 6*time.Minute {
+		t.Fatalf("transient Spark cooldown = %v, want default OAuth model policy around 5m", decision.Cooldown)
+	}
+	if account.HasActiveCooldown() || account.IsPremium5hRateLimited() {
+		t.Fatal("transient Spark 429 must not create an account-level cooldown")
+	}
+	if pct5h, ok := account.GetUsagePercent5h(); !ok || pct5h != 40 {
+		t.Fatalf("main 5h snapshot = (%v, %v), want unchanged 40", pct5h, ok)
+	}
+	if _, ok := account.GetUsagePercent7d(); ok {
+		t.Fatal("transient Spark 429 must not create a main 7d snapshot")
+	}
+}
+
+func TestApplyResponseFailedSemantic429SparkUsesExplicitExhaustedWindow(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: 208, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
+	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
+	handler := &Handler{store: store}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+	resp.Header.Set("x-codex-primary-used-percent", "100")
+	resp.Header.Set("x-codex-primary-window-minutes", "300")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "900")
+	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_exceeded","message":"quota exhausted"}}}`)
+
+	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.3-codex-spark")
+
+	if decision.Scope != rateLimitScopeModel || decision.Reason != "spark_usage_limit" {
+		t.Fatalf("decision = %#v, want explicit Spark window", decision)
+	}
+	pct, resetAt, ok := account.GetUsageSnapshotSpark()
+	if !ok || pct != 100 {
+		t.Fatalf("Spark snapshot = (%v, %v), want 100", pct, ok)
+	}
+	if got := time.Until(resetAt); got < 14*time.Minute || got > 16*time.Minute {
+		t.Fatalf("Spark reset delta = %v, want about 15m", got)
+	}
+	if account.HasActiveCooldown() || account.IsPremium5hRateLimited() {
+		t.Fatal("explicit Spark window must remain model-scoped")
+	}
+	if pct5h, ok := account.GetUsagePercent5h(); !ok || pct5h != 40 {
+		t.Fatalf("main 5h snapshot = (%v, %v), want unchanged 40", pct5h, ok)
+	}
+}
+
+func TestApply429CooldownTransport429KeepsHeadersForOrdinaryAndSpark(t *testing.T) {
+	t.Run("ordinary account window", func(t *testing.T) {
+		store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+		account := &auth.Account{DBID: 206, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
+		handler := &Handler{store: store}
+		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+		resp.Header.Set("x-codex-primary-used-percent", "100")
+		resp.Header.Set("x-codex-primary-window-minutes", "300")
+		resp.Header.Set("x-codex-primary-reset-after-seconds", "900")
+
+		decision := handler.applyCooldownForModel(account, http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_exceeded"}}`), resp, "gpt-5.4")
+
+		if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited_5h" {
+			t.Fatalf("decision = %#v, want transport header account window", decision)
+		}
+		if !account.IsPremium5hRateLimited() {
+			t.Fatal("real transport 429 should still apply the ordinary account window")
+		}
+	})
+
+	t.Run("Spark independent window", func(t *testing.T) {
+		store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+		account := &auth.Account{DBID: 207, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
+		account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
+		handler := &Handler{store: store}
+		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+		resp.Header.Set("x-codex-primary-used-percent", "100")
+		resp.Header.Set("x-codex-primary-window-minutes", "300")
+		resp.Header.Set("x-codex-primary-reset-after-seconds", "900")
+
+		decision := handler.applyCooldownForModel(account, http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_exceeded"}}`), resp, "gpt-5.3-codex-spark")
+
+		if decision.Scope != rateLimitScopeModel || decision.Reason != "spark_usage_limit" {
+			t.Fatalf("decision = %#v, want transport header Spark window", decision)
+		}
+		pct, resetAt, ok := account.GetUsageSnapshotSpark()
+		if !ok || pct != 100 {
+			t.Fatalf("Spark snapshot = (%v, %v), want 100", pct, ok)
+		}
+		if got := time.Until(resetAt); got < 14*time.Minute || got > 16*time.Minute {
+			t.Fatalf("Spark reset delta = %v, want about 15m", got)
+		}
+		if account.HasActiveCooldown() || account.IsPremium5hRateLimited() {
+			t.Fatal("Spark transport 429 must not create an account-level cooldown")
+		}
+		if pct5h, ok := account.GetUsagePercent5h(); !ok || pct5h != 40 {
+			t.Fatalf("main 5h snapshot = (%v, %v), want unchanged 40", pct5h, ok)
+		}
+	})
 }
 
 func TestApply429CooldownUsageLimitUpdatesFreePlanMetadata(t *testing.T) {

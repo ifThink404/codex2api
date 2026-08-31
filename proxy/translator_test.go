@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -3516,6 +3517,16 @@ func TestExtractToolCallsFromOutputValidatedRejectsMalformedOrdinaryCall(t *test
 
 	if calls, err := ExtractToolCallsFromOutputValidated(event); err == nil || calls != nil {
 		t.Fatalf("calls=%v err=%v, want malformed ordinary call error", calls, err)
+	}
+}
+
+func TestMalformedToolArgumentsFailurePayloadCarriesCreatedAt(t *testing.T) {
+	payload := malformedToolArgumentsFailurePayload(errors.New("bad arguments"))
+	if got := gjson.GetBytes(payload, "type").String(); got != "response.failed" {
+		t.Fatalf("type = %q, want response.failed; payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "response.created_at").Int(); got <= 0 {
+		t.Fatalf("response.created_at = %d, want a positive Unix timestamp", got)
 	}
 }
 

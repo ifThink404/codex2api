@@ -275,6 +275,8 @@
     "fileImporting": "Importing…",
     "fileImportProgress": "Importing… batch {{done}}/{{total}}",
     "fileImportDone": "Imported {{imported}}/{{total}} accounts",
+    "importItemUpdated": "updated existing account {{id}}",
+    "importItemRevived": "revived recycled account {{id}} with new credentials",
     "importProgressTitle": "Importing Grok accounts",
     "importPickerTitle": "Import Grok accounts",
     "importPickerDesc": "Choose a source. All entries are added to the Grok account pool.",

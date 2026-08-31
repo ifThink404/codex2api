@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -4235,7 +4236,8 @@ func malformedToolArgumentsFailurePayload(err error) []byte {
 	payload := map[string]any{
 		"type": "response.failed",
 		"response": map[string]any{
-			"status": "failed",
+			"created_at": time.Now().Unix(),
+			"status":     "failed",
 			"error": map[string]any{
 				"code":        "bad_gateway",
 				"type":        "upstream_protocol_error",

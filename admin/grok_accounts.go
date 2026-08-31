@@ -225,7 +225,8 @@ func (h *Handler) AddGrokAccount(c *gin.Context) {
 		return
 	}
 	if duplicateID > 0 {
-		writeError(c, http.StatusConflict, "Grok 凭据身份已存在")
+		// 身份栅栏含回收站账号:提示持有者 ID,避免"列表明明是空的却说已存在"的死胡同。
+		writeError(c, http.StatusConflict, fmt.Sprintf("Grok 凭据身份已存在（账号 ID %d，可能在回收站；批量导入可自动合并/复活）", duplicateID))
 		return
 	}
 	h.db.InsertAccountEventAsync(id, "added", "manual_grok")
@@ -555,6 +556,10 @@ type grokBatchImportItem struct {
 	ID    int64  `json:"id,omitempty"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Updated/Revived 标记该条命中既有身份:凭据已合并进账号 ID(Revived 表示
+	// 该账号原在回收站,本次已复活),而非新建。
+	Updated bool `json:"updated,omitempty"`
+	Revived bool `json:"revived,omitempty"`
 }
 
 const grokBatchImportMaxFiles = 5000
@@ -700,8 +705,40 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 			continue
 		}
 		if duplicateID > 0 {
-			item.Error = "凭据身份已存在，已跳过"
+			// 身份栅栏含回收站账号:命中时合并凭据(回收站复活)而非跳过,
+			// 否则删过的号重新导入永远失败(issue #602)。credentials 里的
+			// base_url/models 只在显式提供时存在,不会覆盖既有配置。
+			reauth, reauthErr := h.db.ReauthGrokAccount(ctx, duplicateID, credentials, "", req.ProxyURL)
+			if reauthErr != nil {
+				item.Error = fmt.Sprintf("合并到既有账号 %d 失败: %v", duplicateID, reauthErr)
+				items = append(items, item)
+				continue
+			}
+			h.store.RemoveAccount(duplicateID)
+			if loadErr := h.store.LoadAccountByID(ctx, duplicateID); loadErr != nil {
+				item.Error = fmt.Sprintf("更新账号 %d 后重载失败: %v", duplicateID, loadErr)
+				items = append(items, item)
+				continue
+			}
+			event := "updated"
+			if reauth.Revived {
+				event = "restored"
+			}
+			h.db.InsertAccountEventAsync(duplicateID, event, "grok_file_import")
+			if subject != "" {
+				existingSubjects[subject] = struct{}{}
+			}
+			if importMeta.FamilyID != "" {
+				existingFamilies[importMeta.FamilyID] = struct{}{}
+			}
+			item.OK = true
+			item.ID = duplicateID
+			item.Updated = true
+			item.Revived = reauth.Revived
 			items = append(items, item)
+			imported++
+			createdIDs = append(createdIDs, duplicateID)
+			h.triggerGrokUsageProbe(duplicateID)
 			continue
 		}
 		h.db.InsertAccountEventAsync(id, "added", "grok_file_import")

@@ -13,8 +13,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/tidwall/gjson"
 )
 
 func TestAntigravityResponsesReasoningEffortMapsToSafeThinkingBudget(t *testing.T) {
@@ -583,6 +585,28 @@ func TestAntigravityJSONResponseDoesNotFabricateCompletion(t *testing.T) {
 	if !strings.Contains(string(out), `"status":"failed"`) || strings.Contains(string(out), `"status":"completed"`) {
 		t.Fatalf("unexpected response: %s", out)
 	}
+	createdAt := gjson.GetBytes(out, "created_at")
+	if createdAt.Type != gjson.Number || createdAt.Int() <= 0 || createdAt.Int() > time.Now().Unix() || createdAt.Float() != float64(createdAt.Int()) {
+		t.Fatalf("created_at = %s, want Unix seconds; response=%s", createdAt.Raw, out)
+	}
+}
+
+func TestAntigravityJSONResponseUsesCapturedCreatedAt(t *testing.T) {
+	const capturedCreatedAt int64 = 1710000000
+	body, err := newAntigravityJSONResponseBodyAt(io.NopCloser(strings.NewReader(`{
+		"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]
+	}`)), "gemini-test", capturedCreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	out, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(out, "created_at").Int(); got != capturedCreatedAt {
+		t.Fatalf("created_at = %d, want captured value %d; response=%s", got, capturedCreatedAt, out)
+	}
 }
 
 func TestAntigravityJSONResponseConvertsFunctionCall(t *testing.T) {
@@ -1133,6 +1157,7 @@ func TestAntigravitySSELifecycleAndBufferedTerminal(t *testing.T) {
 	if !strings.Contains(got, `"model":"gemini-test"`) || !strings.Contains(got, `"sequence_number":0`) {
 		t.Fatalf("stable response metadata missing: %s", got)
 	}
+	assertSyntheticResponseCreatedAt(t, out, "response.completed")
 }
 
 func TestAntigravitySSEConvertsFunctionCallLifecycle(t *testing.T) {
@@ -1182,6 +1207,7 @@ func TestAntigravitySSESafetyFailureDoesNotPenalizeAccount(t *testing.T) {
 	if len(failedPayload) == 0 {
 		t.Fatalf("response.failed missing from stream: %s", raw)
 	}
+	assertSyntheticResponseCreatedAt(t, raw, "response.failed")
 	if !bytes.Contains(failedPayload, []byte(`"code":"content_filter"`)) || !bytes.Contains(failedPayload, []byte(`"status_code":400`)) {
 		t.Fatalf("safety failure payload = %s", failedPayload)
 	}

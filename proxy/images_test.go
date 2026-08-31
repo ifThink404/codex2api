@@ -810,7 +810,7 @@ func TestForwardImagesSelectiveRetryBuffersWholeExplicitErrorAttempt(t *testing.
 	}
 }
 
-func TestForwardImagesTextFallbackCoolsAccountAndFailsOver(t *testing.T) {
+func TestForwardImagesTextFallbackFailsOverWithoutCoolingAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousRuntime := CurrentRuntimeSettings()
 	previousResin := resinCfg.Load()
@@ -818,8 +818,8 @@ func TestForwardImagesTextFallbackCoolsAccountAndFailsOver(t *testing.T) {
 		ApplyRuntimeSettings(previousRuntime)
 		resinCfg.Store(previousResin)
 	})
-	// The structured image-unavailable path owns one bounded failover even when
-	// generic transport retries are disabled.
+	// The no-output fallback owns one bounded failover even when generic
+	// transport retries are disabled; it must not persist account/model state.
 	nextRuntime := previousRuntime
 	nextRuntime.ContinuousRetryPolicy = database.ContinuousRetryPolicy{}
 	ApplyRuntimeSettings(nextRuntime)
@@ -870,8 +870,67 @@ func TestForwardImagesTextFallbackCoolsAccountAndFailsOver(t *testing.T) {
 		t.Fatalf("failover result: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	cooled := first.ModelCooldownRemaining("gpt-image-2") > 0 || second.ModelCooldownRemaining("gpt-image-2") > 0
-	if !cooled {
-		t.Fatal("plain-text image fallback should cool the account/model pair")
+	if cooled {
+		t.Fatal("plain-text image fallback must not cool either account/model pair")
+	}
+}
+
+func TestImageCapabilityCooldownRequiresExplicitUpstreamEvidence(t *testing.T) {
+	plainTextErr := classifyImageNoOutput("Try describing the scene in more detail.")
+	if imageErrorNeedsModelCooldown(plainTextErr) {
+		t.Fatal("plain-text fallback must not request a persistent model cooldown")
+	}
+	safetyErr := classifyImageNoOutput("Blocked by the content policy.")
+	if imageErrorNeedsModelCooldown(safetyErr) {
+		t.Fatal("content-policy refusal must not request a model cooldown")
+	}
+
+	structuredErr := newImageResponseFailedError([]byte(`{"type":"response.failed","response":{"error":{"code":"image_generation_unavailable","message":"image generation is unavailable"}}}`))
+	if !imageErrorNeedsModelCooldown(structuredErr) {
+		t.Fatal("structured image_generation_unavailable must request a model cooldown")
+	}
+
+	toolMissing := []byte(`{"error":{"message":"Tool choice 'image_generation' not found in 'tools' parameter.","param":"tool_choice","type":"invalid_request_error"}}`)
+	if !isExplicitImageGenerationCapabilityLoss(toolMissing) {
+		t.Fatal("explicit image_generation tool-missing error must be classified as capability loss")
+	}
+	if isExplicitImageGenerationCapabilityLoss([]byte(`{"error":{"message":"Invalid type for input[0].arguments"}}`)) {
+		t.Fatal("generic invalid_request_error must not be classified as image capability loss")
+	}
+}
+
+func TestForwardImagesExplicitToolMissingCoolsModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousResin := resinCfg.Load()
+	t.Cleanup(func() { resinCfg.Store(previousResin) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"Tool choice 'image_generation' not found in 'tools' parameter.","param":"tool_choice","type":"invalid_request_error"}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "image-capability-loss-test"})
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{
+		MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4", MaxRetries: 0,
+	})
+	t.Cleanup(store.Stop)
+	account := &auth.Account{DBID: 1, AccessToken: "image-token", PlanType: "plus", AccountID: "image-account"}
+	store.AddAccount(account)
+	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	responsesBody := []byte(`{"model":"gpt-5.4","input":"draw","tools":[{"type":"image_generation","model":"gpt-image-2"}],"stream":true}`)
+	handler.forwardImagesRequest(c, "/v1/images/generations", "gpt-image-2", "gpt-image-2", "gpt-image-2", responsesBody, "b64_json", "image_generation", false)
+
+	if account.ModelCooldownRemaining("gpt-image-2") <= 0 {
+		t.Fatal("explicit image_generation tool-missing error should cool the account/model pair")
+	}
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
 	}
 }
 

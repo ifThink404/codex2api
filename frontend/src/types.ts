@@ -1226,6 +1226,9 @@ export interface GrokSSOImportItem {
   id?: number
   ok: boolean
   error?: string
+  // 命中既有凭据身份时后端合并凭据而非新建：updated=已更新，revived=回收站账号已复活。
+  updated?: boolean
+  revived?: boolean
 }
 
 export interface GrokSSOImportResponse {

@@ -275,6 +275,8 @@
     "fileImporting": "导入中…",
     "fileImportProgress": "导入中… 第 {{done}}/{{total}} 批",
     "fileImportDone": "成功导入 {{imported}}/{{total}} 个账号",
+    "importItemUpdated": "已更新既有账号 {{id}} 的凭据",
+    "importItemRevived": "已复活回收站账号 {{id}} 并更新凭据",
     "importProgressTitle": "导入 Grok 账号",
     "importPickerTitle": "导入 Grok 账号",
     "importPickerDesc": "选择一种来源,导入的账号都会进入 Grok 账号池。",

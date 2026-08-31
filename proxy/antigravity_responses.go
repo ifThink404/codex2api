@@ -1114,6 +1114,13 @@ func readBoundedAntigravityBody(r io.ReadCloser, limit int64) ([]byte, error) {
 }
 
 func newAntigravityJSONResponseBody(r io.ReadCloser, model string) (io.ReadCloser, error) {
+	// Reading the complete upstream body may block until generation finishes.
+	// Freeze the synthetic Responses creation time before that work starts.
+	createdAt := time.Now().Unix()
+	return newAntigravityJSONResponseBodyAt(r, model, createdAt)
+}
+
+func newAntigravityJSONResponseBodyAt(r io.ReadCloser, model string, createdAt int64) (io.ReadCloser, error) {
 	body, err := readBoundedAntigravityBody(r, antigravityResponseBodyLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read Antigravity JSON response: %w", err)
@@ -1149,7 +1156,7 @@ func newAntigravityJSONResponseBody(r io.ReadCloser, model string) (io.ReadClose
 		output = append(output, antigravityFunctionCallItem(functionCall, "completed", functionCall.Arguments))
 	}
 	response := map[string]any{
-		"id": "resp_" + antigravityRequestID(), "object": "response", "status": status, "model": model,
+		"id": "resp_" + antigravityRequestID(), "object": "response", "created_at": createdAt, "status": status, "model": model,
 		"output":      output,
 		"output_text": text,
 	}

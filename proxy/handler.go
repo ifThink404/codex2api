@@ -837,7 +837,7 @@ func grokNativeStreamFailure(protocol GrokProtocol, payload []byte) streamOutcom
 	return outcome
 }
 
-func writeGrokNativeStreamBreakTo(writer io.Writer, protocol GrokProtocol) error {
+func writeGrokNativeStreamBreakTo(writer io.Writer, protocol GrokProtocol, createdAt int64) error {
 	if writer == nil {
 		return nil
 	}
@@ -853,8 +853,13 @@ func writeGrokNativeStreamBreakTo(writer io.Writer, protocol GrokProtocol) error
 		_, err := fmt.Fprintf(writer, "event: error\ndata: %s\n\n", payload)
 		return err
 	default:
-		payload := []byte(`{"type":"response.failed","response":{"status":"failed","error":{"code":"` +
-			ErrorCodeUpstreamStreamBreak + `","message":"` + upstreamStreamBreakMessage + `"}}}`)
+		if createdAt <= 0 {
+			createdAt = time.Now().Unix()
+		}
+		payload := []byte(fmt.Sprintf(
+			`{"type":"response.failed","response":{"created_at":%d,"status":"failed","error":{"code":"%s","message":"%s"}}}`,
+			createdAt, ErrorCodeUpstreamStreamBreak, upstreamStreamBreakMessage,
+		))
 		_, err := fmt.Fprintf(writer, "data: %s\n\n", payload)
 		return err
 	}
@@ -1020,6 +1025,10 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 	var usage *UsageInfo
 	var terminal, failed, wrote, visible bool
 	firstTokenMs := 0
+	streamCreatedAt := startedAt.Unix()
+	if startedAt.IsZero() || streamCreatedAt <= 0 {
+		streamCreatedAt = time.Now().Unix()
+	}
 	var failure streamOutcome
 	var pending bytes.Buffer
 	writeErr := error(nil)
@@ -1027,6 +1036,13 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 	readErr := readRawGrokSSEFramesWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(frame rawGrokSSEFrame) bool {
 		if frame.HasData && !frame.Done {
 			usage = mergeGrokNativeUsage(usage, grokNativeUsage(protocol, frame.Data))
+			if auth.NormalizeGrokProtocol(string(protocol)) == GrokProtocolResponses &&
+				strings.EqualFold(normalizedUpstreamSSEEventType(frame.Event, frame.Data), "response.created") {
+				createdAt := gjson.GetBytes(frame.Data, "response.created_at")
+				if createdAt.Type == gjson.Number && createdAt.Int() > 0 {
+					streamCreatedAt = createdAt.Int()
+				}
+			}
 		}
 		isTerminal, isFailed := false, false
 		if frame.Done && auth.NormalizeGrokProtocol(string(protocol)) == GrokProtocolChatCompletions {
@@ -1094,7 +1110,7 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 	}
 	outcome := classifyStreamOutcome(continuousRetryContextError(c.Request.Context()), readErr, writeErr, terminal)
 	if !terminal && wrote && c.Request.Context().Err() == nil && writeErr == nil {
-		_ = writeGrokNativeStreamBreakTo(output, protocol)
+		_ = writeGrokNativeStreamBreakTo(output, protocol, streamCreatedAt)
 		outputFlusher.Flush()
 	}
 	return usage, outcome, wrote, firstTokenMs
@@ -2372,6 +2388,22 @@ func (h *Handler) applyResponseFailedCooldown(account *auth.Account, payload []b
 	}
 	body := responseFailedErrorBody(payload)
 	statusCode := classifyResponseFailedOutcome(payload).logStatusCode
+	if statusCode == http.StatusTooManyRequests && !account.IsRelayStyle() {
+		// 官方 Codex 的 response.failed/error 是已建立 HTTP/WS 流之后的
+		// 语义错误。此时 resp 描述的是外层成功响应或 WS 握手，普通模型不能拿它的 x-codex-*
+		// 快照推断本次 429 的账号窗口。Spark 有独立模型配额，保留 headers
+		// 后仍须由 classifySpark429RateLimit 验证窗口确已耗尽。真正的
+		// HTTP/WS dial 429 不走本 helper，仍会在 transport failure 路径中
+		// 把原始 resp 交给 applyCooldownForModel。
+		if !isProOnlyModel(model) {
+			resp = nil
+			// 明确的模型容量错误仍只应摘掉当前模型；普通 rate_limit_exceeded
+			// 才回落到账号级短冷却。
+			if !isCodexModelCapacityError(body) {
+				model = ""
+			}
+		}
+	}
 	return h.applyCooldownForModel(account, statusCode, body, resp, model)
 }
 
@@ -3109,8 +3141,10 @@ const upstreamStreamBreakMessage = "Upstream stream ended prematurely; safe to r
 // EOF——下游会把截断响应当正常 200 收尾，既无从感知失败也无从重试
 // (issue #473)。不发 response.completed，避免截断响应被当成功计费。
 func writeResponsesStreamBreakEvent(w *streamFlushWriter) error {
-	payload := []byte(`{"type":"response.failed","response":{"status":"failed","error":{"code":"` +
-		ErrorCodeUpstreamStreamBreak + `","message":"` + upstreamStreamBreakMessage + `"}}}`)
+	payload := []byte(fmt.Sprintf(
+		`{"type":"response.failed","response":{"created_at":%d,"status":"failed","error":{"code":"%s","message":"%s"}}}`,
+		time.Now().Unix(), ErrorCodeUpstreamStreamBreak, upstreamStreamBreakMessage,
+	))
 	if err := w.WriteSSEData(payload); err != nil {
 		return err
 	}
@@ -7716,7 +7750,64 @@ func responseHasCodex5hHeaders(resp *http.Response) bool {
 	return secondary.valid && codexWindowType(secondary.windowMin) == codexRateLimitWindow5h
 }
 
+// classifySpark429RateLimit keeps every Spark rejection scoped to the Spark
+// model. Explicit quota evidence (body reset or an exhausted 5h/7d window)
+// drives the independent Spark usage window; transient
+// rejections retain the normal short model cooldown.
+func classifySpark429RateLimit(account *auth.Account, body []byte, resp *http.Response, now time.Time, model string) codex429Decision {
+	decision := codex429Decision{
+		Scope:  rateLimitScopeModel,
+		Reason: "rate_limited_model",
+		Model:  strings.TrimSpace(model),
+	}
+	if isCodexModelCapacityError(body) {
+		decision.Reason = "model_capacity"
+	}
+
+	if IsUsageLimitReachedError(body) {
+		decision.Reason = "spark_usage_limit"
+		if resetAt, ok := parseUsageLimitResetAt(body, now); ok {
+			decision.ResetAt = resetAt
+			decision.Cooldown = resetAt.Sub(now)
+			return decision
+		}
+	}
+
+	windowType, resetAt, hasWindowReset := classifyCodex429Window(resp, now)
+	switch windowType {
+	case codexRateLimitWindow5h:
+		if !hasWindowReset {
+			resetAt = now.Add(5 * time.Hour)
+		}
+		decision.Reason = "spark_usage_limit"
+		decision.ResetAt = resetAt
+		decision.Cooldown = resetAt.Sub(now)
+		return decision
+	case codexRateLimitWindow7d:
+		if !hasWindowReset {
+			resetAt = now.Add(7 * 24 * time.Hour)
+		}
+		decision.Reason = "spark_usage_limit"
+		decision.ResetAt = resetAt
+		decision.Cooldown = resetAt.Sub(now)
+		return decision
+	}
+
+	if decision.Reason == "spark_usage_limit" {
+		decision.Cooldown = usageLimitFallbackCooldown(account, body)
+		decision.ResetAt = now.Add(decision.Cooldown)
+		return decision
+	}
+	decision.Cooldown = 5 * time.Minute
+	return decision
+}
+
 func classify429RateLimit(account *auth.Account, body []byte, resp *http.Response, now time.Time, model string) codex429Decision {
+	model = strings.TrimSpace(model)
+	if isProOnlyModel(model) {
+		return classifySpark429RateLimit(account, body, resp, now, model)
+	}
+
 	if IsUsageLimitReachedError(body) {
 		if resetAt, ok := parseUsageLimitResetAt(body, now); ok {
 			reason := "usage_limit"
@@ -7764,7 +7855,6 @@ func classify429RateLimit(account *auth.Account, body []byte, resp *http.Respons
 		return codex429Decision{Scope: rateLimitScopeAccount, Reason: "rate_limited_7d", ResetAt: resetAt, Cooldown: resetAt.Sub(now)}
 	}
 
-	model = strings.TrimSpace(model)
 	if model != "" {
 		reason := "rate_limited_model"
 		if isCodexModelCapacityError(body) {
@@ -7842,10 +7932,17 @@ func Apply429Cooldown(store *auth.Store, account *auth.Account, body []byte, res
 	if store == nil || account == nil {
 		return decision
 	}
-	if details, ok := parseUsageLimitDetails(body); ok {
+	// Spark has an independent quota window. Its usage_limit metadata must not
+	// rewrite the account plan or the main 5h/7d snapshots before the model-level
+	// decision below is applied.
+	if details, ok := parseUsageLimitDetails(body); ok && !(decision.Scope == rateLimitScopeModel && isProOnlyModel(model)) {
 		store.ApplyUsageLimitMetadata(account, details.planType, decision.ResetAt)
 	}
 	if decision.Scope == rateLimitScopeModel {
+		if isProOnlyModel(model) && decision.Reason == "spark_usage_limit" {
+			store.MarkSparkUsageExhausted(account, decision.ResetAt)
+			return decision
+		}
 		policy := store.ResolveModelCooldownPolicy(account)
 		if policy.Mode == database.ModelCooldownModeOff || policy.Seconds <= 0 {
 			decision.ResetAt = time.Time{}
@@ -7862,10 +7959,6 @@ func Apply429Cooldown(store *auth.Store, account *auth.Account, body []byte, res
 		)
 		decision.ResetAt = cooldown.ResetAt
 		decision.Cooldown = time.Until(cooldown.ResetAt)
-		return decision
-	}
-	if isProOnlyModel(model) && IsUsageLimitReachedError(body) && decision.Scope == rateLimitScopeAccount {
-		store.MarkSparkUsageExhausted(account, decision.ResetAt)
 		return decision
 	}
 	if account.IsPremium5hPlan() && decision.Scope == rateLimitScopeAccount && decision.Reason == "rate_limited_5h" {

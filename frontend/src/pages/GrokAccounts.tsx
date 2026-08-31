@@ -1358,8 +1358,12 @@ function GrokAccounts({
         reportMerged(i === chunks.length - 1 ? "complete" : "progress");
       }
       // 全部成功时不再弹明细弹窗(右上角进度浮层已给出结果);
-      // 有失败才弹,保留逐号失败原因供排查。
-      if (merged.failed > 0) {
+      // 有失败才弹,保留逐号失败原因供排查。命中既有身份被合并/复活的条目
+      // 也要弹明细——否则"导入成功却没多出新账号"会让人以为导入没生效。
+      if (
+        merged.failed > 0 ||
+        merged.items.some((item) => item.updated || item.revived)
+      ) {
         setImportResult({ ...merged, items: [...merged.items] });
       }
       if (merged.imported > 0) {
@@ -3431,7 +3435,15 @@ function GrokAccounts({
                   )}
                   <span className="min-w-0 flex-1 break-all text-muted-foreground">
                     {item.email || item.name || `#${index + 1}`}
-                    {item.ok ? null : item.error ? ` — ${item.error}` : ""}
+                    {item.ok
+                      ? item.revived
+                        ? ` — ${t("grok.importItemRevived", { id: item.id })}`
+                        : item.updated
+                          ? ` — ${t("grok.importItemUpdated", { id: item.id })}`
+                          : null
+                      : item.error
+                        ? ` — ${item.error}`
+                        : ""}
                   </span>
                 </div>
               ))}

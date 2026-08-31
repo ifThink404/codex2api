@@ -1605,6 +1605,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				Transport: upstreamPromptPolicyTransport(stream, false), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
+			markImageModelUnavailableFromHTTP(h.store, account, requestModel, resp.StatusCode, errBody)
 			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, requestModel)
 			continuousSelected := continuousRetryHTTPSelected(continuousRetryPolicy, resp.StatusCode, errBody)
 			shouldRetry := retryAllowedByEndpointCap(attempt, maxImageAttempts, continuousSelected) && shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
@@ -2348,17 +2349,55 @@ func imageErrorKind(err error) string {
 }
 
 func imageErrorNeedsModelCooldown(err error) bool {
-	outcome := imageNoOutputDetails(err)
-	return outcome != nil && outcome.kind == imageNoOutputUnavailable
+	return isExplicitImageGenerationCapabilityLoss(imageResponseFailedPayload(err))
 }
 
 func markImageModelUnavailable(store *auth.Store, account *auth.Account, model string, err error) {
 	if store == nil || account == nil || !imageErrorNeedsModelCooldown(err) {
 		return
 	}
+	markImageModelCapabilityUnavailable(store, account, model)
+}
+
+func markImageModelUnavailableFromHTTP(store *auth.Store, account *auth.Account, model string, statusCode int, body []byte) {
+	if statusCode != http.StatusBadRequest || !isExplicitImageGenerationCapabilityLoss(body) {
+		return
+	}
+	markImageModelCapabilityUnavailable(store, account, model)
+}
+
+// isExplicitImageGenerationCapabilityLoss only accepts structured upstream
+// evidence. A response.completed frame containing plain model text is still
+// retryable for this request, but it is prompt-dependent and must not persist a
+// capability cooldown on the account/model pair.
+func isExplicitImageGenerationCapabilityLoss(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	code := strings.ToLower(firstNonEmptyImageErrorField(
+		gjson.GetBytes(payload, "response.error.code").String(),
+		gjson.GetBytes(payload, "error.code").String(),
+	))
+	if code == "image_generation_unavailable" {
+		return true
+	}
+	message := strings.ToLower(firstNonEmptyImageErrorField(
+		gjson.GetBytes(payload, "response.error.message").String(),
+		gjson.GetBytes(payload, "error.message").String(),
+		gjson.GetBytes(payload, "message").String(),
+		string(payload),
+	))
+	return strings.Contains(message, "image_generation") &&
+		strings.Contains(message, "not found in 'tools' parameter")
+}
+
+func markImageModelCapabilityUnavailable(store *auth.Store, account *auth.Account, model string) {
+	if store == nil || account == nil {
+		return
+	}
 	cooldown := store.MarkModelCooldown(account, model, imageOAuthUnavailableCooldown, "openai_images_oauth_tool_unavailable")
 	if !cooldown.ResetAt.IsZero() {
-		log.Printf("账号 %d 的 OAuth 图片工具未执行，模型 %s 冷却到 %s", account.ID(), model, cooldown.ResetAt.Format(time.RFC3339))
+		log.Printf("账号 %d 的 OAuth 图片工具明确不可用，模型 %s 冷却到 %s", account.ID(), model, cooldown.ResetAt.Format(time.RFC3339))
 	}
 }
 

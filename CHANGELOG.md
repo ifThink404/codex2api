@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.8.8 - 2026-08-31
+
+### Fixes
+
+- **WebSocket connections now accept `socks5h://` proxies.** Managed proxy validation and HTTP probes already accepted `socks5h`, but the Gorilla WebSocket dialer only recognizes `socks5`, so forced-WebSocket requests failed locally with `proxy: unknown scheme: socks5h` even when the same proxy tested healthy. The WebSocket path now reuses the lenient proxy parser and normalizes only the connection-local scheme to `socks5`, preserving credentials and proxy-side DNS resolution; a fake SOCKS5 regression test verifies the domain-form CONNECT target, and a PostgreSQL + Redis 2004 live request confirmed the bound `socks5h` proxy completes a real upstream WebSocket response.
+
 ## v2.8.7 - 2026-08-31
 
 ### Features
