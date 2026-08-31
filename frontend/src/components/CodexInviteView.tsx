@@ -28,11 +28,22 @@ import type {
   InviteCacheMeta,
   InviteEligibility,
   InviteGuideAccountPlan,
+  InviteRecipientRecord,
   InviteResult,
   InviteTrackingItem,
 } from '../types'
 import { getErrorMessage } from '../utils/error'
 import { useToast } from '../hooks/useToast'
+import {
+  alreadyInvitedEmails,
+  inviteRecipientRecord,
+  inviteRecipientCandidates,
+  isCodexInviteSenderCandidate,
+  mergeInviteRecipientIndex,
+  normalizeInviteEmail,
+  normalizeInviteEmails,
+  type InviteRecipientIndex,
+} from '../lib/inviteAccountSelection'
 
 interface Props {
   accounts: AccountRow[]
@@ -93,14 +104,6 @@ function accountSearchText(account: AccountRow): string {
     .toLowerCase()
 }
 
-function isCodexInviteCandidate(account: AccountRow): boolean {
-  // 仅排除发不出邀请的硬条件：中转 / AT-only 账号没有可用于 referral 的 Codex OAuth 凭证。
-  // enabled / locked / status 只是调度开关与健康状态，不影响 access token 是否可用——
-  // 后端 SendCodexInvite 只要求账号有 access token，不校验这些字段，故前端不在此过滤，
-  // 否则会把仅被禁用调度或临时异常、但凭证仍可用的账号从下拉中隐藏（见 issue #281）。
-  return !account.openai_responses_api && !account.at_only
-}
-
 // 状态圆点配色，与全局 StatusBadge 保持一致。
 const STATUS_DOT_COLOR: Record<string, string> = {
   active: 'bg-emerald-500',
@@ -145,14 +148,9 @@ function findCapacityRule(eligibility: InviteEligibility | null, capacityType: s
   return eligibility?.time_frame_rules?.find((rule) => rule.capacity_type === capacityType) ?? null
 }
 
-// 账号是否处于「非正常」状态。仅用于 UI 提示与视觉区分，不影响能否发送邀请——
-// 凭证（access token）可用即可发邀请，这里只是提醒用户当前选的是什么状态的号。
-function accountAbnormalKey(account: AccountRow): 'disabled' | 'locked' | 'unauthorized' | 'error' | null {
-  if (account.enabled === false) return 'disabled'
+// 锁定用于保护账号不被自动清理，并不代表邀请凭证失效，保留提示帮助用户辨认。
+function accountAbnormalKey(account: AccountRow): 'locked' | null {
   if (account.locked) return 'locked'
-  const status = (account.status || '').toLowerCase()
-  if (status === 'unauthorized') return 'unauthorized'
-  if (status === 'error') return 'error'
   return null
 }
 
@@ -187,9 +185,9 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
   const [pickerAccounts, setPickerAccounts] = useState<AccountRow[]>(accounts)
   const [pickerLoading, setPickerLoading] = useState(loading)
 
-  // 仅保留可用于 referral 的 Codex OAuth 账号；选择器由服务端分页搜索驱动。
+  // 仅保留状态正常且可用于 referral 的 Codex OAuth 账号；选择器由服务端分页搜索驱动。
   const codexAccounts = useMemo(
-    () => pickerAccounts.filter(isCodexInviteCandidate),
+    () => pickerAccounts.filter(isCodexInviteSenderCandidate),
     [pickerAccounts],
   )
   const firstAccount = codexAccounts[0] ?? null
@@ -204,6 +202,10 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
   // 下拉键盘导航的高亮项索引（指向 filteredAccounts）。-1 表示未高亮任何项。
   const [activeIndex, setActiveIndex] = useState(-1)
   const [emailsText, setEmailsText] = useState('')
+  const [inviteRecipientIndex, setInviteRecipientIndex] = useState<InviteRecipientIndex>({})
+  const [checkedRecipientSignature, setCheckedRecipientSignature] = useState('')
+  const [recipientCheckPending, setRecipientCheckPending] = useState(false)
+  const [recipientCheckError, setRecipientCheckError] = useState<string | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [proxyUrl, setProxyUrl] = useState('')
   const [sending, setSending] = useState(false)
@@ -254,6 +256,52 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
   }, [accountQuery, accountTyping])
 
   const parsed = useMemo(() => parseEmails(emailsText), [emailsText])
+  const inputRecipientEmails = useMemo(() => normalizeInviteEmails(parsed.valid), [parsed.valid])
+  const inputRecipientSignature = inputRecipientEmails.join('\n')
+  const mergeInviteRecipients = useCallback((recipients: InviteRecipientRecord[]) => {
+    setInviteRecipientIndex((current) => mergeInviteRecipientIndex(current, recipients))
+  }, [])
+
+  // 手动粘贴的邮箱也必须走持久化记录检查，不能只依赖下拉行上的 disabled。
+  // signature 让输入一变化就立即失去「已检查」状态，防止防抖窗口内误点发送。
+  useEffect(() => {
+    if (!inputRecipientSignature) {
+      setCheckedRecipientSignature('')
+      setRecipientCheckPending(false)
+      setRecipientCheckError(null)
+      return
+    }
+
+    const controller = new AbortController()
+    setRecipientCheckPending(true)
+    setRecipientCheckError(null)
+    const timer = window.setTimeout(() => {
+      void api.checkInviteRecipients(inputRecipientEmails, controller.signal)
+        .then((response) => {
+          if (controller.signal.aborted) return
+          mergeInviteRecipients(response.recipients ?? [])
+          setCheckedRecipientSignature(inputRecipientSignature)
+        })
+        .catch((err) => {
+          if (!controller.signal.aborted) setRecipientCheckError(getErrorMessage(err))
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setRecipientCheckPending(false)
+        })
+    }, 250)
+
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [inputRecipientEmails, inputRecipientSignature, mergeInviteRecipients])
+
+  const duplicateInviteEmails = useMemo(
+    () => alreadyInvitedEmails(parsed.valid, inviteRecipientIndex),
+    [parsed.valid, inviteRecipientIndex],
+  )
+  const recipientsChecked =
+    inputRecipientSignature === '' || checkedRecipientSignature === inputRecipientSignature
   // 收件人选择器的勾选状态直接派生自输入框文本（单一事实来源）：手动输入的邮箱
   // 在下拉里自动呈已选态，勾选/取消即增删输入框内容，两个入口不会各存一份。
   const selectedRecipientEmails = useMemo(() => {
@@ -300,9 +348,12 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
     parsed.valid.length > 0 &&
     parsed.invalid.length === 0 &&
     !overLimit &&
+    recipientsChecked &&
+    !recipientCheckError &&
+    duplicateInviteEmails.length === 0 &&
     !sendCapacityExhausted &&
     !ineligible
-  // 选中账号的非正常状态（禁用/锁定/封禁/错误）；用于提示用户当前选的不是正常号。
+  // 锁定账号仍可邀请，但保留其保护状态提示。
   const selectedAbnormal = useMemo(
     () => (selectedAccount ? accountAbnormalKey(selectedAccount) : null),
     [selectedAccount],
@@ -526,6 +577,14 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
       })
       setResult(res.result)
       if (res.ok) {
+        const invitedAt = new Date().toISOString()
+        mergeInviteRecipients((res.recorded_emails ?? []).map((email) => ({
+          email,
+          state: 'sent',
+          sender_account_id: account.id,
+          invited_at: invitedAt,
+        })))
+        setEmailsText('')
         showToast(t('invite.sendSuccess'), 'success')
       } else {
         showToast(t('invite.sendUpstreamFailed', { code: res.result.status_code }), 'error')
@@ -745,6 +804,8 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
                       selectedEmails={selectedRecipientEmails}
                       onToggle={toggleRecipientEmail}
                       excludeEmail={selectedAccount?.email}
+                      inviteRecipientIndex={inviteRecipientIndex}
+                      onRecipientsChecked={mergeInviteRecipients}
                       creditsMap={creditsMap}
                       onLoadCredits={loadVisibleCredits}
                       onProbeCredits={probeCreditsByIds}
@@ -773,6 +834,26 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
                   {parsed.invalid.length > 0 && (
                     <p className="mt-1.5 break-all text-xs text-red-500">
                       {t('invite.invalidList')} {parsed.invalid.join(', ')}
+                    </p>
+                  )}
+                  {recipientCheckPending && parsed.valid.length > 0 && (
+                    <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Loader2 className="size-3.5 animate-spin" />
+                      <span>{t('invite.recipientChecking')}</span>
+                    </p>
+                  )}
+                  {recipientCheckError && parsed.valid.length > 0 && (
+                    <p className="mt-1.5 flex items-start gap-1.5 text-xs text-red-500">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                      <span>{t('invite.recipientCheckFailed', { error: recipientCheckError })}</span>
+                    </p>
+                  )}
+                  {duplicateInviteEmails.length > 0 && (
+                    <p className="mt-1.5 flex items-start gap-1.5 text-xs text-red-500">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                      <span className="break-all">
+                        {t('invite.alreadyInvitedEmails', { emails: duplicateInviteEmails.join(', ') })}
+                      </span>
                     </p>
                   )}
                   {overLimit && (
@@ -1223,13 +1304,15 @@ function InviteCreditsBadge({ plan }: { plan?: InviteGuideAccountPlan }) {
 }
 
 // RecipientAccountPicker 从账号列表挑选受邀邮箱，支持单选与连续多选（勾选不关闭
-// 下拉）。候选由服务端分页搜索驱动，与左列账号选择器同一条数据通道；只展示有邮箱
-// 的账号，按邮箱去重（team 空间会让同一登录邮箱出现在多个账号行里），并排除当前
-// 发起账号自己——给自己发邀请必然被上游拒绝。
+// 下拉）。候选由服务端分页搜索驱动，与左列账号选择器同一条数据通道；排除禁用、
+// 错误和封禁账号，只展示有邮箱的账号，按邮箱去重（team 空间会让同一登录邮箱出现
+// 在多个账号行里），并排除当前发起账号自己——给自己发邀请必然被上游拒绝。
 function RecipientAccountPicker({
   selectedEmails,
   onToggle,
   excludeEmail,
+  inviteRecipientIndex,
+  onRecipientsChecked,
   creditsMap,
   onLoadCredits,
   onProbeCredits,
@@ -1238,6 +1321,8 @@ function RecipientAccountPicker({
   selectedEmails: Set<string>
   onToggle: (email: string) => void
   excludeEmail?: string
+  inviteRecipientIndex: InviteRecipientIndex
+  onRecipientsChecked: (recipients: InviteRecipientRecord[]) => void
   // 与发起方下拉共享同一份积分数据：任一侧探测过的账号，另一侧立即可见。
   creditsMap: Record<number, InviteGuideAccountPlan>
   onLoadCredits: (ids: number[]) => void
@@ -1249,6 +1334,8 @@ function RecipientAccountPicker({
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<AccountRow[]>([])
   const [loading, setLoading] = useState(false)
+  const [checkedCandidateEmails, setCheckedCandidateEmails] = useState<Set<string>>(new Set())
+  const [recipientCheckError, setRecipientCheckError] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   // 只在展开时拉取，收起后不做任何后台请求。输入搜索词走 250ms 防抖，
@@ -1289,29 +1376,52 @@ function RecipientAccountPicker({
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [open])
 
+  const candidates = useMemo(
+    () => inviteRecipientCandidates(rows, excludeEmail),
+    [rows, excludeEmail],
+  )
+  const candidateEmails = useMemo(
+    () => normalizeInviteEmails(candidates.map((row) => row.email ?? '')),
+    [candidates],
+  )
+
+  // 下拉每一页候选一次批量查询邀请记录。返回列表只包含已经存在的邮箱；请求中的
+  // 其他邮箱在本轮完成后才允许选择，避免状态还没回来时短暂放行重复邀请。
+  useEffect(() => {
+    setCheckedCandidateEmails(new Set())
+    setRecipientCheckError(null)
+    if (!open || candidateEmails.length === 0) return
+
+    const controller = new AbortController()
+    void api.checkInviteRecipients(candidateEmails, controller.signal)
+      .then((response) => {
+        if (controller.signal.aborted) return
+        onRecipientsChecked(response.recipients ?? [])
+        setCheckedCandidateEmails(new Set(candidateEmails))
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setRecipientCheckError(getErrorMessage(err))
+      })
+    return () => controller.abort()
+  }, [open, candidateEmails, onRecipientsChecked])
+
+  const creditCandidates = useMemo(
+    () => candidates.filter((row) => {
+      const email = row.email ?? ''
+      const key = normalizeInviteEmail(email)
+      return checkedCandidateEmails.has(key) && !inviteRecipientRecord(inviteRecipientIndex, email)
+    }),
+    [candidates, checkedCandidateEmails, inviteRecipientIndex],
+  )
+
   // 候选可见时回读网关缓存里的积分（纯缓存读，零上游），让「单次 250」这类
   // 信息直接标在行上——单次收益低的号更适合当受邀方，一眼可辨。
   useEffect(() => {
-    if (!open || rows.length === 0) return
-    const ids = rows.map((row) => row.id)
+    if (!open || creditCandidates.length === 0) return
+    const ids = creditCandidates.map((row) => row.id)
     const timer = window.setTimeout(() => onLoadCredits(ids), 300)
     return () => window.clearTimeout(timer)
-  }, [open, rows, onLoadCredits])
-
-  const excluded = (excludeEmail ?? '').trim().toLowerCase()
-  const candidates = useMemo(() => {
-    const seen = new Set<string>()
-    const out: AccountRow[] = []
-    for (const row of rows) {
-      const email = row.email?.trim()
-      if (!email) continue
-      const key = email.toLowerCase()
-      if (key === excluded || seen.has(key)) continue
-      seen.add(key)
-      out.push(row)
-    }
-    return out
-  }, [rows, excluded])
+  }, [open, creditCandidates, onLoadCredits])
 
   return (
     <div ref={containerRef} className="relative">
@@ -1347,17 +1457,23 @@ function RecipientAccountPicker({
             {candidates.length > 0 ? (
               candidates.map((row) => {
                 const email = row.email?.trim() ?? ''
-                const checked = selectedEmails.has(email.toLowerCase())
+                const key = normalizeInviteEmail(email)
+                const checked = selectedEmails.has(key)
+                const invited = inviteRecipientRecord(inviteRecipientIndex, email)
+                const statusChecked = checkedCandidateEmails.has(key) || Boolean(invited)
+                const disabled = Boolean(invited) || !statusChecked
                 return (
                   <button
                     key={row.id}
                     type="button"
                     role="option"
                     aria-selected={checked}
+                    aria-disabled={disabled}
+                    disabled={disabled}
                     // preventDefault 保住输入框焦点，连续勾选时不触发下拉外的失焦。
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => onToggle(email)}
-                    className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent/70 hover:text-accent-foreground"
+                    className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent/70 hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
                   >
                     <span
                       className={`flex size-4 shrink-0 items-center justify-center rounded border transition-colors ${
@@ -1367,7 +1483,13 @@ function RecipientAccountPicker({
                       {checked && <Check className="size-3" />}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{email}</span>
-                    <RecipientCreditsHint plan={creditsMap[row.id]} />
+                    {invited ? (
+                      <span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                        {t('invite.recipientInvited')}
+                      </span>
+                    ) : (
+                      <RecipientCreditsHint plan={creditsMap[row.id]} />
+                    )}
                     {row.plan_type && (
                       <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                         {row.plan_type}
@@ -1383,12 +1505,16 @@ function RecipientAccountPicker({
             )}
           </div>
           <div className="flex items-center justify-between gap-2 border-t bg-muted/30 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-            <span className="min-w-0 truncate">{t('invite.recipientToggleHint')}</span>
+            <span className={`min-w-0 truncate ${recipientCheckError ? 'text-red-500' : ''}`}>
+              {recipientCheckError
+                ? t('invite.recipientCheckFailed', { error: recipientCheckError })
+                : t('invite.recipientToggleHint')}
+            </span>
             <button
               type="button"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => onProbeCredits(candidates.map((row) => row.id))}
-              disabled={probing}
+              onClick={() => onProbeCredits(creditCandidates.map((row) => row.id))}
+              disabled={probing || creditCandidates.length === 0}
               className="inline-flex shrink-0 items-center gap-1 rounded-md border bg-background px-2 py-0.5 font-medium transition-colors hover:text-foreground disabled:opacity-50"
             >
               {probing && <Loader2 className="size-3 animate-spin" />}

@@ -1,14 +1,21 @@
 package admin
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
+	"github.com/gin-gonic/gin"
 )
 
 func TestCollectInviteEmails(t *testing.T) {
@@ -168,5 +175,237 @@ func TestInviteCacheScopeNormalization(t *testing.T) {
 	}
 	if inviteTrackingScope(programA, periodA, 10) == inviteTrackingScope(programA, periodA, limitA) {
 		t.Fatal("different limits must not share a scope")
+	}
+}
+
+func newInviteRecipientTestHandler(t *testing.T) (*Handler, *database.DB) {
+	t.Helper()
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "invite-recipients.db"))
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 1})
+	store.AddAccount(&auth.Account{
+		DBID:        7,
+		AccessToken: "test-access-token",
+		AccountID:   "workspace-7",
+		Email:       "sender@example.com",
+	})
+	return &Handler{db: db, store: store}, db
+}
+
+func invokeInviteJSON(t *testing.T, method, target string, body any, params gin.Params, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(method, target, bytes.NewReader(payload))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = params
+	handler(c)
+	return recorder
+}
+
+func TestSendInvitePersistsSuccessAndRejectsDuplicate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, db := newInviteRecipientTestHandler(t)
+	calls := 0
+	h.sendCodexInvite = func(_ context.Context, _ *auth.Account, _, programID, entrypoint string, emails []string) (*proxy.CodexInviteResult, error) {
+		calls++
+		return &proxy.CodexInviteResult{
+			OK: true, StatusCode: http.StatusOK, RequestID: "req-success",
+			ProgramID: programID, Entrypoint: entrypoint, Emails: emails,
+		}, nil
+	}
+
+	requestBody := map[string]any{"emails": []string{" Recipient@Example.com "}}
+	first := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/7/invite", requestBody,
+		gin.Params{{Key: "id", Value: "7"}}, h.SendInvite)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	var response struct {
+		OK             bool     `json:"ok"`
+		RecordedEmails []string `json:"recorded_emails"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode first response: %v", err)
+	}
+	if !response.OK || len(response.RecordedEmails) != 1 {
+		t.Fatalf("unexpected first response: %+v", response)
+	}
+	recipients, err := db.ListCodexInviteRecipientsByEmails(context.Background(), []string{"recipient@example.com"})
+	if err != nil || len(recipients) != 1 {
+		t.Fatalf("read ledger: %v %+v", err, recipients)
+	}
+	if recipients[0].State != database.CodexInviteRecipientStateSent || recipients[0].RequestID != "req-success" {
+		t.Fatalf("recipient not finalized: %+v", recipients[0])
+	}
+
+	second := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/7/invite", requestBody,
+		gin.Params{{Key: "id", Value: "7"}}, h.SendInvite)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("upstream called %d times, want once", calls)
+	}
+}
+
+func TestSendInviteReleasesDefinitiveFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, db := newInviteRecipientTestHandler(t)
+	calls := 0
+	h.sendCodexInvite = func(_ context.Context, _ *auth.Account, _, programID, entrypoint string, emails []string) (*proxy.CodexInviteResult, error) {
+		calls++
+		return &proxy.CodexInviteResult{
+			OK: false, StatusCode: http.StatusForbidden,
+			ProgramID: programID, Entrypoint: entrypoint, Emails: emails,
+			UpstreamMessage: "account is not eligible",
+		}, nil
+	}
+	body := map[string]any{"emails": []string{"retry@example.com"}}
+	for i := 0; i < 2; i++ {
+		response := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/7/invite", body,
+			gin.Params{{Key: "id", Value: "7"}}, h.SendInvite)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d status=%d body=%s", i+1, response.Code, response.Body.String())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("upstream called %d times, want retry to be allowed", calls)
+	}
+	items, err := db.ListCodexInviteRecipientsByEmails(context.Background(), []string{"retry@example.com"})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("definitive failures must release reservation: %v %+v", err, items)
+	}
+}
+
+func TestSendInviteChallengeReleasesReservation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, db := newInviteRecipientTestHandler(t)
+	calls := 0
+	h.sendCodexInvite = func(_ context.Context, _ *auth.Account, _, programID, entrypoint string, emails []string) (*proxy.CodexInviteResult, error) {
+		calls++
+		return &proxy.CodexInviteResult{
+			OK: false, StatusCode: http.StatusForbidden, Challenged: true,
+			ProgramID: programID, Entrypoint: entrypoint, Emails: emails,
+		}, nil
+	}
+	body := map[string]any{"emails": []string{"challenge@example.com"}}
+	for i := 0; i < 2; i++ {
+		response := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/7/invite", body,
+			gin.Params{{Key: "id", Value: "7"}}, h.SendInvite)
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d status=%d body=%s", i+1, response.Code, response.Body.String())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("challenge should allow retry, upstream calls=%d", calls)
+	}
+	items, err := db.ListCodexInviteRecipientsByEmails(context.Background(), []string{"challenge@example.com"})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("challenge reservation not released: %v %+v", err, items)
+	}
+}
+
+func TestSendInviteKeepsAmbiguousTransportFailureBlocked(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, db := newInviteRecipientTestHandler(t)
+	calls := 0
+	h.sendCodexInvite = func(context.Context, *auth.Account, string, string, string, []string) (*proxy.CodexInviteResult, error) {
+		calls++
+		return nil, errors.New("connection reset after write")
+	}
+	body := map[string]any{"emails": []string{"uncertain@example.com"}}
+	first := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/7/invite", body,
+		gin.Params{{Key: "id", Value: "7"}}, h.SendInvite)
+	if first.Code != http.StatusBadGateway {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	items, err := db.ListCodexInviteRecipientsByEmails(context.Background(), []string{"UNCERTAIN@example.com"})
+	if err != nil || len(items) != 1 || items[0].State != database.CodexInviteRecipientStateUnknown {
+		t.Fatalf("ambiguous result not blocked: %v %+v", err, items)
+	}
+	second := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/7/invite", body,
+		gin.Params{{Key: "id", Value: "7"}}, h.SendInvite)
+	if second.Code != http.StatusConflict || calls != 1 {
+		t.Fatalf("second status=%d calls=%d body=%s", second.Code, calls, second.Body.String())
+	}
+}
+
+func TestSendInviteRecordsRecipientAlreadyInvited(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, db := newInviteRecipientTestHandler(t)
+	h.sendCodexInvite = func(_ context.Context, _ *auth.Account, _, programID, entrypoint string, emails []string) (*proxy.CodexInviteResult, error) {
+		return &proxy.CodexInviteResult{
+			OK: false, StatusCode: http.StatusForbidden, RequestID: "req-existing",
+			ProgramID: programID, Entrypoint: entrypoint, Emails: emails,
+			UpstreamMessage: "此人已收到推荐邀请", FailedEmails: []string{"existing@example.com"},
+		}, nil
+	}
+	body := map[string]any{"emails": []string{"existing@example.com", "not-sent@example.com"}}
+	response := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/7/invite", body,
+		gin.Params{{Key: "id", Value: "7"}}, h.SendInvite)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	items, err := db.ListCodexInviteRecipientsByEmails(context.Background(), []string{"existing@example.com"})
+	if err != nil || len(items) != 1 || items[0].State != database.CodexInviteRecipientStateKnownInvited {
+		t.Fatalf("known upstream invite not retained: %v %+v", err, items)
+	}
+	released, err := db.ListCodexInviteRecipientsByEmails(context.Background(), []string{"not-sent@example.com"})
+	if err != nil || len(released) != 0 {
+		t.Fatalf("non-failed address from rejected batch should be released: %v %+v", err, released)
+	}
+}
+
+func TestCheckInviteRecipientsReturnsOnlyRecordedEmails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, db := newInviteRecipientTestHandler(t)
+	_, err := db.UpsertCodexInviteRecipientsFromTracking(context.Background(), 7,
+		proxy.DefaultProgramID, proxy.DefaultEntrypoint, http.StatusOK,
+		[]database.CodexInviteRecipientEvidence{{Email: "tracked@example.com", InvitedAt: time.Now()}})
+	if err != nil {
+		t.Fatalf("seed tracking recipient: %v", err)
+	}
+
+	response := invokeInviteJSON(t, http.MethodPost, "/api/admin/accounts/invite/recipients/check",
+		map[string]any{"emails": []string{"TRACKED@example.com", "fresh@example.com"}}, nil,
+		h.CheckInviteRecipients)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Recipients []database.CodexInviteRecipient `json:"recipients"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(decoded.Recipients) != 1 || decoded.Recipients[0].Email != "tracked@example.com" {
+		t.Fatalf("unexpected recipients: %+v", decoded.Recipients)
+	}
+}
+
+func TestRememberInviteTrackingRecipientsBackfillsLedger(t *testing.T) {
+	h, db := newInviteRecipientTestHandler(t)
+	h.rememberInviteTrackingRecipients(context.Background(), 7, proxy.DefaultProgramID,
+		proxy.DefaultEntrypoint, &proxy.CodexInviteTracking{
+			OK: true, StatusCode: http.StatusOK,
+			Items: []proxy.CodexInviteTrackingItem{{
+				Email: "history@example.com", Status: "redeemed",
+				CreatedAt: "2026-08-03T05:24:58.842913Z",
+			}},
+		})
+	items, err := db.ListCodexInviteRecipientsByEmails(context.Background(), []string{"history@example.com"})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("read backfill: %v %+v", err, items)
+	}
+	if items[0].State != database.CodexInviteRecipientStateKnownInvited || items[0].UpstreamRecipientStatus != "redeemed" {
+		t.Fatalf("unexpected backfill: %+v", items[0])
 	}
 }

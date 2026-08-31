@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.8.7 - 2026-08-31
+
+### Features
+
+- **Codex invite recipients are now protected by a durable global at-most-once ledger.** Recipient emails are normalized case-insensitively and atomically reserved before the upstream request, successful sends and historical tracking records remain blocked across restarts and sender accounts, definitive failures release their reservation, and ambiguous transport outcomes stay conservatively unavailable instead of risking a duplicate email. The invite page batch-checks both pasted emails and account-list candidates, keeps previously invited accounts visible with a disabled “Invited” marker, blocks manual duplicates, and clears the recipient input only after a successful send.
+
+### Fixes
+
+- **Disabled, unauthorized, errored, and banned accounts no longer appear in Codex invite selectors.** The sender and recipient dropdowns now share the same eligibility filter while retaining locked and temporarily rate-limited accounts whose referral credentials remain usable; recipient emails are still deduplicated and the selected sender is excluded.
+
 ## v2.8.6 - 2026-08-31
 
 ### Features

@@ -545,6 +545,21 @@ export interface InviteResult {
 export interface InviteResponse {
   ok: boolean
   result: InviteResult
+  // recorded_emails 是本次成功写入邀请记录的邮箱；失败响应中可能缺失。
+  recorded_emails?: string[]
+}
+
+// InviteRecipientRecord 是一个已被邀请的收件人。后端按 trim + lower(email)
+// 做唯一约束；前端保留原始 email 仅用于展示，其余字段用于辅助辨认来源与时间。
+export interface InviteRecipientRecord {
+  email: string
+  state: string
+  sender_account_id?: number
+  invited_at?: ISODateString
+}
+
+export interface InviteRecipientsCheckResponse {
+  recipients: InviteRecipientRecord[]
 }
 
 // InviteGrant 是一条奖励条目（邀请人 / 受邀人各一条）。

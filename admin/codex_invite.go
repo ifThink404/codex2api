@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,11 +16,13 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 const (
-	inviteDefaultMaxEmails = 10
-	inviteUpperMaxEmails   = 50
+	inviteDefaultMaxEmails        = 10
+	inviteUpperMaxEmails          = 50
+	inviteRecipientCheckMaxEmails = 200
 )
 
 const (
@@ -201,6 +204,36 @@ type inviteRequest struct {
 	MaxEmails  int    `json:"max_emails"`
 }
 
+type inviteRecipientCheckRequest struct {
+	Emails []string `json:"emails"`
+}
+
+// CheckInviteRecipients 批量查询收件邮箱是否已经被本网关预占或邀请过。
+// POST /api/accounts/invite/recipients/check
+func (h *Handler) CheckInviteRecipients(c *gin.Context) {
+	if h.db == nil {
+		writeError(c, http.StatusServiceUnavailable, "邀请邮箱账本不可用")
+		return
+	}
+
+	var req inviteRecipientCheckRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	emails, err := collectInviteEmails(req.Emails, "", inviteRecipientCheckMaxEmails)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	recipients, err := h.db.ListCodexInviteRecipientsByEmails(c.Request.Context(), emails)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "查询邀请邮箱状态失败: "+err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"recipients": recipients})
+}
+
 // SendInvite 通过指定账号向 ChatGPT 推荐邀请端点发送邀请邮件。
 // POST /api/accounts/:id/invite
 func (h *Handler) SendInvite(c *gin.Context) {
@@ -239,6 +272,11 @@ func (h *Handler) SendInvite(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "账号没有可用的 access token，请先刷新账号")
 		return
 	}
+	if h.db == nil {
+		// 不能在没有持久账本的情况下先发邮件：上游成功后将无法阻止再次邀请。
+		writeError(c, http.StatusServiceUnavailable, "邀请邮箱账本不可用")
+		return
+	}
 
 	proxyURL := strings.TrimSpace(req.ProxyURL)
 	if proxyURL == "" {
@@ -249,10 +287,64 @@ func (h *Handler) SendInvite(c *gin.Context) {
 	defer cancel()
 
 	programID, entrypoint := proxy.NormalizeInviteProgram(req.ProgramID, req.Entrypoint)
-	result, err := proxy.SendCodexInvite(ctx, account, proxyURL, programID, entrypoint, emails)
+	reservationID := uuid.NewString()
+	if _, err := h.db.ReserveCodexInviteRecipients(ctx, reservationID, account.DBID, programID, entrypoint, emails); err != nil {
+		var conflict *database.CodexInviteRecipientConflictError
+		if errors.As(err, &conflict) {
+			writeError(c, http.StatusConflict, "以下邮箱已经邀请过或正在发送，不能重复邀请: "+strings.Join(conflict.Emails, ", "))
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "预占邀请邮箱失败: "+err.Error())
+		return
+	}
+
+	sendInvite := h.sendCodexInvite
+	if sendInvite == nil {
+		sendInvite = proxy.SendCodexInvite
+	}
+	result, err := sendInvite(ctx, account, proxyURL, programID, entrypoint, emails)
 	if err != nil {
+		// 网络错误不能证明上游没有受理。为保证同一邮箱至多发送一次，保守标记为
+		// unknown，等待 tracking 或管理员核对，而不是自动释放后允许立即重试。
+		if _, markErr := h.db.MarkCodexInviteRecipientsUnknown(c.Request.Context(), reservationID, "", 0); markErr != nil {
+			log.Printf("标记邀请邮箱结果未知失败: reservation=%s err=%v", reservationID, markErr)
+		}
 		writeError(c, http.StatusBadGateway, "邀请请求失败: "+err.Error())
 		return
+	}
+
+	if result.Challenged {
+		// 挑战页明确没有进入邀请业务端点，可以安全释放，保留输入供用户稍后重试。
+		if _, releaseErr := h.db.ReleaseCodexInviteRecipients(c.Request.Context(), reservationID); releaseErr != nil {
+			log.Printf("释放被挑战的邀请邮箱失败: reservation=%s err=%v", reservationID, releaseErr)
+		}
+	} else if !result.OK {
+		// 上游明确给出业务拒绝时本次没有成功发送。若原因明确说明收件人已收到
+		// 邀请，则把对应邮箱记为 known_invited；其余预占释放，允许修正后重试。
+		observedAt := time.Now()
+		evidence := inviteRecipientEvidenceFromInviteItems(result.Invites, observedAt)
+		if inviteFailureIndicatesAlreadyInvited(result.UpstreamMessage) && len(result.FailedEmails) > 0 {
+			evidence = append(evidence, inviteRecipientEvidenceFromEmails(result.FailedEmails, observedAt)...)
+		}
+		canRelease := true
+		if len(evidence) > 0 {
+			if _, markErr := h.db.MarkCodexInviteRecipientsKnownInvited(c.Request.Context(), reservationID,
+				result.RequestID, result.StatusCode, evidence, observedAt); markErr != nil {
+				// 上游已经给出收件人级证据，但本地没能精确固化时不能解锁重试；
+				// 把本批剩余预占转 unknown，宁可人工核对也不冒发第二封的风险。
+				canRelease = false
+				log.Printf("记录上游已邀请邮箱失败: reservation=%s err=%v", reservationID, markErr)
+				if _, unknownErr := h.db.MarkCodexInviteRecipientsUnknown(c.Request.Context(), reservationID,
+					result.RequestID, result.StatusCode); unknownErr != nil {
+					log.Printf("保守锁定邀请邮箱失败: reservation=%s err=%v", reservationID, unknownErr)
+				}
+			}
+		}
+		if canRelease {
+			if _, releaseErr := h.db.ReleaseCodexInviteRecipients(c.Request.Context(), reservationID); releaseErr != nil {
+				log.Printf("释放失败邀请邮箱预占失败: reservation=%s err=%v", reservationID, releaseErr)
+			}
+		}
 	}
 
 	// 只要请求真到过上游，配额就可能已经动过——收件人级被拒也可能已扣掉发送次数。
@@ -271,10 +363,104 @@ func (h *Handler) SendInvite(c *gin.Context) {
 		return
 	}
 
+	invitedAt := time.Now()
+	evidence := inviteRecipientEvidenceFromInviteItems(result.Invites, invitedAt)
+	if _, finalizeErr := h.db.FinalizeCodexInviteRecipients(c.Request.Context(), reservationID,
+		result.RequestID, result.StatusCode, evidence, invitedAt); finalizeErr != nil {
+		// 邮件已经发出，绝不能把成功响应改成可重试的失败。预占行仍会阻止重复发送。
+		log.Printf("固化邀请邮箱成功状态失败: reservation=%s err=%v", reservationID, finalizeErr)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"ok":     true,
-		"result": result,
+		"ok":              true,
+		"result":          result,
+		"recorded_emails": emails,
 	})
+}
+
+func inviteFailureIndicatesAlreadyInvited(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" {
+		return false
+	}
+	if strings.Contains(normalized, "已") &&
+		(strings.Contains(normalized, "邀请") || strings.Contains(normalized, "邀請")) {
+		return true
+	}
+	for _, marker := range []string{
+		"already invited",
+		"already received an invite",
+		"already received a referral",
+		"has already been invited",
+		"previously invited",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func inviteRecipientEvidenceFromEmails(emails []string, observedAt time.Time) []database.CodexInviteRecipientEvidence {
+	evidence := make([]database.CodexInviteRecipientEvidence, 0, len(emails))
+	for _, email := range emails {
+		if strings.TrimSpace(email) == "" {
+			continue
+		}
+		evidence = append(evidence, database.CodexInviteRecipientEvidence{
+			Email:     email,
+			InvitedAt: observedAt,
+		})
+	}
+	return evidence
+}
+
+func inviteRecipientEvidenceFromInviteItems(items []proxy.CodexInviteItem, observedAt time.Time) []database.CodexInviteRecipientEvidence {
+	evidence := make([]database.CodexInviteRecipientEvidence, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.Email) == "" {
+			continue
+		}
+		evidence = append(evidence, database.CodexInviteRecipientEvidence{
+			Email:      item.Email,
+			ReferralID: item.ReferralID,
+			InviteURL:  item.InviteURL,
+			InvitedAt:  observedAt,
+		})
+	}
+	return evidence
+}
+
+// rememberInviteTrackingRecipients 把上游 tracking 证明存在的历史邀请并入全局账本。
+// 无论邀请已兑换、过期还是可重发，产品规则都是「一个邮箱只邀请一次」，因此都保留。
+func (h *Handler) rememberInviteTrackingRecipients(ctx context.Context, accountID int64, programID, entrypoint string, result *proxy.CodexInviteTracking) {
+	if h.db == nil || result == nil || !result.OK || result.Challenged || len(result.Items) == 0 {
+		return
+	}
+	evidence := make([]database.CodexInviteRecipientEvidence, 0, len(result.Items))
+	for _, item := range result.Items {
+		if strings.TrimSpace(item.Email) == "" {
+			continue
+		}
+		invitedAt := time.Time{}
+		if item.CreatedAt != "" {
+			invitedAt, _ = time.Parse(time.RFC3339Nano, item.CreatedAt)
+		}
+		evidence = append(evidence, database.CodexInviteRecipientEvidence{
+			Email:                   item.Email,
+			ReferralID:              item.ReferralID,
+			InviteURL:               item.InviteURL,
+			UpstreamRecipientStatus: item.Status,
+			InvitedAt:               invitedAt,
+		})
+	}
+	if len(evidence) == 0 {
+		return
+	}
+	_, err := h.db.UpsertCodexInviteRecipientsFromTracking(ctx, accountID, programID, entrypoint, result.StatusCode, evidence)
+	if err != nil {
+		log.Printf("回填邀请邮箱账本失败: account=%d err=%v", accountID, err)
+	}
 }
 
 // GetInviteEligibility 查询指定账号的推荐邀请资格与剩余配额。
@@ -330,7 +516,7 @@ func (h *Handler) GetInviteTracking(c *gin.Context) {
 	}
 
 	rawLimit, _ := strconv.Atoi(strings.TrimSpace(c.Query("limit")))
-	programID, _ := proxy.NormalizeInviteProgram(strings.TrimSpace(c.Query("program_id")), "")
+	programID, entrypoint := proxy.NormalizeInviteProgram(strings.TrimSpace(c.Query("program_id")), "")
 	period, limit := proxy.NormalizeInviteTracking(strings.TrimSpace(c.Query("period")), rawLimit)
 	scope := inviteTrackingScope(programID, period, limit)
 	generation := account.GetCredentialGeneration()
@@ -340,6 +526,7 @@ func (h *Handler) GetInviteTracking(c *gin.Context) {
 		var cached proxy.CodexInviteTracking
 		if meta := h.readInviteCache(reqCtx, inviteTrackingCacheNamespace,
 			database.CodexInviteSnapshotTracking, account.DBID, generation, scope, &cached); meta != nil {
+			h.rememberInviteTrackingRecipients(reqCtx, account.DBID, programID, entrypoint, &cached)
 			c.JSON(http.StatusOK, gin.H{"ok": cached.OK, "result": cached, "cache": meta})
 			return
 		}
@@ -355,6 +542,7 @@ func (h *Handler) GetInviteTracking(c *gin.Context) {
 	}
 
 	if result.OK && !result.Challenged {
+		h.rememberInviteTrackingRecipients(reqCtx, account.DBID, programID, entrypoint, result)
 		h.writeInviteCache(reqCtx, inviteTrackingCacheNamespace, database.CodexInviteSnapshotTracking,
 			account.DBID, generation, scope, result.StatusCode, inviteTrackingSnapshotTTL, result)
 	}

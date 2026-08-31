@@ -200,6 +200,7 @@ func (h *Handler) probeInviteEligibilityForGuide(ctx context.Context, accountID 
 	var cachedTracking proxy.CodexInviteTracking
 	if h.readInviteCache(ctx, inviteTrackingCacheNamespace, database.CodexInviteSnapshotTracking,
 		accountID, generation, trackingScope, &cachedTracking) != nil {
+		h.rememberInviteTrackingRecipients(ctx, accountID, programID, entrypoint, &cachedTracking)
 		return
 	}
 	trackingCtx, trackingCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -211,6 +212,7 @@ func (h *Handler) probeInviteEligibilityForGuide(ctx context.Context, accountID 
 		return
 	}
 	if tracking.OK && !tracking.Challenged {
+		h.rememberInviteTrackingRecipients(ctx, accountID, programID, entrypoint, tracking)
 		h.writeInviteCache(ctx, inviteTrackingCacheNamespace, database.CodexInviteSnapshotTracking,
 			accountID, generation, trackingScope, tracking.StatusCode, inviteTrackingSnapshotTTL, tracking)
 	}
@@ -324,6 +326,7 @@ func (h *Handler) buildInviteGuidePlan(ctx context.Context, ids []int64, emailBu
 		var tracking proxy.CodexInviteTracking
 		if h.readInviteCache(ctx, inviteTrackingCacheNamespace, database.CodexInviteSnapshotTracking,
 			id, account.GetCredentialGeneration(), trackingScope, &tracking) != nil {
+			h.rememberInviteTrackingRecipients(ctx, id, programID, entrypoint, &tracking)
 			sent, accepted, pending := inviteTrackingCounts(tracking.Items)
 			item.InvitesSent, item.InvitesAccepted, item.InvitesPending = &sent, &accepted, &pending
 		}

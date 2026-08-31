@@ -69,6 +69,7 @@ import type {
   ImagePromptTemplatePayload,
   ImagePromptTemplatesResponse,
   InviteResponse,
+  InviteRecipientsCheckResponse,
   InviteEligibilityResponse,
   InviteGuidePlan,
   InviteTrackingResponse,
@@ -907,6 +908,12 @@ export const api = {
   },
   sendInvite: (id: number, data: { emails?: string[]; emails_text?: string; program_id?: string; entrypoint?: string; proxy_url?: string; max_emails?: number }) =>
     request<InviteResponse>(`/accounts/${id}/invite`, { method: 'POST', body: JSON.stringify(data) }),
+  checkInviteRecipients: (emails: string[], signal?: AbortSignal) =>
+    request<InviteRecipientsCheckResponse>('/accounts/invite/recipients/check', {
+      method: 'POST',
+      body: JSON.stringify({ emails }),
+      signal,
+    }),
   // refresh=1 绕过网关的资格/记录缓存直连上游，用于手动刷新与发送邀请后的重拉。
   getInviteEligibility: (id: number, params?: { program_id?: string; entrypoint?: string; proxy_url?: string; refresh?: boolean }) => {
     const search = new URLSearchParams()
