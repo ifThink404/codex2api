@@ -135,6 +135,114 @@ type antigravityQuotaResponse struct {
 	} `json:"deprecatedModelIds"`
 }
 
+const (
+	// antigravityValidationRequiredReason 是 Google 对账号触发风控验证时错误体
+	// 里 details[].reason 的取值。该栅栏是账号侧的持续状态,不完成验证每次
+	// 同步都会命中,渲染时不能写成 "temporarily unavailable"。
+	antigravityValidationRequiredReason = "VALIDATION_REQUIRED"
+	// antigravityTOSViolationReason 是账号因违反服务条款被停用的取值,
+	// 同样是持续性封禁,唯一出路是错误体里附带的申诉表单链接。
+	antigravityTOSViolationReason = "TOS_VIOLATION"
+)
+
+// antigravityUpstreamFailure 保留一次上游调用的结构化失败
+// (retrieveUserQuotaSummary / loadCodeAssist 等),用于把真实原因带进
+// 同步 warning 而非只回 bool 或塞整坨 JSON 原文。
+type antigravityUpstreamFailure struct {
+	Status        int
+	Reason        string
+	Message       string
+	ValidationURL string
+	AppealURL     string
+}
+
+type antigravityErrorPayload struct {
+	Error struct {
+		Message string `json:"message"`
+		Details []struct {
+			Reason string `json:"reason"`
+			Metadata struct {
+				ValidationURL string `json:"validation_url"`
+				AppealURL     string `json:"appeal_url"`
+			} `json:"metadata"`
+		} `json:"details"`
+	} `json:"error"`
+}
+
+// antigravityUpstreamFailureFrom 把 HTTP/网络失败折叠成可渲染的诊断。
+func antigravityUpstreamFailureFrom(status int, err error) antigravityUpstreamFailure {
+	failure := antigravityUpstreamFailure{Status: status, Message: strings.TrimSpace(safeAntigravityError(err))}
+	var httpErr *antigravityHTTPError
+	if !errors.As(err, &httpErr) || len(httpErr.rawBody) == 0 {
+		return failure
+	}
+	var payload antigravityErrorPayload
+	if json.Unmarshal(httpErr.rawBody, &payload) != nil {
+		return failure
+	}
+	if message := strings.TrimSpace(payload.Error.Message); message != "" {
+		failure.Message = message
+	}
+	for _, detail := range payload.Error.Details {
+		if failure.Reason == "" {
+			failure.Reason = strings.TrimSpace(detail.Reason)
+		}
+		if failure.ValidationURL == "" {
+			failure.ValidationURL = strings.TrimSpace(detail.Metadata.ValidationURL)
+		}
+		if failure.AppealURL == "" {
+			failure.AppealURL = strings.TrimSpace(detail.Metadata.AppealURL)
+		}
+	}
+	return failure
+}
+
+// antigravityActionableFailureWarning 渲染一次带操作入口的上游失败。
+// subject 指明是什么不可用(如 "Antigravity quota summary")。
+// VALIDATION_REQUIRED / TOS_VIOLATION 都不是暂时性抖动:前者要账号所有者
+// 完成验证、后者只能走申诉表单,必须把链接带出来而不是含糊的 "temporarily"。
+func antigravityActionableFailureWarning(subject string, failure antigravityUpstreamFailure) string {
+	switch failure.Reason {
+	case antigravityValidationRequiredReason:
+		message := subject + " unavailable: Google requires the account owner to verify the account"
+		if failure.Message != "" {
+			message += " (" + failure.Message + ")"
+		}
+		if failure.ValidationURL != "" {
+			message += ". Sign in as this Google account in a browser and open the verification URL: " + failure.ValidationURL
+		}
+		return message
+	case antigravityTOSViolationReason:
+		message := subject + " unavailable: Google disabled this account for a Terms of Service violation"
+		if failure.Message != "" {
+			message += " (" + failure.Message + ")"
+		}
+		if failure.AppealURL != "" {
+			message += ". Submit an appeal to restore access: " + failure.AppealURL
+		}
+		return message
+	}
+	detail := failure.Message
+	if detail == "" && failure.Status > 0 {
+		detail = fmt.Sprintf("upstream returned HTTP %d", failure.Status)
+	}
+	if detail == "" {
+		detail = "no upstream endpoint succeeded"
+	}
+	return subject + " is temporarily unavailable: " + detail
+}
+
+// antigravityEntitlementsWarning 渲染 loadCodeAssist 失败。非 HTTP 错误
+// (网络/刷新类)原文已足够短,原样保留;HTTP 错误的原文是整坨上游 JSON
+// (appeal_url 等一次性链接埋在里面),折叠成带链接的短文案。
+func antigravityEntitlementsWarning(err error) string {
+	var httpErr *antigravityHTTPError
+	if !errors.As(err, &httpErr) {
+		return safeAntigravityError(err)
+	}
+	return antigravityActionableFailureWarning("Antigravity entitlements", antigravityUpstreamFailureFrom(httpErr.Status, httpErr))
+}
+
 type antigravityQuotaSummaryResponse struct {
 	Groups []struct {
 		DisplayName string `json:"displayName"`
@@ -153,6 +261,11 @@ type antigravityQuotaSummaryResponse struct {
 type antigravityHTTPError struct {
 	Status int
 	Body   string
+	// rawBody keeps the untruncated response body. Body is compacted to 512
+	// bytes for rendering, which can cut structured error payloads mid-field
+	// (e.g. the one-time VALIDATION_REQUIRED verification URL is ~300 bytes
+	// on its own); diagnosis must parse the untouched bytes instead.
+	rawBody []byte
 }
 
 func (e *antigravityHTTPError) Error() string {
@@ -401,7 +514,7 @@ func (c *AntigravityClient) Sync(ctx context.Context, credential AntigravityCred
 		entitlements.Allowed = false
 		entitlements.Reason = "Google quota API denied access"
 	}
-	quotaGroups, quotaGroupsObserved := c.fetchQuotaSummary(ctx, credential.AccessToken, credential.ProjectID)
+	quotaGroups, quotaGroupsObserved, quotaSummaryFailure := c.fetchQuotaSummary(ctx, credential.AccessToken, credential.ProjectID)
 	quota.Groups = quotaGroups
 	aiCredits, aiCreditsObserved := c.fetchAICredits(ctx, credential.AccessToken)
 	quota.AICredits = aiCredits
@@ -414,10 +527,10 @@ func (c *AntigravityClient) Sync(ctx context.Context, credential AntigravityCred
 	}
 	warnings := make([]string, 0, 3)
 	if entitlementErr != nil {
-		warnings = append(warnings, entitlementErr.Error())
+		warnings = append(warnings, antigravityEntitlementsWarning(entitlementErr))
 	}
 	if !quotaGroupsObserved {
-		warnings = append(warnings, "Antigravity quota summary is temporarily unavailable")
+		warnings = append(warnings, antigravityActionableFailureWarning("Antigravity quota summary", quotaSummaryFailure))
 	}
 	if !aiCreditsObserved {
 		warnings = append(warnings, "Antigravity AI credits are temporarily unavailable")
@@ -460,7 +573,7 @@ func antigravityPartialSyncResult(credential AntigravityCredential, profile Anti
 		EntitlementsObserved: entitlementErr == nil,
 	}
 	if entitlementErr != nil {
-		result.Warning = entitlementErr.Error()
+		result.Warning = antigravityEntitlementsWarning(entitlementErr)
 	}
 	return result
 }
@@ -732,20 +845,22 @@ func isTrackedAntigravityModel(model string) bool {
 	return false
 }
 
-func (c *AntigravityClient) fetchQuotaSummary(ctx context.Context, accessToken, projectID string) ([]AntigravityQuotaGroup, bool) {
+func (c *AntigravityClient) fetchQuotaSummary(ctx context.Context, accessToken, projectID string) ([]AntigravityQuotaGroup, bool, antigravityUpstreamFailure) {
 	payload := map[string]any{}
 	if strings.TrimSpace(projectID) != "" {
 		payload["project"] = strings.TrimSpace(projectID)
 	}
+	var failure antigravityUpstreamFailure
 	for _, endpoint := range c.endpoints.QuotaSummary {
 		var response antigravityQuotaSummaryResponse
 		status, err := c.postJSON(ctx, endpoint, accessToken, payload, &response)
 		if err != nil {
+			failure = antigravityUpstreamFailureFrom(status, err)
 			if status == http.StatusForbidden || status == http.StatusNotFound {
 				continue
 			}
 			if status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusTooManyRequests {
-				return nil, false
+				return nil, false, failure
 			}
 			continue
 		}
@@ -764,9 +879,9 @@ func (c *AntigravityClient) fetchQuotaSummary(ctx context.Context, accessToken, 
 			}
 			groups = append(groups, item)
 		}
-		return groups, true
+		return groups, true, failure
 	}
-	return nil, false
+	return nil, false, failure
 }
 
 func (c *AntigravityClient) fetchAICredits(ctx context.Context, accessToken string) (*AntigravityAICredits, bool) {
@@ -836,7 +951,7 @@ func (c *AntigravityClient) doJSON(req *http.Request, output any) error {
 		return errors.New("Antigravity upstream response is too large")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &antigravityHTTPError{Status: response.StatusCode, Body: compactAntigravityBody(body)}
+		return &antigravityHTTPError{Status: response.StatusCode, Body: compactAntigravityBody(body), rawBody: body}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()

@@ -1523,6 +1523,41 @@ func TestRuntimeStatusRouteReturnsDependencySnapshot(t *testing.T) {
 	}
 }
 
+func TestSubscriptionUpgradeRoutesAreNotRegistered(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	tc := cache.NewMemory(4)
+	t.Cleanup(func() { _ = tc.Close() })
+	store := auth.NewStore(db, tc, nil)
+	handler := NewHandler(store, db, tc, nil, "admin-secret")
+	router := gin.New()
+	handler.RegisterRoutes(router)
+
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/admin/accounts/1/subscription"},
+		{http.MethodPost, "/api/admin/accounts/1/subscription/upgrade-quotes"},
+		{http.MethodPost, "/api/admin/accounts/1/subscription/upgrades"},
+		{http.MethodGet, "/api/admin/subscription-upgrades/operation-id"},
+		{http.MethodPost, "/api/admin/subscription-upgrades/operation-id/verify"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(route.method, route.path, nil)
+			request.Header.Set("X-Admin-Key", "admin-secret")
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestUpdateSettingsPersistsAutoResetCreditsAcrossPartialUpdates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

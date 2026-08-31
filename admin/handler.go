@@ -171,15 +171,6 @@ type Handler struct {
 	// Agent Identity 导入互斥锁：串行化 runtime_id 的数据库查重与插入，
 	// 防止并发请求在“检查不存在”后同时建号。
 	agentIdentityImportMu sync.Mutex
-
-	// Paid subscription mutations are experimental and disabled by default.
-	// 开关由管理后台设置持有：数据库显式值优先，未设置过才回落到环境变量。
-	subscriptionUpgradeEnabled       atomic.Bool
-	subscriptionUpgradeEnvDefault    bool
-	subscriptionUpgradeClientFactory func(*auth.Account, string) subscriptionUpgradeUpstream
-	subscriptionUpgradeQuoteMu       sync.Mutex
-	subscriptionUpgradeQuotes        map[string]subscriptionUpgradeQuoteRecord
-	subscriptionUpgradeLocks         sync.Map
 }
 
 type responseCacheSettingsStore interface {
@@ -1063,11 +1054,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
 	api.GET("/accounts/live", h.GetAccountLiveState)
 	api.GET("/accounts/:id", h.GetAccount)
-	api.GET("/accounts/:id/subscription", h.GetAccountSubscription)
-	api.POST("/accounts/:id/subscription/upgrade-quotes", h.CreateSubscriptionUpgradeQuote)
-	api.POST("/accounts/:id/subscription/upgrades", h.CreateSubscriptionUpgrade)
-	api.GET("/subscription-upgrades/:operation_id", h.GetSubscriptionUpgradeOperation)
-	api.POST("/subscription-upgrades/:operation_id/verify", h.VerifySubscriptionUpgradeOperation)
 	api.POST("/accounts", h.AddAccount)
 	api.POST("/accounts/at", h.AddATAccount)
 	api.POST("/accounts/codex/agent-identity", h.ImportCodexAgentIdentity)
@@ -1143,6 +1129,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/:id/invite", h.SendInvite)
 	api.GET("/accounts/:id/invite/eligibility", h.GetInviteEligibility)
 	api.GET("/accounts/:id/invite/tracking", h.GetInviteTracking)
+	api.GET("/accounts/invite/plan", h.GetInviteGuidePlan)
+	api.POST("/accounts/invite/plan/probe", h.ProbeInviteGuidePlan)
 	api.GET("/accounts/:id/test", h.TestConnection)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
 	api.POST("/accounts/:id/usage/refresh", h.RefreshAccountUsage)
@@ -1199,6 +1187,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/settings/claude-config", h.GetClaudeConfig)
 	api.PUT("/settings/claude-config", h.UpdateClaudeConfig)
 	api.GET("/settings/observed-instructions", h.GetObservedInstructions)
+	api.GET("/settings/invite-guide", h.GetInviteGuideSettings)
+	api.PUT("/settings/invite-guide", h.UpdateInviteGuideSettings)
 	api.POST("/settings/background-upload", h.UploadBackgroundAsset)
 	api.POST("/settings/image-storage/test", h.TestImageStorageConnection)
 	api.GET("/prompt-filter/logs", h.ListPromptFilterLogs)
@@ -3398,6 +3388,9 @@ func (h *Handler) AddAccount(c *gin.Context) {
 		msg += "，但分组绑定失败: " + err.Error()
 	}
 
+	newAccountIDs := createdIDs.snapshot()
+	h.scheduleInviteGuideProbes(ctx, newAccountIDs)
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":      msg,
 		"success":      successCount,
@@ -3405,6 +3398,7 @@ func (h *Handler) AddAccount(c *gin.Context) {
 		"failed":       failCount,
 		"bound_groups": boundGroups,
 		"group_ids":    groupIDs,
+		"created_ids":  newAccountIDs,
 	})
 }
 
@@ -3479,9 +3473,13 @@ func (h *Handler) streamAddAccounts(c *gin.Context, req addAccountReq, seeds []t
 			Warning: "账号已添加，但分组绑定失败: " + err.Error(),
 		})
 	}
+	newAccountIDs := createdIDs.snapshot()
+	h.scheduleInviteGuideProbes(ctx, newAccountIDs)
+
 	sendImportEvent(c, importEvent{
 		Type: "complete", Current: total, Total: total,
 		Success: successCount, Duplicate: duplicateCount, Failed: failCount,
+		CreatedIDs: newAccountIDs,
 	})
 }
 
@@ -5142,6 +5140,9 @@ type importEvent struct {
 	// Warning 用于「账号已入库、但收尾动作出了问题」这类必须告知却不该当成失败的情况，
 	// 例如导入成功但分组绑定失败。空值时序列化省略，老前端不受影响。
 	Warning string `json:"warning,omitempty"`
+	// CreatedIDs 只在 complete 事件下发，供前端拉取本次导入账号的邀请收益评估。
+	// 空值时省略，老前端不受影响。
+	CreatedIDs []int64 `json:"created_ids,omitempty"`
 }
 
 // sendImportEvent 推送一条导入进度事件；返回 false 表示下游连接已经写不进去了。
@@ -5630,9 +5631,15 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 			Warning: "账号已导入，但分组绑定失败: " + err.Error(),
 		})
 	}
+	// 邀请资格探测排在 complete 之前入队，但不等待结果：探测走导入闸门的后台
+	// worker，前端拿到 created_ids 后自行轮询方案接口。阻塞在这里会把一次导入
+	// 的响应拖长到几十秒。
+	h.scheduleInviteGuideProbes(c.Request.Context(), newAccountIDs)
+
 	sendImportEvent(c, importEvent{
 		Type: "complete", Current: total, Total: total,
 		Success: suc, Updated: upd, Duplicate: duplicateCount, Failed: fai,
+		CreatedIDs: newAccountIDs,
 	})
 
 	log.Printf("导入完成: success=%d, updated=%d, duplicate=%d, failed=%d, total=%d", suc, upd, duplicateCount, fai, total)
@@ -8588,8 +8595,6 @@ type settingsResponse struct {
 	AutoActivate5hWindowEnabled         bool   `json:"auto_activate_5h_window_enabled"`
 	ProxyPoolEnabled                    bool   `json:"proxy_pool_enabled"`
 	FastSchedulerEnabled                bool   `json:"fast_scheduler_enabled"`
-	SubscriptionUpgradesEnabled         bool   `json:"subscription_upgrades_enabled"`
-	SubscriptionUpgradesEnvDefault      bool   `json:"subscription_upgrades_env_default"`
 	SchedulerEngine                     string `json:"scheduler_engine"`
 	CodexForceWebsocket                 bool   `json:"codex_force_websocket"`
 	CodexRequestCompression             bool   `json:"codex_request_compression"`
@@ -8766,7 +8771,6 @@ type updateSettingsReq struct {
 	AutoActivate5hWindowEnabled         *bool                            `json:"auto_activate_5h_window_enabled"`
 	ProxyPoolEnabled                    *bool                            `json:"proxy_pool_enabled"`
 	FastSchedulerEnabled                *bool                            `json:"fast_scheduler_enabled"`
-	SubscriptionUpgradesEnabled         *bool                            `json:"subscription_upgrades_enabled"`
 	SchedulerEngine                     *string                          `json:"scheduler_engine"`
 	CodexForceWebsocket                 *bool                            `json:"codex_force_websocket"`
 	CodexRequestCompression             *bool                            `json:"codex_request_compression"`
@@ -9548,8 +9552,6 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
 	c.JSON(http.StatusOK, settingsResponse{
 		antigravityOAuthSettingsView:        currentAntigravityOAuthSettingsView(),
-		SubscriptionUpgradesEnabled:         h.subscriptionUpgradesEnabled(),
-		SubscriptionUpgradesEnvDefault:      h.subscriptionUpgradeEnvDefault,
 		SiteName:                            branding.SiteName,
 		SiteLogo:                            branding.SiteLogo,
 		BackgroundImage:                     bgCfg.Image,
@@ -10626,22 +10628,6 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: antigravity_oauth_clients = %d 个 client, active_key=%q", len(normalized.Clients), normalized.ActiveKey)
 	}
 
-	if req.SubscriptionUpgradesEnabled != nil {
-		// 订阅升级会对账号真实扣款，开关必须落库：写入后数据库值即为权威，
-		// 环境变量不再能把它顶回开启状态。
-		if h.db == nil {
-			writeError(c, http.StatusInternalServerError, "订阅升级开关存储不可用")
-			return
-		}
-		enabled := *req.SubscriptionUpgradesEnabled
-		if saveErr := h.db.SaveSubscriptionUpgradesEnabled(c.Request.Context(), enabled); saveErr != nil {
-			writeError(c, http.StatusInternalServerError, "保存订阅升级开关失败："+saveErr.Error())
-			return
-		}
-		h.setSubscriptionUpgradeEnabled(enabled)
-		log.Printf("设置已更新: subscription_upgrades_enabled = %t", enabled)
-	}
-
 	if req.MaxRetries != nil {
 		v := *req.MaxRetries
 		if v < 0 {
@@ -11364,8 +11350,6 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 	c.JSON(http.StatusOK, settingsResponse{
 		antigravityOAuthSettingsView:        currentAntigravityOAuthSettingsView(),
-		SubscriptionUpgradesEnabled:         h.subscriptionUpgradesEnabled(),
-		SubscriptionUpgradesEnvDefault:      h.subscriptionUpgradeEnvDefault,
 		SiteName:                            siteName,
 		SiteLogo:                            siteLogo,
 		BackgroundImage:                     bgCfg.Image,

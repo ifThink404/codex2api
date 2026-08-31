@@ -70,6 +70,7 @@ import type {
   ImagePromptTemplatesResponse,
   InviteResponse,
   InviteEligibilityResponse,
+  InviteGuidePlan,
   InviteTrackingResponse,
   MessageResponse,
   ModelSyncResponse,
@@ -906,23 +907,44 @@ export const api = {
   },
   sendInvite: (id: number, data: { emails?: string[]; emails_text?: string; program_id?: string; entrypoint?: string; proxy_url?: string; max_emails?: number }) =>
     request<InviteResponse>(`/accounts/${id}/invite`, { method: 'POST', body: JSON.stringify(data) }),
-  getInviteEligibility: (id: number, params?: { program_id?: string; entrypoint?: string; proxy_url?: string }) => {
+  // refresh=1 绕过网关的资格/记录缓存直连上游，用于手动刷新与发送邀请后的重拉。
+  getInviteEligibility: (id: number, params?: { program_id?: string; entrypoint?: string; proxy_url?: string; refresh?: boolean }) => {
     const search = new URLSearchParams()
     if (params?.program_id) search.set('program_id', params.program_id)
     if (params?.entrypoint) search.set('entrypoint', params.entrypoint)
     if (params?.proxy_url) search.set('proxy_url', params.proxy_url)
+    if (params?.refresh) search.set('refresh', '1')
     const qs = search.toString()
     return request<InviteEligibilityResponse>(`/accounts/${id}/invite/eligibility${qs ? `?${qs}` : ''}`)
   },
-  getInviteTracking: (id: number, params?: { program_id?: string; period?: string; limit?: number; proxy_url?: string }) => {
+  getInviteTracking: (id: number, params?: { program_id?: string; period?: string; limit?: number; proxy_url?: string; refresh?: boolean }) => {
     const search = new URLSearchParams()
     if (params?.program_id) search.set('program_id', params.program_id)
     if (params?.period) search.set('period', params.period)
     if (typeof params?.limit === 'number') search.set('limit', String(params.limit))
     if (params?.proxy_url) search.set('proxy_url', params.proxy_url)
+    if (params?.refresh) search.set('refresh', '1')
     const qs = search.toString()
     return request<InviteTrackingResponse>(`/accounts/${id}/invite/tracking${qs ? `?${qs}` : ''}`)
   },
+  // 导入后的邀请收益评估。emails 是可用受邀邮箱数，传了就按「单次收益高的号优先」
+  // 做贪心分配；不传表示不限，建议次数等于各账号的剩余奖励次数。
+  getInviteGuidePlan: (ids: number[], emails?: number) => {
+    const search = new URLSearchParams({ ids: ids.join(',') })
+    if (typeof emails === 'number' && emails > 0) search.set('emails', String(emails))
+    return request<InviteGuidePlan>(`/accounts/invite/plan?${search.toString()}`)
+  },
+  probeInviteGuidePlan: (ids: number[]) =>
+    request<{ queued: number; skipped: number }>('/accounts/invite/plan/probe', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+  getInviteGuideSettings: () => request<{ enabled: boolean }>('/settings/invite-guide'),
+  updateInviteGuideSettings: (enabled: boolean) =>
+    request<{ enabled: boolean }>('/settings/invite-guide', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
   batchResetStatus: (ids: number[]) =>
     request<{ message: string; success: number; failed: number }>('/accounts/batch-reset-status', { method: 'POST', body: JSON.stringify({ ids }) }),
   batchDeleteAccounts: (ids: number[]) =>

@@ -364,6 +364,63 @@ function AccountAvatar({ account, size = 36 }: { account: AccountRow; size?: num
   );
 }
 
+const warningURLPattern = /https?:\/\/[^\s;]+/;
+
+function firstWarningURL(text?: string): string | null {
+  if (!text) return null;
+  const match = text.match(warningURLPattern);
+  return match ? match[0] : null;
+}
+
+// 权限列里的操作入口:同步 warning 会带出 Google 的一次性操作链接
+// (TOS 申诉表单 / 账号验证),直接渲染成可点击入口,免得去详情页
+// 复制长 URL。
+function SyncWarningAction({ warning }: { warning?: string }) {
+  const { t } = useTranslation();
+  const url = firstWarningURL(warning);
+  if (!url) return null;
+  const label = /appeal/i.test(warning ?? "")
+    ? t("antigravity.submitAppeal")
+    : t("antigravity.verifyAccount");
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mt-1 inline-flex max-w-[180px] items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+    >
+      <ExternalLink className="size-3 shrink-0" aria-hidden />
+      <span className="truncate">{label}</span>
+    </a>
+  );
+}
+
+// 详情页 warning 横幅:URL 转成可点击链接,展示文本截短避免长链接刷屏。
+function LinkifiedWarning({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s;]+)/g);
+  return (
+    <span className="break-words">
+      {parts.map((part, index) => {
+        if (!/^https?:\/\//.test(part)) {
+          return part;
+        }
+        const display = part.length > 64 ? part.slice(0, 61) + "…" : part;
+        return (
+          <a
+            key={index}
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium underline underline-offset-2"
+          >
+            {display}
+          </a>
+        );
+      })}
+    </span>
+  );
+}
+
 function PermissionBadge({ permissions }: { permissions?: AntigravityPermissionsSnapshot }) {
   const { t } = useTranslation();
   const allowed = permissionAllowed(permissions);
@@ -547,7 +604,7 @@ function QuotaDetail({ account }: { account: AccountRow }) {
       {account.antigravity_sync_warning ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          <span className="break-words">{account.antigravity_sync_warning}</span>
+          <LinkifiedWarning text={account.antigravity_sync_warning} />
         </div>
       ) : null}
       <section className="grid gap-3 sm:grid-cols-2">
@@ -1972,6 +2029,7 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                         {account.antigravity_permissions.reason}
                       </div>
                     ) : null}
+                    <SyncWarningAction warning={account.antigravity_sync_warning} />
                   </TableCell>
                   <TableCell>
                     <CompactQuota

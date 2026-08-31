@@ -538,3 +538,130 @@ func TestAntigravityClientReturnsRotatedCredentialOnQuotaFailure(t *testing.T) {
 		t.Fatalf("partial result = %+v", result)
 	}
 }
+
+func TestAntigravitySyncSurfacesValidationRequiredQuotaWarning(t *testing.T) {
+	// 真实 VALIDATION_REQUIRED 错误体超过 512 字节,验证 URL 位于尾部:
+	// 该用例同时证明 warning 解析的是未截断 rawBody,而非渲染用的 Body。
+	validationURL := "https://accounts.google.com/signin/continue?sarp=1&scc=1&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&plt=AKgnsbv6rSViHMUsE" + strings.Repeat("x", 280)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"id":"subject","email":"user@example.com","verified_email":true}`)
+		case "/load":
+			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"project","paidTier":{"name":"Pro"}}`)
+		case "/quota":
+			_, _ = io.WriteString(w, `{"models":{"gemini-2.5-pro":{"quotaInfo":{"remainingFraction":0.5}}}}`)
+		case "/summary":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":{"code":403,"message":"Verify your account to continue.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED","domain":"cloudcode-pa.googleapis.com","metadata":{"validation_error_message":"Verify your account to continue.","validation_url":"`+validationURL+`"}}]}}`)
+		case "/credits":
+			_, _ = io.WriteString(w, `{"paidTier":{"availableCredits":[]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newAntigravityClient(server.Client(), AntigravityEndpoints{
+		UserInfoURL: server.URL + "/userinfo",
+		LoadProject: []string{server.URL + "/load"}, Quota: []string{server.URL + "/quota"},
+		QuotaSummary: []string{server.URL + "/summary"}, AICredits: []string{server.URL + "/credits"},
+	})
+	client.oauth = nil
+
+	result, err := client.Sync(context.Background(), AntigravityCredential{AccessToken: "access"})
+	if err != nil {
+		t.Fatalf("Sync() error = %v (quota summary failure must not fail the sync)", err)
+	}
+	if result.QuotaGroupsObserved {
+		t.Fatal("QuotaGroupsObserved = true, want false after 403")
+	}
+	if !strings.Contains(result.Warning, "Verify your account to continue.") {
+		t.Fatalf("warning missing upstream message: %q", result.Warning)
+	}
+	if !strings.Contains(result.Warning, validationURL) {
+		t.Fatalf("warning missing untruncated verification URL: %q", result.Warning)
+	}
+	if strings.Contains(result.Warning, "temporarily unavailable") {
+		t.Fatalf("VALIDATION_REQUIRED rendered as temporarily unavailable: %q", result.Warning)
+	}
+}
+
+func TestAntigravitySyncQuotaSummaryTransientFailureKeepsDiagnostic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"id":"subject","email":"user@example.com","verified_email":true}`)
+		case "/load":
+			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"project","paidTier":{"name":"Pro"}}`)
+		case "/quota":
+			_, _ = io.WriteString(w, `{"models":{"gemini-2.5-pro":{"quotaInfo":{"remainingFraction":0.5}}}}`)
+		case "/summary":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"code":503,"message":"backend restarting","status":"UNAVAILABLE"}}`)
+		case "/credits":
+			_, _ = io.WriteString(w, `{"paidTier":{"availableCredits":[]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newAntigravityClient(server.Client(), AntigravityEndpoints{
+		UserInfoURL: server.URL + "/userinfo",
+		LoadProject: []string{server.URL + "/load"}, Quota: []string{server.URL + "/quota"},
+		QuotaSummary: []string{server.URL + "/summary"}, AICredits: []string{server.URL + "/credits"},
+	})
+	client.oauth = nil
+
+	result, err := client.Sync(context.Background(), AntigravityCredential{AccessToken: "access"})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if !strings.Contains(result.Warning, "Antigravity quota summary is temporarily unavailable") ||
+		!strings.Contains(result.Warning, "backend restarting") {
+		t.Fatalf("warning = %q, want transient wording with upstream detail", result.Warning)
+	}
+}
+
+func TestAntigravitySyncSurfacesTOSViolationAppealLink(t *testing.T) {
+	const appealURL = "https://forms.gle/hGzM9MEUv2azZsrb9"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"id":"subject","email":"user@example.com","verified_email":true}`)
+		case "/load":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":{"code":403,"message":"This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"TOS_VIOLATION","domain":"cloudcode-pa.googleapis.com","metadata":{"appeal_url_link_text":"Submit Appeal","appeal_url":"`+appealURL+`","uiMessage":"true"}}]}}`)
+		case "/quota":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":"forbidden"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newAntigravityClient(server.Client(), AntigravityEndpoints{
+		UserInfoURL: server.URL + "/userinfo",
+		LoadProject: []string{server.URL + "/load"}, Quota: []string{server.URL + "/quota"},
+	})
+	client.oauth = nil
+
+	result, err := client.Sync(context.Background(), AntigravityCredential{AccessToken: "access"})
+	if err != nil {
+		t.Fatalf("Sync() error = %v (a forbidden quota snapshot must not fail the sync)", err)
+	}
+	if !result.Quota.Forbidden || result.EntitlementsObserved {
+		t.Fatalf("quota/entitlements = forbidden=%t observed=%t, want true/false", result.Quota.Forbidden, result.EntitlementsObserved)
+	}
+	if !strings.Contains(result.Warning, "Terms of Service violation") || !strings.Contains(result.Warning, appealURL) {
+		t.Fatalf("warning = %q, want short TOS summary with appeal URL", result.Warning)
+	}
+	if strings.Contains(result.Warning, `"details"`) {
+		t.Fatalf("warning still embeds the raw upstream JSON blob: %q", result.Warning)
+	}
+}

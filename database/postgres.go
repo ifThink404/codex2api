@@ -1221,7 +1221,7 @@ func (db *DB) migrate(ctx context.Context) error {
 				grok_config        TEXT DEFAULT '{}',
 				claude_config      TEXT DEFAULT '{}',
 				antigravity_oauth_config TEXT DEFAULT '{}',
-				subscription_upgrades_enabled BOOLEAN,
+				invite_guide_config TEXT DEFAULT '{}',
 				max_concurrency    INT DEFAULT 2,
 			global_rpm         INT DEFAULT 0,
 			test_model         VARCHAR(100) DEFAULT 'gpt-5.4',
@@ -1272,7 +1272,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS grok_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS claude_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS antigravity_oauth_config TEXT DEFAULT '{}';
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS subscription_upgrades_enabled BOOLEAN;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS invite_guide_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS test_content TEXT DEFAULT 'hi';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS pg_max_conns INT DEFAULT 50;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS redis_pool_size INT DEFAULT 30;
@@ -1619,9 +1619,6 @@ func (db *DB) migrate(ctx context.Context) error {
 	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer migrateCancel()
 	if _, err = db.conn.ExecContext(migrateCtx, migrateQuery); err != nil {
-		return err
-	}
-	if err := db.ensureSubscriptionUpgradeSchema(ctx); err != nil {
 		return err
 	}
 	return db.runDataMigrationsWithTimeout()

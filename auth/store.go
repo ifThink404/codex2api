@@ -596,15 +596,6 @@ func (a *Account) GetAccessToken() string {
 	return strings.TrimSpace(a.AccessToken)
 }
 
-func (a *Account) HasSessionToken() bool {
-	if a == nil {
-		return false
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return strings.TrimSpace(a.SessionToken) != ""
-}
-
 func (a *Account) GetCustomHeaders() map[string]string {
 	if a == nil {
 		return nil

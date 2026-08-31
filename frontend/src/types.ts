@@ -591,9 +591,18 @@ export interface InviteEligibility {
   upstream_raw?: string
 }
 
+// InviteCacheMeta 说明这份结果是现拉的还是缓存的，以及取回的时刻。
+// source=upstream 表示刚打过上游；runtime/snapshot 分别来自运行态缓存与数据库快照。
+export interface InviteCacheMeta {
+  source: 'upstream' | 'runtime' | 'snapshot'
+  observed_at?: string
+  expires_at?: string
+}
+
 export interface InviteEligibilityResponse {
   ok: boolean
   result: InviteEligibility
+  cache?: InviteCacheMeta
 }
 
 // InviteTrackingItem 是一条已发邀请记录。
@@ -624,6 +633,53 @@ export interface InviteTracking {
 export interface InviteTrackingResponse {
   ok: boolean
   result: InviteTracking
+  cache?: InviteCacheMeta
+}
+
+// InviteGuideAccountPlan 是导入引导里单个账号的邀请收益评估。
+// state 语义：pending=还没探测出结果，eligible=有资格且还有奖励次数，
+// exhausted=有资格但本月奖励次数已用尽（发了也拿不到积分），ineligible=上游判定无资格。
+export type InviteGuideState = 'pending' | 'eligible' | 'exhausted' | 'ineligible'
+
+export interface InviteGuideAccountPlan {
+  id: number
+  email?: string
+  plan_type?: string
+  state: InviteGuideState
+  // remaining_* 缺失表示上游没给这个字段，与「明确为 0」不同。
+  remaining_send_capacity?: number
+  remaining_reward_capacity?: number
+  // grant_amount 是邀请人单次能拿到的额度，不含受邀人那一份。
+  grant_amount?: number
+  // 本月发送用量，来自资格接口的 time_frame_rules。与下面的 invites_* 不是同一个
+  // 窗口：这是「月」，那是邀请记录的 90 天。
+  monthly_sent?: number
+  monthly_send_total?: number
+  // 近 90 天的实际邀请记录。字段缺失表示「没有跟踪数据」，与「确实是 0」不同——
+  // 导入探测只抓资格不抓记录，多数账号本来就没有这部分数据。
+  invites_sent?: number
+  invites_accepted?: number
+  invites_pending?: number
+  potential_credits: number
+  offer_id?: string
+  title?: string
+  ineligible_reason?: string
+  suggested_invites: number
+  observed_at?: string
+}
+
+export interface InviteGuidePlan {
+  enabled: boolean
+  total: number
+  probed: number
+  pending: number
+  unprobed: number
+  eligible: number
+  probe_cap: number
+  total_reward_slots: number
+  total_potential_credits: number
+  email_budget: number
+  accounts: InviteGuideAccountPlan[]
 }
 
 export interface RecycleBinAccountRow {
@@ -1720,8 +1776,6 @@ export interface SystemSettings {
   auto_activate_5h_window_enabled: boolean
   proxy_pool_enabled: boolean
   fast_scheduler_enabled: boolean
-  subscription_upgrades_enabled: boolean
-  subscription_upgrades_env_default: boolean
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
   codex_request_compression: boolean

@@ -255,7 +255,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					grok_config TEXT DEFAULT '{}',
 					claude_config TEXT DEFAULT '{}',
 					antigravity_oauth_config TEXT DEFAULT '{}',
-					subscription_upgrades_enabled INTEGER,
+					invite_guide_config TEXT DEFAULT '{}',
 					max_concurrency INTEGER DEFAULT 2,
 				global_rpm INTEGER DEFAULT 0,
 				test_model TEXT DEFAULT 'gpt-5.4',
@@ -573,7 +573,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "grok_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "claude_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "antigravity_oauth_config", "TEXT DEFAULT '{}'"},
-		{"system_settings", "subscription_upgrades_enabled", "INTEGER"},
+		{"system_settings", "invite_guide_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "test_content", "TEXT DEFAULT 'hi'"},
 		{"system_settings", "pg_max_conns", "INTEGER DEFAULT 50"},
 		{"system_settings", "redis_pool_size", "INTEGER DEFAULT 30"},
@@ -811,9 +811,6 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 	}
 	if err := db.installSchedulerOutboxTriggers(ctx); err != nil {
 		return fmt.Errorf("install scheduler outbox triggers: %w", err)
-	}
-	if err := db.ensureSubscriptionUpgradeSchema(ctx); err != nil {
-		return err
 	}
 
 	return db.runDataMigrationsWithTimeout()

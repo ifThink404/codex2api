@@ -186,6 +186,7 @@ import {
   resolveAccountOverlayKind,
 } from "../components/AccountStateOverlay";
 import CodexInviteView from "../components/CodexInviteView";
+import InviteGuideModal from "../components/InviteGuideModal";
 import Sub2APIImportModal from "../components/Sub2APIImportModal";
 import AccountQuotaDistributionChart from "../components/AccountQuotaDistributionChart";
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
@@ -1873,6 +1874,11 @@ export default function Accounts() {
     duplicate: 0,
     failed: 0,
     done: false,
+  });
+  // 导入后的邀请积分引导。ids 是本次导入新建的账号,后端会过滤出能发邀请的。
+  const [inviteGuide, setInviteGuide] = useState<{ show: boolean; ids: number[] }>({
+    show: false,
+    ids: [],
   });
   const [addMethod, setAddMethod] = useState<
     "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity"
@@ -3823,6 +3829,18 @@ export default function Accounts() {
     }
   };
 
+  // maybeOpenInviteGuide 在导入结束后按设置决定是否弹出邀请积分引导。
+  // 开关读失败时不弹:宁可少一次引导,也不要在设置不可用时打扰用户。
+  const maybeOpenInviteGuide = useCallback(async (ids: number[]) => {
+    try {
+      const settings = await api.getInviteGuideSettings();
+      if (!settings.enabled) return;
+    } catch {
+      return;
+    }
+    setInviteGuide({ show: true, ids });
+  }, []);
+
   // readImportSSE 读取单批导入的 SSE 进度流。baseline 是此前已完成批次的累计值,
   // 本批实时进度叠加其上;markDoneOnComplete=false 时(还有后续批次)不置 done,
   // 让进度条跨批保持运行态。本批结束后把本批终值累加进 baseline(原地修改)。
@@ -3837,6 +3855,9 @@ export default function Accounts() {
       failed: number;
     },
     markDoneOnComplete = true,
+    // createdIDs 原地收集本次导入新建的账号 ID(complete 事件下发),跨批累加,
+    // 供导入结束后拉取邀请收益方案。
+    createdIDs?: number[],
   ) => {
     const base = baseline ?? {
       current: 0,
@@ -3889,7 +3910,11 @@ export default function Accounts() {
             updated: number;
             duplicate: number;
             failed: number;
+            created_ids?: number[];
           };
+          if (event.type === "complete" && createdIDs && event.created_ids?.length) {
+            createdIDs.push(...event.created_ids);
+          }
           last = {
             current: event.current ?? 0,
             total: event.total ?? 0,
@@ -3977,6 +4002,8 @@ export default function Accounts() {
       duplicate: 0,
       failed: 0,
     };
+    // 本次导入(含所有批次)新建的账号 ID,用于导入完成后的邀请收益引导。
+    const importedAccountIDs: number[] = [];
 
     try {
       for (let i = 0; i < batches.length; i++) {
@@ -4007,7 +4034,7 @@ export default function Accounts() {
         // 只有最后一批完成后才标记 done,让进度条在多批之间保持运行态。
         const isLastBatch = i === batches.length - 1;
         if (res.headers.get("content-type")?.includes("text/event-stream")) {
-          await readImportSSE(res, totals, isLastBatch);
+          await readImportSSE(res, totals, isLastBatch, importedAccountIDs);
         } else {
           const data = await res.json();
           if (!res.ok) {
@@ -4031,6 +4058,11 @@ export default function Accounts() {
         }
       }
       showToast(t("accounts.importCompleted"));
+      // 引导只在有新建账号时触发;开关状态由后端判定,前端拿到 enabled=false
+      // 就不展示,避免把开关语义复制两份。
+      if (importedAccountIDs.length > 0) {
+        void maybeOpenInviteGuide(importedAccountIDs);
+      }
     } catch (error) {
       setImportProgress({
         show: true,
@@ -10588,6 +10620,20 @@ export default function Accounts() {
               </div>
             </div>
           </Modal>
+
+          <InviteGuideModal
+            show={inviteGuide.show}
+            accountIds={inviteGuide.ids}
+            onClose={() => setInviteGuide((p) => ({ ...p, show: false }))}
+            onGoInvite={(accountEmail) => {
+              setInviteGuide((p) => ({ ...p, show: false }));
+              navigate(
+                accountEmail
+                  ? `/accounts/invite?account=${encodeURIComponent(accountEmail)}`
+                  : "/accounts/invite",
+              );
+            }}
+          />
 
           <Modal
             show={importProgress.show}
