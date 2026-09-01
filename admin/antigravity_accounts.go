@@ -40,6 +40,12 @@ type antigravityImportRequest struct {
 	ClientID       string          `json:"client_id"`
 	ClientSecret   string          `json:"client_secret"`
 	GroupIDs       json.RawMessage `json:"group_ids"`
+	// ImportProxy 决定文件里的 proxy_url 是否注册进代理表并同步代理池。
+	//
+	// 该渠道的导入一直会采用文件内代理（prepareAntigravityImport 就是这么写的），
+	// 只是从不入表：账号绑的是一个代理池不认识的 URL，管理页看不见、也进不了轮转。
+	// 开关只控制"是否入表"，关闭时维持既有行为，不改变代理的取用优先级。
+	ImportProxy bool `json:"import_proxy"`
 }
 
 type addAntigravityAccountRequest struct {
@@ -1201,6 +1207,28 @@ func (h *Handler) BatchImportAntigravityAccounts(c *gin.Context) {
 		return
 	}
 
+	// 代理注册必须早于任何账号落库，顺序理由见 registerImportedProxyBindings。
+	// 规范化结果写回 document，让账号绑定的 URL 与代理表里的那条完全一致——两者
+	// 只要差一个尾斜杠，账号就会被判为绑了一个不在池里的托管代理而不可调度。
+	var proxyOutcome importProxyOutcome
+	if req.ImportProxy {
+		proxyBindings := make([]importProxyBinding, len(parsedCredentials))
+		for i, parsed := range parsedCredentials {
+			proxyBindings[i] = importProxyBinding{url: parsed.Document.ProxyURL, enabled: parsed.Document.ProxyEnabled}
+		}
+		proxyCtx, proxyCancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+		outcome, registerErr := h.registerImportedProxyBindings(proxyCtx, proxyBindings)
+		proxyCancel()
+		if registerErr != nil {
+			writeError(c, http.StatusInternalServerError, registerErr.Error())
+			return
+		}
+		proxyOutcome = outcome
+		for i := range parsedCredentials {
+			parsedCredentials[i].Document.ProxyURL = proxyBindings[i].url
+		}
+	}
+
 	preparedImports := make([]preparedAntigravityImport, 0, len(parsedCredentials))
 	for _, parsedCredential := range parsedCredentials {
 		prepared := prepareAntigravityImport(parsedCredential, req.ProxyURL)
@@ -1481,12 +1509,20 @@ func (h *Handler) BatchImportAntigravityAccounts(c *gin.Context) {
 			degraded++
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"total": total, "imported": imported,
 		"synced": synced, "degraded": degraded,
 		"failed": total - imported, "items": items,
 		"group_ids": groupIDs, "warning": groupWarning,
-	})
+	}
+	if req.ImportProxy {
+		response["proxies_imported"] = proxyOutcome.inserted
+		response["proxies_skipped"] = proxyOutcome.skipped
+		if warning := proxyOutcome.warning(); warning != "" {
+			response["proxy_warning"] = warning
+		}
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func antigravityImportTimeout(accounts int) time.Duration {

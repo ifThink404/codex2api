@@ -18,6 +18,7 @@ import {
   Sparkles,
   UserCircle2,
   Users,
+  X,
 } from 'lucide-react'
 import PageHeader from './PageHeader'
 import { Button } from '@/components/ui/button'
@@ -799,18 +800,31 @@ export default function CodexInviteView({ accounts, onClose, loading = false }: 
                   </div>
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col p-5">
-                  <div className="mb-2">
-                    <RecipientAccountPicker
-                      selectedEmails={selectedRecipientEmails}
-                      onToggle={toggleRecipientEmail}
-                      excludeEmail={selectedAccount?.email}
-                      inviteRecipientIndex={inviteRecipientIndex}
-                      onRecipientsChecked={mergeInviteRecipients}
-                      creditsMap={creditsMap}
-                      onLoadCredits={loadVisibleCredits}
-                      onProbeCredits={probeCreditsByIds}
-                      probing={creditsProbing}
-                    />
+                  <div className="mb-2 flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <RecipientAccountPicker
+                        selectedEmails={selectedRecipientEmails}
+                        onToggle={toggleRecipientEmail}
+                        excludeEmail={selectedAccount?.email}
+                        inviteRecipientIndex={inviteRecipientIndex}
+                        onRecipientsChecked={mergeInviteRecipients}
+                        creditsMap={creditsMap}
+                        onLoadCredits={loadVisibleCredits}
+                        onProbeCredits={probeCreditsByIds}
+                        probing={creditsProbing}
+                      />
+                    </div>
+                    {emailsText.trim() !== '' && (
+                      <button
+                        type="button"
+                        onClick={() => setEmailsText('')}
+                        title={t('invite.clearEmails')}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border bg-background px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <X className="size-3.5" />
+                        {t('invite.clearEmails')}
+                      </button>
+                    )}
                   </div>
                   <textarea
                     value={emailsText}

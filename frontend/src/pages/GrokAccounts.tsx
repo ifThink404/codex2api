@@ -494,6 +494,9 @@ function GrokAccounts({
 
   // 导入入口：选择器弹窗 + 三种来源（JSON 凭据文件 / sso.txt / refreshtoken.txt）
   const [showImportPicker, setShowImportPicker] = useState(false);
+  // 采用文件内代理：勾选后 JSON 凭据文件里带的 proxy_url 生效，并自动注册进代理池。
+  // sso.txt / refreshtoken.txt 一行一个 token，物理上带不了代理，只对 JSON 生效。
+  const [importFileProxies, setImportFileProxies] = useState(false);
   const authFileInputRef = useRef<HTMLInputElement | null>(null);
   const ssoFileInputRef = useRef<HTMLInputElement | null>(null);
   const refreshFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1287,14 +1290,21 @@ function GrokAccounts({
     }
   };
 
+  // GrokImportChunkResult 覆盖三个导入端点的共同响应形态。代理三项只有 JSON 凭据
+  // 文件那条链路会返回（且必须开了「采用文件内代理」），其余端点恒为 undefined。
+  type GrokImportChunkResult = {
+    total: number;
+    imported: number;
+    failed: number;
+    items: GrokSSOImportItem[];
+    proxies_imported?: number;
+    proxies_skipped?: number;
+    proxy_warning?: string;
+  };
+
   // runImport 统一跑一次导入调用：置忙、展示结果、成功后刷新列表。
   const runImport = async (
-    fn: () => Promise<{
-      total: number;
-      imported: number;
-      failed: number;
-      items: GrokSSOImportItem[];
-    }>,
+    fn: () => Promise<GrokImportChunkResult>,
     totalItems = 0,
   ) => runImportChunks([fn], totalItems);
 
@@ -1305,14 +1315,7 @@ function GrokAccounts({
   // totalItems 是全部待导入条数(调用方按文件/行数预先算好),用于右上角进度浮层
   // (与 Codex 账号页批量操作同款);传 0 则进度条按分片完成时的累计条数走。
   const runImportChunks = async (
-    chunks: Array<
-      () => Promise<{
-        total: number;
-        imported: number;
-        failed: number;
-        items: GrokSSOImportItem[];
-      }>
-    >,
+    chunks: Array<() => Promise<GrokImportChunkResult>>,
     totalItems = 0,
   ) => {
     if (chunks.length === 0) return;
@@ -1335,6 +1338,14 @@ function GrokAccounts({
       failed: 0,
       items: [] as GrokSSOImportItem[],
     };
+    // 代理注册结果按分片累加。carried 只有在后端确实处理了这个开关时才为真
+    // （响应里出现代理计数），据此决定收尾 toast 要不要带代理那段。
+    const proxySummary = {
+      carried: false,
+      imported: 0,
+      skipped: 0,
+      warnings: [] as string[],
+    };
     const reportMerged = (type: "progress" | "complete", error?: string) =>
       reportOperationEvent(progressTitle, {
         type,
@@ -1352,6 +1363,16 @@ function GrokAccounts({
         merged.imported += res.imported ?? 0;
         merged.failed += res.failed ?? 0;
         merged.items = merged.items.concat(res.items ?? []);
+        if (res.proxies_imported !== undefined) {
+          proxySummary.carried = true;
+          proxySummary.imported += res.proxies_imported;
+          proxySummary.skipped += res.proxies_skipped ?? 0;
+          // 分片之间的告警多半一模一样(同一批文件),去重后再拼。
+          const warning = res.proxy_warning?.trim();
+          if (warning && !proxySummary.warnings.includes(warning)) {
+            proxySummary.warnings.push(warning);
+          }
+        }
         if (chunks.length > 1) {
           setImportProgress({ done: i + 1, total: chunks.length });
         }
@@ -1367,12 +1388,27 @@ function GrokAccounts({
         setImportResult({ ...merged, items: [...merged.items] });
       }
       if (merged.imported > 0) {
-        showToast(
-          t("grok.fileImportDone", {
-            imported: merged.imported,
-            total: merged.total,
-          }),
-        );
+        const done = t("grok.fileImportDone", {
+          imported: merged.imported,
+          total: merged.total,
+        });
+        // Toast 只有一个槽位,连续调用会互相顶掉——代理结果和告警必须拼进同一条。
+        if (proxySummary.carried) {
+          const parts = [
+            done,
+            t("accounts.importProxySummary", {
+              imported: proxySummary.imported,
+              skipped: proxySummary.skipped,
+            }),
+            ...proxySummary.warnings,
+          ];
+          showToast(
+            parts.join(" "),
+            proxySummary.warnings.length > 0 ? "error" : "success",
+          );
+        } else {
+          showToast(done);
+        }
         void reload();
         scheduleUsageSettleReloads();
       }
@@ -1416,6 +1452,7 @@ function GrokAccounts({
           api.batchImportGrokAccounts({
             files: part,
             group_ids: importGroupIds,
+            import_proxy: importFileProxies || undefined,
           }),
       ),
       files.length,
@@ -3333,6 +3370,18 @@ function GrokAccounts({
           />
           <p className="text-[11px] text-muted-foreground">
             {t("accounts.importGroupsHint")}
+          </p>
+          <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="size-3.5"
+              checked={importFileProxies}
+              onChange={(e) => setImportFileProxies(e.target.checked)}
+            />
+            {t("accounts.importFileProxies")}
+          </label>
+          <p className="text-[11px] text-muted-foreground">
+            {t("grok.importFileProxiesHint")}
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">

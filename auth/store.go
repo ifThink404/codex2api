@@ -4730,6 +4730,37 @@ func (s *Store) ReloadProxyPool() error {
 	return nil
 }
 
+// UnusableManagedProxies returns the subset of proxyURLs that are known to the
+// proxy table but absent from the enabled set — disabled, test-failed, or
+// deleted. It mirrors the fail-closed rule in resolveProxyForAccountSnapshot:
+// while the pool is enabled, an account pinned to one of these has no usable
+// egress and will not be scheduled. Callers use it to warn instead of silently
+// importing accounts that cannot serve traffic.
+func (s *Store) UnusableManagedProxies(proxyURLs []string) []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.proxyPoolEnabled {
+		return nil
+	}
+	var unusable []string
+	for _, raw := range proxyURLs {
+		proxyURL := strings.TrimSpace(raw)
+		if proxyURL == "" {
+			continue
+		}
+		if _, managed := s.managedProxySet[proxyURL]; !managed {
+			continue
+		}
+		if _, enabled := s.proxyPoolSet[proxyURL]; !enabled {
+			unusable = append(unusable, proxyURL)
+		}
+	}
+	return unusable
+}
+
 // RemoveProxyURLs immediately removes proxies from the in-memory pool. It uses
 // the same serialization lock as ReloadProxyPool so an older reload snapshot
 // cannot publish the removed URLs afterward.

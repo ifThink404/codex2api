@@ -3601,7 +3601,7 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 			customHeaders:  customHeaders,
 		})
 		if seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
-			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at")
+			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at", overwriteAccountProxy)
 			if err != nil {
 				log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
 				failCount++
@@ -3725,7 +3725,7 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 
 		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{accessToken: at, allowDuplicate: req.AllowDuplicate, customHeaders: req.CustomHeaders})
 		if seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
-			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at")
+			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at", overwriteAccountProxy)
 			if err != nil {
 				log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
 				failCount++
@@ -4355,6 +4355,43 @@ type importToken struct {
 	agentTaskID     string
 	chatgptUserID   string
 	agentFedRAMP    bool
+	// proxyURL 是导入文件里携带的代理，仅在 import_proxy 打开时生效。
+	// 它绝不能进 importTokenSeed / 去重指纹：同一个账号换了代理仍然是同一个账号，
+	// 参与指纹会让它被当成两条独立记录导入两遍。
+	proxyURL     string
+	proxyLabel   string
+	proxyEnabled *bool
+}
+
+// importSettings 汇总一次导入请求的表单开关。这些开关要穿过"入口 → 4 个格式
+// 解析函数 → importAccountsCommon"三层，继续用位置参数堆叠会越加越长。
+type importSettings struct {
+	// defaultProxyURL 是表单里填的代理：文件没带代理、或没开 importProxies 时的兜底。
+	defaultProxyURL string
+	// importProxies 打开后采用文件内携带的代理，并把它们注册进代理池。
+	importProxies  bool
+	allowDuplicate bool
+	customHeaders  map[string]string
+}
+
+// proxyForToken 返回该条目最终生效的代理：文件内代理优先，缺失时回落表单值。
+func (s importSettings) proxyForToken(t importToken) string {
+	if s.importProxies {
+		if fromFile := strings.TrimSpace(t.proxyURL); fromFile != "" {
+			return fromFile
+		}
+	}
+	return strings.TrimSpace(s.defaultProxyURL)
+}
+
+// proxyOverwritePolicyForToken 决定 upsert 命中已有账号时怎么处理代理绑定。
+// 文件带来的代理是被动数据，不覆盖目标端已有的绑定（那里可能已经做过精细分配）；
+// 表单里填的代理是操作员的显式换绑意图，维持既有的覆盖语义。
+func (s importSettings) proxyOverwritePolicyForToken(t importToken) proxyOverwritePolicy {
+	if s.importProxies && strings.TrimSpace(t.proxyURL) != "" {
+		return preserveAccountProxy
+	}
+	return overwriteAccountProxy
 }
 
 func (t importToken) isAgentIdentity() bool {
@@ -4456,6 +4493,9 @@ type jsonAccountEntry struct {
 	Codex5HResetAt        string                 `json:"codex_5h_reset_at"`
 	Codex5HUsageUpdatedAt string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt   string                 `json:"codex_usage_updated_at"`
+	ProxyURL              string                 `json:"proxy_url"`
+	ProxyLabel            string                 `json:"proxy_label"`
+	ProxyEnabled          *bool                  `json:"proxy_enabled"`
 }
 
 type jsonAccountUser struct {
@@ -4477,6 +4517,20 @@ type sub2apiImportPayload struct {
 type sub2apiAccountEntry struct {
 	Name        string                    `json:"name"`
 	Credentials sub2apiAccountCredentials `json:"credentials"`
+	// 代理是账号属性而不是凭据，不同导出实现有的写在条目根上、有的塞进
+	// credentials，两处都收，根上的优先。
+	ProxyURL     string `json:"proxy_url"`
+	ProxyLabel   string `json:"proxy_label"`
+	ProxyEnabled *bool  `json:"proxy_enabled"`
+}
+
+// proxyFields 返回该条目最终采用的代理三件套：条目根优先，回退到 credentials。
+// URL 决定用哪一组，避免根上只写了 label 却把 URL 从 credentials 拿过来配错。
+func (a sub2apiAccountEntry) proxyFields() (string, string, *bool) {
+	if url := strings.TrimSpace(a.ProxyURL); url != "" {
+		return url, strings.TrimSpace(a.ProxyLabel), a.ProxyEnabled
+	}
+	return strings.TrimSpace(a.Credentials.ProxyURL), strings.TrimSpace(a.Credentials.ProxyLabel), a.Credentials.ProxyEnabled
 }
 
 type sub2apiAccountCredentials struct {
@@ -4510,6 +4564,9 @@ type sub2apiAccountCredentials struct {
 	Codex5HResetAt        string                 `json:"codex_5h_reset_at"`
 	Codex5HUsageUpdatedAt string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt   string                 `json:"codex_usage_updated_at"`
+	ProxyURL              string                 `json:"proxy_url"`
+	ProxyLabel            string                 `json:"proxy_label"`
+	ProxyEnabled          *bool                  `json:"proxy_enabled"`
 }
 
 type importJSONScalarString string
@@ -4700,6 +4757,9 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 			agentNode = agentIdentityNodeFromFlatCredentials(entry.AuthMode, entry.AgentRuntimeID, entry.AgentPrivateKey, entry.AgentTaskID, accID, entry.ChatGPTUserID, email, planType, entry.AgentFedRAMP)
 		}
 		if tok, ok := agentIdentityImportTokenFromNode(agentNode, name); ok {
+			tok.proxyURL = strings.TrimSpace(entry.ProxyURL)
+			tok.proxyLabel = strings.TrimSpace(entry.ProxyLabel)
+			tok.proxyEnabled = entry.ProxyEnabled
 			tokens = append(tokens, tok)
 			continue
 		}
@@ -4722,6 +4782,9 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 				codex5HResetAt:        strings.TrimSpace(entry.Codex5HResetAt),
 				codex5HUsageUpdatedAt: strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 				codexUsageUpdatedAt:   strings.TrimSpace(entry.CodexUsageUpdatedAt),
+				proxyURL:              strings.TrimSpace(entry.ProxyURL),
+				proxyLabel:            strings.TrimSpace(entry.ProxyLabel),
+				proxyEnabled:          entry.ProxyEnabled,
 			})
 		}
 	}
@@ -4760,6 +4823,7 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 		planType := firstNonEmpty(c.PlanType, c.PlanTypeCamel, c.Account.PlanType, c.Account.PlanTypeCamel)
 		accID := firstNonEmpty(c.AccountID, c.User.ID, c.Account.ID)
 		expiresAt := firstNonEmpty(c.ExpiresAt.String(), c.Expired.String(), c.Expires.String())
+		proxyURL, proxyLabel, proxyEnabled := account.proxyFields()
 
 		// Agent Identity 条目：无 RT/ST/AT，单独识别。子对象缺失时回退到
 		// 平铺在 credentials 里的 Agent Identity 字段（sub2api 导出形态）。
@@ -4768,6 +4832,9 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 			agentNode = agentIdentityNodeFromFlatCredentials(c.AuthMode, c.AgentRuntimeID, c.AgentPrivateKey, c.AgentTaskID, accID, c.ChatGPTUserID, email, planType, c.AgentFedRAMP)
 		}
 		if tok, ok := agentIdentityImportTokenFromNode(agentNode, name); ok {
+			tok.proxyURL = proxyURL
+			tok.proxyLabel = proxyLabel
+			tok.proxyEnabled = proxyEnabled
 			return append(tokens, tok)
 		}
 
@@ -4789,6 +4856,9 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 				codex5HResetAt:        strings.TrimSpace(c.Codex5HResetAt),
 				codex5HUsageUpdatedAt: strings.TrimSpace(c.Codex5HUsageUpdatedAt),
 				codexUsageUpdatedAt:   strings.TrimSpace(c.CodexUsageUpdatedAt),
+				proxyURL:              proxyURL,
+				proxyLabel:            proxyLabel,
+				proxyEnabled:          proxyEnabled,
 			})
 		}
 	}
@@ -4910,12 +4980,18 @@ func importTokenOAuthIdentityKey(t importToken, conflicts map[string]bool) strin
 // ImportAccounts 批量导入账号（支持 TXT / JSON）
 func (h *Handler) ImportAccounts(c *gin.Context) {
 	format := c.DefaultPostForm("format", "txt")
-	proxyURL := c.PostForm("proxy_url")
-	allowDuplicate := parseBoolForm(c.PostForm("allow_duplicate"))
 	customHeaders, err := parseCustomHeadersForm(c.PostForm("custom_headers"))
 	if err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
+	}
+	settings := importSettings{
+		defaultProxyURL: c.PostForm("proxy_url"),
+		// TXT 系格式一行一个 token，物理上不可能携带代理。这里忽略开关而不是
+		// 报错，免得前端还要跟着格式切换清理该状态。
+		importProxies:  parseBoolForm(c.PostForm("import_proxy")) && (format == "json" || format == "json_at"),
+		allowDuplicate: parseBoolForm(c.PostForm("allow_duplicate")),
+		customHeaders:  customHeaders,
 	}
 	// 分组校验放在解析文件之前：分组 ID 打错时一个账号都不该被导入。
 	groupCtx, groupCancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
@@ -4929,13 +5005,13 @@ func (h *Handler) ImportAccounts(c *gin.Context) {
 
 	switch format {
 	case "json":
-		h.importAccountsJSON(c, proxyURL, allowDuplicate, customHeaders)
+		h.importAccountsJSON(c, settings)
 	case "json_at":
-		h.importAccountsJSONPreferAT(c, proxyURL, allowDuplicate, customHeaders)
+		h.importAccountsJSONPreferAT(c, settings)
 	case "at_txt":
-		h.importAccountsATTXT(c, proxyURL, allowDuplicate, customHeaders)
+		h.importAccountsATTXT(c, settings)
 	default:
-		h.importAccountsTXT(c, proxyURL, allowDuplicate, customHeaders)
+		h.importAccountsTXT(c, settings)
 	}
 }
 
@@ -5017,7 +5093,7 @@ func importTokensFromTextFiles(files []uploadedImportFile, makeToken func(string
 }
 
 // importAccountsTXT 通过 TXT 文件导入（每行一个 RT）
-func (h *Handler) importAccountsTXT(c *gin.Context, proxyURL string, allowDuplicate bool, customHeaders ...map[string]string) {
+func (h *Handler) importAccountsTXT(c *gin.Context, settings importSettings) {
 	files, err := readUploadedImportFiles(c)
 	if err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
@@ -5032,11 +5108,11 @@ func (h *Handler) importAccountsTXT(c *gin.Context, proxyURL string, allowDuplic
 		return
 	}
 
-	h.importAccountsCommon(c, tokens, proxyURL, allowDuplicate, firstCustomHeaders(customHeaders))
+	h.importAccountsCommon(c, tokens, settings)
 }
 
 // importAccountsJSON 通过 JSON 文件导入（兼容 CLIProxyAPI 凭证格式）
-func (h *Handler) importAccountsJSON(c *gin.Context, proxyURL string, allowDuplicate bool, customHeaders ...map[string]string) {
+func (h *Handler) importAccountsJSON(c *gin.Context, settings importSettings) {
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 		writeError(c, http.StatusBadRequest, "解析表单失败")
 		return
@@ -5070,12 +5146,12 @@ func (h *Handler) importAccountsJSON(c *gin.Context, proxyURL string, allowDupli
 		return
 	}
 
-	h.importAccountsCommon(c, allTokens, proxyURL, allowDuplicate, firstCustomHeaders(customHeaders))
+	h.importAccountsCommon(c, allTokens, settings)
 }
 
 // importAccountsJSONPreferAT 通过 JSON 文件导入，但只信任 access_token，
 // 用于一些导出工具中 refresh_token / session_token 是占位/重复值的场景。
-func (h *Handler) importAccountsJSONPreferAT(c *gin.Context, proxyURL string, allowDuplicate bool, customHeaders ...map[string]string) {
+func (h *Handler) importAccountsJSONPreferAT(c *gin.Context, settings importSettings) {
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 		writeError(c, http.StatusBadRequest, "解析表单失败")
 		return
@@ -5116,14 +5192,7 @@ func (h *Handler) importAccountsJSONPreferAT(c *gin.Context, proxyURL string, al
 		return
 	}
 
-	h.importAccountsCommon(c, allTokens, proxyURL, allowDuplicate, firstCustomHeaders(customHeaders))
-}
-
-func firstCustomHeaders(headers []map[string]string) map[string]string {
-	if len(headers) == 0 {
-		return nil
-	}
-	return headers[0]
+	h.importAccountsCommon(c, allTokens, settings)
 }
 
 // importEvent SSE 导入进度事件
@@ -5141,6 +5210,9 @@ type importEvent struct {
 	// CreatedIDs 只在 complete 事件下发，供前端拉取本次导入账号的邀请收益评估。
 	// 空值时省略，老前端不受影响。
 	CreatedIDs []int64 `json:"created_ids,omitempty"`
+	// 代理注册结果，只在开启"导入文件内代理"时非零。同样 omitempty。
+	ProxiesImported int `json:"proxies_imported,omitempty"`
+	ProxiesSkipped  int `json:"proxies_skipped,omitempty"`
 }
 
 // sendImportEvent 推送一条导入进度事件；返回 false 表示下游连接已经写不进去了。
@@ -5208,8 +5280,25 @@ func sendSSEJSON(c *gin.Context, event any) bool {
 }
 
 // importAccountsCommon 公共的去重、并发插入、SSE 进度推送逻辑（支持 RT 和 AT-only 混合导入）
-func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, proxyURL string, allowDuplicate bool, customHeaders ...map[string]string) {
-	importCustomHeaders := firstCustomHeaders(customHeaders)
+func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, settings importSettings) {
+	importCustomHeaders := settings.customHeaders
+	allowDuplicate := settings.allowDuplicate
+
+	// 代理注册必须跑在任何账号入库之前——包括下面的 Agent Identity 分支。
+	// registerImportedProxies 会原地规范化 tokens 上的代理 URL，失败则整次导入
+	// 中止：继续写只会产出一批绑着未入池代理、因而不可调度的账号。
+	// 这里还没进 SSE（setupSSE 在去重之后），可以正常返回 HTTP 错误。
+	var proxyOutcome importProxyOutcome
+	if settings.importProxies {
+		proxyCtx, proxyCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		outcome, err := h.registerImportedProxies(proxyCtx, tokens)
+		proxyCancel()
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "导入代理失败，未写入任何账号: "+err.Error())
+			return
+		}
+		proxyOutcome = outcome
+	}
 
 	// Agent Identity 条目单独处理（无 RT/ST/AT，按 runtime_id 去重、动态签名），
 	// 从常规 token 流里拆出，计数在收尾时并入总响应。
@@ -5225,7 +5314,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 	var agentCreatedIDs []int64
 	if len(agentTokens) > 0 {
 		agentCtx, agentCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		agentSuccess, agentDuplicate, agentFailed, agentCreatedIDs = h.importAgentIdentityTokens(agentCtx, agentTokens, proxyURL, allowDuplicate)
+		agentSuccess, agentDuplicate, agentFailed, agentCreatedIDs = h.importAgentIdentityTokens(agentCtx, agentTokens, settings)
 		agentCancel()
 		log.Printf("导入: Agent Identity 条目 %d 个（新增 %d，跳过 %d，失败 %d）", len(agentTokens), agentSuccess, agentDuplicate, agentFailed)
 	}
@@ -5418,13 +5507,21 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 		if err := h.bindImportedAccountGroups(c.Request.Context(), agentCreatedIDs, importGroupIDsFromContext(c)); err != nil {
 			log.Printf("导入: Agent Identity 账号分组绑定失败: %v", err)
 		}
-		c.JSON(http.StatusOK, gin.H{
+		response := gin.H{
 			"message":   fmt.Sprintf("导入完成：新增 %d 个，跳过 %d 个，失败 %d 个", agentSuccess, duplicateCount, agentFailed),
 			"success":   agentSuccess,
 			"duplicate": duplicateCount,
 			"failed":    agentFailed,
 			"total":     total,
-		})
+		}
+		if settings.importProxies {
+			response["proxies_imported"] = proxyOutcome.inserted
+			response["proxies_skipped"] = proxyOutcome.skipped
+			if warning := proxyOutcome.warning(); warning != "" {
+				response["warning"] = warning
+			}
+		}
+		c.JSON(http.StatusOK, response)
 		return
 	}
 
@@ -5486,6 +5583,9 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 			defer dbLimiter.release()
 
 			name := tok.name
+			// 文件内代理优先、表单代理兜底；registerImportedProxies 已经把非法值
+			// 清空，所以这里拿到的一定是校验过的 URL。
+			proxyURL := settings.proxyForToken(tok)
 
 			seed := importTokenSeed(tok, conflictingChatGPTIDs)
 			seed.allowDuplicate = allowDuplicate
@@ -5504,7 +5604,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				}
 
 				upsertCtx, upsertCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(upsertCtx, name, proxyURL, seed, importSource)
+				id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(upsertCtx, name, proxyURL, seed, importSource, settings.proxyOverwritePolicyForToken(tok))
 				upsertCancel()
 				if err != nil {
 					log.Printf("导入账号 %d/%d 更新或写入失败: %v", idx+1, len(newTokens), err)
@@ -5637,14 +5737,17 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 	sendImportEvent(c, importEvent{
 		Type: "complete", Current: total, Total: total,
 		Success: suc, Updated: upd, Duplicate: duplicateCount, Failed: fai,
-		CreatedIDs: newAccountIDs,
+		CreatedIDs:      newAccountIDs,
+		ProxiesImported: proxyOutcome.inserted,
+		ProxiesSkipped:  proxyOutcome.skipped,
+		Warning:         proxyOutcome.warning(),
 	})
 
 	log.Printf("导入完成: success=%d, updated=%d, duplicate=%d, failed=%d, total=%d", suc, upd, duplicateCount, fai, total)
 }
 
 // importAccountsATTXT 通过 TXT 文件导入 AT-only 账号（每行一个 Access Token）
-func (h *Handler) importAccountsATTXT(c *gin.Context, proxyURL string, allowDuplicate bool, customHeaders ...map[string]string) {
+func (h *Handler) importAccountsATTXT(c *gin.Context, settings importSettings) {
 	files, err := readUploadedImportFiles(c)
 	if err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
@@ -5659,7 +5762,7 @@ func (h *Handler) importAccountsATTXT(c *gin.Context, proxyURL string, allowDupl
 		return
 	}
 
-	h.importAccountsCommon(c, tokens, proxyURL, allowDuplicate, firstCustomHeaders(customHeaders))
+	h.importAccountsCommon(c, tokens, settings)
 }
 
 // GetAccountUsage 查询单个账号的用量统计
@@ -11577,6 +11680,68 @@ type cpaExportEntry struct {
 	AccessToken           string `json:"access_token"`
 	LastRefresh           string `json:"last_refresh"`
 	RefreshToken          string `json:"refresh_token"`
+	// 代理三件套只在 include_proxy=1 时写出：代理 URL 常带明文用户名密码。
+	// ProxyEnabled 用指针区分"文件没带这个字段"（老文件，按启用处理）与
+	// "源端显式禁用"，bool 的零值会被 omitempty 一起吞掉。
+	ProxyURL     string `json:"proxy_url,omitempty"`
+	ProxyLabel   string `json:"proxy_label,omitempty"`
+	ProxyEnabled *bool  `json:"proxy_enabled,omitempty"`
+}
+
+// exportProxyResolver 决定导出条目是否携带账号绑定的代理。零值表示不携带——
+// 导出代理等于导出代理凭据，必须由调用方显式打开。
+type exportProxyResolver struct {
+	include bool
+	byURL   map[string]*database.ProxyRow
+}
+
+// newExportProxyResolver 在 include 为真时读一次代理表，用来给导出条目补上
+// label / enabled。账号绑的自定义代理（不在代理表里）只带 URL。
+func (h *Handler) newExportProxyResolver(ctx context.Context, include bool) exportProxyResolver {
+	if !include {
+		return exportProxyResolver{}
+	}
+	resolver := exportProxyResolver{include: true, byURL: make(map[string]*database.ProxyRow)}
+	proxies, err := h.db.ListProxies(ctx)
+	if err != nil {
+		// 代理表读失败不该让整次导出失败：URL 在账号行上，label/enabled 只是附注。
+		log.Printf("导出账号: 读取代理表失败，本次仅导出代理 URL: %v", err)
+		return resolver
+	}
+	for _, proxy := range proxies {
+		if proxy == nil {
+			continue
+		}
+		resolver.byURL[strings.TrimSpace(proxy.URL)] = proxy
+	}
+	return resolver
+}
+
+// resolve 返回导出条目该写入的代理 URL / label / 启用状态。
+func (r exportProxyResolver) resolve(rawURL string) (string, string, *bool) {
+	if !r.include {
+		return "", "", nil
+	}
+	proxyURL := strings.TrimSpace(rawURL)
+	if proxyURL == "" {
+		return "", "", nil
+	}
+	row := r.byURL[proxyURL]
+	if row == nil {
+		return proxyURL, "", nil
+	}
+	enabled := row.Enabled
+	return proxyURL, row.Label, &enabled
+}
+
+// exportIncludeProxy 解析 include_proxy 查询参数；未显式传入时取渠道默认值。
+// 用 Query().Has 做存在性判断而不是空串比较：include_proxy=0 必须能压过
+// 默认开启的渠道（Antigravity）。
+func exportIncludeProxy(c *gin.Context, defaultValue bool) bool {
+	if !c.Request.URL.Query().Has("include_proxy") {
+		return defaultValue
+	}
+	return parseBoolForm(c.Query("include_proxy"))
 }
 
 type accountAuthJSONTokens struct {
@@ -11656,7 +11821,8 @@ func (h *Handler) GetAccountAuthJSON(c *gin.Context) {
 }
 
 // accountRowToCPAExportEntry 将数据库账号行转为 CPA 导出条目；无凭证时返回 false。
-func accountRowToCPAExportEntry(row *database.AccountRow) (cpaExportEntry, bool) {
+// proxies 决定是否连同账号绑定的代理一起导出（零值 = 不导出）。
+func accountRowToCPAExportEntry(row *database.AccountRow, proxies exportProxyResolver) (cpaExportEntry, bool) {
 	if row == nil {
 		return cpaExportEntry{}, false
 	}
@@ -11672,6 +11838,7 @@ func accountRowToCPAExportEntry(row *database.AccountRow) (cpaExportEntry, bool)
 	if accountID == "" {
 		accountID = row.GetCredential("account_id")
 	}
+	proxyURL, proxyLabel, proxyEnabled := proxies.resolve(row.ProxyURL)
 	return cpaExportEntry{
 		Type:                  "codex",
 		Email:                 row.GetCredential("email"),
@@ -11688,6 +11855,9 @@ func accountRowToCPAExportEntry(row *database.AccountRow) (cpaExportEntry, bool)
 		AccessToken:           at,
 		LastRefresh:           row.UpdatedAt.Format(time.RFC3339),
 		RefreshToken:          rt,
+		ProxyURL:              proxyURL,
+		ProxyLabel:            proxyLabel,
+		ProxyEnabled:          proxyEnabled,
 	}, true
 }
 
@@ -11739,6 +11909,9 @@ func (h *Handler) ExportAccounts(c *gin.Context) {
 		return
 	}
 
+	// 远程迁移同样默认不带代理：目标机未必连得上源机的代理网段，静默继承会让
+	// 整批账号绑上不可达出口。需要时由调用方显式传 include_proxy=1。
+	proxies := h.newExportProxyResolver(ctx, exportIncludeProxy(c, false))
 	idSet := parseExportIDSet(idsParam)
 
 	// 构建运行时状态映射（用于健康过滤）
@@ -11760,13 +11933,14 @@ func (h *Handler) ExportAccounts(c *gin.Context) {
 				continue
 			}
 		}
-		entry, ok := accountRowToExportEntry(row)
+		entry, ok := accountRowToExportEntry(row, proxies)
 		if !ok {
 			continue
 		}
 		entries = append(entries, entry)
 	}
 
+	writeSecretResponseHeaders(c)
 	c.JSON(http.StatusOK, entries)
 }
 
@@ -11783,18 +11957,20 @@ func (h *Handler) ExportRecycleBinAccounts(c *gin.Context) {
 		return
 	}
 
+	proxies := h.newExportProxyResolver(ctx, exportIncludeProxy(c, false))
 	idSet := parseExportIDSet(c.Query("ids"))
 	entries := make([]any, 0, len(rows))
 	for _, row := range rows {
 		if idSet != nil && !idSet[row.ID] {
 			continue
 		}
-		entry, ok := accountRowToExportEntry(row)
+		entry, ok := accountRowToExportEntry(row, proxies)
 		if !ok {
 			continue
 		}
 		entries = append(entries, entry)
 	}
+	writeSecretResponseHeaders(c)
 	c.JSON(http.StatusOK, entries)
 }
 
@@ -11894,7 +12070,7 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 	}
 
 	log.Printf("远程迁移: 从 %s 拉取到 %d 个账号，开始导入", remoteURL, len(tokens))
-	h.importAccountsCommon(c, tokens, "", false)
+	h.importAccountsCommon(c, tokens, importSettings{})
 }
 
 // ==================== Models ====================

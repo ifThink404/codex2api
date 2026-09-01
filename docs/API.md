@@ -866,6 +866,8 @@ Downloads active Antigravity credentials. Optional `ids=1,2` selects accounts; o
 
 The response is intentionally secret-bearing and is accepted by the Antigravity batch importer for backup restoration. OAuth JSON includes usable access/refresh/ID tokens and OAuth client metadata. API-key JSON explicitly includes `auth_kind: "api_key"`, `api_key`, declared models, model mapping, and the exported enabled state. Never log, cache, or expose this download to non-admin callers.
 
+Unlike the other export endpoints, `include_proxy` defaults to **enabled** here: this channel has always emitted the account's bound `proxy_url`, and dropping it would silently break the round-trip of existing backups. Pass `include_proxy=0` to exclude it. When enabled, entries also carry `proxy_label` and `proxy_enabled`; proxy URLs frequently embed credentials, so treat the download accordingly. The importer registers those proxies into the proxy table only when its own `import_proxy` flag is set — see [proxy_pool.md](proxy_pool.md#随账号导出导入迁移代理绑定).
+
 #### GET /api/admin/accounts/:id/antigravity/state
 
 Returns persisted sanitized state without an upstream call:
@@ -1099,11 +1101,50 @@ curl -X POST http://localhost:8080/api/admin/accounts/at \
 
 **Form 字段:**
 
-| 字段      | 类型   | 必填 | 说明                                      |
-| --------- | ------ | ---- | ----------------------------------------- |
-| file      | file   | 是   | 上传文件（最大 20MB，JSON 格式支持多文件） |
-| format    | string | 否   | 文件格式：`txt`（默认）、`json`、`at_txt` |
-| proxy_url | string | 否   | 代理 URL                                  |
+| 字段         | 类型   | 必填 | 说明                                       |
+| ------------ | ------ | ---- | ------------------------------------------ |
+| file         | file   | 是   | 上传文件（最大 20MB，JSON 格式支持多文件） |
+| format       | string | 否   | 文件格式：`txt`（默认）、`json`、`at_txt`  |
+| proxy_url    | string | 否   | 代理 URL                                   |
+| import_proxy | bool   | 否   | 采用文件内携带的代理，并注册进代理池       |
+
+**import_proxy 说明:**
+
+传 `true` 时，JSON 文件里每个账号携带的 `proxy_url` 生效（优先于表单的 `proxy_url`），
+这些代理会先写进代理表、同步进内存代理池，然后才写账号——顺序不能颠倒，账号先绑上
+一个尚未入池的托管代理会被判定为无可用出口而不可调度。TXT 格式一行一个 Token，
+物理上带不了代理，该开关对其无效。
+
+行为细节：
+
+- 单次最多注册 500 条代理，超限则一条都不注册、全部账号退回表单代理；
+- 格式非法的代理条目被跳过，对应账号退回表单代理，不会绑上未入池的 URL；
+- 已存在的同 URL 代理按 `ON CONFLICT DO NOTHING` 跳过，**不会**被复活或改标签，
+  若它在本机是禁用/测试失败状态，绑定它的账号不会被调度，响应里会给出告警；
+- 源端标记为禁用的代理一律以启用态导入，并在响应里告警；
+- 新注册的代理打上 `imported-<YYYYMMDD-HHmm>` 标签，便于事后按批筛选清理；
+- 命中已有账号时，文件带来的代理**不覆盖**该账号已有的绑定（只填补空绑定）；
+  表单填写的 `proxy_url` 维持既有的覆盖语义。
+
+SSE 的 `complete` 事件会带上 `proxies_imported` / `proxies_skipped` / `warning`。
+
+**其它渠道:**
+
+Grok 与 Antigravity 的批量导入支持同名开关，但走 JSON 请求体而非 form 字段，
+响应里的告警字段叫 `proxy_warning`（与 `proxies_imported` / `proxies_skipped` 一起，
+仅在开关打开时出现）：
+
+| 端点                                   | 字段                    | 生效范围                                                       |
+| -------------------------------------- | ----------------------- | -------------------------------------------------------------- |
+| `POST /api/admin/accounts/grok/import` | `import_proxy` (bool)   | 只对 JSON 凭据文件生效；`sso.txt` / `refreshtoken.txt` 一行一个 Token，物理上带不了代理 |
+| `POST /api/admin/accounts/antigravity/import` | `import_proxy` (bool) | 只控制「是否入代理表」，见下                                     |
+
+Antigravity 的导入**一直**会采用文件里的 `proxy_url`，只是从不入表：账号绑的是一个
+代理池不认识的 URL，管理页看不见、也进不了轮转。该开关只补上入表这一步，关闭时维持
+既有行为，不改变代理的取用优先级。
+
+上述规则（写入顺序、500 条上限、非法条目回退、不复活既有代理、不覆盖已有绑定）三个
+渠道完全一致，详见 [proxy_pool.md](proxy_pool.md#随账号导出导入迁移代理绑定)。
 
 **format 格式说明:**
 
@@ -1233,6 +1274,7 @@ data: {"type":"complete","current":3,"total":3,"success":2,"failed":1}
 - `filter`: healthy (只导出健康账号)
 - `ids`: 1,2,3 (指定 ID 列表)
 - `remote`: true (远程迁移模式)
+- `include_proxy`: 1 (连同账号绑定的代理一起导出，默认关闭)
 
 **响应:**
 
@@ -1250,6 +1292,25 @@ data: {"type":"complete","current":3,"total":3,"success":2,"failed":1}
   }
 ]
 ```
+
+**include_proxy 说明:**
+
+开启后每个条目追加 `proxy_url` / `proxy_label` / `proxy_enabled` 三项，配合导入端的
+`import_proxy` 即可把「号池 + 代理绑定关系」整体迁走。三项都只在账号确实绑了代理时
+出现，未绑定的账号不会多出空字段。
+
+> ⚠️ 代理 URL 常常内嵌用户名密码，导出文件本就含明文 `refresh_token`，开启后敏感度
+> 更高，请按机密文件处理。
+
+`/accounts/grok/export`、`/accounts/antigravity/export`、`/accounts/recycle-bin/export`
+同样支持该参数。其中 Antigravity 的导出**一直**会写出 `proxy_url`（历史行为，默认即为
+开启），去掉它反而会让既有的迁移流程静默丢配置；要排除代理需显式传 `include_proxy=0`。
+
+`remote=true` 的远程迁移模式默认同样不带代理：目标机未必连得上源机的代理网段，静默
+继承会让整批账号绑上不可达出口。
+
+只绑到分组、由分组下发的代理不属于账号自身的绑定，不会被账号导出携带——目标端需要
+先建好同名分组。
 
 #### POST /api/admin/accounts/migrate
 

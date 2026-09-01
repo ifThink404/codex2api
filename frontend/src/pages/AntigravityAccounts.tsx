@@ -146,6 +146,9 @@ interface ImportDraft {
   modelMapping: string;
   proxyUrl: string;
   groupIds: number[];
+  // importFileProxies 只控制"文件内代理是否注册进代理表"。该渠道的导入一直会采用
+  // 文件里的 proxy_url，关掉它只是让那些代理停在账号绑定上、不进代理池。
+  importFileProxies: boolean;
 }
 
 interface EditDraft {
@@ -174,6 +177,7 @@ const EMPTY_IMPORT_DRAFT: ImportDraft = {
   modelMapping: "",
   proxyUrl: "",
   groupIds: [],
+  importFileProxies: false,
 };
 
 const EMPTY_OAUTH_DRAFT: OAuthDraft = {
@@ -1457,22 +1461,36 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
           files: credentialFiles.map((file) => file.content),
           proxy_url: importDraft.proxyUrl.trim() || undefined,
           group_ids: importDraft.groupIds,
+          import_proxy: importDraft.importFileProxies || undefined,
         });
         setImportResult(result);
         const needsReview = result.failed > 0 || (result.degraded ?? 0) > 0;
+        const proxyWarning = result.proxy_warning?.trim();
+        // Toast 只有一个槽位,连续调用会互相顶掉——代理结果和告警必须拼进同一条。
+        const summary = needsReview
+          ? t("antigravity.importReview", {
+              imported: result.imported,
+              synced: result.synced ?? 0,
+              degraded: result.degraded ?? 0,
+              failed: result.failed,
+            })
+          : t("antigravity.importDone", {
+              imported: result.imported,
+              total: result.total,
+            });
+        const parts = [summary];
+        if (result.proxies_imported !== undefined) {
+          parts.push(
+            t("accounts.importProxySummary", {
+              imported: result.proxies_imported,
+              skipped: result.proxies_skipped ?? 0,
+            }),
+          );
+          if (proxyWarning) parts.push(proxyWarning);
+        }
         showToast(
-          needsReview
-            ? t("antigravity.importReview", {
-                imported: result.imported,
-                synced: result.synced ?? 0,
-                degraded: result.degraded ?? 0,
-                failed: result.failed,
-              })
-            : t("antigravity.importDone", {
-                imported: result.imported,
-                total: result.total,
-              }),
-          needsReview ? "warning" : "success",
+          parts.join(" "),
+          needsReview || proxyWarning ? "warning" : "success",
         );
         if (result.failed === 0 && (result.degraded ?? 0) === 0) {
           setShowImport(false);
@@ -2567,6 +2585,28 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
             groups={antigravityGroups}
             onCreateGroup={createAntigravityGroup}
           />
+
+          {importMode === "files" ? (
+            <div className="space-y-1">
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="size-3.5"
+                  checked={importDraft.importFileProxies}
+                  onChange={(event) =>
+                    setImportDraft((current) => ({
+                      ...current,
+                      importFileProxies: event.target.checked,
+                    }))
+                  }
+                />
+                {t("accounts.importFileProxies")}
+              </label>
+              <p className="text-[11px] text-muted-foreground">
+                {t("antigravity.importFileProxiesHint")}
+              </p>
+            </div>
+          ) : null}
 
           {importResult && (importResult.failed > 0 || (importResult.degraded ?? 0) > 0) ? (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">

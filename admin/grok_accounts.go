@@ -546,6 +546,9 @@ type batchImportGrokReq struct {
 	BaseURL  string   `json:"base_url"`
 	Models   []string `json:"models"`
 	ProxyURL string   `json:"proxy_url"`
+	// ImportProxy 打开后采用文件内携带的代理，并把它们注册进代理池；关闭时文件
+	// 里的 proxy_url 一律忽略，全部账号用表单填的代理。
+	ImportProxy bool `json:"import_proxy"`
 	// GroupIDs 让导入时就把新账号绑进指定分组；跳过的重复账号不受影响。
 	GroupIDs json.RawMessage `json:"group_ids"`
 }
@@ -659,6 +662,21 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 		return
 	}
 
+	// 代理必须在任何账号落库之前注册进代理表并同步到内存代理池，顺序理由见
+	// registerImportedProxyBindings。索引与 req.Files 对齐，逐文件取用。
+	proxyBindings := make([]importProxyBinding, len(req.Files))
+	var proxyOutcome importProxyOutcome
+	if req.ImportProxy {
+		for i, content := range req.Files {
+			proxyBindings[i] = grokFileProxyBinding(content)
+		}
+		proxyOutcome, err = h.registerImportedProxyBindings(ctx, proxyBindings)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
 	items := make([]grokBatchImportItem, 0, len(req.Files))
 	imported := 0
 	createdIDs := make([]int64, 0, len(req.Files))
@@ -697,8 +715,14 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 		if name == "" {
 			name = fmt.Sprintf("grok-%d", i+1)
 		}
+		// 文件内代理优先，缺失/非法时回落表单值。
+		fileProxyURL := proxyBindings[i].url
+		effectiveProxyURL := req.ProxyURL
+		if fileProxyURL != "" {
+			effectiveProxyURL = fileProxyURL
+		}
 		enabled := !(importMeta.DisabledPresent && importMeta.Disabled)
-		id, duplicateID, insertErr := h.db.InsertGrokAccountIfAbsent(ctx, name, credentials, req.ProxyURL, enabled)
+		id, duplicateID, insertErr := h.db.InsertGrokAccountIfAbsent(ctx, name, credentials, effectiveProxyURL, enabled)
 		if insertErr != nil {
 			item.Error = insertErr.Error()
 			items = append(items, item)
@@ -708,7 +732,15 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 			// 身份栅栏含回收站账号:命中时合并凭据(回收站复活)而非跳过,
 			// 否则删过的号重新导入永远失败(issue #602)。credentials 里的
 			// base_url/models 只在显式提供时存在,不会覆盖既有配置。
-			reauth, reauthErr := h.db.ReauthGrokAccount(ctx, duplicateID, credentials, "", req.ProxyURL)
+			//
+			// 代理传空 = 保留账号原绑定。文件带来的代理是被动数据，不覆盖目标端
+			// 已有的绑定（那里可能已经做过精细分配）；表单填的代理是操作员的显式
+			// 换绑意图，维持既有覆盖语义。
+			reauthProxyURL := effectiveProxyURL
+			if fileProxyURL != "" && h.accountHasProxyBinding(ctx, duplicateID) {
+				reauthProxyURL = ""
+			}
+			reauth, reauthErr := h.db.ReauthGrokAccount(ctx, duplicateID, credentials, "", reauthProxyURL)
 			if reauthErr != nil {
 				item.Error = fmt.Sprintf("合并到既有账号 %d 失败: %v", duplicateID, reauthErr)
 				items = append(items, item)
@@ -743,7 +775,7 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 		}
 		h.db.InsertAccountEventAsync(id, "added", "grok_file_import")
 
-		acc := grokAccountFromCredentials(id, credentials, req.ProxyURL)
+		acc := grokAccountFromCredentials(id, credentials, effectiveProxyURL)
 		acc.Models = models
 		if baseURL != "" {
 			acc.BaseURL = strings.TrimRight(baseURL, "/")
@@ -772,6 +804,13 @@ func (h *Handler) BatchImportGrokAccounts(c *gin.Context) {
 		"failed":    len(req.Files) - imported,
 		"items":     items,
 		"group_ids": groupIDs,
+	}
+	if req.ImportProxy {
+		response["proxies_imported"] = proxyOutcome.inserted
+		response["proxies_skipped"] = proxyOutcome.skipped
+		if warning := proxyOutcome.warning(); warning != "" {
+			response["proxy_warning"] = warning
+		}
 	}
 	if err := h.bindImportedAccountGroups(ctx, createdIDs, groupIDs); err != nil {
 		response["group_bind_error"] = err.Error()

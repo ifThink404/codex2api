@@ -1445,16 +1445,27 @@ export const api = {
     request<{ message: string; cleaned: number }>('/accounts/antigravity/clean-banned', { method: 'POST' }),
   cleanAntigravityError: () =>
     request<{ message: string; cleaned: number }>('/accounts/antigravity/clean-error', { method: 'POST' }),
-  exportAccounts: (params: { filter: 'healthy' | 'all'; ids?: number[]; channel?: 'codex' | 'grok' }) => {
+  /**
+   * 导出账号凭据。includeProxy 打开后条目里会带上账号绑定的代理 URL，
+   * 而代理 URL 常含明文用户名密码，因此默认关闭、由调用方显式开启。
+   */
+  exportAccounts: (params: {
+    filter: 'healthy' | 'all'
+    ids?: number[]
+    channel?: 'codex' | 'grok'
+    includeProxy?: boolean
+  }) => {
     const sp = new URLSearchParams({ filter: params.filter })
     if (params.ids && params.ids.length > 0) sp.set('ids', params.ids.join(','))
     if (params.channel) sp.set('channel', params.channel)
+    if (params.includeProxy) sp.set('include_proxy', '1')
     return request<CPAExportEntry[]>(`/accounts/export?${sp.toString()}`)
   },
   /** 导出回收站账号；ids 为空则导出回收站全部。 */
-  exportRecycleBinAccounts: (ids?: number[]) => {
+  exportRecycleBinAccounts: (ids?: number[], includeProxy?: boolean) => {
     const sp = new URLSearchParams()
     if (ids && ids.length > 0) sp.set('ids', ids.join(','))
+    if (includeProxy) sp.set('include_proxy', '1')
     const q = sp.toString()
     return request<CPAExportEntry[]>(`/accounts/recycle-bin/export${q ? `?${q}` : ''}`)
   },
@@ -1465,9 +1476,10 @@ export const api = {
    * 单个账号返回裸 JSON，多个账号返回 ZIP（内部每账号一个 <邮箱>.json）。
    * 文件名由服务端在 Content-Disposition 里给出，前端不再自行拼接。
    */
-  exportGrokAccounts: (ids?: number[]) => {
+  exportGrokAccounts: (ids?: number[], includeProxy?: boolean) => {
     const sp = new URLSearchParams({ filter: 'all' })
     if (ids && ids.length > 0) sp.set('ids', ids.join(','))
+    if (includeProxy) sp.set('include_proxy', '1')
     return requestNamedBlob(`/accounts/grok/export?${sp.toString()}`)
   },
   /** Admin-only secret-bearing Antigravity credential download (JSON or ZIP). */

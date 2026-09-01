@@ -1839,6 +1839,9 @@ export default function Accounts() {
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
   const [showExportPicker, setShowExportPicker] = useState(false);
+  // 导出时是否带上账号绑定的代理。默认关闭：代理 URL 常含明文用户名密码，
+  // 只有在确实要迁移「号池 + 代理绑定关系」时才该打开。
+  const [exportIncludeProxy, setExportIncludeProxy] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
   const [showAnalysisCharts, setShowAnalysisCharts] = useState(
@@ -1902,6 +1905,9 @@ export default function Accounts() {
   const [sessionProxyUrl, setSessionProxyUrl] = useState("");
   // 允许重复添加：勾选后本次添加/导入跳过去重，强制新建（添加弹窗与导入弹窗共用）。
   const [allowDuplicate, setAllowDuplicate] = useState(false);
+  // 采用文件内代理：勾选后 JSON 文件里带的 proxy_url 生效，并自动注册进代理池。
+  // 只对 JSON 系格式有意义，TXT 一行一个 token 物理上带不了代理。
+  const [importFileProxies, setImportFileProxies] = useState(false);
   const [openAIForm, setOpenAIForm] =
     useState<AddOpenAIResponsesAccountRequest>({
       base_url: "https://api.openai.com",
@@ -3858,6 +3864,9 @@ export default function Accounts() {
     // createdIDs 原地收集本次导入新建的账号 ID(complete 事件下发),跨批累加,
     // 供导入结束后拉取邀请收益方案。
     createdIDs?: number[],
+    // proxySummary 原地累加代理注册结果(complete 事件下发),跨批累加,
+    // 供导入结束后在 toast 里汇报。
+    proxySummary?: { imported: number; skipped: number; warnings: string[] },
   ) => {
     const base = baseline ?? {
       current: 0,
@@ -3911,9 +3920,20 @@ export default function Accounts() {
             duplicate: number;
             failed: number;
             created_ids?: number[];
+            proxies_imported?: number;
+            proxies_skipped?: number;
+            warning?: string;
           };
           if (event.type === "complete" && createdIDs && event.created_ids?.length) {
             createdIDs.push(...event.created_ids);
+          }
+          if (event.type === "complete" && proxySummary) {
+            proxySummary.imported += event.proxies_imported ?? 0;
+            proxySummary.skipped += event.proxies_skipped ?? 0;
+            // 同一条告警在多批之间会重复出现，去重后再展示。
+            if (event.warning && !proxySummary.warnings.includes(event.warning)) {
+              proxySummary.warnings.push(event.warning);
+            }
           }
           last = {
             current: event.current ?? 0,
@@ -4004,6 +4024,11 @@ export default function Accounts() {
     };
     // 本次导入(含所有批次)新建的账号 ID,用于导入完成后的邀请收益引导。
     const importedAccountIDs: number[] = [];
+    // 本次导入注册进代理池的代理统计,跨批累加后在结束 toast 里汇报。
+    const proxySummary = { imported: 0, skipped: 0, warnings: [] as string[] };
+    // 只有 JSON 系格式的文件才可能携带代理,后端也只对这两种格式认这个开关。
+    const carriesFileProxies =
+      importFileProxies && (format === "json" || format === "json_at");
 
     try {
       for (let i = 0; i < batches.length; i++) {
@@ -4012,6 +4037,7 @@ export default function Accounts() {
         if (format !== "txt") formData.append("format", format);
         const trimmedImportProxy = (proxyOverride ?? importProxyUrl).trim();
         if (trimmedImportProxy) formData.append("proxy_url", trimmedImportProxy);
+        if (carriesFileProxies) formData.append("import_proxy", "true");
         const routedHeaders = applyOptionalWorkspaceRouteHeader(
           parsedCustomHeaders.value,
           workspaceOverride,
@@ -4034,7 +4060,13 @@ export default function Accounts() {
         // 只有最后一批完成后才标记 done,让进度条在多批之间保持运行态。
         const isLastBatch = i === batches.length - 1;
         if (res.headers.get("content-type")?.includes("text/event-stream")) {
-          await readImportSSE(res, totals, isLastBatch, importedAccountIDs);
+          await readImportSSE(
+            res,
+            totals,
+            isLastBatch,
+            importedAccountIDs,
+            proxySummary,
+          );
         } else {
           const data = await res.json();
           if (!res.ok) {
@@ -4053,11 +4085,33 @@ export default function Accounts() {
           totals.updated += data.updated ?? 0;
           totals.duplicate += data.duplicate ?? 0;
           totals.failed += data.failed ?? 0;
+          // 纯 Agent Identity 文件走的是这条非流式分支,代理统计同样在这里下发。
+          proxySummary.imported += data.proxies_imported ?? 0;
+          proxySummary.skipped += data.proxies_skipped ?? 0;
+          if (data.warning && !proxySummary.warnings.includes(data.warning)) {
+            proxySummary.warnings.push(data.warning);
+          }
           setImportProgress({ show: true, ...totals, done: isLastBatch });
           if (isLastBatch) void reload();
         }
       }
-      showToast(t("accounts.importCompleted"));
+      // Toast 只有一个槽位,连续调用会互相顶掉——代理结果和告警必须拼进同一条。
+      if (carriesFileProxies) {
+        const parts = [
+          t("accounts.importCompleted"),
+          t("accounts.importProxySummary", {
+            imported: proxySummary.imported,
+            skipped: proxySummary.skipped,
+          }),
+          ...proxySummary.warnings,
+        ];
+        showToast(
+          parts.join(" "),
+          proxySummary.warnings.length > 0 ? "error" : "success",
+        );
+      } else {
+        showToast(t("accounts.importCompleted"));
+      }
       // 引导只在有新建账号时触发;开关状态由后端判定,前端拿到 enabled=false
       // 就不展示,避免把开关语义复制两份。
       if (importedAccountIDs.length > 0) {
@@ -4360,9 +4414,12 @@ export default function Accounts() {
         filter: "healthy" | "all";
         ids?: number[];
         channel: "codex";
+        includeProxy?: boolean;
       } = {
         filter: scope === "healthy" ? "healthy" : "all",
         channel: "codex",
+        // TXT 只导出 refresh_token,带上代理也写不进去,徒然让响应多带一份明文口令。
+        includeProxy: format === "json" && exportIncludeProxy,
       };
       if (scope === "selected") {
         params.ids = Array.from(selected);
@@ -8178,6 +8235,18 @@ export default function Accounts() {
                 />
                 {t("accounts.allowDuplicate")}
               </label>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="size-3.5"
+                  checked={importFileProxies}
+                  onChange={(e) => setImportFileProxies(e.target.checked)}
+                />
+                {t("accounts.importFileProxies")}
+              </label>
+              <p className="text-[11px] text-muted-foreground">
+                {t("accounts.importFileProxiesHint")}
+              </p>
               <div className="space-y-1.5 pt-1">
                 <label className="text-xs font-medium text-foreground">
                   {t("accounts.importGroupsLabel")}
@@ -8424,6 +8493,30 @@ export default function Accounts() {
                     </div>
                   </button>
                 </div>
+              </div>
+              {/* 代理配置只对 JSON 导出生效，TXT 只有 refresh_token 一列。 */}
+              <div className="border-t border-border pt-3">
+                <label className="flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 size-3.5 shrink-0"
+                    checked={exportIncludeProxy}
+                    onChange={(e) => setExportIncludeProxy(e.target.checked)}
+                  />
+                  <span className="min-w-0">
+                    <span className="font-medium text-foreground">
+                      {t("accounts.exportIncludeProxy")}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      {t("accounts.exportIncludeProxyHint")}
+                    </span>
+                  </span>
+                </label>
+                {exportIncludeProxy && (
+                  <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-600 dark:text-amber-400">
+                    {t("accounts.exportIncludeProxyWarning")}
+                  </p>
+                )}
               </div>
             </div>
           </Modal>
@@ -11055,6 +11148,9 @@ function RecycleBinView({
     }
     setExporting(true);
     try {
+      // 回收站导出不带代理:这里是"恢复误删账号"的入口,不是迁移入口,没有
+      // 承载勾选项的弹窗,默认不外泄代理里的明文口令。需要迁移代理绑定关系
+      // 请用账号页的导出。
       const data = await api.exportRecycleBinAccounts(ids);
       if (data.length === 0) {
         showToast(t("accounts.exportNoAccounts"), "error");
