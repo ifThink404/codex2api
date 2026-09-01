@@ -51,6 +51,12 @@ import AccountGroupFilterSelect, {
   type AccountGroupFilterValue,
 } from "../components/AccountGroupFilterSelect";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
+import AccountProxyBadge from "../components/AccountProxyBadge";
+import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
+import {
+  buildProxyBindingContext,
+  type ProxyBindingContext,
+} from "../lib/accountProxyBinding";
 import ChannelLogo from "../components/ChannelLogo";
 import { CompactStat } from "../components/CompactStat";
 import Modal from "../components/Modal";
@@ -911,27 +917,11 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
   const requestAbortRef = useRef<AbortController | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+	const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [accounts, setAccounts] = useState<AccountRow[]>([]);
-  const [allGroups, setAllGroups] = useState<AccountGroup[]>([]);
-  // 代理池：账号弹窗"从代理池选择"下拉的数据源，随页面加载一次；失败静默留空。
-  const [proxyPool, setProxyPool] = useState<ProxyRow[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .listProxies()
-      .then((res) => {
-        if (!cancelled) setProxyPool(res.proxies ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setProxyPool([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const antigravityGroups = useMemo(
+	const [accounts, setAccounts] = useState<AccountRow[]>([]);
+	const [allGroups, setAllGroups] = useState<AccountGroup[]>([]);
+	const antigravityGroups = useMemo(
     () => allGroups.filter((group) => group.channel === "antigravity"),
     [allGroups],
   );
@@ -952,6 +942,49 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
     EMPTY_ACCOUNT_GROUP_FILTER,
   );
   const [busy, setBusy] = useState<{ id: number; action: BusyAction } | null>(null);
+
+  // 代理池 + 代理池开关 + 全局代理:代理徽章的判定输入。本页此前只有纯文本代理
+  // 输入框,没接过代理池,这里补上(拉取失败静默留空,不影响手填)。
+  const [proxyPool, setProxyPool] = useState<ProxyRow[]>([]);
+  const [proxyPoolEnabled, setProxyPoolEnabled] = useState(false);
+  const [globalProxyURL, setGlobalProxyURL] = useState("");
+  const [quickProxyAccount, setQuickProxyAccount] = useState<AccountRow | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .listProxies()
+      .then((res) => {
+        if (!cancelled) setProxyPool(res.proxies ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setProxyPool([]);
+      });
+    void api
+      .getSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setProxyPoolEnabled(Boolean(settings.proxy_pool_enabled));
+        setGlobalProxyURL((settings.proxy_url ?? "").trim());
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  // 分组用全量而非 antigravityGroups:后端解析组代理不看渠道,按渠道过滤会把
+  // 跨渠道的存量成员误报成"无组代理"。
+  const proxyBindingCtx = useMemo<ProxyBindingContext>(
+    () =>
+      buildProxyBindingContext({
+        proxies: proxyPool,
+        groups: allGroups,
+        poolEnabled: proxyPoolEnabled,
+        globalProxy: globalProxyURL,
+      }),
+    [proxyPool, allGroups, proxyPoolEnabled, globalProxyURL],
+  );
 
   const [showImport, setShowImport] = useState(false);
   const [importMode, setImportMode] = useState<ImportMode>("single");
@@ -1986,6 +2019,7 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                 <TableHead>{t("antigravity.columnProject")}</TableHead>
                 <TableHead>{t("antigravity.columnPermission")}</TableHead>
                 <TableHead>{t("antigravity.columnQuota")}</TableHead>
+                <TableHead>{t("accounts.proxyColumn")}</TableHead>
                 <TableHead>{t("antigravity.columnStatus")}</TableHead>
                 <TableHead>{t("antigravity.columnUpdated")}</TableHead>
                 <TableHead className="w-[184px] text-right">
@@ -2053,6 +2087,13 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                     <CompactQuota
                       account={account}
                       onOpen={() => openDetailAccount(account.id)}
+                    />
+                  </TableCell>
+                  <TableCell className="min-w-[120px] max-w-[180px]">
+                    <AccountProxyBadge
+                      account={account}
+                      ctx={proxyBindingCtx}
+                      onClick={() => setQuickProxyAccount(account)}
                     />
                   </TableCell>
                   <TableCell>
@@ -2149,6 +2190,13 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                 <CompactQuota
                   account={account}
                   onOpen={() => openDetailAccount(account.id)}
+                />
+              </div>
+              <div className="mt-3 flex border-t border-border pt-3">
+                <AccountProxyBadge
+                  account={account}
+                  ctx={proxyBindingCtx}
+                  onClick={() => setQuickProxyAccount(account)}
                 />
               </div>
               <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-2">
@@ -2858,6 +2906,22 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
           </div>
         ) : null}
       </Modal>
+
+      {/* 代理徽章直达的快速绑定弹窗：与 Codex / Grok 账号页共用组件 */}
+      <AccountProxyQuickEditor
+        account={quickProxyAccount}
+        accountLabel={
+          quickProxyAccount
+            ? quickProxyAccount.name ||
+              quickProxyAccount.email ||
+              `#${quickProxyAccount.id}`
+            : ""
+        }
+        proxies={proxyPool}
+        ctx={proxyBindingCtx}
+        onClose={() => setQuickProxyAccount(null)}
+        onSaved={() => reload({ silent: true })}
+      />
 
       {confirmDialog}
     </div>

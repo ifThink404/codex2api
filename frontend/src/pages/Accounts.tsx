@@ -5,6 +5,12 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyPoolSelect } from "../components/ProxyPoolSelect";
+import AccountProxyBadge from "../components/AccountProxyBadge";
+import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
+import {
+  buildProxyBindingContext,
+  type ProxyBindingContext,
+} from "../lib/accountProxyBinding";
 import Modal from "../components/Modal";
 import ChannelLogo from "../components/ChannelLogo";
 import ModelLogo from "../components/ModelLogo";
@@ -327,6 +333,7 @@ const ACCOUNT_TABLE_COLUMNS = [
   "email",
   "tags",
   "groups",
+  "proxy",
   "priority",
   "plan",
   "status",
@@ -993,6 +1000,7 @@ interface AccountRowActions {
   openSchedulerEditor: (account: AccountRow) => void;
   openQuickConfig: (account: AccountRow) => void;
   openQuickGroupEditor: (account: AccountRow) => void;
+  openQuickProxyEditor: (account: AccountRow) => void;
   openUsage: (account: AccountRow) => void;
   // 直接打开用量弹窗的官方统计 tab（成本列的官方胶囊）。
   openOfficialUsage: (account: AccountRow) => void;
@@ -1053,6 +1061,7 @@ const AccountTableRow = memo(function AccountTableRow({
   visibleColumns,
   showEmailDomainTags,
   allGroups,
+  proxyCtx,
   healthBuckets,
   lazyMode,
   refreshing,
@@ -1067,6 +1076,7 @@ const AccountTableRow = memo(function AccountTableRow({
   visibleColumns: Record<AccountTableColumn, boolean>;
   showEmailDomainTags: boolean;
   allGroups: AccountGroup[];
+  proxyCtx: ProxyBindingContext;
   healthBuckets: AccountHealthBucket[] | undefined;
   lazyMode: boolean;
   refreshing: boolean;
@@ -1318,6 +1328,17 @@ const AccountTableRow = memo(function AccountTableRow({
                                 />
                               </TableCell>
                             )}
+                            {visibleColumns.proxy && (
+                              <TableCell className="min-w-[120px] max-w-[180px]">
+                                <AccountProxyBadge
+                                  account={account}
+                                  ctx={proxyCtx}
+                                  onClick={() =>
+                                    actions.openQuickProxyEditor(account)
+                                  }
+                                />
+                              </TableCell>
+                            )}
                             {visibleColumns.priority && (
                               <TableCell>
                                 <SchedulerPriorityBadge account={account} />
@@ -1533,6 +1554,7 @@ const AccountCardItem = memo(function AccountCardItem({
   selected,
   detailOpen,
   allGroups,
+  proxyCtx,
   lazyMode,
   showEmailDomainTags,
   healthBuckets,
@@ -1548,6 +1570,7 @@ const AccountCardItem = memo(function AccountCardItem({
   selected: boolean;
   detailOpen: boolean;
   allGroups: AccountGroup[];
+  proxyCtx: ProxyBindingContext;
   lazyMode: boolean;
   showEmailDomainTags: boolean;
   healthBuckets: AccountHealthBucket[] | undefined;
@@ -1565,6 +1588,7 @@ const AccountCardItem = memo(function AccountCardItem({
       selected={selected}
       detailOpen={detailOpen}
       allGroups={allGroups}
+      proxyCtx={proxyCtx}
       lazyMode={lazyMode}
       showEmailDomainTags={showEmailDomainTags}
       healthBuckets={healthBuckets}
@@ -1577,6 +1601,7 @@ const AccountCardItem = memo(function AccountCardItem({
       onOpenDetail={() => actions.openDetail(account)}
       onEdit={() => actions.openSchedulerEditor(account)}
       onEditGroups={() => actions.openQuickGroupEditor(account)}
+      onEditProxy={() => actions.openQuickProxyEditor(account)}
       onUsage={() => actions.openUsage(account)}
       onOpenOfficialUsage={() => actions.openOfficialUsage(account)}
       onTest={() => actions.openTesting(account)}
@@ -1954,6 +1979,10 @@ export default function Accounts() {
   );
   const [quickGroupIds, setQuickGroupIds] = useState<number[]>([]);
   const [quickGroupSubmitting, setQuickGroupSubmitting] = useState(false);
+  // 代理徽章点开的快速绑定弹窗：只改 proxy_url 一个字段。
+  const [quickProxyAccount, setQuickProxyAccount] = useState<AccountRow | null>(
+    null,
+  );
   // OAuth 账号“支持模型”白名单编辑器状态;空白名单表示该账号可调度所有模型。
   const [modelsAccount, setModelsAccount] = useState<AccountRow | null>(null);
   const [modelsDraft, setModelsDraft] = useState<string[]>([]);
@@ -1976,6 +2005,24 @@ export default function Accounts() {
     [allGroups],
   );
   const [apiKeys, setAPIKeys] = useState<APIKeyRow[]>([]);
+  // 代理徽章的判定上下文。fail-closed(钉住的托管代理已不在启用池)只在代理池
+  // 开启时成立,所以开关与全局代理都得跟着代理池一起进来。
+  const [proxyPoolEnabled, setProxyPoolEnabled] = useState(false);
+  const [globalProxyURL, setGlobalProxyURL] = useState("");
+  // 单个对象且引用稳定:memo 行组件的 props 里不能出现每轮新建的数组/对象,
+  // 否则整表 memo 失效(账号页性能优化的既有教训)。
+  // 分组用全量而非 codexGroups:后端解析组代理时不看渠道,迁移前挂在别的渠道组里
+  // 的存量成员照样吃那条组代理,按渠道过滤会把它误报成"无组代理"。
+  const proxyBindingCtx = useMemo<ProxyBindingContext>(
+    () =>
+      buildProxyBindingContext({
+        proxies: proxyPool,
+        groups: allGroups,
+        poolEnabled: proxyPoolEnabled,
+        globalProxy: globalProxyURL,
+      }),
+    [proxyPool, allGroups, proxyPoolEnabled, globalProxyURL],
+  );
   const [lazyMode, setLazyMode] = useState(false);
   const [accountPortalEnabled, setAccountPortalEnabled] = useState(false);
   const [panelPendingCount, setPanelPendingCount] = useState(0);
@@ -2632,6 +2679,8 @@ export default function Accounts() {
         if (cancelled) return;
         setLazyMode(settings.lazy_mode);
         setAccountPortalEnabled(Boolean(settings.public_account_portal_page_enabled));
+        setProxyPoolEnabled(Boolean(settings.proxy_pool_enabled));
+        setGlobalProxyURL((settings.proxy_url ?? "").trim());
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -5848,6 +5897,7 @@ export default function Accounts() {
     openSchedulerEditor,
     openQuickConfig: (account) => setQuickConfigAccount(account),
     openQuickGroupEditor,
+    openQuickProxyEditor: (account) => setQuickProxyAccount(account),
     openUsage: (account) => {
       setUsageInitialPage("overview");
       setUsageAccount(account);
@@ -5874,6 +5924,7 @@ export default function Accounts() {
       openSchedulerEditor: (a) => rowActionsImplRef.current?.openSchedulerEditor(a),
       openQuickConfig: (a) => rowActionsImplRef.current?.openQuickConfig(a),
       openQuickGroupEditor: (a) => rowActionsImplRef.current?.openQuickGroupEditor(a),
+      openQuickProxyEditor: (a) => rowActionsImplRef.current?.openQuickProxyEditor(a),
       openUsage: (a) => rowActionsImplRef.current?.openUsage(a),
       openOfficialUsage: (a) => rowActionsImplRef.current?.openOfficialUsage(a),
       openTesting: (a) => rowActionsImplRef.current?.openTesting(a),
@@ -6832,6 +6883,7 @@ export default function Accounts() {
                       plan: t("accounts.plan"),
                       tags: t("accounts.tagsLabel"),
                       groups: t("accounts.groupsLabel"),
+                      proxy: t("accounts.proxyColumn"),
                       priority: t("accounts.schedulerPriorityColumn"),
                       status: t("accounts.status"),
                       today: t("accounts.todayStats"),
@@ -7131,6 +7183,7 @@ export default function Accounts() {
                         selected={selected.has(account.id)}
                         detailOpen={detailAccountId === account.id}
                         allGroups={allGroups}
+                        proxyCtx={proxyBindingCtx}
                         lazyMode={lazyMode}
                         showEmailDomainTags={showEmailDomainTags}
                         healthBuckets={healthBars[String(account.id)]}
@@ -7199,6 +7252,11 @@ export default function Accounts() {
                                 ? "↓"
                                 : "↑"
                               : ""}
+                          </TableHead>
+                        )}
+                        {visibleColumns.proxy && (
+                          <TableHead className="text-[13px] font-semibold">
+                            {t("accounts.proxyColumn")}
                           </TableHead>
                         )}
                         {visibleColumns.priority && (
@@ -7374,6 +7432,7 @@ export default function Accounts() {
                           visibleColumns={visibleColumns}
                           showEmailDomainTags={showEmailDomainTags}
                           allGroups={allGroups}
+                          proxyCtx={proxyBindingCtx}
                           healthBuckets={healthBars[String(account.id)]}
                           lazyMode={lazyMode}
                           refreshing={refreshingIds.has(account.id)}
@@ -9711,6 +9770,19 @@ export default function Accounts() {
               </div>
             ) : null}
           </Modal>
+
+          <AccountProxyQuickEditor
+            account={quickProxyAccount}
+            accountLabel={
+              quickProxyAccount ? formatAccountName(quickProxyAccount) : ""
+            }
+            proxies={proxyPool}
+            ctx={proxyBindingCtx}
+            onClose={() => setQuickProxyAccount(null)}
+            onSaved={async () => {
+              await reload();
+            }}
+          />
 
           <Modal
             show={Boolean(quickGroupAccount)}
@@ -13454,6 +13526,7 @@ function AccountMobileCard({
   selected,
   detailOpen = false,
   allGroups,
+  proxyCtx,
   lazyMode,
   showEmailDomainTags,
   healthBuckets,
@@ -13466,6 +13539,7 @@ function AccountMobileCard({
   onOpenDetail,
   onEdit,
   onEditGroups,
+  onEditProxy,
   onUsage,
   onTest,
   onRefresh,
@@ -13484,6 +13558,7 @@ function AccountMobileCard({
   selected: boolean;
   detailOpen?: boolean;
   allGroups: AccountGroup[];
+  proxyCtx: ProxyBindingContext;
   lazyMode: boolean;
   showEmailDomainTags: boolean;
   healthBuckets: AccountHealthBucket[] | undefined;
@@ -13496,6 +13571,7 @@ function AccountMobileCard({
   onOpenDetail: () => void;
   onEdit: () => void;
   onEditGroups: () => void;
+  onEditProxy: () => void;
   onUsage: () => void;
   onTest: () => void;
   onRefresh: () => void;
@@ -13811,6 +13887,13 @@ function AccountMobileCard({
             onClick={onEditGroups}
             emptyLabel={t("accounts.groupQuickEdit")}
           />
+          <div className="mt-1.5 flex">
+            <AccountProxyBadge
+              account={account}
+              ctx={proxyCtx}
+              onClick={onEditProxy}
+            />
+          </div>
         </div>
 
         <div className="mt-auto border-t border-border/70 bg-muted/15 p-4">
@@ -14076,6 +14159,15 @@ function AccountMobileCard({
             onClick={onEditGroups}
             emptyLabel={t("accounts.groupQuickEdit")}
           />
+        )}
+        {(!visibleColumns || visibleColumns.proxy) && (
+          <div className="mt-1.5 flex">
+            <AccountProxyBadge
+              account={account}
+              ctx={proxyCtx}
+              onClick={onEditProxy}
+            />
+          </div>
         )}
       </div>
 

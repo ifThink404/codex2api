@@ -35,6 +35,12 @@ import {
 import { api, getAdminKey } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyPoolSelect } from "../components/ProxyPoolSelect";
+import AccountProxyBadge from "../components/AccountProxyBadge";
+import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
+import {
+  buildProxyBindingContext,
+  type ProxyBindingContext,
+} from "../lib/accountProxyBinding";
 import type {
   AccountGroup,
   AccountRow,
@@ -184,6 +190,7 @@ interface GrokRowHandlers {
   toggleEnabled: (account: AccountRow) => void;
   edit: (account: AccountRow) => void;
   editGroups: (account: AccountRow) => void;
+  editProxy: (account: AccountRow) => void;
   remove: (account: AccountRow) => void;
   usageRefreshed: (account: AccountRow) => void;
 }
@@ -478,6 +485,39 @@ function GrokAccounts({
       cancelled = true;
     };
   }, []);
+  // 代理徽章判定上下文：fail-closed(钉住的托管代理已不在启用池)只在代理池开启时
+  // 成立,所以开关与全局代理必须跟着代理池一起读进来。
+  const [proxyPoolEnabled, setProxyPoolEnabled] = useState(false);
+  const [globalProxyURL, setGlobalProxyURL] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setProxyPoolEnabled(Boolean(settings.proxy_pool_enabled));
+        setGlobalProxyURL((settings.proxy_url ?? "").trim());
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const [quickProxyAccount, setQuickProxyAccount] = useState<AccountRow | null>(
+    null,
+  );
+  // 分组用全量而非 grokGroups:后端解析组代理不看渠道,按渠道过滤会把跨渠道的
+  // 存量成员误报成"无组代理"。对象引用稳定,memo 行组件才不会整表重渲。
+  const proxyBindingCtx = useMemo<ProxyBindingContext>(
+    () =>
+      buildProxyBindingContext({
+        proxies: proxyPool,
+        groups: allGroups,
+        poolEnabled: proxyPoolEnabled,
+        globalProxy: globalProxyURL,
+      }),
+    [proxyPool, allGroups, proxyPoolEnabled, globalProxyURL],
+  );
   const [modelDraft, setModelDraft] = useState("");
   const [modelsLoading, setModelsLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -1006,6 +1046,7 @@ function GrokAccounts({
     // openEdit/handleRefresh 等在组件体更靠后定义,这里一律用闭包延迟取值,避开 TDZ。
     edit: (account) => openEdit(account),
     editGroups: (account) => openQuickGroupEditor(account),
+    editProxy: (account) => setQuickProxyAccount(account),
     remove: (account) => void handleDelete(account),
     usageRefreshed: (account) => {
       void refreshAccountRow(account.id);
@@ -1021,6 +1062,7 @@ function GrokAccounts({
       toggleEnabled: (account) => rowHandlersRef.current.toggleEnabled(account),
       edit: (account) => rowHandlersRef.current.edit(account),
       editGroups: (account) => rowHandlersRef.current.editGroups(account),
+      editProxy: (account) => rowHandlersRef.current.editProxy(account),
       remove: (account) => rowHandlersRef.current.remove(account),
       usageRefreshed: (account) => rowHandlersRef.current.usageRefreshed(account),
     }),
@@ -2506,6 +2548,9 @@ function GrokAccounts({
                       {t("grok.colPlan")}
                     </TableHead>
                     <TableHead className="text-[13px] font-semibold">
+                      {t("accounts.proxyColumn")}
+                    </TableHead>
+                    <TableHead className="text-[13px] font-semibold">
                       {t("grok.colStatus")}
                     </TableHead>
                     <TableHead
@@ -2565,6 +2610,7 @@ function GrokAccounts({
                       key={account.id}
                       account={account}
                       allGroups={allGroups}
+                      proxyCtx={proxyBindingCtx}
                       sequence={(currentPage - 1) * pageSize + index + 1}
                       busy={busyId === account.id}
                       batchTesting={batchTesting}
@@ -2592,6 +2638,7 @@ function GrokAccounts({
                   key={account.id}
                   account={account}
                   allGroups={allGroups}
+                  proxyCtx={proxyBindingCtx}
                   sequence={(currentPage - 1) * pageSize + index + 1}
                   busy={busyId === account.id}
                   batchTesting={batchTesting}
@@ -3139,6 +3186,16 @@ function GrokAccounts({
           showCreditSettings={false}
         />
       ) : null}
+
+      {/* 代理徽章直达的快速绑定弹窗：与 Codex 账号页共用组件 */}
+      <AccountProxyQuickEditor
+        account={quickProxyAccount}
+        accountLabel={quickProxyAccount ? accountLabel(quickProxyAccount) : ""}
+        proxies={proxyPool}
+        ctx={proxyBindingCtx}
+        onClose={() => setQuickProxyAccount(null)}
+        onSaved={() => reload()}
+      />
 
       {/* 快速设置账号分组(issue #487):与 Codex 账号页同一交互 */}
       <Modal
@@ -3833,6 +3890,7 @@ function GrokAccounts({
 const MemoGrokAccountTableRow = memo(function MemoGrokAccountTableRow({
   account,
   allGroups,
+  proxyCtx,
   sequence,
   busy,
   batchTesting,
@@ -3843,6 +3901,7 @@ const MemoGrokAccountTableRow = memo(function MemoGrokAccountTableRow({
 }: {
   account: AccountRow;
   allGroups: AccountGroup[];
+  proxyCtx: ProxyBindingContext;
   sequence: number;
   busy: boolean;
   batchTesting: boolean;
@@ -3859,6 +3918,7 @@ const MemoGrokAccountTableRow = memo(function MemoGrokAccountTableRow({
     <GrokAccountTableRow
       account={account}
       groups={groups}
+      proxyCtx={proxyCtx}
       sequence={sequence}
       busy={busy}
       batchTesting={batchTesting}
@@ -3873,6 +3933,7 @@ const MemoGrokAccountTableRow = memo(function MemoGrokAccountTableRow({
       onToggleEnabled={() => handlers.toggleEnabled(account)}
       onEdit={() => handlers.edit(account)}
       onEditGroups={() => handlers.editGroups(account)}
+      onEditProxy={() => handlers.editProxy(account)}
       onDelete={() => handlers.remove(account)}
       onUsageRefreshed={() => handlers.usageRefreshed(account)}
     />
@@ -3882,6 +3943,7 @@ const MemoGrokAccountTableRow = memo(function MemoGrokAccountTableRow({
 const MemoGrokAccountCard = memo(function MemoGrokAccountCard({
   account,
   allGroups,
+  proxyCtx,
   sequence,
   busy,
   batchTesting,
@@ -3891,6 +3953,7 @@ const MemoGrokAccountCard = memo(function MemoGrokAccountCard({
 }: {
   account: AccountRow;
   allGroups: AccountGroup[];
+  proxyCtx: ProxyBindingContext;
   sequence: number;
   busy: boolean;
   batchTesting: boolean;
@@ -3906,6 +3969,7 @@ const MemoGrokAccountCard = memo(function MemoGrokAccountCard({
     <GrokAccountCard
       account={account}
       groups={groups}
+      proxyCtx={proxyCtx}
       sequence={sequence}
       busy={busy}
       batchTesting={batchTesting}
@@ -3919,6 +3983,7 @@ const MemoGrokAccountCard = memo(function MemoGrokAccountCard({
       onToggleEnabled={() => handlers.toggleEnabled(account)}
       onEdit={() => handlers.edit(account)}
       onEditGroups={() => handlers.editGroups(account)}
+      onEditProxy={() => handlers.editProxy(account)}
       onDelete={() => handlers.remove(account)}
       onUsageRefreshed={() => handlers.usageRefreshed(account)}
     />
@@ -3928,6 +3993,7 @@ const MemoGrokAccountCard = memo(function MemoGrokAccountCard({
 function GrokAccountCard({
   account,
   groups = [],
+  proxyCtx,
   sequence,
   busy,
   batchTesting,
@@ -3941,11 +4007,13 @@ function GrokAccountCard({
   onToggleEnabled,
   onEdit,
   onEditGroups,
+  onEditProxy,
   onDelete,
   onUsageRefreshed,
 }: {
   account: AccountRow;
   groups?: AccountGroup[];
+  proxyCtx: ProxyBindingContext;
   sequence: number;
   busy: boolean;
   batchTesting: boolean;
@@ -3959,6 +4027,7 @@ function GrokAccountCard({
   onToggleEnabled: () => void;
   onEdit: () => void;
   onEditGroups: () => void;
+  onEditProxy: () => void;
   onDelete: () => void;
   onUsageRefreshed: () => void;
 }) {
@@ -4090,6 +4159,11 @@ function GrokAccountCard({
             groups={groups}
             onClick={onEditGroups}
             emptyLabel={t("accounts.groupQuickEdit")}
+          />
+          <AccountProxyBadge
+            account={account}
+            ctx={proxyCtx}
+            onClick={onEditProxy}
           />
         </div>
 
@@ -4252,6 +4326,7 @@ function GrokAccountActions({
 function GrokAccountTableRow({
   account,
   groups = [],
+  proxyCtx,
   sequence,
   busy,
   batchTesting,
@@ -4266,11 +4341,13 @@ function GrokAccountTableRow({
   onToggleEnabled,
   onEdit,
   onEditGroups,
+  onEditProxy,
   onDelete,
   onUsageRefreshed,
 }: {
   account: AccountRow;
   groups?: AccountGroup[];
+  proxyCtx: ProxyBindingContext;
   sequence: number;
   busy: boolean;
   batchTesting: boolean;
@@ -4285,6 +4362,7 @@ function GrokAccountTableRow({
   onToggleEnabled: () => void;
   onEdit: () => void;
   onEditGroups: () => void;
+  onEditProxy: () => void;
   onDelete: () => void;
   onUsageRefreshed: () => void;
 }) {
@@ -4392,6 +4470,13 @@ function GrokAccountTableRow({
       </TableCell>
       <TableCell className="text-center">
         <GrokPlanBadge account={account} />
+      </TableCell>
+      <TableCell className="min-w-[120px] max-w-[180px]">
+        <AccountProxyBadge
+          account={account}
+          ctx={proxyCtx}
+          onClick={onEditProxy}
+        />
       </TableCell>
       <TableCell data-account-state-cell="status">
         {tableOverlay ?? (
