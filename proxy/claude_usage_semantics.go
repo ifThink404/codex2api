@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"github.com/codex2api/database"
 	"github.com/tidwall/gjson"
 )
 
@@ -65,4 +66,13 @@ func claudeFirstCacheControlTTL(body []byte) string {
 		}
 	}
 	return ttl
+}
+
+// applyUsageCacheWritesToLog 把上游用量里的缓存写入 token 复制到待落库的用量记录。
+func applyUsageCacheWritesToLog(log *database.UsageLogInput, usage *UsageInfo) {
+	if log == nil || usage == nil {
+		return
+	}
+	log.CacheWrite5mTokens = usage.CacheWrite5mTokens
+	log.CacheWrite1hTokens = usage.CacheWrite1hTokens
 }

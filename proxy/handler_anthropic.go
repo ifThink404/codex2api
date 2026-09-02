@@ -1023,6 +1023,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					retryLog.PromptTokens, retryLog.CompletionTokens, retryLog.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 					retryLog.InputTokens, retryLog.OutputTokens = usage.InputTokens, usage.OutputTokens
 					retryLog.ReasoningTokens, retryLog.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+					applyUsageCacheWritesToLog(&retryLog, usage)
 				}
 				h.logUsageForRequest(c, &retryLog)
 				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
@@ -1076,6 +1077,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 				logInput.InputTokens, logInput.OutputTokens = usage.InputTokens, usage.OutputTokens
 				logInput.ReasoningTokens, logInput.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+				applyUsageCacheWritesToLog(logInput, usage)
 			}
 			if outcome.logStatusCode != http.StatusOK {
 				logInput.UpstreamErrorKind = outcome.failureKind
@@ -1517,6 +1519,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			logInput.OutputTokens = usage.OutputTokens
 			logInput.ReasoningTokens = usage.ReasoningTokens
 			logInput.CachedTokens = usage.CachedTokens
+			applyUsageCacheWritesToLog(logInput, usage)
 		}
 		h.logUsageForRequest(c, logInput)
 
