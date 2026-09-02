@@ -185,6 +185,41 @@ func (s *Store) ClaudeSessionWindowLimit() int64 {
 	return atomic.LoadInt64(&s.claudeSessionWindowLimit)
 }
 
+// CLIVersionSyncEnabledValue 把缺失字段解释为开启，避免老配置静默关闭同步。
+func (c ClaudeConfig) CLIVersionSyncEnabledValue() bool {
+	return c.CLIVersionSyncEnabled == nil || *c.CLIVersionSyncEnabled
+}
+
+// NormalizeClaudeCLIVersionSyncIntervalHours 钳到 [1,720]，0/负数视为默认 12。
+func NormalizeClaudeCLIVersionSyncIntervalHours(hours int) int {
+	if hours <= 0 {
+		return 12
+	}
+	if hours > 720 {
+		return 720
+	}
+	return hours
+}
+
+func (s *Store) SetClaudeCLIVersionSync(enabled bool, intervalHours int) {
+	if s == nil {
+		return
+	}
+	s.claudeCLIVersionSyncDisabled.Store(!enabled)
+	s.claudeCLIVersionSyncIntervalH.Store(int64(NormalizeClaudeCLIVersionSyncIntervalHours(intervalHours)))
+}
+
+func (s *Store) ClaudeCLIVersionSyncEnabled() bool {
+	return s != nil && !s.claudeCLIVersionSyncDisabled.Load()
+}
+
+func (s *Store) ClaudeCLIVersionSyncIntervalHours() int {
+	if s == nil {
+		return 12
+	}
+	return NormalizeClaudeCLIVersionSyncIntervalHours(int(s.claudeCLIVersionSyncIntervalH.Load()))
+}
+
 // ApplyAccountClaudeFingerprintMode 更新内存态账号的 Claude 指纹模式。
 func (s *Store) ApplyAccountClaudeFingerprintMode(dbID int64, mode string) bool {
 	acc := s.FindByID(dbID)
@@ -211,6 +246,8 @@ type ClaudeConfig struct {
 	FingerprintMode    string `json:"fingerprint_mode"`     // preserve / force(空=preserve)
 	DefaultTimezone    string `json:"default_timezone"`     // 导入账号默认 IANA 时区
 	SessionWindowLimit int64  `json:"session_window_limit"` // 默认并发会话窗口数(0=跟随全局 maxConcurrency)
+	CLIVersionSyncEnabled       *bool `json:"cli_version_sync_enabled,omitempty"`        // 缺失=true
+	CLIVersionSyncIntervalHours int   `json:"cli_version_sync_interval_hours,omitempty"` // 0=12，钳 [1,720]
 	ClaudeClientPolicy
 	ClaudeSecurityConfig
 }
@@ -321,6 +358,7 @@ func ParseClaudeConfig(raw string) ClaudeConfig {
 	if cfg.SessionWindowLimit < 0 {
 		cfg.SessionWindowLimit = 0
 	}
+	cfg.CLIVersionSyncIntervalHours = NormalizeClaudeCLIVersionSyncIntervalHours(cfg.CLIVersionSyncIntervalHours)
 	if clientPolicy, err := NormalizeClaudeClientPolicy(cfg.ClaudeClientPolicy); err == nil {
 		cfg.ClaudeClientPolicy = clientPolicy
 	} else {
@@ -336,6 +374,7 @@ func applyClaudeConfigToStore(s *Store, raw string) {
 	s.SetClaudeFingerprintModeDefault(cfg.FingerprintMode)
 	s.SetClaudeDefaultTimezone(cfg.DefaultTimezone)
 	s.SetClaudeSessionWindowLimit(cfg.SessionWindowLimit)
+	s.SetClaudeCLIVersionSync(cfg.CLIVersionSyncEnabledValue(), cfg.CLIVersionSyncIntervalHours)
 	s.SetClaudeClientPolicy(cfg.ClaudeClientPolicy)
 	s.SetClaudeSecurityConfig(cfg.SecurityConfig())
 }
