@@ -541,6 +541,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const reloadAbortRef = useRef<AbortController | null>(null);
   const reloadGenerationRef = useRef(0);
+  const legacyUsageRefreshRef = useRef<Set<number>>(new Set());
 
   // 搜索防抖
   useEffect(() => {
@@ -668,6 +669,37 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
     }, 3000);
     return () => window.clearInterval(samplingPollTimer);
   }, [pendingSamplingKey, reload]);
+
+  // Older Claude rows may already have a probe timestamp from before the
+  // OAuth usage-window field was introduced. Trigger one bounded, zero-cost
+  // refresh for those rows so the model-scoped Fable window is backfilled and
+  // rendered without requiring the operator to click every row manually.
+  const legacyUsageRefreshKey = useMemo(
+    () => accounts
+      .filter((acc) => acc.claude_api && acc.claude_usage_windows === undefined && !acc.claude_usage_probe_error)
+      .map((acc) => acc.id)
+      .join(","),
+    [accounts],
+  );
+  useEffect(() => {
+    if (!legacyUsageRefreshKey) return undefined;
+    const pending = legacyUsageRefreshKey
+      .split(",")
+      .map(Number)
+      .filter((id) => Number.isFinite(id) && !legacyUsageRefreshRef.current.has(id));
+    if (pending.length === 0) return undefined;
+    const batch = pending.slice(0, 4);
+    batch.forEach((id) => legacyUsageRefreshRef.current.add(id));
+    let cancelled = false;
+    void Promise.all(
+      batch.map((id) => api.refreshAccountUsage(id).catch(() => null)),
+    ).finally(() => {
+      if (!cancelled) void reload({ silent: true });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [legacyUsageRefreshKey, reload]);
 
   const mergeLiveStateIntoAccount = useCallback((account: AccountRow): AccountRow => {
     const live = liveState[String(account.id)];

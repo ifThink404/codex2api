@@ -59,6 +59,8 @@ test('Claude account list refreshes after asynchronous sampling without stale ov
   assert.match(claude, /samplingPoll|sample.*poll/i)
   assert.match(claude, /claude_usage_probe_at/)
   assert.match(claude, /claude_usage_windows/)
+  assert.match(claude, /legacyUsageRefreshKey/)
+  assert.match(claude, /refreshAccountUsage\(id\)/)
   assert.match(claude, /model_scoped/)
   assert.match(claude, /getAccountLiveState/)
   assert.match(claude, /AccountDetailSheet/)
