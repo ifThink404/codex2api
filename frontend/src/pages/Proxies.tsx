@@ -27,6 +27,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Select } from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -1502,24 +1503,25 @@ export default function Proxies() {
               );
             })}
           </div>
-          <select
+          <Select
+            compact
             value={riskFilter}
-            onChange={(event) => {
-              setRiskFilter(event.target.value as RiskFilter);
+            onValueChange={(value) => {
+              setRiskFilter(value as RiskFilter);
               setPage(1);
             }}
-            className="h-8 shrink-0 rounded-lg border border-border bg-background px-2 text-xs font-medium text-foreground"
-            title={t("proxies.riskFilterHint")}
-          >
-            <option value="all">{t("proxies.riskFilterAll")}</option>
-            <option value="unscored">{t("proxies.riskFilterUnscored")}</option>
-            <option value="low">{t("proxies.riskFilterLow")}</option>
-            <option value="medium">{t("proxies.riskFilterMedium")}</option>
-            <option value="high">{t("proxies.riskFilterHigh")}</option>
-            <option value="very_high">{t("proxies.riskFilterVeryHigh")}</option>
-            <option value="stale">{t("proxies.riskFilterStale")}</option>
-            <option value="error">{t("proxies.riskFilterError")}</option>
-          </select>
+            triggerClassName="h-8 shrink-0 text-xs font-medium"
+            options={[
+              { value: "all", label: t("proxies.riskFilterAll") },
+              { value: "unscored", label: t("proxies.riskFilterUnscored") },
+              { value: "low", label: t("proxies.riskFilterLow") },
+              { value: "medium", label: t("proxies.riskFilterMedium") },
+              { value: "high", label: t("proxies.riskFilterHigh") },
+              { value: "very_high", label: t("proxies.riskFilterVeryHigh") },
+              { value: "stale", label: t("proxies.riskFilterStale") },
+              { value: "error", label: t("proxies.riskFilterError") },
+            ]}
+          />
         </div>
       </div>
 
@@ -1985,16 +1987,18 @@ export default function Proxies() {
           {riskProfiles.length > 0 ? (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-muted/20 p-3">
               <span className="text-xs font-semibold text-muted-foreground">{t("proxies.riskProfileSelect")}</span>
-              <select
-                className="h-9 min-w-[220px] rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                value={riskProfileDraft.id}
-                onChange={(event) => {
-                  const selectedProfile = riskProfiles.find((profile) => profile.id === Number(event.target.value));
+              <Select
+                value={String(riskProfileDraft.id)}
+                onValueChange={(value) => {
+                  const selectedProfile = riskProfiles.find((profile) => profile.id === Number(value));
                   if (selectedProfile) openRiskProfile(selectedProfile);
                 }}
-              >
-                {riskProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}{profile.enabled ? ` · ${t("proxies.riskEnabled")}` : ` · ${t("proxies.riskDisabled")}`}</option>)}
-              </select>
+                triggerClassName="min-w-[220px]"
+                options={riskProfiles.map((profile) => ({
+                  value: String(profile.id),
+                  label: `${profile.name}${profile.enabled ? ` · ${t("proxies.riskEnabled")}` : ` · ${t("proxies.riskDisabled")}`}`,
+                }))}
+              />
             </div>
           ) : null}
           <p className="rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-xs leading-5 text-muted-foreground"><span className="font-semibold text-foreground">{t("proxies.riskBuiltInEngine")}</span> {t("proxies.riskReferenceOnly")}</p>
