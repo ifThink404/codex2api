@@ -55,6 +55,10 @@ func TestIsClaudeThinkingDisabledUnsupportedError(t *testing.T) {
 	if !isClaudeThinkingDisabledUnsupportedError(400, []byte(thinkingDisabledErr)) {
 		t.Fatal("must recognise the disabled-thinking rejection")
 	}
+	effortErr := `{"type":"error","error":{"type":"invalid_request_error","message":"output_config.effort 'max' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking."}}`
+	if !isClaudeThinkingDisabledUnsupportedError(400, []byte(effortErr)) {
+		t.Fatal("effort-vs-disabled rejection must be treated the same way (drop thinking)")
+	}
 	if isClaudeThinkingDisabledUnsupportedError(400, []byte(`{"error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid signature in thinking block"}}`)) {
 		t.Fatal("signature errors are a different rectifier")
 	}

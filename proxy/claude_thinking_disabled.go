@@ -34,11 +34,16 @@ func dropClaudeDisabledThinking(body []byte) ([]byte, bool) {
 	return out, true
 }
 
-// isClaudeThinkingDisabledUnsupportedError 识别 Anthropic 对 thinking.type=disabled 的拒绝。
+// isClaudeThinkingDisabledUnsupportedError 识别 Anthropic 对 thinking.type=disabled 的拒绝，
+// 包括"该模型不支持 disabled"与"effort 过高时不允许关闭思考"两种文案；两者的修正都是
+// 移除 thinking 参数让模型回到默认的自适应思考。
 func isClaudeThinkingDisabledUnsupportedError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusBadRequest || len(body) == 0 {
 		return false
 	}
 	message := strings.ToLower(gjson.GetBytes(body, "error.message").String() + " " + gjson.GetBytes(body, "message").String())
-	return strings.Contains(message, "thinking.type.disabled") && strings.Contains(message, "not supported")
+	if strings.Contains(message, "thinking.type.disabled") && strings.Contains(message, "not supported") {
+		return true
+	}
+	return strings.Contains(message, "not supported when thinking is disabled")
 }
