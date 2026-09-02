@@ -91,3 +91,58 @@ func TestParseAccountSchedulerUpdateRejectsVersionPolicyWithoutVersion(t *testin
 		t.Fatal("minimum account policy without client version must be rejected")
 	}
 }
+
+func TestGetClaudeConfigExposesCLIVersionSyncState(t *testing.T) {
+	t.Cleanup(func() { auth.SetClaudeSyncedCLIVersion("") })
+	auth.SetClaudeSyncedCLIVersion("2.1.300")
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	h := &Handler{store: store}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	h.GetClaudeConfig(c)
+	body := recorder.Body.Bytes()
+	if !gjson.GetBytes(body, "cli_version_sync_enabled").Bool() {
+		t.Fatal("cli_version_sync_enabled should default true")
+	}
+	if got := gjson.GetBytes(body, "cli_version_sync_interval_hours").Int(); got != 12 {
+		t.Fatalf("interval = %d", got)
+	}
+	if got := gjson.GetBytes(body, "synced_cli_version").String(); got != "2.1.300" {
+		t.Fatalf("synced = %q", got)
+	}
+	if got := gjson.GetBytes(body, "builtin_cli_version").String(); got != auth.BuiltinClaudeCLIVersion {
+		t.Fatalf("builtin = %q", got)
+	}
+	if got := gjson.GetBytes(body, "effective_cli_version").String(); got != "2.1.300" {
+		t.Fatalf("effective = %q", got)
+	}
+}
+
+func TestUpdateClaudeConfigPersistsCLIVersionSyncFields(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	h := &Handler{store: store, db: newTestAdminDB(t)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("PUT", "/settings/claude-config", strings.NewReader(`{"fingerprint_mode":"force","cli_version_sync_enabled":false,"cli_version_sync_interval_hours":48,"synced_cli_version":"9.9.9"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.UpdateClaudeConfig(c)
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if store.ClaudeCLIVersionSyncEnabled() || store.ClaudeCLIVersionSyncIntervalHours() != 48 {
+		t.Fatalf("store not updated: enabled=%v hours=%d", store.ClaudeCLIVersionSyncEnabled(), store.ClaudeCLIVersionSyncIntervalHours())
+	}
+	if auth.ClaudeSyncedCLIVersion() == "9.9.9" {
+		t.Fatal("PUT must ignore read-only synced_cli_version")
+	}
+	settings, err := h.db.GetSystemSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := auth.ParseClaudeConfig(settings.ClaudeConfig)
+	if cfg.CLIVersionSyncEnabledValue() || cfg.CLIVersionSyncIntervalHours != 48 {
+		t.Fatalf("persisted cfg = %+v", cfg)
+	}
+}

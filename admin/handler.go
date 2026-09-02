@@ -1184,6 +1184,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PUT("/settings", h.UpdateSettings)
 	api.GET("/settings/claude-config", h.GetClaudeConfig)
 	api.PUT("/settings/claude-config", h.UpdateClaudeConfig)
+	api.POST("/settings/claude-config/cli-version/sync", h.SyncClaudeCLIVersion)
 	api.GET("/settings/observed-instructions", h.GetObservedInstructions)
 	api.GET("/settings/invite-guide", h.GetInviteGuideSettings)
 	api.PUT("/settings/invite-guide", h.UpdateInviteGuideSettings)
