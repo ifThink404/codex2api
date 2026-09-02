@@ -3743,6 +3743,11 @@ export interface ClaudeGlobalConfig {
   client_version: string
   default_timezone: string
   session_window_limit: number
+  cli_version_sync_enabled: boolean
+  cli_version_sync_interval_hours: number
+  synced_cli_version?: string
+  builtin_cli_version?: string
+  effective_cli_version?: string
   allow_service_tier: boolean
   allow_inference_geo: boolean
   allow_speed: boolean

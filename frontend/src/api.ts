@@ -1215,6 +1215,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  syncClaudeCLIVersion: () =>
+    request<{
+      fetched_version: string
+      effective_version: string
+      builtin_version: string
+      updated: boolean
+      accounts_refreshed: number
+    }>('/settings/claude-config/cli-version/sync', { method: 'POST' }),
   getObservedInstructions: () =>
     request<ObservedInstructionsResponse>('/settings/observed-instructions'),
   updateSettings: (data: Partial<SystemSettings>) =>

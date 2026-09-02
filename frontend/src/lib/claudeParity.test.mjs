@@ -175,3 +175,20 @@ test('Claude admin API reference covers import, sampling, probing, and config co
   assert.match(apiReference, /Claude \/ Anthropic 管理 API/)
   assert.match(apiReference, /Messages API/)
 })
+
+test('Claude settings expose CLI version sync controls and typed API', () => {
+  const api = readFileSync(new URL('../api.ts', import.meta.url), 'utf8')
+  assert.match(types, /cli_version_sync_enabled: boolean/)
+  assert.match(types, /cli_version_sync_interval_hours: number/)
+  assert.match(types, /synced_cli_version\?: string/)
+  assert.match(api, /syncClaudeCLIVersion: \(\) =>/)
+  assert.match(api, /\/settings\/claude-config\/cli-version\/sync/)
+  for (const key of ['claudeCliVersionSync', 'claudeCliVersionSyncNow', 'claudeCliVersionSyncSuccess', 'claudeCliVersionAutoSync', 'claudeCliVersionSyncInterval']) {
+    assert.equal(typeof zh.settings?.[key], 'string', `zh.settings.${key}`)
+  }
+  const en = JSON.parse(readFileSync(new URL('../locales/en.json', import.meta.url), 'utf8'))
+  const tw = JSON.parse(readFileSync(new URL('../locales/zh-TW.json', import.meta.url), 'utf8'))
+  for (const locale of [en, tw]) {
+    assert.equal(typeof locale.settings?.claudeCliVersionSyncNow, 'string')
+  }
+})
