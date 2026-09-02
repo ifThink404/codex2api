@@ -82,8 +82,23 @@ func RefreshClaudeFingerprintVersions(ctx context.Context, store *Store, persist
 				continue
 			}
 		}
+		// The DB write above already succeeded, so this account counts as
+		// updated regardless of what happens to the in-memory copy below.
+		// Between the RLock snapshot read above and this Lock, a concurrent
+		// writer (e.g. the store's dispatch-state reconciliation loop calling
+		// ApplyAccountCustomHeaders, or an admin edit) may have already
+		// changed acc.CustomHeaders. Overwriting it here with our stale
+		// `next` would silently lose that update. Guard with a compare-and-
+		// swap: only apply `next` if CustomHeaders still matches the
+		// snapshot we based it on; otherwise skip the memory write and let
+		// the store's own reconciliation converge memory to the DB value
+		// (which we just persisted) on its next cycle.
 		acc.mu.Lock()
-		acc.CustomHeaders = next
+		if stringMapEqual(acc.CustomHeaders, headers) {
+			acc.CustomHeaders = next
+		} else {
+			log.Printf("[claude-cli-version-sync] 账号 %d 指纹在回写期间被并发修改，跳过内存更新", dbID)
+		}
 		acc.mu.Unlock()
 		updated++
 	}

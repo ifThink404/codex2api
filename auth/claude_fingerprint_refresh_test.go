@@ -84,6 +84,58 @@ func TestRefreshClaudeFingerprintVersions_PersistsAndAppliesInMemory(t *testing.
 	}
 }
 
+// concurrentMutationPersister simulates a writer (e.g. the store's dispatch-
+// state reconciliation loop, or an admin edit) that changes an account's
+// CustomHeaders concurrently with the DB persist performed by
+// RefreshClaudeFingerprintVersions, landing in the TOCTOU window between the
+// snapshot read and the in-memory write.
+type concurrentMutationPersister struct {
+	acc     *Account
+	calls   map[int64]map[string]string
+	mutated bool
+}
+
+func (p *concurrentMutationPersister) UpdateAccountCustomHeaders(_ context.Context, id int64, headers map[string]string) error {
+	if p.calls == nil {
+		p.calls = map[int64]map[string]string{}
+	}
+	p.calls[id] = headers
+	if !p.mutated {
+		p.mutated = true
+		p.acc.mu.Lock()
+		p.acc.CustomHeaders = map[string]string{"User-Agent": p.acc.CustomHeaders["User-Agent"], "X-App": "other"}
+		p.acc.mu.Unlock()
+	}
+	return nil
+}
+
+func TestRefreshClaudeFingerprintVersions_SkipsMemoryWriteOnConcurrentMutation(t *testing.T) {
+	store := NewStore(nil, nil, nil)
+	defer store.Stop()
+	claude := &Account{DBID: 260, UpstreamType: UpstreamClaude, CustomHeaders: map[string]string{"User-Agent": "claude-cli/2.1.219 (external, cli)"}}
+	store.mu.Lock()
+	store.accounts = []*Account{claude}
+	store.mu.Unlock()
+
+	persister := &concurrentMutationPersister{acc: claude}
+	updated, err := RefreshClaudeFingerprintVersions(context.Background(), store, persister, "2.1.258")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("updated = %d, want 1 (DB write succeeded)", updated)
+	}
+	if got := persister.calls[260]["User-Agent"]; got != "claude-cli/2.1.258 (external, cli)" {
+		t.Fatalf("persisted UA = %q, want bumped version", got)
+	}
+	claude.mu.RLock()
+	got := claude.CustomHeaders["X-App"]
+	claude.mu.RUnlock()
+	if got != "other" {
+		t.Fatalf("concurrent in-memory mutation must not be overwritten by stale refresh, X-App = %q", got)
+	}
+}
+
 func TestRefreshClaudeFingerprintVersions_RejectsInvalidVersion(t *testing.T) {
 	store := NewStore(nil, nil, nil)
 	defer store.Stop()
