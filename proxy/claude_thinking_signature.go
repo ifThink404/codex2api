@@ -97,10 +97,12 @@ func isClaudeThinkingSignatureError(statusCode int, body []byte) bool {
 	return strings.Contains(message, "invalid `signature`") && strings.Contains(message, "thinking")
 }
 
-// executeClaudeWithThinkingSignatureRetry 执行一次上游调用；若上游以
-// "Invalid `signature` in `thinking` block" 拒绝且请求里确实带有 thinking 块，
-// 则剥掉全部 thinking 块后在同一账号上重试一次。任何其它结果原样返回，
-// 错误体会被重新装回响应供调用方读取。
+// executeClaudeWithThinkingSignatureRetry 执行一次上游调用，并对两类可在网关侧
+// 修正的 400 做同账号一次重试：
+//   - "Invalid `signature` in `thinking` block"：剥掉全部 thinking 块；
+//   - "thinking.type.disabled is not supported"：移除 thinking 参数。
+//
+// 任何其它结果原样返回，错误体会被重新装回响应供调用方读取。
 func executeClaudeWithThinkingSignatureRetry(ctx context.Context, body []byte, exec func(context.Context, []byte) (*http.Response, error)) (*http.Response, error) {
 	resp, err := exec(ctx, body)
 	if err != nil || resp == nil || resp.StatusCode != http.StatusBadRequest {
@@ -112,17 +114,33 @@ func executeClaudeWithThinkingSignatureRetry(ctx context.Context, body []byte, e
 		resp.Body = io.NopCloser(bytes.NewReader(errBody))
 		return resp, nil
 	}
-	if !isClaudeThinkingSignatureError(resp.StatusCode, errBody) {
+	var rectified []byte
+	switch {
+	case isClaudeThinkingSignatureError(resp.StatusCode, errBody):
+		stripped, n := stripClaudeThinkingBlocks(body)
+		if n == 0 {
+			resp.Body = io.NopCloser(bytes.NewReader(errBody))
+			return resp, nil
+		}
+		log.Printf("[claude-thinking-signature] 上游拒绝 thinking 签名，剥离 %d 个 thinking 块后同账号重试一次", n)
+		rectified = stripped
+	case isClaudeThinkingDisabledUnsupportedError(resp.StatusCode, errBody):
+		if !gjson.GetBytes(body, "thinking").Exists() {
+			resp.Body = io.NopCloser(bytes.NewReader(errBody))
+			return resp, nil
+		}
+		out, delErr := sjson.DeleteBytes(body, "thinking")
+		if delErr != nil {
+			resp.Body = io.NopCloser(bytes.NewReader(errBody))
+			return resp, nil
+		}
+		log.Printf("[claude-thinking-signature] 上游不接受 thinking.type=disabled，移除 thinking 参数后同账号重试一次")
+		rectified = out
+	default:
 		resp.Body = io.NopCloser(bytes.NewReader(errBody))
 		return resp, nil
 	}
-	stripped, n := stripClaudeThinkingBlocks(body)
-	if n == 0 {
-		resp.Body = io.NopCloser(bytes.NewReader(errBody))
-		return resp, nil
-	}
-	log.Printf("[claude-thinking-signature] 上游拒绝 thinking 签名，剥离 %d 个 thinking 块后同账号重试一次", n)
-	retryResp, retryErr := exec(ctx, stripped)
+	retryResp, retryErr := exec(ctx, rectified)
 	if retryErr != nil {
 		return nil, retryErr
 	}

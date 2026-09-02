@@ -627,6 +627,11 @@ func prepareClaudeRequestBody(body []byte, cfg auth.ClaudeSecurityConfig) ([]byt
 		log.Printf("[claude-thinking-signature] 丢弃 %d 个签名为空或截断的 thinking 块", dropped)
 		normalized = cleaned
 	}
+	// 思考常开的模型（Fable / Mythos）拒绝 thinking.type=disabled，直接省略该参数。
+	if cleaned, dropped := dropClaudeDisabledThinking(normalized); dropped {
+		log.Printf("[claude-thinking-signature] 模型 %s 不接受 thinking.type=disabled，已移除该参数", gjson.GetBytes(normalized, "model").String())
+		normalized = cleaned
+	}
 	return injectClaudeCodeSystemPrompt(normalized), nil
 }
 
