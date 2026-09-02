@@ -248,12 +248,55 @@ func TestAlignClaudeOutboundUserAgent(t *testing.T) {
 	for _, tc := range cases {
 		gotUA, deny := alignClaudeOutboundUserAgent(tc.outbound, tc.required)
 		if gotUA != tc.wantUA || (deny != "") != tc.wantDeny {
-			t.Errorf("%s: ua=%q deny=%q", tc.name, gotUA, deny)
+			t.Errorf("%s: ua=%q deny=%q wantUA=%q wantDeny=%v", tc.name, gotUA, deny, tc.wantUA, tc.wantDeny)
 		}
 	}
 }
 
+func TestApplyClaudeOutboundVersionAlignment_BumpsForcedFingerprintForFable(t *testing.T) {
+	t.Cleanup(func() { auth.SetClaudeSyncedCLIVersion("") })
+	auth.SetClaudeSyncedCLIVersion("")
+
+	ctx := withUserAgentAudit(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", nil)
+	req.Header.Set("User-Agent", "claude-cli/2.1.219 (external, cli)")
+	RecordUpstreamUserAgent(ctx, req.Header.Get("User-Agent")) // mimic applyClaudeMessagesHeaders
+
+	required := claudeOutboundRequiredVersion(auth.ClaudeClientDecision{RequiredVersion: "2.1.251", IsCLI: true}, "claude-fable-5-1")
+	if perr := applyClaudeOutboundVersionAlignment(req, required); perr != nil {
+		t.Fatalf("expected no deny, got %v", perr)
+	}
+	wantUA := "claude-cli/" + auth.BuiltinClaudeCLIVersion + " (external, cli)"
+	if got := req.Header.Get("User-Agent"); got != wantUA {
+		t.Fatalf("req User-Agent = %q, want %q", got, wantUA)
+	}
+	if audited, ok := upstreamUserAgentAudit(ctx); !ok || audited != wantUA {
+		t.Fatalf("upstreamUserAgentAudit = (%q, %v), want (%q, true)", audited, ok, wantUA)
+	}
+
+	// Already-satisfied UA must be left untouched, and the audit must not be
+	// rewritten either.
+	ctx2 := withUserAgentAudit(context.Background())
+	req2, _ := http.NewRequestWithContext(ctx2, "POST", "https://api.anthropic.com/v1/messages", nil)
+	satisfiedUA := "claude-cli/2.1.258 (external, cli)"
+	req2.Header.Set("User-Agent", satisfiedUA)
+	RecordUpstreamUserAgent(ctx2, satisfiedUA) // sentinel: must survive unchanged
+
+	required2 := claudeOutboundRequiredVersion(auth.ClaudeClientDecision{RequiredVersion: "2.1.251", IsCLI: true}, "claude-fable-5-1")
+	if perr := applyClaudeOutboundVersionAlignment(req2, required2); perr != nil {
+		t.Fatalf("expected no deny for already-satisfied UA, got %v", perr)
+	}
+	if got := req2.Header.Get("User-Agent"); got != satisfiedUA {
+		t.Fatalf("req2 User-Agent = %q, want unchanged %q", got, satisfiedUA)
+	}
+	if audited, ok := upstreamUserAgentAudit(ctx2); !ok || audited != satisfiedUA {
+		t.Fatalf("upstreamUserAgentAudit(ctx2) = (%q, %v), want unchanged (%q, true)", audited, ok, satisfiedUA)
+	}
+}
+
 func TestExecuteClaudeMessagesRequestWithPolicy_DeniesWhenForcedFingerprintTooOld(t *testing.T) {
+	t.Cleanup(func() { auth.SetClaudeSyncedCLIVersion("") })
+	auth.SetClaudeSyncedCLIVersion("")
 	ctx := withUserAgentAudit(context.Background())
 	account := &auth.Account{DBID: 251, UpstreamType: auth.UpstreamClaude, AccessToken: "tok", CustomHeaders: map[string]string{"User-Agent": "claude-cli/2.1.219 (external, cli)"}}
 	headers := http.Header{}
