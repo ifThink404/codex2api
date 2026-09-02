@@ -4329,6 +4329,7 @@
     "claudeCliVersionSyncing": "同步中…",
     "claudeCliVersionSyncSuccess": "生效版本 {{version}}，已回写 {{accounts}} 个账号指纹",
     "claudeCliVersionSyncFailed": "Claude Code 版本同步失败",
+    "claudeCliVersionSyncWarning": "已同步到 {{version}}，但指纹回写有警告：{{message}}",
     "claudeCliVersionAutoSync": "自动同步",
     "claudeCliVersionAutoSyncDesc": "开启后按间隔自动同步；关闭后仅在启动时用内置版本回写指纹。",
     "claudeCliVersionSyncInterval": "同步间隔（小时）",

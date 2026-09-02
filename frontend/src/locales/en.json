@@ -4329,6 +4329,7 @@
     "claudeCliVersionSyncing": "Syncing…",
     "claudeCliVersionSyncSuccess": "Effective version {{version}}, refreshed {{accounts}} account fingerprints",
     "claudeCliVersionSyncFailed": "Claude Code version sync failed",
+    "claudeCliVersionSyncWarning": "Synced to {{version}}, but fingerprint refresh had a warning: {{message}}",
     "claudeCliVersionAutoSync": "Auto sync",
     "claudeCliVersionAutoSyncDesc": "When on, syncs on the configured interval; when off, only the built-in version is applied at startup.",
     "claudeCliVersionSyncInterval": "Sync interval (hours)",

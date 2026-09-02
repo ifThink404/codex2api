@@ -28,6 +28,13 @@ var (
 	claudeNpmDistTagsURLForTest    = ""
 )
 
+// SetClaudeVersionSourceURLsForTest 覆盖 GitHub/npm 版本源端点。仅供测试使用；
+// 生产代码不要调用。传空串恢复默认端点。
+func SetClaudeVersionSourceURLsForTest(github, npm string) {
+	claudeReleasesLatestURLForTest = github
+	claudeNpmDistTagsURLForTest = npm
+}
+
 // ClaudeCLIVersionSyncDisabled 报告是否通过 CLAUDE_DISABLE_CLI_VERSION_SYNC 关闭了联网同步。
 // 关闭后仍会在启动时用当前生效版本做一次本地指纹回写（不联网）；管理端「立即同步」不受影响。
 func ClaudeCLIVersionSyncDisabled() bool {
@@ -180,24 +187,14 @@ func SyncClaudeCLIVersion(ctx context.Context, db *database.DB, store *auth.Stor
 
 // StartClaudeCLIVersionSync 启动时先用生效版本做一次本地指纹回写（不联网），
 // 然后按 ClaudeConfig 的开关与间隔定时联网同步。
+// 本地回写在后台任务内执行，即使 CLAUDE_DISABLE_CLI_VERSION_SYNC 关闭了联网
+// 同步也照常运行；只有联网的 runOnce 与定时循环受该开关约束。
 func StartClaudeCLIVersionSync(ctx context.Context, db *database.DB, store *auth.Store, proxyResolver func() string) {
 	if db == nil || store == nil {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	{
-		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if n, err := auth.RefreshClaudeFingerprintVersions(refreshCtx, store, db, auth.EffectiveClaudeCLIVersion()); err != nil {
-			log.Printf("[claude-cli-version-sync] 启动指纹版本回写部分失败: %v", err)
-		} else if n > 0 {
-			log.Printf("[claude-cli-version-sync] 启动时已回写 %d 个 Claude 账号指纹版本至 %s", n, auth.EffectiveClaudeCLIVersion())
-		}
-		cancel()
-	}
-	if ClaudeCLIVersionSyncDisabled() {
-		return
 	}
 	resolveProxy := func() string {
 		if proxyResolver == nil {
@@ -227,6 +224,20 @@ func StartClaudeCLIVersionSync(ctx context.Context, db *database.DB, store *auth
 			stopParent()
 			taskCancel()
 		}()
+
+		{
+			refreshCtx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
+			if n, err := auth.RefreshClaudeFingerprintVersions(refreshCtx, store, db, auth.EffectiveClaudeCLIVersion()); err != nil {
+				log.Printf("[claude-cli-version-sync] 启动指纹版本回写部分失败: %v", err)
+			} else if n > 0 {
+				log.Printf("[claude-cli-version-sync] 启动时已回写 %d 个 Claude 账号指纹版本至 %s", n, auth.EffectiveClaudeCLIVersion())
+			}
+			cancel()
+		}
+		if ClaudeCLIVersionSyncDisabled() {
+			return
+		}
+
 		if store.ClaudeCLIVersionSyncEnabled() {
 			runOnce(taskCtx)
 		}

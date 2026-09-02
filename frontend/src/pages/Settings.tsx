@@ -800,9 +800,12 @@ function ClaudeCodeSettingsCard() {
     setSyncingCliVersion(true)
     try {
       const result = await api.syncClaudeCLIVersion()
-      setSyncedCliVersion(result.fetched_version || result.effective_version)
+      if (result.updated) setSyncedCliVersion(result.fetched_version)
       setEffectiveCliVersion(result.effective_version)
       showToast(t('settings.claudeCliVersionSyncSuccess', { version: result.effective_version, accounts: result.accounts_refreshed }), 'success')
+      if (result.warning) {
+        showToast(t('settings.claudeCliVersionSyncWarning', { version: result.effective_version, message: result.warning }), 'warning')
+      }
     } catch (error) {
       showToast(`${t('settings.claudeCliVersionSyncFailed')}: ${getErrorMessage(error)}`, 'error')
     } finally {

@@ -222,6 +222,17 @@ func TestApplyClaudeMessagesHeadersForceCompletesPartialFingerprint(t *testing.T
 	}
 }
 
+func TestApplyClaudeMessagesHeaders_EmptyUAFallsBackToEffectiveClaudeCLIVersion(t *testing.T) {
+	t.Cleanup(func() { auth.SetClaudeSyncedCLIVersion("") })
+	auth.SetClaudeSyncedCLIVersion("2.1.300")
+
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", nil)
+	applyClaudeMessagesHeaders(req, "tok", http.Header{}, false, nil, "preserve")
+	if got := req.Header.Get("User-Agent"); got != "claude-cli/2.1.300 (external, cli)" {
+		t.Fatalf("empty-UA fallback = %q, want claude-cli/2.1.300 (external, cli)", got)
+	}
+}
+
 func TestApplyClaudeMessagesHeadersRewritesFixedClaudeCLIVersion(t *testing.T) {
 	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", nil)
 	incoming := http.Header{}

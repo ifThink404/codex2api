@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -84,22 +85,20 @@ func TestRefreshClaudeFingerprintVersions_PersistsAndAppliesInMemory(t *testing.
 	}
 }
 
-// concurrentMutationPersister simulates a writer (e.g. the store's dispatch-
-// state reconciliation loop, or an admin edit) that changes an account's
-// CustomHeaders concurrently with the DB persist performed by
-// RefreshClaudeFingerprintVersions, landing in the TOCTOU window between the
-// snapshot read and the in-memory write.
+// concurrentMutationPersister simulates a writer (e.g. an admin edit) that
+// changes an account's CustomHeaders concurrently with the DB persist
+// performed by RefreshClaudeFingerprintVersions, landing in the TOCTOU
+// window between the snapshot read and the in-memory write. It mutates only
+// on its first call, so the second (retry) attempt observes a stable value
+// and the CAS should succeed.
 type concurrentMutationPersister struct {
 	acc     *Account
-	calls   map[int64]map[string]string
+	calls   []map[string]string
 	mutated bool
 }
 
-func (p *concurrentMutationPersister) UpdateAccountCustomHeaders(_ context.Context, id int64, headers map[string]string) error {
-	if p.calls == nil {
-		p.calls = map[int64]map[string]string{}
-	}
-	p.calls[id] = headers
+func (p *concurrentMutationPersister) UpdateAccountCustomHeaders(_ context.Context, _ int64, headers map[string]string) error {
+	p.calls = append(p.calls, headers)
 	if !p.mutated {
 		p.mutated = true
 		p.acc.mu.Lock()
@@ -109,7 +108,7 @@ func (p *concurrentMutationPersister) UpdateAccountCustomHeaders(_ context.Conte
 	return nil
 }
 
-func TestRefreshClaudeFingerprintVersions_SkipsMemoryWriteOnConcurrentMutation(t *testing.T) {
+func TestRefreshClaudeFingerprintVersions_RetriesAndAppliesOnSecondAttempt(t *testing.T) {
 	store := NewStore(nil, nil, nil)
 	defer store.Stop()
 	claude := &Account{DBID: 260, UpstreamType: UpstreamClaude, CustomHeaders: map[string]string{"User-Agent": "claude-cli/2.1.219 (external, cli)"}}
@@ -122,17 +121,66 @@ func TestRefreshClaudeFingerprintVersions_SkipsMemoryWriteOnConcurrentMutation(t
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if updated != 1 {
-		t.Fatalf("updated = %d, want 1 (DB write succeeded)", updated)
+	if len(persister.calls) != 2 {
+		t.Fatalf("persister called %d times, want 2", len(persister.calls))
 	}
-	if got := persister.calls[260]["User-Agent"]; got != "claude-cli/2.1.258 (external, cli)" {
-		t.Fatalf("persisted UA = %q, want bumped version", got)
+	if updated != 1 {
+		t.Fatalf("updated = %d, want 1 (retry succeeded)", updated)
 	}
 	claude.mu.RLock()
-	got := claude.CustomHeaders["X-App"]
+	finalHeaders := cloneStringMap(claude.CustomHeaders)
 	claude.mu.RUnlock()
-	if got != "other" {
-		t.Fatalf("concurrent in-memory mutation must not be overwritten by stale refresh, X-App = %q", got)
+	if finalHeaders["X-App"] != "other" {
+		t.Fatalf("final in-memory headers must keep the concurrent edit, X-App = %q", finalHeaders["X-App"])
+	}
+	if finalHeaders["User-Agent"] != "claude-cli/2.1.258 (external, cli)" {
+		t.Fatalf("final in-memory User-Agent = %q, want bumped version", finalHeaders["User-Agent"])
+	}
+	if !stringMapEqual(persister.calls[1], finalHeaders) {
+		t.Fatalf("second persisted map %v must equal final in-memory headers %v", persister.calls[1], finalHeaders)
+	}
+}
+
+// alwaysConflictingPersister mutates the account's headers on every call, so
+// the bounded CAS retry always observes a stale snapshot and must give up
+// without applying its own (now doubly-stale) in-memory write.
+type alwaysConflictingPersister struct {
+	acc   *Account
+	calls int
+}
+
+func (p *alwaysConflictingPersister) UpdateAccountCustomHeaders(_ context.Context, _ int64, _ map[string]string) error {
+	p.calls++
+	p.acc.mu.Lock()
+	p.acc.CustomHeaders = map[string]string{"User-Agent": p.acc.CustomHeaders["User-Agent"], "X-Conflict": fmt.Sprintf("v%d", p.calls)}
+	p.acc.mu.Unlock()
+	return nil
+}
+
+func TestRefreshClaudeFingerprintVersions_GivesUpAfterTwoConflicts(t *testing.T) {
+	store := NewStore(nil, nil, nil)
+	defer store.Stop()
+	claude := &Account{DBID: 261, UpstreamType: UpstreamClaude, CustomHeaders: map[string]string{"User-Agent": "claude-cli/2.1.219 (external, cli)"}}
+	store.mu.Lock()
+	store.accounts = []*Account{claude}
+	store.mu.Unlock()
+
+	persister := &alwaysConflictingPersister{acc: claude}
+	updated, err := RefreshClaudeFingerprintVersions(context.Background(), store, persister, "2.1.258")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("updated = %d, want 0 (both attempts hit a conflict)", updated)
+	}
+	if persister.calls != 2 {
+		t.Fatalf("persister called %d times, want 2", persister.calls)
+	}
+	claude.mu.RLock()
+	got := claude.CustomHeaders["User-Agent"]
+	claude.mu.RUnlock()
+	if got != "claude-cli/2.1.219 (external, cli)" {
+		t.Fatalf("in-memory UA must be whatever the persister last set (not overwritten), got %q", got)
 	}
 }
 

@@ -273,7 +273,7 @@ func applyClaudeMessagesHeaders(req *http.Request, accessToken string, incoming 
 	}
 	// 保底:连指纹都没有(老账号未生成指纹)时,给一个稳定的默认 UA,避免空 UA 破绽。
 	if strings.TrimSpace(req.Header.Get("User-Agent")) == "" {
-		req.Header.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
+		req.Header.Set("User-Agent", "claude-cli/"+auth.EffectiveClaudeCLIVersion()+" (external, cli)")
 	}
 	// Keep Claude on the same request-scoped User-Agent audit path as Codex,
 	// Grok, and WebSocket transports. Record only the final sanitized header
@@ -378,7 +378,7 @@ func applyClaudeOutboundVersionAlignment(req *http.Request, required string) *Er
 func defaultClaudeIdentityHeader(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "user-agent":
-		return "claude-cli/2.1.220 (external, cli)"
+		return "claude-cli/" + auth.EffectiveClaudeCLIVersion() + " (external, cli)"
 	case "x-app":
 		return "cli"
 	case "x-stainless-lang":

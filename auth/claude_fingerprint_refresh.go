@@ -43,6 +43,8 @@ func RefreshClaudeFingerprintUserAgent(headers map[string]string, targetVersion 
 
 // RefreshClaudeFingerprintVersions 把所有 Claude 账号的指纹 UA 版本抬到 version。
 // 返回实际改写的账号数与首个持久化错误；单账号失败不影响其它账号。
+// 每个账号最多重试一次内存 CAS（见 refreshClaudeFingerprintAccountWithRetry）；
+// 两次都撞并发修改则放弃本轮，不计入已更新，也不视为错误。
 func RefreshClaudeFingerprintVersions(ctx context.Context, store *Store, persister ClaudeCustomHeadersPersister, version string) (int, error) {
 	target, ok := ParseClaudeClientVersion("claude-cli/" + strings.TrimSpace(version))
 	if !ok {
@@ -69,38 +71,55 @@ func RefreshClaudeFingerprintVersions(ctx context.Context, store *Store, persist
 		if !isClaude {
 			continue
 		}
+		applied, err := refreshClaudeFingerprintAccountWithRetry(ctx, acc, dbID, headers, target, persister)
+		if applied {
+			updated++
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return updated, firstErr
+}
+
+// refreshClaudeFingerprintAccountWithRetry bumps one Claude account's
+// fingerprint UA version, persisting to the DB and applying to memory under
+// a bounded compare-and-swap retry loop.
+//
+// There is no reconciliation loop for Claude accounts (unlike
+// openai_responses accounts — see store.go's dispatch-state reconciliation,
+// which never touches Claude custom headers), so a skipped in-memory write
+// would persist as a memory/DB divergence until the next sync run or a
+// process restart. To avoid that, on a CAS mismatch we recompute `next` from
+// a fresh snapshot (which already includes whatever the concurrent writer
+// set) and retry the persist + CAS once more.
+func refreshClaudeFingerprintAccountWithRetry(ctx context.Context, acc *Account, dbID int64, headers map[string]string, target string, persister ClaudeCustomHeadersPersister) (bool, error) {
+	const maxAttempts = 2
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		next, changed := RefreshClaudeFingerprintUserAgent(headers, target)
 		if !changed {
-			continue
+			return false, nil
 		}
 		if persister != nil {
 			if err := persister.UpdateAccountCustomHeaders(ctx, dbID, next); err != nil {
 				log.Printf("[claude-cli-version-sync] 账号 %d 指纹版本回写失败: %v", dbID, err)
-				if firstErr == nil {
-					firstErr = fmt.Errorf("account %d: %w", dbID, err)
-				}
-				continue
+				return false, fmt.Errorf("account %d: %w", dbID, err)
 			}
 		}
-		// The DB write above already succeeded, so this account counts as
-		// updated regardless of what happens to the in-memory copy below.
-		// Between the RLock snapshot read above and this Lock, a concurrent
-		// writer (e.g. the store's dispatch-state reconciliation loop calling
-		// ApplyAccountCustomHeaders, or an admin edit) may have already
-		// changed acc.CustomHeaders. Overwriting it here with our stale
-		// `next` would silently lose that update. Guard with a compare-and-
-		// swap: only apply `next` if CustomHeaders still matches the
-		// snapshot we based it on; otherwise skip the memory write and let
-		// the store's own reconciliation converge memory to the DB value
-		// (which we just persisted) on its next cycle.
 		acc.mu.Lock()
 		if stringMapEqual(acc.CustomHeaders, headers) {
 			acc.CustomHeaders = next
-		} else {
-			log.Printf("[claude-cli-version-sync] 账号 %d 指纹在回写期间被并发修改，跳过内存更新", dbID)
+			acc.mu.Unlock()
+			return true, nil
 		}
+		// Concurrent writer changed CustomHeaders between our snapshot and
+		// this lock. Re-snapshot and retry from the newer value so both the
+		// DB and memory end up reflecting the concurrent edit plus the
+		// version bump.
+		freshHeaders := cloneStringMap(acc.CustomHeaders)
 		acc.mu.Unlock()
-		updated++
+		headers = freshHeaders
 	}
-	return updated, firstErr
+	log.Printf("[claude-cli-version-sync] 账号 %d 指纹在回写期间被并发修改两次，放弃本轮", dbID)
+	return false, nil
 }

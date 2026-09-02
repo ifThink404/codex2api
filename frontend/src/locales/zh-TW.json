@@ -194,6 +194,7 @@
     "claudeCliVersionSyncing": "同步中…",
     "claudeCliVersionSyncSuccess": "生效版本 {{version}}，已回寫 {{accounts}} 個帳號指紋",
     "claudeCliVersionSyncFailed": "Claude Code 版本同步失敗",
+    "claudeCliVersionSyncWarning": "已同步到 {{version}}，但指紋回寫有警告：{{message}}",
     "claudeCliVersionAutoSync": "自動同步",
     "claudeCliVersionAutoSyncDesc": "開啟後按間隔自動同步；關閉後僅在啟動時用內建版本回寫指紋。",
     "claudeCliVersionSyncInterval": "同步間隔（小時）",

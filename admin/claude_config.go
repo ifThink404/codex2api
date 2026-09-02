@@ -132,7 +132,18 @@ func (h *Handler) UpdateClaudeConfig(c *gin.Context) {
 // boolPtr 返回指向给定 bool 值的指针，便于构造「显式布尔字段」的 JSON DTO。
 func boolPtr(v bool) *bool { return &v }
 
+// claudeCLIVersionSyncResponse 在同步结果之上附加一个可选的 warning 字段：
+// 抓取+持久化成功、但指纹回写部分失败时，仍以 200 响应并携带 warning，
+// 而不是把整次同步判为失败。
+type claudeCLIVersionSyncResponse struct {
+	*proxy.ClaudeCLIVersionSyncResult
+	Warning string `json:"warning,omitempty"`
+}
+
 // SyncClaudeCLIVersion 供设置页「立即同步」调用：拉取最新 Claude Code CLI 版本并回写账号指纹。
+// proxy.SyncClaudeCLIVersion 的 err 可能只是抓取成功、持久化成功之后的指纹回写部分失败，
+// 因此只在抓取阶段就失败（没有 FetchedVersion）时才判 502；否则仍按 200 返回结果，
+// 并把该 err 作为 warning 字段透出，方便前端提示但不阻断已生效的版本同步。
 func (h *Handler) SyncClaudeCLIVersion(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
 	defer cancel()
@@ -141,9 +152,13 @@ func (h *Handler) SyncClaudeCLIVersion(c *gin.Context) {
 		proxyURL = h.store.GetProxyURL()
 	}
 	result, err := proxy.SyncClaudeCLIVersion(ctx, h.db, h.store, proxyURL)
-	if err != nil {
+	if err != nil && (result == nil || result.FetchedVersion == "") {
 		writeError(c, http.StatusBadGateway, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, result)
+	resp := claudeCLIVersionSyncResponse{ClaudeCLIVersionSyncResult: result}
+	if err != nil {
+		resp.Warning = err.Error()
+	}
+	c.JSON(http.StatusOK, resp)
 }

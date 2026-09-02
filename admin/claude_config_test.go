@@ -3,11 +3,13 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -144,5 +146,77 @@ func TestUpdateClaudeConfigPersistsCLIVersionSyncFields(t *testing.T) {
 	cfg := auth.ParseClaudeConfig(settings.ClaudeConfig)
 	if cfg.CLIVersionSyncEnabledValue() || cfg.CLIVersionSyncIntervalHours != 48 {
 		t.Fatalf("persisted cfg = %+v", cfg)
+	}
+}
+
+func TestClaudeConfigSyncCLIVersion_PartialFailureStillReturns200WithWarning(t *testing.T) {
+	t.Cleanup(func() { auth.SetClaudeSyncedCLIVersion("") })
+	db := newTestAdminDB(t)
+	ctx := context.Background()
+
+	id, err := db.InsertAccountWithUpstream(ctx, "claude-a", "anthropic", "oauth", map[string]interface{}{
+		"upstream_type":  "claude",
+		"access_token":   "tok",
+		"custom_headers": map[string]interface{}{"User-Agent": "claude-cli/2.1.219 (external, cli)"},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"v2.1.300"}`))
+	}))
+	defer gh.Close()
+	proxy.SetClaudeVersionSourceURLsForTest(gh.URL, gh.URL)
+	t.Cleanup(func() { proxy.SetClaudeVersionSourceURLsForTest("", "") })
+
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	store.SetAccountsForTest([]*auth.Account{{DBID: id, UpstreamType: auth.UpstreamClaude, CustomHeaders: map[string]string{"User-Agent": "claude-cli/2.1.219 (external, cli)"}}})
+
+	// Soft-delete the row directly in the DB (bypassing the store), so the
+	// fingerprint persist inside SyncClaudeCLIVersion hits sql.ErrNoRows
+	// while the in-memory Store still thinks the account is live.
+	if err := db.SoftDeleteAccount(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{store: store, db: db}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/settings/claude-config/cli-version/sync", nil)
+	h.SyncClaudeCLIVersion(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.Bytes()
+	if got := gjson.GetBytes(body, "fetched_version").String(); got != "2.1.300" {
+		t.Fatalf("fetched_version = %q, want 2.1.300", got)
+	}
+	if got := gjson.GetBytes(body, "warning").String(); got == "" {
+		t.Fatal("warning should be non-empty when the fingerprint persist fails after a successful fetch")
+	}
+}
+
+func TestClaudeConfigSyncCLIVersion_FetchFailureReturns502(t *testing.T) {
+	t.Cleanup(func() { auth.SetClaudeSyncedCLIVersion("") })
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer bad.Close()
+	proxy.SetClaudeVersionSourceURLsForTest(bad.URL, bad.URL)
+	t.Cleanup(func() { proxy.SetClaudeVersionSourceURLsForTest("", "") })
+
+	store := auth.NewStore(nil, nil, nil)
+	defer store.Stop()
+	h := &Handler{store: store, db: newTestAdminDB(t)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/settings/claude-config/cli-version/sync", nil)
+	h.SyncClaudeCLIVersion(c)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", recorder.Code, recorder.Body.String())
 	}
 }
