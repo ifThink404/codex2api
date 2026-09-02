@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -293,14 +292,8 @@ func applyClaudeMessagesHeadersWithVersion(req *http.Request, accessToken string
 	}
 }
 
-var claudeCLIUserAgentVersionPattern = regexp.MustCompile(`(?i)(\bclaude(?:-cli|-code)|\bclaude\s+code)([/\s:_-]*)(?:v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)`)
-
 func rewriteClaudeCLIUserAgentVersion(userAgent, version string) string {
-	version = strings.TrimSpace(version)
-	if _, ok := auth.ParseClaudeClientVersion("claude-cli/" + version); !ok {
-		return ""
-	}
-	return claudeCLIUserAgentVersionPattern.ReplaceAllString(userAgent, "${1}${2}"+version)
+	return auth.RewriteClaudeCLIUserAgentVersion(userAgent, version)
 }
 
 // defaultClaudeIdentityHeader is a deterministic compatibility fallback for
