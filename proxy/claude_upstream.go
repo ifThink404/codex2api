@@ -919,6 +919,15 @@ func HandleClaudeModelBillingRejection(store *auth.Store, account *auth.Account,
 	}
 	// 模型级冷却,原因 credits_required;不做退避升级(固定窗口周期性复探,买 credits 后自然恢复)。
 	store.MarkModelCooldownWithBackoff(account, m, claudeCreditsRequiredCooldown, "credits_required", false)
+	// 套餐不含该模型时把它从账号白名单里移除,调度器此后不再把该模型派给这个账号。
+	// 白名单为空(放行全部)时无法表达排除,只能靠上面的冷却。
+	dropCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if removed, err := store.DropAccountModel(dropCtx, account, m); err != nil {
+		log.Printf("[账号 %d] 移除不支持的模型 %s 失败: %v", account.ID(), m, err)
+	} else if removed {
+		log.Printf("[账号 %d] 上游 credits_required,已把模型 %s 从账号模型白名单移除", account.ID(), m)
+	}
 	return true
 }
 

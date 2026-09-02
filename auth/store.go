@@ -9457,6 +9457,15 @@ func (s *Store) MarkModelCooldownWithBackoff(acc *Account, model string, duratio
 	if reason == "" {
 		reason = "rate_limited"
 	}
+	// 已有更长且仍在生效的冷却（如 credits_required 的 30 分钟）不得被后续更短的
+	// 通用限流冷却覆盖缩短，否则账号会在几秒后被重新选中并再次撞上同一错误。
+	if current.ResetAt.After(now) && current.ResetAt.After(resetAt) {
+		resetAt = current.ResetAt
+		if current.Reason != "" {
+			reason = current.Reason
+		}
+		level = current.BackoffLevel
+	}
 	cooldown := ModelCooldown{
 		Model:        key,
 		Reason:       reason,
