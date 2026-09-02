@@ -1510,6 +1510,7 @@ export default function Proxies() {
               setRiskFilter(value as RiskFilter);
               setPage(1);
             }}
+            className="w-auto shrink-0"
             triggerClassName="h-8 shrink-0 text-xs font-medium"
             options={[
               { value: "all", label: t("proxies.riskFilterAll") },
@@ -1993,7 +1994,7 @@ export default function Proxies() {
                   const selectedProfile = riskProfiles.find((profile) => profile.id === Number(value));
                   if (selectedProfile) openRiskProfile(selectedProfile);
                 }}
-                triggerClassName="min-w-[220px]"
+                className="w-auto shrink-0 min-w-[220px]"
                 options={riskProfiles.map((profile) => ({
                   value: String(profile.id),
                   label: `${profile.name}${profile.enabled ? ` · ${t("proxies.riskEnabled")}` : ` · ${t("proxies.riskDisabled")}`}`,
