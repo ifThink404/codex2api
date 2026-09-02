@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -228,6 +229,51 @@ func TestApplyClaudeMessagesHeadersRewritesFixedClaudeCLIVersion(t *testing.T) {
 	applyClaudeMessagesHeadersWithVersion(req, "tok", incoming, false, nil, "preserve", "2.1.251")
 	if got := req.Header.Get("User-Agent"); got != "claude-cli/2.1.251 (external, cli)" {
 		t.Fatalf("fixed Claude CLI UA = %q", got)
+	}
+}
+
+func TestAlignClaudeOutboundUserAgent(t *testing.T) {
+	t.Cleanup(func() { auth.SetClaudeSyncedCLIVersion("") })
+	auth.SetClaudeSyncedCLIVersion("")
+	cases := []struct {
+		name, outbound, required, wantUA string
+		wantDeny                         bool
+	}{
+		{"no requirement", "claude-cli/2.1.219 (external, cli)", "", "claude-cli/2.1.219 (external, cli)", false},
+		{"already satisfied", "claude-cli/2.1.258 (external, cli)", "2.1.251", "claude-cli/2.1.258 (external, cli)", false},
+		{"stale fingerprint bumped to effective", "claude-cli/2.1.219 (external, cli)", "2.1.251", "claude-cli/" + auth.BuiltinClaudeCLIVersion + " (external, cli)", false},
+		{"non-cli untouched", "Go-http-client/1.1", "2.1.251", "Go-http-client/1.1", false},
+		{"effective still too old", "claude-cli/2.1.219 (external, cli)", "9.9.9", "claude-cli/2.1.219 (external, cli)", true},
+	}
+	for _, tc := range cases {
+		gotUA, deny := alignClaudeOutboundUserAgent(tc.outbound, tc.required)
+		if gotUA != tc.wantUA || (deny != "") != tc.wantDeny {
+			t.Errorf("%s: ua=%q deny=%q", tc.name, gotUA, deny)
+		}
+	}
+}
+
+func TestExecuteClaudeMessagesRequestWithPolicy_DeniesWhenForcedFingerprintTooOld(t *testing.T) {
+	ctx := withUserAgentAudit(context.Background())
+	account := &auth.Account{DBID: 251, UpstreamType: auth.UpstreamClaude, AccessToken: "tok", CustomHeaders: map[string]string{"User-Agent": "claude-cli/2.1.219 (external, cli)"}}
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/9.9.9 (external, cli)")
+	policy := auth.ClaudeClientPolicy{Platform: auth.ClaudeClientPlatformAny, VersionPolicy: auth.ClaudeVersionPolicyMinimum, ClientVersion: "9.9.9"}
+	_, err := ExecuteClaudeMessagesRequestWithPolicy(ctx, account, []byte(`{"model":"claude-opus-5","messages":[]}`), "", headers, "force", policy)
+	var perr *Error
+	if !errors.As(err, &perr) || perr.HTTPStatus != http.StatusUpgradeRequired || perr.Code != "claude_client_policy" {
+		t.Fatalf("expected local 426 claude_client_policy, got %v", err)
+	}
+	if !strings.Contains(perr.Message, "2.1.219") || !strings.Contains(perr.Message, "9.9.9") {
+		t.Fatalf("message should name outbound and required versions: %s", perr.Message)
+	}
+}
+
+func TestClaudeOutboundRequiredVersion_UsesModelFloorForNonCLIInbound(t *testing.T) {
+	// 入站不是 CLI(无 required),但 force 指纹是旧 CLI UA 且模型有下限:出站仍需对齐。
+	gotUA, deny := alignClaudeOutboundUserAgent("claude-cli/2.1.219 (external, cli)", claudeOutboundRequiredVersion(auth.ClaudeClientDecision{}, "claude-fable-5-1"))
+	if deny != "" || !strings.Contains(gotUA, auth.BuiltinClaudeCLIVersion) {
+		t.Fatalf("ua=%q deny=%q", gotUA, deny)
 	}
 }
 

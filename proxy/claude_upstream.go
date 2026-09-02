@@ -195,6 +195,13 @@ func ExecuteClaudeMessagesRequestWithPolicy(ctx context.Context, account *auth.A
 	}
 	applyClaudeMessagesHeadersWithVersion(req, accessToken, headers, stream, fingerprint, fingerprintMode, decision.RewriteVersion, securityConfig)
 
+	if finalUA, deny := alignClaudeOutboundUserAgent(req.Header.Get("User-Agent"), claudeOutboundRequiredVersion(decision, model)); deny != "" {
+		return nil, &Error{Code: "claude_client_policy", Message: deny, Type: ErrorTypeInvalidRequest, Retryable: false, HTTPStatus: http.StatusUpgradeRequired}
+	} else if finalUA != req.Header.Get("User-Agent") {
+		req.Header.Set("User-Agent", finalUA)
+		RecordUpstreamUserAgent(req.Context(), finalUA)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		if shouldRecyclePooledClient(err) {
@@ -294,6 +301,48 @@ func applyClaudeMessagesHeadersWithVersion(req *http.Request, accessToken string
 
 func rewriteClaudeCLIUserAgentVersion(userAgent, version string) string {
 	return auth.RewriteClaudeCLIUserAgentVersion(userAgent, version)
+}
+
+// claudeOutboundRequiredVersion 取入站门控得出的 required 与模型下限中的较大者。
+// 入站非 CLI 时 decision.RequiredVersion 为空,但 force 指纹可能把出站改成 CLI UA,
+// 此时仍必须遵守模型下限。
+func claudeOutboundRequiredVersion(decision auth.ClaudeClientDecision, model string) string {
+	required := strings.TrimSpace(decision.RequiredVersion)
+	floor := auth.ClaudeModelMinimumVersion(model)
+	if floor == "" {
+		return required
+	}
+	if required == "" {
+		return floor
+	}
+	if cmp, err := auth.CompareClaudeClientVersions(floor, required); err == nil && cmp > 0 {
+		return floor
+	}
+	return required
+}
+
+// alignClaudeOutboundUserAgent 保证最终出站 CLI UA 版本不低于 required。
+// 低于时抬到生效版本;生效版本仍不够则返回拒绝消息(调用方本地 426,不发上游)。
+func alignClaudeOutboundUserAgent(outbound, required string) (string, string) {
+	if strings.TrimSpace(required) == "" {
+		return outbound, ""
+	}
+	outVersion, isCLI := auth.ParseClaudeClientVersion(outbound)
+	if !isCLI {
+		return outbound, ""
+	}
+	if cmp, err := auth.CompareClaudeClientVersions(outVersion, required); err != nil || cmp >= 0 {
+		return outbound, ""
+	}
+	effective := auth.EffectiveClaudeCLIVersion()
+	if cmp, err := auth.CompareClaudeClientVersions(effective, required); err != nil || cmp < 0 {
+		return outbound, fmt.Sprintf("Claude Code CLI outbound version %s is below required %s (effective %s); update client_version or wait for CLI version sync", outVersion, required, effective)
+	}
+	rewritten := auth.RewriteClaudeCLIUserAgentVersion(outbound, effective)
+	if rewritten == "" {
+		return outbound, ""
+	}
+	return rewritten, ""
 }
 
 // defaultClaudeIdentityHeader is a deterministic compatibility fallback for
