@@ -230,7 +230,11 @@ func (h *Handler) probeUsageViaClaudeMessages(ctx context.Context, account *auth
 			fingerprintMode = account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
 			securityConfig = h.store.ClaudeSecurityConfig()
 		}
-		resp, err = proxy.ExecuteClaudeMessagesRequest(ctx, account, body, proxyURL, nil, fingerprintMode, securityConfig)
+		clientPolicy := auth.ClaudeClientPolicy{}
+		if h != nil && h.store != nil {
+			clientPolicy = h.store.ClaudeClientPolicyForAccount(account)
+		}
+		resp, err = proxy.ExecuteClaudeMessagesRequestWithPolicy(ctx, account, body, proxyURL, nil, fingerprintMode, clientPolicy, securityConfig)
 	}
 	if err != nil {
 		return err

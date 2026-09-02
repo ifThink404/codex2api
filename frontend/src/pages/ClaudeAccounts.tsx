@@ -1709,6 +1709,8 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.subscriptionPlan")}</span><span>{(() => { const badge = claudePlanBadge(detailTarget.plan_type || "claude"); return <span className={badge.cls}>{badge.label}</span>; })()}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.subscriptionExpires")}</span><span className="text-right">{formatShortDateTime(detailTarget.subscription_expires_at)?.label ?? t("claude.metadataUnknown")}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.fingerprintModeLabel")}</span><span className="text-right">{detailTarget.claude_fingerprint_mode === "force" ? t("claude.fpForce") : detailTarget.claude_fingerprint_mode === "preserve" ? t("claude.fpPreserve") : t("claude.fpFollowGlobal")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.clientPlatformLabel")}</span><span className="text-right">{detailTarget.claude_client_platform === "claude_code_cli_only" ? t("claude.clientPlatformCLIOnly") : t("claude.clientPlatformUnrestricted")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.versionPolicyLabel")}</span><span className="text-right">{detailTarget.claude_version_policy === "fixed" ? t("claude.versionPolicyFixed") : detailTarget.claude_version_policy === "minimum" ? t("claude.versionPolicyMinimum") : t("claude.versionPolicyPassthrough")}{detailTarget.claude_client_version ? ` · ${detailTarget.claude_client_version}` : ""}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.timezoneLabel")}</span><span className="max-w-[250px] text-right">{detailTarget.timezone ? claudeTimezoneLabel(detailTarget.timezone) : t("claude.metadataUnknown")}</span></div>
                 <div className="flex items-start justify-between gap-3"><span className="shrink-0 text-muted-foreground">{t("claude.upstreamUserAgent")}</span><span className="max-w-[260px] break-all text-right font-mono text-[10px]">{detailTarget.claude_user_agent || t("claude.uaNotConfigured")}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">{t("claude.modelsLabel")}</span><span className="max-w-[230px] text-right">{detailTarget.models?.length ? t("claude.modelsWhitelistCount", { count: normalizeClaudeModelList(detailTarget.models).length }) : t("claude.modelsWhitelistAll")}</span></div>
@@ -2388,6 +2390,13 @@ function EditAccountModal({
   const [fpMode, setFpMode] = useState<"" | "preserve" | "force">(
     (account.claude_fingerprint_mode as "" | "preserve" | "force") ?? "",
   );
+  const [clientPlatform, setClientPlatform] = useState<"" | "any" | "claude_code_cli_only">(
+    (account.claude_client_platform_override as "" | "any" | "claude_code_cli_only") ?? "",
+  );
+  const [versionPolicy, setVersionPolicy] = useState<"" | "passthrough" | "fixed" | "minimum">(
+    (account.claude_version_policy_override as "" | "passthrough" | "fixed" | "minimum") ?? "",
+  );
+  const [clientVersion, setClientVersion] = useState(account.claude_client_version_override ?? "");
   const [timezone, setTimezone] = useState(account.timezone ?? "");
   const [timezoneCustom, setTimezoneCustom] = useState(
     Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
@@ -2413,6 +2422,9 @@ function EditAccountModal({
         auto_pause_5h_threshold: parseNum(pause5h),
         auto_pause_7d_threshold: parseNum(pause7d),
         claude_fingerprint_mode: fpMode,
+        claude_client_platform: clientPlatform || null,
+        claude_version_policy: versionPolicy || null,
+        claude_client_version: clientVersion.trim() || null,
         timezone: timezone.trim(),
       });
       showToast(t("claude.saved"), "success");
@@ -2424,7 +2436,7 @@ function EditAccountModal({
     } finally {
       setBusy(false);
     }
-  }, [account.id, proxyUrl, proxies, confirm, tags, priority, scoreBias, concurrency, pause5h, pause7d, fpMode, timezone, onSaved, showToast, t]);
+  }, [account.id, proxyUrl, proxies, confirm, tags, priority, scoreBias, concurrency, pause5h, pause7d, fpMode, clientPlatform, versionPolicy, clientVersion, timezone, onSaved, showToast, t]);
 
   const field = (label: string, node: ReactNode, hint?: string) => (
     <div className="space-y-1">
@@ -2482,6 +2494,30 @@ function EditAccountModal({
               <option value="force">{t("claude.fpForce")}</option>
             </select>,
             t("claude.fingerprintModeHint"),
+          )}
+          {field(
+            t("claude.clientPlatformLabel"),
+            <select className={selectCls} value={clientPlatform} onChange={(e) => setClientPlatform(e.target.value as "" | "any" | "claude_code_cli_only")}>
+              <option value="">{t("claude.clientPlatformAny")}</option>
+              <option value="any">{t("claude.clientPlatformUnrestricted")}</option>
+              <option value="claude_code_cli_only">{t("claude.clientPlatformCLIOnly")}</option>
+            </select>,
+            t("claude.clientPlatformHint"),
+          )}
+          {field(
+            t("claude.versionPolicyLabel"),
+            <div className="space-y-1.5">
+              <select className={selectCls} value={versionPolicy} onChange={(e) => setVersionPolicy(e.target.value as "" | "passthrough" | "fixed" | "minimum")}>
+                <option value="">{t("claude.versionPolicyPassthrough")}</option>
+                <option value="passthrough">{t("claude.versionPolicyPassthroughExplicit")}</option>
+                <option value="fixed">{t("claude.versionPolicyFixed")}</option>
+                <option value="minimum">{t("claude.versionPolicyMinimum")}</option>
+              </select>
+              {versionPolicy === "fixed" || versionPolicy === "minimum" ? (
+                <Input value={clientVersion} onChange={(e) => setClientVersion(e.target.value)} placeholder="2.1.251" />
+              ) : null}
+            </div>,
+            t("claude.clientVersionHint"),
           )}
           {field(
             t("claude.timezoneLabelEdit"),

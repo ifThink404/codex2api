@@ -211,6 +211,12 @@ export interface AccountRow {
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_fingerprint_mode?: CodexFingerprintMode
   claude_fingerprint_mode?: 'preserve' | 'force' | ''
+  claude_client_platform?: 'any' | 'claude_code_cli_only'
+  claude_version_policy?: 'passthrough' | 'fixed' | 'minimum'
+  claude_client_version?: string
+  claude_client_platform_override?: 'any' | 'claude_code_cli_only' | ''
+  claude_version_policy_override?: 'passthrough' | 'fixed' | 'minimum' | ''
+  claude_client_version_override?: string
   claude_usage_probe_at?: ISODateString
   claude_usage_probe_error?: string
   claude_usage_windows?: ClaudeUsageWindow[]
@@ -1297,6 +1303,9 @@ export interface UpdateAccountSchedulerRequest {
   custom_headers?: Record<string, string> | null
   codex_fingerprint_mode?: CodexFingerprintMode | null
   claude_fingerprint_mode?: 'preserve' | 'force' | '' | null
+  claude_client_platform?: 'any' | 'claude_code_cli_only' | null
+  claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
+  claude_client_version?: string | null
   timezone?: string | null
 }
 
@@ -3729,6 +3738,9 @@ export interface ObservedInstructionsResponse {
 // ClaudeGlobalConfig 是系统设置里的 ClaudeCode 全局配置(全体 Claude 账号默认遵守)。
 export interface ClaudeGlobalConfig {
   fingerprint_mode: 'preserve' | 'force' | ''
+  client_platform: 'any' | 'claude_code_cli_only'
+  version_policy: 'passthrough' | 'fixed' | 'minimum'
+  client_version: string
   default_timezone: string
   session_window_limit: number
   allow_service_tier: boolean

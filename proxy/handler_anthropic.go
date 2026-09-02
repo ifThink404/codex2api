@@ -23,6 +23,30 @@ import (
 
 const upstreamErrorBodyReadMaxBytes = 1 << 20
 
+// isClaudeClientCompatibilityError recognizes Anthropic's model/client version
+// gate. It must stay narrower than generic invalid_request_error so ordinary
+// request failures retain their existing account/error handling.
+func isClaudeClientCompatibilityError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest || len(body) == 0 {
+		return false
+	}
+	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	if errType == "" {
+		errType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "type").String()))
+	}
+	if errType != ErrorTypeInvalidRequest {
+		return false
+	}
+	message := strings.ToLower(strings.Join([]string{
+		gjson.GetBytes(body, "error.message").String(),
+		gjson.GetBytes(body, "message").String(),
+		string(body),
+	}, " "))
+	return strings.Contains(message, "claude code") &&
+		strings.Contains(message, "does not support this model") &&
+		strings.Contains(message, "version") && strings.Contains(message, "required")
+}
+
 var claudeDownstreamResponseHeaders = map[string]struct{}{
 	"anthropic-ratelimit-unified-5h-utilization":       {},
 	"anthropic-ratelimit-unified-5h-reset":             {},
@@ -84,6 +108,12 @@ func normalizeNativeFailureMessageForAccount(account *auth.Account, outcome stre
 // backoff so the scheduler does not immediately hammer the same token again.
 func (h *Handler) applyClaudeNativeFailureCooldown(account *auth.Account, outcome streamOutcome, resp *http.Response, model string) streamOutcome {
 	if h == nil || h.store == nil || account == nil || !account.IsClaudeOAuth() || len(outcome.failurePayload) == 0 || outcome.logStatusCode == http.StatusOK {
+		return outcome
+	}
+	if isClaudeClientCompatibilityError(outcome.logStatusCode, responseFailedErrorBody(outcome.failurePayload)) {
+		// A provider compatibility gate is deterministic for the caller, not a
+		// transient upstream/account failure. Keep it out of all cooldown paths.
+		outcome.failureKind = "client_compatibility"
 		return outcome
 	}
 	// Anthropic may encode a billing entitlement failure inside an otherwise
@@ -598,7 +628,8 @@ func (h *Handler) Messages(c *gin.Context) {
 			}
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				claudeFpMode := account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
-				r, e := ExecuteClaudeMessagesRequest(upstreamCtx, account, claudeRequestBody, proxyURL, downstreamHeaders, claudeFpMode, claudeSecurityConfig)
+				clientPolicy := h.store.ClaudeClientPolicyForAccount(account)
+				r, e := ExecuteClaudeMessagesRequestWithPolicy(upstreamCtx, account, claudeRequestBody, proxyURL, downstreamHeaders, claudeFpMode, clientPolicy, claudeSecurityConfig)
 				if e == nil {
 					markClaudeNativeRoute(r)
 				}
@@ -707,11 +738,11 @@ func (h *Handler) Messages(c *gin.Context) {
 
 			if !retryable {
 				var structured *Error
-				if errors.As(reqErr, &structured) && structured.HTTPStatus == http.StatusBadRequest {
+				if errors.As(reqErr, &structured) && (structured.HTTPStatus == http.StatusBadRequest || structured.HTTPStatus == http.StatusUpgradeRequired) {
 					if isStream && writeCommittedAnthropicRetryError(c, "invalid_request_error", structured.Message) {
 						return
 					}
-					sendAnthropicError(c, http.StatusBadRequest, "invalid_request_error", structured.Message)
+					sendAnthropicError(c, structured.HTTPStatus, "invalid_request_error", structured.Message)
 					return
 				}
 				if isStream && writeCommittedAnthropicRetryError(c, "api_error", "Upstream request failed") {
@@ -755,6 +786,28 @@ func (h *Handler) Messages(c *gin.Context) {
 			resp.Body.Close()
 			if continuousRetryCommitExpired(c, continuousRetryProtocolAnthropic) {
 				h.store.Release(account)
+				return
+			}
+			// Anthropic's Claude Code model gate is a client compatibility issue,
+			// not an account failure. Stop before ReportRequestFailure,
+			// SyncClaudeUsageState, retry exclusions, or model/account cooldowns.
+			if account.IsClaudeOAuth() && isClaudeClientCompatibilityError(resp.StatusCode, errBody) {
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				message := usageLogErrorMessage(resp.StatusCode, errBody)
+				if message == "" || message == fmt.Sprintf("HTTP %d", resp.StatusCode) {
+					message = "Claude Code 客户端版本不支持该模型，请运行 claude update 后重试"
+				}
+				h.logUsageForRequest(c, &database.UsageLogInput{
+					AccountID: account.ID(), Endpoint: "/v1/messages", Model: model,
+					EffectiveModel: attemptEffectiveModel, StatusCode: resp.StatusCode,
+					DurationMs: durationMs, InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
+					Stream: isStream, ViaWebsocket: useWebsocket, UpstreamErrorKind: "client_compatibility", ErrorMessage: message,
+				})
+				if isStream && writeCommittedAnthropicRetryError(c, ErrorTypeInvalidRequest, message) {
+					return
+				}
+				sendAnthropicError(c, http.StatusBadRequest, ErrorTypeInvalidRequest, message)
 				return
 			}
 			// Antigravity 的 401 是过期 access token，刷新后同号重试一次即可恢复

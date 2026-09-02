@@ -1581,6 +1581,12 @@ type accountResponse struct {
 	CodexFingerprintMode          string                      `json:"codex_fingerprint_mode,omitempty"`
 	ClaudeFingerprintMode         string                      `json:"claude_fingerprint_mode,omitempty"`
 	ClaudeUserAgent               string                      `json:"claude_user_agent,omitempty"`
+	ClaudeClientPlatform          string                      `json:"claude_client_platform,omitempty"`
+	ClaudeVersionPolicy           string                      `json:"claude_version_policy,omitempty"`
+	ClaudeClientVersion           string                      `json:"claude_client_version,omitempty"`
+	ClaudeClientPlatformOverride  string                      `json:"claude_client_platform_override,omitempty"`
+	ClaudeVersionPolicyOverride   string                      `json:"claude_version_policy_override,omitempty"`
+	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
 	Timezone                      string                      `json:"timezone,omitempty"`
 	CustomHeaders                 map[string]string           `json:"custom_headers,omitempty"`
 	HealthTier                    string                      `json:"health_tier"`
@@ -2031,6 +2037,9 @@ type updateAccountSchedulerReq struct {
 	CustomHeaders           json.RawMessage `json:"custom_headers"`
 	CodexFingerprintMode    json.RawMessage `json:"codex_fingerprint_mode"`
 	ClaudeFingerprintMode   json.RawMessage `json:"claude_fingerprint_mode"`
+	ClaudeClientPlatform    json.RawMessage `json:"claude_client_platform"`
+	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
+	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
 }
 
@@ -2052,6 +2061,9 @@ type accountSchedulerUpdate struct {
 	CustomHeaders           optionalCustomHeaders
 	CodexFingerprintMode    database.OptionalString
 	ClaudeFingerprintMode   database.OptionalString
+	ClaudeClientPlatform    database.OptionalString
+	ClaudeVersionPolicy     database.OptionalString
+	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
 	CredentialUpdates       map[string]interface{}
 }
@@ -2131,6 +2143,30 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if claudeFingerprintMode.Set {
 		claudeFingerprintMode.Value = auth.NormalizeClaudeFingerprintMode(claudeFingerprintMode.Value)
 	}
+	claudeClientPlatform, err := parseOptionalStringField(req.ClaudeClientPlatform, "claude_client_platform", validateClaudeClientPlatform)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if claudeClientPlatform.Set {
+		claudeClientPlatform.Value = string(auth.ClaudeClientPlatform(strings.ToLower(strings.TrimSpace(claudeClientPlatform.Value))))
+	}
+	claudeVersionPolicy, err := parseOptionalStringField(req.ClaudeVersionPolicy, "claude_version_policy", validateClaudeVersionPolicy)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if claudeVersionPolicy.Set {
+		claudeVersionPolicy.Value = string(auth.ClaudeVersionPolicy(strings.ToLower(strings.TrimSpace(claudeVersionPolicy.Value))))
+	}
+	claudeClientVersion, err := parseOptionalStringField(req.ClaudeClientVersion, "claude_client_version", validateClaudeClientVersion)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if claudeClientVersion.Set {
+		claudeClientVersion.Value = strings.TrimSpace(claudeClientVersion.Value)
+	}
+	if claudeVersionPolicy.Set && (claudeVersionPolicy.Value == string(auth.ClaudeVersionPolicyFixed) || claudeVersionPolicy.Value == string(auth.ClaudeVersionPolicyMinimum)) && (!claudeClientVersion.Set || claudeClientVersion.Value == "") {
+		return accountSchedulerUpdate{}, errors.New("claude_client_version is required for fixed/minimum policy")
+	}
 	timezoneField, err := parseOptionalStringField(req.Timezone, "timezone", validateAccountTimezone)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2147,6 +2183,15 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 	if claudeFingerprintMode.Set {
 		credentialUpdates[auth.ClaudeFingerprintModeCredentialKey] = claudeFingerprintMode.Value
+	}
+	if claudeClientPlatform.Set {
+		credentialUpdates[auth.ClaudeClientPlatformCredentialKey] = claudeClientPlatform.Value
+	}
+	if claudeVersionPolicy.Set {
+		credentialUpdates[auth.ClaudeVersionPolicyCredentialKey] = claudeVersionPolicy.Value
+	}
+	if claudeClientVersion.Set {
+		credentialUpdates[auth.ClaudeClientVersionCredentialKey] = claudeClientVersion.Value
 	}
 	if timezoneField.Set {
 		credentialUpdates["timezone"] = strings.TrimSpace(timezoneField.Value)
@@ -2206,6 +2251,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		CustomHeaders:           customHeaders,
 		CodexFingerprintMode:    codexFingerprintMode,
 		ClaudeFingerprintMode:   claudeFingerprintMode,
+		ClaudeClientPlatform:    claudeClientPlatform,
+		ClaudeVersionPolicy:     claudeVersionPolicy,
+		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
 		CredentialUpdates:       credentialUpdates,
 	}, nil
@@ -2217,6 +2265,30 @@ func validateClaudeFingerprintMode(value string) error {
 		return nil
 	}
 	return fmt.Errorf("claude_fingerprint_mode must be one of: preserve, force")
+}
+
+func validateClaudeClientPlatform(value string) error {
+	if strings.EqualFold(strings.TrimSpace(value), string(auth.ClaudeClientPlatformAny)) || strings.EqualFold(strings.TrimSpace(value), string(auth.ClaudeClientPlatformCLIOnly)) || strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return fmt.Errorf("claude_client_platform must be any or claude_code_cli_only")
+}
+
+func validateClaudeVersionPolicy(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", string(auth.ClaudeVersionPolicyPassthrough), string(auth.ClaudeVersionPolicyFixed), string(auth.ClaudeVersionPolicyMinimum):
+		return nil
+	default:
+		return fmt.Errorf("claude_version_policy must be passthrough, fixed, or minimum")
+	}
+}
+
+func validateClaudeClientVersion(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	_, err := auth.CompareClaudeClientVersions(strings.TrimSpace(value), strings.TrimSpace(value))
+	return err
 }
 
 // validateAccountTimezone 允许空串(=清除);非空必须是可加载的 IANA 时区。
@@ -2530,6 +2602,34 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.ClaudeFingerprintMode.Set {
 		h.store.ApplyAccountClaudeFingerprintMode(id, update.ClaudeFingerprintMode.Value)
+	}
+	if update.ClaudeClientPlatform.Set || update.ClaudeVersionPolicy.Set || update.ClaudeClientVersion.Set {
+		policy := auth.ClaudeClientPolicy{}
+		if update.ClaudeClientPlatform.Set {
+			policy.Platform = auth.ClaudeClientPlatform(update.ClaudeClientPlatform.Value)
+		}
+		if update.ClaudeVersionPolicy.Set {
+			policy.VersionPolicy = auth.ClaudeVersionPolicy(update.ClaudeVersionPolicy.Value)
+		}
+		if update.ClaudeClientVersion.Set {
+			policy.ClientVersion = update.ClaudeClientVersion.Value
+		}
+		// Empty fields mean inherit global. The runtime account is updated with
+		// only the explicitly changed values by reading its current overrides.
+		if account := h.store.FindByID(id); account != nil {
+			account.Mu().RLock()
+			if !update.ClaudeClientPlatform.Set {
+				policy.Platform = auth.ClaudeClientPlatform(account.ClaudeClientPlatformOverride)
+			}
+			if !update.ClaudeVersionPolicy.Set {
+				policy.VersionPolicy = auth.ClaudeVersionPolicy(account.ClaudeVersionPolicyOverride)
+			}
+			if !update.ClaudeClientVersion.Set {
+				policy.ClientVersion = account.ClaudeClientVersionOverride
+			}
+			account.Mu().RUnlock()
+		}
+		h.store.ApplyAccountClaudeClientPolicy(id, policy)
 	}
 	if update.CodexFingerprintMode.Set {
 		h.store.ApplyAccountCodexFingerprintMode(id, update.CodexFingerprintMode.Value)

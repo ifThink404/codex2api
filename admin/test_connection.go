@@ -150,7 +150,7 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	var resp *http.Response
 	var reqErr error
 	if isClaudeAccount {
-		resp, reqErr = proxy.ExecuteClaudeMessagesRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), c.Request.Header.Clone(), account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeSecurityConfig())
+		resp, reqErr = proxy.ExecuteClaudeMessagesRequestWithPolicy(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), c.Request.Header.Clone(), account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeClientPolicyForAccount(account), h.store.ClaudeSecurityConfig())
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else {
@@ -1348,7 +1348,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	var resp *http.Response
 	var err error
 	if acc.IsClaudeOAuth() {
-		resp, err = proxy.ExecuteClaudeMessagesRequest(testCtx, acc, buildClaudeConnectionTestPayload(h.store, testModel), h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeSecurityConfig())
+		resp, err = proxy.ExecuteClaudeMessagesRequestWithPolicy(testCtx, acc, buildClaudeConnectionTestPayload(h.store, testModel), h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeClientPolicyForAccount(acc), h.store.ClaudeSecurityConfig())
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
@@ -1483,7 +1483,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	var resp *http.Response
 	var err error
 	if acc.IsClaudeOAuth() {
-		resp, err = proxy.ExecuteClaudeMessagesRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeSecurityConfig())
+		resp, err = proxy.ExecuteClaudeMessagesRequestWithPolicy(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), h.store.ClaudeClientPolicyForAccount(acc), h.store.ClaudeSecurityConfig())
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {

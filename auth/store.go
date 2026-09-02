@@ -126,6 +126,11 @@ type Account struct {
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
+	// Claude Code platform/version policy overrides. Empty values inherit the
+	// corresponding global policy from Store.
+	ClaudeClientPlatformOverride string
+	ClaudeVersionPolicyOverride  string
+	ClaudeClientVersionOverride  string
 	// claudeSessionWindow 是 Claude 账号的全局默认并发会话窗口数(装载时从系统设置
 	// 快照,>0 时作为无账号级/分组覆盖时的基础并发回退)。
 	claudeSessionWindow int64
@@ -3328,6 +3333,9 @@ type Store struct {
 	claudeFingerprintDefault atomic.Value // string: Claude 指纹模式全局默认（preserve/force;空=preserve）
 	claudeDefaultTimezone    atomic.Value // string: 导入 Claude 账号时的默认 IANA 时区
 	claudeSecurityConfig     atomic.Value // ClaudeSecurityConfig: ClaudeCode 出站安全策略
+	claudeClientPlatform     atomic.Value // ClaudeClientPlatform: any / claude_code_cli_only
+	claudeVersionPolicy      atomic.Value // ClaudeVersionPolicy: passthrough / fixed / minimum
+	claudeClientVersion      atomic.Value // string: global fixed/minimum SemVer
 	claudeSessionWindowLimit int64        // Claude 账号默认并发会话窗口数（0=用全局 maxConcurrency）
 	grokAffinityMode         atomic.Value // string: "follow" / "bounded" / "off" / "strict"（"follow"=跟随全局）
 	grokProbeEnabled         atomic.Bool  // 定期探测 Grok 账号状态是否开启（默认关）
@@ -5122,6 +5130,12 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	codexClientMetadataMode := NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode"))
 	codexFingerprintMode := NormalizeCodexFingerprintMode(row.GetCredential(CodexFingerprintModeCredentialKey))
 	claudeFingerprintMode := NormalizeClaudeFingerprintMode(row.GetCredential(ClaudeFingerprintModeCredentialKey))
+	var claudeClientPlatformOverride, claudeVersionPolicyOverride, claudeClientVersionOverride string
+	if strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamClaude) {
+		claudeClientPlatformOverride = strings.ToLower(strings.TrimSpace(row.GetCredential(ClaudeClientPlatformCredentialKey)))
+		claudeVersionPolicyOverride = strings.ToLower(strings.TrimSpace(row.GetCredential(ClaudeVersionPolicyCredentialKey)))
+		claudeClientVersionOverride = strings.TrimSpace(row.GetCredential(ClaudeClientVersionCredentialKey))
+	}
 	isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamOpenAIResponses) && strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
 	isGrokAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamGrok) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
 	isAntigravityAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamAntigravity) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
@@ -5135,25 +5149,28 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 
 	account := &Account{
-		DBID:                    row.ID,
-		CredentialGeneration:    row.CredentialGeneration,
-		CredentialFamilyID:      row.CredentialFamilyID,
-		RefreshToken:            rt,
-		SessionToken:            st,
-		ProxyURL:                strings.TrimSpace(row.ProxyURL),
-		CustomHeaders:           row.GetCredentialStringMap("custom_headers"),
-		HealthTier:              HealthTierWarm,
-		AddedAt:                 row.CreatedAt.UnixNano(),
-		UpstreamType:            upstreamType,
-		AntigravityProjectID:    strings.TrimSpace(row.GetCredential("project_id")),
-		BaseURL:                 strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		APIKey:                  strings.TrimSpace(apiKey),
-		Models:                  models,
-		ModelMapping:            modelMapping,
-		CodexClientMetadataMode: codexClientMetadataMode,
-		CodexFingerprintMode:    codexFingerprintMode,
-		ClaudeFingerprintMode:   claudeFingerprintMode,
-		claudeSessionWindow:     claudeSessionWindowForRow(upstreamType, s.ClaudeSessionWindowLimit()),
+		DBID:                         row.ID,
+		CredentialGeneration:         row.CredentialGeneration,
+		CredentialFamilyID:           row.CredentialFamilyID,
+		RefreshToken:                 rt,
+		SessionToken:                 st,
+		ProxyURL:                     strings.TrimSpace(row.ProxyURL),
+		CustomHeaders:                row.GetCredentialStringMap("custom_headers"),
+		HealthTier:                   HealthTierWarm,
+		AddedAt:                      row.CreatedAt.UnixNano(),
+		UpstreamType:                 upstreamType,
+		AntigravityProjectID:         strings.TrimSpace(row.GetCredential("project_id")),
+		BaseURL:                      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		APIKey:                       strings.TrimSpace(apiKey),
+		Models:                       models,
+		ModelMapping:                 modelMapping,
+		CodexClientMetadataMode:      codexClientMetadataMode,
+		CodexFingerprintMode:         codexFingerprintMode,
+		ClaudeFingerprintMode:        claudeFingerprintMode,
+		ClaudeClientPlatformOverride: claudeClientPlatformOverride,
+		ClaudeVersionPolicyOverride:  claudeVersionPolicyOverride,
+		ClaudeClientVersionOverride:  claudeClientVersionOverride,
+		claudeSessionWindow:          claudeSessionWindowForRow(upstreamType, s.ClaudeSessionWindowLimit()),
 	}
 	if strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamClaude) {
 		if observedRaw := strings.TrimSpace(row.GetCredential(ClaudeUsageProbeAtCredentialKey)); observedRaw != "" {

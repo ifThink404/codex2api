@@ -211,7 +211,95 @@ type ClaudeConfig struct {
 	FingerprintMode    string `json:"fingerprint_mode"`     // preserve / force(空=preserve)
 	DefaultTimezone    string `json:"default_timezone"`     // 导入账号默认 IANA 时区
 	SessionWindowLimit int64  `json:"session_window_limit"` // 默认并发会话窗口数(0=跟随全局 maxConcurrency)
+	ClaudeClientPolicy
 	ClaudeSecurityConfig
+}
+
+// SetClaudeClientPolicy publishes the global Claude Code platform/version
+// policy. Invalid values are ignored so malformed legacy settings cannot break
+// startup; the admin endpoint performs strict validation before saving.
+func (s *Store) SetClaudeClientPolicy(policy ClaudeClientPolicy) {
+	if s == nil {
+		return
+	}
+	normalized, err := NormalizeClaudeClientPolicy(policy)
+	if err != nil {
+		normalized = ClaudeClientPolicy{Platform: ClaudeClientPlatformAny, VersionPolicy: ClaudeVersionPolicyPassthrough}
+	}
+	s.claudeClientPlatform.Store(normalized.Platform)
+	s.claudeVersionPolicy.Store(normalized.VersionPolicy)
+	s.claudeClientVersion.Store(normalized.ClientVersion)
+}
+
+func (s *Store) ClaudeClientPlatform() ClaudeClientPlatform {
+	if s != nil {
+		if value, ok := s.claudeClientPlatform.Load().(ClaudeClientPlatform); ok && value != "" {
+			return value
+		}
+	}
+	return ClaudeClientPlatformAny
+}
+
+func (s *Store) ClaudeVersionPolicy() ClaudeVersionPolicy {
+	if s != nil {
+		if value, ok := s.claudeVersionPolicy.Load().(ClaudeVersionPolicy); ok && value != "" {
+			return value
+		}
+	}
+	return ClaudeVersionPolicyPassthrough
+}
+
+func (s *Store) ClaudeClientVersion() string {
+	if s != nil {
+		if value, ok := s.claudeClientVersion.Load().(string); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+// ClaudeClientPolicy returns the normalized global policy.
+func (s *Store) ClaudeClientPolicy() ClaudeClientPolicy {
+	return ClaudeClientPolicy{Platform: s.ClaudeClientPlatform(), VersionPolicy: s.ClaudeVersionPolicy(), ClientVersion: s.ClaudeClientVersion()}
+}
+
+// ClaudeClientPolicyForAccount merges an account override over the global
+// policy. Empty account fields intentionally inherit global settings.
+func (s *Store) ClaudeClientPolicyForAccount(account *Account) ClaudeClientPolicy {
+	policy := s.ClaudeClientPolicy()
+	if account == nil {
+		return policy
+	}
+	account.mu.RLock()
+	if account.ClaudeClientPlatformOverride != "" {
+		policy.Platform = ClaudeClientPlatform(account.ClaudeClientPlatformOverride)
+	}
+	if account.ClaudeVersionPolicyOverride != "" {
+		policy.VersionPolicy = ClaudeVersionPolicy(account.ClaudeVersionPolicyOverride)
+	}
+	if account.ClaudeClientVersionOverride != "" {
+		policy.ClientVersion = account.ClaudeClientVersionOverride
+	}
+	account.mu.RUnlock()
+	if normalized, err := NormalizeClaudeClientPolicy(policy); err == nil {
+		return normalized
+	}
+	return ClaudeClientPolicy{Platform: ClaudeClientPlatformAny, VersionPolicy: ClaudeVersionPolicyPassthrough}
+}
+
+// ApplyAccountClaudeClientPolicy updates an in-memory override after the
+// credentials mutation has been committed.
+func (s *Store) ApplyAccountClaudeClientPolicy(dbID int64, policy ClaudeClientPolicy) bool {
+	account := s.FindByID(dbID)
+	if account == nil {
+		return false
+	}
+	account.mu.Lock()
+	account.ClaudeClientPlatformOverride = string(policy.Platform)
+	account.ClaudeVersionPolicyOverride = string(policy.VersionPolicy)
+	account.ClaudeClientVersionOverride = policy.ClientVersion
+	account.mu.Unlock()
+	return true
 }
 
 // SecurityConfig extracts the flattened Claude security fields from the
@@ -233,6 +321,11 @@ func ParseClaudeConfig(raw string) ClaudeConfig {
 	if cfg.SessionWindowLimit < 0 {
 		cfg.SessionWindowLimit = 0
 	}
+	if clientPolicy, err := NormalizeClaudeClientPolicy(cfg.ClaudeClientPolicy); err == nil {
+		cfg.ClaudeClientPolicy = clientPolicy
+	} else {
+		cfg.ClaudeClientPolicy = ClaudeClientPolicy{Platform: ClaudeClientPlatformAny, VersionPolicy: ClaudeVersionPolicyPassthrough}
+	}
 	cfg.ClaudeSecurityConfig = NormalizeClaudeSecurityConfig(cfg.ClaudeSecurityConfig)
 	return cfg
 }
@@ -243,5 +336,6 @@ func applyClaudeConfigToStore(s *Store, raw string) {
 	s.SetClaudeFingerprintModeDefault(cfg.FingerprintMode)
 	s.SetClaudeDefaultTimezone(cfg.DefaultTimezone)
 	s.SetClaudeSessionWindowLimit(cfg.SessionWindowLimit)
+	s.SetClaudeClientPolicy(cfg.ClaudeClientPolicy)
 	s.SetClaudeSecurityConfig(cfg.SecurityConfig())
 }

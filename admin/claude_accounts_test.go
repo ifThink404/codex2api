@@ -34,6 +34,9 @@ func TestBuildAccountResponseMarksClaudeProvider(t *testing.T) {
 			"access_token":                          "claude-token",
 			"plan_type":                             "claude",
 			"codex_fingerprint_mode":                "full",
+			auth.ClaudeClientPlatformCredentialKey:  "claude_code_cli_only",
+			auth.ClaudeVersionPolicyCredentialKey:   "minimum",
+			auth.ClaudeClientVersionCredentialKey:   "2.1.251",
 			auth.ClaudeUsageProbeAtCredentialKey:    "2026-08-29T05:00:00Z",
 			auth.ClaudeUsageProbeErrorCredentialKey: "",
 			auth.ClaudeUsageWindowsCredentialKey:    `[{"name":"7d_fable","label":"Fable 5.x","utilization":63,"reset_at":"2026-09-08T00:00:00Z","model_scoped":true,"model_family":"fable"}]`,
@@ -48,6 +51,9 @@ func TestBuildAccountResponseMarksClaudeProvider(t *testing.T) {
 	}
 	if response.CodexFingerprintMode != "" {
 		t.Fatalf("Claude account leaked Codex fingerprint mode %q", response.CodexFingerprintMode)
+	}
+	if response.ClaudeClientPlatform != string(auth.ClaudeClientPlatformCLIOnly) || response.ClaudeVersionPolicy != string(auth.ClaudeVersionPolicyMinimum) || response.ClaudeClientVersion != "2.1.251" {
+		t.Fatalf("Claude effective client policy = %q/%q/%q", response.ClaudeClientPlatform, response.ClaudeVersionPolicy, response.ClaudeClientVersion)
 	}
 	if response.ClaudeUsageProbeAt != "2026-08-29T05:00:00Z" || response.ClaudeUsageProbeError != "" {
 		t.Fatalf("Claude sampling metadata = at=%q error=%q", response.ClaudeUsageProbeAt, response.ClaudeUsageProbeError)
