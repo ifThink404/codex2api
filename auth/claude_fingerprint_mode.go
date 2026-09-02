@@ -243,11 +243,11 @@ func claudeSessionWindowForRow(upstreamType string, globalWindow int64) int64 {
 // ClaudeConfig 是 ClaudeCode 全局配置(系统设置 claude_config 列反序列化目标)。
 // 全体 Claude 账号默认遵守;个体账号可通过编辑覆盖。
 type ClaudeConfig struct {
-	FingerprintMode    string `json:"fingerprint_mode"`     // preserve / force(空=preserve)
-	DefaultTimezone    string `json:"default_timezone"`     // 导入账号默认 IANA 时区
-	SessionWindowLimit int64  `json:"session_window_limit"` // 默认并发会话窗口数(0=跟随全局 maxConcurrency)
-	CLIVersionSyncEnabled       *bool `json:"cli_version_sync_enabled,omitempty"`        // 缺失=true
-	CLIVersionSyncIntervalHours int   `json:"cli_version_sync_interval_hours,omitempty"` // 0=12，钳 [1,720]
+	FingerprintMode             string `json:"fingerprint_mode"`                          // preserve / force(空=preserve)
+	DefaultTimezone             string `json:"default_timezone"`                          // 导入账号默认 IANA 时区
+	SessionWindowLimit          int64  `json:"session_window_limit"`                      // 默认并发会话窗口数(0=跟随全局 maxConcurrency)
+	CLIVersionSyncEnabled       *bool  `json:"cli_version_sync_enabled,omitempty"`        // 缺失=true
+	CLIVersionSyncIntervalHours int    `json:"cli_version_sync_interval_hours,omitempty"` // 0=12，钳 [1,720]
 	ClaudeClientPolicy
 	ClaudeSecurityConfig
 }

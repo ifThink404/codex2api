@@ -3322,37 +3322,37 @@ type Store struct {
 	// 智能刷新调度器
 	refreshScheduler atomic.Pointer[RefreshSchedulerIntegration]
 
-	allowRemoteMigration     atomic.Bool  // 是否允许远程迁移拉取账号
-	modelMapping             atomic.Value // 模型映射 JSON 字符串
-	codexModelMapping        atomic.Value // Codex 模型映射 JSON 字符串
-	payloadRules             atomic.Value // Payload 请求体重写规则 JSON 字符串
-	reasoningEffortModels    atomic.Value // 带思考强度的模型别名 JSON 数组
-	schedulerMode            atomic.Value // string: "round_robin" / "remaining_quota" / "fill_first"
-	affinityMode             atomic.Value // string: "bounded" / "off" / "strict"
-	affinitySpreadEnabled    atomic.Bool  // 新亲和键按 HRW 哈希散列选号(issue #484)
-	claudeFingerprintDefault atomic.Value // string: Claude 指纹模式全局默认（preserve/force;空=preserve）
-	claudeDefaultTimezone    atomic.Value // string: 导入 Claude 账号时的默认 IANA 时区
-	claudeSecurityConfig     atomic.Value // ClaudeSecurityConfig: ClaudeCode 出站安全策略
-	claudeClientPlatform     atomic.Value // ClaudeClientPlatform: any / claude_code_cli_only
-	claudeVersionPolicy      atomic.Value // ClaudeVersionPolicy: passthrough / fixed / minimum
-	claudeClientVersion      atomic.Value // string: global fixed/minimum SemVer
-	claudeSessionWindowLimit int64        // Claude 账号默认并发会话窗口数（0=用全局 maxConcurrency）
+	allowRemoteMigration          atomic.Bool  // 是否允许远程迁移拉取账号
+	modelMapping                  atomic.Value // 模型映射 JSON 字符串
+	codexModelMapping             atomic.Value // Codex 模型映射 JSON 字符串
+	payloadRules                  atomic.Value // Payload 请求体重写规则 JSON 字符串
+	reasoningEffortModels         atomic.Value // 带思考强度的模型别名 JSON 数组
+	schedulerMode                 atomic.Value // string: "round_robin" / "remaining_quota" / "fill_first"
+	affinityMode                  atomic.Value // string: "bounded" / "off" / "strict"
+	affinitySpreadEnabled         atomic.Bool  // 新亲和键按 HRW 哈希散列选号(issue #484)
+	claudeFingerprintDefault      atomic.Value // string: Claude 指纹模式全局默认（preserve/force;空=preserve）
+	claudeDefaultTimezone         atomic.Value // string: 导入 Claude 账号时的默认 IANA 时区
+	claudeSecurityConfig          atomic.Value // ClaudeSecurityConfig: ClaudeCode 出站安全策略
+	claudeClientPlatform          atomic.Value // ClaudeClientPlatform: any / claude_code_cli_only
+	claudeVersionPolicy           atomic.Value // ClaudeVersionPolicy: passthrough / fixed / minimum
+	claudeClientVersion           atomic.Value // string: global fixed/minimum SemVer
+	claudeSessionWindowLimit      int64        // Claude 账号默认并发会话窗口数（0=用全局 maxConcurrency）
 	claudeCLIVersionSyncDisabled  atomic.Bool  // Claude CLI 版本自动同步是否关闭（零值=开启）
 	claudeCLIVersionSyncIntervalH atomic.Int64 // Claude CLI 版本同步间隔小时（0=默认 12）
-	grokAffinityMode         atomic.Value // string: "follow" / "bounded" / "off" / "strict"（"follow"=跟随全局）
-	grokProbeEnabled         atomic.Bool  // 定期探测 Grok 账号状态是否开启（默认关）
-	grokProbeIntervalMin     atomic.Int64 // 定期探测间隔（分钟，默认 30，下限 grokProbeMinIntervalMinutes）
-	grokMaxRateLimitRetry    atomic.Int64 // Grok 请求限流(429)专属换号重试上限（0=跟随全局）
-	grokFollowUpEffort       atomic.Value // GrokFollowUpEffortConfig
-	grokQualityGuard         atomic.Value // GrokQualityGuardConfig（降智检测,issue #587）
-	modelCooldownSettings    atomic.Value // database.ModelCooldownSettings
-	promptFilterConfig       atomic.Value // promptFilterConfigState
-	sessionMu                sync.RWMutex
-	sessionBindings          map[string]sessionAffinity
-	sessionSlotBufferEnabled atomic.Bool
-	sessionSlotBufferNS      atomic.Int64
-	sessionSlotSequence      uint64
-	sessionSlotReservations  map[int64]map[string][]uint64
+	grokAffinityMode              atomic.Value // string: "follow" / "bounded" / "off" / "strict"（"follow"=跟随全局）
+	grokProbeEnabled              atomic.Bool  // 定期探测 Grok 账号状态是否开启（默认关）
+	grokProbeIntervalMin          atomic.Int64 // 定期探测间隔（分钟，默认 30，下限 grokProbeMinIntervalMinutes）
+	grokMaxRateLimitRetry         atomic.Int64 // Grok 请求限流(429)专属换号重试上限（0=跟随全局）
+	grokFollowUpEffort            atomic.Value // GrokFollowUpEffortConfig
+	grokQualityGuard              atomic.Value // GrokQualityGuardConfig（降智检测,issue #587）
+	modelCooldownSettings         atomic.Value // database.ModelCooldownSettings
+	promptFilterConfig            atomic.Value // promptFilterConfigState
+	sessionMu                     sync.RWMutex
+	sessionBindings               map[string]sessionAffinity
+	sessionSlotBufferEnabled      atomic.Bool
+	sessionSlotBufferNS           atomic.Int64
+	sessionSlotSequence           uint64
+	sessionSlotReservations       map[int64]map[string][]uint64
 
 	globalAutoPause5hThreshold    float64  // protected by mu
 	globalAutoPause7dThreshold    float64  // protected by mu
