@@ -36,16 +36,20 @@ type modelPricingRule struct {
 }
 
 type CostBreakdown struct {
-	InputCost                 float64 `json:"input_cost"`
-	OutputCost                float64 `json:"output_cost"`
-	CacheReadCost             float64 `json:"cache_read_cost"`
-	TotalCost                 float64 `json:"total_cost"`
-	InputPricePerMToken       float64 `json:"input_price_per_mtoken"`
-	OutputPricePerMToken      float64 `json:"output_price_per_mtoken"`
-	CacheReadPricePerMToken   float64 `json:"cache_read_price_per_mtoken"`
-	ServiceTierCostMultiplier float64 `json:"service_tier_cost_multiplier"`
-	LongContext               bool    `json:"long_context"`
-	LongContextThreshold      int     `json:"long_context_threshold"`
+	InputCost                  float64 `json:"input_cost"`
+	OutputCost                 float64 `json:"output_cost"`
+	CacheReadCost              float64 `json:"cache_read_cost"`
+	TotalCost                  float64 `json:"total_cost"`
+	InputPricePerMToken        float64 `json:"input_price_per_mtoken"`
+	OutputPricePerMToken       float64 `json:"output_price_per_mtoken"`
+	CacheReadPricePerMToken    float64 `json:"cache_read_price_per_mtoken"`
+	CacheWrite5mCost           float64 `json:"cache_write_5m_cost"`
+	CacheWrite1hCost           float64 `json:"cache_write_1h_cost"`
+	CacheWrite5mPricePerMToken float64 `json:"cache_write_5m_price_per_mtoken"`
+	CacheWrite1hPricePerMToken float64 `json:"cache_write_1h_price_per_mtoken"`
+	ServiceTierCostMultiplier  float64 `json:"service_tier_cost_multiplier"`
+	LongContext                bool    `json:"long_context"`
+	LongContextThreshold       int     `json:"long_context_threshold"`
 }
 
 var (
@@ -315,10 +319,17 @@ func UsageLogBilledCost(log *UsageLogInput) float64 {
 	if billingModel == "" {
 		billingModel = log.Model
 	}
-	return calculateCost(log.InputTokens, log.OutputTokens, log.CachedTokens, billingModel, usageLogBillingServiceTier(log))
+	return CalculateCostBreakdownWithCacheWrites(log.InputTokens, log.OutputTokens, log.CachedTokens, log.CacheWrite5mTokens, log.CacheWrite1hTokens, billingModel, usageLogBillingServiceTier(log)).TotalCost
 }
 
 func CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens int, model string, serviceTier string) CostBreakdown {
+	return CalculateCostBreakdownWithCacheWrites(inputTokens, outputTokens, cachedTokens, 0, 0, model, serviceTier)
+}
+
+// CalculateCostBreakdownWithCacheWrites 在 CalculateCostBreakdown 的基础上计入 Anthropic
+// 提示缓存写入（5 分钟 / 1 小时）。inputTokens 是总输入（未缓存 + 缓存命中 + 缓存写入），
+// 写入价缺省按输入价的 1.25 倍 / 2 倍。
+func CalculateCostBreakdownWithCacheWrites(inputTokens, outputTokens, cachedTokens, cacheWrite5mTokens, cacheWrite1hTokens int, model string, serviceTier string) CostBreakdown {
 	pricing := GetModelPricing(model)
 	threshold := longContextThreshold
 	if pricing.LongContextThresholdTokens > 0 {
@@ -366,27 +377,51 @@ func CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens int, model s
 	if cachedTokens > inputTokens {
 		cachedTokens = inputTokens
 	}
+	if cacheWrite5mTokens < 0 {
+		cacheWrite5mTokens = 0
+	}
+	if cacheWrite1hTokens < 0 {
+		cacheWrite1hTokens = 0
+	}
+	cacheWrite5mPrice := pricing.CacheWrite5mPricePerMToken
+	if cacheWrite5mPrice <= 0 {
+		cacheWrite5mPrice = inputPrice * 1.25
+	}
+	cacheWrite1hPrice := pricing.CacheWrite1hPricePerMToken
+	if cacheWrite1hPrice <= 0 {
+		cacheWrite1hPrice = inputPrice * 2
+	}
 
 	uncachedInputTokens := inputTokens
 	if cacheReadPrice > 0 {
 		uncachedInputTokens = inputTokens - cachedTokens
 	}
+	uncachedInputTokens -= cacheWrite5mTokens + cacheWrite1hTokens
+	if uncachedInputTokens < 0 {
+		uncachedInputTokens = 0
+	}
 
 	inputCost := float64(uncachedInputTokens) / 1000000.0 * inputPrice
 	cacheReadCost := float64(cachedTokens) / 1000000.0 * cacheReadPrice
+	cacheWrite5mCost := float64(cacheWrite5mTokens) / 1000000.0 * cacheWrite5mPrice
+	cacheWrite1hCost := float64(cacheWrite1hTokens) / 1000000.0 * cacheWrite1hPrice
 	outputCost := float64(outputTokens) / 1000000.0 * outputPrice
 
 	return CostBreakdown{
-		InputCost:                 inputCost * tierMultiplier,
-		OutputCost:                outputCost * tierMultiplier,
-		CacheReadCost:             cacheReadCost * tierMultiplier,
-		TotalCost:                 (inputCost + cacheReadCost + outputCost) * tierMultiplier,
-		InputPricePerMToken:       inputPrice * tierMultiplier,
-		OutputPricePerMToken:      outputPrice * tierMultiplier,
-		CacheReadPricePerMToken:   cacheReadPrice * tierMultiplier,
-		ServiceTierCostMultiplier: tierMultiplier,
-		LongContext:               longContextApplied,
-		LongContextThreshold:      threshold,
+		InputCost:                  inputCost * tierMultiplier,
+		OutputCost:                 outputCost * tierMultiplier,
+		CacheReadCost:              cacheReadCost * tierMultiplier,
+		CacheWrite5mCost:           cacheWrite5mCost * tierMultiplier,
+		CacheWrite1hCost:           cacheWrite1hCost * tierMultiplier,
+		TotalCost:                  (inputCost + cacheReadCost + cacheWrite5mCost + cacheWrite1hCost + outputCost) * tierMultiplier,
+		InputPricePerMToken:        inputPrice * tierMultiplier,
+		OutputPricePerMToken:       outputPrice * tierMultiplier,
+		CacheReadPricePerMToken:    cacheReadPrice * tierMultiplier,
+		CacheWrite5mPricePerMToken: cacheWrite5mPrice * tierMultiplier,
+		CacheWrite1hPricePerMToken: cacheWrite1hPrice * tierMultiplier,
+		ServiceTierCostMultiplier:  tierMultiplier,
+		LongContext:                longContextApplied,
+		LongContextThreshold:       threshold,
 	}
 }
 

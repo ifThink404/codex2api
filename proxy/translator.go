@@ -3508,15 +3508,21 @@ type TokenDetails struct {
 }
 
 type UsageInfo struct {
-	PromptTokens        int           `json:"prompt_tokens"`
-	CompletionTokens    int           `json:"completion_tokens"`
-	TotalTokens         int           `json:"total_tokens"`
-	InputTokens         int           `json:"input_tokens,omitempty"`
-	OutputTokens        int           `json:"output_tokens,omitempty"`
-	ReasoningTokens     int           `json:"reasoning_tokens,omitempty"`
-	CachedTokens        int           `json:"cached_tokens,omitempty"`
-	PromptTokensDetails *TokenDetails `json:"prompt_tokens_details,omitempty"`
-	InputTokensDetails  *TokenDetails `json:"input_tokens_details,omitempty"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	InputTokens      int `json:"input_tokens,omitempty"`
+	OutputTokens     int `json:"output_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens,omitempty"`
+	// CacheWrite* 是 Anthropic 提示缓存写入 token（cache_creation_input_tokens 及其 5m/1h 细分）。
+	CacheWriteTokens   int `json:"cache_write_tokens,omitempty"`
+	CacheWrite5mTokens int `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens int `json:"cache_write_1h_tokens,omitempty"`
+	// anthropicTotalApplied 标记 InputTokens 已转换为 Anthropic 总输入口径，避免重复累加。
+	anthropicTotalApplied bool
+	PromptTokensDetails   *TokenDetails `json:"prompt_tokens_details,omitempty"`
+	InputTokensDetails    *TokenDetails `json:"input_tokens_details,omitempty"`
 }
 
 func newUsageInfo(inputTokens, outputTokens, reasoningTokens, cachedTokens int) *UsageInfo {

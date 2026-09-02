@@ -384,6 +384,12 @@ function UsageCostCell({ log }: { log: UsageLog }) {
           {log.cached_tokens > 0 && (
             <CostTooltipRow label={t('usage.cacheReadCost')} value={formatUSD(log.cache_read_cost)} />
           )}
+          {(log.cache_write_5m_tokens ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.cacheWrite5mCost')} value={formatUSD(log.cache_write_5m_cost)} />
+          )}
+          {(log.cache_write_1h_tokens ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.cacheWrite1hCost')} value={formatUSD(log.cache_write_1h_cost)} />
+          )}
           {log.input_tokens > 0 && (
             <CostTooltipRow label={t('usage.inputUnitPrice')} value={formatTokenPricePerMillion(log.input_price_per_mtoken)} valueClassName="text-sky-300" />
           )}
@@ -392,6 +398,12 @@ function UsageCostCell({ log }: { log: UsageLog }) {
           )}
           {log.cached_tokens > 0 && log.cache_read_price_per_mtoken > 0 && (
             <CostTooltipRow label={t('usage.cacheReadUnitPrice')} value={formatTokenPricePerMillion(log.cache_read_price_per_mtoken)} valueClassName="text-cyan-300" />
+          )}
+          {(log.cache_write_5m_tokens ?? 0) > 0 && (log.cache_write_5m_price_per_mtoken ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.cacheWrite5mUnitPrice')} value={formatTokenPricePerMillion(log.cache_write_5m_price_per_mtoken)} valueClassName="text-amber-300" />
+          )}
+          {(log.cache_write_1h_tokens ?? 0) > 0 && (log.cache_write_1h_price_per_mtoken ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.cacheWrite1hUnitPrice')} value={formatTokenPricePerMillion(log.cache_write_1h_price_per_mtoken)} valueClassName="text-amber-300" />
           )}
           {requestedTier && (
             <CostTooltipRow label={t('usage.requestedTier')} value={formatServiceTierLabel(t, requestedTier)} valueClassName="text-slate-200" />
@@ -2832,11 +2844,20 @@ export default function Usage() {
                           )}
                         </TableCell>}
                         {visibleColumns.cached && <TableCell className="text-right">
-                          {log.cached_tokens > 0 ? (
-                            <Badge variant="outline" className={`${usageTableBadgeClass} gap-1 border-transparent bg-indigo-500/10 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400`}>
-                              <DatabaseZap className="size-3.5" />
-                              {formatTokens(log.cached_tokens, true)}
-                            </Badge>
+                          {log.cached_tokens > 0 || (log.cache_write_5m_tokens ?? 0) + (log.cache_write_1h_tokens ?? 0) > 0 ? (
+                            <div className="flex flex-col items-end gap-0.5">
+                              {log.cached_tokens > 0 && (
+                                <Badge variant="outline" className={`${usageTableBadgeClass} gap-1 border-transparent bg-indigo-500/10 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400`}>
+                                  <DatabaseZap className="size-3.5" />
+                                  {formatTokens(log.cached_tokens, true)}
+                                </Badge>
+                              )}
+                              {(log.cache_write_5m_tokens ?? 0) + (log.cache_write_1h_tokens ?? 0) > 0 && (
+                                <span className={`${usageTableMonoClass} text-[10px] text-amber-600 dark:text-amber-400`} title={t('usage.cacheWriteTooltip', { m5: formatTokens(log.cache_write_5m_tokens ?? 0, true), h1: formatTokens(log.cache_write_1h_tokens ?? 0, true) })}>
+                                  {t('usage.cacheWriteBadge', { tokens: formatTokens((log.cache_write_5m_tokens ?? 0) + (log.cache_write_1h_tokens ?? 0), true) })}
+                                </span>
+                              )}
+                            </div>
                           ) : (
                             <span className={`${usageTableMonoClass} text-muted-foreground`}>-</span>
                           )}

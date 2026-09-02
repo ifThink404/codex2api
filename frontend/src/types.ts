@@ -3070,6 +3070,8 @@ export interface UsageLog {
   has_compaction_history: boolean
   via_websocket?: boolean
   cached_tokens: number
+  cache_write_5m_tokens: number
+  cache_write_1h_tokens: number
   service_tier: string
   requested_service_tier: string
   actual_service_tier: string
@@ -3091,10 +3093,14 @@ export interface UsageLog {
   input_cost: number
   output_cost: number
   cache_read_cost: number
+  cache_write_5m_cost: number
+  cache_write_1h_cost: number
   total_cost: number
   input_price_per_mtoken: number
   output_price_per_mtoken: number
   cache_read_price_per_mtoken: number
+  cache_write_5m_price_per_mtoken: number
+  cache_write_1h_price_per_mtoken: number
   rate_multiplier: number
   long_context?: boolean
   long_context_threshold?: number

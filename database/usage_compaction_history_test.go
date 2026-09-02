@@ -153,7 +153,8 @@ func TestUsageLogCompactionStatesRoundTripAndFilter(t *testing.T) {
 }
 
 func TestUsageLogInsertColumnCountIncludesCompactionHistory(t *testing.T) {
-	const want = 50
+	// 50 legacy columns + cache_write_5m_tokens + cache_write_1h_tokens (Anthropic prompt-cache writes).
+	const want = 52
 	if usageLogInsertColumnCount != want {
 		t.Fatalf("usageLogInsertColumnCount = %d, want %d", usageLogInsertColumnCount, want)
 	}

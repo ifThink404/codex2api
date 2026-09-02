@@ -52,6 +52,10 @@ const claudeCodeSystemBlockJSON = `{"type":"text","text":"You are Claude Code, A
 // 接受 4 个 cache_control 块；客户端已用满时再注入带缓存标记的前言会被整体拒绝。
 const claudeCodeSystemBlockNoCacheJSON = `{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}`
 
+// claudeCodeSystemBlock1hJSON 是带 1 小时缓存标记的声明块。Anthropic 不允许 1h 块排在 5m
+// 块之后，客户端请求 1h 缓存时前言必须同样使用 1h。
+const claudeCodeSystemBlock1hJSON = `{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral","ttl":"1h"}}`
+
 // claudeMaxCacheControlBlocks 是 Anthropic Messages API 允许的 cache_control 块上限。
 const claudeMaxCacheControlBlocks = 4
 
@@ -60,6 +64,9 @@ const claudeMaxCacheControlBlocks = 4
 func claudeCodeSystemBlockFor(body []byte) string {
 	if claudeCacheControlBlockCount(body) >= claudeMaxCacheControlBlocks {
 		return claudeCodeSystemBlockNoCacheJSON
+	}
+	if claudeFirstCacheControlTTL(body) == "1h" {
+		return claudeCodeSystemBlock1hJSON
 	}
 	return claudeCodeSystemBlockJSON
 }

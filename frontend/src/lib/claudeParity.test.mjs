@@ -206,3 +206,11 @@ test('Claude settings card uses the shared Select and renders CLI version sync b
   assert.match(card, /cli_version_sync_interval_hours: cliVersionSyncIntervalHours/)
   assert.match(card, /<DraftNumberInput[\s\S]*?min=\{1\}[\s\S]*?max=\{720\}/)
 })
+
+test('Usage page surfaces Anthropic prompt-cache write tokens and costs', () => {
+  assert.match(usage, /cache_write_5m_cost/)
+  assert.match(usage, /cache_write_1h_price_per_mtoken/)
+  assert.match(usage, /cacheWriteBadge/)
+  assert.match(types, /cache_write_1h_tokens: number/)
+  assert.equal(typeof zh.usage?.cacheWrite1hCost, 'string')
+})
