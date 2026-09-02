@@ -24,8 +24,8 @@ func TestGrokNativeUsage_MessagesParsesCacheCreationBreakdown(t *testing.T) {
 func TestGrokNativeUsage_MessagesFallsBackToTotalCacheCreation(t *testing.T) {
 	payload := []byte(`{"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":4081,"output_tokens":4}}`)
 	usage := grokNativeUsage(GrokProtocolMessages, payload)
-	if usage.CacheWriteTokens != 4081 || usage.CacheWrite5mTokens != 4081 || usage.CacheWrite1hTokens != 0 {
-		t.Fatalf("without a breakdown the total counts as 5m: write %d (5m %d, 1h %d)", usage.CacheWriteTokens, usage.CacheWrite5mTokens, usage.CacheWrite1hTokens)
+	if usage.CacheWriteTokens != 4081 || usage.CacheWrite5mTokens != 0 || usage.CacheWrite1hTokens != 0 {
+		t.Fatalf("parser must keep only the reported breakdown: write %d (5m %d, 1h %d)", usage.CacheWriteTokens, usage.CacheWrite5mTokens, usage.CacheWrite1hTokens)
 	}
 }
 
@@ -79,5 +79,19 @@ func TestInjectClaudeCodeSystemPrompt_InheritsClientCacheTTL(t *testing.T) {
 	out = injectClaudeCodeSystemPrompt(messagesOnly)
 	if got := gjson.GetBytes(out, "system.0.cache_control.ttl").String(); got != "1h" {
 		t.Fatalf("a 1h block in messages must also make the preamble 1h, got %q", got)
+	}
+}
+
+func TestStreamMergeDoesNotDoubleCountCacheWrites(t *testing.T) {
+	// message_start carries the TTL breakdown, message_delta only the total.
+	start := grokNativeUsage(GrokProtocolMessages, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":3634,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":3634},"output_tokens":1}}}`))
+	delta := grokNativeUsage(GrokProtocolMessages, []byte(`{"type":"message_delta","usage":{"input_tokens":10,"cache_creation_input_tokens":3634,"cache_read_input_tokens":0,"output_tokens":4}}`))
+	merged := mergeGrokNativeUsage(start, delta)
+	w5m, w1h := splitClaudeCacheWrites(merged)
+	if w5m != 0 || w1h != 3634 {
+		t.Fatalf("split = 5m %d / 1h %d, want 0 / 3634", w5m, w1h)
+	}
+	if w5m, w1h := splitClaudeCacheWrites(delta); w5m != 3634 || w1h != 0 {
+		t.Fatalf("total-only usage must default to 5m: %d / %d", w5m, w1h)
 	}
 }

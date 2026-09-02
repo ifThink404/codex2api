@@ -788,12 +788,11 @@ func grokNativeUsage(protocol GrokProtocol, payload []byte) *UsageInfo {
 		cached := int(usage.Get("cache_read_input_tokens").Int())
 		info := newUsageInfo(input, output, 0, cached)
 		writeTotal := int(usage.Get("cache_creation_input_tokens").Int())
+		// 只记录事件里真实给出的 TTL 细分；流式的 message_delta 只带总数，
+		// "无细分则按 5 分钟"的兜底放在落库映射里做，避免与 message_start 的
+		// 细分在合并时被同时计入。
 		write5m := int(usage.Get("cache_creation.ephemeral_5m_input_tokens").Int())
 		write1h := int(usage.Get("cache_creation.ephemeral_1h_input_tokens").Int())
-		if write5m+write1h == 0 && writeTotal > 0 {
-			// 没有 TTL 细分时按默认的 5 分钟缓存计费。
-			write5m = writeTotal
-		}
 		if writeTotal < write5m+write1h {
 			writeTotal = write5m + write1h
 		}

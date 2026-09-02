@@ -73,6 +73,17 @@ func applyUsageCacheWritesToLog(log *database.UsageLogInput, usage *UsageInfo) {
 	if log == nil || usage == nil {
 		return
 	}
-	log.CacheWrite5mTokens = usage.CacheWrite5mTokens
-	log.CacheWrite1hTokens = usage.CacheWrite1hTokens
+	log.CacheWrite5mTokens, log.CacheWrite1hTokens = splitClaudeCacheWrites(usage)
+}
+
+// splitClaudeCacheWrites 返回缓存写入的 5m/1h 细分；上游只给了总数时按默认的 5 分钟缓存计。
+func splitClaudeCacheWrites(usage *UsageInfo) (write5m, write1h int) {
+	if usage == nil {
+		return 0, 0
+	}
+	write5m, write1h = usage.CacheWrite5mTokens, usage.CacheWrite1hTokens
+	if write5m+write1h == 0 && usage.CacheWriteTokens > 0 {
+		write5m = usage.CacheWriteTokens
+	}
+	return write5m, write1h
 }
