@@ -404,6 +404,25 @@ function UsageWindow({
   );
 }
 
+function ClaudeScopedUsageWindows({ windows }: { windows?: AccountRow["claude_usage_windows"] }) {
+  const { t } = useTranslation();
+  const scoped = (windows ?? []).filter((window) => window.model_scoped && window.name !== "5h" && window.name !== "7d");
+  if (scoped.length === 0) return null;
+  return (
+    <>
+      {scoped.map((window) => (
+        <UsageWindow
+          key={window.name}
+          label={window.model_family === "fable" ? "Fable" : (window.label || window.name)}
+          pct={claudeUsagePct(window.utilization)}
+          reset={window.reset_at}
+          resetLabel={t("claude.resetIn")}
+        />
+      ))}
+    </>
+  );
+}
+
 function ClaudeConcurrencyBadge({ acc }: { acc: AccountRow }) {
   const { t } = useTranslation();
   const active = Math.max(0, acc.active_requests ?? 0);
@@ -853,6 +872,9 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
                         claude_usage_probe_at: refreshed.claude_usage_probe_at,
                         claude_usage_probe_error: refreshed.claude_usage_probe_error,
                       }
+                    : {}),
+                  ...(row.claude_api && refreshed.claude_usage_windows
+                    ? { claude_usage_windows: refreshed.claude_usage_windows }
                     : {}),
                 }
               : row,
@@ -1660,6 +1682,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
             <div className="space-y-1 rounded-xl border border-border bg-card p-3">
               <UsageWindow label={t("claude.usage5h")} pct={claudeUsagePct(detailTarget.usage_percent_5h)} reset={detailTarget.reset_5h_at} resetLabel={t("claude.resetIn")} detail={detailTarget.usage_5h_detail} />
               <UsageWindow label={t("claude.usage7d")} pct={claudeUsagePct(detailTarget.usage_percent_7d)} reset={detailTarget.reset_7d_at} resetLabel={t("claude.resetIn")} detail={detailTarget.usage_7d_detail} />
+              <ClaudeScopedUsageWindows windows={detailTarget.claude_usage_windows} />
             </div>
           }
           providerSlot={
@@ -1997,10 +2020,11 @@ function ClaudeAccountRow({
       <td className="px-2 py-3">
         <div className="flex items-center justify-center gap-1.5">
           <div className="min-w-0 space-y-1">
-            {pct5h !== null || pct7d !== null || acc.usage_5h_detail || acc.usage_7d_detail ? (
+            {pct5h !== null || pct7d !== null || acc.usage_5h_detail || acc.usage_7d_detail || (acc.claude_usage_windows ?? []).some((window) => window.model_scoped) ? (
               <>
                 <UsageWindow label={t("claude.usage5h")} pct={pct5h} reset={acc.reset_5h_at} resetLabel={t("claude.resetIn")} detail={acc.usage_5h_detail} />
                 <UsageWindow label={t("claude.usage7d")} pct={pct7d} reset={acc.reset_7d_at} resetLabel={t("claude.resetIn")} detail={acc.usage_7d_detail} />
+                <ClaudeScopedUsageWindows windows={acc.claude_usage_windows} />
               </>
             ) : (
               <span className="text-xs text-muted-foreground/50">-</span>

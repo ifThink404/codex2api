@@ -1598,6 +1598,7 @@ type accountResponse struct {
 	Codex5HUsageUpdatedAt         string                      `json:"codex_5h_usage_updated_at,omitempty"`
 	ClaudeUsageProbeAt            string                      `json:"claude_usage_probe_at,omitempty"`
 	ClaudeUsageProbeError         string                      `json:"claude_usage_probe_error,omitempty"`
+	ClaudeUsageWindows            []auth.ClaudeUsageWindow    `json:"claude_usage_windows,omitempty"`
 	ActiveRequests                int64                       `json:"active_requests"`
 	OccupiedRequests              int64                       `json:"occupied_requests"`
 	SessionSlotBufferEnabled      bool                        `json:"session_slot_buffer_enabled"`
@@ -5846,6 +5847,12 @@ func (h *Handler) RefreshAccountUsage(c *gin.Context) {
 			}
 			if value := row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey); value != "" {
 				resp["claude_usage_probe_error"] = value
+			}
+			if value := row.GetCredential(auth.ClaudeUsageWindowsCredentialKey); value != "" {
+				var windows []auth.ClaudeUsageWindow
+				if json.Unmarshal([]byte(value), &windows) == nil && len(windows) > 0 {
+					resp["claude_usage_windows"] = windows
+				}
 			}
 		}
 	}

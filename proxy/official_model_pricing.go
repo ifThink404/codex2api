@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
+	"golang.org/x/net/html"
 )
 
 const (
@@ -27,8 +28,8 @@ type OfficialPricingSyncOptions struct {
 	IncludeClaude bool
 }
 
-// OfficialAnthropicPricingURL 是 Anthropic 官方价格参考页(仅用于前端展示链接)。
-const OfficialAnthropicPricingURL = "https://www.anthropic.com/pricing"
+// OfficialAnthropicPricingURL 是包含模型 API 价格表的 Anthropic 官方文档。
+const OfficialAnthropicPricingURL = "https://platform.claude.com/docs/en/about-claude/pricing"
 
 // isClaudeBillingModel 判断某规范计费键是否为 Claude 模型。
 func isClaudeBillingModel(model string) bool {
@@ -46,7 +47,7 @@ type OfficialPricingSyncResult struct {
 	SyncedAt time.Time `json:"synced_at"`
 }
 
-// SyncOfficialModelPricing 先在事务外拉取 OpenAI/xAI 官方 Markdown 价目，全部解析
+// SyncOfficialModelPricing 先在事务外拉取 OpenAI/xAI Markdown 与 Anthropic HTML 价目，全部解析
 // 完成后才用一次短写入更新覆盖表。管理员 custom 覆盖始终优先，不会被自动同步改写。
 func SyncOfficialModelPricing(ctx context.Context, db *database.DB, proxyURL string, options OfficialPricingSyncOptions) (*OfficialPricingSyncResult, error) {
 	if db == nil {
@@ -112,21 +113,38 @@ func SyncOfficialModelPricing(ctx context.Context, db *database.DB, proxyURL str
 		}
 	}
 
-	// Claude:Anthropic 无可解析的官方价目文档,且账号真实模型是动态发现的(可能含
-	// opus-5 / sonnet-5 等新版)。因此对账号当前的每个 claude 模型,用内置家族定价规则
-	// (database.GetModelPricing,已含 opus/sonnet/haiku 现代档)算出权威价并落为 synced,
-	// 动态覆盖全部模型、不写死具体清单。用户仍可在定价页覆盖。
+	// Claude 使用 Anthropic 官方 HTML 模型价格表，不能把代码内置回退价伪装成
+	// "官方同步"。官方页面不可用时明确失败，管理员可稍后重试；自定义覆盖仍优先。
 	if options.IncludeClaude {
+		body, err := fetchOfficialPricingMarkdown(ctx, client, OfficialAnthropicPricingURL)
+		if err != nil {
+			return result, fmt.Errorf("读取 Anthropic 官方价格失败: %w", err)
+		}
+		parsed, err := ParseAnthropicOfficialPricingHTML(body)
+		if err != nil {
+			return result, fmt.Errorf("解析 Anthropic 官方价格失败: %w", err)
+		}
 		result.Sources = append(result.Sources, OfficialAnthropicPricingURL)
-		for model := range allowed {
-			if !isClaudeBillingModel(model) {
-				continue
+		if len(allowed) == 0 {
+			for model, override := range parsed {
+				pricing[model] = override
 			}
-			base := database.GetModelPricing(model)
-			if base == nil {
-				continue
+		} else {
+			// Official rows use stable family IDs while Claude accounts often
+			// advertise dated variants (e.g. claude-sonnet-4-5-20250929).
+			// Project each allowed variant onto its closest official base row.
+			for model := range allowed {
+				if !isClaudeBillingModel(model) {
+					continue
+				}
+				candidate := strings.ReplaceAll(model, ".", "-")
+				for officialModel, override := range parsed {
+					if candidate == officialModel || strings.HasPrefix(candidate, officialModel+"-") {
+						pricing[model] = override
+						break
+					}
+				}
 			}
-			pricing[model] = database.ModelPricingOverrideFromPricing(base, "")
 		}
 	}
 
@@ -390,6 +408,139 @@ func normalizeOfficialPricingModel(value string) string {
 	return database.CanonicalBillingModelKey(value)
 }
 
+// ParseAnthropicOfficialPricingHTML parses the model pricing table published by
+// Anthropic. The page is server-rendered HTML and has changed CSS classes several
+// times, so parsing is intentionally based on table headers rather than styling.
+// Returned cached_input is cache-read (hit) pricing; cache creation prices are
+// kept separately in cache_write_5m/cache_write_1h.
+func ParseAnthropicOfficialPricingHTML(body []byte) (map[string]database.ModelPricingOverride, error) {
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]database.ModelPricingOverride)
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "table" {
+			parseAnthropicPricingTable(node, out)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("未找到 Anthropic model pricing 表")
+	}
+	return out, nil
+}
+
+func parseAnthropicPricingTable(table *html.Node, out map[string]database.ModelPricingOverride) {
+	var rows [][]string
+	var collect func(*html.Node)
+	collect = func(node *html.Node) {
+		if node != table && node.Type == html.ElementNode && node.Data == "tr" {
+			cells := make([]string, 0, 8)
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				if child.Type == html.ElementNode && (child.Data == "th" || child.Data == "td") {
+					cells = append(cells, strings.TrimSpace(htmlNodeText(child)))
+				}
+			}
+			if len(cells) > 0 {
+				rows = append(rows, cells)
+			}
+			return
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			collect(child)
+		}
+	}
+	collect(table)
+	if len(rows) < 2 {
+		return
+	}
+	header := make([]string, len(rows[0]))
+	for i, cell := range rows[0] {
+		header[i] = strings.ToLower(strings.Join(strings.Fields(cell), " "))
+	}
+	find := func(needles ...string) int {
+		for i, cell := range header {
+			matched := true
+			for _, needle := range needles {
+				if !strings.Contains(cell, needle) {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return i
+			}
+		}
+		return -1
+	}
+	modelIdx := find("model")
+	inputIdx := find("input")
+	write5Idx := find("5m", "cache", "write")
+	write1Idx := find("1h", "cache", "write")
+	readIdx := find("cache", "hit")
+	if readIdx < 0 {
+		readIdx = find("cache", "refresh")
+	}
+	if readIdx < 0 {
+		readIdx = find("cache", "read")
+	}
+	outputIdx := find("output")
+	if modelIdx < 0 || inputIdx < 0 || readIdx < 0 || outputIdx < 0 {
+		return
+	}
+	for _, row := range rows[1:] {
+		if modelIdx >= len(row) || inputIdx >= len(row) || outputIdx >= len(row) || readIdx >= len(row) {
+			continue
+		}
+		model := normalizeAnthropicPricingModel(row[modelIdx])
+		if model == "" || !isClaudeBillingModel(model) {
+			continue
+		}
+		override := database.ModelPricingOverride{
+			Input:       parseOfficialPrice(row[inputIdx]),
+			CachedInput: parseOfficialPrice(row[readIdx]),
+			Output:      parseOfficialPrice(row[outputIdx]),
+		}
+		if write5Idx >= 0 && write5Idx < len(row) {
+			override.CacheWrite5m = parseOfficialPrice(row[write5Idx])
+		}
+		if write1Idx >= 0 && write1Idx < len(row) {
+			override.CacheWrite1h = parseOfficialPrice(row[write1Idx])
+		}
+		if override.Input > 0 && override.Output > 0 {
+			out[model] = override
+		}
+	}
+}
+
+func htmlNodeText(node *html.Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Type == html.TextNode {
+		return node.Data
+	}
+	var b strings.Builder
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		b.WriteString(htmlNodeText(child))
+	}
+	return b.String()
+}
+
+func normalizeAnthropicPricingModel(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if idx := strings.Index(value, " ("); idx >= 0 {
+		value = value[:idx]
+	}
+	value = strings.NewReplacer(" ", "-", ".", "-").Replace(value)
+	return database.CanonicalBillingModelKey(value)
+}
+
 func parseOfficialPrice(value string) float64 {
 	value = strings.TrimSpace(value)
 	if value == "" || value == "-" {
@@ -397,6 +548,9 @@ func parseOfficialPrice(value string) float64 {
 	}
 	value = strings.TrimPrefix(value, "$")
 	value = strings.ReplaceAll(value, ",", "")
+	if fields := strings.Fields(value); len(fields) > 0 {
+		value = strings.TrimPrefix(fields[0], "$")
+	}
 	price, _ := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	return price
 }

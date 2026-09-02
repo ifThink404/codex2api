@@ -830,6 +830,7 @@ export const api = {
       reset_spark_at?: string
       claude_usage_probe_at?: string
       claude_usage_probe_error?: string
+      claude_usage_windows?: import('./types').ClaudeUsageWindow[]
     }>(`/accounts/${id}/usage/refresh`, { method: 'POST' }),
   updateAccountScheduler: (id: number, data: UpdateAccountSchedulerRequest) =>
     request<MessageResponse>(`/accounts/${id}/scheduler`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -1401,6 +1402,7 @@ export const api = {
       models_dev_url: string
 		official_openai_url: string
 		official_xai_url: string
+		official_claude_url: string
 		official_sync_config: OfficialPricingSyncConfig
     }>('/model-pricing'),
   updateModelPricing: (payload: { model: string; reset?: boolean; pricing?: ModelPricingOverride }) =>

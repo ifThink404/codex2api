@@ -109,6 +109,16 @@ export interface AccountUsageWindow {
   model_avg_first_token_ms?: Record<string, number>
 }
 
+/** Claude OAuth zero-spend quota bucket; model-scoped buckets include Fable. */
+export interface ClaudeUsageWindow {
+  name: string
+  label?: string
+  utilization: number
+  reset_at?: ISODateString
+  model_scoped?: boolean
+  model_family?: string
+}
+
 export interface GrokProductUsage {
   product: string
   usage_percent?: number | null
@@ -203,6 +213,7 @@ export interface AccountRow {
   claude_fingerprint_mode?: 'preserve' | 'force' | ''
   claude_usage_probe_at?: ISODateString
   claude_usage_probe_error?: string
+  claude_usage_windows?: ClaudeUsageWindow[]
   timezone?: string
   custom_headers?: Record<string, string> | null
   health_tier?: string
@@ -3130,6 +3141,8 @@ export interface ModelPricingOverride {
   source?: string
   input?: number
   cached_input?: number
+  cache_write_5m?: number
+  cache_write_1h?: number
   output?: number
   input_priority?: number
   cached_input_priority?: number
