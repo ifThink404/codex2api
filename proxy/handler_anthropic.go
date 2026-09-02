@@ -655,7 +655,11 @@ func (h *Handler) Messages(c *gin.Context) {
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				claudeFpMode := account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
 				clientPolicy := h.store.ClaudeClientPolicyForAccount(account)
-				r, e := ExecuteClaudeMessagesRequestWithPolicy(upstreamCtx, account, claudeRequestBody, proxyURL, downstreamHeaders, claudeFpMode, clientPolicy, claudeSecurityConfig)
+				// 上游以无效 thinking 签名拒绝时，剥离 thinking 块后在同一账号重试一次，
+				// 不进入换号重试（换号无法修复客户端带来的坏签名）。
+				r, e := executeClaudeWithThinkingSignatureRetry(upstreamCtx, claudeRequestBody, func(ctx context.Context, body []byte) (*http.Response, error) {
+					return ExecuteClaudeMessagesRequestWithPolicy(ctx, account, body, proxyURL, downstreamHeaders, claudeFpMode, clientPolicy, claudeSecurityConfig)
+				})
 				if e == nil {
 					markClaudeNativeRoute(r)
 				}

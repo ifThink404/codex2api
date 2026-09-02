@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -46,6 +47,22 @@ const (
 // claudeCodeSystemBlockJSON 是注入到 system 数组首位的块(带 ephemeral 缓存标记,
 // 与官方客户端一致)。
 const claudeCodeSystemBlockJSON = `{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}`
+
+// claudeCodeSystemBlockNoCacheJSON 是不带 cache_control 的同一声明块。Anthropic 最多
+// 接受 4 个 cache_control 块；客户端已用满时再注入带缓存标记的前言会被整体拒绝。
+const claudeCodeSystemBlockNoCacheJSON = `{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}`
+
+// claudeMaxCacheControlBlocks 是 Anthropic Messages API 允许的 cache_control 块上限。
+const claudeMaxCacheControlBlocks = 4
+
+// claudeCodeSystemBlockFor 在客户端未用满 cache_control 配额时返回带缓存标记的
+// 声明块，否则返回无标记版本。
+func claudeCodeSystemBlockFor(body []byte) string {
+	if claudeCacheControlBlockCount(body) >= claudeMaxCacheControlBlocks {
+		return claudeCodeSystemBlockNoCacheJSON
+	}
+	return claudeCodeSystemBlockJSON
+}
 
 // defaultClaudeModelIDs 是未设白名单时对外暴露的当前 Claude 模型集(别名形式,
 // Anthropic 侧会解析到带日期的具体版本)。模型演进时可在此维护,或用账号 Models
@@ -597,6 +614,12 @@ func prepareClaudeRequestBody(body []byte, cfg auth.ClaudeSecurityConfig) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	// 客户端会话文件损坏时会回传空/截断签名的 thinking 块，上游必然 400；
+	// 文档允许省略历史 thinking，发送前直接丢弃。
+	if cleaned, dropped := dropUnsignedClaudeThinkingBlocks(normalized); dropped > 0 {
+		log.Printf("[claude-thinking-signature] 丢弃 %d 个签名为空或截断的 thinking 块", dropped)
+		normalized = cleaned
+	}
 	return injectClaudeCodeSystemPrompt(normalized), nil
 }
 
@@ -649,10 +672,11 @@ func injectClaudeCodeSystemPrompt(body []byte) []byte {
 		return body
 	}
 	system := gjson.GetBytes(body, "system")
+	preambleBlock := claudeCodeSystemBlockFor(body)
 
 	switch {
 	case !system.Exists() || system.Type == gjson.Null:
-		out, err := sjson.SetRawBytes(body, "system", []byte("["+claudeCodeSystemBlockJSON+"]"))
+		out, err := sjson.SetRawBytes(body, "system", []byte("["+preambleBlock+"]"))
 		if err != nil {
 			return body
 		}
@@ -668,7 +692,7 @@ func injectClaudeCodeSystemPrompt(body []byte) []byte {
 		if err != nil {
 			return body
 		}
-		raw := "[" + claudeCodeSystemBlockJSON + "," + string(textBlock) + "]"
+		raw := "[" + preambleBlock + "," + string(textBlock) + "]"
 		out, err := sjson.SetRawBytes(body, "system", []byte(raw))
 		if err != nil {
 			return body
@@ -686,9 +710,9 @@ func injectClaudeCodeSystemPrompt(body []byte) []byte {
 		inner = strings.TrimSuffix(inner, "]")
 		var newArr string
 		if strings.TrimSpace(inner) == "" {
-			newArr = "[" + claudeCodeSystemBlockJSON + "]"
+			newArr = "[" + preambleBlock + "]"
 		} else {
-			newArr = "[" + claudeCodeSystemBlockJSON + "," + inner + "]"
+			newArr = "[" + preambleBlock + "," + inner + "]"
 		}
 		out, err := sjson.SetRawBytes(body, "system", []byte(newArr))
 		if err != nil {
