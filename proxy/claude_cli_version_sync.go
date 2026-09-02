@@ -29,7 +29,7 @@ var (
 )
 
 // ClaudeCLIVersionSyncDisabled 报告是否通过 CLAUDE_DISABLE_CLI_VERSION_SYNC 关闭了联网同步。
-// 关闭后仍会在启动时用内置版本做一次本地指纹回写；管理端「立即同步」不受影响。
+// 关闭后仍会在启动时用当前生效版本做一次本地指纹回写（不联网）；管理端「立即同步」不受影响。
 func ClaudeCLIVersionSyncDisabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CLAUDE_DISABLE_CLI_VERSION_SYNC"))) {
 	case "1", "true", "yes", "on":
