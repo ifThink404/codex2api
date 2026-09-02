@@ -447,6 +447,32 @@ func (h *Handler) Messages(c *gin.Context) {
 		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", "messages is required")
 		return
 	}
+	// Apply the global Claude client gate before scheduler acquisition. This
+	// keeps deterministic platform/version failures fast even when the Claude
+	// account is busy; account-specific overrides are checked again after the
+	// selected OAuth account is known.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-") {
+		decision, policyErr := auth.ValidateClaudeClientRequest(h.store.ClaudeClientPolicy(), c.GetHeader("User-Agent"), model)
+		if policyErr != nil {
+			rejectAnthropicMessagesRequest(c, http.StatusBadRequest, ErrorTypeInvalidRequest, "Claude 客户端策略无效: "+policyErr.Error())
+			return
+		}
+		if !decision.Allowed {
+			status := http.StatusBadRequest
+			if decision.Code == "client_version_too_old" || decision.Code == "client_version_missing" {
+				status = http.StatusUpgradeRequired
+			}
+			message := decision.Message
+			if decision.DetectedVersion != "" {
+				message += fmt.Sprintf(" (detected %s)", decision.DetectedVersion)
+			}
+			if decision.RequiredVersion != "" {
+				message += fmt.Sprintf("; required %s", decision.RequiredVersion)
+			}
+			rejectAnthropicMessagesRequest(c, status, ErrorTypeInvalidRequest, message)
+			return
+		}
+	}
 	if h.inspectPromptFilterAnthropic(c, canonicalBody, "/v1/messages", model) {
 		return
 	}
