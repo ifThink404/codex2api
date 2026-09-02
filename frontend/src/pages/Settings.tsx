@@ -718,6 +718,11 @@ function ClaudeCodeSettingsCard() {
   const [maxOutputTokens, setMaxOutputTokens] = useState('0')
   const [maxToolCount, setMaxToolCount] = useState('0')
   const [maxToolSchemaBytes, setMaxToolSchemaBytes] = useState('0')
+  const [cliVersionSyncEnabled, setCliVersionSyncEnabled] = useState(true)
+  const [cliVersionSyncIntervalHours, setCliVersionSyncIntervalHours] = useState(12)
+  const [syncedCliVersion, setSyncedCliVersion] = useState('')
+  const [effectiveCliVersion, setEffectiveCliVersion] = useState('')
+  const [syncingCliVersion, setSyncingCliVersion] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -742,6 +747,10 @@ function ClaudeCodeSettingsCard() {
         setMaxOutputTokens(String(cfg.max_output_tokens ?? 0))
         setMaxToolCount(String(cfg.max_tool_count ?? 0))
         setMaxToolSchemaBytes(String(cfg.max_tool_schema_bytes ?? 0))
+        setCliVersionSyncEnabled(cfg.cli_version_sync_enabled ?? true)
+        setCliVersionSyncIntervalHours(cfg.cli_version_sync_interval_hours || 12)
+        setSyncedCliVersion(cfg.synced_cli_version ?? '')
+        setEffectiveCliVersion(cfg.effective_cli_version ?? cfg.builtin_cli_version ?? '')
       })
       .catch(() => {
         /* 读取失败保持默认空 */
@@ -776,6 +785,8 @@ function ClaudeCodeSettingsCard() {
         max_output_tokens: Number.isFinite(maxOutputValue) && maxOutputValue >= 0 ? Math.floor(maxOutputValue) : 0,
         max_tool_count: Number.isFinite(maxToolValue) && maxToolValue >= 0 ? Math.floor(maxToolValue) : 0,
         max_tool_schema_bytes: Number.isFinite(maxToolSchemaValue) && maxToolSchemaValue >= 0 ? Math.floor(maxToolSchemaValue) : 0,
+        cli_version_sync_enabled: cliVersionSyncEnabled,
+        cli_version_sync_interval_hours: cliVersionSyncIntervalHours,
       })
       showToast(t('settings.claudeSaved'), 'success')
     } catch (error) {
@@ -783,10 +794,21 @@ function ClaudeCodeSettingsCard() {
     } finally {
       setSaving(false)
     }
-  }, [allowInferenceGeo, allowSafetyIdentifier, allowServiceTier, allowSpeed, allowedBetaHeaders, clientPlatform, clientVersion, fingerprintMode, maxOutputTokens, maxToolCount, maxToolSchemaBytes, sessionWindow, showToast, t, timezone, versionPolicy])
+  }, [allowInferenceGeo, allowSafetyIdentifier, allowServiceTier, allowSpeed, allowedBetaHeaders, cliVersionSyncEnabled, cliVersionSyncIntervalHours, clientPlatform, clientVersion, fingerprintMode, maxOutputTokens, maxToolCount, maxToolSchemaBytes, sessionWindow, showToast, t, timezone, versionPolicy])
 
-  const selectCls =
-    'h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring'
+  const handleSyncClaudeCliVersion = useCallback(async () => {
+    setSyncingCliVersion(true)
+    try {
+      const result = await api.syncClaudeCLIVersion()
+      setSyncedCliVersion(result.fetched_version || result.effective_version)
+      setEffectiveCliVersion(result.effective_version)
+      showToast(t('settings.claudeCliVersionSyncSuccess', { version: result.effective_version, accounts: result.accounts_refreshed }), 'success')
+    } catch (error) {
+      showToast(`${t('settings.claudeCliVersionSyncFailed')}: ${getErrorMessage(error)}`, 'error')
+    } finally {
+      setSyncingCliVersion(false)
+    }
+  }, [showToast, t])
 
   return (
     <SettingsCard
@@ -811,25 +833,37 @@ function ClaudeCodeSettingsCard() {
           />
         </SettingField>
         <SettingField label={t('settings.claudeFingerprintMode')} description={t('settings.claudeFingerprintModeDesc')}>
-          <select className={selectCls} value={fingerprintMode} onChange={(e) => setFingerprintMode(e.target.value as 'preserve' | 'force' | '')}>
-            <option value="">{t('settings.claudeFpPreserve')}</option>
-            <option value="preserve">{t('settings.claudeFpPreserveExplicit')}</option>
-            <option value="force">{t('settings.claudeFpForce')}</option>
-          </select>
+          <Select
+            value={fingerprintMode}
+            onValueChange={(value) => setFingerprintMode(value as 'preserve' | 'force' | '')}
+            options={[
+              { value: '', label: t('settings.claudeFpPreserve') },
+              { value: 'preserve', label: t('settings.claudeFpPreserveExplicit') },
+              { value: 'force', label: t('settings.claudeFpForce') },
+            ]}
+          />
         </SettingField>
         <SettingField label={t('settings.claudeClientPlatform')} description={t('settings.claudeClientPlatformDesc')}>
-          <select className={selectCls} value={clientPlatform} onChange={(e) => setClientPlatform(e.target.value as 'any' | 'claude_code_cli_only')}>
-            <option value="any">{t('settings.claudeClientPlatformAny')}</option>
-            <option value="claude_code_cli_only">{t('settings.claudeClientPlatformCLIOnly')}</option>
-          </select>
+          <Select
+            value={clientPlatform}
+            onValueChange={(value) => setClientPlatform(value as 'any' | 'claude_code_cli_only')}
+            options={[
+              { value: 'any', label: t('settings.claudeClientPlatformAny') },
+              { value: 'claude_code_cli_only', label: t('settings.claudeClientPlatformCLIOnly') },
+            ]}
+          />
         </SettingField>
         <SettingField label={t('settings.claudeVersionPolicy')} description={t('settings.claudeVersionPolicyDesc')}>
           <div className="space-y-1.5">
-            <select className={selectCls} value={versionPolicy} onChange={(e) => setVersionPolicy(e.target.value as 'passthrough' | 'fixed' | 'minimum')}>
-              <option value="passthrough">{t('settings.claudeVersionPolicyPassthrough')}</option>
-              <option value="fixed">{t('settings.claudeVersionPolicyFixed')}</option>
-              <option value="minimum">{t('settings.claudeVersionPolicyMinimum')}</option>
-            </select>
+            <Select
+              value={versionPolicy}
+              onValueChange={(value) => setVersionPolicy(value as 'passthrough' | 'fixed' | 'minimum')}
+              options={[
+                { value: 'passthrough', label: t('settings.claudeVersionPolicyPassthrough') },
+                { value: 'fixed', label: t('settings.claudeVersionPolicyFixed') },
+                { value: 'minimum', label: t('settings.claudeVersionPolicyMinimum') },
+              ]}
+            />
             {versionPolicy !== 'passthrough' ? <Input value={clientVersion} onChange={(e) => setClientVersion(e.target.value)} placeholder="2.1.251" /> : null}
           </div>
         </SettingField>
@@ -856,6 +890,47 @@ function ClaudeCodeSettingsCard() {
             {timezone ? <p className="text-[10px] text-muted-foreground">{claudeTimezoneLabel(timezone)}</p> : null}
           </div>
         </SettingField>
+        <SettingField label={t('settings.claudeCliVersionSync')} description={t('settings.claudeCliVersionSyncDesc')}>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => void handleSyncClaudeCliVersion()} disabled={syncingCliVersion}>
+              <RefreshCw className={cn('size-3.5', syncingCliVersion && 'animate-spin')} />
+              {syncingCliVersion ? t('settings.claudeCliVersionSyncing') : t('settings.claudeCliVersionSyncNow')}
+            </Button>
+            {effectiveCliVersion ? (
+              <span className="font-mono text-xs text-muted-foreground">
+                {effectiveCliVersion}
+                {!syncedCliVersion ? ` · ${t('settings.claudeCliVersionBuiltin')}` : ''}
+              </span>
+            ) : null}
+          </div>
+        </SettingField>
+        {/* 自动同步开关 + 间隔成对横排，与 Codex 运行时优化保持同一布局 */}
+        <div className="sm:col-span-2 grid gap-0 overflow-hidden rounded-lg border border-border/60 bg-muted/15 sm:grid-cols-2 sm:divide-x sm:divide-border/60">
+          <div className="flex min-h-[48px] items-center justify-between gap-3 px-3 py-2.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="text-[13px] font-medium leading-snug text-foreground sm:text-sm">{t('settings.claudeCliVersionAutoSync')}</span>
+              <SettingHelp text={t('settings.claudeCliVersionAutoSyncDesc')} />
+            </div>
+            <Switch checked={cliVersionSyncEnabled} onCheckedChange={setCliVersionSyncEnabled} />
+          </div>
+          <div className={cn('flex min-h-[48px] items-center justify-between gap-3 border-t border-border/60 px-3 py-2.5 sm:border-t-0', !cliVersionSyncEnabled && 'opacity-60')}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="text-[13px] font-medium leading-snug text-foreground sm:text-sm">{t('settings.claudeCliVersionSyncInterval')}</span>
+              <SettingHelp text={t('settings.claudeCliVersionSyncIntervalDesc')} />
+            </div>
+            <div className="relative w-[7.25rem] shrink-0">
+              <DraftNumberInput
+                min={1}
+                max={720}
+                className="h-9 pr-10 tabular-nums"
+                disabled={!cliVersionSyncEnabled}
+                value={cliVersionSyncIntervalHours}
+                onValueChange={setCliVersionSyncIntervalHours}
+              />
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">h</span>
+            </div>
+          </div>
+        </div>
       </div>
       <details className="mt-4 rounded-lg border border-primary/20 bg-primary/5">
         <summary className="cursor-pointer px-3 py-2.5 text-sm font-semibold text-foreground">
