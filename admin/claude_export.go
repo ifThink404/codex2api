@@ -273,24 +273,32 @@ func prepareClaudeTimezoneCredentialUpdateWithHeaders(row *database.AccountRow, 
 	if requestedHeaders != nil {
 		baseHeaders = requestedHeaders
 	}
+	// Keys are canonicalized up front: the generated fingerprint says
+	// "X-Stainless-OS" while previously persisted headers come back as
+	// "X-Stainless-Os", and normalizeCustomHeaders treats a case-only clash
+	// with different values as an error. Without this a same-timezone save
+	// failed whenever the freshly rolled OS differed from the stored one.
+	// 先统一成规范大小写：指纹生成的是 X-Stainless-OS，落库后读回是 X-Stainless-Os，
+	// 否则同时区保存时随机到不同 OS 就会触发"大小写重复且值冲突"。
 	merged := make(map[string]string)
 	keepIdentity := requestedHeaders == nil && strings.EqualFold(strings.TrimSpace(row.GetCredential("timezone")), timezone)
 	for name, value := range auth.GenerateClaudeFingerprint(timezone).Headers() {
-		merged[name] = value
+		merged[http.CanonicalHeaderKey(strings.TrimSpace(name))] = value
 	}
 	for name, value := range baseHeaders {
 		lowerName := strings.ToLower(strings.TrimSpace(name))
+		canonicalName := http.CanonicalHeaderKey(strings.TrimSpace(name))
 		if _, isIdentity := identity[lowerName]; isIdentity {
 			// Keep a complete existing fingerprint stable when the operator
 			// saves the same timezone again; a timezone change (or explicit
 			// header patch) intentionally rotates the identity snapshot.
 			if keepIdentity {
-				merged[name] = value
+				merged[canonicalName] = value
 			}
 			continue
 		}
 		if isClaudeSafeOperationalHeader(name) {
-			merged[name] = value
+			merged[canonicalName] = value
 		}
 	}
 	normalized, err := normalizeCustomHeaders(merged)
