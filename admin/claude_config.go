@@ -22,6 +22,10 @@ type claudeGlobalConfigDTO struct {
 	auth.ClaudeSecurityConfig
 	CLIVersionSyncEnabled       *bool `json:"cli_version_sync_enabled"`
 	CLIVersionSyncIntervalHours int   `json:"cli_version_sync_interval_hours"`
+	// FirstTokenTimeoutSeconds：Claude 路径首字超时秒数（缺失=默认 120，0=跟随全局）。
+	FirstTokenTimeoutSeconds *int `json:"first_token_timeout_seconds"`
+	// StreamKeepaliveEnabled：Claude 流式首字前是否发 SSE 保活注释（缺失=开启）。
+	StreamKeepaliveEnabled *bool `json:"stream_keepalive_enabled"`
 	// 以下三项只读；PUT 忽略。
 	SyncedCLIVersion    string `json:"synced_cli_version"`
 	BuiltinCLIVersion   string `json:"builtin_cli_version"`
@@ -39,6 +43,8 @@ func (h *Handler) GetClaudeConfig(c *gin.Context) {
 		ClaudeSecurityConfig:        security,
 		CLIVersionSyncEnabled:       boolPtr(h.store.ClaudeCLIVersionSyncEnabled()),
 		CLIVersionSyncIntervalHours: h.store.ClaudeCLIVersionSyncIntervalHours(),
+		FirstTokenTimeoutSeconds:    claudeIntPtr(h.store.ClaudeFirstTokenTimeoutSeconds()),
+		StreamKeepaliveEnabled:      boolPtr(h.store.ClaudeStreamKeepaliveEnabled()),
 		SyncedCLIVersion:            auth.ClaudeSyncedCLIVersion(),
 		BuiltinCLIVersion:           auth.BuiltinClaudeCLIVersion,
 		EffectiveCLIVersion:         auth.EffectiveClaudeCLIVersion(),
@@ -80,6 +86,8 @@ func (h *Handler) UpdateClaudeConfig(c *gin.Context) {
 	security := auth.NormalizeClaudeSecurityConfig(req.ClaudeSecurityConfig)
 	syncEnabled := req.CLIVersionSyncEnabled == nil || *req.CLIVersionSyncEnabled
 	syncInterval := auth.NormalizeClaudeCLIVersionSyncIntervalHours(req.CLIVersionSyncIntervalHours)
+	firstTokenTimeout := auth.NormalizeClaudeFirstTokenTimeoutSeconds(req.FirstTokenTimeoutSeconds)
+	streamKeepalive := req.StreamKeepaliveEnabled == nil || *req.StreamKeepaliveEnabled
 
 	cfg := auth.ClaudeConfig{
 		FingerprintMode:             mode,
@@ -89,6 +97,8 @@ func (h *Handler) UpdateClaudeConfig(c *gin.Context) {
 		ClaudeSecurityConfig:        security,
 		CLIVersionSyncEnabled:       boolPtr(syncEnabled),
 		CLIVersionSyncIntervalHours: syncInterval,
+		FirstTokenTimeoutSeconds:    claudeIntPtr(firstTokenTimeout),
+		StreamKeepaliveEnabled:      boolPtr(streamKeepalive),
 	}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
@@ -107,6 +117,8 @@ func (h *Handler) UpdateClaudeConfig(c *gin.Context) {
 	h.store.SetClaudeClientPolicy(clientPolicy)
 	h.store.SetClaudeSecurityConfig(security)
 	h.store.SetClaudeCLIVersionSync(syncEnabled, syncInterval)
+	h.store.SetClaudeFirstTokenTimeoutSeconds(firstTokenTimeout)
+	h.store.SetClaudeStreamKeepaliveEnabled(streamKeepalive)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":                         "已保存 ClaudeCode 全局配置",
@@ -126,11 +138,16 @@ func (h *Handler) UpdateClaudeConfig(c *gin.Context) {
 		"max_tool_schema_bytes":           security.MaxToolSchemaBytes,
 		"cli_version_sync_enabled":        syncEnabled,
 		"cli_version_sync_interval_hours": syncInterval,
+		"first_token_timeout_seconds":     firstTokenTimeout,
+		"stream_keepalive_enabled":        streamKeepalive,
 	})
 }
 
 // boolPtr 返回指向给定 bool 值的指针，便于构造「显式布尔字段」的 JSON DTO。
 func boolPtr(v bool) *bool { return &v }
+
+// claudeIntPtr 返回指向给定 int 值的指针，用于「缺失与显式 0 有别」的 JSON DTO 字段。
+func claudeIntPtr(v int) *int { return &v }
 
 // claudeCLIVersionSyncResponse 在同步结果之上附加一个可选的 warning 字段：
 // 抓取+持久化成功、但指纹回写部分失败时，仍以 200 响应并携带 warning，

@@ -3751,6 +3751,8 @@ export interface ClaudeGlobalConfig {
   session_window_limit: number
   cli_version_sync_enabled: boolean
   cli_version_sync_interval_hours: number
+  first_token_timeout_seconds: number
+  stream_keepalive_enabled: boolean
   synced_cli_version?: string
   builtin_cli_version?: string
   effective_cli_version?: string

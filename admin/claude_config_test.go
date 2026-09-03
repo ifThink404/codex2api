@@ -220,3 +220,57 @@ func TestClaudeConfigSyncCLIVersion_FetchFailureReturns502(t *testing.T) {
 		t.Fatalf("status = %d, want 502: %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestClaudeConfigFirstTokenTimeoutAndKeepaliveRoundTrip(t *testing.T) {
+	db := newTestAdminDB(t)
+	store := auth.NewStore(db, nil, nil)
+	defer store.Stop()
+	h := &Handler{store: store, db: db}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	h.GetClaudeConfig(c)
+	if got := gjson.GetBytes(recorder.Body.Bytes(), "first_token_timeout_seconds").Int(); got != int64(auth.DefaultClaudeFirstTokenTimeoutSeconds) {
+		t.Fatalf("default first_token_timeout_seconds = %d, want %d", got, auth.DefaultClaudeFirstTokenTimeoutSeconds)
+	}
+	if got := gjson.GetBytes(recorder.Body.Bytes(), "stream_keepalive_enabled"); !got.Exists() || !got.Bool() {
+		t.Fatalf("stream_keepalive_enabled must default to true, got %s", got.Raw)
+	}
+
+	recorder = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("PUT", "/api/admin/settings/claude-config", strings.NewReader(`{"first_token_timeout_seconds":90,"stream_keepalive_enabled":false}`))
+	h.UpdateClaudeConfig(c)
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := gjson.GetBytes(recorder.Body.Bytes(), "first_token_timeout_seconds").Int(); got != 90 {
+		t.Fatalf("response first_token_timeout_seconds = %d, want 90", got)
+	}
+	if store.ClaudeFirstTokenTimeoutSeconds() != 90 || store.ClaudeStreamKeepaliveEnabled() {
+		t.Fatalf("runtime store not updated: timeout=%d keepalive=%v", store.ClaudeFirstTokenTimeoutSeconds(), store.ClaudeStreamKeepaliveEnabled())
+	}
+	settings, err := db.GetSystemSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := settings.ClaudeConfig
+	persisted := auth.ParseClaudeConfig(raw)
+	if persisted.FirstTokenTimeoutSecondsValue() != 90 || persisted.StreamKeepaliveEnabledValue() {
+		t.Fatalf("persisted config = %s", raw)
+	}
+
+	// Explicit 0 must persist as 0 (follow global), not be re-defaulted to 120.
+	recorder = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("PUT", "/api/admin/settings/claude-config", strings.NewReader(`{"first_token_timeout_seconds":0}`))
+	h.UpdateClaudeConfig(c)
+	if store.ClaudeFirstTokenTimeoutSeconds() != 0 {
+		t.Fatalf("explicit 0 must disable the Claude timeout, got %d", store.ClaudeFirstTokenTimeoutSeconds())
+	}
+	settings, _ = db.GetSystemSettings(context.Background())
+	raw = settings.ClaudeConfig
+	if auth.ParseClaudeConfig(raw).FirstTokenTimeoutSecondsValue() != 0 {
+		t.Fatalf("persisted explicit 0 was re-defaulted: %s", raw)
+	}
+}

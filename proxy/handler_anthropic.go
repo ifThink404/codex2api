@@ -639,10 +639,13 @@ func (h *Handler) Messages(c *gin.Context) {
 		attemptIdentity := ruleIdentity.WithSelectedAccount(account, h.store)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
-		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
+		attemptFirstTokenTimeout := claudeFirstTokenTimeoutFor(h.store, account)
+		ttftGuard := newFirstTokenTimeoutGuard(attemptFirstTokenTimeout, upstreamCancel)
 		var resp *http.Response
 		var reqErr error
 		if account.IsClaudeOAuth() {
+			// 首字前保活：长推理期间让下游能区分"上游在思考"与"连接已死"。
+			activateClaudeStreamKeepalive(c.Request.Context(), h.store, account, isStream)
 			// Claude Code OAuth 账号本身说 Anthropic Messages API：不翻译成 Codex，
 			// 直接把原始入站 body 透传到 api.anthropic.com/v1/messages；返回的响应
 			// 已是原生 Anthropic SSE，打上原生路由标记复用既有透传链路。
@@ -721,7 +724,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
 			if timedOut {
-				reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
+				reqErr = firstTokenTimeoutError(attemptFirstTokenTimeout)
 			}
 			kind := classifyTransportFailure(reqErr)
 			if wsHTTPFallback.ForceHTTP() && !useWebsocket {
@@ -985,6 +988,8 @@ func (h *Handler) Messages(c *gin.Context) {
 				applyAnthropicUsageSemantics(usage)
 			}
 			outcome = normalizeNativeFailureMessageForAccount(account, outcome)
+			outcome = claudeNativeFirstTokenOutcome(ttftGuard, firstTokenMs, outcome, attemptFirstTokenTimeout)
+			logClaudeFirstTokenLatency(account, attemptEffectiveModel, reasoningEffort, firstTokenMs, outcome, start)
 			// The native forwarder consumes the body before returning. Synchronize
 			// Anthropic's unified quota headers now, once per attempt, so Claude
 			// usage remains fresh without adding a write before first token.
@@ -1348,7 +1353,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		outcome = overlayContinuousRetryLocalFailure(outcome, readErr, writeErr)
 		terminalFailurePayload, _ = resolvePreContentRetryErrorCandidate(terminalFailurePayload, preContentErrorCandidate, contentStarted, wroteAnyBody, gotTerminal, readErr, c.Request.Context().Err(), writeErr)
 		if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
-			outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
+			outcome = firstTokenTimeoutOutcome(attemptFirstTokenTimeout)
 		}
 		ttftGuard.Stop()
 		if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {

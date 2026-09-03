@@ -3339,6 +3339,9 @@ type Store struct {
 	claudeSessionWindowLimit      int64        // Claude 账号默认并发会话窗口数（0=用全局 maxConcurrency）
 	claudeCLIVersionSyncDisabled  atomic.Bool  // Claude CLI 版本自动同步是否关闭（零值=开启）
 	claudeCLIVersionSyncIntervalH atomic.Int64 // Claude CLI 版本同步间隔小时（0=默认 12）
+	claudeFirstTokenTimeoutSec    atomic.Int64 // Claude 路径首字超时秒（0=跟随全局）
+	claudeFirstTokenTimeoutSet    atomic.Bool  // 首字超时是否被显式设置过（否则取默认 120）
+	claudeStreamKeepaliveDisabled atomic.Bool  // Claude 流式首字前 SSE 保活是否关闭（零值=开启）
 	grokAffinityMode              atomic.Value // string: "follow" / "bounded" / "off" / "strict"（"follow"=跟随全局）
 	grokProbeEnabled              atomic.Bool  // 定期探测 Grok 账号状态是否开启（默认关）
 	grokProbeIntervalMin          atomic.Int64 // 定期探测间隔（分钟，默认 30，下限 grokProbeMinIntervalMinutes）

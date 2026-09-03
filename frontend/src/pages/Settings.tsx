@@ -720,6 +720,8 @@ function ClaudeCodeSettingsCard() {
   const [maxToolSchemaBytes, setMaxToolSchemaBytes] = useState('0')
   const [cliVersionSyncEnabled, setCliVersionSyncEnabled] = useState(true)
   const [cliVersionSyncIntervalHours, setCliVersionSyncIntervalHours] = useState(12)
+  const [firstTokenTimeoutSeconds, setFirstTokenTimeoutSeconds] = useState(120)
+  const [streamKeepaliveEnabled, setStreamKeepaliveEnabled] = useState(true)
   const [syncedCliVersion, setSyncedCliVersion] = useState('')
   const [effectiveCliVersion, setEffectiveCliVersion] = useState('')
   const [syncingCliVersion, setSyncingCliVersion] = useState(false)
@@ -749,6 +751,8 @@ function ClaudeCodeSettingsCard() {
         setMaxToolSchemaBytes(String(cfg.max_tool_schema_bytes ?? 0))
         setCliVersionSyncEnabled(cfg.cli_version_sync_enabled ?? true)
         setCliVersionSyncIntervalHours(cfg.cli_version_sync_interval_hours || 12)
+        setFirstTokenTimeoutSeconds(cfg.first_token_timeout_seconds ?? 120)
+        setStreamKeepaliveEnabled(cfg.stream_keepalive_enabled ?? true)
         setSyncedCliVersion(cfg.synced_cli_version ?? '')
         setEffectiveCliVersion(cfg.effective_cli_version ?? cfg.builtin_cli_version ?? '')
       })
@@ -787,6 +791,8 @@ function ClaudeCodeSettingsCard() {
         max_tool_schema_bytes: Number.isFinite(maxToolSchemaValue) && maxToolSchemaValue >= 0 ? Math.floor(maxToolSchemaValue) : 0,
         cli_version_sync_enabled: cliVersionSyncEnabled,
         cli_version_sync_interval_hours: cliVersionSyncIntervalHours,
+        first_token_timeout_seconds: firstTokenTimeoutSeconds,
+        stream_keepalive_enabled: streamKeepaliveEnabled,
       })
       showToast(t('settings.claudeSaved'), 'success')
     } catch (error) {
@@ -794,7 +800,7 @@ function ClaudeCodeSettingsCard() {
     } finally {
       setSaving(false)
     }
-  }, [allowInferenceGeo, allowSafetyIdentifier, allowServiceTier, allowSpeed, allowedBetaHeaders, cliVersionSyncEnabled, cliVersionSyncIntervalHours, clientPlatform, clientVersion, fingerprintMode, maxOutputTokens, maxToolCount, maxToolSchemaBytes, sessionWindow, showToast, t, timezone, versionPolicy])
+  }, [allowInferenceGeo, allowSafetyIdentifier, allowServiceTier, allowSpeed, allowedBetaHeaders, cliVersionSyncEnabled, cliVersionSyncIntervalHours, clientPlatform, clientVersion, fingerprintMode, firstTokenTimeoutSeconds, maxOutputTokens, maxToolCount, maxToolSchemaBytes, sessionWindow, showToast, streamKeepaliveEnabled, t, timezone, versionPolicy])
 
   const handleSyncClaudeCliVersion = useCallback(async () => {
     setSyncingCliVersion(true)
@@ -932,6 +938,32 @@ function ClaudeCodeSettingsCard() {
               />
               <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">h</span>
             </div>
+          </div>
+        </div>
+        {/* 首字超时 + 首字前保活成对横排：两者都只作用于 Claude OAuth 路径 */}
+        <div className="sm:col-span-2 grid gap-0 overflow-hidden rounded-lg border border-border/60 bg-muted/15 sm:grid-cols-2 sm:divide-x sm:divide-border/60">
+          <div className="flex min-h-[48px] items-center justify-between gap-3 px-3 py-2.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="text-[13px] font-medium leading-snug text-foreground sm:text-sm">{t('settings.claudeFirstTokenTimeout')}</span>
+              <SettingHelp text={t('settings.claudeFirstTokenTimeoutDesc')} />
+            </div>
+            <div className="relative w-[7.25rem] shrink-0">
+              <DraftNumberInput
+                min={0}
+                max={600}
+                className="h-9 pr-10 tabular-nums"
+                value={firstTokenTimeoutSeconds}
+                onValueChange={setFirstTokenTimeoutSeconds}
+              />
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">s</span>
+            </div>
+          </div>
+          <div className="flex min-h-[48px] items-center justify-between gap-3 border-t border-border/60 px-3 py-2.5 sm:border-t-0">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="text-[13px] font-medium leading-snug text-foreground sm:text-sm">{t('settings.claudeStreamKeepalive')}</span>
+              <SettingHelp text={t('settings.claudeStreamKeepaliveDesc')} />
+            </div>
+            <Switch checked={streamKeepaliveEnabled} onCheckedChange={setStreamKeepaliveEnabled} />
           </div>
         </div>
       </div>
