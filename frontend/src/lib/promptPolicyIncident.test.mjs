@@ -65,3 +65,10 @@ test('CY detail lists linked risk profiles and AI attribution marks context-only
   assert.equal(typeof zh.promptFilter.cyberRiskSubjects, 'string')
   assert.equal(typeof zh.promptFilter.intelligence.aiContextOnlyBasis, 'string')
 })
+
+test('CY learning-review evidence shows the linked risk profiles too', () => {
+  assert.match(promptFilterSource, /function PromptRiskSubjectList\(/)
+  const uses = promptFilterSource.match(/<PromptRiskSubjectList /g) ?? []
+  assert.ok(uses.length >= 2, 'subject list must be rendered in both the CY detail and the evidence dialog')
+  assert.match(promptFilterSource, /evidence\.risk_subjects/)
+})

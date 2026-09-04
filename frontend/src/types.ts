@@ -2779,6 +2779,8 @@ export interface PromptIntelligenceEvidence {
   api_key_id?: number
   api_key_name?: string
   observed_at: string
+  incident_id?: string
+  risk_subjects?: PromptRiskIncidentSubject[]
 }
 
 export interface PromptIntelligenceEvidenceResponse {
