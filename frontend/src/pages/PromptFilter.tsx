@@ -2116,6 +2116,12 @@ function IntelligenceView() {
                   {evidence.api_key_name ? <span>{evidence.api_key_name}</span> : null}
                   <span>{formatBeijingTime(evidence.observed_at)}</span>
                 </div>
+                {evidence.incident_id ? (
+                  <div className="mb-3">
+                    <div className="mb-1 text-xs font-semibold text-muted-foreground">{t('promptFilter.cyberRiskSubjects')} · <span className="font-mono font-normal">{evidence.incident_id.slice(0, 8)}</span></div>
+                    <PromptRiskSubjectList subjects={evidence.risk_subjects ?? []} compact />
+                  </div>
+                ) : null}
                 {evidence.sample_preview ? <p className="whitespace-pre-wrap break-words text-sm">{evidence.sample_preview}</p> : null}
                 {evidence.source_ref ? <p className="mt-2 break-all text-xs text-muted-foreground">{t('promptFilter.intelligence.sourceReference')}: {evidence.source_ref}</p> : null}
                 {Object.keys(evidence.metadata || {}).length ? <SoftCodeBlock className="mt-3">{JSON.stringify(evidence.metadata, null, 2)}</SoftCodeBlock> : null}
@@ -5405,33 +5411,7 @@ function PromptPolicyIncidentDetailButton({ incident, onDeleted }: { incident: P
               {detail ? (
                 <div>
                   <div className="mb-2 font-semibold">{t('promptFilter.cyberRiskSubjects')}</div>
-                  {(detail.risk_subjects?.length ?? 0) === 0 ? (
-                    <p className="text-xs text-muted-foreground">{t('promptFilter.cyberRiskSubjectsEmpty')}</p>
-                  ) : (
-                    <div className="space-y-1.5">
-                      {detail.risk_subjects!.map((subject) => (
-                        <div key={`${subject.subject_type}:${subject.subject_key}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-2.5 py-2">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <Badge variant={subject.subject_type === 'newapi_user' ? 'default' : 'outline'}>{t(`promptFilter.risk.subjects.${subject.subject_type}`, { defaultValue: subject.subject_type })}</Badge>
-                              <span className="font-medium">{subject.subject_display || subject.subject_key}</span>
-                              {subject.is_person ? <Badge variant="secondary">{t('promptFilter.risk.personVerified')}</Badge> : null}
-                            </div>
-                            <div className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground">
-                              {subject.newapi_user_id ? <span>{t('promptFilter.risk.userId')} #{subject.newapi_user_id}</span> : null}
-                              {subject.newapi_user_email ? <span>{subject.newapi_user_email}</span> : null}
-                              {subject.newapi_user_name ? <span>{subject.newapi_user_name}</span> : null}
-                              {subject.newapi_user_group ? <span>{t('promptFilter.risk.userGroup')}: {subject.newapi_user_group}</span> : null}
-                              {subject.platform ? <span>{subject.platform}</span> : null}
-                              <span className="font-mono">{subject.subject_key.slice(0, 18)}</span>
-                              <span>{t('promptFilter.cyberRiskSubjectEvents', { count: subject.event_count })}</span>
-                            </div>
-                          </div>
-                          <PromptRiskProfileDetailButton profile={riskSubjectToProfileStub(subject)} />
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <PromptRiskSubjectList subjects={detail.risk_subjects ?? []} />
                 </div>
               ) : null}
               {content ? <div><div className="mb-2 font-semibold">{t('promptFilter.userPromptLabel')}</div><pre className="max-h-[45vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 text-xs">{content}</pre></div> : null}
@@ -5442,6 +5422,40 @@ function PromptPolicyIncidentDetailButton({ incident, onDeleted }: { incident: P
         </DialogContent>
       </Dialog>
     </>
+  )
+}
+
+// CY 关联的画像主体列表：上游 CY 事件详情与 CY 学习审核的证据详情共用，
+// 人员主体排在最前，每个主体可直接打开画像详情。
+function PromptRiskSubjectList({ subjects, compact = false }: { subjects: PromptRiskIncidentSubject[]; compact?: boolean }) {
+  const { t } = useTranslation()
+  if (subjects.length === 0) {
+    return <p className="text-xs text-muted-foreground">{t('promptFilter.cyberRiskSubjectsEmpty')}</p>
+  }
+  return (
+    <div className={compact ? 'space-y-1' : 'space-y-1.5'}>
+      {subjects.map((subject) => (
+        <div key={`${subject.subject_type}:${subject.subject_key}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-2.5 py-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant={subject.subject_type === 'newapi_user' ? 'default' : 'outline'}>{t(`promptFilter.risk.subjects.${subject.subject_type}`, { defaultValue: subject.subject_type })}</Badge>
+              <span className="font-medium">{subject.subject_display || subject.subject_key}</span>
+              {subject.is_person ? <Badge variant="secondary">{t('promptFilter.risk.personVerified')}</Badge> : null}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground">
+              {subject.newapi_user_id ? <span>{t('promptFilter.risk.userId')} #{subject.newapi_user_id}</span> : null}
+              {subject.newapi_user_email ? <span>{subject.newapi_user_email}</span> : null}
+              {subject.newapi_user_name ? <span>{subject.newapi_user_name}</span> : null}
+              {subject.newapi_user_group ? <span>{t('promptFilter.risk.userGroup')}: {subject.newapi_user_group}</span> : null}
+              {subject.platform ? <span>{subject.platform}</span> : null}
+              <span className="font-mono">{subject.subject_key.slice(0, 18)}</span>
+              <span>{t('promptFilter.cyberRiskSubjectEvents', { count: subject.event_count })}</span>
+            </div>
+          </div>
+          <PromptRiskProfileDetailButton profile={riskSubjectToProfileStub(subject)} />
+        </div>
+      ))}
+    </div>
   )
 }
 
