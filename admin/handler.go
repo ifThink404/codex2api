@@ -45,15 +45,16 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	store            *auth.Store
-	cache            cache.TokenCache
-	db               *database.DB
-	cacheCfgStore    responseCacheSettingsStore
-	rateLimiter      *proxy.RateLimiter
-	systemUpdate     *systemUpdater
-	systemUpdateOnce sync.Once
-	refreshAccount   func(context.Context, int64) error
-	probeUsage       func(context.Context, *auth.Account) error
+	store             *auth.Store
+	modelRefreshFuncs map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
+	cache             cache.TokenCache
+	db                *database.DB
+	cacheCfgStore     responseCacheSettingsStore
+	rateLimiter       *proxy.RateLimiter
+	systemUpdate      *systemUpdater
+	systemUpdateOnce  sync.Once
+	refreshAccount    func(context.Context, int64) error
+	probeUsage        func(context.Context, *auth.Account) error
 	// executeClaudeUsageProbe is injectable for tests; production uses the
 	// provider-native Anthropic Messages request directly.
 	executeClaudeUsageProbe func(context.Context, *auth.Account, []byte) (*http.Response, error)
@@ -1234,6 +1235,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/prompt-filter/intelligence/candidates/:id/dismiss", h.DismissPromptIntelligenceCandidate)
 	api.GET("/models", h.ListModels)
 	api.POST("/models/sync", h.SyncModels)
+	api.POST("/models/refresh-all", h.RefreshAllModels)
 	api.POST("/codex-cli-version/sync", h.SyncCodexCLIVersion)
 	api.GET("/model-pricing", h.ListModelPricing)
 	api.PUT("/model-pricing", h.UpdateModelPricing)

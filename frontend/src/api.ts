@@ -75,6 +75,7 @@ import type {
   InviteTrackingResponse,
   MessageResponse,
   ModelSyncResponse,
+  RefreshAllModelsResponse,
   ModelPricingOverride,
 	OfficialPricingSyncConfig,
 	OfficialPricingSyncResult,
@@ -780,6 +781,11 @@ export const api = {
     request<{ message: string; refreshed: number; failed: number; model_count: number }>('/accounts/claude/models/refresh', {
       method: 'POST',
       timeoutMs: 60_000,
+    }),
+  refreshAllModels: () =>
+    request<RefreshAllModelsResponse>('/models/refresh-all', {
+      method: 'POST',
+      timeoutMs: 130_000,
     }),
   batchUpdateGrokModels: (data: BatchUpdateGrokModelsRequest) =>
     request<BatchUpdateGrokModelsResponse>('/accounts/grok/batch-models', {

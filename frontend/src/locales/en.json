@@ -4232,7 +4232,9 @@
       "catalogSearch": "Search models…",
       "catalogCount": "{{count}} models",
       "catalogRefresh": "Refresh account models",
-      "catalogRefreshed": "Refreshed, {{count}} models available",
+      "catalogRefreshed": "Refreshed, {{count}} models available ({{detail}})",
+      "catalogRefreshChannelFailed": "failed",
+      "catalogRefreshChannelAccounts": "{{count}} accounts",
       "catalogMarkSeen": "Mark seen",
       "newBadge": "NEW"
     },

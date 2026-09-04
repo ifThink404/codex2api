@@ -848,8 +848,21 @@ export default function ModelPricing() {
   const refreshCatalogModels = useCallback(async () => {
     setRefreshingModels(true)
     try {
-      const res = await api.refreshAllClaudeModels()
-      showToast(t('settings.pricing.catalogRefreshed', { count: res.model_count }))
+      // 统一刷新所有渠道（Codex 注册表 + Claude/Grok/Antigravity 账号模型），
+      // 每个渠道独立成败，逐渠道汇报，新模型直接列出。
+      const res = await api.refreshAllModels()
+      const detail = res.channels
+        .map((ch) => {
+          const label = CHANNEL_LABEL[ch.channel as Exclude<ChannelFilter, 'all'>] ?? ch.channel
+          const status = ch.error
+            ? t('settings.pricing.catalogRefreshChannelFailed')
+            : t('settings.pricing.catalogRefreshChannelAccounts', { count: ch.refreshed })
+          const added = ch.added.length ? ` +${ch.added.join(', ')}` : ''
+          return `${label} ${status}${added}`
+        })
+        .join(' · ')
+      const failed = res.channels.some((ch) => ch.error)
+      showToast(t('settings.pricing.catalogRefreshed', { count: res.model_count, detail }), failed ? 'error' : undefined)
       await load()
     } catch (error) {
       showToast(getErrorMessage(error), 'error')

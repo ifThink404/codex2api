@@ -4232,7 +4232,9 @@
       "catalogSearch": "搜索模型…",
       "catalogCount": "共 {{count}} 个模型",
       "catalogRefresh": "刷新账号模型",
-      "catalogRefreshed": "已刷新,可用模型共 {{count}} 个",
+      "catalogRefreshed": "已刷新,可用模型共 {{count}} 个（{{detail}}）",
+      "catalogRefreshChannelFailed": "失败",
+      "catalogRefreshChannelAccounts": "{{count}} 个账号",
       "catalogMarkSeen": "标记已读",
       "newBadge": "新"
     },

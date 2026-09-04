@@ -78,6 +78,14 @@ test('model pricing exposes Anthropic source and distinct cache write fields', (
   assert.match(types, /cache_write_1h/)
 })
 
+test('model catalog refresh button refreshes every channel, not only Claude', () => {
+  const pricing = readFileSync(new URL('../pages/ModelPricing.tsx', import.meta.url), 'utf8')
+  assert.match(pricing, /api\.refreshAllModels\(\)/)
+  assert.doesNotMatch(pricing, /api\.refreshAllClaudeModels\(\)/)
+  assert.match(pricing, /catalogRefreshChannelFailed/)
+  assert.match(types, /RefreshAllModelsResponse/)
+})
+
 test('Claude settings expose client platform and version policy controls', () => {
   assert.match(settings, /clientPlatform|client_platform/)
   assert.match(settings, /versionPolicy|version_policy/)
