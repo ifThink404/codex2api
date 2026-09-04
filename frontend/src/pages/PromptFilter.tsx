@@ -17,7 +17,7 @@ import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import { getPromptFilterScoreBand, normalizePromptFilterScore } from '../lib/promptFilterScore'
 import { parseAdvancedConfigDocument, patchAdvancedConfigDocument, readAdvancedConfigPath } from '../types'
-import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIdentityUpdateMode, PromptIntelligenceAIAnalysisResponse, PromptIntelligenceAIProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceGatewayKey, PromptIntelligenceRun, PromptPolicyAuditHealth, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewAPIKeyDescriptor, PromptReviewKeyTestResult, PromptReviewProfile, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings, PromptLogRetention, PromptRiskIncidentSubject } from '../types'
+import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIdentityUpdateMode, PromptIntelligenceAIAnalysisResponse, PromptIntelligenceAIProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceGatewayKey, PromptIntelligenceRun, PromptPolicyAuditHealth, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewAPIKeyDescriptor, PromptReviewKeyTestResult, PromptReviewProfile, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings, PromptLogRetention, PromptRiskIncidentSubject, PromptIntelligenceDraftSuggestion } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -1552,6 +1552,8 @@ function IntelligenceView() {
   const [publishTarget, setPublishTarget] = useState<PromptIntelligenceCandidate | null>(null)
   const [draftTarget, setDraftTarget] = useState<PromptIntelligenceCandidate | null>(null)
   const [draftForm, setDraftForm] = useState({ name: '', pattern: '', weight: 35, category: 'cyber_abuse', strict: true, rationale: '' })
+  const [draftSuggesting, setDraftSuggesting] = useState(false)
+  const [draftSuggestion, setDraftSuggestion] = useState<PromptIntelligenceDraftSuggestion | null>(null)
   const [evidenceLoading, setEvidenceLoading] = useState<number | null>(null)
   const [evidenceDialog, setEvidenceDialog] = useState<PromptIntelligenceEvidenceResponse | null>(null)
   const [dismissTarget, setDismissTarget] = useState<PromptIntelligenceCandidate | null>(null)
@@ -1644,10 +1646,38 @@ function IntelligenceView() {
 
   const openDraft = (candidate: PromptIntelligenceCandidate) => {
     setDraftTarget(candidate)
+    setDraftSuggestion(null)
     setDraftForm({
       name: '', pattern: '', weight: 35, category: 'cyber_abuse', strict: true,
       rationale: candidate.sample_preview ? t('promptFilter.intelligence.draftRationaleFromEvidence') : '',
     })
+  }
+
+  // 让模型基于候选的 CY 证据先写出草案，预填表单；校验结果只提示，人审核后再保存。
+  const suggestDraft = async () => {
+    if (!draftTarget) return
+    setDraftSuggesting(true)
+    try {
+      const value = await api.suggestPromptIntelligenceCandidateDraft(draftTarget.id, {
+        provider: aiProvider,
+        model: aiModel.trim() || undefined,
+        api_key_id: aiProvider === 'account_pool' ? Number(aiAPIKeyID) || undefined : undefined,
+      })
+      setDraftSuggestion(value)
+      setDraftForm({
+        name: value.rule.name,
+        pattern: value.rule.pattern,
+        weight: value.rule.weight,
+        category: value.rule.category,
+        strict: value.rule.strict,
+        rationale: value.rule.rationale,
+      })
+      showToast(value.validation_error ? t('promptFilter.intelligence.draftSuggestedWithWarning') : t('promptFilter.intelligence.draftSuggested'), value.validation_error ? 'warning' : undefined)
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setDraftSuggesting(false)
+    }
   }
 
   const createDraft = async () => {
@@ -2159,6 +2189,27 @@ function IntelligenceView() {
           </DialogHeader>
           {draftTarget?.sample_preview ? (
             <div className="rounded-lg border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning-bg))] p-3 text-sm whitespace-pre-wrap break-words">{draftTarget.sample_preview}</div>
+          ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 p-3">
+            <div className="min-w-0 text-xs text-muted-foreground">
+              <div className="font-semibold text-foreground">{t('promptFilter.intelligence.draftSuggestTitle')}</div>
+              <div className="mt-0.5">{t('promptFilter.intelligence.draftSuggestHint', { provider: aiProvider === 'account_pool' ? t('promptFilter.intelligence.providerPool') : t('promptFilter.intelligence.providerReview') })}</div>
+            </div>
+            <Button size="sm" variant="outline" disabled={draftSuggesting || candidateAction !== null} onClick={() => void suggestDraft()}>
+              {draftSuggesting ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+              {draftSuggesting ? t('promptFilter.intelligence.draftSuggesting') : t('promptFilter.intelligence.draftSuggest')}
+            </Button>
+          </div>
+          {draftSuggestion ? (
+            <div className={cn('rounded-lg border p-3 text-xs', draftSuggestion.validation_error ? 'border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning-bg))]' : 'border-[hsl(var(--success))]/30 bg-[hsl(var(--success))]/5')}>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="outline">{draftSuggestion.provider} · {draftSuggestion.model}</Badge>
+                <Badge variant="outline">{t('promptFilter.intelligence.aiConfidence')}: {(draftSuggestion.confidence * 100).toFixed(0)}%</Badge>
+                {draftSuggestion.evidence_basis === 'context_only' ? <Badge variant="secondary">{t('promptFilter.intelligence.aiContextOnlyBasis')}</Badge> : null}
+              </div>
+              {draftSuggestion.reason ? <p className="mt-2 text-sm">{draftSuggestion.reason}</p> : null}
+              {draftSuggestion.validation_error ? <p className="mt-2 font-medium text-[hsl(var(--warning))]">{t('promptFilter.intelligence.draftSuggestValidation')}: {draftSuggestion.validation_error}</p> : <p className="mt-2 text-[hsl(var(--success))]">{t('promptFilter.intelligence.draftSuggestValid')}</p>}
+            </div>
           ) : null}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t('promptFilter.intelligence.draftName')}><Input value={draftForm.name} onChange={(event) => setDraftForm((current) => ({ ...current, name: event.target.value }))} /></Field>
