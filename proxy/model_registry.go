@@ -397,7 +397,12 @@ var codexModelIDPattern = regexp.MustCompile(`\bgpt-[0-9]+(?:\.[0-9]+)*(?:-[a-z]
 func ParseOfficialCodexModelIDs(html string) (models []string, skipped []string) {
 	seen := map[string]struct{}{}
 	skippedSeen := map[string]struct{}{}
-	for _, match := range codexModelIDPattern.FindAllString(strings.ToLower(html), -1) {
+	lowered := strings.ToLower(html)
+	for _, loc := range codexModelIDPattern.FindAllStringIndex(lowered, -1) {
+		match := lowered[loc[0]:loc[1]]
+		if !isOfficialCodexModelIDContext(lowered, loc[0], loc[1]) {
+			continue
+		}
 		if isAllowedUpstreamCodexModel(match) {
 			if _, ok := seen[match]; !ok {
 				seen[match] = struct{}{}
@@ -415,6 +420,28 @@ func ParseOfficialCodexModelIDs(html string) (models []string, skipped []string)
 	})
 	sort.Strings(skipped)
 	return models, skipped
+}
+
+// isOfficialCodexModelIDContext 只接受官方模型页里"当作模型 ID 使用"的出现位置：
+// 被引号包裹（astro-island props / JSON，如 &quot;gpt-5.5&quot;）或 `codex -m <id>` 命令。
+// 导航文案（"Using GPT-6 Astra"→gpt-6）、锚点（#gpt-6-astra-in-enterprise）、
+// 图片文件名（gpt-6-astra-texture.webp）都不算模型 ID。
+func isOfficialCodexModelIDContext(lowered string, start, end int) bool {
+	before := lowered[:start]
+	after := lowered[end:]
+	if strings.HasSuffix(before, "codex -m ") {
+		return after == "" || !isModelIDByte(after[0])
+	}
+	for _, quote := range []string{"&quot;", "\"", "'"} {
+		if strings.HasSuffix(before, quote) && strings.HasPrefix(after, quote) {
+			return true
+		}
+	}
+	return false
+}
+
+func isModelIDByte(b byte) bool {
+	return b == '-' || b == '.' || b == '_' || b == '/' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 func modelSortRank(id string) int {
