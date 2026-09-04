@@ -3436,6 +3436,17 @@ export interface ProxyRiskScoringProfile {
   updated_at: ISODateString
 }
 
+export interface PromptLogRetention {
+  retention_days: number
+  running: boolean
+  last_run_at?: string
+  last_deleted_logs: number
+  last_deleted_events: number
+  last_deleted_sources: number
+  last_duration_ms: number
+  last_error?: string
+}
+
 export interface ProxyRiskScoringJobItem {
   seq: number
   proxy_id: number

@@ -138,6 +138,7 @@ import type {
   UpdateAccountGroupRequest,
   UpstreamChannel,
   ClaudeGlobalConfig,
+  PromptLogRetention,
 } from './types'
 
 const BASE = '/api/admin'
@@ -1305,6 +1306,11 @@ export const api = {
 		request<PromptPolicyIncidentDetailResponse>(`/prompt-policy/incidents/${encodeURIComponent(incidentId)}`),
 	getPromptPolicyAuditHealth: () =>
 		request<PromptPolicyAuditHealth>('/prompt-policy/incidents/health'),
+	getPromptLogRetention: () => request<PromptLogRetention>('/prompt-filter/retention'),
+	updatePromptLogRetention: (retentionDays: number) =>
+		request<PromptLogRetention>('/prompt-filter/retention', { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) }),
+	runPromptLogRetention: () =>
+		request<{ started: boolean; retention_days: number }>('/prompt-filter/retention/run', { method: 'POST' }),
 	clearPromptPolicyIncidents: () =>
 		request<MessageResponse>('/prompt-policy/incidents', { method: 'DELETE' }),
 	deletePromptPolicyIncident: (incidentId: string) =>
