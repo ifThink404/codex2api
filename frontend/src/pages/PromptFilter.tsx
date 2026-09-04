@@ -1876,21 +1876,22 @@ function IntelligenceView() {
           </div>
           <div className="mb-3 text-xs text-muted-foreground">{t('promptFilter.intelligence.reviewCount', { count: candidateTotal })}</div>
           <div className="overflow-x-auto rounded-lg border border-border bg-card">
-            <Table>
+            {/* 固定列宽：规则正则和说明只能在第一列内换行，不能横向压到来源 / 状态列上。 */}
+            <Table className="min-w-[1120px] table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead>{t('promptFilter.intelligence.ruleOrEvidence')}</TableHead>
-                <TableHead>{t('promptFilter.intelligence.sourceLabel')}</TableHead>
-                <TableHead>{t('promptFilter.intelligence.statusLabel')}</TableHead>
-                <TableHead>{t('promptFilter.intelligence.evidenceCount')}</TableHead>
-                <TableHead>{t('promptFilter.intelligence.lastSeen')}</TableHead>
-                <TableHead className="text-right">{t('common.actions')}</TableHead>
+                <TableHead className="w-[110px]">{t('promptFilter.intelligence.sourceLabel')}</TableHead>
+                <TableHead className="w-[110px]">{t('promptFilter.intelligence.statusLabel')}</TableHead>
+                <TableHead className="w-[80px]">{t('promptFilter.intelligence.evidenceCount')}</TableHead>
+                <TableHead className="w-[170px]">{t('promptFilter.intelligence.lastSeen')}</TableHead>
+                <TableHead className="w-[300px] text-right">{t('common.actions')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {candidates.map((candidate) => (
                 <TableRow key={candidate.id}>
-                  <TableCell className="max-w-xl">
+                  <TableCell className="min-w-0 whitespace-normal align-top">
                     <div className="flex flex-wrap items-center gap-2 font-medium">
                       {candidateTitle(candidate)}
                       <Badge variant="outline">{candidate.kind === 'evidence' ? t('promptFilter.intelligence.evidenceOnly') : candidate.change_type === 'update' ? t('promptFilter.intelligence.update') : t('promptFilter.intelligence.new')}</Badge>
@@ -1901,7 +1902,7 @@ function IntelligenceView() {
                         </Badge>
                       ) : null}
                     </div>
-                    {candidate.pattern ? <code className="mt-1 block break-all text-xs text-muted-foreground">{candidate.pattern}</code> : null}
+                    {candidate.pattern ? <code className="mt-1 block whitespace-pre-wrap break-all text-xs text-muted-foreground">{candidate.pattern}</code> : null}
                     {candidate.kind === 'pattern' ? (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         <Badge variant="outline">{t('promptFilter.intelligence.category')}: {candidate.category || '-'}</Badge>
@@ -1909,13 +1910,13 @@ function IntelligenceView() {
                         {candidate.strict ? <Badge variant="outline" className="border-destructive/40 text-destructive">strict</Badge> : null}
                       </div>
                     ) : null}
-                    {candidate.sample_preview ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{candidate.sample_preview}</p> : null}
-                    {candidate.rationale ? <p className="mt-1 text-xs text-muted-foreground">{candidate.rationale}</p> : null}
+                    {candidate.sample_preview ? <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">{candidate.sample_preview}</p> : null}
+                    {candidate.rationale ? <p className="mt-1 break-words text-xs text-muted-foreground">{candidate.rationale}</p> : null}
                   </TableCell>
-                  <TableCell><Badge variant="outline">{sourceLabel(candidate.source)}</Badge></TableCell>
-                  <TableCell><Badge variant="outline">{candidateLifecycleLabel(candidate)}</Badge></TableCell>
-                  <TableCell>{candidate.evidence_count}</TableCell>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{candidate.last_seen_at ? formatBeijingTime(candidate.last_seen_at) : '-'}</TableCell>
+                  <TableCell className="align-top"><Badge variant="outline">{sourceLabel(candidate.source)}</Badge></TableCell>
+                  <TableCell className="align-top"><Badge variant="outline">{candidateLifecycleLabel(candidate)}</Badge></TableCell>
+                  <TableCell className="align-top">{candidate.evidence_count}</TableCell>
+                  <TableCell className="whitespace-nowrap align-top text-sm text-muted-foreground">{candidate.last_seen_at ? formatBeijingTime(candidate.last_seen_at) : '-'}</TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-2">
                       <Button size="sm" variant="outline" disabled={evidenceLoading === candidate.id} onClick={() => void viewEvidence(candidate)}>
