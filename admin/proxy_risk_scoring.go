@@ -591,7 +591,22 @@ type proxyRiskScoringJob struct {
 	Error     string    `json:"error,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	cancel    context.CancelFunc
+	// Current 是正在检测的代理标签（host:port），Items 是逐条结果（按 Seq 递增），
+	// 供前端轮询增量渲染：检测完一条就能在表格里看到一条。
+	Current string                    `json:"current,omitempty"`
+	Items   []proxyRiskScoringJobItem `json:"-"`
+	cancel  context.CancelFunc
+}
+
+// proxyRiskScoringJobItem 是任务里一条代理的检测结果。
+type proxyRiskScoringJobItem struct {
+	Seq       int                              `json:"seq"`
+	ProxyID   int64                            `json:"proxy_id"`
+	Label     string                           `json:"label"`
+	Status    string                           `json:"status"` // success | error | skipped | cached
+	Error     string                           `json:"error,omitempty"`
+	Snapshot  *database.ProxyRiskScoreSnapshot `json:"snapshot,omitempty"`
+	CheckedAt time.Time                        `json:"checked_at"`
 }
 
 type proxyRiskScoringJobSnapshot struct {
@@ -607,16 +622,54 @@ type proxyRiskScoringJobSnapshot struct {
 	Error     string    `json:"error,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Current   string    `json:"current,omitempty"`
+	// Items 只包含 Seq > after 的增量；LastSeq 供下次轮询作为 after。
+	Items   []proxyRiskScoringJobItem `json:"items"`
+	LastSeq int                       `json:"last_seq"`
 }
 
 func (job *proxyRiskScoringJob) snapshot() proxyRiskScoringJobSnapshot {
+	return job.snapshotAfter(0)
+}
+
+func (job *proxyRiskScoringJob) snapshotAfter(after int) proxyRiskScoringJobSnapshot {
 	job.mu.RLock()
 	defer job.mu.RUnlock()
+	items := make([]proxyRiskScoringJobItem, 0)
+	for _, item := range job.Items {
+		if item.Seq > after {
+			items = append(items, item)
+		}
+	}
 	return proxyRiskScoringJobSnapshot{
 		ID: job.ID, ProfileID: job.ProfileID, Status: job.Status, Total: job.Total,
 		Done: job.Done, Success: job.Success, Failed: job.Failed, Skipped: job.Skipped,
 		CacheHits: job.CacheHits, Error: job.Error, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
+		Current: job.Current, Items: items, LastSeq: len(job.Items),
 	}
+}
+
+// appendItem 追加一条逐条结果（调用方须持有 job.mu）。
+func (job *proxyRiskScoringJob) appendItem(item proxyRiskScoringJobItem) {
+	item.Seq = len(job.Items) + 1
+	if item.CheckedAt.IsZero() {
+		item.CheckedAt = time.Now().UTC()
+	}
+	job.Items = append(job.Items, item)
+}
+
+// proxyRiskScoringLabel 是进度里展示的代理标签：优先备注，否则 host:port（不带凭据）。
+func proxyRiskScoringLabel(proxy *database.ProxyRow) string {
+	if proxy == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(proxy.Label); label != "" {
+		return label
+	}
+	if parsed, err := url.Parse(strings.TrimSpace(proxy.URL)); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return fmt.Sprintf("#%d", proxy.ID)
 }
 
 func (h *Handler) setProxyRiskScoringJob(job *proxyRiskScoringJob) {
@@ -779,7 +832,12 @@ func (h *Handler) runProxyRiskScoringJob(ctx context.Context, job *proxyRiskScor
 		}
 		proxy := proxy
 		if cached := latest[proxy.ID]; cached != nil && !force && cached.ExpiresAt != nil && cached.ExpiresAt.After(time.Now()) {
-			h.updateProxyRiskScoringJob(job.ID, func(current *proxyRiskScoringJob) { current.Done++; current.CacheHits++ })
+			cachedCopy := *cached
+			h.updateProxyRiskScoringJob(job.ID, func(current *proxyRiskScoringJob) {
+				current.Done++
+				current.CacheHits++
+				current.appendItem(proxyRiskScoringJobItem{ProxyID: proxy.ID, Label: proxyRiskScoringLabel(proxy), Status: "cached", Snapshot: &cachedCopy})
+			})
 			continue
 		}
 		sem <- struct{}{}
@@ -835,6 +893,8 @@ func (h *Handler) scoreOneProxyRisk(ctx context.Context, job *proxyRiskScoringJo
 		h.recordProxyRiskScoringSkipped(ctx, job, profile, proxy, "达到每日评分次数上限")
 		return
 	}
+	label := proxyRiskScoringLabel(proxy)
+	h.updateProxyRiskScoringJob(job.ID, func(current *proxyRiskScoringJob) { current.Current = label })
 	snapshot, credits, checkErr := client.checkIP(ctx, ip)
 	snapshot.ProxyID = proxy.ID
 	snapshot.ProfileID = profile.ID
@@ -850,12 +910,20 @@ func (h *Handler) scoreOneProxyRisk(ctx context.Context, job *proxyRiskScoringJo
 		snapshot.ExpiresAt = &expires
 	}
 	_ = h.db.InsertProxyRiskScoreSnapshot(context.WithoutCancel(ctx), &snapshot)
+	snapshotCopy := snapshot
 	h.updateProxyRiskScoringJob(job.ID, func(current *proxyRiskScoringJob) {
 		current.Done++
+		item := proxyRiskScoringJobItem{ProxyID: proxy.ID, Label: label, Status: "success", Snapshot: &snapshotCopy}
 		if checkErr != nil {
 			current.Failed++
+			item.Status = "error"
+			item.Error = checkErr.Error()
 		} else {
 			current.Success++
+		}
+		current.appendItem(item)
+		if current.Current == label {
+			current.Current = ""
 		}
 	})
 }
@@ -867,7 +935,11 @@ func (h *Handler) recordProxyRiskScoringSkipped(ctx context.Context, job *proxyR
 		snapshot.ExpiresAt = &expires
 		_ = h.db.InsertProxyRiskScoreSnapshot(context.WithoutCancel(ctx), snapshot)
 	}
-	h.updateProxyRiskScoringJob(job.ID, func(current *proxyRiskScoringJob) { current.Done++; current.Skipped++ })
+	h.updateProxyRiskScoringJob(job.ID, func(current *proxyRiskScoringJob) {
+		current.Done++
+		current.Skipped++
+		current.appendItem(proxyRiskScoringJobItem{ProxyID: proxy.ID, Label: proxyRiskScoringLabel(proxy), Status: "skipped", Error: reason})
+	})
 }
 
 func (h *Handler) GetProxyRiskScoringJob(c *gin.Context) {
@@ -876,7 +948,8 @@ func (h *Handler) GetProxyRiskScoringJob(c *gin.Context) {
 		writeError(c, http.StatusNotFound, "评分任务不存在或已过期")
 		return
 	}
-	c.JSON(http.StatusOK, job.snapshot())
+	after, _ := strconv.Atoi(strings.TrimSpace(c.Query("after")))
+	c.JSON(http.StatusOK, job.snapshotAfter(after))
 }
 
 func (h *Handler) CancelProxyRiskScoringJob(c *gin.Context) {

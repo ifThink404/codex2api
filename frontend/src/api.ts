@@ -1538,8 +1538,8 @@ export const api = {
     request<{ success: boolean; latency_ms?: number; score?: number | null; risk_level?: string; credits_remaining?: number | null; snapshot?: ProxyRiskScoreSnapshot | null; message?: string; error?: string }>(`/proxy-risk-scoring/profiles/${id}/test`, { method: 'POST' }),
   startProxyRiskScoringJob: (data: { profile_id?: number; proxy_ids?: number[]; force?: boolean }) =>
     request<ProxyRiskScoringJob>('/proxies/risk-score', { method: 'POST', body: JSON.stringify(data) }),
-  getProxyRiskScoringJob: (id: string) =>
-    request<ProxyRiskScoringJob>(`/proxies/risk-score/jobs/${encodeURIComponent(id)}`),
+  getProxyRiskScoringJob: (id: string, after = 0) =>
+    request<ProxyRiskScoringJob>(`/proxies/risk-score/jobs/${encodeURIComponent(id)}${after > 0 ? `?after=${after}` : ''}`),
   cancelProxyRiskScoringJob: (id: string) =>
     request<MessageResponse>(`/proxies/risk-score/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   getProxyRiskScore: (id: number) =>

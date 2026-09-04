@@ -477,6 +477,8 @@ export default function Proxies() {
   const [riskTestResult, setRiskTestResult] = useState<ProxyRiskScoreSnapshot | null>(null);
   const [riskJob, setRiskJob] = useState<ProxyRiskScoringJob | null>(null);
   const riskPollCancelledRef = useRef(false);
+  const riskPollSeqRef = useRef(0);
+  const [riskRecentIds, setRiskRecentIds] = useState<Set<number>>(new Set());
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
@@ -837,7 +839,32 @@ export default function Proxies() {
   const pollRiskJob = useCallback(async (jobID: string) => {
     if (riskPollCancelledRef.current) return;
     try {
-      const next = await api.getProxyRiskScoringJob(jobID);
+      // 只取上次游标之后的增量：检测完一条就把分数合并进表格对应行，并短暂高亮。
+      const next = await api.getProxyRiskScoringJob(jobID, riskPollSeqRef.current);
+      riskPollSeqRef.current = Math.max(riskPollSeqRef.current, next.last_seq ?? 0);
+      const items = next.items ?? [];
+      if (items.length > 0) {
+        const byProxy = new Map<number, ProxyRiskScoreSnapshot | null>();
+        for (const item of items) {
+          if (item.snapshot) byProxy.set(item.proxy_id, item.snapshot);
+        }
+        if (byProxy.size > 0) {
+          setProxies((prev) =>
+            prev.map((proxy) =>
+              byProxy.has(proxy.id) ? { ...proxy, risk_score: byProxy.get(proxy.id) ?? proxy.risk_score } : proxy,
+            ),
+          );
+        }
+        const touched = items.map((item) => item.proxy_id);
+        setRiskRecentIds((prev) => new Set([...prev, ...touched]));
+        window.setTimeout(() => {
+          setRiskRecentIds((prev) => {
+            const cleared = new Set(prev);
+            for (const id of touched) cleared.delete(id);
+            return cleared;
+          });
+        }, 2500);
+      }
       setRiskJob(next);
       if (next.status === "queued" || next.status === "running") {
         window.setTimeout(() => void pollRiskJob(jobID), 1000);
@@ -856,6 +883,7 @@ export default function Proxies() {
       return;
     }
     riskPollCancelledRef.current = false;
+    riskPollSeqRef.current = 0;
     try {
       const job = await api.startProxyRiskScoringJob({ profile_id: activeRiskProfile.id, proxy_ids: proxyIDs, force: false });
       setRiskJob(job);
@@ -1332,6 +1360,9 @@ export default function Proxies() {
             <span className="flex min-w-0 items-center gap-1.5 text-sky-700 dark:text-sky-300">
               <Loader2 className="size-3.5 shrink-0 animate-spin" />
               <span className="truncate">{t("proxies.riskScoringProgress", { done: riskJob.done, total: riskJob.total, success: riskJob.success, failed: riskJob.failed, skipped: riskJob.skipped, cache: riskJob.cache_hits })}</span>
+              {riskJob.current ? (
+                <span className="truncate font-mono text-[11px] font-normal text-sky-700/80 dark:text-sky-300/80">· {t("proxies.riskScoringCurrent", { label: riskJob.current })}</span>
+              ) : null}
             </span>
             <Button type="button" variant="ghost" size="sm" onClick={() => void cancelRiskScoring()} className="h-7 shrink-0 text-xs">{t("proxies.riskCancel")}</Button>
           </div>
@@ -1634,7 +1665,7 @@ export default function Proxies() {
                           </div>
                           <div className="mt-3 rounded-lg border border-border/70 bg-muted/20 p-2">
                             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{t("proxies.riskScoreColumn")}</div>
-                            <ProxyRiskScoreSummary score={p.risk_score} />
+                            <span className={cn("inline-block rounded-md transition-colors duration-700", riskRecentIds.has(p.id) && "bg-sky-500/15 ring-1 ring-sky-500/40")}><ProxyRiskScoreSummary score={p.risk_score} /></span>
                           </div>
 
                           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -1751,7 +1782,7 @@ export default function Proxies() {
                       const isTesting = testingIds.has(p.id);
                       const scheme = getProxyScheme(p.url);
                       return (
-                        <TableRow key={p.id}>
+                        <TableRow key={p.id} className={cn("transition-colors duration-700", riskRecentIds.has(p.id) && "bg-sky-500/10")}>
                           <TableCell>
                             <input
                               type="checkbox"

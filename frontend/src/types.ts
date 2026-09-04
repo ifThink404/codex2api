@@ -2862,6 +2862,7 @@ export interface ModelsResponse {
 
 export interface ChannelModelRefreshResult {
   channel: 'codex' | 'claude' | 'grok' | 'antigravity' | string
+  groups?: number
   refreshed: number
   failed: number
   added: string[]
@@ -2869,6 +2870,7 @@ export interface ChannelModelRefreshResult {
 }
 
 export interface RefreshAllModelsResponse {
+  type: 'complete'
   message: string
   channels: ChannelModelRefreshResult[]
   added: string[]
@@ -3434,8 +3436,21 @@ export interface ProxyRiskScoringProfile {
   updated_at: ISODateString
 }
 
+export interface ProxyRiskScoringJobItem {
+  seq: number
+  proxy_id: number
+  label: string
+  status: 'success' | 'error' | 'skipped' | 'cached' | string
+  error?: string
+  snapshot?: ProxyRiskScoreSnapshot | null
+  checked_at: ISODateString
+}
+
 export interface ProxyRiskScoringJob {
   job_id: string
+  current?: string
+  items: ProxyRiskScoringJobItem[]
+  last_seq: number
   profile_id: number
   status: string
   total: number
