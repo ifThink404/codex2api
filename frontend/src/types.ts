@@ -2201,9 +2201,24 @@ export interface PromptPolicyAuditHealth {
 	}
 }
 
+export interface PromptRiskIncidentSubject {
+	subject_type: PromptRiskSubjectType
+	subject_key: string
+	subject_display: string
+	platform?: string
+	is_person: boolean
+	identity_confidence: number
+	newapi_user_id?: string
+	newapi_user_name?: string
+	newapi_user_email?: string
+	newapi_user_group?: string
+	event_count: number
+}
+
 export interface PromptPolicyIncidentDetailResponse {
 	incident: PromptPolicyIncident
 	matches: PromptFilterMatch[]
+	risk_subjects?: PromptRiskIncidentSubject[]
 	candidate?: {
 		id: number
 		status: string
@@ -2822,6 +2837,7 @@ export interface PromptIntelligenceAIAnalysisResponse {
   analysis_evidence_id: number
   provider: PromptIntelligenceAIProvider
   model: string
+  evidence_basis?: 'prompt' | 'context_only'
   decision: PromptIntelligenceAIDecision
   rule_candidate?: PromptIntelligenceCandidate
   rule_error?: string

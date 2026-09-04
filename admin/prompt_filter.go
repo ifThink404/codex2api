@@ -43,6 +43,9 @@ type promptPolicyIncidentDetailResponse struct {
 	Matches   json.RawMessage                       `json:"matches"`
 	Candidate *database.PromptRuleCandidate         `json:"candidate,omitempty"`
 	Evidence  *database.PromptRuleCandidateEvidence `json:"evidence,omitempty"`
+	// RiskSubjects 是该 CY 关联的画像主体（人员 / 会话 / Key / IP / 上游账号），
+	// 让归因时能直接看到并跳到对应的人员画像。
+	RiskSubjects []database.PromptRiskIncidentSubject `json:"risk_subjects"`
 }
 
 type promptPolicyAuditQueueHealth struct {
@@ -714,7 +717,10 @@ func (h *Handler) GetPromptPolicyIncident(c *gin.Context) {
 	if !json.Valid(matches) {
 		matches = json.RawMessage("[]")
 	}
-	response := promptPolicyIncidentDetailResponse{Incident: incident, Matches: matches}
+	response := promptPolicyIncidentDetailResponse{Incident: incident, Matches: matches, RiskSubjects: []database.PromptRiskIncidentSubject{}}
+	if subjects, subjectsErr := h.db.ListPromptRiskSubjectsForIncident(ctx, incidentID); subjectsErr == nil {
+		response.RiskSubjects = subjects
+	}
 	if incident.CandidateID > 0 {
 		if candidate, candidateErr := h.db.GetPromptRuleCandidate(ctx, incident.CandidateID); candidateErr == nil {
 			response.Candidate = candidate

@@ -75,6 +75,7 @@ type promptIntelligenceAIAnalysisMetadata struct {
 	ReviewSystemPromptHash  string                       `json:"review_system_prompt_hash"`
 	UpstreamEvidenceCount   int                          `json:"upstream_evidence_count"`
 	LearnableEvidenceCount  int                          `json:"learnable_evidence_count"`
+	EvidenceBasis           string                       `json:"evidence_basis,omitempty"`
 	Result                  promptIntelligenceAIDecision `json:"result"`
 	RuleValidationError     string                       `json:"rule_validation_error,omitempty"`
 	IdentityValidationError string                       `json:"identity_validation_error,omitempty"`
@@ -116,10 +117,18 @@ type promptIdentityUpdateResult struct {
 	BlockReason        string   `json:"block_reason,omitempty"`
 }
 
+const (
+	// promptIntelligenceEvidenceBasisPrompt 表示归因基于至少一条完整用户 Prompt；
+	// promptIntelligenceEvidenceBasisContextOnly 表示只有会话 / 工具上下文证据。
+	promptIntelligenceEvidenceBasisPrompt      = "prompt"
+	promptIntelligenceEvidenceBasisContextOnly = "context_only"
+)
+
 type promptIntelligenceAIAnalysisResponse struct {
 	AnalysisEvidenceID int64                        `json:"analysis_evidence_id"`
 	Provider           string                       `json:"provider"`
 	Model              string                       `json:"model"`
+	EvidenceBasis      string                       `json:"evidence_basis"`
 	Decision           promptIntelligenceAIDecision `json:"decision"`
 	RuleCandidate      *promptIntelligenceCandidate `json:"rule_candidate,omitempty"`
 	RuleError          string                       `json:"rule_error,omitempty"`
@@ -302,9 +311,12 @@ func (h *Handler) AnalyzePromptIntelligenceCandidate(c *gin.Context) {
 		writeError(c, http.StatusConflict, "该候选只有证据不足的 CY 记录，尚未提取到可学习的 Prompt 或关联上下文；已停止调用外部模型")
 		return
 	}
+	// 没有完整用户 Prompt 的 CY（Codex 工具回合：当前用户消息为空，命中来自
+	// history / tool_output 层）同样允许归因：证据包里保存了 session_context /
+	// tool_arguments / tool_output 段，按 evidence_basis=context_only 标注后送模型。
+	evidenceBasis := promptIntelligenceEvidenceBasisPrompt
 	if !promptIntelligenceHasDirectEvidence(learnableEvidence) {
-		writeError(c, http.StatusConflict, "该候选只有 context_only 上下文证据，没有完整用户 Prompt；已停止调用外部模型")
-		return
+		evidenceBasis = promptIntelligenceEvidenceBasisContextOnly
 	}
 	learnableEvidenceCount := countPromptIntelligenceLearnableEvidence(upstreamEvidence)
 
@@ -312,7 +324,7 @@ func (h *Handler) AnalyzePromptIntelligenceCandidate(c *gin.Context) {
 	reviewCfg := promptfilter.NormalizeReviewConfig(cfg.Review)
 	reviewSystemPrompt := promptfilter.NormalizeReviewAdapterConfig(reviewCfg.Adapter).SystemPrompt
 	analysisSystemPrompt := buildPromptIntelligenceAIIdentity(reviewSystemPrompt)
-	analysisInput := buildPromptIntelligenceAIEvidenceInput(candidate, learnableEvidence)
+	analysisInput := buildPromptIntelligenceAIEvidenceInput(candidate, learnableEvidence, evidenceBasis)
 	rawOutput, attribution, err := h.callPromptIntelligenceAI(c.Request.Context(), request, reviewCfg, analysisSystemPrompt, analysisInput)
 	if err != nil {
 		status := http.StatusBadGateway
@@ -337,7 +349,7 @@ func (h *Handler) AnalyzePromptIntelligenceCandidate(c *gin.Context) {
 		Version: 1, Provider: attribution.Provider, Model: attribution.Model,
 		APIKeyID: attribution.APIKeyID, APIKeyName: attribution.APIKeyName,
 		ReviewSystemPromptHash: promptfilter.StableEvidenceFingerprint("review-system-prompt", reviewSystemPrompt),
-		UpstreamEvidenceCount:  len(upstreamEvidence), LearnableEvidenceCount: learnableEvidenceCount, Result: decision,
+		UpstreamEvidenceCount:  len(upstreamEvidence), LearnableEvidenceCount: learnableEvidenceCount, EvidenceBasis: evidenceBasis, Result: decision,
 		RawOutputPreview: promptfilter.RedactedPreview(promptfilter.RedactSensitive(rawOutput), 4000),
 	}
 	if decision.Rule != nil {
@@ -363,7 +375,7 @@ func (h *Handler) AnalyzePromptIntelligenceCandidate(c *gin.Context) {
 
 	response := promptIntelligenceAIAnalysisResponse{
 		AnalysisEvidenceID: analysisEvidence.ID, Provider: attribution.Provider, Model: attribution.Model,
-		Decision: decision,
+		Decision: decision, EvidenceBasis: evidenceBasis,
 		IdentityUpdate: promptIdentityUpdateResult{
 			Mode: request.IdentityUpdateMode, AnalysisEvidenceID: analysisEvidence.ID,
 		},
@@ -381,10 +393,12 @@ func (h *Handler) AnalyzePromptIntelligenceCandidate(c *gin.Context) {
 		if metadata.IdentityValidationError != "" {
 			response.IdentityUpdate.BlockReason = metadata.IdentityValidationError
 		} else if request.IdentityUpdateMode == promptIdentityUpdateModeGuardedAuto {
-			directEvidenceCount := countPromptIntelligenceDirectEvidence(upstreamEvidence)
+			// 受控自动应用的证据门槛按独立证据计数：完整 Prompt 与 context_only 上下文证据
+			// 都算（管理员已选择允许上下文证据触发自动模式）。
+			directEvidenceCount := countPromptIntelligenceAutoEligibleEvidence(upstreamEvidence)
 			response.IdentityUpdate.Eligible = decision.Confidence >= promptIdentityAutoMinConfidence && directEvidenceCount >= promptIdentityAutoMinUpstreamEvidence
 			if !response.IdentityUpdate.Eligible {
-				response.IdentityUpdate.BlockReason = fmt.Sprintf("受控自动应用要求置信度至少 %.2f 且同类完整 Prompt 证据至少 %d 条", promptIdentityAutoMinConfidence, promptIdentityAutoMinUpstreamEvidence)
+				response.IdentityUpdate.BlockReason = fmt.Sprintf("受控自动应用要求置信度至少 %.2f 且同类独立证据（完整 Prompt 或上下文）至少 %d 条", promptIdentityAutoMinConfidence, promptIdentityAutoMinUpstreamEvidence)
 			} else {
 				applied, applyErr := h.applyPromptIntelligenceIdentityPatch(c.Request.Context(), candidateID, analysisEvidence.ID, "guarded_auto")
 				if applyErr != nil {
@@ -466,6 +480,11 @@ Functional malware remains harmful regardless of ownership, simulation, lab,
 sandbox, research, or temporary-path framing. Defensive detection and analysis
 remain allowed, but executable ransomware encryption behavior is not benign.
 
+When evidence_basis is "context_only", the current user prompt was empty (an
+agent tool turn): attribute from related_context (session_context /
+tool_arguments / tool_output) and state in "reason" that the attribution is
+based on context rather than a user prompt.
+
 Analyze whether the evidence reveals a reusable detection gap. You may propose:
 1. one narrow RE2-compatible rule candidate; and/or
 2. up to eight short learned safety-guidance clauses that clarify classification.
@@ -485,7 +504,7 @@ only when evidence is ambiguous, too specific, effectively blocked already, or
 unsafe to generalize.`
 }
 
-func buildPromptIntelligenceAIEvidenceInput(candidate *database.PromptRuleCandidate, evidence []*database.PromptRuleCandidateEvidence) string {
+func buildPromptIntelligenceAIEvidenceInput(candidate *database.PromptRuleCandidate, evidence []*database.PromptRuleCandidateEvidence, evidenceBasis string) string {
 	type safeEvidence struct {
 		SourceKind      string                              `json:"source_kind"`
 		EvidenceQuality string                              `json:"evidence_quality"`
@@ -533,9 +552,15 @@ func buildPromptIntelligenceAIEvidenceInput(candidate *database.PromptRuleCandid
 			DecisionContext: contextFields,
 		})
 	}
+	if evidenceBasis == "" {
+		evidenceBasis = promptIntelligenceEvidenceBasisPrompt
+	}
 	payload := map[string]any{
 		"candidate_id": candidate.ID, "fingerprint": candidate.Fingerprint,
 		"evidence_count": candidate.EvidenceCount, "learnable_evidence_count": len(evidence),
+		// context_only：没有当前用户 Prompt，命中来自 related_context（session_context /
+		// tool_arguments / tool_output 段）；模型需据此归因并明确说明依据是上下文。
+		"evidence_basis":   evidenceBasis,
 		"sample_preview":   promptfilter.RedactedPreview(candidate.SamplePreview, 2000),
 		"coverage_summary": summarizePromptIntelligenceCoverage(evidence),
 		"evidence":         items,
@@ -774,6 +799,38 @@ func promptIntelligenceModerationOnlyModel(model string) bool {
 
 func promptIntelligenceHasDirectEvidence(evidence []*database.PromptRuleCandidateEvidence) bool {
 	return countPromptIntelligenceDirectEvidence(evidence) > 0
+}
+
+// countPromptIntelligenceAutoEligibleEvidence 是受控自动应用的证据计数：与
+// countPromptIntelligenceDirectEvidence 一样按去重后的独立证据计数，但 context_only
+// 证据也计入（以其上下文文本指纹去重）；只有 insufficient 被排除。
+func countPromptIntelligenceAutoEligibleEvidence(evidence []*database.PromptRuleCandidateEvidence) int {
+	seen := make(map[string]struct{}, len(evidence))
+	for _, row := range evidence {
+		learning := promptIntelligenceLearningEvidenceFromMetadata(row.MetadataJSON, row.SamplePreview)
+		if learning.Quality == "insufficient" {
+			continue
+		}
+		text := strings.TrimSpace(learning.PromptText)
+		if text == "" {
+			parts := make([]string, 0, len(learning.Context))
+			for _, segment := range learning.Context {
+				if value := strings.TrimSpace(segment.Text); value != "" {
+					parts = append(parts, value)
+				}
+			}
+			text = strings.Join(parts, "\n")
+		}
+		if text == "" {
+			continue
+		}
+		fingerprint := promptfilter.PromptEvidenceFingerprint(text)
+		if fingerprint == "" {
+			fingerprint = row.SourceRefHash
+		}
+		seen[fingerprint] = struct{}{}
+	}
+	return len(seen)
 }
 
 func callPromptIntelligenceReviewProvider(ctx context.Context, cfg promptfilter.ReviewConfig, model, systemPrompt, input string) (string, error) {

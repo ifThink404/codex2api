@@ -17,7 +17,7 @@ import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import { getPromptFilterScoreBand, normalizePromptFilterScore } from '../lib/promptFilterScore'
 import { parseAdvancedConfigDocument, patchAdvancedConfigDocument, readAdvancedConfigPath } from '../types'
-import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIdentityUpdateMode, PromptIntelligenceAIAnalysisResponse, PromptIntelligenceAIProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceGatewayKey, PromptIntelligenceRun, PromptPolicyAuditHealth, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewAPIKeyDescriptor, PromptReviewKeyTestResult, PromptReviewProfile, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings, PromptLogRetention } from '../types'
+import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIdentityUpdateMode, PromptIntelligenceAIAnalysisResponse, PromptIntelligenceAIProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceGatewayKey, PromptIntelligenceRun, PromptPolicyAuditHealth, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewAPIKeyDescriptor, PromptReviewKeyTestResult, PromptReviewProfile, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings, PromptLogRetention, PromptRiskIncidentSubject } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -2038,6 +2038,7 @@ function IntelligenceView() {
                 <Badge className="bg-sky-500/12 text-sky-600 dark:bg-sky-500/20 dark:text-sky-400">{t('promptFilter.intelligence.aiLearned')}</Badge>
                 <Badge variant="outline">{t('promptFilter.intelligence.aiConfidence')}: {(aiResult.decision.confidence * 100).toFixed(0)}%</Badge>
                 <Badge variant="outline">{aiResult.provider} · {aiResult.model}</Badge>
+                {aiResult.evidence_basis === 'context_only' ? <Badge variant="secondary">{t('promptFilter.intelligence.aiContextOnlyBasis')}</Badge> : null}
               </div>
               <p className="text-sm">{aiResult.decision.reason || t('promptFilter.intelligence.aiNoReason')}</p>
               {aiResult.decision.rule ? (
@@ -5401,6 +5402,38 @@ function PromptPolicyIncidentDetailButton({ incident, onDeleted }: { incident: P
               </div>
               {(item.local_reason || item.local_reason_code) ? <PromptPolicyDetailField label={t('promptFilter.cyberReason')} value={item.local_reason || item.local_reason_code} /> : null}
               {detail && detail.matches.length > 0 ? <div><div className="mb-2 font-semibold">{t('promptFilter.testResultMatches')}</div><div className="flex flex-wrap gap-1.5">{detail.matches.map((match, index) => <Badge key={`${match.name}-${index}`} variant="secondary">{match.name} · {match.weight}</Badge>)}</div></div> : null}
+              {detail ? (
+                <div>
+                  <div className="mb-2 font-semibold">{t('promptFilter.cyberRiskSubjects')}</div>
+                  {(detail.risk_subjects?.length ?? 0) === 0 ? (
+                    <p className="text-xs text-muted-foreground">{t('promptFilter.cyberRiskSubjectsEmpty')}</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {detail.risk_subjects!.map((subject) => (
+                        <div key={`${subject.subject_type}:${subject.subject_key}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-2.5 py-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Badge variant={subject.subject_type === 'newapi_user' ? 'default' : 'outline'}>{t(`promptFilter.risk.subjects.${subject.subject_type}`, { defaultValue: subject.subject_type })}</Badge>
+                              <span className="font-medium">{subject.subject_display || subject.subject_key}</span>
+                              {subject.is_person ? <Badge variant="secondary">{t('promptFilter.risk.personVerified')}</Badge> : null}
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground">
+                              {subject.newapi_user_id ? <span>{t('promptFilter.risk.userId')} #{subject.newapi_user_id}</span> : null}
+                              {subject.newapi_user_email ? <span>{subject.newapi_user_email}</span> : null}
+                              {subject.newapi_user_name ? <span>{subject.newapi_user_name}</span> : null}
+                              {subject.newapi_user_group ? <span>{t('promptFilter.risk.userGroup')}: {subject.newapi_user_group}</span> : null}
+                              {subject.platform ? <span>{subject.platform}</span> : null}
+                              <span className="font-mono">{subject.subject_key.slice(0, 18)}</span>
+                              <span>{t('promptFilter.cyberRiskSubjectEvents', { count: subject.event_count })}</span>
+                            </div>
+                          </div>
+                          <PromptRiskProfileDetailButton profile={riskSubjectToProfileStub(subject)} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : null}
               {content ? <div><div className="mb-2 font-semibold">{t('promptFilter.userPromptLabel')}</div><pre className="max-h-[45vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 text-xs">{content}</pre></div> : null}
               <div className="flex justify-end border-t pt-3"><Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => void deleteIncident()} disabled={deleting}>{deleting ? t('promptFilter.clearing') : t('promptFilter.deleteCyberIncident')}</Button></div>
             </div>
@@ -5410,6 +5443,32 @@ function PromptPolicyIncidentDetailButton({ incident, onDeleted }: { incident: P
       </Dialog>
     </>
   )
+}
+
+// CY 关联主体只有主体键和身份信息；画像详情按钮会用主体键拉取完整画像，这里只需一个占位对象。
+function riskSubjectToProfileStub(subject: PromptRiskIncidentSubject): PromptRiskProfile {
+  return {
+    subject_type: subject.subject_type,
+    subject_key: subject.subject_key,
+    subject_display: subject.subject_display || subject.subject_key,
+    platform: subject.platform,
+    newapi_user_id: subject.newapi_user_id,
+    newapi_user_name: subject.newapi_user_name,
+    newapi_user_email: subject.newapi_user_email,
+    newapi_user_group: subject.newapi_user_group,
+    is_person: subject.is_person,
+    identity_confidence: subject.identity_confidence,
+    risk_score: 0,
+    risk_level: 'low',
+    recommended_actions: [],
+    score_breakdown: { local_signal: 0, upstream_signal: 0, recurrence: 0, identity_confidence: subject.identity_confidence },
+    has_activity: subject.event_count > 0,
+    latest_at: new Date(0).toISOString(),
+    event_count: subject.event_count,
+    events_10m: 0,
+    events_24h: 0,
+    events_7d: 0,
+  } as unknown as PromptRiskProfile
 }
 
 function PromptPolicyDetailField({ label, value }: { label: string; value: string }) {

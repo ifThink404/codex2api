@@ -68,7 +68,7 @@ func TestPromptIntelligenceCoverageRejectsNoChangeForLocallyAllowedCY(t *testing
 	if err := validatePromptIntelligenceAICoverageDecision(promptIntelligenceAIDecision{Decision: "no_change"}, coverage); err == nil {
 		t.Fatal("locally allowed upstream CY evidence accepted no_change")
 	}
-	input := buildPromptIntelligenceAIEvidenceInput(&database.PromptRuleCandidate{}, evidence)
+	input := buildPromptIntelligenceAIEvidenceInput(&database.PromptRuleCandidate{}, evidence, "")
 	if !strings.Contains(input, `"effective_coverage":"uncovered"`) {
 		t.Fatalf("coverage summary missing from AI evidence input: %s", input)
 	}
@@ -196,7 +196,7 @@ func TestPromptIntelligenceEvidenceInputIncludesDurableLearningBundle(t *testing
 		}`,
 		Protocol: "responses", Provider: "openai", Model: "gpt-5.6-sol", ObservedAt: time.Now(),
 	}}
-	input := buildPromptIntelligenceAIEvidenceInput(&database.PromptRuleCandidate{ID: 7, EvidenceCount: 1}, evidence)
+	input := buildPromptIntelligenceAIEvidenceInput(&database.PromptRuleCandidate{ID: 7, EvidenceCount: 1}, evidence, promptIntelligenceEvidenceBasisContextOnly)
 	for _, expected := range []string{"full request", "linked context", "cyber_policy details", "deepseek-test", `"status_code":400`, `"learnable_evidence_count":1`} {
 		if !strings.Contains(input, expected) {
 			t.Fatalf("AI evidence input missing %q: %s", expected, input)
@@ -520,5 +520,33 @@ func TestCountPromptIntelligenceDirectEvidenceDeduplicatesReplays(t *testing.T) 
 	distinct := append(replayed, row("d", "a different prompt"))
 	if got := countPromptIntelligenceDirectEvidence(distinct); got != 2 {
 		t.Fatalf("distinct prompts must count separately, got %d", got)
+	}
+}
+
+func TestCountPromptIntelligenceAutoEligibleEvidenceIncludesContextOnly(t *testing.T) {
+	contextOnly := func(ref, text string) *database.PromptRuleCandidateEvidence {
+		return &database.PromptRuleCandidateEvidence{
+			SourceKind: database.PromptRuleCandidateSourceUpstreamCyberPolicy, SourceRefHash: ref,
+			MetadataJSON: `{"evidence_quality":"context_only","learning_evidence":{"version":1,"quality":"context_only","context":[{"origin":"tool_arguments","role":"assistant","text":"` + text + `"}]}}`,
+		}
+	}
+	evidence := []*database.PromptRuleCandidateEvidence{
+		contextOnly("a", "git clone https://github.com/x/CVE-2026-65343"),
+		contextOnly("b", "git clone https://github.com/x/CVE-2026-65343"), // 同一段上下文重放 → 只算一条
+		contextOnly("c", "python exploit.py --target 10.0.0.1"),
+		{SourceKind: database.PromptRuleCandidateSourceUpstreamCyberPolicy, SourceRefHash: "d", MetadataJSON: `{"evidence_quality":"insufficient","learning_evidence":{"version":1,"quality":"insufficient"}}`},
+	}
+	if got := countPromptIntelligenceDirectEvidence(evidence); got != 0 {
+		t.Fatalf("direct evidence should still exclude context_only, got %d", got)
+	}
+	if got := countPromptIntelligenceAutoEligibleEvidence(evidence); got != 2 {
+		t.Fatalf("auto-eligible evidence = %d, want 2 (deduplicated context, insufficient excluded)", got)
+	}
+	if promptIntelligenceHasDirectEvidence(evidence) {
+		t.Fatalf("no direct evidence expected")
+	}
+	input := buildPromptIntelligenceAIEvidenceInput(&database.PromptRuleCandidate{ID: 1}, evidence[:1], promptIntelligenceEvidenceBasisContextOnly)
+	if !strings.Contains(input, `"evidence_basis":"context_only"`) {
+		t.Fatalf("analysis input should carry evidence_basis: %s", input)
 	}
 }
