@@ -2854,6 +2854,8 @@ export interface PromptIntelligenceDraftSuggestion {
   reason: string
   rule: { name: string; pattern: string; weight: number; category: string; strict: boolean; rationale: string }
   validation_error?: string
+  evidence_matched: number
+  evidence_total: number
 }
 
 export interface PromptIntelligenceHistoryResponse {

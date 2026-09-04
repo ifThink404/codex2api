@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,6 +33,10 @@ type promptIntelligenceDraftSuggestResponse struct {
 	Reason          string                   `json:"reason"`
 	Rule            promptIntelligenceAIRule `json:"rule"`
 	ValidationError string                   `json:"validation_error,omitempty"`
+	// EvidenceMatched / EvidenceTotal：草案正则在本候选可学习证据上的命中数，
+	// 0 命中说明规则没有抓住它所依据的行为，前端提示但不阻止人工修改后保存。
+	EvidenceMatched int `json:"evidence_matched"`
+	EvidenceTotal   int `json:"evidence_total"`
 }
 
 // SuggestPromptIntelligenceCandidateDraft POST /api/admin/prompt-filter/intelligence/candidates/:id/draft/suggest
@@ -126,10 +131,22 @@ func (h *Handler) SuggestPromptIntelligenceCandidateDraft(c *gin.Context) {
 	if rule.Weight <= 0 {
 		rule.Weight = 35
 	}
+	// 校验口径与人工保存草案一致（validateIntelligenceCandidate：权重范围 + 正则安全审计），
+	// 不套用自动入库的"完整匹配内置样句"门槛——那条门槛会拒绝所有针对具体行为的窄正则。
+	validationError := ""
+	if err := validateIntelligenceCandidate(promptIntelligenceCandidate{
+		Name: rule.Name, Pattern: rule.Pattern, Weight: rule.Weight, Category: rule.Category, Strict: rule.Strict, Rationale: rule.Rationale,
+	}); err != nil {
+		validationError = err.Error()
+	}
+	matched, total := countPromptIntelligenceDraftEvidenceMatches(rule.Pattern, learnableEvidence)
+	if validationError == "" && matched == 0 {
+		validationError = "草案正则没有命中本候选的任何证据文本，请检查正则是否抓住了实际行为"
+	}
 	response := promptIntelligenceDraftSuggestResponse{
 		Provider: attribution.Provider, Model: attribution.Model, EvidenceBasis: evidenceBasis,
 		Confidence: decision.Confidence, Reason: decision.Reason, Rule: rule,
-		ValidationError: validatePromptIntelligenceAIRule(rule),
+		ValidationError: validationError, EvidenceMatched: matched, EvidenceTotal: total,
 	}
 	h.insertIntelligenceLog(c.Request.Context(), "intel_ai_draft", "suggested", attribution.Model, response, nil)
 	c.JSON(http.StatusOK, response)
@@ -165,4 +182,32 @@ Rule requirements:
 
 Return exactly one JSON object and nothing else:
 {"decision":"rule","confidence":0.00,"reason":"...","rule":{"name":"...","pattern":"...","weight":35,"category":"...","strict":false,"rationale":"..."}}`
+}
+
+// countPromptIntelligenceDraftEvidenceMatches 用草案正则（按网关的大小写不敏感方式编译）
+// 逐条测试可学习证据的 Prompt 文本或上下文段，返回命中数与总数。
+func countPromptIntelligenceDraftEvidenceMatches(pattern string, evidence []*database.PromptRuleCandidateEvidence) (int, int) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || len(evidence) == 0 {
+		return 0, len(evidence)
+	}
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		return 0, len(evidence)
+	}
+	matched := 0
+	for _, row := range evidence {
+		learning := promptIntelligenceLearningEvidenceFromMetadata(row.MetadataJSON, row.SamplePreview)
+		texts := []string{learning.PromptText, row.SamplePreview}
+		for _, segment := range learning.Context {
+			texts = append(texts, segment.Text)
+		}
+		for _, text := range texts {
+			if strings.TrimSpace(text) != "" && re.MatchString(text) {
+				matched++
+				break
+			}
+		}
+	}
+	return matched, len(evidence)
 }

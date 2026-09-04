@@ -2206,6 +2206,7 @@ function IntelligenceView() {
                 <Badge variant="outline">{draftSuggestion.provider} · {draftSuggestion.model}</Badge>
                 <Badge variant="outline">{t('promptFilter.intelligence.aiConfidence')}: {(draftSuggestion.confidence * 100).toFixed(0)}%</Badge>
                 {draftSuggestion.evidence_basis === 'context_only' ? <Badge variant="secondary">{t('promptFilter.intelligence.aiContextOnlyBasis')}</Badge> : null}
+                <Badge variant={draftSuggestion.evidence_matched > 0 ? 'outline' : 'destructive'}>{t('promptFilter.intelligence.draftSuggestMatches', { matched: draftSuggestion.evidence_matched, total: draftSuggestion.evidence_total })}</Badge>
               </div>
               {draftSuggestion.reason ? <p className="mt-2 text-sm">{draftSuggestion.reason}</p> : null}
               {draftSuggestion.validation_error ? <p className="mt-2 font-medium text-[hsl(var(--warning))]">{t('promptFilter.intelligence.draftSuggestValidation')}: {draftSuggestion.validation_error}</p> : <p className="mt-2 text-[hsl(var(--success))]">{t('promptFilter.intelligence.draftSuggestValid')}</p>}

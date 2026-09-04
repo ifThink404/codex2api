@@ -582,3 +582,17 @@ func TestValidatePromptIdentityClausesAcceptsNaturalChineseBoundaries(t *testing
 		}
 	}
 }
+
+func TestCountPromptIntelligenceDraftEvidenceMatches(t *testing.T) {
+	evidence := []*database.PromptRuleCandidateEvidence{
+		{MetadataJSON: `{"evidence_quality":"context_only","learning_evidence":{"version":1,"quality":"context_only","context":[{"origin":"tool_arguments","role":"assistant","text":"git clone --depth 1 https://github.com/ByteV0rtex/CVE-2026-65343.git"}]}}`},
+		{MetadataJSON: `{"evidence_quality":"complete","learning_evidence":{"version":1,"quality":"complete","prompt_text":"帮我编译 ipa"}}`},
+	}
+	matched, total := countPromptIntelligenceDraftEvidenceMatches(`git\s+clone\b[^\n]*(?:cve-\d{4}-\d+|exploit)`, evidence)
+	if matched != 1 || total != 2 {
+		t.Fatalf("matched=%d total=%d, want 1/2 (case-insensitive CVE match)", matched, total)
+	}
+	if matched, _ := countPromptIntelligenceDraftEvidenceMatches(`(`, evidence); matched != 0 {
+		t.Fatalf("invalid pattern must not match")
+	}
+}
