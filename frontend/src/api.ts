@@ -1394,6 +1394,8 @@ export const api = {
     request<import('./types').PromptIntelligenceAIProvidersResponse>('/prompt-filter/intelligence/ai-providers'),
   analyzePromptIntelligenceCandidate: (id: number, data: import('./types').PromptIntelligenceAIAnalysisRequest) =>
     request<import('./types').PromptIntelligenceAIAnalysisResponse>(`/prompt-filter/intelligence/candidates/${id}/analyze`, { method: 'POST', body: JSON.stringify(data) }),
+  suggestPromptIntelligenceCandidateDraft: (id: number, data: { provider: import('./types').PromptIntelligenceAIProvider; model?: string; api_key_id?: number }) =>
+    request<import('./types').PromptIntelligenceDraftSuggestion>(`/prompt-filter/intelligence/candidates/${id}/draft/suggest`, { method: 'POST', body: JSON.stringify(data), timeoutMs: 90_000 }),
   applyPromptIntelligenceIdentityUpdate: (candidateId: number, evidenceId: number) =>
     request<{ identity_update: import('./types').PromptIdentityUpdateResult }>(`/prompt-filter/intelligence/candidates/${candidateId}/identity-updates/${evidenceId}/apply`, { method: 'POST' }),
   rollbackPromptIntelligenceIdentityUpdate: (candidateId: number, evidenceId: number) =>

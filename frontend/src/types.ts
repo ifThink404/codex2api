@@ -2846,6 +2846,16 @@ export interface PromptIntelligenceAIAnalysisResponse {
   identity_update: PromptIdentityUpdateResult
 }
 
+export interface PromptIntelligenceDraftSuggestion {
+  provider: PromptIntelligenceAIProvider
+  model: string
+  evidence_basis: 'prompt' | 'context_only'
+  confidence: number
+  reason: string
+  rule: { name: string; pattern: string; weight: number; category: string; strict: boolean; rationale: string }
+  validation_error?: string
+}
+
 export interface PromptIntelligenceHistoryResponse {
   runs: PromptIntelligenceRun[]
   total: number
