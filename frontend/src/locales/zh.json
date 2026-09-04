@@ -3404,6 +3404,7 @@
       "draftSuggestedWithWarning": "草案已预填，但未通过校验，请修改后再保存",
       "draftSuggestValidation": "校验未通过",
       "draftSuggestValid": "校验通过，可直接保存为待审核草案",
+      "draftSuggestMatches": "命中证据 {{matched}}/{{total}}",
       "providerReview": "Review 适配器",
       "providerPool": "账号池",
       "draftCreated": "规则草案“{{name}}”已进入待审核区",

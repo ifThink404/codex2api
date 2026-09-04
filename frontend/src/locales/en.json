@@ -3404,6 +3404,7 @@
       "draftSuggestedWithWarning": "Draft prefilled but failed validation; adjust before saving",
       "draftSuggestValidation": "Validation failed",
       "draftSuggestValid": "Validation passed; can be saved as a pending draft",
+      "draftSuggestMatches": "matches {{matched}}/{{total}} evidence",
       "providerReview": "Review adapter",
       "providerPool": "Account pool",
       "draftCreated": "Rule draft “{{name}}” is now pending review",
