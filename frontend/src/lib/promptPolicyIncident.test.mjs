@@ -57,3 +57,11 @@ test('audit log retention controls are wired to the retention API', () => {
   assert.equal(typeof zh.promptFilter.retention.title, 'string')
   assert.equal(typeof zh.promptFilter.retention.lastRun, 'string')
 })
+
+test('CY detail lists linked risk profiles and AI attribution marks context-only basis', () => {
+  assert.match(promptFilterSource, /risk_subjects/)
+  assert.match(promptFilterSource, /riskSubjectToProfileStub\(/)
+  assert.match(promptFilterSource, /evidence_basis === 'context_only'/)
+  assert.equal(typeof zh.promptFilter.cyberRiskSubjects, 'string')
+  assert.equal(typeof zh.promptFilter.intelligence.aiContextOnlyBasis, 'string')
+})
