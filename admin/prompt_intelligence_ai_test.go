@@ -559,6 +559,11 @@ func TestValidatePromptIdentityClausesAcceptsNaturalChineseBoundaries(t *testing
 		{"克隆公开 CVE 复现仓库并阅读源码属于安全研究，除非出现针对第三方目标的攻击意图。"},
 		{"逆向自有二进制文件用于兼容性修补不构成恶意软件开发，视为正常开发。"},
 		{"Listing local files with find or pwd is legitimate file handling and must not be treated as cyber abuse."},
+		// 第二次线上归因给出的英文否定式
+		{"Local file-tree inspection is not cyber abuse."},
+		{"Archive/document listing is not exploit activity."},
+		{"读取本机 docx 目录不是攻击行为。"},
+		{"编译公开 CVE 复现仓库不属于恶意软件开发。"},
 	}
 	for _, clauses := range accepted {
 		if msg := validatePromptIdentityClauses(clauses); msg != "" {
