@@ -413,7 +413,7 @@
     "intelligence": {
       "aiAnalyze": "AI 歸因",
       "draftSuggestTitle": "AI 產生規則草案",
-      "draftSuggestHint": "用目前選擇的 AI 提供方（{{provider}}）基於該候選的 CY 證據產生一條窄正則草案，預填到下方表單；請審核後再儲存。",
+      "draftSuggestHint": "選擇產生用的提供方、模型和路由 Key（與 AI 歸因的 Review Key 相互獨立），基於該候選的 CY 證據產生一條窄正則草案並預填到下方表單；請審核後再儲存。",
       "draftSuggest": "AI 產生",
       "draftSuggesting": "產生中…",
       "draftSuggested": "草案已產生並預填，請審核",

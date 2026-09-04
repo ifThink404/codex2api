@@ -3397,7 +3397,7 @@
       "strictLabel": "Strict rule",
       "saveDraft": "Save pending draft",
       "draftSuggestTitle": "Draft the rule with AI",
-      "draftSuggestHint": "Use the selected AI provider ({{provider}}) to draft one narrow regex rule from this candidate's CY evidence and prefill the form; review it before saving.",
+      "draftSuggestHint": "Pick the provider, model and gateway key for generation (independent of the Review key used for attribution); one narrow regex draft is generated from this candidate's CY evidence and prefilled below. Review before saving.",
       "draftSuggest": "Generate with AI",
       "draftSuggesting": "Generating…",
       "draftSuggested": "Draft generated and prefilled; please review",

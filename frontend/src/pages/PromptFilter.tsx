@@ -1553,6 +1553,11 @@ function IntelligenceView() {
   const [draftTarget, setDraftTarget] = useState<PromptIntelligenceCandidate | null>(null)
   const [draftForm, setDraftForm] = useState({ name: '', pattern: '', weight: 35, category: 'cyber_abuse', strict: true, rationale: '' })
   const [draftSuggesting, setDraftSuggesting] = useState(false)
+  // 草案生成的提供方独立于 AI 归因：审核用的 Review Key 和生成用的账号池 Key 不是一回事，
+  // 默认走账号池，上次选择记在本地。
+  const [draftProvider, setDraftProvider] = useState<PromptIntelligenceAIProvider>(() => readDraftAIPreference().provider)
+  const [draftModel, setDraftModel] = useState(() => readDraftAIPreference().model)
+  const [draftAPIKeyID, setDraftAPIKeyID] = useState(() => readDraftAIPreference().apiKeyId)
   const [draftSuggestion, setDraftSuggestion] = useState<PromptIntelligenceDraftSuggestion | null>(null)
   const [evidenceLoading, setEvidenceLoading] = useState<number | null>(null)
   const [evidenceDialog, setEvidenceDialog] = useState<PromptIntelligenceEvidenceResponse | null>(null)
@@ -1644,13 +1649,21 @@ function IntelligenceView() {
     }
   }
 
-  const openDraft = (candidate: PromptIntelligenceCandidate) => {
+  const openDraft = async (candidate: PromptIntelligenceCandidate) => {
     setDraftTarget(candidate)
     setDraftSuggestion(null)
     setDraftForm({
       name: '', pattern: '', weight: 35, category: 'cyber_abuse', strict: true,
       rationale: candidate.sample_preview ? t('promptFilter.intelligence.draftRationaleFromEvidence') : '',
     })
+    if (!gatewayKeys.length) {
+      try {
+        const response = await api.getPromptIntelligenceAIProviders()
+        setGatewayKeys(response.gateway_keys.filter((key) => key.status === 'active'))
+      } catch {
+        // Key 列表加载失败不影响手工填写草案。
+      }
+    }
   }
 
   // 让模型基于候选的 CY 证据先写出草案，预填表单；校验结果只提示，人审核后再保存。
@@ -1658,10 +1671,11 @@ function IntelligenceView() {
     if (!draftTarget) return
     setDraftSuggesting(true)
     try {
+      writeDraftAIPreference({ provider: draftProvider, model: draftModel, apiKeyId: draftAPIKeyID })
       const value = await api.suggestPromptIntelligenceCandidateDraft(draftTarget.id, {
-        provider: aiProvider,
-        model: aiModel.trim() || undefined,
-        api_key_id: aiProvider === 'account_pool' ? Number(aiAPIKeyID) || undefined : undefined,
+        provider: draftProvider,
+        model: draftModel.trim() || undefined,
+        api_key_id: draftProvider === 'account_pool' ? Number(draftAPIKeyID) || undefined : undefined,
       })
       setDraftSuggestion(value)
       setDraftForm({
@@ -1780,9 +1794,11 @@ function IntelligenceView() {
 
   const lifecycleLabel = (status: string) => t(`promptFilter.intelligence.lifecycle.${status}`, { defaultValue: status || '-' })
   const sourceLabel = (source?: string) => t(`promptFilter.intelligence.source.${source || 'unknown'}`, { defaultValue: source || '-' })
-  const candidateTitle = (candidate: PromptIntelligenceCandidate) => candidate.kind === 'evidence'
+  // 标题统一带上候选 ID（#417）：列表、证据 / 归因 / 草案 / 发布弹窗都用它，
+  // 与上游 CY 事件详情里的「候选 · #ID」一一对应。
+  const candidateTitle = (candidate: PromptIntelligenceCandidate) => `#${candidate.id} · ${candidate.kind === 'evidence'
     ? t(candidate.lifecycle_status === 'published' ? 'promptFilter.intelligence.attributedEvidence' : 'promptFilter.intelligence.awaitingAttribution')
-    : candidate.name || t('promptFilter.intelligence.unnamedRule')
+    : candidate.name || t('promptFilter.intelligence.unnamedRule')}`
 
   const candidateLifecycleLabel = (candidate: PromptIntelligenceCandidate) => candidate.kind === 'evidence' && candidate.lifecycle_status === 'published'
     ? t('promptFilter.intelligence.attributed')
@@ -1918,7 +1934,7 @@ function IntelligenceView() {
                             {candidate.ai_analyzed ? t('promptFilter.intelligence.aiViewResult') : t('promptFilter.intelligence.aiAnalyze')}
                           </Button>
                           {candidate.lifecycle_status === 'pending' ? (
-                            <Button size="sm" disabled={candidateAction === candidate.id} onClick={() => openDraft(candidate)}>
+                            <Button size="sm" disabled={candidateAction === candidate.id} onClick={() => void openDraft(candidate)}>
                               <Pencil className="size-4" />
                               {t('promptFilter.intelligence.createDraft')}
                             </Button>
@@ -2190,15 +2206,44 @@ function IntelligenceView() {
           {draftTarget?.sample_preview ? (
             <div className="rounded-lg border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning-bg))] p-3 text-sm whitespace-pre-wrap break-words">{draftTarget.sample_preview}</div>
           ) : null}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 p-3">
-            <div className="min-w-0 text-xs text-muted-foreground">
+          <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+            <div className="text-xs text-muted-foreground">
               <div className="font-semibold text-foreground">{t('promptFilter.intelligence.draftSuggestTitle')}</div>
-              <div className="mt-0.5">{t('promptFilter.intelligence.draftSuggestHint', { provider: aiProvider === 'account_pool' ? t('promptFilter.intelligence.providerPool') : t('promptFilter.intelligence.providerReview') })}</div>
+              <div className="mt-0.5">{t('promptFilter.intelligence.draftSuggestHint')}</div>
             </div>
-            <Button size="sm" variant="outline" disabled={draftSuggesting || candidateAction !== null} onClick={() => void suggestDraft()}>
-              {draftSuggesting ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-              {draftSuggesting ? t('promptFilter.intelligence.draftSuggesting') : t('promptFilter.intelligence.draftSuggest')}
-            </Button>
+            <div className="grid gap-3 md:grid-cols-3">
+              <Field label={t('promptFilter.intelligence.aiProvider')}>
+                <Select
+                  value={draftProvider}
+                  onValueChange={(value) => setDraftProvider(value as PromptIntelligenceAIProvider)}
+                  options={[
+                    { value: 'account_pool', label: t('promptFilter.intelligence.aiProviderPool') },
+                    { value: 'review', label: t('promptFilter.intelligence.aiProviderReview') },
+                  ]}
+                />
+              </Field>
+              <Field label={t('promptFilter.intelligence.aiModel')} hint={t('promptFilter.intelligence.aiModelHint')}>
+                <Input value={draftModel} onChange={(event) => setDraftModel(event.target.value)} placeholder={t('promptFilter.intelligence.aiModelDefault')} />
+              </Field>
+              {draftProvider === 'account_pool' ? (
+                <Field label={t('promptFilter.intelligence.aiGatewayKey')} hint={t('promptFilter.intelligence.aiGatewayKeyHint')}>
+                  <Select
+                    value={draftAPIKeyID}
+                    onValueChange={setDraftAPIKeyID}
+                    options={[
+                      { value: '0', label: t('promptFilter.intelligence.aiGatewayKeyAuto') },
+                      ...gatewayKeys.map((key) => ({ value: String(key.id), label: `${key.name || `#${key.id}`} · ${key.masked}` })),
+                    ]}
+                  />
+                </Field>
+              ) : null}
+            </div>
+            <div className="flex justify-end">
+              <Button size="sm" variant="outline" disabled={draftSuggesting || candidateAction !== null} onClick={() => void suggestDraft()}>
+                {draftSuggesting ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                {draftSuggesting ? t('promptFilter.intelligence.draftSuggesting') : t('promptFilter.intelligence.draftSuggest')}
+              </Button>
+            </div>
           </div>
           {draftSuggestion ? (
             <div className={cn('rounded-lg border p-3 text-xs', draftSuggestion.validation_error ? 'border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning-bg))]' : 'border-[hsl(var(--success))]/30 bg-[hsl(var(--success))]/5')}>
@@ -5509,6 +5554,31 @@ function PromptRiskSubjectList({ subjects, compact = false }: { subjects: Prompt
       ))}
     </div>
   )
+}
+
+const DRAFT_AI_PREFERENCE_KEY = 'prompt_intel_draft_ai'
+type DraftAIPreference = { provider: PromptIntelligenceAIProvider; model: string; apiKeyId: string }
+function readDraftAIPreference(): DraftAIPreference {
+  const fallback: DraftAIPreference = { provider: 'account_pool', model: '', apiKeyId: '0' }
+  try {
+    const raw = window.localStorage.getItem(DRAFT_AI_PREFERENCE_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as Partial<DraftAIPreference>
+    return {
+      provider: parsed.provider === 'review' ? 'review' : 'account_pool',
+      model: typeof parsed.model === 'string' ? parsed.model : '',
+      apiKeyId: typeof parsed.apiKeyId === 'string' ? parsed.apiKeyId : '0',
+    }
+  } catch {
+    return fallback
+  }
+}
+function writeDraftAIPreference(value: DraftAIPreference) {
+  try {
+    window.localStorage.setItem(DRAFT_AI_PREFERENCE_KEY, JSON.stringify(value))
+  } catch {
+    /* 本地偏好写入失败不影响生成 */
+  }
 }
 
 // CY 关联主体只有主体键和身份信息；画像详情按钮会用主体键拉取完整画像，这里只需一个占位对象。
