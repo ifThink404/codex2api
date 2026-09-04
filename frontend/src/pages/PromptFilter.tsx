@@ -1877,15 +1877,15 @@ function IntelligenceView() {
           <div className="mb-3 text-xs text-muted-foreground">{t('promptFilter.intelligence.reviewCount', { count: candidateTotal })}</div>
           <div className="overflow-x-auto rounded-lg border border-border bg-card">
             {/* 固定列宽：规则正则和说明只能在第一列内换行，不能横向压到来源 / 状态列上。 */}
-            <Table className="min-w-[1120px] table-fixed">
+            <Table className="min-w-[1280px] table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead>{t('promptFilter.intelligence.ruleOrEvidence')}</TableHead>
-                <TableHead className="w-[110px]">{t('promptFilter.intelligence.sourceLabel')}</TableHead>
-                <TableHead className="w-[110px]">{t('promptFilter.intelligence.statusLabel')}</TableHead>
-                <TableHead className="w-[80px]">{t('promptFilter.intelligence.evidenceCount')}</TableHead>
-                <TableHead className="w-[170px]">{t('promptFilter.intelligence.lastSeen')}</TableHead>
-                <TableHead className="w-[300px] text-right">{t('common.actions')}</TableHead>
+                <TableHead className="w-[150px]">{t('promptFilter.intelligence.sourceLabel')}</TableHead>
+                <TableHead className="w-[100px]">{t('promptFilter.intelligence.statusLabel')}</TableHead>
+                <TableHead className="w-[70px]">{t('promptFilter.intelligence.evidenceCount')}</TableHead>
+                <TableHead className="w-[160px]">{t('promptFilter.intelligence.lastSeen')}</TableHead>
+                <TableHead className="w-[430px] text-right">{t('common.actions')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1917,8 +1917,8 @@ function IntelligenceView() {
                   <TableCell className="align-top"><Badge variant="outline">{candidateLifecycleLabel(candidate)}</Badge></TableCell>
                   <TableCell className="align-top">{candidate.evidence_count}</TableCell>
                   <TableCell className="whitespace-nowrap align-top text-sm text-muted-foreground">{candidate.last_seen_at ? formatBeijingTime(candidate.last_seen_at) : '-'}</TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-2">
+                  <TableCell className="whitespace-normal align-top">
+                    <div className="flex flex-wrap justify-end gap-2">
                       <Button size="sm" variant="outline" disabled={evidenceLoading === candidate.id} onClick={() => void viewEvidence(candidate)}>
                         <FileText className="size-4" />
                         {t('promptFilter.intelligence.viewEvidence')}
