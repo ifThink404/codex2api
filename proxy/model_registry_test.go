@@ -364,3 +364,21 @@ func TestSyncOfficialCodexModelsEmptyProxyStillAttempts(t *testing.T) {
 		t.Fatalf("unexpected error kind: %v", err)
 	}
 }
+
+func TestIsAllowedUpstreamCodexModelAcceptsMajorOnlyVersions(t *testing.T) {
+	// gpt-6-astra 这类没有小数点的新一代型号必须被允许进入注册表。
+	for _, id := range []string{"gpt-6-astra", "gpt-6", "gpt-7-nova"} {
+		if !isAllowedUpstreamCodexModel(id) {
+			t.Fatalf("%s should be allowed", id)
+		}
+	}
+	for _, id := range []string{"gpt-4", "gpt-4-turbo", "gpt-5", "gpt-5-codex"} {
+		if isAllowedUpstreamCodexModel(id) {
+			t.Fatalf("%s should be rejected", id)
+		}
+	}
+	models, _ := ParseOfficialCodexModelIDs(`<code>codex -m gpt-6-astra</code> gpt-5.4`)
+	if !slices.Contains(models, "gpt-6-astra") {
+		t.Fatalf("parsed models missing gpt-6-astra: %v", models)
+	}
+}

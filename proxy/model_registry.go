@@ -443,17 +443,19 @@ func isAllowedUpstreamCodexModel(id string) bool {
 	if dash := strings.IndexByte(version, '-'); dash >= 0 {
 		version = version[:dash]
 	}
+	// 版本号可能只有大版本（gpt-6-astra、gpt-6），没有小数点时 minor 视为 0，
+	// 不能因为缺少 ".x" 就把新一代型号拒之门外。
 	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		return false
-	}
 	major, err := strconv.Atoi(parts[0])
 	if err != nil {
 		return false
 	}
-	minor, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return false
+	minor := 0
+	if len(parts) >= 2 {
+		minor, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return false
+		}
 	}
 	if major > 5 {
 		return true
