@@ -3433,6 +3433,30 @@ export interface APIKeyScopeSummaryItem {
   skip_requests?: number
 }
 
+export interface APIKeyModelRequestLimit {
+  /** Stable backend-generated identity; omit when adding a rule. */
+  id?: string
+  model: string
+  window: 'week'
+  max_requests: number
+  timezone: string
+  /** ISO weekday: Monday = 1, Sunday = 7. */
+  reset_weekday: number
+  reset_time: string
+}
+
+export interface APIKeyModelRequestUsage {
+  rule_id: string
+  model: string
+  window: 'week'
+  limit: number
+  used: number
+  remaining: number
+  window_start: ISODateString
+  reset_at: ISODateString
+  timezone: string
+}
+
 export interface APIKeyLimits {
   model_allow?: string[]
   model_deny?: string[]
@@ -3458,6 +3482,8 @@ export interface APIKeyLimits {
   allow_live?: boolean
   /** 分组 / 账号维度的用量预算（issue #439）。 */
   scope_limits?: APIKeyScopeLimit[]
+  /** Fixed weekly request budgets shared by models matching each rule. */
+  model_request_limits?: APIKeyModelRequestLimit[]
 }
 
 export interface APIKeyWindowUsage {
@@ -3660,6 +3686,7 @@ export interface PublicAPIKeyUsageResponse {
   key: PublicAPIKeyUsageKey
   range: PublicAPIKeyUsageRange
   usage: PublicAPIKeyUsageReport
+  model_request_usage?: APIKeyModelRequestUsage[]
 }
 
 export interface CreateAPIKeyResponse {

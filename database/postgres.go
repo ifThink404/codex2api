@@ -1259,6 +1259,22 @@ func (db *DB) migrate(ctx context.Context) error {
 			response_cache_config_generation BIGINT NOT NULL DEFAULT 1,
 			models_list_read_max_bytes BIGINT NOT NULL DEFAULT 8388608
 		);
+	CREATE TABLE IF NOT EXISTS api_key_model_request_counters (
+		api_key_id BIGINT NOT NULL,
+		rule_id VARCHAR(80) NOT NULL,
+		window_start BIGINT NOT NULL,
+		reset_at BIGINT NOT NULL,
+		used_requests BIGINT NOT NULL DEFAULT 0,
+		PRIMARY KEY (api_key_id, rule_id, window_start)
+	);
+	CREATE TABLE IF NOT EXISTS api_key_model_request_ledger (
+		api_key_id BIGINT NOT NULL,
+		rule_id VARCHAR(80) NOT NULL,
+		request_id VARCHAR(200) NOT NULL,
+		window_start BIGINT NOT NULL,
+		created_at BIGINT NOT NULL,
+		PRIMARY KEY (api_key_id, rule_id, request_id)
+	);
 	CREATE TABLE IF NOT EXISTS api_key_scope_counters (
 		api_key_id BIGINT NOT NULL,
 		scope_type VARCHAR(16) NOT NULL,
@@ -1673,9 +1689,10 @@ type APIKeyRow struct {
 //   - PlanAllow: 账号套餐白名单(plus/pro/team/...)。非空时该 Key 仅调度命中其一的账号,
 //     语义与 AllowedGroupIDs 类似,均在账号选择阶段过滤。空表示不限套餐。
 type APIKeyLimits struct {
-	ModelAllow []string `json:"model_allow,omitempty"`
-	ModelDeny  []string `json:"model_deny,omitempty"`
-	PlanAllow  []string `json:"plan_allow,omitempty"`
+	ModelRequestLimits []APIKeyModelRequestLimit `json:"model_request_limits,omitempty"`
+	ModelAllow         []string                  `json:"model_allow,omitempty"`
+	ModelDeny          []string                  `json:"model_deny,omitempty"`
+	PlanAllow          []string                  `json:"plan_allow,omitempty"`
 	// NoAffinityGroupIDs 指定未携带 Codex 引擎指纹或 X-Codex2API-Affinity-Key 的请求使用的账号分组。
 	// 空表示不启用分流，继续沿用 AllowedGroupIDs 的现有行为。
 	NoAffinityGroupIDs []int64 `json:"no_affinity_group_ids,omitempty"`
@@ -1794,7 +1811,7 @@ func (l APIKeyLimits) IsZero() bool {
 		l.RPM == 0 && l.RPD == 0 && l.MaxConcurrency == 0 &&
 		l.CostLimit5h == 0 && l.CostLimit7d == 0 && l.CostLimit30d == 0 && l.CostLimitDaily == 0 &&
 		l.TokenLimit5h == 0 && l.TokenLimit7d == 0 && l.TokenLimit30d == 0 && l.TokenLimitDaily == 0 &&
-		len(l.ScopeLimits) == 0 &&
+		len(l.ScopeLimits) == 0 && len(l.ModelRequestLimits) == 0 &&
 		!l.DisableImageGeneration &&
 		!l.AutoCompactOnOverflow &&
 		!l.AllowLive &&
@@ -1877,6 +1894,11 @@ func (db *DB) InsertAPIKey(ctx context.Context, name, key string) (int64, error)
 }
 
 func (db *DB) InsertAPIKeyWithOptions(ctx context.Context, input APIKeyInput) (int64, error) {
+	rules, err := NormalizeAPIKeyModelRequestLimits(input.Limits.ModelRequestLimits)
+	if err != nil {
+		return 0, err
+	}
+	input.Limits.ModelRequestLimits = rules
 	if input.QuotaLimit < 0 {
 		input.QuotaLimit = 0
 	}
@@ -1993,32 +2015,34 @@ func (db *DB) UpdateAPIKeyAllowedGroupIDs(ctx context.Context, id int64, groupID
 // UpdateAPIKeyLimits persists the per-key rate / quota / model limit configuration.
 // 空 APIKeyLimits 等价于"清除所有限制",对应数据库列为 '{}'。
 func (db *DB) UpdateAPIKeyLimits(ctx context.Context, id int64, limits APIKeyLimits) error {
-	payload := encodeAPIKeyLimits(limits)
-	var (
-		res sql.Result
-		err error
-	)
-	if db.isSQLite() {
-		res, err = db.conn.ExecContext(ctx, `UPDATE api_keys SET limits = $1 WHERE id = $2`, payload, id)
-	} else {
-		res, err = db.conn.ExecContext(ctx, `UPDATE api_keys SET limits = $1::jsonb WHERE id = $2`, payload, id)
-	}
+	rules, err := NormalizeAPIKeyModelRequestLimits(limits.ModelRequestLimits)
 	if err != nil {
 		return err
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
+	limits.ModelRequestLimits = rules
+	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		if err := db.validateAPIKeyModelRequestRuleUpdate(ctx, tx, id, rules); err != nil {
+			return err
+		}
+		query := `UPDATE api_keys SET limits = $1::jsonb WHERE id = $2`
+		if db.isSQLite() {
+			query = `UPDATE api_keys SET limits = $1 WHERE id = $2`
+		}
+		_, err := tx.ExecContext(ctx, query, encodeAPIKeyLimits(limits), id)
 		return err
-	}
-	if affected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	})
 }
 
 // UpdateAPIKey applies multiple editable fields in one transaction.
 // Omitted fields keep their existing values.
 func (db *DB) UpdateAPIKey(ctx context.Context, id int64, update APIKeyUpdate) error {
+	if update.LimitsSet {
+		rules, err := NormalizeAPIKeyModelRequestLimits(update.Limits.ModelRequestLimits)
+		if err != nil {
+			return err
+		}
+		update.Limits.ModelRequestLimits = rules
+	}
 	sets := make([]string, 0, 4)
 	args := make([]interface{}, 0, 5)
 	placeholder := func() string {
@@ -2081,18 +2105,25 @@ func (db *DB) UpdateAPIKey(ctx context.Context, id int64, update APIKeyUpdate) e
 	}
 	idPlaceholder := placeholder()
 	args[len(args)-1] = id
-	res, err := db.conn.ExecContext(ctx, "UPDATE api_keys SET "+strings.Join(sets, ", ")+" WHERE id = "+idPlaceholder, args...)
-	if err != nil {
-		return err
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		if update.LimitsSet {
+			if err := db.validateAPIKeyModelRequestRuleUpdate(ctx, tx, id, update.Limits.ModelRequestLimits); err != nil {
+				return err
+			}
+		}
+		res, err := tx.ExecContext(ctx, "UPDATE api_keys SET "+strings.Join(sets, ", ")+" WHERE id = "+idPlaceholder, args...)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
 }
 
 // APIKeyQuotaResetTarget identifies one row changed by a quota reset. Returning
@@ -3313,6 +3344,12 @@ func (db *DB) DeleteAPIKey(ctx context.Context, id int64) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE id = $1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_key_model_request_counters WHERE api_key_id = $1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_key_model_request_ledger WHERE api_key_id = $1`, id); err != nil {
 			return err
 		}
 		// scope 累计计数器没有外键约束，删 Key 时顺带清掉，避免留下永远不会再被读到的孤行。

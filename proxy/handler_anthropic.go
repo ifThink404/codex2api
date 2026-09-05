@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codex2api/auth"
@@ -757,6 +758,12 @@ func (h *Handler) Messages(c *gin.Context) {
 		durationMs := int(time.Since(start).Milliseconds())
 
 		if reqErr != nil {
+			if apiKeyModelRequestError(reqErr) != nil {
+				ttftGuard.Stop()
+				h.store.Release(account)
+				sendAPIKeyModelRequestQuotaError(c, reqErr)
+				return
+			}
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
 			if timedOut {
@@ -1193,12 +1200,49 @@ func (h *Handler) Messages(c *gin.Context) {
 			streamAttempt = h.newContinuousRetryStreamAttempt(continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, flusher)
 			streamWriter := h.newAttemptStreamFlushWriter(c, streamAttempt, c.Writer, flusher)
 			var pendingFirstTokenEvents bytes.Buffer
+			// downstreamMu 串行化翻译写路径与其共享状态(writeErr/wroteAnyBody/
+			// streamWriter):下面的下游保活 goroutine 与翻译回调并发写同一个
+			// ResponseWriter,必须互斥,否则注释可能插进半个 SSE 事件里。
+			var downstreamMu sync.Mutex
+			// 首个内容帧之后上游长推理/等工具边界期间可能数十秒无可转发帧,与
+			// /v1/responses 一样定期写标准 SSE 注释,避免反代/CDN/隧道把健康长流
+			// 当空闲连接掐断(issue #623)。缓冲式持续重试下 streamWriter 写的是
+			// 私有缓冲,真实下游心跳由 request 级 keepalive 负责,不再起第二个。
+			stopDownstreamKeepalive := func() {}
+			if !continuousRetryBuffersAttempts(continuousRetryPolicy) {
+				stopDownstreamKeepalive = startDownstreamSSEKeepalive(c.Request.Context(), downstreamSSEKeepaliveInterval, func() bool {
+					downstreamMu.Lock()
+					defer downstreamMu.Unlock()
+					if writeErr != nil || c.Request.Context().Err() != nil {
+						return false
+					}
+					// 首个真实字节前不能写注释,否则会提前提交 HTTP 200,
+					// 破坏首包前 response.failed 的真实状态码与换号重试语义。
+					if !wroteAnyBody {
+						return true
+					}
+					if err := streamWriter.WriteSSEComment(downstreamSSEKeepaliveComment); err != nil {
+						// 下游已断:翻译回调只会在下一帧到达时才发现,上游静默期间
+						// 会一直阻塞在读上,这里主动取消上游读让本 attempt 尽快收尾。
+						writeErr = err
+						upstreamCancel()
+						return false
+					}
+					return true
+				})
+			}
 			// contentStarted 用严格口径（isFirstTokenResult）跟踪"首个真实内容帧"，
 			// 专供流提交决策（缓冲/重试窗口/failed 抑制）使用；ttftRecorded 按
 			// first_token_mode 可能是 loose 口径，只用于首字统计。loose 模式会把
 			// output_item.added 等纯结构帧当"首字"，若拿它做流提交门，结构帧一到
 			// 就落盘 200，首包前静默重试窗口被过早关闭（issue #435）。
 			readErr = readSSEStreamWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(sseEvent string, data []byte) bool {
+				downstreamMu.Lock()
+				defer downstreamMu.Unlock()
+				// 保活写失败已判定下游断开:不再翻译/写入,停止读取。
+				if writeErr != nil {
+					return false
+				}
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 
@@ -1324,6 +1368,8 @@ func (h *Handler) Messages(c *gin.Context) {
 
 				return !isResponsesTerminalEvent(eventType)
 			})
+			// stop 会等保活 goroutine 完整退出,之后的收尾写入不再有并发方。
+			stopDownstreamKeepalive()
 			// 仅在真的写过 body 时才做收尾 flush：flusher.Flush 会先提交 HTTP 200 header，
 			// 零写入时提前 flush 会让循环外按真实错误码返回的 JSON 失效（status 已定型为 200）。
 			if writeErr == nil && wroteAnyBody {

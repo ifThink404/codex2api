@@ -46,6 +46,8 @@ import type {
   APIKeyTokenStat,
   APIKeyAccountStatsResponse,
   APIKeyScopeUsageItem,
+  APIKeyLimits,
+  APIKeyModelRequestUsage,
   APIKeyScopeSummaryItem,
   AccountsResponse,
   AccountAnalysisResponse,
@@ -1156,7 +1158,7 @@ export const api = {
   deleteAPIKey: (id: number) =>
     request<MessageResponse>(`/keys/${id}`, { method: 'DELETE' }),
   updateAPIKey: (id: number, data: UpdateAPIKeyRequest) =>
-    request<MessageResponse>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    request<MessageResponse & { limits?: APIKeyLimits }>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   resetAPIKeyQuota: (id: number) =>
     request<MessageResponse>(`/keys/${id}/reset-quota`, { method: 'POST' }),
   resetAllAPIKeyQuotas: () =>
@@ -1164,6 +1166,8 @@ export const api = {
   // 分组 / 账号维度限额的当前用量（issue #439）。
   getAPIKeyScopeUsage: (id: number) =>
     request<{ items: APIKeyScopeUsageItem[] }>(`/keys/${id}/scope-usage`),
+  getAPIKeyModelRequestUsage: (id: number) =>
+    request<{ model_request_usage: APIKeyModelRequestUsage[] }>(`/keys/${id}/model-request-usage`),
   // 列表页用的全量概览：一次拿到所有 Key 的 scope 预算占比。
   getAPIKeysScopeSummary: () =>
     request<{ summary: Record<string, APIKeyScopeSummaryItem[]> }>('/keys-scope-summary'),

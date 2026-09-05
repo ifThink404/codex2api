@@ -3099,6 +3099,7 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 		c.Set(contextAPIKeyName, strings.TrimSpace(apiKeyRow.Name))
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
+		h.attachAPIKeyModelRequestQuota(c, false)
 		c.Set("apiKey", key)
 		if h.enforceRequiredNewAPIIdentityAtIngress(c) {
 			c.Abort()
@@ -3304,6 +3305,9 @@ func isRetryableRequestError(err error) bool {
 }
 
 func isRetryableRequestErrorForContext(ctx context.Context, err error, policies ...database.ContinuousRetryPolicy) bool {
+	if apiKeyModelRequestError(err) != nil {
+		return false
+	}
 	if ctx != nil && ctx.Err() != nil {
 		return false
 	}
@@ -4031,6 +4035,12 @@ func (h *Handler) Responses(c *gin.Context) {
 			durationMs := int(time.Since(start).Milliseconds())
 
 			if reqErr != nil {
+				if apiKeyModelRequestError(reqErr) != nil {
+					stopTTFTGuard()
+					h.store.Release(account)
+					sendAPIKeyModelRequestQuotaError(c, reqErr)
+					return
+				}
 				timedOut := ttftTimedOut()
 				stopTTFTGuard()
 				if timedOut {
@@ -4761,6 +4771,12 @@ func (h *Handler) Responses(c *gin.Context) {
 		durationMs := int(time.Since(start).Milliseconds())
 
 		if reqErr != nil {
+			if apiKeyModelRequestError(reqErr) != nil {
+				ttftGuard.Stop()
+				h.store.Release(account)
+				sendAPIKeyModelRequestQuotaError(c, reqErr)
+				return
+			}
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
 			if timedOut {
@@ -5173,9 +5189,10 @@ func (h *Handler) Responses(c *gin.Context) {
 			// 默认（未启用自动续想）路径也可能在 xhigh/max 的长推理阶段数十秒
 			// 没有可转发帧。定期写标准 SSE 注释，避免本机反代/Tailscale
 			// 把健康长流误判为空闲连接。自动续想路径已有自己的隐藏轮保活，
-			// 不重复启动第二个 ticker。
+			// 缓冲式持续重试下 streamWriter 写的是私有缓冲、真实心跳由 request
+			// 级 keepalive 负责，两种情况都不重复启动第二个 ticker。
 			stopDownstreamKeepalive := func() {}
-			if !contEnabled {
+			if !contEnabled && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
 				stopDownstreamKeepalive = startDownstreamSSEKeepalive(c.Request.Context(), downstreamSSEKeepaliveInterval, func() bool {
 					downstreamMu.Lock()
 					defer downstreamMu.Unlock()
@@ -5882,6 +5899,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			durationMs := int(time.Since(start).Milliseconds())
 
 			if reqErr != nil {
+				if apiKeyModelRequestError(reqErr) != nil {
+					h.store.Release(account)
+					sendAPIKeyModelRequestQuotaError(c, reqErr)
+					return
+				}
 				retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
 				if kind := classifyTransportFailure(reqErr); retryable && shouldPenalizeTransportKind(kind) {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
@@ -6119,6 +6141,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		durationMs := int(time.Since(start).Milliseconds())
 
 		if reqErr != nil {
+			if apiKeyModelRequestError(reqErr) != nil {
+				h.store.Release(account)
+				sendAPIKeyModelRequestQuotaError(c, reqErr)
+				return
+			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
 			if kind := classifyTransportFailure(reqErr); retryable && shouldPenalizeTransportKind(kind) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
@@ -6743,6 +6770,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		durationMs := int(time.Since(start).Milliseconds())
 
 		if reqErr != nil {
+			if apiKeyModelRequestError(reqErr) != nil {
+				ttftGuard.Stop()
+				h.store.Release(account)
+				sendAPIKeyModelRequestQuotaError(c, reqErr)
+				return
+			}
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
 			if timedOut {
@@ -7063,7 +7096,42 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			// 但继续读上游直到 response.completed/failed，以拿到准确 usage。
 			clientGone := false
 			var pendingFirstTokenChunks bytes.Buffer
+			// downstreamMu 串行化翻译写路径与其共享状态(clientGone/writeErr/
+			// wroteAnyBody/streamWriter):下游保活 goroutine 与翻译回调并发写
+			// 同一个 ResponseWriter,必须互斥。
+			var downstreamMu sync.Mutex
+			// 与 /v1/responses 同一套下游保活:首个内容帧之后上游长推理期间定期
+			// 写 SSE 注释,避免反代/CDN 把健康长流当空闲连接掐断(issue #623)。
+			// 缓冲式持续重试下 streamWriter 写的是私有缓冲,真实下游心跳由
+			// request 级 keepalive 负责,不再起第二个。
+			stopDownstreamKeepalive := func() {}
+			if !continuousRetryBuffersAttempts(continuousRetryPolicy) {
+				stopDownstreamKeepalive = startDownstreamSSEKeepalive(c.Request.Context(), downstreamSSEKeepaliveInterval, func() bool {
+					downstreamMu.Lock()
+					defer downstreamMu.Unlock()
+					if c.Request.Context().Err() != nil {
+						clientGone = true
+						return false
+					}
+					if clientGone {
+						return false
+					}
+					// 首个真实字节前不能写注释,否则会提前提交 HTTP 200,
+					// 破坏首包前 response.failed 的真实状态码与换号重试语义。
+					if !wroteAnyBody {
+						return true
+					}
+					if err := streamWriter.WriteSSEComment(downstreamSSEKeepaliveComment); err != nil {
+						writeErr = err
+						clientGone = true
+						return false
+					}
+					return true
+				})
+			}
 			readErr = readSSEStreamWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(sseEvent string, data []byte) bool {
+				downstreamMu.Lock()
+				defer downstreamMu.Unlock()
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 				if eventType == "response.failed" {
@@ -7208,6 +7276,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				}
 				return true
 			})
+			// stop 会等保活 goroutine 完整退出,之后的收尾写入不再有并发方。
+			stopDownstreamKeepalive()
 			// 仅在真的写过 body 时才做收尾 flush:flusher.Flush 会先提交 HTTP 200 header,
 			// 零写入时提前 flush 会让循环外的 c.JSON(4xx) 失效(status 已定型为 200)。
 			if writeErr == nil && wroteAnyBody {

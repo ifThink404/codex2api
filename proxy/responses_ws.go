@@ -331,6 +331,11 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	// prior frame's config or body digest.
 	resetPromptRequestSecurityFrame(c)
 	resetPromptPolicyRequestCorrelationID(c)
+	quotaParentRequest := c.Request
+	if err := h.refreshAPIKeyModelRequestQuotaTurn(c); err != nil {
+		return writeResponsesWSError(conn, apiKeyModelRequestError(err).apiErr)
+	}
+	defer func() { c.Request = quotaParentRequest }()
 	c.Set(promptGuardPolicyEventIDContextKey, policyEventID)
 	rawBody, model, apiErr := normalizeResponsesWebSocketClientPayload(rawPayload)
 	if apiErr != nil {
@@ -696,6 +701,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 
 		if reqErr != nil {
+			if quotaErr := apiKeyModelRequestError(reqErr); quotaErr != nil {
+				ttftGuard.Stop()
+				h.store.Release(account)
+				// A model-specific budget must not close the connection for other models.
+				return writeResponsesWSError(conn, quotaErr.apiErr)
+			}
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
 			if timedOut {

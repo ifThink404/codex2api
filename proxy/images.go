@@ -1557,6 +1557,11 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		})
 		durationMs := int(time.Since(start).Milliseconds())
 		if reqErr != nil {
+			if apiKeyModelRequestError(reqErr) != nil {
+				h.store.Release(account)
+				sendAPIKeyModelRequestQuotaError(c, reqErr)
+				return
+			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
 			if kind := classifyTransportFailure(reqErr); retryable && shouldPenalizeTransportKind(kind) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)

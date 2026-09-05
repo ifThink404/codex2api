@@ -857,9 +857,20 @@ Claude 账号详情还会返回脱敏的 `claude_user_agent` 指纹摘要；不�
 
 #### GET /api/admin/accounts/:id/test
 
-执行一次手动原生 Messages 测连并以 SSE 返回 `test_start`、`content`、`error`、
-`test_complete`。与只读模型探测不同，手动测连会同步真实账号的用量/限流与错误
+执行一次手动原生 Messages 测连并以 SSE 返回 `test_start`、`content`、`diagnostics`、
+`error`、`test_complete`。与只读模型探测不同，手动测连会同步真实账号的用量/限流与错误
 状态；上游明确 rejected/耗尽时不会被“成功”结果清除。
+
+Claude 测连的 `diagnostics` 对象包含本次上游 HTTP 状态、响应头耗时、首段文本/思考
+内容耗时、总耗时（均为毫秒）、请求/响应模型、实际使用的指纹模式，以及可观测到的
+Request ID、Organization ID、Message ID、结束原因和错误类型。`usage` 保留原生
+`input_tokens`（未缓存输入）、`output_tokens`、缓存读取/写入及 5m/1h 缓存写入明细；
+流式累计用量按最新值更新，不重复相加。未观测到的字段省略，不以零代替。
+
+`response_headers` 是经过白名单筛选的诊断响应头（限流、请求标识等，不含 Cookie 或
+认证头），`response_body` 是已读取的 JSON/SSE 脱敏预览，最多 64 KiB；截断时
+`body_truncated=true`。成功和失败均可携带诊断信息。最终 `diagnostics` 事件可能位于
+`test_complete`/`error` 之后，客户端应读到 SSE 关闭再刷新账号快照。
 
 Claude 模型探测和连接测试的输出预算默认 4096；配置了正数 `max_output_tokens` 时取两者
 较小值，`0` 表示不设应用层上限。完整响应只有 thinking 时也可通过；流式响应仍要求终止
@@ -1080,15 +1091,20 @@ curl -X POST http://localhost:8080/api/admin/accounts/at \
 
 测试账号连接。
 
-**响应:**
+**响应:** `text/event-stream`。以下为成功测连的事件示例：
 
-```json
-{
-  "success": true,
-  "latency_ms": 523,
-  "message": "连接正常"
-}
+```text
+data: {"type":"test_start","model":"claude-haiku-4-5"}
+
+data: {"type":"content","text":"pong"}
+
+data: {"type":"test_complete","success":true}
+
+data: {"type":"diagnostics","diagnostics":{"model":"claude-haiku-4-5","http_status":200,"duration_ms":523}}
 ```
+
+`diagnostics` 为 Claude 账号的附加事件；失败由 `error` 事件返回。具体诊断字段见上文
+Claude 原生 Messages 测连说明。
 
 #### GET /api/admin/accounts/:id/usage
 
@@ -2390,6 +2406,64 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 
 - `global_rpm = 0`: 无限流
 - `global_rpm > 0`: 启用 RPM 限流
+
+### API Key 模型周请求次数预算
+
+API Key 的 `limits.model_request_limits` 可按最终映射模型限制固定日历周的请求次数。支持精确模型名及 `*` 通配，一条规则的匹配模型共用预算，多条命中规则同时生效。配置字段、计数口径及更新规则详见 [配置说明](CONFIGURATION.md#api-key-模型周请求次数预算)。
+
+管理端创建 `POST /api/admin/keys` 与更新 `PATCH /api/admin/keys/:id` 均接收该字段。新增规则省略 `id`，服务端生成；读取 `GET /api/admin/keys` 返回的 `limits` 获取已保存的 ID。更新已有规则时保留 ID，只能修改次数上限或调整顺序；模型与重置安排需通过删除旧规则、新增规则更改。非法配置或未知规则 ID 返回 `400`。
+
+管理员可使用管理鉴权查询当前周用量：
+
+```http
+GET /api/admin/keys/123/model-request-usage
+X-Admin-Key: YOUR_ADMIN_SECRET
+```
+
+```json
+{
+  "model_request_usage": [
+    {
+      "rule_id": "mr_example",
+      "model": "gpt-6*",
+      "window": "week",
+      "limit": 50,
+      "used": 12,
+      "remaining": 38,
+      "window_start": "2026-08-30T16:00:00Z",
+      "reset_at": "2026-09-06T16:00:00Z",
+      "timezone": "Asia/Shanghai"
+    }
+  ]
+}
+```
+
+公开自助接口 `GET /api/key-usage/summary` 与别名 `GET /api/key-usage/me` 在原有 `key`、`range`、`usage` 之外增加相同结构的顶层 `model_request_usage`。传入 `Authorization: Bearer YOUR_API_KEY`，只返回此 Key 的预算，不能通过查询参数读取其他 Key；公开用量页关闭时继续返回 `404`。没有配置时该字段为 `[]`。此字段始终反映当前固定周，与报表的 `range` 参数独立。
+
+预算耗尽时 HTTP 返回 `429`，错误码为 `rate_limit_reached`，`Retry-After` 表示距离该规则重置的秒数。`error.details` 包含耗尽规则的用量快照：
+
+```json
+{
+  "error": {
+    "type": "rate_limit_error",
+    "code": "rate_limit_reached",
+    "message": "API key weekly model request limit reached for \"gpt-6*\" (50/50)",
+    "details": {
+      "rule_id": "mr_example",
+      "model": "gpt-6*",
+      "window": "week",
+      "limit": 50,
+      "used": 50,
+      "remaining": 0,
+      "window_start": "2026-08-30T16:00:00Z",
+      "reset_at": "2026-09-06T16:00:00Z",
+      "timezone": "Asia/Shanghai"
+    }
+  }
+}
+```
+
+Responses WebSocket 升级后用对应错误帧返回拒绝信息，每个 `response.create` 分别计数；HTTP 流式请求在上游发送前检查。若较早的上游尝试已启动 HTTP 事件流，而后续重试映射到另一模型并耗尽其预算，已有流中会发送包含同样 `error.details` 的错误事件。该本地预算错误不会触发上游换号重试。计数依赖暂时不可用时返回 `503`，不静默放行。额度耗尽后可等待规则重置，或调用不匹配该规则且满足其他限制的模型。
 
 ### 账号级别限流
 

@@ -695,6 +695,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 		logCodexFingerprintDebug("http", account, proxyURL, req.Header)
 
+		if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
+			return nil, err
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			if shouldRecyclePooledClient(err) {
@@ -767,6 +770,9 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 			return nil, ErrInternalError("创建请求失败", err)
 		}
 		applyOpenAIResponsesRequestHeaders(req, account, apiKey, headers)
+		if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(body, "model").String()); err != nil {
+			return nil, err
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			if shouldRecyclePooledClient(err) {
@@ -894,6 +900,9 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 	}
 	applyOpenAIResponsesRequestHeaders(req, account, apiKey, headers)
 
+	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
+		return nil, err
+	}
 	resp, err := getPooledClient(account, proxyURL).Do(req)
 	if err != nil {
 		if shouldRecyclePooledClient(err) {
@@ -981,6 +990,9 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	}
 	logCodexFingerprintDebug("compact", account, proxyURL, req.Header)
 
+	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
+		return nil, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		if shouldRecyclePooledClient(err) {

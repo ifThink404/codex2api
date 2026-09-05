@@ -258,6 +258,9 @@ func ExecuteClaudeMessagesRequestWithPolicy(ctx context.Context, account *auth.A
 		}
 	}
 
+	if err := ConsumeAPIKeyModelRequestQuota(ctx, model); err != nil {
+		return nil, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		if shouldRecyclePooledClient(err) {

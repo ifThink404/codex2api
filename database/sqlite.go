@@ -212,6 +212,22 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_model_request_counters (
+			api_key_id INTEGER NOT NULL,
+			rule_id TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			reset_at INTEGER NOT NULL,
+			used_requests INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (api_key_id, rule_id, window_start)
+		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_model_request_ledger (
+			api_key_id INTEGER NOT NULL,
+			rule_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (api_key_id, rule_id, request_id)
+		);`,
 		`CREATE TABLE IF NOT EXISTS api_key_scope_counters (
 			api_key_id INTEGER NOT NULL,
 			scope_type TEXT NOT NULL,

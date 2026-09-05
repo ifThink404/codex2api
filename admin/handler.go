@@ -1172,6 +1172,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PATCH("/keys/:id", h.UpdateAPIKey)
 	api.POST("/keys/:id/reset-quota", h.ResetAPIKeyQuota)
 	api.GET("/keys/:id/scope-usage", h.GetAPIKeyScopeUsage)
+	api.GET("/keys/:id/model-request-usage", h.GetAPIKeyModelRequestUsage)
 	api.GET("/keys-scope-summary", h.GetAPIKeysScopeSummary)
 	api.POST("/keys/:id/scope-quota/reset", h.ResetAPIKeyScopeQuota)
 	api.DELETE("/keys/:id", h.DeleteAPIKey)
@@ -8411,6 +8412,11 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 	var limits database.APIKeyLimits
 	if req.Limits != nil {
 		limits = sanitizeAPIKeyLimits(*req.Limits)
+		limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, nil)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := h.validateAPIKeyGroupIDs(ctx, limits.NoAffinityGroupIDs, "limits.no_affinity_group_ids"); err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())
 			return
@@ -8575,6 +8581,11 @@ func (h *Handler) UpdateAPIKey(c *gin.Context) {
 	}
 	if req.Limits != nil {
 		update.Limits = sanitizeAPIKeyLimits(*req.Limits)
+		update.Limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, row.Limits.ModelRequestLimits)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := h.validateAPIKeyGroupIDs(ctx, update.Limits.NoAffinityGroupIDs, "limits.no_affinity_group_ids"); err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())
 			return
@@ -8600,7 +8611,11 @@ func (h *Handler) UpdateAPIKey(c *gin.Context) {
 		h.db.InvalidateScopeQuotaKeyCache()
 	}
 	h.invalidateAPIKeyRuntimeCaches(ctx, row.Key)
-	writeMessage(c, http.StatusOK, "API Key 已更新")
+	savedLimits := row.Limits
+	if update.LimitsSet {
+		savedLimits = update.Limits
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "API Key 已更新", "limits": savedLimits})
 }
 
 // sanitizeAPIKeyLimits 把请求体里来的 limits 归一:负值置 0,空白模型名过滤,字符串小写。
@@ -8648,6 +8663,7 @@ func sanitizeAPIKeyLimits(in database.APIKeyLimits) database.APIKeyLimits {
 		AllowLive:              in.AllowLive,
 		UpstreamChannel:        in.ResolveUpstreamChannel(),
 		ScopeLimits:            database.NormalizeAPIKeyScopeLimits(in.ScopeLimits),
+		ModelRequestLimits:     in.ModelRequestLimits,
 	}
 	// 归一后旧 bool 与新 policy 保持一致，避免两处配置漂移。
 	out.DisableImageGeneration = out.ImageGenerationPolicy == database.ImageGenerationPolicyBlock
