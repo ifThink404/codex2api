@@ -60,24 +60,25 @@ func TestApplyAnthropicUsageSemantics_TotalsInputAcrossCacheBuckets(t *testing.T
 }
 
 func TestInjectClaudeCodeSystemPrompt_InheritsClientCacheTTL(t *testing.T) {
+	// system.0 是计费块(无 cache_control),声明块在 system.1。
 	oneHour := []byte(`{"system":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":"hi"}]}`)
 	out := injectClaudeCodeSystemPrompt(oneHour)
-	if got := gjson.GetBytes(out, "system.0.cache_control.ttl").String(); got != "1h" {
+	if got := gjson.GetBytes(out, "system.1.cache_control.ttl").String(); got != "1h" {
 		t.Fatalf("injected preamble ttl = %q, want 1h so it does not precede the client's 1h block with a 5m block", got)
 	}
 	fiveMin := []byte(`{"system":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hi"}]}`)
 	out = injectClaudeCodeSystemPrompt(fiveMin)
-	if gjson.GetBytes(out, "system.0.cache_control.ttl").Exists() {
+	if gjson.GetBytes(out, "system.1.cache_control.ttl").Exists() {
 		t.Fatal("client without 1h must keep the default preamble block")
 	}
 	none := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
 	out = injectClaudeCodeSystemPrompt(none)
-	if !gjson.GetBytes(out, "system.0.cache_control").Exists() || gjson.GetBytes(out, "system.0.cache_control.ttl").Exists() {
+	if !gjson.GetBytes(out, "system.1.cache_control").Exists() || gjson.GetBytes(out, "system.1.cache_control.ttl").Exists() {
 		t.Fatal("no client cache_control: default 5m preamble block")
 	}
 	messagesOnly := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
 	out = injectClaudeCodeSystemPrompt(messagesOnly)
-	if got := gjson.GetBytes(out, "system.0.cache_control.ttl").String(); got != "1h" {
+	if got := gjson.GetBytes(out, "system.1.cache_control.ttl").String(); got != "1h" {
 		t.Fatalf("a 1h block in messages must also make the preamble 1h, got %q", got)
 	}
 }

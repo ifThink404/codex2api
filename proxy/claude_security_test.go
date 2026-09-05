@@ -2,15 +2,18 @@ package proxy
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
 func TestNormalizeClaudeRequestBodyCanonicalizesBeforeReview(t *testing.T) {
-	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"he` + string(rune(0x200B)) + `llo"}],"service_tier":"priority","inference_geo":"us","speed":"fast","safety_identifier":"user-42"}`)
+	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"he` + string(rune(0x202E)) + `llo"}],"service_tier":"priority","inference_geo":"us","speed":"fast","safety_identifier":"user-42"}`)
 	out, err := normalizeClaudeRequestBody(body, auth.DefaultClaudeSecurityConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -22,6 +25,70 @@ func TestNormalizeClaudeRequestBodyCanonicalizesBeforeReview(t *testing.T) {
 		if gjson.GetBytes(out, field).Exists() {
 			t.Fatalf("default security policy kept %s: %s", field, out)
 		}
+	}
+}
+
+// TestMessagesIngressKeepsCodexPriorityTierOffNativeRoute 钉住跨渠道边界。
+//
+// /v1/messages 同时服务 Codex 翻译、Grok 与 Antigravity 中转。Claude 的出站策略
+// 默认要删掉 speed / service_tier / inference_geo / safety_identifier —— 无差别套
+// 用就会把 Codex 账号的 priority 档位连同用量归因一起静默吞掉:Anthropic 侧请求
+// 加速用的是 speed:"fast",路由 stub 正是读它才写出 service_tier:priority,
+// 而规范化默认把 speed 删了,stub 就再也拿不到档位。
+func TestMessagesIngressKeepsCodexPriorityTierOffNativeRoute(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-5","speed":"fast","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
+	h := &Handler{}
+	models := []string{"gpt-5.4"}
+
+	// 非 Claude 路由:handler 用未改写的 rawBody,speed 存活 → 档位到得了 Codex。
+	if got := extractServiceTier(h.resolveMessagesRoutingBody(body, "claude-sonnet-4-5", models)); got != "priority" {
+		t.Fatalf("非原生路由应保住 priority 档位, got %q", got)
+	}
+
+	// Claude 出站策略本身照旧剥离(它对 Anthropic 上游确实不合法)。
+	normalized, err := normalizeClaudeRequestBody(body, auth.DefaultClaudeSecurityConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(normalized, "speed").Exists() {
+		t.Fatalf("Claude 原生出站仍应剥离 speed: %s", normalized)
+	}
+	// 而这正是无差别套用的后果:档位没了。回归就长这样。
+	if got := extractServiceTier(h.resolveMessagesRoutingBody(normalized, "claude-sonnet-4-5", models)); got != "" {
+		t.Fatalf("规范化后的体本就不该还带档位, got %q", got)
+	}
+}
+
+// TestNativeClaudeRouteDecisionIsMemoizedPerRequest 钉住"每请求只判一次"。
+//
+// 入站是否套用 Claude 出站策略、模型路由是否保留 claude-* 原生 ID,问的是同一个
+// 判定。两次独立计算若不一致(中间账号变得不可用),就会出现"按 Claude 剥过字段
+// 的体被送去 Codex 账号"。判定本身还要扫号池,万级号池下重复全扫是热路径开销。
+func TestNativeClaudeRouteDecisionIsMemoizedPerRequest(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+	defer store.Stop()
+	h := &Handler{store: store}
+	gin.SetMode(gin.TestMode)
+
+	requestCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	if h.nativeClaudeRouteForRequest(requestCtx, "claude-sonnet-4-5") {
+		t.Fatal("空号池不该判定为 Claude 原生路由")
+	}
+
+	store.AddAccount(&auth.Account{
+		DBID:         92,
+		UpstreamType: auth.UpstreamClaude,
+		AccessToken:  "claude-token",
+		Status:       auth.StatusReady,
+		Models:       []string{"claude-sonnet-4-5"},
+	})
+	if h.nativeClaudeRouteForRequest(requestCtx, "claude-sonnet-4-5") {
+		t.Fatal("同一请求内的路由判定必须稳定,不能中途翻转")
+	}
+
+	nextRequestCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	if !h.nativeClaudeRouteForRequest(nextRequestCtx, "claude-sonnet-4-5") {
+		t.Fatal("新请求看到可用 Claude 账号时应判定为原生路由")
 	}
 }
 
@@ -103,14 +170,14 @@ func TestNormalizeClaudeRequestBodyNormalizesLegacyMaxTokensAlias(t *testing.T) 
 	}
 }
 
-func TestNormalizeClaudeRequestBodyDropsUnsupportedContextManagement(t *testing.T) {
+func TestNormalizeClaudeRequestBodyKeepsContextManagement(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-7","max_tokens":13100,"messages":[],"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`)
 	out, err := normalizeClaudeRequestBody(body, auth.DefaultClaudeSecurityConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gjson.GetBytes(out, "context_management").Exists() {
-		t.Fatalf("context_management is rejected by the Claude OAuth endpoint: %s", out)
+	if !gjson.GetBytes(out, "context_management").Exists() {
+		t.Fatalf("context_management is sent with its paired beta, must survive normalization: %s", out)
 	}
 	for _, field := range []string{"thinking", "output_config"} {
 		if !gjson.GetBytes(out, field).Exists() {

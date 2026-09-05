@@ -63,7 +63,31 @@ var DefaultAntigravityEndpoints = AntigravityEndpoints{
 	AICredits: []string{
 		"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
 	},
+	// onboardUser provisions the Cloud Code companion project for a Google
+	// account that has never used Antigravity. loadCodeAssist returns an empty
+	// cloudaicompanionProject for those accounts, and without a project the
+	// account can never be dispatched. The native client onboards on the daily
+	// host; production is kept as a fallback only.
+	OnboardUser: []string{
+		"https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
+		"https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
+	},
 }
+
+const (
+	// antigravityOnboardPollAttempts / antigravityOnboardPollInterval bound the
+	// long-running-operation poll for onboardUser. The operation normally
+	// completes within one or two polls; five attempts two seconds apart is the
+	// budget used by the native client.
+	antigravityOnboardPollAttempts = 5
+	antigravityOnboardPollInterval = 2 * time.Second
+	// antigravityOnboardDefaultTier is used when loadCodeAssist advertised no
+	// default tier at all.
+	antigravityOnboardDefaultTier = "free-tier"
+	// antigravityOnboardAPIClient mirrors the X-Goog-Api-Client header the
+	// native Node client sends on the onboarding call.
+	antigravityOnboardAPIClient = "gl-node/22.21.1"
+)
 
 type antigravityOAuthClient struct {
 	Key          string
@@ -83,6 +107,9 @@ type AntigravityClient struct {
 	activeKey  string
 	userAgent  string
 	now        func() time.Time
+	// sleep is the poll delay used while waiting for onboardUser to finish.
+	// Injectable so tests do not spend real seconds.
+	sleep func(context.Context, time.Duration) error
 }
 
 type antigravityTokenResponse struct {
@@ -95,14 +122,21 @@ type antigravityTokenResponse struct {
 }
 
 type antigravityTierPayload struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	QuotaTier        string `json:"quotaTier"`
-	Slug             string `json:"slug"`
-	IsDefault        bool   `json:"is_default"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	QuotaTier string `json:"quotaTier"`
+	Slug      string `json:"slug"`
+	// Cloud Code emits camelCase (isDefault); the snake_case alias is kept so
+	// stored snapshots and any proto-JSON variant still parse.
+	IsDefault        bool `json:"isDefault"`
+	IsDefaultSnake   bool `json:"is_default"`
 	AvailableCredits []struct {
 		CreditAmount any `json:"creditAmount"`
 	} `json:"availableCredits"`
+}
+
+func (t antigravityTierPayload) isDefaultTier() bool {
+	return t.IsDefault || t.IsDefaultSnake
 }
 
 type antigravityLoadProjectResponse struct {
@@ -113,6 +147,34 @@ type antigravityLoadProjectResponse struct {
 	IneligibleTiers []struct {
 		ReasonCode string `json:"reasonCode"`
 	} `json:"ineligibleTiers"`
+}
+
+// antigravityOnboardResponse is the long-running operation envelope returned
+// by v1internal:onboardUser. The provisioned project appears under response
+// either as a bare string or as an object carrying id.
+type antigravityOnboardResponse struct {
+	Done     bool `json:"done"`
+	Response struct {
+		Project json.RawMessage `json:"cloudaicompanionProject"`
+	} `json:"response"`
+}
+
+func (r antigravityOnboardResponse) projectID() string {
+	raw := bytes.TrimSpace(r.Response.Project)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+	var asObject struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &asObject); err == nil {
+		return strings.TrimSpace(asObject.ID)
+	}
+	return ""
 }
 
 type antigravityQuotaResponse struct {
@@ -160,7 +222,7 @@ type antigravityErrorPayload struct {
 	Error struct {
 		Message string `json:"message"`
 		Details []struct {
-			Reason string `json:"reason"`
+			Reason   string `json:"reason"`
 			Metadata struct {
 				ValidationURL string `json:"validation_url"`
 				AppealURL     string `json:"appeal_url"`
@@ -563,8 +625,99 @@ func (c *AntigravityClient) fetchIdentityContext(ctx context.Context, credential
 	if entitlements.ProjectID == "" {
 		entitlements.ProjectID = projectID
 	}
+	if entitlementErr == nil && entitlements.ProjectID == "" {
+		// loadCodeAssist succeeded but the account has no companion project
+		// yet. Provision one the way the native client does; otherwise the
+		// account is stored healthy but is never dispatchable.
+		onboarded, onboardErr := c.onboardProject(ctx, credential.AccessToken, entitlements)
+		if onboardErr != nil {
+			entitlementErr = fmt.Errorf("Antigravity project provisioning (onboardUser) failed: %w", onboardErr)
+		} else {
+			entitlements.ProjectID = onboarded
+		}
+	}
 	credential.ProjectID = entitlements.ProjectID
 	return profile, entitlements, entitlementErr, nil
+}
+
+// antigravityOnboardTierID picks the tier onboardUser should provision:
+// the advertised default tier first, then the current tier, then free-tier.
+func antigravityOnboardTierID(entitlements AntigravityEntitlements) string {
+	for _, tier := range entitlements.AllowedTiers {
+		if tier.IsDefault && strings.TrimSpace(tier.ID) != "" {
+			return strings.TrimSpace(tier.ID)
+		}
+	}
+	if entitlements.CurrentTier != nil && strings.TrimSpace(entitlements.CurrentTier.ID) != "" {
+		return strings.TrimSpace(entitlements.CurrentTier.ID)
+	}
+	return antigravityOnboardDefaultTier
+}
+
+// onboardProject calls v1internal:onboardUser and polls the returned
+// long-running operation until it reports done with a project id.
+func (c *AntigravityClient) onboardProject(ctx context.Context, accessToken string, entitlements AntigravityEntitlements) (string, error) {
+	if len(c.endpoints.OnboardUser) == 0 {
+		return "", errors.New("no onboardUser endpoint configured")
+	}
+	payload := map[string]any{
+		"tierId": antigravityOnboardTierID(entitlements),
+		"metadata": map[string]any{
+			"ideType":    "ANTIGRAVITY",
+			"platform":   "PLATFORM_UNSPECIFIED",
+			"pluginType": "GEMINI",
+		},
+	}
+	var lastErr error
+	for _, endpoint := range c.endpoints.OnboardUser {
+		for attempt := range antigravityOnboardPollAttempts {
+			if attempt > 0 {
+				if err := c.sleepFor(ctx, antigravityOnboardPollInterval); err != nil {
+					return "", err
+				}
+			}
+			var response antigravityOnboardResponse
+			status, err := c.postJSONWithHeaders(ctx, endpoint, accessToken, payload, &response, map[string]string{
+				"X-Goog-Api-Client": antigravityOnboardAPIClient,
+			})
+			if err != nil {
+				lastErr = err
+				if status != http.StatusTooManyRequests && status < http.StatusInternalServerError {
+					// Non-retryable on this host; a 404 means the host does not
+					// serve onboardUser, so try the next endpoint.
+					break
+				}
+				continue
+			}
+			if projectID := response.projectID(); projectID != "" {
+				return projectID, nil
+			}
+			if !response.Done {
+				lastErr = errors.New("onboardUser operation is still pending")
+				continue
+			}
+			lastErr = errors.New("onboardUser completed without a project id")
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("onboardUser did not return a project id")
+	}
+	return "", lastErr
+}
+
+func (c *AntigravityClient) sleepFor(ctx context.Context, d time.Duration) error {
+	if c.sleep != nil {
+		return c.sleep(ctx, d)
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func antigravityPartialSyncResult(credential AntigravityCredential, profile AntigravityProfile, entitlements AntigravityEntitlements, entitlementErr error) AntigravitySyncResult {
@@ -753,7 +906,7 @@ func convertAntigravityTier(tier *antigravityTierPayload) *AntigravityTier {
 	}
 	return &AntigravityTier{
 		ID: strings.TrimSpace(tier.ID), Name: strings.TrimSpace(tier.Name),
-		QuotaTier: strings.TrimSpace(tier.QuotaTier), Slug: strings.TrimSpace(tier.Slug), IsDefault: tier.IsDefault,
+		QuotaTier: strings.TrimSpace(tier.QuotaTier), Slug: strings.TrimSpace(tier.Slug), IsDefault: tier.isDefaultTier(),
 	}
 }
 
@@ -919,6 +1072,10 @@ func parseAntigravityNumber(value any) (float64, bool) {
 }
 
 func (c *AntigravityClient) postJSON(ctx context.Context, endpoint, accessToken string, payload any, output any) (int, error) {
+	return c.postJSONWithHeaders(ctx, endpoint, accessToken, payload, output, nil)
+}
+
+func (c *AntigravityClient) postJSONWithHeaders(ctx context.Context, endpoint, accessToken string, payload any, output any, extraHeaders map[string]string) (int, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return 0, err
@@ -930,6 +1087,9 @@ func (c *AntigravityClient) postJSON(ctx context.Context, endpoint, accessToken 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
 	err = c.doJSON(req, output)
 	if httpErr := (*antigravityHTTPError)(nil); errors.As(err, &httpErr) {
 		return httpErr.Status, err

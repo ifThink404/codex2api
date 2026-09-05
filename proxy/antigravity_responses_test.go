@@ -125,7 +125,7 @@ func TestAntigravityResponsesUsesOfficialEnvelopeWithoutForcedCredits(t *testing
 		t.Fatalf("userAgent = %#v", got["userAgent"])
 	}
 	request := got["request"].(map[string]any)
-	if request["sessionId"] != antigravityOfficialSessionID {
+	if !isAntigravitySessionID(request["sessionId"]) {
 		t.Fatalf("sessionId = %#v", request["sessionId"])
 	}
 	requestID, _ := got["requestId"].(string)
@@ -766,7 +766,7 @@ func TestAntigravityOAuthWireUsesOfficialIdentity(t *testing.T) {
 		t.Fatalf("body userAgent = %#v", gotBody["userAgent"])
 	}
 	request := gotBody["request"].(map[string]any)
-	if request["sessionId"] != antigravityOfficialSessionID {
+	if !isAntigravitySessionID(request["sessionId"]) {
 		t.Fatalf("sessionId = %#v", request["sessionId"])
 	}
 	if _, exists := gotBody["enabledCreditTypes"]; exists {
@@ -1196,8 +1196,14 @@ func TestAntigravitySSELifecycleAndBufferedTerminal(t *testing.T) {
 			t.Fatalf("missing %s: %s", eventType, got)
 		}
 	}
-	if !strings.Contains(got, `"delta":"hello"`) || !strings.Contains(got, `"output_text":"hello"`) {
-		t.Fatalf("buffered terminal text is incomplete: %s", got)
+	if !strings.Contains(got, `"delta":"hel"`) || !strings.Contains(got, `"delta":"lo"`) || !strings.Contains(got, `"output_text":"hello"`) {
+		t.Fatalf("incremental deltas or terminal text are incomplete: %s", got)
+	}
+	if strings.Index(got, `"delta":"hel"`) > strings.Index(got, `"delta":"lo"`) {
+		t.Fatalf("deltas are out of order: %s", got)
+	}
+	if strings.Count(got, `"type":"response.output_item.added"`) != 1 || strings.Count(got, `"type":"response.content_part.added"`) != 1 {
+		t.Fatalf("message item must be opened exactly once: %s", got)
 	}
 	if strings.Count(got, `"type":"response.completed"`) != 1 {
 		t.Fatalf("completed count = %d, body=%s", strings.Count(got, `"type":"response.completed"`), got)
@@ -1316,8 +1322,8 @@ func TestAntigravitySSESafetyTerminalFails(t *testing.T) {
 	}
 }
 
-func TestAntigravitySSEPriorTextIsNotLeakedWhenLaterSafetyFrameArrives(t *testing.T) {
-	input := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"sensitive-prefix\"}]}}]}\n\n" +
+func TestAntigravitySSELaterSafetyFrameFailsAfterIncrementalDeltas(t *testing.T) {
+	input := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"already-streamed\"}]}}]}\n\n" +
 		"data: {\"candidates\":[{\"finishReason\":\"SAFETY\"}]}\n\n"
 	body := newAntigravitySSEResponseBody(io.NopCloser(strings.NewReader(input)))
 	defer body.Close()
@@ -1326,8 +1332,17 @@ func TestAntigravitySSEPriorTextIsNotLeakedWhenLaterSafetyFrameArrives(t *testin
 		t.Fatal(err)
 	}
 	got := string(out)
-	if !strings.Contains(got, `"type":"response.failed"`) || strings.Contains(got, "sensitive-prefix") || strings.Contains(got, `"type":"response.completed"`) {
-		t.Fatalf("later safety frame did not fail closed: %s", got)
+	// Text that arrived before the rejection was already forwarded as a delta;
+	// the stream must still terminate as failed, never as completed, and must
+	// not close the text part as if it were a finished answer.
+	if !strings.Contains(got, `"delta":"already-streamed"`) {
+		t.Fatalf("earlier text was not streamed incrementally: %s", got)
+	}
+	if !strings.Contains(got, `"type":"response.failed"`) || strings.Contains(got, `"type":"response.completed"`) || strings.Contains(got, `"type":"response.output_text.done"`) {
+		t.Fatalf("later safety frame did not terminate the stream as failed: %s", got)
+	}
+	if strings.Index(got, `"type":"response.failed"`) < strings.Index(got, `"delta":"already-streamed"`) {
+		t.Fatalf("failure must follow the streamed delta: %s", got)
 	}
 }
 
@@ -1386,5 +1401,76 @@ func TestAntigravitySSEPromptSafetyWithoutCandidateFails(t *testing.T) {
 	got := string(out)
 	if !strings.Contains(got, "response.failed") || strings.Contains(got, "response.completed") || !strings.Contains(got, "safety policy") {
 		t.Fatalf("prompt safety result = %s", got)
+	}
+}
+
+// isAntigravitySessionID reports whether v has the native session id shape:
+// a "-" followed by a decimal 63-bit value.
+func isAntigravitySessionID(v any) bool {
+	s, ok := v.(string)
+	if !ok || len(s) < 2 || s[0] != '-' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func TestAntigravitySessionIDIsStablePerConversationAndDistinctAcrossConversations(t *testing.T) {
+	first, err := responsesToGeminiInternal([]byte(`{"input":[{"role":"user","content":"hello there"}],"prompt_cache_key":"thread-a"}`), "project", "gemini-3.7-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := responsesToGeminiInternal([]byte(`{"input":[{"role":"user","content":"hello there"},{"role":"assistant","content":"hi"},{"role":"user","content":"more"}],"prompt_cache_key":"thread-a"}`), "project", "gemini-3.7-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := responsesToGeminiInternal([]byte(`{"input":[{"role":"user","content":"hello there"}],"prompt_cache_key":"thread-b"}`), "project", "gemini-3.7-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionOf := func(env map[string]any) string {
+		request := env["request"].(map[string]any)
+		id, _ := request["sessionId"].(string)
+		return id
+	}
+	if !isAntigravitySessionID(sessionOf(first)) {
+		t.Fatalf("sessionId shape = %q", sessionOf(first))
+	}
+	if sessionOf(first) != sessionOf(again) {
+		t.Fatalf("same prompt_cache_key produced different session ids: %q vs %q", sessionOf(first), sessionOf(again))
+	}
+	if sessionOf(first) == sessionOf(other) {
+		t.Fatalf("different prompt_cache_key shared a session id: %q", sessionOf(first))
+	}
+}
+
+func TestAntigravitySessionIDFallsBackToFirstUserTurn(t *testing.T) {
+	sessionOf := func(body string) string {
+		env, err := responsesToGeminiInternal([]byte(body), "project", "gemini-3.7-flash-high")
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := env["request"].(map[string]any)
+		id, _ := request["sessionId"].(string)
+		return id
+	}
+	turnOne := sessionOf(`{"instructions":"be brief","input":[{"role":"user","content":"first question"}]}`)
+	turnTwo := sessionOf(`{"instructions":"be brief","input":[{"role":"user","content":"first question"},{"role":"assistant","content":"answer"},{"role":"user","content":"follow up"}]}`)
+	unrelated := sessionOf(`{"input":[{"role":"user","content":"another conversation"}]}`)
+	if turnOne != turnTwo {
+		t.Fatalf("conversation continuation changed the session id: %q vs %q", turnOne, turnTwo)
+	}
+	if turnOne == unrelated {
+		t.Fatalf("unrelated conversations shared a session id: %q", turnOne)
+	}
+	if !isAntigravitySessionID(turnOne) || turnOne == "-3750763034362895579" {
+		t.Fatalf("session id must be derived, not the legacy constant: %q", turnOne)
+	}
+	if metadataSeeded := sessionOf(`{"input":"x","metadata":{"session_id":"sess-1"}}`); metadataSeeded != antigravitySessionIDFromSeed("metadata.session_id:sess-1") {
+		t.Fatalf("metadata.session_id was not used as the seed: %q", metadataSeeded)
 	}
 }

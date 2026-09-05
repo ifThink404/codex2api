@@ -19,10 +19,12 @@ import (
 	"time"
 )
 
-// 真实取值池(保持精简、贴近近期版本)。
+// 真实取值池(保持精简、贴近近期版本)。头部为 Claude Code 2.1.259 抓包确认的当前
+// 线上组合(@anthropic-ai/sdk 0.112.1 + Node v26.3.0),其余为历史抓包值,保留给
+// 老账号的兼容性与抽样多样性。
 var (
-	claudeSDKVersions = []string{"0.68.0", "0.65.0", "0.63.1", "0.60.0"}
-	claudeNodeRuntime = []string{"v22.14.0", "v22.11.0", "v20.18.1", "v20.17.0"}
+	claudeSDKVersions = []string{"0.112.1", "0.68.0", "0.65.0", "0.63.1", "0.60.0"}
+	claudeNodeRuntime = []string{"v26.3.0", "v22.14.0", "v22.11.0", "v20.18.1", "v20.17.0"}
 	claudeStainlessOS = []string{"MacOS", "Linux", "Windows"}
 	claudeArchByOS    = map[string][]string{
 		"MacOS":   {"arm64", "x64"},

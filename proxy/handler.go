@@ -436,7 +436,7 @@ func antigravityChannelAccountFilter(model string) auth.AccountFilter {
 		if !supported {
 			return false
 		}
-		if account.IsModelRateLimited(model) || account.IsModelRateLimited(wireModel) {
+		if antigravityAccountModelRateLimited(account, model, wireModel) {
 			return false
 		}
 		return true
@@ -484,7 +484,7 @@ func accountFilterForResponsesModelResolver(effectiveModel string, allowCodexAcc
 				return false
 			}
 			wireModel, supported := antigravityResolvePublicModelForAccount(account, effectiveModel)
-			return supported && !account.IsModelRateLimited(effectiveModel) && !account.IsModelRateLimited(wireModel)
+			return supported && !antigravityAccountModelRateLimited(account, effectiveModel, wireModel)
 		}
 		if account.IsRelayStyle() {
 			routedModel := effectiveModel
@@ -2478,11 +2478,18 @@ func responseFailedStatusCodeWithEvidence(payload []byte) (int, bool) {
 	// 确定性客户端错误：输入超上下文窗口/字段超长/模型不存在等，换号重试
 	// 也必然失败。归为 400，避免落入 default 500 触发透明重试并惩罚账号
 	// 健康度 (issue #310)。
+	//
+	// code/type 缺失时还要看 message：中转上游常把超窗回成
+	// {"code":null,"type":"upstream_error","message":"Your input exceeds the
+	// context window..."}，只匹配 code/type 会落进 default 500，于是网关把整个
+	// 号池挨个试一遍（换号必然一样失败）并给每个健康账号记一笔故障。
+	// 复用超窗压缩那套只查固定 error 字段的判定，避免全文扫命中回显的请求内容。
 	case strings.Contains(codeOrType, "context_length") ||
 		strings.Contains(codeOrType, "context_window") ||
 		strings.Contains(codeOrType, "above_max_length") ||
 		strings.Contains(codeOrType, "model_not_found") ||
-		strings.Contains(codeOrType, "unsupported"):
+		strings.Contains(codeOrType, "unsupported") ||
+		isContextLengthExceededBody(responseFailedErrorBody(payload)):
 		return http.StatusBadRequest, true
 	case strings.Contains(codeOrType, "invalid") || strings.Contains(codeOrType, "bad_request"):
 		return http.StatusBadRequest, true
@@ -4141,7 +4148,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 				}
 
-				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityRefreshFailed {
+				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
@@ -6836,7 +6843,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					log.Printf("Antigravity OAuth refresh failed after upstream 401 (account=%d, endpoint=/v1/chat/completions): %v", account.ID(), refreshErr)
 				}
 			}
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -8019,11 +8026,13 @@ func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, b
 		return h.applyGrokCooldownForModel(account, statusCode, body, resp, model)
 	}
 	// Antigravity 401 is recovered by RefreshAntigravityAccount. Do not apply
-	// Codex subscription/payment semantics, but retain relay-style model
-	// cooldowns for real 429s so repeated requests cannot hammer Google.
+	// Codex subscription/payment semantics. 429/503 carry Google's structured
+	// quota status instead, which sizes the per-(account, model) cooldown from
+	// the upstream retry hint and keeps a shared capacity shortage from being
+	// charged to this credential.
 	if account.IsAntigravityAPI() {
-		if statusCode == http.StatusTooManyRequests {
-			return Apply429Cooldown(h.store, account, body, resp, model)
+		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
+			return applyAntigravityCooldown(h.store, account, statusCode, body, resp, model)
 		}
 		return codex429Decision{}
 	}

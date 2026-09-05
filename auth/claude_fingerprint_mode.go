@@ -336,60 +336,55 @@ type ClaudeConfig struct {
 }
 
 // SetClaudeClientPolicy publishes the global Claude Code platform/version
-// policy. Invalid values are ignored so malformed legacy settings cannot break
-// startup; the admin endpoint performs strict validation before saving.
+// policy as one snapshot so readers never observe a half-updated policy.
+// Invalid values fall back to any/passthrough so malformed legacy settings
+// cannot break startup; the admin endpoint performs strict validation first.
 func (s *Store) SetClaudeClientPolicy(policy ClaudeClientPolicy) {
 	if s == nil {
 		return
 	}
 	normalized, err := NormalizeClaudeClientPolicy(policy)
 	if err != nil {
-		normalized = ClaudeClientPolicy{Platform: ClaudeClientPlatformAny, VersionPolicy: ClaudeVersionPolicyPassthrough}
+		normalized = DefaultClaudeClientPolicy()
 	}
-	s.claudeClientPlatform.Store(normalized.Platform)
-	s.claudeVersionPolicy.Store(normalized.VersionPolicy)
-	s.claudeClientVersion.Store(normalized.ClientVersion)
-}
-
-func (s *Store) ClaudeClientPlatform() ClaudeClientPlatform {
-	if s != nil {
-		if value, ok := s.claudeClientPlatform.Load().(ClaudeClientPlatform); ok && value != "" {
-			return value
-		}
-	}
-	return ClaudeClientPlatformAny
-}
-
-func (s *Store) ClaudeVersionPolicy() ClaudeVersionPolicy {
-	if s != nil {
-		if value, ok := s.claudeVersionPolicy.Load().(ClaudeVersionPolicy); ok && value != "" {
-			return value
-		}
-	}
-	return ClaudeVersionPolicyPassthrough
-}
-
-func (s *Store) ClaudeClientVersion() string {
-	if s != nil {
-		if value, ok := s.claudeClientVersion.Load().(string); ok {
-			return value
-		}
-	}
-	return ""
+	s.claudeClientPolicy.Store(normalized)
 }
 
 // ClaudeClientPolicy returns the normalized global policy.
 func (s *Store) ClaudeClientPolicy() ClaudeClientPolicy {
-	return ClaudeClientPolicy{Platform: s.ClaudeClientPlatform(), VersionPolicy: s.ClaudeVersionPolicy(), ClientVersion: s.ClaudeClientVersion()}
+	if s != nil {
+		if value, ok := s.claudeClientPolicy.Load().(ClaudeClientPolicy); ok {
+			if normalized, err := NormalizeClaudeClientPolicy(value); err == nil {
+				return normalized
+			}
+		}
+	}
+	return DefaultClaudeClientPolicy()
+}
+
+func (s *Store) ClaudeClientPlatform() ClaudeClientPlatform {
+	return s.ClaudeClientPolicy().Platform
+}
+
+func (s *Store) ClaudeVersionPolicy() ClaudeVersionPolicy {
+	return s.ClaudeClientPolicy().VersionPolicy
+}
+
+func (s *Store) ClaudeClientVersion() string {
+	return s.ClaudeClientPolicy().ClientVersion
 }
 
 // ClaudeClientPolicyForAccount merges an account override over the global
-// policy. Empty account fields intentionally inherit global settings.
+// policy. Empty account fields intentionally inherit global settings. When the
+// merged result is invalid (for example a stale minimum/fixed override whose
+// version was cleared) the account keeps the already-valid global policy
+// instead of silently dropping a platform restriction.
 func (s *Store) ClaudeClientPolicyForAccount(account *Account) ClaudeClientPolicy {
-	policy := s.ClaudeClientPolicy()
+	global := s.ClaudeClientPolicy()
 	if account == nil {
-		return policy
+		return global
 	}
+	policy := global
 	account.mu.RLock()
 	if account.ClaudeClientPlatformOverride != "" {
 		policy.Platform = ClaudeClientPlatform(account.ClaudeClientPlatformOverride)
@@ -404,7 +399,7 @@ func (s *Store) ClaudeClientPolicyForAccount(account *Account) ClaudeClientPolic
 	if normalized, err := NormalizeClaudeClientPolicy(policy); err == nil {
 		return normalized
 	}
-	return ClaudeClientPolicy{Platform: ClaudeClientPlatformAny, VersionPolicy: ClaudeVersionPolicyPassthrough}
+	return global
 }
 
 // ApplyAccountClaudeClientPolicy updates an in-memory override after the
@@ -447,7 +442,7 @@ func ParseClaudeConfig(raw string) ClaudeConfig {
 	if clientPolicy, err := NormalizeClaudeClientPolicy(cfg.ClaudeClientPolicy); err == nil {
 		cfg.ClaudeClientPolicy = clientPolicy
 	} else {
-		cfg.ClaudeClientPolicy = ClaudeClientPolicy{Platform: ClaudeClientPlatformAny, VersionPolicy: ClaudeVersionPolicyPassthrough}
+		cfg.ClaudeClientPolicy = DefaultClaudeClientPolicy()
 	}
 	cfg.ClaudeSecurityConfig = NormalizeClaudeSecurityConfig(cfg.ClaudeSecurityConfig)
 	return cfg

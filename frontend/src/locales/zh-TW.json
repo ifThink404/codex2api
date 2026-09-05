@@ -118,7 +118,8 @@
     "providerViewClaude": "Claude",
     "testProxySuccess": "代理可用",
     "testProxyFailed": "代理測試失敗",
-    "proxyPoolEmpty": "代理池為空(可在「代理」頁新增)"
+    "proxyPoolEmpty": "代理池為空(可在「代理」頁新增)",
+    "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
     "pricing": {
@@ -234,7 +235,7 @@
     "claudeAllowSafetyIdentifier": "允許 safety_identifier",
     "claudeAllowSafetyIdentifierDesc": "允許把安全標識透傳給上游；預設關閉以減少隱私暴露。",
     "claudeAllowedBetaHeaders": "額外允許的 Beta Header",
-    "claudeAllowedBetaHeadersDesc": "逗號分隔；OAuth 必需 Header 始終保留，未列出的客戶端 Beta 預設丟棄。",
+    "claudeAllowedBetaHeadersDesc": "逗號分隔；真實 Claude Code CLI 的 Beta 與 OAuth 必需 Beta 始終放行，此處僅用於額外放行其它客戶端 Beta，未列出的仍丟棄。",
     "claudeMaxOutputTokens": "最大輸出 Token",
     "claudeUnlimitedPlaceholder": "0 = 不限制（以上游模型能力為準）",
     "claudeMaxOutputTokensDesc": "0 表示不設閘道上限；非 0 為單次請求上限，最終仍受上游模型限制。",
@@ -412,18 +413,6 @@
     "reviewTestReason": "模型原因",
     "intelligence": {
       "aiAnalyze": "AI 歸因",
-      "draftSuggestTitle": "AI 產生規則草案",
-      "draftSuggestHint": "選擇產生用的提供方、模型和路由 Key（與 AI 歸因的 Review Key 相互獨立），基於該候選的 CY 證據產生一條窄正則草案並預填到下方表單；請審核後再儲存。",
-      "draftSuggest": "AI 產生",
-      "draftSuggesting": "產生中…",
-      "draftSuggested": "草案已產生並預填，請審核",
-      "draftSuggestedWithWarning": "草案已預填，但未通過校驗，請修改後再儲存",
-      "draftSuggestValidation": "校驗未通過",
-      "draftSuggestValid": "校驗通過，可直接儲存為待審核草案",
-      "draftSuggestMatches": "命中證據 {{matched}}/{{total}}",
-      "providerReview": "Review 轉接器",
-      "providerPool": "帳號池",
-      "aiContextOnlyBasis": "基於上下文歸因（無完整使用者 Prompt）",
       "aiLearned": "已由 AI 學習",
       "aiViewResult": "查看 AI 結果",
       "aiAnalysisTitle": "使用 AI 分析 CY 證據",
@@ -472,7 +461,19 @@
         "ai_analysis": "AI 歸因分析",
         "ai_identity_update": "AI 身分版本",
         "ai_identity_rollback": "身分版本回滾"
-      }
+      },
+      "draftSuggestTitle": "AI 產生規則草案",
+      "draftSuggestHint": "選擇產生用的提供方、模型和路由 Key（與 AI 歸因的 Review Key 相互獨立），基於該候選的 CY 證據產生一條窄正則草案並預填到下方表單；請審核後再儲存。",
+      "draftSuggest": "AI 產生",
+      "draftSuggesting": "產生中…",
+      "draftSuggested": "草案已產生並預填，請審核",
+      "draftSuggestedWithWarning": "草案已預填，但未通過校驗，請修改後再儲存",
+      "draftSuggestValidation": "校驗未通過",
+      "draftSuggestValid": "校驗通過，可直接儲存為待審核草案",
+      "draftSuggestMatches": "命中證據 {{matched}}/{{total}}",
+      "providerReview": "Review 轉接器",
+      "providerPool": "帳號池",
+      "aiContextOnlyBasis": "基於上下文歸因（無完整使用者 Prompt）"
     },
     "risk": {
       "title": "請求與身份風險畫像",
@@ -491,7 +492,6 @@
       "userName": "使用者名稱",
       "userEmail": "使用者信箱",
       "userGroup": "使用者分組",
-      "personVerified": "已核實人員",
       "score": "風險分",
       "recent": "時間視窗",
       "evidence": "證據統計",
@@ -689,7 +689,8 @@
         "upstream_cy_evidence_unavailable": "上游 CY：證據不可用",
         "upstream_cy_not_comparable": "上游 CY：不可比較",
         "upstream_cy_legacy_unknown": "上游 CY：歷史未知"
-      }
+      },
+      "personVerified": "已核實人員"
     },
     "saveRefreshFailed": "設定已儲存，但規則或日誌重新整理失敗；可稍後單獨重新整理頁面",
     "advancedConfigInvalidTitle": "進階防護設定無法解析",
@@ -761,21 +762,6 @@
     "deleteCyberIncidentConfirm": "確定刪除此 CY 記錄嗎？風險畫像與學習證據會保留。",
     "clearReviewLogs": "清空複核歷史",
     "clearLocalLogs": "清空本機日誌",
-    "retention": {
-      "title": "審核日誌保留",
-      "description": "超過保留天數的本地審核日誌、風險事件及來源記錄每小時自動分批清理；與仍存在的上游 CY 記錄關聯的日誌不會被清理，只在刪除該 CY 時一併刪除。0 表示關閉自動清理。",
-      "daysLabel": "保留天數",
-      "saving": "儲存中…",
-      "saved": "已儲存：保留 {{days}} 天",
-      "saveFailed": "儲存失敗",
-      "runNow": "立即清理",
-      "running": "清理中…",
-      "started": "已開始背景清理，完成後自動重新整理",
-      "runFailed": "啟動清理失敗",
-      "lastRun": "上次清理 {{time}}：日誌 {{logs}} 筆、風險事件 {{events}} 筆、來源 {{sources}} 筆，耗時 {{seconds}} 秒",
-      "neverRun": "尚未執行過自動清理",
-      "lastError": "上次錯誤：{{error}}"
-    },
     "cyberIncidentsCleared": "上游 CY 事件已清空，風險畫像已保留",
     "cyberIncidentDeleted": "CY 記錄已刪除，風險畫像與學習證據已保留",
     "reviewLogsCleared": "外部模型複核歷史已清空，風險畫像已保留",
@@ -798,9 +784,6 @@
     "cyberGroups": "事件發生時帳號群組",
     "cyberKeyAllowedGroups": "事件發生時 Key 可用群組",
     "cyberPromptAvailable": "關聯 Prompt 可用",
-    "cyberRiskSubjects": "關聯人員畫像",
-    "cyberRiskSubjectsEmpty": "該 CY 尚未關聯到任何畫像主體（風險畫像可能仍在背景產生）",
-    "cyberRiskSubjectEvents": "{{count}} 筆事件",
     "cyberAttempt": "傳輸 / 序號",
     "cyberDetail": "詳細資料",
     "cyberDetailTitle": "上游 CY 事件詳細資料",
@@ -1169,9 +1152,32 @@
       "decodeRot13": "識別符合結構條件的 ROT13 文字，只把有意義的還原結果加入檢查。",
       "decodeEscapes": "還原 Unicode、十六進位和常見反斜線跳脫序列。",
       "decodeCompression": "在大小和輪數限制內識別 Base64 包裝的 gzip 或 zlib 壓縮文字。"
-    }
+    },
+    "retention": {
+      "title": "審核日誌保留",
+      "description": "超過保留天數的本地審核日誌、風險事件及來源記錄每小時自動分批清理；與仍存在的上游 CY 記錄關聯的日誌不會被清理，只在刪除該 CY 時一併刪除。0 表示關閉自動清理。",
+      "daysLabel": "保留天數",
+      "saving": "儲存中…",
+      "saved": "已儲存：保留 {{days}} 天",
+      "saveFailed": "儲存失敗",
+      "runNow": "立即清理",
+      "running": "清理中…",
+      "started": "已開始背景清理，完成後自動重新整理",
+      "runFailed": "啟動清理失敗",
+      "lastRun": "上次清理 {{time}}：日誌 {{logs}} 筆、風險事件 {{events}} 筆、來源 {{sources}} 筆，耗時 {{seconds}} 秒",
+      "neverRun": "尚未執行過自動清理",
+      "lastError": "上次錯誤：{{error}}"
+    },
+    "cyberRiskSubjects": "關聯人員畫像",
+    "cyberRiskSubjectsEmpty": "該 CY 尚未關聯到任何畫像主體（風險畫像可能仍在背景產生）",
+    "cyberRiskSubjectEvents": "{{count}} 筆事件"
   },
   "usage": {
+    "tableCached": "快取",
+    "cacheReadTooltip": "讀取快取：{{tokens}}",
+    "cacheCreateTooltip": "建立快取：{{tokens}}（5 分鐘 {{m5}} · 1 小時 {{h1}}）",
+    "claudeInputTooltip": "未快取輸入：{{input}}；總輸入：{{total}}（含讀取快取 {{read}}、建立快取 {{write}}）",
+    "totalInputTokens": "總輸入（含快取）",
     "cyberPolicyViewContent": "查看 cyber_policy 事件詳細資料",
     "cyberPolicyDetailTitle": "cyber_policy 觸發詳細資料",
     "cyberPolicyRequestContent": "關聯 Prompt",
@@ -1205,6 +1211,16 @@
   },
   "proxies": {
     "idle": "空閒",
+    "bindKindClaude": "Claude",
+    "accountKind": {
+      "codex": "Codex",
+      "grok": "Grok",
+      "antigravity": "Antigravity",
+      "claude": "Claude",
+      "openai": "OpenAI",
+      "agent": "Agent",
+      "at": "AT"
+    },
     "riskReferenceOnly": "風險評分僅供參考，不影響代理啟用、停用、綁定或請求路由。",
     "riskBuiltInEngine": "內建 Scamalytics v3 評分引擎，不依賴外部評分服務。",
     "riskBuiltInEngineHint": "連線測試會檢測 8.8.8.8，並消耗一次 Scamalytics 額度。",
@@ -1291,16 +1307,10 @@
     "riskFeatureDatacenter": "資料中心",
     "riskFeatureBlacklist": "黑名單",
     "riskKeep": "保留",
-    "riskRecommendation": {"keep": "建議保留", "watch": "建議觀察", "replace": "建議更換"},
-    "bindKindClaude": "Claude",
-    "accountKind": {
-      "codex": "Codex",
-      "grok": "Grok",
-      "antigravity": "Antigravity",
-      "claude": "Claude",
-      "openai": "OpenAI",
-      "agent": "Agent",
-      "at": "AT"
+    "riskRecommendation": {
+      "keep": "建議保留",
+      "watch": "建議觀察",
+      "replace": "建議更換"
     }
   },
   "scheduler": {
@@ -1327,11 +1337,14 @@
     "exportConfirmDescription": "下載檔案包含完整 OAuth 憑據與帳號指紋,可直接匯入另一套 Codex2API。請妥善保管,不要傳給無權限人員。",
     "exportSelectedConfirmTitle": "匯出已選 Claude 憑據？",
     "exportSelectedConfirmDescription": "將匯出已選 {{count}} 個帳號的完整 OAuth 憑據與帳號指紋。",
-    "empty": "暫無 Claude 帳號",
+    "emptyTitle": "還沒有 Claude 帳號",
+    "emptyDescription": "透過網頁授權或匯入 Token 新增 Claude 帳號後即可開始調度。",
     "tabOAuth": "網頁授權",
     "tabImport": "匯入 Token",
     "step1": "第一步：點擊產生授權連結並在瀏覽器完成授權",
     "genAuthUrl": "產生授權連結",
+    "regenAuthUrl": "重新產生",
+    "authUrlReady": "授權連結已產生，請開啟授權頁完成登入授權",
     "openAuth": "開啟授權頁",
     "step2": "第二步：貼上回呼網址列的 URL 或 code",
     "callbackPlaceholder": "http://localhost:54545/callback?code=... 或直接貼 code",
@@ -1355,7 +1368,8 @@
     "providerProtocol": "Messages API",
     "refreshModels": "重新整理模型",
     "modelsRefreshed": "已更新可用模型（{{count}} 個）",
-    "emptyFiltered": "沒有符合篩選的帳號",
+    "noMatchesTitle": "沒有匹配的帳號",
+    "noMatchesDescription": "請清除篩選或調整搜尋關鍵字。",
     "schedulingView": "排程檢視",
     "searchPlaceholder": "搜尋信箱、名稱或模型…",
     "modelCount": "{{count}} 個模型",
@@ -1370,7 +1384,7 @@
     "healthWarm": "預熱",
     "healthRisky": "風險",
     "statScheduling": "排程中",
-    "statBanned": "封鎖",
+    "statBanned": "授權失效",
     "statUnsampled": "未取樣",
     "lastSample": "最後取樣",
     "samplingState": {
@@ -1379,7 +1393,7 @@
       "error": "取樣失敗",
       "notSampled": "尚無取樣"
     },
-    "healthBanned": "封鎖",
+    "healthBanned": "已隔離",
     "planAll": "全部方案",
     "authAll": "全部",
     "authOAuth": "OAuth",
@@ -1518,7 +1532,9 @@
     "modelNeedsCredits": "需 credits",
     "modelNeedsCreditsHint": "該模型需購買 usage credits(方案不含),目前不可用",
     "modelRateLimited": "限流中",
-    "modelAvailable": "可用"
+    "modelAvailable": "可用",
+    "empty": "暫無 Claude 帳號",
+    "emptyFiltered": "沒有符合篩選的帳號"
   },
   "accountGroups": {
     "manageTitle": "管理分組",

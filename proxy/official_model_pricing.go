@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -115,35 +116,18 @@ func SyncOfficialModelPricing(ctx context.Context, db *database.DB, proxyURL str
 
 	// Claude 使用 Anthropic 官方 HTML 模型价格表，不能把代码内置回退价伪装成
 	// "官方同步"。官方页面不可用时明确失败，管理员可稍后重试；自定义覆盖仍优先。
+	// Anthropic 页面不可达/解析失败时与 xAI 一致降级为 warning:OpenAI/xAI 已解析
+	// 的结果照常落库,不能因为一个来源拖垮整轮同步(定时同步默认三家都开)。
 	if options.IncludeClaude {
 		body, err := fetchOfficialPricingMarkdown(ctx, client, OfficialAnthropicPricingURL)
 		if err != nil {
-			return result, fmt.Errorf("读取 Anthropic 官方价格失败: %w", err)
-		}
-		parsed, err := ParseAnthropicOfficialPricingHTML(body)
-		if err != nil {
-			return result, fmt.Errorf("解析 Anthropic 官方价格失败: %w", err)
-		}
-		result.Sources = append(result.Sources, OfficialAnthropicPricingURL)
-		if len(allowed) == 0 {
-			for model, override := range parsed {
-				pricing[model] = override
-			}
+			result.Warnings = append(result.Warnings, fmt.Sprintf("读取 Anthropic 官方价格失败: %v", err))
+		} else if parsed, parseErr := ParseAnthropicOfficialPricingHTML(body); parseErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("解析 Anthropic 官方价格失败: %v", parseErr))
 		} else {
-			// Official rows use stable family IDs while Claude accounts often
-			// advertise dated variants (e.g. claude-sonnet-4-5-20250929).
-			// Project each allowed variant onto its closest official base row.
-			for model := range allowed {
-				if !isClaudeBillingModel(model) {
-					continue
-				}
-				candidate := strings.ReplaceAll(model, ".", "-")
-				for officialModel, override := range parsed {
-					if candidate == officialModel || strings.HasPrefix(candidate, officialModel+"-") {
-						pricing[model] = override
-						break
-					}
-				}
+			result.Sources = append(result.Sources, OfficialAnthropicPricingURL)
+			for model, override := range projectClaudeOfficialPricing(allowed, parsed) {
+				pricing[model] = override
 			}
 		}
 	}
@@ -408,13 +392,50 @@ func normalizeOfficialPricingModel(value string) string {
 	return database.CanonicalBillingModelKey(value)
 }
 
+// projectClaudeOfficialPricing maps account-advertised Claude models onto the
+// official pricing rows. Official rows use stable family IDs while accounts
+// often advertise dated variants (e.g. claude-sonnet-4-5-20250929). An exact
+// match wins; otherwise the longest official row that prefixes the candidate
+// wins, so claude-opus-4-5 resolves to claude-opus-4-5 and never to the
+// legacy claude-opus-4 row regardless of map iteration order. With no allowed
+// set every official row is imported as-is.
+func projectClaudeOfficialPricing(allowed map[string]struct{}, parsed map[string]database.ModelPricingOverride) map[string]database.ModelPricingOverride {
+	out := make(map[string]database.ModelPricingOverride)
+	if len(allowed) == 0 {
+		for model, override := range parsed {
+			out[model] = override
+		}
+		return out
+	}
+	for model := range allowed {
+		if !isClaudeBillingModel(model) {
+			continue
+		}
+		candidate := strings.ReplaceAll(model, ".", "-")
+		if override, ok := parsed[candidate]; ok {
+			out[model] = override
+			continue
+		}
+		bestKey := ""
+		for officialModel := range parsed {
+			if strings.HasPrefix(candidate, officialModel+"-") && len(officialModel) > len(bestKey) {
+				bestKey = officialModel
+			}
+		}
+		if bestKey != "" {
+			out[model] = parsed[bestKey]
+		}
+	}
+	return out
+}
+
 // ParseAnthropicOfficialPricingHTML parses the model pricing table published by
 // Anthropic. The page is server-rendered HTML and has changed CSS classes several
 // times, so parsing is intentionally based on table headers rather than styling.
 // Returned cached_input is cache-read (hit) pricing; cache creation prices are
 // kept separately in cache_write_5m/cache_write_1h.
 func ParseAnthropicOfficialPricingHTML(body []byte) (map[string]database.ModelPricingOverride, error) {
-	doc, err := html.Parse(strings.NewReader(string(body)))
+	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

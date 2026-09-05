@@ -2,6 +2,13 @@ export type ToastType = 'success' | 'error' | 'warning' | 'info'
 export type ISODateString = string
 export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
 
+// 管理台可见渠道设置（GET/PUT /settings/visible-channels）
+export interface VisibleChannelsSettings {
+  channels: UpstreamChannel[]
+  all: UpstreamChannel[]
+  fallback: UpstreamChannel
+}
+
 /** Claude Code OAuth：第一步返回授权 URL 与 state。 */
 export interface ClaudeAuthURLResponse {
   auth_url: string
@@ -220,6 +227,8 @@ export interface AccountRow {
   claude_usage_probe_at?: ISODateString
   claude_usage_probe_error?: string
   claude_usage_windows?: ClaudeUsageWindow[]
+  /** True once the OAuth usage probe has run for this row (even with no windows). */
+  claude_usage_windows_probed?: boolean
   timezone?: string
   custom_headers?: Record<string, string> | null
   health_tier?: string
@@ -1952,6 +1961,7 @@ export interface SystemSettings {
   codex_cli_version_sync_enabled: boolean
   codex_cli_version_sync_interval_hours: number
   codex_synced_cli_version?: string
+  codex_effective_cli_version?: string
   codex_user_agent_config: string
   usage_log_mode: 'full' | 'errors' | 'off' | string
   usage_log_batch_size: number
@@ -2189,20 +2199,6 @@ export interface PromptPolicyAuditHealth {
 		pending_low: number
 		retained_bytes: number
 	}
-}
-
-export interface PromptRiskIncidentSubject {
-	subject_type: PromptRiskSubjectType
-	subject_key: string
-	subject_display: string
-	platform?: string
-	is_person: boolean
-	identity_confidence: number
-	newapi_user_id?: string
-	newapi_user_name?: string
-	newapi_user_email?: string
-	newapi_user_group?: string
-	event_count: number
 }
 
 export interface PromptPolicyIncidentDetailResponse {
@@ -2836,6 +2832,20 @@ export interface PromptIntelligenceAIAnalysisResponse {
   identity_update: PromptIdentityUpdateResult
 }
 
+export interface PromptRiskIncidentSubject {
+	subject_type: PromptRiskSubjectType
+	subject_key: string
+	subject_display: string
+	platform?: string
+	is_person: boolean
+	identity_confidence: number
+	newapi_user_id?: string
+	newapi_user_name?: string
+	newapi_user_email?: string
+	newapi_user_group?: string
+	event_count: number
+}
+
 export interface PromptIntelligenceDraftSuggestion {
   provider: PromptIntelligenceAIProvider
   model: string
@@ -2846,6 +2856,105 @@ export interface PromptIntelligenceDraftSuggestion {
   validation_error?: string
   evidence_matched: number
   evidence_total: number
+}
+
+export interface ProxyRiskScoreSnapshot {
+  id: number
+  proxy_id: number
+  profile_id: number
+  provider: string
+  resolved_ip: string
+  score: number | null
+  risk_level: string
+  recommendation: string
+  proxy_type?: string
+  is_vpn: boolean
+  is_tor: boolean
+  is_datacenter: boolean
+  is_blacklisted: boolean
+  blacklist_sources?: string[]
+  isp?: string
+  country?: string
+  latency_ms: number
+  status: string
+  error?: string
+  features_json?: string
+  raw_response_json?: string
+  checked_at: ISODateString
+  expires_at?: ISODateString | null
+}
+
+export interface ProxyRiskScoringProfile {
+  id: number
+  name: string
+  provider: string
+  engine?: string
+  enabled: boolean
+  priority: number
+  scamalytics_host: string
+  scamalytics_user: string
+  scamalytics_key_configured?: boolean
+  scamalytics_key_masked?: string
+  timeout_seconds: number
+  concurrency: number
+  request_delay_ms: number
+  cache_ttl_seconds: number
+  max_checks_per_job: number
+  daily_check_limit: number
+  credit_reserve: number
+  allow_force_refresh: boolean
+  resolve_hostnames: boolean
+  allow_private_targets: boolean
+  docs_url: string
+  tutorial_url: string
+  daily_used_date?: string
+  daily_used_count?: number
+  credits_remaining?: number | null
+  credits_used?: number | null
+  credit_reset_at?: ISODateString | null
+  last_quota_checked_at?: ISODateString | null
+  last_error?: string
+  created_at: ISODateString
+  updated_at: ISODateString
+}
+
+export interface PromptLogRetention {
+  retention_days: number
+  running: boolean
+  last_run_at?: string
+  last_deleted_logs: number
+  last_deleted_events: number
+  last_deleted_sources: number
+  last_duration_ms: number
+  last_error?: string
+}
+
+export interface ProxyRiskScoringJobItem {
+  seq: number
+  proxy_id: number
+  label: string
+  status: 'success' | 'error' | 'skipped' | 'cached' | string
+  error?: string
+  snapshot?: ProxyRiskScoreSnapshot | null
+  checked_at: ISODateString
+}
+
+export interface ProxyRiskScoringJob {
+  job_id: string
+  current?: string
+  items: ProxyRiskScoringJobItem[]
+  last_seq: number
+  profile_id: number
+  status: string
+  total: number
+  done: number
+  success: number
+  failed: number
+  skipped: number
+  cache_hits: number
+  error?: string
+  created_at: ISODateString
+  updated_at: ISODateString
 }
 
 export interface PromptIntelligenceHistoryResponse {
@@ -2913,6 +3022,7 @@ export interface ModelSyncResponse {
   updated: number
   unchanged: number
   skipped: string[]
+  removed?: string[]
   models: string[]
   items: ModelInfo[]
   last_synced_at: string
@@ -3402,107 +3512,6 @@ export interface PromptFilterNewAPIBinding {
 
 export interface PromptFilterNewAPIBindingsResponse {
   bindings: PromptFilterNewAPIBinding[]
-}
-
-// Proxy risk scoring is an optional, reference-only observation. It never
-// changes proxy enablement or request routing.
-export interface ProxyRiskScoreSnapshot {
-  id: number
-  proxy_id: number
-  profile_id: number
-  provider: string
-  resolved_ip: string
-  score: number | null
-  risk_level: string
-  recommendation: string
-  proxy_type?: string
-  is_vpn: boolean
-  is_tor: boolean
-  is_datacenter: boolean
-  is_blacklisted: boolean
-  blacklist_sources?: string[]
-  isp?: string
-  country?: string
-  latency_ms: number
-  status: string
-  error?: string
-  features_json?: string
-  raw_response_json?: string
-  checked_at: ISODateString
-  expires_at?: ISODateString | null
-}
-
-export interface ProxyRiskScoringProfile {
-  id: number
-  name: string
-  provider: string
-  engine?: string
-  enabled: boolean
-  priority: number
-  scamalytics_host: string
-  scamalytics_user: string
-  scamalytics_key_configured?: boolean
-  scamalytics_key_masked?: string
-  timeout_seconds: number
-  concurrency: number
-  request_delay_ms: number
-  cache_ttl_seconds: number
-  max_checks_per_job: number
-  daily_check_limit: number
-  credit_reserve: number
-  allow_force_refresh: boolean
-  resolve_hostnames: boolean
-  allow_private_targets: boolean
-  docs_url: string
-  tutorial_url: string
-  daily_used_date?: string
-  daily_used_count?: number
-  credits_remaining?: number | null
-  credits_used?: number | null
-  credit_reset_at?: ISODateString | null
-  last_quota_checked_at?: ISODateString | null
-  last_error?: string
-  created_at: ISODateString
-  updated_at: ISODateString
-}
-
-export interface PromptLogRetention {
-  retention_days: number
-  running: boolean
-  last_run_at?: string
-  last_deleted_logs: number
-  last_deleted_events: number
-  last_deleted_sources: number
-  last_duration_ms: number
-  last_error?: string
-}
-
-export interface ProxyRiskScoringJobItem {
-  seq: number
-  proxy_id: number
-  label: string
-  status: 'success' | 'error' | 'skipped' | 'cached' | string
-  error?: string
-  snapshot?: ProxyRiskScoreSnapshot | null
-  checked_at: ISODateString
-}
-
-export interface ProxyRiskScoringJob {
-  job_id: string
-  current?: string
-  items: ProxyRiskScoringJobItem[]
-  last_seq: number
-  profile_id: number
-  status: string
-  total: number
-  done: number
-  success: number
-  failed: number
-  skipped: number
-  cache_hits: number
-  error?: string
-  created_at: ISODateString
-  updated_at: ISODateString
 }
 
 export interface CreatePromptFilterNewAPIBindingRequest {

@@ -156,7 +156,7 @@ function getOutputMultiplier(input: number, output: number): string | null {
   return `${ratio.toFixed(1).replace(/\.0$/, '')}x`
 }
 
-const PREFERRED_MODEL_ORDER = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const
+const PREFERRED_MODEL_ORDER = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const
 
 function modelPreferredRank(model: string): number {
   const lower = model.trim().toLowerCase()

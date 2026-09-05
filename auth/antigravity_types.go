@@ -341,4 +341,5 @@ type AntigravityEndpoints struct {
 	Quota        []string
 	QuotaSummary []string
 	AICredits    []string
+	OnboardUser  []string
 }

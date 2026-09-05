@@ -2559,29 +2559,36 @@ func normalizeReasoningEffortForModel(effort, model string) string {
 
 // modelSupportsMaxReasoningEffort 判断模型是否支持 reasoning.effort=max
 // （gpt-5.6 及更高版本；带变体后缀如 gpt-5.6-sol 同样识别）。
+// Trusted Access for Cyber 的 gpt-daybreak-*-latest 稳定别名指向 5.6 家族
+// （blue=gpt-5.6-sol、red=gpt-5.6-cyber，issue #624），同样放行。
 func modelSupportsMaxReasoningEffort(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if !strings.HasPrefix(model, "gpt-") {
 		return false
+	}
+	if strings.HasPrefix(model, "gpt-daybreak-") {
+		return true
 	}
 	version := strings.TrimPrefix(model, "gpt-")
 	if dash := strings.IndexByte(version, '-'); dash >= 0 {
 		version = version[:dash]
 	}
 	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		return false
-	}
 	major, err := strconv.Atoi(parts[0])
 	if err != nil {
+		return false
+	}
+	// 只有大版本号的新一代型号（gpt-6-astra、gpt-6）：官方模型页明确列出
+	// Max 档位，按 major > 5 放行；缺少 ".x" 不能当成旧模型钳掉。
+	if major > 5 {
+		return true
+	}
+	if len(parts) < 2 {
 		return false
 	}
 	minor, err := strconv.Atoi(parts[1])
 	if err != nil {
 		return false
-	}
-	if major > 5 {
-		return true
 	}
 	return major == 5 && minor >= 6
 }

@@ -665,3 +665,141 @@ func TestAntigravitySyncSurfacesTOSViolationAppealLink(t *testing.T) {
 		t.Fatalf("warning still embeds the raw upstream JSON blob: %q", result.Warning)
 	}
 }
+
+func TestAntigravityClientOnboardsProjectWhenLoadCodeAssistHasNone(t *testing.T) {
+	var mu sync.Mutex
+	onboardCalls := 0
+	var onboardBody map[string]any
+	var onboardAPIClient string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"id":"google-subject","email":"fresh@example.com","verified_email":true,"name":"Fresh"}`)
+		case "/load":
+			// A never-onboarded account: no companion project, camelCase isDefault.
+			_, _ = io.WriteString(w, `{"currentTier":{"id":"free-tier","name":"Free"},"allowedTiers":[{"id":"free-tier","name":"Free","isDefault":true},{"id":"g1-pro-tier","name":"Pro"}]}`)
+		case "/onboard":
+			mu.Lock()
+			onboardCalls++
+			call := onboardCalls
+			onboardAPIClient = r.Header.Get("X-Goog-Api-Client")
+			_ = json.NewDecoder(r.Body).Decode(&onboardBody)
+			mu.Unlock()
+			if call == 1 {
+				_, _ = io.WriteString(w, `{"name":"operations/1","done":false}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"name":"operations/1","done":true,"response":{"cloudaicompanionProject":{"id":"provisioned-project"}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newAntigravityClient(server.Client(), AntigravityEndpoints{
+		UserInfoURL: server.URL + "/userinfo",
+		LoadProject: []string{server.URL + "/load"},
+		OnboardUser: []string{server.URL + "/onboard"},
+	})
+	sleeps := 0
+	client.sleep = func(context.Context, time.Duration) error { sleeps++; return nil }
+
+	credential := AntigravityCredential{AccessToken: "access-token"}
+	_, entitlements, entitlementErr, err := client.fetchIdentityContext(context.Background(), &credential, false)
+	if err != nil {
+		t.Fatalf("fetchIdentityContext() error: %v", err)
+	}
+	if entitlementErr != nil {
+		t.Fatalf("entitlement error: %v", entitlementErr)
+	}
+	if entitlements.ProjectID != "provisioned-project" || credential.ProjectID != "provisioned-project" {
+		t.Fatalf("project = %q / %q, want provisioned-project", entitlements.ProjectID, credential.ProjectID)
+	}
+	if onboardCalls != 2 || sleeps != 1 {
+		t.Fatalf("onboard calls = %d, sleeps = %d, want 2 polls with one wait", onboardCalls, sleeps)
+	}
+	if onboardBody["tierId"] != "free-tier" {
+		t.Fatalf("onboard tierId = %#v, want the advertised default tier", onboardBody["tierId"])
+	}
+	metadata, _ := onboardBody["metadata"].(map[string]any)
+	if metadata["ideType"] != "ANTIGRAVITY" || metadata["pluginType"] != "GEMINI" {
+		t.Fatalf("onboard metadata = %#v", onboardBody["metadata"])
+	}
+	if onboardAPIClient != antigravityOnboardAPIClient {
+		t.Fatalf("X-Goog-Api-Client = %q", onboardAPIClient)
+	}
+	if len(entitlements.AllowedTiers) != 2 || !entitlements.AllowedTiers[0].IsDefault || entitlements.AllowedTiers[1].IsDefault {
+		t.Fatalf("camelCase isDefault was not parsed: %+v", entitlements.AllowedTiers)
+	}
+}
+
+func TestAntigravityClientOnboardFailureSurfacesAsEntitlementWarning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"id":"google-subject","email":"fresh@example.com","verified_email":true}`)
+		case "/load":
+			_, _ = io.WriteString(w, `{"allowedTiers":[{"id":"free-tier","isDefault":true}]}`)
+		case "/onboard":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":{"code":403,"message":"onboarding denied","status":"PERMISSION_DENIED"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newAntigravityClient(server.Client(), AntigravityEndpoints{
+		UserInfoURL: server.URL + "/userinfo",
+		LoadProject: []string{server.URL + "/load"},
+		OnboardUser: []string{server.URL + "/onboard"},
+	})
+	client.sleep = func(context.Context, time.Duration) error { return nil }
+
+	credential := AntigravityCredential{AccessToken: "access-token"}
+	_, entitlements, entitlementErr, err := client.fetchIdentityContext(context.Background(), &credential, false)
+	if err != nil {
+		t.Fatalf("fetchIdentityContext() error: %v", err)
+	}
+	if entitlementErr == nil || !strings.Contains(entitlementErr.Error(), "onboardUser") {
+		t.Fatalf("entitlement error = %v, want onboardUser failure", entitlementErr)
+	}
+	if entitlements.ProjectID != "" {
+		t.Fatalf("project = %q, want empty after failed onboarding", entitlements.ProjectID)
+	}
+}
+
+func TestAntigravityClientKeepsPreservedProjectWithoutOnboarding(t *testing.T) {
+	onboardCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"id":"google-subject","email":"user@example.com","verified_email":true}`)
+		case "/load":
+			_, _ = io.WriteString(w, `{"allowedTiers":[{"id":"free-tier","isDefault":true}]}`)
+		case "/onboard":
+			onboardCalls++
+			_, _ = io.WriteString(w, `{"done":true,"response":{"cloudaicompanionProject":"other"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newAntigravityClient(server.Client(), AntigravityEndpoints{
+		UserInfoURL: server.URL + "/userinfo",
+		LoadProject: []string{server.URL + "/load"},
+		OnboardUser: []string{server.URL + "/onboard"},
+	})
+	credential := AntigravityCredential{AccessToken: "access-token", ProjectID: "existing-project"}
+	_, entitlements, entitlementErr, err := client.fetchIdentityContext(context.Background(), &credential, true)
+	if err != nil || entitlementErr != nil {
+		t.Fatalf("errors: %v / %v", err, entitlementErr)
+	}
+	if entitlements.ProjectID != "existing-project" || onboardCalls != 0 {
+		t.Fatalf("project = %q, onboard calls = %d; a preserved project must not trigger onboarding", entitlements.ProjectID, onboardCalls)
+	}
+}

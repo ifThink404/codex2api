@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,7 +53,6 @@ var antigravityOAuthEndpointBases = []string{
 const (
 	antigravityOAuthDailyEndpoint    = "https://daily-cloudcode-pa.googleapis.com"
 	antigravityOAuthSandboxEndpoint  = "https://daily-cloudcode-pa.sandbox.googleapis.com"
-	antigravityOfficialSessionID     = "-3750763034362895579"
 	antigravityOfficialBodyUserAgent = "antigravity"
 	antigravityOfficialHTTPUserAgent = "antigravity/hub/2.9.1 windows/amd64"
 	antigravityZeroWidthSpace        = "\u200B"
@@ -127,27 +129,34 @@ func ExecuteAntigravityResponsesRequest(ctx context.Context, account *auth.Accou
 		lastRetryableResponse = nil
 	}
 	useUserProject := antigravityUserProjectHeaderEnabled()
+	payload, _ := json.Marshal(gemini)
+	sameEndpointBudget := &antigravitySameEndpointRetryBudget{}
 	for headerAttempt := 0; headerAttempt < 2; headerAttempt++ {
 		retryWithoutUserProject := false
 		for _, base := range antigravityOAuthEndpointList() {
 			endpoint := strings.TrimRight(base, "/") + "/v1internal:" + method + query
-			payload, _ := json.Marshal(gemini)
-			req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-			if reqErr != nil {
-				return nil, reqErr
-			}
-			req.Header.Set("Authorization", "Bearer "+bearer)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("User-Agent", antigravityOfficialHTTPUserAgent)
-			if useUserProject {
-				req.Header.Set("x-goog-user-project", project)
-			}
-			resp, doErr := client.Do(req)
-			if doErr != nil {
-				last = doErr
-				continue
-			}
-			if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout {
+			var resp *http.Response
+			for {
+				req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+				if reqErr != nil {
+					return nil, reqErr
+				}
+				req.Header.Set("Authorization", "Bearer "+bearer)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("User-Agent", antigravityOfficialHTTPUserAgent)
+				if useUserProject {
+					req.Header.Set("x-goog-user-project", project)
+				}
+				var doErr error
+				resp, doErr = client.Do(req)
+				if doErr != nil {
+					last = doErr
+					resp = nil
+					break
+				}
+				if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusRequestTimeout {
+					break
+				}
 				body, readErr := readBoundedAntigravityBody(resp.Body, antigravityErrorBodyLimit)
 				if readErr != nil {
 					last = fmt.Errorf("antigravity upstream HTTP %d body: %w", resp.StatusCode, readErr)
@@ -158,11 +167,22 @@ func ExecuteAntigravityResponsesRequest(ctx context.Context, account *auth.Accou
 				}
 				resp.Body = io.NopCloser(bytes.NewReader(body))
 				resp.ContentLength = int64(len(body))
+				// A sub-second RATE_LIMIT_EXCEEDED or a shared MODEL_CAPACITY_EXHAUSTED
+				// is cheaper to wait out right here than to switch endpoint or account.
+				if wait, retry := sameEndpointBudget.retryDelay(resp.StatusCode, body); retry {
+					if sleepErr := antigravitySleep(ctx, wait); sleepErr == nil {
+						continue
+					}
+				}
 				if lastRetryableResponse != nil {
 					_ = lastRetryableResponse.Body.Close()
 				}
 				lastResponse = resp
 				lastRetryableResponse = resp
+				resp = nil
+				break
+			}
+			if resp == nil {
 				continue
 			}
 			if resp.StatusCode == http.StatusForbidden {
@@ -529,7 +549,7 @@ func responsesToGeminiInternal(raw []byte, project, model string) (map[string]an
 	if len(systemParts) > 0 {
 		request["systemInstruction"] = map[string]any{"parts": []any{map[string]any{"text": antigravityObfuscateSystemInstruction(strings.Join(systemParts, "\n\n"))}}}
 	}
-	request["sessionId"] = antigravityOfficialSessionID
+	request["sessionId"] = antigravitySessionID(in, contents)
 	if tools, ok := in["tools"].([]any); ok {
 		if declarations := antigravityGeminiFunctionDeclarations(tools); len(declarations) > 0 && antigravityGeminiFunctionToolsEnabled() && antigravityGeminiSupportsFunctionTools(wireModel) {
 			request["tools"] = []any{map[string]any{"functionDeclarations": declarations}}
@@ -1114,6 +1134,67 @@ func lowerStringField(m map[string]any, key string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }
 
+// antigravitySessionID derives the Cloud Code sessionId for one request. The
+// native client uses one stable id per conversation, so the gateway derives a
+// stable value from the strongest conversation identifier the downstream
+// request carries: an explicit prompt_cache_key or session/user metadata,
+// otherwise the first user turn's text. Distinct conversations therefore get
+// distinct ids while every turn of one conversation keeps the same id. A
+// single constant shared by every account and conversation would be a pool
+// fingerprint, which is why no fixed fallback is used.
+func antigravitySessionID(in map[string]any, contents []any) string {
+	if key := antigravitySessionSeed(in, contents); key != "" {
+		return antigravitySessionIDFromSeed(key)
+	}
+	raw := make([]byte, 8)
+	_, _ = rand.Read(raw)
+	return antigravitySessionIDFromDigest(raw)
+}
+
+func antigravitySessionSeed(in map[string]any, contents []any) string {
+	if in != nil {
+		if key, _ := in["prompt_cache_key"].(string); strings.TrimSpace(key) != "" {
+			return "prompt_cache_key:" + strings.TrimSpace(key)
+		}
+		if metadata, ok := in["metadata"].(map[string]any); ok {
+			for _, field := range []string{"session_id", "conversation_id", "user_id"} {
+				if value, _ := metadata[field].(string); strings.TrimSpace(value) != "" {
+					return "metadata." + field + ":" + strings.TrimSpace(value)
+				}
+			}
+		}
+		if user, _ := in["user"].(string); strings.TrimSpace(user) != "" {
+			return "user:" + strings.TrimSpace(user)
+		}
+	}
+	for _, content := range contents {
+		entry, _ := content.(map[string]any)
+		if entry == nil || entry["role"] != "user" {
+			continue
+		}
+		parts, _ := entry["parts"].([]any)
+		for _, part := range parts {
+			partValue, _ := part.(map[string]any)
+			if text, _ := partValue["text"].(string); strings.TrimSpace(text) != "" {
+				return "first_user_text:" + text
+			}
+		}
+	}
+	return ""
+}
+
+func antigravitySessionIDFromSeed(seed string) string {
+	sum := sha256.Sum256([]byte("codex2api:antigravity:session\x00" + seed))
+	return antigravitySessionIDFromDigest(sum[:8])
+}
+
+// antigravitySessionIDFromDigest renders eight digest bytes the way the native
+// client renders its session ids: a negative-signed decimal of a 63-bit value.
+func antigravitySessionIDFromDigest(digest []byte) string {
+	value := int64(binary.BigEndian.Uint64(digest[:8]) & 0x7FFFFFFFFFFFFFFF)
+	return "-" + strconv.FormatInt(value, 10)
+}
+
 func antigravityRequestID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
@@ -1292,6 +1373,9 @@ type antigravitySSEBody struct {
 	sequence   int64
 	started    bool
 	terminal   bool
+	// textStarted records that the assistant message item and its text part
+	// have been opened downstream, so later fragments go out as deltas.
+	textStarted bool
 }
 
 func newAntigravitySSEResponseBody(r io.ReadCloser, model ...string) io.ReadCloser {
@@ -1367,12 +1451,46 @@ func (b *antigravitySSEBody) enqueueFailure(code, message string, statusCode ...
 	b.enqueue("response.failed", map[string]any{"response": response})
 }
 
+// openTextItem emits the assistant message item and its text part once, so
+// text can then stream as incremental deltas.
+func (b *antigravitySSEBody) openTextItem() {
+	if b.textStarted {
+		return
+	}
+	b.enqueueStart()
+	b.textStarted = true
+	b.enqueue("response.output_item.added", map[string]any{
+		"output_index": 0,
+		"item": map[string]any{
+			"id": b.messageID, "type": "message", "status": "in_progress",
+			"role": "assistant", "content": []any{},
+		},
+	})
+	b.enqueue("response.content_part.added", map[string]any{
+		"item_id": b.messageID, "output_index": 0, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+	})
+}
+
+// emitTextDelta forwards one upstream text fragment downstream immediately.
+// Cloud Code streams incrementally; holding the text until the finish reason
+// made time-to-first-token equal the whole generation time.
+func (b *antigravitySSEBody) emitTextDelta(fragment string) {
+	if fragment == "" || b.terminal {
+		return
+	}
+	b.openTextItem()
+	b.text.WriteString(fragment)
+	b.enqueue("response.output_text.delta", map[string]any{
+		"item_id": b.messageID, "output_index": 0, "content_index": 0, "delta": fragment,
+	})
+}
+
 func (b *antigravitySSEBody) enqueueSuccess(status string, usage map[string]any) {
 	if b.terminal {
 		return
 	}
 	b.enqueueStart()
-	b.terminal = true
 	text := b.text.String()
 	content := map[string]any{"type": "output_text", "text": text, "annotations": []any{}}
 	message := map[string]any{
@@ -1380,23 +1498,10 @@ func (b *antigravitySSEBody) enqueueSuccess(status string, usage map[string]any)
 		"role": "assistant", "content": []any{content},
 	}
 	output := make([]any, 0, 1+len(b.functions))
-	if text != "" || len(b.functions) == 0 {
-		b.enqueue("response.output_item.added", map[string]any{
-			"output_index": 0,
-			"item": map[string]any{
-				"id": b.messageID, "type": "message", "status": "in_progress",
-				"role": "assistant", "content": []any{},
-			},
-		})
-		b.enqueue("response.content_part.added", map[string]any{
-			"item_id": b.messageID, "output_index": 0, "content_index": 0,
-			"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-		})
-		if text != "" {
-			b.enqueue("response.output_text.delta", map[string]any{
-				"item_id": b.messageID, "output_index": 0, "content_index": 0, "delta": text,
-			})
-		}
+	if b.textStarted || len(b.functions) == 0 {
+		// A response with neither text nor tool calls still needs one empty
+		// message item so the Responses lifecycle stays well-formed.
+		b.openTextItem()
 		b.enqueue("response.output_text.done", map[string]any{
 			"item_id": b.messageID, "output_index": 0, "content_index": 0, "text": text,
 		})
@@ -1406,6 +1511,7 @@ func (b *antigravitySSEBody) enqueueSuccess(status string, usage map[string]any)
 		b.enqueue("response.output_item.done", map[string]any{"output_index": 0, "item": message})
 		output = append(output, message)
 	}
+	b.terminal = true
 	functionOutputStart := len(output)
 	for index, functionCall := range b.functions {
 		outputIndex := functionOutputStart + index
@@ -1497,15 +1603,18 @@ func (b *antigravitySSEBody) Read(p []byte) (int, error) {
 			b.enqueueFailure("unsupported_output", "antigravity upstream returned an unsupported non-text output", http.StatusBadRequest)
 			continue
 		}
-		// Cloud Code/Gemini streaming emits incremental text fragments. Buffer
-		// them until the terminal finish reason so a later safety rejection can
-		// fail closed without leaking already-rejected candidate text.
-		b.text.WriteString(extractGeminiText(env))
-		b.addFunctionCalls(extractGeminiFunctionCalls(env))
-		if b.text.Len()+antigravityFunctionCallsSize(b.functions) > antigravityResponseBodyLimit {
+		// Text streams through as deltas. A safety or error frame that arrives
+		// in the same upstream frame as text is checked above, before any of
+		// that frame's text is forwarded; a rejection that arrives in a later
+		// frame terminates the stream with response.failed instead.
+		fragment := extractGeminiText(env)
+		calls := extractGeminiFunctionCalls(env)
+		if b.text.Len()+len(fragment)+antigravityFunctionCallsSize(b.functions)+antigravityFunctionCallsSize(calls) > antigravityResponseBodyLimit {
 			b.enqueueFailure(ErrorCodeUpstreamError, "antigravity streamed response exceeded the safe size limit")
 			continue
 		}
+		b.emitTextDelta(fragment)
+		b.addFunctionCalls(calls)
 		if finishReason != "" {
 			var usage map[string]any
 			if metadata, ok := env["usageMetadata"].(map[string]any); ok {

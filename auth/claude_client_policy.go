@@ -31,6 +31,18 @@ const (
 	ClaudeVersionPolicyMinimum     ClaudeVersionPolicy = "minimum"
 )
 
+// Deny codes produced by ValidateClaudeClientRequest.
+const (
+	ClaudeClientDenyPlatformNotAllowed = "client_platform_not_allowed"
+	ClaudeClientDenyVersionMissing     = "client_version_missing"
+	ClaudeClientDenyVersionTooOld      = "client_version_too_old"
+)
+
+// DefaultClaudeClientPolicy is the backwards-compatible any/passthrough policy.
+func DefaultClaudeClientPolicy() ClaudeClientPolicy {
+	return ClaudeClientPolicy{Platform: ClaudeClientPlatformAny, VersionPolicy: ClaudeVersionPolicyPassthrough}
+}
+
 // ClaudeClientPolicy is the effective global/account client policy.
 type ClaudeClientPolicy struct {
 	Platform      ClaudeClientPlatform `json:"client_platform"`
@@ -163,7 +175,7 @@ func ValidateClaudeClientRequest(policy ClaudeClientPolicy, userAgent, model str
 	detected, isCLI := ParseClaudeClientVersion(userAgent)
 	decision := ClaudeClientDecision{Allowed: true, DetectedVersion: detected, IsCLI: isCLI}
 	if normalized.Platform == ClaudeClientPlatformCLIOnly && !isCLI {
-		return denyClaudeClient("client_platform_not_allowed", "Claude account only accepts Claude Code CLI requests", decision), nil
+		return denyClaudeClient(ClaudeClientDenyPlatformNotAllowed, "Claude account only accepts Claude Code CLI requests", decision), nil
 	}
 	modelFloor := ClaudeModelMinimumVersion(model)
 	required := ""
@@ -187,15 +199,40 @@ func ValidateClaudeClientRequest(policy ClaudeClientPolicy, userAgent, model str
 		versionToCheck = normalized.ClientVersion
 	}
 	if versionToCheck == "" {
-		return denyClaudeClient("client_version_missing", "Claude Code CLI version is required", decision), nil
+		return denyClaudeClient(ClaudeClientDenyVersionMissing, "Claude Code CLI version is required", decision), nil
 	}
 	if cmp, compareErr := CompareClaudeClientVersions(versionToCheck, required); compareErr != nil {
 		return ClaudeClientDecision{}, compareErr
 	} else if cmp < 0 {
-		return denyClaudeClient("client_version_too_old", "Claude Code CLI version is too old; run 'claude update'", decision), nil
+		return denyClaudeClient(ClaudeClientDenyVersionTooOld, "Claude Code CLI version is too old; run 'claude update'", decision), nil
 	}
 	decision.RequiredVersion = required
 	return decision, nil
+}
+
+// HTTPStatus maps a deny decision onto the downstream status code: version
+// problems are 426 Upgrade Required, everything else is a plain 400.
+func (d ClaudeClientDecision) HTTPStatus() int {
+	if d.Allowed {
+		return 200
+	}
+	if d.Code == ClaudeClientDenyVersionTooOld || d.Code == ClaudeClientDenyVersionMissing {
+		return 426
+	}
+	return 400
+}
+
+// DetailMessage renders the deny message with detected/required versions so
+// every caller emits the same wording.
+func (d ClaudeClientDecision) DetailMessage() string {
+	message := d.Message
+	if d.DetectedVersion != "" {
+		message += fmt.Sprintf(" (detected %s)", d.DetectedVersion)
+	}
+	if d.RequiredVersion != "" {
+		message += fmt.Sprintf("; required %s", d.RequiredVersion)
+	}
+	return message
 }
 
 func denyClaudeClient(code, message string, decision ClaudeClientDecision) ClaudeClientDecision {

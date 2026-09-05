@@ -25,6 +25,22 @@ type ClaudeUsageWindow struct {
 	ModelFamily string    `json:"model_family,omitempty"`
 }
 
+// MarshalJSON omits reset_at when the upstream bucket carried no reset time;
+// omitempty does not apply to time.Time so the zero value would otherwise be
+// serialized as 0001-01-01 and rendered as a real date downstream.
+func (w ClaudeUsageWindow) MarshalJSON() ([]byte, error) {
+	type alias ClaudeUsageWindow
+	payload := struct {
+		alias
+		ResetAt *time.Time `json:"reset_at,omitempty"`
+	}{alias: alias(w)}
+	if !w.ResetAt.IsZero() {
+		reset := w.ResetAt
+		payload.ResetAt = &reset
+	}
+	return json.Marshal(payload)
+}
+
 type claudeUsageResponse struct {
 	FiveHour *claudeUsageBucket `json:"five_hour"`
 	SevenDay *claudeUsageBucket `json:"seven_day"`
@@ -113,11 +129,19 @@ func ParseClaudeOAuthUsage(body []byte) ([]ClaudeUsageWindow, error) {
 		}
 		seen[name] = struct{}{}
 		windows = append(windows, ClaudeUsageWindow{
-			Name: name, Label: strings.Title(strings.ReplaceAll(family, "_", " ")) + " 5.x", Utilization: clampClaudeUsagePercent(limit.Percent),
+			Name: name, Label: claudeUsageFamilyLabel(family) + " 5.x", Utilization: clampClaudeUsagePercent(limit.Percent),
 			ResetAt: parseClaudeUsageTime(limit.ResetsAt), ModelScoped: true, ModelFamily: family,
 		})
 	}
 	return windows, nil
+}
+
+func claudeUsageFamilyLabel(family string) string {
+	words := strings.Fields(strings.ReplaceAll(family, "_", " "))
+	for i, word := range words {
+		words[i] = strings.ToUpper(word[:1]) + word[1:]
+	}
+	return strings.Join(words, " ")
 }
 
 func claudeUsageModelFamily(value string) string {

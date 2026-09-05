@@ -45,8 +45,15 @@ import { CompactStat } from "../components/CompactStat";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
 import AccountQuotaDistributionChart from "../components/AccountQuotaDistributionChart";
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
+import StateShell from "../components/StateShell";
 import type { AccountAnalysisResponse } from "../types";
 import { ProxyField } from "../components/ProxyField";
+import AccountProxyBadge from "../components/AccountProxyBadge";
+import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
+import {
+  buildProxyBindingContext,
+  type ProxyBindingContext,
+} from "../lib/accountProxyBinding";
 import ChipInput from "../components/ChipInput";
 import { AccountGroupManagerModal, ACCOUNT_GROUP_COLORS } from "../components/AccountGroupManagerModal";
 import { Select } from "../components/ui/select";
@@ -292,6 +299,7 @@ const SORT_MAP: Record<SortKey, { sort: NonNullable<Parameters<typeof api.getAcc
 // 可显隐列(序号/邮箱/操作为固定核心列,不参与切换)。持久化到 localStorage,与 Codex 一致。
 const CLAUDE_TOGGLE_COLUMNS = [
   "groups",
+  "proxy",
   "priority",
   "plan",
   "status",
@@ -305,6 +313,24 @@ const CLAUDE_TOGGLE_COLUMNS = [
 type ClaudeCol = (typeof CLAUDE_TOGGLE_COLUMNS)[number];
 type ClaudeColVisibility = Record<ClaudeCol, boolean>;
 const CLAUDE_COLS_KEY = "codex2api:claude-accounts:visible-columns";
+// 分析面板显隐同样持久化,避免切到 Codex 页再切回来时又展开;默认收起。
+const CLAUDE_ANALYSIS_VISIBILITY_KEY = "codex2api:claude-accounts:analysis-visible";
+
+function loadClaudeAnalysisVisibility(): boolean {
+  try {
+    return window.localStorage.getItem(CLAUDE_ANALYSIS_VISIBILITY_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistClaudeAnalysisVisibility(visible: boolean) {
+  try {
+    window.localStorage.setItem(CLAUDE_ANALYSIS_VISIBILITY_KEY, visible ? "true" : "false");
+  } catch {
+    /* localStorage 不可用时仅保留会话内状态 */
+  }
+}
 
 function defaultClaudeCols(): ClaudeColVisibility {
   return Object.fromEntries(CLAUDE_TOGGLE_COLUMNS.map((c) => [c, true])) as ClaudeColVisibility;
@@ -404,6 +430,9 @@ function UsageWindow({
   );
 }
 
+// Upper bound on concurrent one-time usage backfill requests per page mount.
+const LEGACY_USAGE_BACKFILL_BATCH = 4;
+
 function ClaudeScopedUsageWindows({ windows }: { windows?: AccountRow["claude_usage_windows"] }) {
   const { t } = useTranslation();
   const scoped = (windows ?? []).filter((window) => window.model_scoped && window.name !== "5h" && window.name !== "7d");
@@ -456,6 +485,10 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [proxyPool, setProxyPool] = useState<ProxyRow[]>([]);
+  // 代理池开关 + 全局代理:代理徽章要靠这两个才能把"未自绑"的账号判成继承池/全局/直连。
+  const [proxyPoolEnabled, setProxyPoolEnabled] = useState(false);
+  const [globalProxyURL, setGlobalProxyURL] = useState("");
+  const [quickProxyAccount, setQuickProxyAccount] = useState<AccountRow | null>(null);
   const [groups, setGroups] = useState<AccountGroup[]>([]);
 
   const [showAdd, setShowAdd] = useState(false);
@@ -481,7 +514,10 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   const [healthBars, setHealthBars] = useState<Record<string, AccountHealthBucket[]>>({});
   // 额度分布 + 限流恢复分析(号池模式面板,与 Codex 同源接口/组件)。
   const [analysis, setAnalysis] = useState<AccountAnalysisResponse | null>(null);
-  const [showAnalysis, setShowAnalysis] = useState(true);
+  const [showAnalysis, setShowAnalysis] = useState(loadClaudeAnalysisVisibility);
+  useEffect(() => {
+    persistClaudeAnalysisVisibility(showAnalysis);
+  }, [showAnalysis]);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const analysisAbortRef = useRef<AbortController | null>(null);
@@ -670,13 +706,15 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
     return () => window.clearInterval(samplingPollTimer);
   }, [pendingSamplingKey, reload]);
 
-  // Older Claude rows may already have a probe timestamp from before the
-  // OAuth usage-window field was introduced. Trigger one bounded, zero-cost
-  // refresh for those rows so the model-scoped Fable window is backfilled and
-  // rendered without requiring the operator to click every row manually.
+  // Older Claude rows were sampled before the OAuth usage-window field
+  // existed. Refresh each such row exactly once so the model-scoped Fable
+  // window is backfilled without the operator clicking every row. The backend
+  // marks the row as probed on every attempt (even with no windows), so rows
+  // whose OAuth endpoint is unavailable never re-qualify and never trigger the
+  // paid Messages fallback again on the next page visit.
   const legacyUsageRefreshKey = useMemo(
     () => accounts
-      .filter((acc) => acc.claude_api && acc.claude_usage_windows === undefined && !acc.claude_usage_probe_error)
+      .filter((acc) => acc.claude_api && Boolean(acc.claude_usage_probe_at) && !acc.claude_usage_windows_probed && !acc.claude_usage_probe_error)
       .map((acc) => acc.id)
       .join(","),
     [accounts],
@@ -688,7 +726,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       .map(Number)
       .filter((id) => Number.isFinite(id) && !legacyUsageRefreshRef.current.has(id));
     if (pending.length === 0) return undefined;
-    const batch = pending.slice(0, 4);
+    const batch = pending.slice(0, LEGACY_USAGE_BACKFILL_BATCH);
     batch.forEach((id) => legacyUsageRefreshRef.current.add(id));
     let cancelled = false;
     void Promise.all(
@@ -905,8 +943,8 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
                         claude_usage_probe_error: refreshed.claude_usage_probe_error,
                       }
                     : {}),
-                  ...(row.claude_api && refreshed.claude_usage_windows
-                    ? { claude_usage_windows: refreshed.claude_usage_windows }
+                  ...(row.claude_api && refreshed.claude_usage_windows_probed
+                    ? { claude_usage_windows_probed: true, claude_usage_windows: refreshed.claude_usage_windows ?? [] }
                     : {}),
                 }
               : row,
@@ -975,10 +1013,31 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
       .catch(() => {
         if (!cancelled) setProxyPool([]);
       });
+    void api
+      .getSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setProxyPoolEnabled(Boolean(settings.proxy_pool_enabled));
+        setGlobalProxyURL((settings.proxy_url ?? "").trim());
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [reloadGroups]);
+
+  // 分组用全量 groups 而非 claudeGroups:后端解析组代理不看渠道,按渠道过滤会把
+  // 跨渠道的存量成员误报成"无组代理"。
+  const proxyBindingCtx = useMemo<ProxyBindingContext>(
+    () =>
+      buildProxyBindingContext({
+        proxies: proxyPool,
+        groups,
+        poolEnabled: proxyPoolEnabled,
+        globalProxy: globalProxyURL,
+      }),
+    [proxyPool, groups, proxyPoolEnabled, globalProxyURL],
+  );
 
   useEffect(() => {
     setGroupFilter((current) => pruneAccountGroupFilter(current, claudeGroups));
@@ -1229,6 +1288,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         title={t("claude.title")}
         description={t("claude.subtitle")}
         hideTitle={Boolean(headerSlot)}
+        actionsBelow
         titleAdornment={headerSlot}
         onRefresh={() => { void reload(); void loadAnalysis(); }}
         actions={
@@ -1545,13 +1605,42 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
           <Button className="mt-3" variant="outline" size="sm" onClick={() => void reload()}>{t("common.retry")}</Button>
         </div>
       ) : total === 0 && !filtersActive ? (
-        <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
-          {t("claude.empty")}
-        </div>
+        /* 空号池占位卡(与 Antigravity 页同款 StateShell):提示添加账号并直达授权弹窗 */
+        <StateShell
+          variant="page"
+          isEmpty
+          emptyIcon={<ChannelLogo channel="claude" size={30} />}
+          emptyTitle={t("claude.emptyTitle")}
+          emptyDescription={t("claude.emptyDescription")}
+          action={
+            <Button
+              onClick={() => {
+                setAddInitialTab("oauth");
+                setShowAdd(true);
+              }}
+            >
+              <Plus className="size-4" />
+              {t("claude.addAccount")}
+            </Button>
+          }
+        >
+          {null}
+        </StateShell>
       ) : accounts.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-muted-foreground">
-          {t("claude.emptyFiltered")}
-        </div>
+        <StateShell
+          variant="page"
+          isEmpty
+          emptyIcon={<ChannelLogo channel="claude" size={30} />}
+          emptyTitle={t("claude.noMatchesTitle")}
+          emptyDescription={t("claude.noMatchesDescription")}
+          action={
+            <Button variant="outline" onClick={clearFilters}>
+              {t("claude.clearFilters")}
+            </Button>
+          }
+        >
+          {null}
+        </StateShell>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
           <table className="w-full border-collapse text-sm">
@@ -1569,6 +1658,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
                 <th className="px-2 py-2.5 text-center">{t("accounts.sequence")}</th>
                 <th className="px-2 py-2.5">{t("accounts.email")}</th>
                 {visibleCols.groups ? <th className="px-2 py-2.5 text-center">{t("accounts.groupsLabel")}</th> : null}
+                {visibleCols.proxy ? <th className="px-2 py-2.5 text-center">{t("accounts.proxyColumn")}</th> : null}
                 {visibleCols.priority ? <th className="px-2 py-2.5 text-center">{t("accounts.schedulerPriorityColumn")}</th> : null}
                 {visibleCols.plan ? <th className="px-2 py-2.5 text-center">{t("accounts.plan")}</th> : null}
                 {visibleCols.status ? <th className="px-2 py-2.5 text-center">{t("accounts.status")}</th> : null}
@@ -1593,6 +1683,8 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
                   healthBuckets={healthBars[String(acc.id)]}
                   hideDomainTags={hideDomainTags}
                   columns={visibleCols}
+                  proxyCtx={proxyBindingCtx}
+                  onEditProxy={() => setQuickProxyAccount(acc)}
                   onRefresh={() => void handleRefresh(acc)}
                   onRefreshModels={() => void handleRefreshModels(acc)}
                   onToggleEnabled={() => void handleToggleEnabled(acc)}
@@ -1777,6 +1869,19 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         />
       ) : null}
 
+      <AccountProxyQuickEditor
+        account={quickProxyAccount}
+        accountLabel={
+          quickProxyAccount
+            ? quickProxyAccount.email || quickProxyAccount.name || `#${quickProxyAccount.id}`
+            : ""
+        }
+        proxies={proxyPool}
+        ctx={proxyBindingCtx}
+        onClose={() => setQuickProxyAccount(null)}
+        onSaved={() => reload({ silent: true })}
+      />
+
       {confirmDialog}
     </div>
   );
@@ -1792,6 +1897,8 @@ function ClaudeAccountRow({
   healthBuckets,
   hideDomainTags,
   columns,
+  proxyCtx,
+  onEditProxy,
   onRefresh,
   onRefreshModels,
   onToggleEnabled,
@@ -1814,6 +1921,8 @@ function ClaudeAccountRow({
   healthBuckets?: AccountHealthBucket[];
   hideDomainTags: boolean;
   columns: ClaudeColVisibility;
+  proxyCtx: ProxyBindingContext;
+  onEditProxy: () => void;
   onRefresh: () => void;
   onRefreshModels: () => void;
   onToggleEnabled: () => void;
@@ -1945,6 +2054,13 @@ function ClaudeAccountRow({
             <Plus className="size-2.5" />
             {t("claude.assignGroups")}
           </button>
+        </div>
+      </td>
+      ) : null}
+      {columns.proxy ? (
+      <td className="min-w-[120px] max-w-[180px] px-2 py-3">
+        <div className="flex items-center justify-center">
+          <AccountProxyBadge account={acc} ctx={proxyCtx} onClick={onEditProxy} />
         </div>
       </td>
       ) : null}
@@ -2153,6 +2269,7 @@ function ColumnsMenu({
 
   const labelFor: Record<ClaudeCol, string> = {
     groups: t("accounts.groupsLabel"),
+    proxy: t("accounts.proxyColumn"),
     priority: t("accounts.schedulerPriorityColumn"),
     plan: t("accounts.plan"),
     status: t("accounts.status"),
@@ -3071,14 +3188,18 @@ function ClaudeAddModal({
     [groupIds],
   );
 
+  // 生成授权链接只展示,不自动弹授权页:由用户确认链接后自行打开或复制到别处授权。
+  const [authUrlLoading, setAuthUrlLoading] = useState(false);
   const genAuthUrl = useCallback(async () => {
+    setAuthUrlLoading(true);
     try {
       const res = await api.generateClaudeAuthURL();
       setAuthUrl(res.auth_url);
       setState(res.state);
-      window.open(res.auth_url, "_blank", "noopener,noreferrer");
     } catch (error) {
       showToast(t("claude.authUrlFailed") + ": " + getErrorMessage(error), "error");
+    } finally {
+      setAuthUrlLoading(false);
     }
   }, [showToast, t]);
 
@@ -3265,6 +3386,7 @@ function ClaudeAddModal({
       show
       onClose={onClose}
       title={t("claude.addAccount")}
+      contentClassName="sm:max-w-[680px]"
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
@@ -3295,18 +3417,31 @@ function ClaudeAddModal({
         {tab === "oauth" ? (
           <div className="space-y-3">
             <p className="text-xs text-muted-foreground">{t("claude.step1")}</p>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={() => void genAuthUrl()}>
+            {/* 先生成并展示授权链接(不自动弹授权页),用户核对后自行打开/复制 */}
+            {!authUrl ? (
+              <Button variant="secondary" size="sm" disabled={authUrlLoading} onClick={() => void genAuthUrl()}>
+                {authUrlLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
                 {t("claude.genAuthUrl")}
               </Button>
-              {authUrl ? (
-                <>
-                  <a href={authUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-primary underline">
-                    <ExternalLink className="size-3" />
+            ) : (
+              <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+                <p className="text-xs text-muted-foreground">{t("claude.authUrlReady")}</p>
+                {/* 完整 URL 直接作为可点击链接展示:全量换行(break-all)不出滚动条 */}
+                <a
+                  href={authUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block w-full rounded-md border border-input bg-background p-2 font-mono text-[11px] leading-snug break-all text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+                >
+                  {authUrl}
+                </a>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" onClick={() => window.open(authUrl, "_blank", "noopener,noreferrer")}>
+                    <ExternalLink className="size-3.5" />
                     {t("claude.openAuth")}
-                  </a>
+                  </Button>
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
                     onClick={() => {
                       void navigator.clipboard?.writeText(authUrl);
@@ -3315,19 +3450,13 @@ function ClaudeAddModal({
                   >
                     {t("claude.copyLink")}
                   </Button>
-                </>
-              ) : null}
-            </div>
-            {/* 生成后展示完整授权 URL(可读、可手动复制),而不是只给一个跳转链接 */}
-            {authUrl ? (
-              <textarea
-                readOnly
-                value={authUrl}
-                rows={2}
-                onFocus={(e) => e.currentTarget.select()}
-                className="w-full resize-none rounded-md border border-input bg-muted/40 p-2 font-mono text-[11px] leading-snug text-muted-foreground outline-none"
-              />
-            ) : null}
+                  <Button variant="ghost" size="sm" disabled={authUrlLoading} onClick={() => void genAuthUrl()}>
+                    <RefreshCw className={cn("size-3.5", authUrlLoading && "animate-spin")} />
+                    {t("claude.regenAuthUrl")}
+                  </Button>
+                </div>
+              </div>
+            )}
             <p className="text-xs text-muted-foreground">{t("claude.step2")}</p>
             <Input value={callback} onChange={(e) => setCallback(e.target.value)} placeholder={t("claude.callbackPlaceholder")} />
             {commonFields}

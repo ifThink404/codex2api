@@ -76,6 +76,10 @@ import type {
   MessageResponse,
   ModelSyncResponse,
   RefreshAllModelsResponse,
+  ProxyRiskScoreSnapshot,
+  ProxyRiskScoringProfile,
+  ProxyRiskScoringJob,
+  PromptLogRetention,
   ModelPricingOverride,
 	OfficialPricingSyncConfig,
 	OfficialPricingSyncResult,
@@ -97,9 +101,6 @@ import type {
 	PromptPolicyIncidentsResponse,
   PromptFilterNewAPIBinding,
   PromptFilterNewAPIBindingsResponse,
-  ProxyRiskScoreSnapshot,
-  ProxyRiskScoringProfile,
-  ProxyRiskScoringJob,
   PromptFilterRulePatternTestResponse,
   PromptFilterRulesResponse,
   PromptFilterTestResponse,
@@ -138,7 +139,7 @@ import type {
   UpdateAccountGroupRequest,
   UpstreamChannel,
   ClaudeGlobalConfig,
-  PromptLogRetention,
+  VisibleChannelsSettings,
 } from './types'
 
 const BASE = '/api/admin'
@@ -838,6 +839,7 @@ export const api = {
       claude_usage_probe_at?: string
       claude_usage_probe_error?: string
       claude_usage_windows?: import('./types').ClaudeUsageWindow[]
+      claude_usage_windows_probed?: boolean
     }>(`/accounts/${id}/usage/refresh`, { method: 'POST' }),
   updateAccountScheduler: (id: number, data: UpdateAccountSchedulerRequest) =>
     request<MessageResponse>(`/accounts/${id}/scheduler`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -953,6 +955,12 @@ export const api = {
     request<{ queued: number; skipped: number }>('/accounts/invite/plan/probe', {
       method: 'POST',
       body: JSON.stringify({ ids }),
+    }),
+  getVisibleChannels: () => request<VisibleChannelsSettings>('/settings/visible-channels'),
+  updateVisibleChannels: (channels: readonly UpstreamChannel[]) =>
+    request<VisibleChannelsSettings>('/settings/visible-channels', {
+      method: 'PUT',
+      body: JSON.stringify({ channels }),
     }),
   getInviteGuideSettings: () => request<{ enabled: boolean }>('/settings/invite-guide'),
   updateInviteGuideSettings: (enabled: boolean) =>
@@ -1532,8 +1540,6 @@ export const api = {
     request<{ message: string; cleaned: number; unbound: number }>('/proxies/clean-error', { method: 'POST' }),
   autoBalanceProxies: (data: { channel?: 'codex' | 'grok' | 'claude'; mode?: 'unbound' | 'all'; max_per_proxy?: number; proxy_ids?: number[] }) =>
     request<AutoBalanceProxiesResult>('/proxies/auto-balance', { method: 'POST', body: JSON.stringify(data) }),
-  testProxy: (url: string, id?: number, lang?: string) =>
-    request<ProxyTestResult>('/proxies/test', { method: 'POST', body: JSON.stringify({ url, id, lang }) }),
   listProxyRiskScoringProfiles: () =>
     request<{ profiles: ProxyRiskScoringProfile[] }>('/proxy-risk-scoring/profiles'),
   createProxyRiskScoringProfile: (data: Partial<ProxyRiskScoringProfile> & { scamalytics_key?: string }) =>
@@ -1554,6 +1560,8 @@ export const api = {
     request<ProxyRiskScoreSnapshot | { score: null; status: 'unscored' }>(`/proxies/${id}/risk-score`),
   getProxyRiskScoreHistory: (id: number, profileId: number, page = 1, pageSize = 20) =>
     request<{ items: ProxyRiskScoreSnapshot[]; total: number; page: number; page_size: number }>(`/proxies/${id}/risk-score/history?profile_id=${profileId}&page=${page}&page_size=${pageSize}`),
+  testProxy: (url: string, id?: number, lang?: string) =>
+    request<ProxyTestResult>('/proxies/test', { method: 'POST', body: JSON.stringify({ url, id, lang }) }),
   // OAuth
   generateOAuthURL: (data: { proxy_url?: string; redirect_uri?: string }) =>
     request<OAuthURLResponse>('/oauth/generate-auth-url', { method: 'POST', body: JSON.stringify(data) }),
@@ -1573,9 +1581,9 @@ export interface ProxyRow {
   test_location: string
   test_latency_ms: number
   test_status: 'untested' | 'success' | 'error'
+  risk_score?: ProxyRiskScoreSnapshot | null
   /** 绑定到该代理的账号数(服务端聚合,前端免拉全量账号)。 */
   bound_count: number
-  risk_score?: ProxyRiskScoreSnapshot | null
 }
 
 export interface AutoBalanceProxiesResult {

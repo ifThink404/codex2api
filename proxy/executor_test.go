@@ -273,6 +273,38 @@ func TestClassifyResponseFailedOutcomeContextLengthExceeded(t *testing.T) {
 	}
 }
 
+// 中转上游把超窗回成 code:null / type:"upstream_error"，只有 message 说明了真实
+// 原因。仅匹配 code/type 会落进 default 500，把号池挨个试一遍并惩罚每个健康账号。
+func TestClassifyResponseFailedOutcomeContextLengthExceededMessageOnly(t *testing.T) {
+	for name, payload := range map[string][]byte{
+		"nested null code": []byte(`{"type":"response.failed","response":{"status":"failed","error":{"code":null,"type":"upstream_error","message":"Your input exceeds the context window of this model. Please adjust your input and try again."}}}`),
+		"top-level error":  []byte(`{"type":"error","error":{"type":"upstream_error","message":"Your input exceeds the context window of this model."}}`),
+		"status details":   []byte(`{"type":"response.failed","response":{"status":"failed","status_details":{"error":{"message":"maximum context length exceeded"}}}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			outcome := classifyResponseFailedOutcome(payload)
+			if outcome.logStatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", outcome.logStatusCode, http.StatusBadRequest)
+			}
+			if outcome.penalize {
+				t.Fatal("context window overflow must not penalize the account")
+			}
+			if shouldTransparentRetryStream(outcome, 0, 2, false, nil, nil) {
+				t.Fatal("context window overflow must not trigger transparent account-rotation retry")
+			}
+		})
+	}
+}
+
+// 回显的请求内容不得改变判定：只有固定的 error 字段是权威的。
+func TestClassifyResponseFailedOutcomeIgnoresEchoedContextWindowText(t *testing.T) {
+	payload := []byte(`{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","type":"upstream_error","message":"boom"},"echo":"my prompt explains that input exceeds the context window"}}`)
+
+	if got := classifyResponseFailedOutcome(payload).logStatusCode; got != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", got, http.StatusInternalServerError)
+	}
+}
+
 func TestClassifyResponseFailedOutcomeDeterministicClientErrors(t *testing.T) {
 	for _, code := range []string{"context_window_exceeded", "string_above_max_length", "model_not_found", "unsupported_parameter"} {
 		payload := []byte(`{"type":"response.failed","response":{"error":{"code":"` + code + `","message":"boom"}}}`)

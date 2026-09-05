@@ -39,7 +39,7 @@ func TestDropClaudeDisabledThinkingForAlwaysOnModels(t *testing.T) {
 }
 
 func TestPrepareClaudeRequestBody_DropsDisabledThinkingForFable(t *testing.T) {
-	out, err := prepareClaudeRequestBody([]byte(`{"model":"claude-fable-5-1","max_tokens":10,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hi"}]}`), auth.DefaultClaudeSecurityConfig())
+	out, err := prepareClaudeRequestBody([]byte(`{"model":"claude-fable-5-1","max_tokens":10,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hi"}]}`), auth.DefaultClaudeSecurityConfig(), claudeBodyIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -188,6 +188,11 @@ func TestGPT56VariantPricing(t *testing.T) {
 		{"gpt-5.6-terra", 2.0, 12.0, 0.2, 4.0, 24.0},
 		{"gpt-5.6-luna", 0.2, 1.2, 0.02, 0.4, 2.4},
 		{"gpt-5.6-sol-high", 5.0, 30.0, 0.5, 10.0, 60.0},
+		// Trusted Access for Cyber 稳定别名（issue #624）：blue 即 sol，red 即
+		// 5.6-cyber（无公开定价）——都按 sol 计，绝不能掉进 $1/$2 默认价。
+		{"gpt-daybreak-blue-latest", 5.0, 30.0, 0.5, 10.0, 60.0},
+		{"gpt-daybreak-red-latest", 5.0, 30.0, 0.5, 10.0, 60.0},
+		{"gpt-5.6-cyber", 5.0, 30.0, 0.5, 10.0, 60.0},
 	}
 	for _, c := range cases {
 		p := GetModelPricing(c.model)
@@ -200,6 +205,36 @@ func TestGPT56VariantPricing(t *testing.T) {
 		got := CalculateCost(n, n, 0, c.model, "fast")
 		want := (c.priorityIn + c.priorityOut) * float64(n) / 1_000_000.0
 		assertFloatEqual(t, got, want)
+	}
+}
+
+// gpt-6-astra 官方定价（developers.openai.com/api/docs/pricing，2026-09）：
+// standard $10/$50、缓存 $1；≥272K 长上下文 $20/$75、缓存 $2；fast 恒 2×。
+// 变体后缀 / 思考强度别名同价；未知 gpt-6 变体按 astra 兜底，绝不能掉进默认价。
+func TestGPT6AstraPricing(t *testing.T) {
+	for _, model := range []string{"gpt-6-astra", "gpt-6-astra-high", "gpt-6-astra(xhigh)", "GPT-6-Astra", "gpt-6", "gpt-6-nova"} {
+		if got := CanonicalBillingModelKey(model); got != "gpt-6-astra" {
+			t.Fatalf("CanonicalBillingModelKey(%q) = %q, want gpt-6-astra", model, got)
+		}
+		p := GetModelPricing(model)
+		assertFloatEqual(t, p.InputPricePerMToken, 10.0)
+		assertFloatEqual(t, p.OutputPricePerMToken, 50.0)
+		assertFloatEqual(t, p.CacheReadPricePerMToken, 1.0)
+		assertFloatEqual(t, p.LongInputPricePerMToken, 20.0)
+		assertFloatEqual(t, p.LongOutputPricePerMToken, 75.0)
+		assertFloatEqual(t, p.LongCacheReadPricePerMToken, 2.0)
+	}
+
+	// 短上下文 fast 档：2× standard。
+	const n = 100_000
+	assertFloatEqual(t, CalculateCost(n, n, 0, "gpt-6-astra", "fast"), (20.0+100.0)*float64(n)/1_000_000.0)
+	// 长上下文（≥272K）standard 档走 long 价。
+	const long = 300_000
+	assertFloatEqual(t, CalculateCost(long, 1_000, 0, "gpt-6-astra", ""), 20.0*float64(long)/1_000_000.0+75.0*1_000/1_000_000.0)
+
+	// gpt-5.6 家族不得被 gpt-6 前缀误伤。
+	if got := CanonicalBillingModelKey("gpt-5.6-sol"); got != "gpt-5.6-sol" {
+		t.Fatalf("CanonicalBillingModelKey(gpt-5.6-sol) = %q, want gpt-5.6-sol", got)
 	}
 }
 
@@ -525,5 +560,20 @@ func TestClaudeFablePricingUsesOfficialCacheReadRates(t *testing.T) {
 	assertFloatEqual(t, fable5.CacheReadPricePerMToken, 1)
 	if fable5.CacheWrite5mPricePerMToken != 12.5 || fable5.CacheWrite1hPricePerMToken != 20 {
 		t.Fatalf("Fable 5 cache-write pricing = %+v", fable5)
+	}
+}
+
+func TestCanonicalBillingModelKeyDaybreakAliases(t *testing.T) {
+	for _, model := range []string{"gpt-daybreak-blue-latest", "gpt-daybreak-red-latest", "GPT-Daybreak-Blue-Latest"} {
+		if got := CanonicalBillingModelKey(model); got != "gpt-5.6-sol" {
+			t.Fatalf("CanonicalBillingModelKey(%q) = %q, want gpt-5.6-sol", model, got)
+		}
+	}
+	// 只认 gpt-daybreak- 前缀：带版本号的 ID 仍按自身版本计费，无关模型不沾光。
+	if got := CanonicalBillingModelKey("gpt-5.4-daybreak"); got != "gpt-5.4" {
+		t.Fatalf("CanonicalBillingModelKey(gpt-5.4-daybreak) = %q, want gpt-5.4", got)
+	}
+	if got := CanonicalBillingModelKey("daybreak-blue"); got == "gpt-5.6-sol" {
+		t.Fatal("bare daybreak-blue must not resolve to gpt-5.6-sol")
 	}
 }

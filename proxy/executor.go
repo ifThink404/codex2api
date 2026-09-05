@@ -1234,12 +1234,13 @@ type requestSessionIdentity struct {
 //  2. Header: Session_id
 //  3. Header: Conversation_id
 //  4. Header: Idempotency-Key
-//  5. Body:   prompt_cache_key
-//  6. Body:   内容派生种子（model+instructions+system+首条 user 消息，见
+//  5. Header: X-Session-Id / X-Session-Affinity（opencode 等第三方客户端）
+//  6. Body:   prompt_cache_key
+//  7. Body:   内容派生种子（model+instructions+system+首条 user 消息，见
 //     deriveContentSessionSeed；带 previous_response_id 的续链请求跳过）
-//  7. 基于 Bearer API Key 的确定性 UUID
+//  8. 基于 Bearer API Key 的确定性 UUID
 //
-// 第 6 级让"同一段对话的多轮请求"收敛到同一账号粘性键：单 API Key 供多终端
+// 第 7 级让"同一段对话的多轮请求"收敛到同一账号粘性键：单 API Key 供多终端
 // 用户共用时，粘性粒度从"整个 Key 挤一个账号"细化为"每段对话独立粘定"。
 // 专用 affinity header 永不参与上游 session ID / prompt_cache_key，也不会被转发；
 // 下游网关可用它传稳定的最终用户/对话标识，在共享 Bearer Key 时仍实现一人一号式绑定。
@@ -1314,8 +1315,16 @@ func ResolveExplicitSessionID(headers http.Header, body []byte) string {
 				return v
 			}
 		}
+		// opencode 等第三方 CLI 客户端用 x-session-id / x-session-affinity 标识会话
+		// （值为 ses_...，非 UUID，出站上由 claudeUpstreamSessionID 等确定性派生为
+		// UUIDv7）。优先级低于既有显式头，高于 body prompt_cache_key。
+		for _, key := range []string{"X-Session-Id", "X-Session-Affinity"} {
+			if v := strings.TrimSpace(headers.Get(key)); v != "" {
+				return v
+			}
+		}
 	}
-	// 优先从 body 的 prompt_cache_key 提取
+	// 没有显式会话头时，从 body 的 prompt_cache_key 提取。
 	if v := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); v != "" {
 		return v
 	}

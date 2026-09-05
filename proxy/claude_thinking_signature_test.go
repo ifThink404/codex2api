@@ -148,7 +148,7 @@ func TestInjectClaudeCodeSystemPrompt_OmitsCacheControlAtLimit(t *testing.T) {
 	block := `{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}`
 	body := []byte(`{"system":[` + block + `,` + block + `],"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[` + block + `]}]}`)
 	out := injectClaudeCodeSystemPrompt(body)
-	first := gjson.GetBytes(out, "system.0")
+	first := gjson.GetBytes(out, "system.1")
 	if !strings.HasPrefix(first.Get("text").String(), claudeCodeSystemPreamble) {
 		t.Fatalf("preamble must still be injected: %s", first.Raw)
 	}
@@ -161,7 +161,7 @@ func TestInjectClaudeCodeSystemPrompt_KeepsCacheControlBelowLimit(t *testing.T) 
 	block := `{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}`
 	body := []byte(`{"system":[` + block + `],"messages":[{"role":"user","content":"hi"}]}`)
 	out := injectClaudeCodeSystemPrompt(body)
-	if !gjson.GetBytes(out, "system.0.cache_control").Exists() {
+	if !gjson.GetBytes(out, "system.1.cache_control").Exists() {
 		t.Fatal("with only 1 client cache_control block the preamble keeps its cache_control")
 	}
 }
