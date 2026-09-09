@@ -333,7 +333,7 @@ step_database() {
   echo "  2) PG+Redis — PostgreSQL + Redis，适合生产 / 多并发"
   echo ""
   local db_default db_choice_default
-  db_default="$(env_default DATABASE_DRIVER "sqlite")"
+  db_default="$(env_default DATABASE_DRIVER "postgres")"
   db_default="$(printf "%s" "$db_default" | tr '[:upper:]' '[:lower:]')"
   case "$db_default" in
     postgres|postgresql|pg)
