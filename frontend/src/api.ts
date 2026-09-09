@@ -125,6 +125,8 @@ import type {
   CPAExportEntry,
   SystemSettings,
   ObservedInstructionsResponse,
+  CodexUserAgentCatalog,
+  CodexUserAgentPreview,
   UpdateAccountSchedulerRequest,
   UpdateAPIKeyRequest,
   UpdatePromptFilterNewAPIBindingRequest,
@@ -1278,6 +1280,10 @@ export const api = {
     }>('/settings/claude-config/cli-version/sync', { method: 'POST' }),
   getObservedInstructions: () =>
     request<ObservedInstructionsResponse>('/settings/observed-instructions'),
+  getCodexUserAgentCatalog: () =>
+    request<CodexUserAgentCatalog>('/settings/codex-user-agent/catalog'),
+  previewCodexUserAgent: (data: { config: string; client_compat_mode?: string; codex_min_cli_version?: string }) =>
+    request<CodexUserAgentPreview>('/settings/codex-user-agent/preview', { method: 'POST', body: JSON.stringify(data) }),
   updateSettings: (data: Partial<SystemSettings>) =>
     request<SystemSettings>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
   uploadBackground: (file: File) => {

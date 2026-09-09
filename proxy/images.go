@@ -15,6 +15,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,11 +36,26 @@ import (
 )
 
 const (
-	defaultImagesMainModel = "gpt-5.4-mini"
+	// defaultImagesMainModel 是生图链路里驱动 image_generation 工具调用的主模型
+	// (图像本身由 tools[0].model 决定,主模型只负责发起工具调用,token 开销极小)。
+	// 2026-09 起 ChatGPT 账号的 Codex manifest 已不含 gpt-5.4-mini,上游对它直接回
+	// 400 "The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT
+	// account",整条生图链路随之全断;free/plus/pro 三档 manifest 均含 gpt-5.6-luna,
+	// 故改用它。CODEX_IMAGES_MAIN_MODEL 可整体覆盖;上游再次下线时,
+	// imagesMainModelFallbacks 会在同一账号上按序换驱动重试,不会把 400 记到生图模型头上。
+	defaultImagesMainModel = "gpt-5.6-luna"
 	defaultImagesToolModel = "gpt-image-2"
 
 	imageModel2KAlias = "gpt-image-2-2k"
 	imageModel4KAlias = "gpt-image-2-4k"
+
+	// imageModel2KSuffix / imageModel4KSuffix 是分辨率档位别名后缀:任意
+	// gpt-image-* 模型都可以带 -2k / -4k(如 gpt-image-2-4k),网关剥掉后缀
+	// 作为 tools[0].model 发上游,并按档位补默认尺寸与超分计划。
+	imageModel2KSuffix = "-2k"
+	imageModel4KSuffix = "-4k"
+
+	imagesMainModelEnv = "CODEX_IMAGES_MAIN_MODEL"
 
 	defaultImages1KSize = "1024x1024"
 	defaultImages2KSize = "2048x2048"
@@ -75,6 +91,52 @@ const (
 )
 
 var imageStreamKeepaliveInterval = 15 * time.Second
+
+// imagesMainModelFallbacks 是驱动主模型被上游按"不支持"拒绝时的候选序列,
+// 按 free/plus/pro 三档 manifest 的交集从便宜到贵排列。
+var imagesMainModelFallbacks = []string{"gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"}
+
+// imagesMainModel 返回生图链路当前的驱动主模型:环境变量优先,否则用内置默认。
+func imagesMainModel() string {
+	if value := strings.TrimSpace(os.Getenv(imagesMainModelEnv)); value != "" {
+		return value
+	}
+	return defaultImagesMainModel
+}
+
+// imagesMainModelCandidates 返回驱动主模型的完整候选序列(首选 + 回退),去重且
+// 排除生图模型本身。
+func imagesMainModelCandidates() []string {
+	seen := make(map[string]bool, len(imagesMainModelFallbacks)+1)
+	candidates := make([]string, 0, len(imagesMainModelFallbacks)+1)
+	for _, candidate := range append([]string{imagesMainModel()}, imagesMainModelFallbacks...) {
+		key := strings.ToLower(strings.TrimSpace(candidate))
+		if key == "" || seen[key] || isImageOnlyModel(key) {
+			continue
+		}
+		seen[key] = true
+		candidates = append(candidates, strings.TrimSpace(candidate))
+	}
+	return candidates
+}
+
+// nextImagesMainModelAfterUnsupported 判断上游 400 是否在拒绝当前驱动主模型
+// (而不是生图模型或请求内容),是则返回下一个未试过的候选驱动。tried 记录本次请求
+// 已被拒绝的驱动,由调用方跨重试保存。
+func nextImagesMainModelAfterUnsupported(responsesBody, errBody []byte, tried map[string]bool) (string, bool) {
+	current := strings.TrimSpace(gjson.GetBytes(responsesBody, "model").String())
+	rejected := codexUnsupportedModelFromBody(errBody)
+	if current == "" || rejected == "" || !strings.EqualFold(current, rejected) || isImageOnlyModel(rejected) {
+		return "", false
+	}
+	tried[strings.ToLower(current)] = true
+	for _, candidate := range imagesMainModelCandidates() {
+		if !tried[strings.ToLower(candidate)] {
+			return candidate, true
+		}
+	}
+	return "", false
+}
 
 type imageCallResult struct {
 	Result        string
@@ -361,6 +423,34 @@ func isImageOnlyModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
 }
 
+// IsGPTImageModel 判断模型名是否属于 Codex 生图模型族(gpt-image-*),含 -2k/-4k
+// 档位别名与带日期的快照名。供 admin 生图台等外部包复用同一准入判定。
+func IsGPTImageModel(model string) bool {
+	return isImageOnlyModel(model)
+}
+
+// splitImageModelSizeAlias 把 gpt-image-*-2k / -4k 拆成基础模型与档位后缀;
+// 无后缀时返回原模型与空串。
+func splitImageModelSizeAlias(model string) (string, string) {
+	model = strings.TrimSpace(model)
+	lower := strings.ToLower(model)
+	for _, suffix := range []string{imageModel2KSuffix, imageModel4KSuffix} {
+		if strings.HasSuffix(lower, suffix) && len(lower) > len(suffix) {
+			base := model[:len(model)-len(suffix)]
+			if isImageOnlyModel(base) {
+				return base, suffix
+			}
+		}
+	}
+	return model, ""
+}
+
+// isGPTImage2FamilyModel 判断是否 gpt-image-2 世代(含 2.5 flare/sunburst 及其快照名):
+// 这一族共用 1K/2K/4K 尺寸档位与提示词方向推断;更早或未知型号不补默认尺寸。
+func isGPTImage2FamilyModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-2")
+}
+
 type imageDefaultSizeSet struct {
 	defaultSize   string
 	squareSize    string
@@ -374,30 +464,39 @@ func normalizeImageToolModel(model string) (string, string) {
 
 func normalizeImageToolModelForPrompt(model string, prompt string) (string, string) {
 	model = strings.TrimSpace(model)
-	switch strings.ToLower(model) {
-	case "", defaultImagesToolModel:
-		return defaultImagesToolModel, inferDefaultImageSize(prompt, imageDefaultSizeSet{
-			defaultSize:   defaultImages1KSize,
-			squareSize:    defaultImages1KSize,
-			landscapeSize: defaultImages1KLandscapeSize,
-			portraitSize:  defaultImages1KPortraitSize,
-		})
-	case imageModel2KAlias:
-		return defaultImagesToolModel, inferDefaultImageSize(prompt, imageDefaultSizeSet{
+	if model == "" {
+		model = defaultImagesToolModel
+	}
+	base, tier := splitImageModelSizeAlias(model)
+	if strings.EqualFold(base, defaultImagesToolModel) {
+		base = defaultImagesToolModel
+	}
+	if !isGPTImage2FamilyModel(base) {
+		// gpt-image-1.5 等更早型号或未知名字:原样透传,尺寸交给上游默认。
+		return model, ""
+	}
+	switch tier {
+	case imageModel2KSuffix:
+		return base, inferDefaultImageSize(prompt, imageDefaultSizeSet{
 			defaultSize:   defaultImages2KSize,
 			squareSize:    defaultImages2KSize,
 			landscapeSize: defaultImages2KLandscapeSize,
 			portraitSize:  defaultImages2KPortraitSize,
 		})
-	case imageModel4KAlias:
-		return defaultImagesToolModel, inferDefaultImageSize(prompt, imageDefaultSizeSet{
+	case imageModel4KSuffix:
+		return base, inferDefaultImageSize(prompt, imageDefaultSizeSet{
 			defaultSize:   defaultImages4KSize,
 			squareSize:    defaultImages4KSquareSize,
 			landscapeSize: defaultImages4KLandscapeSize,
 			portraitSize:  defaultImages4KPortraitSize,
 		})
 	default:
-		return model, ""
+		return base, inferDefaultImageSize(prompt, imageDefaultSizeSet{
+			defaultSize:   defaultImages1KSize,
+			squareSize:    defaultImages1KSize,
+			landscapeSize: defaultImages1KLandscapeSize,
+			portraitSize:  defaultImages1KPortraitSize,
+		})
 	}
 }
 
@@ -467,7 +566,7 @@ func setDefaultImageToolSize(tool []byte, defaultSize string) []byte {
 
 func shouldValidateGPTImage2Size(model string) bool {
 	toolModel, _ := normalizeImageToolModel(model)
-	return strings.EqualFold(strings.TrimSpace(toolModel), defaultImagesToolModel)
+	return isGPTImage2FamilyModel(toolModel)
 }
 
 func validateGPTImage2Size(size string) error {
@@ -1377,7 +1476,7 @@ func (h *Handler) imagesEditsFromJSON(c *gin.Context) {
 
 func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {
 	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
-	req, _ = sjson.SetBytes(req, "model", defaultImagesMainModel)
+	req, _ = sjson.SetBytes(req, "model", imagesMainModel())
 
 	input := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
 	input, _ = sjson.SetBytes(input, "0.content.0.text", prompt)
@@ -1460,6 +1559,9 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	continuousRetryActive := false
 	var sameAccountRetryID int64
 	sameAccountEmptyRetried := make(map[int64]bool)
+	// 驱动主模型被上游拒绝("The 'X' model is not supported ...")时换下一个候选驱动
+	// 在同一账号上重试;记录已拒绝的驱动避免绕圈。
+	rejectedMainModels := make(map[string]bool)
 
 	// 仅在 response_format=url 且配置了云存储时启用：上传图片到对象存储、
 	// 登记进图库并返回预签名直链。否则 urlFor 为 nil，沿用 base64/data URL。
@@ -1607,6 +1709,36 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
 			logUpstreamError(inboundEndpoint, resp.StatusCode, logModel, account.ID(), errBody)
+			if resp.StatusCode == http.StatusBadRequest {
+				// 400 拒绝的是驱动主模型而非生图模型:不能按 (账号, 生图模型) 冷却——那会把
+				// 唯一能生图的账号整体拉黑 30 分钟;换下一个候选驱动在同一账号上重试。
+				if nextMainModel, ok := nextImagesMainModelAfterUnsupported(responsesBody, errBody, rejectedMainModels); ok {
+					rejectedMainModel := gjson.GetBytes(responsesBody, "model").String()
+					log.Printf("账号 %d (plan=%s) 生图驱动模型 %s 被上游拒绝，改用 %s 重试（可通过 %s 覆盖默认驱动）", account.ID(), account.GetPlanType(), rejectedMainModel, nextMainModel, imagesMainModelEnv)
+					if rewritten, err := sjson.SetBytes(responsesBody, "model", nextMainModel); err == nil {
+						responsesBody = rewritten
+					}
+					h.logUsageForRequest(c, &database.UsageLogInput{
+						AccountID:         account.ID(),
+						Endpoint:          inboundEndpoint,
+						Model:             logModel,
+						EffectiveModel:    logEffectiveModel,
+						StatusCode:        resp.StatusCode,
+						DurationMs:        durationMs,
+						InboundEndpoint:   inboundEndpoint,
+						UpstreamEndpoint:  "/v1/responses",
+						Stream:            stream,
+						IsRetryAttempt:    true,
+						AttemptIndex:      attempt + 1,
+						UpstreamErrorKind: "images_main_model_unsupported",
+						ErrorMessage:      usageLogErrorMessage(resp.StatusCode, errBody),
+					})
+					lastStatusCode = resp.StatusCode
+					lastBody = errBody
+					sameAccountRetryID = account.ID()
+					continue
+				}
+			}
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, inboundEndpoint, logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: upstreamPromptPolicyTransport(stream, false), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
@@ -2082,10 +2214,10 @@ func (p imageUpscalePlan) enabled() bool {
 // 里最终生效的 size(用户显式值优先,否则别名默认),它是权威目标尺寸。
 func imageUpscalePlanForRequest(requestModel string, responsesBody []byte) imageUpscalePlan {
 	var scale string
-	switch strings.ToLower(strings.TrimSpace(requestModel)) {
-	case imageModel2KAlias:
+	switch _, tier := splitImageModelSizeAlias(requestModel); tier {
+	case imageModel2KSuffix:
 		scale = imageproc.Upscale2K
-	case imageModel4KAlias:
+	case imageModel4KSuffix:
 		scale = imageproc.Upscale4K
 	default:
 		return imageUpscalePlan{}

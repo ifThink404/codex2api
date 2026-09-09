@@ -53,7 +53,15 @@ const STORAGE_KEY = 'codex2api_image_studio_api_key'
 const PORTAL_VIEWS = ['studio', 'history', 'gallery'] as const
 type PortalView = (typeof PORTAL_VIEWS)[number]
 
+// gpt-image-2.5 flare / sunburst 暂不公开：后端透传与尺寸档位逻辑已就绪，但不下发到
+// 下拉框；正式推出时取消注释即可（顺序保持在 gpt-image-2 之前）。
 const IMAGE_MODELS = [
+  // { label: 'gpt-image-2.5-flare', value: 'gpt-image-2.5-flare' },
+  // { label: 'gpt-image-2.5-flare-2k', value: 'gpt-image-2.5-flare-2k' },
+  // { label: 'gpt-image-2.5-flare-4k', value: 'gpt-image-2.5-flare-4k' },
+  // { label: 'gpt-image-2.5-sunburst', value: 'gpt-image-2.5-sunburst' },
+  // { label: 'gpt-image-2.5-sunburst-2k', value: 'gpt-image-2.5-sunburst-2k' },
+  // { label: 'gpt-image-2.5-sunburst-4k', value: 'gpt-image-2.5-sunburst-4k' },
   { label: 'gpt-image-2', value: 'gpt-image-2' },
   { label: 'gpt-image-2-2k', value: 'gpt-image-2-2k' },
   { label: 'gpt-image-2-4k', value: 'gpt-image-2-4k' },
@@ -91,7 +99,10 @@ function readStoredAPIKey(): { key: string; remember: boolean } {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { key: '', remember: true }
     const parsed = JSON.parse(raw) as { key?: string; remember?: boolean }
-    return { key: parsed.key?.trim() || '', remember: parsed.remember !== false }
+    return {
+      key: parsed.key?.trim() || '',
+      remember: parsed.remember !== false,
+    }
   } catch {
     return { key: '', remember: true }
   }
@@ -302,33 +313,45 @@ export default function ImageStudioPortal() {
     }
   }, [activeAPIKey, verifyAndEnter])
 
-  const loadHistory = useCallback(async (key = activeAPIKey, page = historyPage) => {
-    if (!key) return
-    setHistoryLoading(true)
-    try {
-      const res = await api.getPortalImageJobs(key, { page, pageSize: HISTORY_PAGE_SIZE })
-      setHistoryJobs(res.jobs ?? [])
-      setHistoryTotal(res.total ?? 0)
-    } catch (err) {
-      showToast(getErrorMessage(err))
-    } finally {
-      setHistoryLoading(false)
-    }
-  }, [activeAPIKey, historyPage, showToast])
+  const loadHistory = useCallback(
+    async (key = activeAPIKey, page = historyPage) => {
+      if (!key) return
+      setHistoryLoading(true)
+      try {
+        const res = await api.getPortalImageJobs(key, {
+          page,
+          pageSize: HISTORY_PAGE_SIZE,
+        })
+        setHistoryJobs(res.jobs ?? [])
+        setHistoryTotal(res.total ?? 0)
+      } catch (err) {
+        showToast(getErrorMessage(err))
+      } finally {
+        setHistoryLoading(false)
+      }
+    },
+    [activeAPIKey, historyPage, showToast],
+  )
 
-  const loadAssets = useCallback(async (key = activeAPIKey, page = assetPage) => {
-    if (!key) return
-    setGalleryLoading(true)
-    try {
-      const res = await api.getPortalImageAssets(key, { page, pageSize: GALLERY_PAGE_SIZE })
-      setAssets(res.assets ?? [])
-      setAssetTotal(res.total ?? 0)
-    } catch (err) {
-      showToast(getErrorMessage(err))
-    } finally {
-      setGalleryLoading(false)
-    }
-  }, [activeAPIKey, assetPage, showToast])
+  const loadAssets = useCallback(
+    async (key = activeAPIKey, page = assetPage) => {
+      if (!key) return
+      setGalleryLoading(true)
+      try {
+        const res = await api.getPortalImageAssets(key, {
+          page,
+          pageSize: GALLERY_PAGE_SIZE,
+        })
+        setAssets(res.assets ?? [])
+        setAssetTotal(res.total ?? 0)
+      } catch (err) {
+        showToast(getErrorMessage(err))
+      } finally {
+        setGalleryLoading(false)
+      }
+    },
+    [activeAPIKey, assetPage, showToast],
+  )
 
   useEffect(() => {
     if (!activeAPIKey || bootstrapping) return
@@ -383,7 +406,9 @@ export default function ImageStudioPortal() {
           const binary = atob(asset.cache_b64_json)
           const bytes = new Uint8Array(binary.length)
           for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
-          const blob = new Blob([bytes], { type: asset.mime_type || 'image/png' })
+          const blob = new Blob([bytes], {
+            type: asset.mime_type || 'image/png',
+          })
           const url = URL.createObjectURL(blob)
           setAssetURLs((prev) => {
             const next = { ...prev, [asset.id]: url }
@@ -481,7 +506,10 @@ export default function ImageStudioPortal() {
     // Always refresh a page of gallery assets for the picker.
     setGalleryPickerLoading(true)
     try {
-      const res = await api.getPortalImageAssets(activeAPIKey, { page: 1, pageSize: 48 })
+      const res = await api.getPortalImageAssets(activeAPIKey, {
+        page: 1,
+        pageSize: 48,
+      })
       setAssets(res.assets ?? [])
       setAssetTotal(res.total ?? 0)
       setAssetPage(1)
@@ -866,9 +894,7 @@ export default function ImageStudioPortal() {
                       type="button"
                       className={cn(
                         'inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-[0.65rem] px-2.5 text-xs font-semibold transition-all',
-                        !imageToImageMode
-                          ? 'bg-background text-foreground shadow-sm'
-                          : 'text-muted-foreground hover:text-foreground',
+                        imageToImageMode ? 'text-muted-foreground hover:text-foreground' : 'bg-background text-foreground shadow-sm',
                       )}
                       onClick={() => setImageToImageMode(false)}
                     >
@@ -1121,7 +1147,97 @@ export default function ImageStudioPortal() {
                 ) : null}
               </div>
               <div className="image-studio-canvas-bg relative flex min-h-0 flex-1 items-center justify-center p-4 sm:p-5">
-                {!currentJob ? (
+                {currentJob ? (
+                  busy ? (
+                    <div className="flex w-full max-w-md flex-col items-center gap-4 animate-image-studio-fade-in">
+                      <div className="image-studio-checkerboard relative aspect-[16/10] w-full overflow-hidden rounded-2xl border border-border/70 shadow-inner">
+                        <div className="absolute inset-y-0 w-1/2 animate-image-studio-shimmer bg-gradient-to-r from-transparent via-white/25 to-transparent dark:via-white/10" />
+                      </div>
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="h-1.5 w-44 overflow-hidden rounded-full bg-muted">
+                          <div className="h-full w-1/2 animate-image-studio-progress rounded-full bg-primary/70" />
+                        </div>
+                        <div className="text-sm font-medium">{statusLabel(currentJob.status)}</div>
+                        <div className="text-xs text-muted-foreground">#{currentJob.id}</div>
+                      </div>
+                    </div>
+                  ) : currentJob.status === 'failed' ? (
+                    <div className="flex max-w-md flex-col items-center gap-3 px-2 text-center animate-image-studio-fade-in">
+                      <div className="rounded-2xl border border-destructive/25 bg-destructive/10 px-5 py-3.5 animate-image-studio-shake">
+                        <div className="text-sm font-semibold text-destructive">{t('images.createJobFailed')}</div>
+                        <div className="mt-1.5 text-xs leading-relaxed text-destructive/90">
+                          {currentJob.error_message || t('imageStudioPortal.tryAgain')}
+                        </div>
+                      </div>
+                      <Button size="sm" variant="outline" onClick={() => void submitJob()} disabled={submitting || !prompt.trim()}>
+                        <RefreshCw className="size-3.5" />
+                        {t('imageStudioPortal.retry')}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex w-full flex-col items-center gap-3 animate-image-studio-result-in">
+                      {resultAssets.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">{t('imageStudioPortal.emptyResult')}</div>
+                      ) : (
+                        <div className="flex w-full flex-wrap items-stretch justify-center gap-3">
+                          {resultAssets.map((asset) => {
+                            const src = imageSrc(asset, assetURLs)
+                            return (
+                              <div
+                                key={asset.id}
+                                className="group flex w-full max-w-[min(100%,420px)] flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/85 shadow-sm"
+                              >
+                                <button
+                                  type="button"
+                                  className="image-studio-checkerboard relative aspect-[4/3] w-full overflow-hidden text-left"
+                                  onClick={() => openPreview(asset, currentJob.prompt)}
+                                  title={t('imageStudioPortal.viewFullscreen')}
+                                >
+                                  {src ? (
+                                    <img
+                                      src={src}
+                                      alt={asset.filename}
+                                      className="size-full object-cover transition-transform duration-300 group-hover:scale-[1.015]"
+                                    />
+                                  ) : (
+                                    <div className="flex size-full items-center justify-center text-muted-foreground">
+                                      <Loader2 className="size-5 animate-spin" />
+                                    </div>
+                                  )}
+                                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/25 group-hover:opacity-100">
+                                    <span className="inline-flex items-center gap-1.5 rounded-full bg-black/65 px-2.5 py-1 text-xs font-medium text-white">
+                                      <Expand className="size-3.5" />
+                                      {t('imageStudioPortal.viewFullscreen')}
+                                    </span>
+                                  </div>
+                                </button>
+                                <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2">
+                                  <span className="truncate text-[11px] text-muted-foreground">
+                                    {asset.actual_size || (asset.width && asset.height ? `${asset.width}x${asset.height}` : asset.model)}
+                                  </span>
+                                  <div className="flex shrink-0 gap-1">
+                                    <Button
+                                      size="icon-sm"
+                                      variant="ghost"
+                                      className="size-7"
+                                      onClick={() => openPreview(asset, currentJob.prompt)}
+                                    >
+                                      <Expand className="size-3.5" />
+                                    </Button>
+                                    <Button size="icon-sm" variant="ghost" className="size-7" onClick={() => void downloadAsset(asset)}>
+                                      <Download className="size-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                      <p className="text-[11px] text-muted-foreground">{t('imageStudioPortal.clickToPreview')}</p>
+                    </div>
+                  )
+                ) : (
                   <div className="flex w-full max-w-md flex-col items-center gap-3 text-center animate-image-studio-fade-in">
                     <div className="flex size-14 items-center justify-center rounded-2xl border border-border/70 bg-background/80 shadow-sm">
                       <ImageIcon className="size-6 text-primary/70" />
@@ -1143,99 +1259,6 @@ export default function ImageStudioPortal() {
                         {t('imageStudioPortal.fromGallery')}
                       </span>
                     </div>
-                  </div>
-                ) : busy ? (
-                  <div className="flex w-full max-w-md flex-col items-center gap-4 animate-image-studio-fade-in">
-                    <div className="image-studio-checkerboard relative aspect-[16/10] w-full overflow-hidden rounded-2xl border border-border/70 shadow-inner">
-                      <div className="absolute inset-y-0 w-1/2 animate-image-studio-shimmer bg-gradient-to-r from-transparent via-white/25 to-transparent dark:via-white/10" />
-                    </div>
-                    <div className="flex flex-col items-center gap-2">
-                      <div className="h-1.5 w-44 overflow-hidden rounded-full bg-muted">
-                        <div className="h-full w-1/2 animate-image-studio-progress rounded-full bg-primary/70" />
-                      </div>
-                      <div className="text-sm font-medium">{statusLabel(currentJob.status)}</div>
-                      <div className="text-xs text-muted-foreground">#{currentJob.id}</div>
-                    </div>
-                  </div>
-                ) : currentJob.status === 'failed' ? (
-                  <div className="flex max-w-md flex-col items-center gap-3 px-2 text-center animate-image-studio-fade-in">
-                    <div className="rounded-2xl border border-destructive/25 bg-destructive/10 px-5 py-3.5 animate-image-studio-shake">
-                      <div className="text-sm font-semibold text-destructive">{t('images.createJobFailed')}</div>
-                      <div className="mt-1.5 text-xs leading-relaxed text-destructive/90">
-                        {currentJob.error_message || t('imageStudioPortal.tryAgain')}
-                      </div>
-                    </div>
-                    <Button size="sm" variant="outline" onClick={() => void submitJob()} disabled={submitting || !prompt.trim()}>
-                      <RefreshCw className="size-3.5" />
-                      {t('imageStudioPortal.retry')}
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex w-full flex-col items-center gap-3 animate-image-studio-result-in">
-                    {resultAssets.length === 0 ? (
-                      <div className="text-sm text-muted-foreground">{t('imageStudioPortal.emptyResult')}</div>
-                    ) : (
-                      <div className="flex w-full flex-wrap items-stretch justify-center gap-3">
-                        {resultAssets.map((asset) => {
-                          const src = imageSrc(asset, assetURLs)
-                          return (
-                            <div
-                              key={asset.id}
-                              className="group flex w-full max-w-[min(100%,420px)] flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/85 shadow-sm"
-                            >
-                              <button
-                                type="button"
-                                className="image-studio-checkerboard relative aspect-[4/3] w-full overflow-hidden text-left"
-                                onClick={() => openPreview(asset, currentJob.prompt)}
-                                title={t('imageStudioPortal.viewFullscreen')}
-                              >
-                                {src ? (
-                                  <img
-                                    src={src}
-                                    alt={asset.filename}
-                                    className="size-full object-cover transition-transform duration-300 group-hover:scale-[1.015]"
-                                  />
-                                ) : (
-                                  <div className="flex size-full items-center justify-center text-muted-foreground">
-                                    <Loader2 className="size-5 animate-spin" />
-                                  </div>
-                                )}
-                                <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/25 group-hover:opacity-100">
-                                  <span className="inline-flex items-center gap-1.5 rounded-full bg-black/65 px-2.5 py-1 text-xs font-medium text-white">
-                                    <Expand className="size-3.5" />
-                                    {t('imageStudioPortal.viewFullscreen')}
-                                  </span>
-                                </div>
-                              </button>
-                              <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2">
-                                <span className="truncate text-[11px] text-muted-foreground">
-                                  {asset.actual_size || (asset.width && asset.height ? `${asset.width}x${asset.height}` : asset.model)}
-                                </span>
-                                <div className="flex shrink-0 gap-1">
-                                  <Button
-                                    size="icon-sm"
-                                    variant="ghost"
-                                    className="size-7"
-                                    onClick={() => openPreview(asset, currentJob.prompt)}
-                                  >
-                                    <Expand className="size-3.5" />
-                                  </Button>
-                                  <Button
-                                    size="icon-sm"
-                                    variant="ghost"
-                                    className="size-7"
-                                    onClick={() => void downloadAsset(asset)}
-                                  >
-                                    <Download className="size-3.5" />
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-                    <p className="text-[11px] text-muted-foreground">{t('imageStudioPortal.clickToPreview')}</p>
                   </div>
                 )}
               </div>
@@ -1593,7 +1616,9 @@ export default function ImageStudioPortal() {
 
           <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border px-4 py-3 sm:px-5">
             <div className="text-xs text-muted-foreground">
-              {t('imageStudioPortal.gallerySelectedCount', { count: galleryPickerSelected.size })}
+              {t('imageStudioPortal.gallerySelectedCount', {
+                count: galleryPickerSelected.size,
+              })}
             </div>
             <div className="flex items-center gap-2">
               <Button

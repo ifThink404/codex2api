@@ -279,7 +279,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					antigravity_config TEXT DEFAULT '{}',
 					max_concurrency INTEGER DEFAULT 2,
 				global_rpm INTEGER DEFAULT 0,
-				test_model TEXT DEFAULT 'gpt-5.4',
+				test_model TEXT DEFAULT 'gpt-5.5',
 				test_content TEXT DEFAULT 'hi',
 				test_concurrency INTEGER DEFAULT 50,
 				proxy_url TEXT DEFAULT '',
@@ -788,6 +788,16 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		  AND COALESCE(prompt_filter_review_enabled, 0) = 0
 		  AND COALESCE(prompt_filter_review_base_url, '') = 'https://api.openai.com'
 		  AND COALESCE(prompt_filter_review_model, '') = 'omni-moderation-latest'
+	`); err != nil {
+		return err
+	}
+
+	// gpt-5.4 全系已下线(2026-09 上游 ChatGPT 账号 manifest 不再包含):仍指向它的
+	// 连通性测试模型改回出厂默认,否则测连必 400。
+	if _, err := db.conn.ExecContext(ctx, `
+		UPDATE system_settings
+		SET test_model = 'gpt-5.5'
+		WHERE LOWER(COALESCE(test_model, '')) IN ('gpt-5.4', 'gpt-5.4-mini')
 	`); err != nil {
 		return err
 	}

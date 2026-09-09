@@ -366,7 +366,8 @@ func (h *Handler) resolveMessagesRoutingBodyForRequest(c *gin.Context, rawBody [
 	mapped := resolveAnthropicModel(requestedModel, mappingJSON, supportedModels)
 	// 原生 Claude 路由:若存在能服务该模型的 Claude Code OAuth 账号,则保持原生
 	// 模型 ID,交由 claude 账号原生透传;否则维持既有 Codex 翻译兜底(claude-* →
-	// gpt-5.4),不影响没有 claude 账号、靠 Codex 服务 /v1/messages 的用户。
+	// gpt-5.5 / haiku → gpt-5.6-luna),不影响没有 claude 账号、靠 Codex 服务
+	// /v1/messages 的用户。
 	if nativeClaudeRoute {
 		mapped = nativeClaudeModel
 	}

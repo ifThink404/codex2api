@@ -252,17 +252,66 @@ func TestAntigravityResponsesConvertsFunctionDeclarations(t *testing.T) {
 	if declaration["name"] != "lookup" || declaration["description"] != "Look up a value" {
 		t.Fatalf("declaration = %#v", declaration)
 	}
-	parameters := declaration["parameters"].(map[string]any)
-	properties := parameters["properties"].(map[string]any)
+	schema := declaration["parametersJsonSchema"].(map[string]any)
+	properties := schema["properties"].(map[string]any)
 	query := properties["query"].(map[string]any)
-	if parameters["type"] != "OBJECT" || query["type"] != "STRING" {
-		t.Fatalf("parameters = %#v", parameters)
+	if schema["type"] != "OBJECT" || query["type"] != "STRING" {
+		t.Fatalf("parametersJsonSchema = %#v", schema)
 	}
-	if _, ok := parameters["additionalProperties"]; ok {
-		t.Fatalf("unsupported additionalProperties survived: %#v", parameters)
+	if _, ok := schema["additionalProperties"]; ok {
+		t.Fatalf("unsupported additionalProperties survived: %#v", schema)
 	}
 	if mode := request["toolConfig"].(map[string]any)["functionCallingConfig"].(map[string]any)["mode"]; mode != "VALIDATED" {
 		t.Fatalf("function calling mode = %#v", mode)
+	}
+}
+
+func TestAntigravityGeminiParametersDropsOrphanRequiredFields(t *testing.T) {
+	parameters := antigravityGeminiParameters(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"country":  map[string]any{"type": "string"},
+			"industry": map[string]any{"type": "string"},
+		},
+		"required": []any{"country", "industry", "stale_field", "another_stale"},
+	})
+	required, _ := parameters["required"].([]any)
+	if len(required) != 2 {
+		t.Fatalf("required = %#v, want [country industry]", required)
+	}
+	if required[0] != "country" || required[1] != "industry" {
+		t.Fatalf("required = %#v", required)
+	}
+}
+
+func TestAntigravityGeminiParametersDropsNestedOrphanRequiredFields(t *testing.T) {
+	t.Setenv(antigravityFunctionToolsEnv, "true")
+	got, err := responsesToGeminiInternal([]byte(`{
+		"input":"hello",
+		"tools":[{
+			"type":"function",
+			"name":"run_command",
+			"parameters":{
+				"type":"object",
+				"properties":{
+					"environment":{
+						"type":"object",
+						"properties":{"cwd":{"type":"string"}},
+						"required":["cwd","missing_field"]
+					}
+				},
+				"required":["environment"]
+			}
+		}]
+	}`), "project", "gemini-3-flash-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := got["request"].(map[string]any)["tools"].([]any)[0].(map[string]any)["functionDeclarations"].([]any)[0].(map[string]any)["parametersJsonSchema"].(map[string]any)
+	environment := schema["properties"].(map[string]any)["environment"].(map[string]any)
+	required, _ := environment["required"].([]any)
+	if len(required) != 1 || required[0] != "cwd" {
+		t.Fatalf("environment.required = %#v, want [cwd]", required)
 	}
 }
 

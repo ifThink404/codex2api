@@ -1277,7 +1277,7 @@ func (db *DB) migrate(ctx context.Context) error {
 				antigravity_config TEXT DEFAULT '{}',
 				max_concurrency    INT DEFAULT 2,
 			global_rpm         INT DEFAULT 0,
-			test_model         VARCHAR(100) DEFAULT 'gpt-5.4',
+			test_model         VARCHAR(100) DEFAULT 'gpt-5.5',
 			test_content       TEXT DEFAULT 'hi',
 			test_concurrency   INT DEFAULT 50,
 			proxy_url          VARCHAR(500) DEFAULT '',
@@ -1404,6 +1404,12 @@ func (db *DB) migrate(ctx context.Context) error {
 	  AND COALESCE(prompt_filter_review_enabled, FALSE) = FALSE
 	  AND COALESCE(prompt_filter_review_base_url, '') = 'https://api.openai.com'
 	  AND COALESCE(prompt_filter_review_model, '') = 'omni-moderation-latest';
+	-- gpt-5.4 全系已下线(2026-09 上游 ChatGPT 账号 manifest 不再包含):仍指向它的
+	-- 连通性测试模型改回出厂默认,否则测连必 400。
+	ALTER TABLE system_settings ALTER COLUMN test_model SET DEFAULT 'gpt-5.5';
+	UPDATE system_settings
+	SET test_model = 'gpt-5.5'
+	WHERE LOWER(COALESCE(test_model, '')) IN ('gpt-5.4', 'gpt-5.4-mini');
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS client_compat_mode VARCHAR(20) DEFAULT 'preserve';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_min_cli_version VARCHAR(32) DEFAULT '0.153.3';
 	ALTER TABLE system_settings ALTER COLUMN codex_min_cli_version SET DEFAULT '0.153.3';

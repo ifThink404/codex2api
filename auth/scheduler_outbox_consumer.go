@@ -488,6 +488,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.Models = cloneStringSlice(src.Models)
 	dst.ModelMapping = src.ModelMapping
 	dst.CodexClientMetadataMode = src.CodexClientMetadataMode
+	dst.CodexPassthroughMode = src.CodexPassthroughMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
 	dst.ClaudeFingerprintMode = src.ClaudeFingerprintMode
 	dst.claudeSessionWindow = src.claudeSessionWindow

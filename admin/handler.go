@@ -1202,6 +1202,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
 	api.GET("/settings", h.GetSettings)
 	api.PUT("/settings", h.UpdateSettings)
+	api.GET("/settings/codex-user-agent/catalog", h.GetCodexUserAgentCatalog)
+	api.POST("/settings/codex-user-agent/preview", h.PreviewCodexUserAgent)
 	api.GET("/settings/claude-config", h.GetClaudeConfig)
 	api.PUT("/settings/claude-config", h.UpdateClaudeConfig)
 	api.POST("/settings/claude-config/cli-version/sync", h.SyncClaudeCLIVersion)
@@ -1613,6 +1615,7 @@ type accountResponse struct {
 	Models                        []string                    `json:"models,omitempty"`
 	ModelMapping                  string                      `json:"model_mapping,omitempty"`
 	CodexClientMetadataMode       string                      `json:"codex_client_metadata_mode,omitempty"`
+	CodexPassthroughMode          string                      `json:"codex_passthrough_mode,omitempty"`
 	CodexFingerprintMode          string                      `json:"codex_fingerprint_mode,omitempty"`
 	ClaudeFingerprintMode         string                      `json:"claude_fingerprint_mode,omitempty"`
 	ClaudeUserAgent               string                      `json:"claude_user_agent,omitempty"`
@@ -4013,6 +4016,7 @@ type addOpenAIResponsesAccountReq struct {
 	Models                  []string          `json:"models"`
 	ModelMapping            string            `json:"model_mapping"`
 	CodexClientMetadataMode *string           `json:"codex_client_metadata_mode"`
+	CodexPassthroughMode    *string           `json:"codex_passthrough_mode"`
 	ProxyURL                string            `json:"proxy_url"`
 	CustomHeaders           map[string]string `json:"custom_headers"`
 }
@@ -4085,6 +4089,14 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		}
 		codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(*req.CodexClientMetadataMode)
 	}
+	codexPassthroughMode := auth.CodexPassthroughModeOff
+	if req.CodexPassthroughMode != nil {
+		if !auth.IsValidCodexPassthroughMode(*req.CodexPassthroughMode) {
+			writeError(c, http.StatusBadRequest, "codex_passthrough_mode 必须是 off、auto 或 always")
+			return
+		}
+		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(*req.CodexPassthroughMode)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -4117,6 +4129,7 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		"models":                                 models,
 		"model_mapping":                          modelMapping,
 		"codex_client_metadata_mode":             codexClientMetadataMode,
+		"codex_passthrough_mode":                 codexPassthroughMode,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 	}
@@ -4140,6 +4153,7 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		Models:                  models,
 		ModelMapping:            modelMapping,
 		CodexClientMetadataMode: codexClientMetadataMode,
+		CodexPassthroughMode:    codexPassthroughMode,
 		CustomHeaders:           customHeaders,
 		Email:                   baseURL,
 		PlanType:                "api",
@@ -4295,6 +4309,14 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		}
 		codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(*req.CodexClientMetadataMode)
 	}
+	codexPassthroughMode := auth.NormalizeCodexPassthroughMode(row.GetCredential("codex_passthrough_mode"))
+	if req.CodexPassthroughMode != nil {
+		if !auth.IsValidCodexPassthroughMode(*req.CodexPassthroughMode) {
+			writeError(c, http.StatusBadRequest, "codex_passthrough_mode 必须是 off、auto 或 always")
+			return
+		}
+		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(*req.CodexPassthroughMode)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -4317,6 +4339,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		"models":                                 models,
 		"model_mapping":                          modelMapping,
 		"codex_client_metadata_mode":             codexClientMetadataMode,
+		"codex_passthrough_mode":                 codexPassthroughMode,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 		"custom_headers":                         cloneCustomHeaders(customHeaders),
@@ -4338,7 +4361,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		return
 	}
 	if h.store != nil {
-		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, codexClientMetadataMode, req.ProxyURL)
+		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, codexClientMetadataMode, codexPassthroughMode, req.ProxyURL)
 		h.store.ApplyAccountCustomHeaders(id, customHeaders)
 	}
 	h.db.InsertAccountEventAsync(id, "updated", "manual_openai_responses")
@@ -12484,6 +12507,62 @@ func (h *Handler) SyncCodexCLIVersion(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// ==================== Codex User-Agent 形态目录与预览 ====================
+
+// GetCodexUserAgentCatalog 返回 Codex 客户端形态目录(形态、平台、终端、末尾标记名、
+// CLI 版本→构建号配对与默认号池配比),供设置页做搭配选择。
+func (h *Handler) GetCodexUserAgentCatalog(c *gin.Context) {
+	c.JSON(http.StatusOK, proxy.CodexUserAgentCatalog())
+}
+
+type codexUserAgentPreviewRequest struct {
+	Config             string `json:"config"`
+	ClientCompatMode   string `json:"client_compat_mode"`
+	CodexMinCLIVersion string `json:"codex_min_cli_version"`
+}
+
+// PreviewCodexUserAgent 按表单里尚未保存的 UA 配置算出真实出站身份(User-Agent /
+// Originator / Version),与执行链路同一套规则;号池模式下对前几个 Codex 账号逐个抽样。
+// 兼容模式与最低 CLI 版本可随请求传入(表单值),缺省用当前生效设置。
+func (h *Handler) PreviewCodexUserAgent(c *gin.Context) {
+	var req codexUserAgentPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	settings := proxy.CurrentRuntimeSettings()
+	compatMode := strings.TrimSpace(req.ClientCompatMode)
+	if compatMode == "" {
+		compatMode = settings.ClientCompatMode
+	}
+	minVersion := strings.TrimSpace(req.CodexMinCLIVersion)
+	if minVersion == "" {
+		minVersion = settings.CodexMinCLIVersion
+	}
+	versionFloor := ""
+	if compatMode == proxy.ClientCompatModeAuto {
+		versionFloor = minVersion
+	}
+	var sampleIDs []int64
+	if h.store != nil {
+		for _, acc := range h.store.Accounts() {
+			if acc == nil || acc.IsRelayStyle() || acc.IsOpenAIResponsesAPI() || acc.IsAntigravityAPI() {
+				continue
+			}
+			sampleIDs = append(sampleIDs, acc.ID())
+			if len(sampleIDs) >= 6 {
+				break
+			}
+		}
+	}
+	preview, err := proxy.PreviewCodexUserAgentConfig(req.Config, versionFloor, sampleIDs)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, preview)
 }
 
 // ==================== 账号趋势 ====================

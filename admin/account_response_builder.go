@@ -123,6 +123,10 @@ func (h *Handler) buildAccountResponse(
 	if isOpenAIResponsesAccount && includeDetails {
 		codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode"))
 	}
+	codexPassthroughMode := ""
+	if isOpenAIResponsesAccount && includeDetails {
+		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(row.GetCredential("codex_passthrough_mode"))
+	}
 	balanceQueryURL := ""
 	if isOpenAIResponsesAccount && includeDetails {
 		balanceQueryURL = row.GetCredential(openAIResponsesBalanceQueryURLCredential)
@@ -246,6 +250,7 @@ func (h *Handler) buildAccountResponse(
 		Models:                       row.GetCredentialStringSlice("models"),
 		ModelMapping:                 modelMapping,
 		CodexClientMetadataMode:      codexClientMetadataMode,
+		CodexPassthroughMode:         codexPassthroughMode,
 		CodexFingerprintMode:         codexFingerprintMode,
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeUserAgent:              claudeUserAgent,
@@ -496,6 +501,7 @@ func stripAccountDetailFields(resp *accountResponse) {
 	}
 	resp.ModelMapping = ""
 	resp.CodexClientMetadataMode = ""
+	resp.CodexPassthroughMode = ""
 	resp.CustomHeaders = nil
 	resp.AllowedAPIKeyIDs = nil
 	resp.Usage5hDetail = nil

@@ -368,14 +368,14 @@ Redis 模式下，共享上下文只要没有超过重建上限，即使大于 L
 
 ## 对外接口
 
-| 接口 | 说明 |
-| --- | --- |
-| `POST /v1/chat/completions` | Chat Completions 风格入口 |
-| `POST /v1/responses` | Responses 风格入口 |
-| `POST /v1/images/generations` | OpenAI Images 生成入口 |
-| `POST /v1/images/edits` | OpenAI Images 编辑入口 |
-| `GET /v1/models` | 返回可用模型列表（含 gpt-5.5、gpt-5.4、gpt-5.4-mini、gpt-5.3-codex、gpt-image-2 等） |
-| `GET /health` | 健康检查 |
+| 接口                          | 说明                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `POST /v1/chat/completions`   | Chat Completions 风格入口                                                                                |
+| `POST /v1/responses`          | Responses 风格入口                                                                                       |
+| `POST /v1/images/generations` | OpenAI Images 生成入口                                                                                   |
+| `POST /v1/images/edits`       | OpenAI Images 编辑入口                                                                                   |
+| `GET /v1/models`              | 返回可用模型列表（含 gpt-6-astra、gpt-5.6-sol/terra/luna、gpt-5.5、gpt-5.3-codex-spark、gpt-image-2 等） |
+| `GET /health`                 | 健康检查                                                                                                 |
 
 > **计费提示**：gpt-5.5 标准 tier 计费为 $5.00/M 输入 / $30.00/M 输出，priority tier 为 $12.50/M 输入 / $75.00/M 输出。其他模型按 billing 引擎规则计费。
 
@@ -606,8 +606,8 @@ codex2api/
    └─ vite.config.js            # Vite 配置
 ```
 
----
 
+---
 
 ## 常见注意事项
 

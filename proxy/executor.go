@@ -770,13 +770,16 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
 	capabilityKey := openAIResponsesCodexMetadataCapabilityKey(account, baseURL)
 	clientMetadataMode := account.OpenAIResponsesCodexClientMetadataMode()
+	relayPassthrough := codexIdentityPassthroughActive(account, headers)
 	proxyInjectedMetadata := false
-	if clientMetadataMode == auth.CodexClientMetadataModeAlways {
-		requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
-	} else if clientMetadataMode == auth.CodexClientMetadataModeAuto {
-		_, required := openAIResponsesCodexMetadataRequired.Load(capabilityKey)
-		if required {
+	if !relayPassthrough {
+		if clientMetadataMode == auth.CodexClientMetadataModeAlways {
 			requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
+		} else if clientMetadataMode == auth.CodexClientMetadataModeAuto {
+			_, required := openAIResponsesCodexMetadataRequired.Load(capabilityKey)
+			if required {
+				requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
+			}
 		}
 	}
 
@@ -804,7 +807,8 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	if err != nil {
 		return nil, err
 	}
-	if clientMetadataMode == auth.CodexClientMetadataModeOff || clientMetadataMode == auth.CodexClientMetadataModeAlways {
+	// 透传模式保持客户端身份原样，不参与安装标识注入/重试改写。
+	if relayPassthrough || clientMetadataMode == auth.CodexClientMetadataModeOff || clientMetadataMode == auth.CodexClientMetadataModeAlways {
 		return resp, nil
 	}
 	if proxyInjectedMetadata {
@@ -883,7 +887,19 @@ func isCodexAccessRestrictedResponse(resp *http.Response) bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()), "codex_access_restricted")
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()), "codex_access_restricted") {
+		return true
+	}
+	// 部分中转（sub2api 的 codex_cli_only、zzzcoding 等第三方网关）用
+	// {"error":{"message":"This account only allows Codex official clients",
+	// "type":"forbidden_error"}} 表达同样的官方客户端限制。
+	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()), "forbidden_error") {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+	return strings.Contains(msg, "official clients") ||
+		strings.Contains(msg, "codex client") ||
+		strings.Contains(msg, "codex 客户端")
 }
 
 // ExecuteOpenAIResponsesCompactRequest 向中转（OpenAI Responses API）账号发送
@@ -1054,12 +1070,12 @@ func generatedCodexClientHeaders(account *auth.Account, settings RuntimeSettings
 	if settings.ClientCompatMode == ClientCompatModeAuto {
 		versionFloor = settings.CodexMinCLIVersion
 	}
-	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, versionFloor); ok {
-		return userAgent, version
-	}
 	accountID := int64(0)
 	if account != nil {
 		accountID = account.ID()
+	}
+	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, accountID, versionFloor); ok {
+		return userAgent, version
 	}
 	profile := ProfileForAccount(accountID)
 	userAgent := strings.TrimSpace(profile.UserAgent)
@@ -1123,7 +1139,11 @@ func resolveCodexOutboundClientHeaders(account *auth.Account, apiKey string, dev
 	if settings.ClientCompatMode == ClientCompatModeAuto {
 		versionFloor = settings.CodexMinCLIVersion
 	}
-	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, versionFloor); ok {
+	configAccountID := int64(0)
+	if account != nil {
+		configAccountID = account.ID()
+	}
+	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, configAccountID, versionFloor); ok {
 		return userAgent, version, true
 	}
 	effectiveVersion := effectiveLatestCodexCLIVersion()
@@ -1194,7 +1214,11 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 	if version != "" {
 		req.Header.Set("Version", version)
 	}
-	if originator := strings.TrimSpace(downstreamHeaders.Get("Originator")); !usedGeneratedHeaders && originator != "" && IsCodexOfficialClientByHeaders("", originator) {
+	// Originator 必须与出站 UA 的客户端前缀一致：网关自行生成 UA 时跟随生成结果
+	// （模拟 "Codex Desktop" 就发 "Codex Desktop"），透传官方客户端时沿用下游值。
+	if usedGeneratedHeaders {
+		req.Header.Set("Originator", CodexOriginatorForGeneratedUserAgent(userAgent))
+	} else if originator := strings.TrimSpace(downstreamHeaders.Get("Originator")); originator != "" && IsCodexOfficialClientByHeaders("", originator) {
 		req.Header.Set("Originator", originator)
 	} else {
 		req.Header.Set("Originator", Originator)
@@ -1230,13 +1254,59 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 	if req == nil {
 		return
 	}
-	userAgent, version, _ := resolveCodexOutboundClientHeaders(account, "", nil, headers)
+	passthrough := codexIdentityPassthroughActive(account, headers)
+	userAgent := ""
+	version := ""
+	var usedGenerated bool
+	if passthrough {
+		// 完全透传：下游声明什么身份就用什么身份，不做生成/改写。
+		userAgent = strings.TrimSpace(headers.Get("User-Agent"))
+		version = firstNonEmptyHeader(headers, "Version", "")
+		if userAgent == "" {
+			userAgent = defaultCodexCLIUserAgent
+		}
+		if version == "" {
+			version = codexVersionFromUserAgent(userAgent, effectiveLatestCodexCLIVersion())
+		}
+	} else {
+		userAgent, version, usedGenerated = resolveCodexOutboundClientHeaders(account, "", nil, headers)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("User-Agent", userAgent)
 	if version != "" {
 		req.Header.Set("Version", version)
+		// 部分中转只放行官方 Codex 客户端，按 x-codex-app-version 判定
+		// （见 cockpit-tools issue #1892：不带该头直接 403 forbidden_error）。
+		req.Header.Set("x-codex-app-version", version)
+	}
+	// Originator 与出站 UA 的客户端前缀保持一致：生成 UA 时跟随生成结果
+	// （模拟 "Codex Desktop" 就发 "Codex Desktop"）。
+	if passthrough {
+		if originator := strings.TrimSpace(headers.Get("Originator")); originator != "" {
+			req.Header.Set("Originator", originator)
+		} else {
+			req.Header.Set("Originator", Originator)
+		}
+	} else if usedGenerated {
+		req.Header.Set("Originator", CodexOriginatorForGeneratedUserAgent(userAgent))
+	} else {
+		req.Header.Set("Originator", Originator)
+	}
+	if passthrough {
+		// 透传模式把官方客户端身份原样转发给中转：白名单 x-codex-* 头与会话头
+		// 均来自下游，sub2api 等 codex_cli_only 网关按这些指纹判定官方客户端。
+		applyCodexAllowedForwardHeaders(req, headers)
+		if strings.TrimSpace(req.Header.Get(codexBetaFeaturesHeader)) == "" {
+			req.Header.Set(codexBetaFeaturesHeader, defaultCodexBetaFeatures)
+		}
+		if v := strings.TrimSpace(headers.Get("session-id")); v != "" {
+			req.Header.Set("session-id", v)
+		}
+		if v := strings.TrimSpace(headers.Get("thread-id")); v != "" {
+			req.Header.Set("thread-id", v)
+		}
 	}
 	if headers != nil {
 		for _, key := range []string{"OpenAI-Organization", "OpenAI-Project", "Idempotency-Key", codexResponsesLiteHeader} {
@@ -1247,6 +1317,31 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 	}
 	applyAccountCustomHeaders(req, account)
 	RecordUpstreamUserAgent(req.Context(), req.Header.Get("User-Agent"))
+}
+
+// codexIdentityPassthroughActive 判断 OpenAI Responses 中转账号是否开启
+// Codex 身份透传（见 auth.CodexPassthroughMode）：
+//   - always：无论下游是谁都原样转发其身份；
+//   - auto：仅下游已携带官方 Codex 客户端身份（UA/Originator）时透传；
+//   - off：不透传，保持默认的生成/兜底身份（默认值，升级后行为不变）。
+func codexIdentityPassthroughActive(account *auth.Account, headers http.Header) bool {
+	if account == nil {
+		return false
+	}
+	mode := account.OpenAIResponsesCodexPassthroughMode()
+	if mode == auth.CodexPassthroughModeAlways {
+		return true
+	}
+	if mode != auth.CodexPassthroughModeAuto {
+		return false
+	}
+	if headers == nil {
+		return false
+	}
+	return IsCodexOfficialClientByHeaders(
+		strings.TrimSpace(headers.Get("User-Agent")),
+		strings.TrimSpace(headers.Get("Originator")),
+	)
 }
 
 const downstreamAffinityHeader = "X-Codex2API-Affinity-Key"

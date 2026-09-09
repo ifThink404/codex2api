@@ -73,8 +73,44 @@ func IsValidCodexClientMetadataMode(value string) bool {
 	}
 }
 
+// Codex 身份透传档位，仅对 OpenAI Responses 中转账号生效。
+// off    = 保持默认出站身份（生成/兜底 Codex 身份头，丢弃下游 x-codex-* 头）。
+// auto   = 仅当下游请求本身携带官方 Codex 客户端身份（UA/Originator）时，
+//
+//	把该身份原样透传给中转；其余请求维持 off 行为。
+//
+// always = 完全透传：无论下游是谁，原样转发其身份头（与 sub2api 透传模式对齐）。
 const (
-	DefaultTestContent  = "hi"
+	CodexPassthroughModeOff    = "off"
+	CodexPassthroughModeAuto   = "auto"
+	CodexPassthroughModeAlways = "always"
+)
+
+func NormalizeCodexPassthroughMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexPassthroughModeAuto:
+		return CodexPassthroughModeAuto
+	case CodexPassthroughModeAlways:
+		return CodexPassthroughModeAlways
+	default:
+		return CodexPassthroughModeOff
+	}
+}
+
+func IsValidCodexPassthroughMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexPassthroughModeOff, CodexPassthroughModeAuto, CodexPassthroughModeAlways:
+		return true
+	default:
+		return false
+	}
+}
+
+const (
+	DefaultTestContent = "hi"
+	// DefaultTestModel 是连通性测试的出厂默认模型;须是当前上游仍在线、free/plus/pro
+	// 三档都可用的模型(gpt-5.4 已于 2026-09 下线)。
+	DefaultTestModel    = "gpt-5.5"
 	MaxTestContentRunes = 8192
 )
 
@@ -130,6 +166,9 @@ type Account struct {
 	Models                      []string
 	ModelMapping                string
 	CodexClientMetadataMode     string
+	// CodexPassthroughMode 是 OpenAI Responses 中转账号的 Codex 身份透传档位
+	// （off / auto / always），见 codex passthrough 常量定义。
+	CodexPassthroughMode string
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode string
@@ -582,6 +621,17 @@ func (a *Account) OpenAIResponsesCodexClientMetadataMode() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return NormalizeCodexClientMetadataMode(a.CodexClientMetadataMode)
+}
+
+// OpenAIResponsesCodexPassthroughMode 返回 OpenAI Responses 中转账号生效的
+// Codex 身份透传档位；空值与非法的存量数据都回落到 off，升级后行为不变。
+func (a *Account) OpenAIResponsesCodexPassthroughMode() string {
+	if a == nil {
+		return CodexPassthroughModeOff
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return NormalizeCodexPassthroughMode(a.CodexPassthroughMode)
 }
 
 func (a *Account) OpenAIResponsesCredentials() (baseURL, apiKey string) {
@@ -5158,6 +5208,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	models := normalizeModelList(row.GetCredentialStringSlice("models"))
 	modelMapping := strings.TrimSpace(row.GetCredential("model_mapping"))
 	codexClientMetadataMode := NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode"))
+	codexPassthroughMode := NormalizeCodexPassthroughMode(row.GetCredential("codex_passthrough_mode"))
 	codexFingerprintMode := NormalizeCodexFingerprintMode(row.GetCredential(CodexFingerprintModeCredentialKey))
 	claudeFingerprintMode := NormalizeClaudeFingerprintMode(row.GetCredential(ClaudeFingerprintModeCredentialKey))
 	var claudeClientPlatformOverride, claudeVersionPolicyOverride, claudeClientVersionOverride, claudeAuthKind string
@@ -5197,6 +5248,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		Models:                       models,
 		ModelMapping:                 modelMapping,
 		CodexClientMetadataMode:      codexClientMetadataMode,
+		CodexPassthroughMode:         codexPassthroughMode,
 		CodexFingerprintMode:         codexFingerprintMode,
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
@@ -5614,6 +5666,7 @@ func (s *Store) reconcileDispatchState(ctx context.Context) (bool, error) {
 					row.GetCredentialStringSlice("models"),
 					row.GetCredential("model_mapping"),
 					row.GetCredential("codex_client_metadata_mode"),
+					row.GetCredential("codex_passthrough_mode"),
 					row.ProxyURL,
 				)
 				s.ApplyAccountCustomHeaders(row.ID, row.GetCredentialStringMap("custom_headers"))
@@ -7701,7 +7754,7 @@ func (s *Store) GetTestModel() string {
 	if v, ok := s.testModel.Load().(string); ok && v != "" {
 		return v
 	}
-	return "gpt-5.4"
+	return DefaultTestModel
 }
 
 // SetTestContent dynamically updates connection test input text.
@@ -9075,19 +9128,19 @@ func (s *Store) accountAllowedForAPIKey(acc *Account, apiKeyID int64) bool {
 	return acc.AllowsAPIKey(apiKeyID) && s.APIKeyAllowsAccount(apiKeyID, acc)
 }
 
-func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, models []string, modelMapping, codexClientMetadataMode, proxyURL string) bool {
+func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, models []string, modelMapping, codexClientMetadataMode, codexPassthroughMode, proxyURL string) bool {
 	if s != nil && s.db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if row, err := s.db.GetAccountByID(ctx, dbID); err == nil &&
 			strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), UpstreamOpenAIResponses) {
-			return s.applyOpenAIResponsesConfig(ctx, row, dbID, baseURL, apiKey, models, modelMapping, codexClientMetadataMode, proxyURL)
+			return s.applyOpenAIResponsesConfig(ctx, row, dbID, baseURL, apiKey, models, modelMapping, codexClientMetadataMode, codexPassthroughMode, proxyURL)
 		}
 	}
-	return s.applyOpenAIResponsesConfig(context.Background(), nil, dbID, baseURL, apiKey, models, modelMapping, codexClientMetadataMode, proxyURL)
+	return s.applyOpenAIResponsesConfig(context.Background(), nil, dbID, baseURL, apiKey, models, modelMapping, codexClientMetadataMode, codexPassthroughMode, proxyURL)
 }
 
-func (s *Store) applyOpenAIResponsesConfig(ctx context.Context, row *database.AccountRow, dbID int64, baseURL, apiKey string, models []string, modelMapping, codexClientMetadataMode, proxyURL string) bool {
+func (s *Store) applyOpenAIResponsesConfig(ctx context.Context, row *database.AccountRow, dbID int64, baseURL, apiKey string, models []string, modelMapping, codexClientMetadataMode, codexPassthroughMode, proxyURL string) bool {
 	acc := s.FindByID(dbID)
 	if acc == nil {
 		return false
@@ -9104,6 +9157,7 @@ func (s *Store) applyOpenAIResponsesConfig(ctx context.Context, row *database.Ac
 		models = row.GetCredentialStringSlice("models")
 		modelMapping = row.GetCredential("model_mapping")
 		codexClientMetadataMode = row.GetCredential("codex_client_metadata_mode")
+		codexPassthroughMode = row.GetCredential("codex_passthrough_mode")
 		proxyURL = row.ProxyURL
 		credentialGeneration = row.CredentialGeneration
 	}
@@ -9125,6 +9179,7 @@ func (s *Store) applyOpenAIResponsesConfig(ctx context.Context, row *database.Ac
 	acc.Models = normalizeModelList(models)
 	acc.ModelMapping = strings.TrimSpace(modelMapping)
 	acc.CodexClientMetadataMode = NormalizeCodexClientMetadataMode(codexClientMetadataMode)
+	acc.CodexPassthroughMode = NormalizeCodexPassthroughMode(codexPassthroughMode)
 	acc.ProxyURL = strings.TrimSpace(proxyURL)
 	acc.Email = acc.BaseURL
 	acc.PlanType = "api"

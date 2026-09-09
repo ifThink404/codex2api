@@ -263,7 +263,7 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
 
 **端点:** `POST /v1/images/generations`
 
-**说明:** OpenAI Images 兼容入口。外部请求使用 `gpt-image-2`，内部按 `CLIProxyAPI/` 与 `sub2api/` 的链路转换为 Codex `/responses`：主模型为 `gpt-5.4-mini`，图像模型写入 `tools[0].model`。
+**说明:** OpenAI Images 兼容入口。外部请求使用 `gpt-image-2`（可加 `-2k` / `-4k` 档位后缀），内部按 `CLIProxyAPI/` 与 `sub2api/` 的链路转换为 Codex `/responses`：主模型默认 `gpt-5.6-luna`（可用环境变量 `CODEX_IMAGES_MAIN_MODEL` 覆盖；被上游拒绝时按 `gpt-5.5` → `gpt-5.6-terra` → `gpt-5.6-sol` → `gpt-6-astra` 顺序换驱动重试），图像模型写入 `tools[0].model`。
 
 **请求示例:**
 
@@ -457,12 +457,12 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
 {
   "object": "list",
   "data": [
+    { "id": "gpt-6-astra", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.6-sol", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.6-terra", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.6-luna", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.5", "object": "model", "owned_by": "openai" },
-    { "id": "gpt-5.4", "object": "model", "owned_by": "openai" },
-    { "id": "gpt-5.4-mini", "object": "model", "owned_by": "openai" },
-    { "id": "gpt-5.3-codex", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.3-codex-spark", "object": "model", "owned_by": "openai" },
-    { "id": "gpt-5.2", "object": "model", "owned_by": "openai" },
     { "id": "gpt-image-2", "object": "model", "owned_by": "openai" },
     { "id": "grok-imagine-image", "object": "model", "owned_by": "xai" },
     { "id": "grok-imagine-video-1.5", "object": "model", "owned_by": "xai" }
@@ -479,8 +479,8 @@ Grok 账号编辑页支持账号级模型映射，可让只请求 GPT 模型名�
 ```json
 {
   "gpt-5.5": "grok-4.5",
-  "gpt-5.4": "grok-4.5",
-  "gpt-5.3-codex": "grok-4.5"
+  "gpt-5.6-sol": "grok-4.5",
+  "gpt-6-astra": "grok-4.5"
 }
 ```
 
@@ -1221,15 +1221,15 @@ Codex 测连的 `codex_diagnostics` 对象包含：
   `body_truncated=true`。
 
 ```text
-data: {"type":"test_start","model":"gpt-5.4"}
+data: {"type":"test_start","model":"gpt-5.5"}
 
-data: {"type":"diagnostics","codex_diagnostics":{"model":"gpt-5.4","http_status":200,"headers_ms":412,"transport":"http","request_id":"req_x","plan_type":"plus","primary_window":{"used_percent":12.5,"window_minutes":300,"reset_after_seconds":1800}}}
+data: {"type":"diagnostics","codex_diagnostics":{"model":"gpt-5.5","http_status":200,"headers_ms":412,"transport":"http","request_id":"req_x","plan_type":"plus","primary_window":{"used_percent":12.5,"window_minutes":300,"reset_after_seconds":1800}}}
 
 data: {"type":"content","text":"pong"}
 
 data: {"type":"test_complete","success":true}
 
-data: {"type":"diagnostics","codex_diagnostics":{"model":"gpt-5.4","http_status":200,"headers_ms":412,"first_content_ms":980,"duration_ms":1210,"response_id":"resp_x","response_status":"completed","usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}
+data: {"type":"diagnostics","codex_diagnostics":{"model":"gpt-5.5","http_status":200,"headers_ms":412,"first_content_ms":980,"duration_ms":1210,"response_id":"resp_x","response_status":"completed","usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}
 ```
 
 #### GET /api/admin/accounts/:id/usage
@@ -1325,6 +1325,7 @@ Antigravity 的导入**一直**会采用文件里的 `proxy_url`，只是从不�
   ```
 
 - **`at_txt`** — 每行一个 Access Token（AT-only 模式）:
+
   ```text
   eyJhbGciOiJSUzI1NiIs...token1
   eyJhbGciOiJSUzI1NiIs...token2
@@ -2197,12 +2198,12 @@ data: {"type":"progress","proxy_id":1,"current":1,"total":3,"success":1,"result"
 ```json
 {
   "models": [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
-    "gpt-5.2",
     "gpt-image-2"
   ],
   "items": [
@@ -2233,12 +2234,12 @@ data: {"type":"progress","proxy_id":1,"current":1,"total":3,"success":1,"result"
   "unchanged": 5,
   "skipped": ["gpt-5.2-codex"],
   "models": [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
-    "gpt-5.2",
     "gpt-image-2"
   ],
   "last_synced_at": "2026-04-24T00:00:00Z",
@@ -2445,15 +2446,13 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 
 ## 支持模型
 
-| 模型                | 说明                                                        |
-| ------------------- | ----------------------------------------------------------- |
-| gpt-5.5             | 最新旗舰模型。计费：$5.00/M 输入 / $30.00/M 输出（标准），priority 分别为 $12.50/M / $75.00/M |
-| gpt-5.4             | 旗舰模型                                                    |
-| gpt-5.4-mini        | 轻量版                                  |
-| gpt-5.3-codex       | 较新版本                                |
-| gpt-5.3-codex-spark | Codex Spark 模型，仅 Pro 订阅账号可调用 |
-| gpt-5.2             | 兼容保留模型                            |
-| gpt-image-2         | GPT Image 2 图像生成模型                |
+| 模型                       | 说明                                                                                      |
+| -------------------------- | ----------------------------------------------------------------------------------------- |
+| gpt-6-astra                | 最强旗舰模型                                                                              |
+| gpt-5.6-sol / terra / luna | gpt-5.6 系列（luna 为更快档位）                                                           |
+| gpt-5.5                    | 旗舰模型。计费：$5.00/M 输入 / $30.00/M 输出（标准），priority 分别为 $12.50/M / $75.00/M |
+| gpt-5.3-codex-spark        | Codex Spark 模型，仅 Pro 订阅账号可调用                                                   |
+| gpt-image-2                | GPT Image 2 图像生成模型                                                                  |
 
 > 提示：实际支持的模型以 `/v1/models` 接口返回为准，文档可能未及时更新。
 

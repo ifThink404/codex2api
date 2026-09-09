@@ -57,6 +57,7 @@ import type {
   AddATAccountRequest,
   AddOpenAIResponsesAccountRequest,
   CodexClientMetadataMode,
+  CodexPassthroughMode,
   CodexFingerprintMode,
   UpdateOpenAIResponsesAccountRequest,
   APIKeyRow,
@@ -1831,6 +1832,7 @@ export default function Accounts() {
       balance_query_url: "",
       models: [],
       codex_client_metadata_mode: "auto",
+      codex_passthrough_mode: "off",
       proxy_url: "",
     });
   const [openAIModelDraft, setOpenAIModelDraft] = useState("");
@@ -1929,6 +1931,7 @@ export default function Accounts() {
       balance_query_url: "",
       models: [],
       codex_client_metadata_mode: "auto",
+      codex_passthrough_mode: "off",
       proxy_url: "",
     });
   const [openAIModelMappingText, setOpenAIModelMappingText] = useState("");
@@ -3525,6 +3528,7 @@ export default function Accounts() {
         balance_query_url: "",
         models: [],
         codex_client_metadata_mode: "auto",
+        codex_passthrough_mode: "off",
         proxy_url: "",
       });
       setOpenAIModelDraft("");
@@ -5425,6 +5429,8 @@ export default function Accounts() {
       models: account.models ?? [],
       codex_client_metadata_mode:
         account.codex_client_metadata_mode ?? "auto",
+      codex_passthrough_mode:
+        account.codex_passthrough_mode ?? "off",
       proxy_url: account.proxy_url ?? "",
     });
     setEditOpenAIModelDraft("");
@@ -5479,6 +5485,7 @@ export default function Accounts() {
       balance_query_url: "",
       models: [],
       codex_client_metadata_mode: "auto",
+      codex_passthrough_mode: "off",
       proxy_url: "",
     });
     setEditOpenAIModelDraft("");
@@ -7848,6 +7855,38 @@ export default function Accounts() {
                   />
                 </div>
                 <div>
+                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
+                    {t("accounts.codexPassthroughMode")}
+                  </label>
+                  <Select
+                    value={openAIForm.codex_passthrough_mode ?? "off"}
+                    onValueChange={(value) =>
+                      setOpenAIForm((form) => ({
+                        ...form,
+                        codex_passthrough_mode:
+                          value as CodexPassthroughMode,
+                      }))
+                    }
+                    options={[
+                      {
+                        value: "off",
+                        label: t("accounts.codexPassthroughOff"),
+                      },
+                      {
+                        value: "auto",
+                        label: t("accounts.codexPassthroughAuto"),
+                      },
+                      {
+                        value: "always",
+                        label: t("accounts.codexPassthroughAlways"),
+                      },
+                    ]}
+                  />
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {t("accounts.codexPassthroughHint")}
+                  </p>
+                </div>
+                <div>
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <label className="text-sm font-semibold text-muted-foreground">
                       {t("accounts.openaiModels")} *
@@ -8977,6 +9016,38 @@ export default function Accounts() {
                           ]}
                         />
                       </div>
+                    </div>
+                    <div>
+                      <label className="block mb-2 text-xs font-semibold text-muted-foreground">
+                        {t("accounts.codexPassthroughMode")}
+                      </label>
+                      <Select
+                        value={editOpenAIForm.codex_passthrough_mode ?? "off"}
+                        onValueChange={(value) =>
+                          setEditOpenAIForm((form) => ({
+                            ...form,
+                            codex_passthrough_mode:
+                              value as CodexPassthroughMode,
+                          }))
+                        }
+                        options={[
+                          {
+                            value: "off",
+                            label: t("accounts.codexPassthroughOff"),
+                          },
+                          {
+                            value: "auto",
+                            label: t("accounts.codexPassthroughAuto"),
+                          },
+                          {
+                            value: "always",
+                            label: t("accounts.codexPassthroughAlways"),
+                          },
+                        ]}
+                      />
+                      <p className="mt-1.5 text-xs text-muted-foreground">
+                        {t("accounts.codexPassthroughHint")}
+                      </p>
                     </div>
 
                     <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs space-y-4">

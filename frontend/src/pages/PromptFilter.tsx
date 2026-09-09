@@ -338,7 +338,7 @@ const defaultAdvancedProtection: AdvancedProtectionConfig = {
     allow_remote_urls: false,
   },
   output: { enabled: false, strict_only: true },
-  intelligence: { enabled: false, interval_hours: 24, queries: ['LLM jailbreak prompt injection', 'ChatGPT jailbreak prompt', 'Codex prompt injection jailbreak', '大模型 破限 提示词', 'GPT 破甲 提示词', 'AI 越狱 提示词', '中文 prompt injection 绕过'], max_search_results: 20, model_enabled: false, model: 'gpt-5.4', max_model_calls: 1 },
+  intelligence: { enabled: false, interval_hours: 24, queries: ['LLM jailbreak prompt injection', 'ChatGPT jailbreak prompt', 'Codex prompt injection jailbreak', '大模型 破限 提示词', 'GPT 破甲 提示词', 'AI 越狱 提示词', '中文 prompt injection 绕过'], max_search_results: 20, model_enabled: false, model: 'gpt-5.5', max_model_calls: 1 },
 }
 
 function parsePromptGuardMode(value: unknown, fallback: PromptGuardMode = 'inherit'): PromptGuardMode {

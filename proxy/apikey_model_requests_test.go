@@ -55,14 +55,14 @@ func newModelQuotaTestHandler(t *testing.T, limit int64, upstream string, native
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 4, MaxRetries: 0, MaxRateLimitRetries: 0})
 	t.Cleanup(store.Stop)
 	if native {
-		store.AddAccount(&auth.Account{DBID: 1, AccessToken: "test-token", PlanType: "pro", Models: []string{"gpt-6-astra", "gpt-5.4"}})
+		store.AddAccount(&auth.Account{DBID: 1, AccessToken: "test-token", PlanType: "pro", Models: []string{"gpt-6-astra", "gpt-5.5"}})
 	} else {
 		// The early global mapping is deliberately outside the quota; only the
 		// later account mapping exposes the actual model that must be charged.
-		store.SetCodexModelMapping(`{"team-model":"gpt-5.4"}`)
+		store.SetCodexModelMapping(`{"team-model":"gpt-5.5"}`)
 		store.AddAccount(&auth.Account{DBID: 1, UpstreamType: auth.UpstreamOpenAIResponses,
 			BaseURL: upstream, APIKey: "relay-test", PlanType: "api",
-			Models: []string{"gpt-6-astra", "gpt-5.4"}, ModelMapping: `{"team-model":"gpt-6-astra"}`})
+			Models: []string{"gpt-6-astra", "gpt-5.5"}, ModelMapping: `{"team-model":"gpt-6-astra"}`})
 	}
 	h := NewHandler(store, db, &config.Config{}, nil)
 	r := gin.New()
@@ -85,7 +85,7 @@ func TestModelRequestQuotaHTTPMappedModelAndProtocolErrors(t *testing.T) {
 		sent.Add(1)
 		body := readUpstreamRequestBody(r)
 		model := gjson.GetBytes(body, "model").String()
-		if model != "gpt-6-astra" && model != "gpt-5.4" {
+		if model != "gpt-6-astra" && model != "gpt-5.5" {
 			t.Errorf("unexpected wire model %q", model)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -119,7 +119,7 @@ func TestModelRequestQuotaHTTPMappedModelAndProtocolErrors(t *testing.T) {
 	if sent.Load() != 1 {
 		t.Fatalf("exhausted requests reached upstream: calls=%d", sent.Load())
 	}
-	other := performModelQuotaRequest(router, "/v1/responses", `{"model":"gpt-5.4","input":"hi","stream":true}`)
+	other := performModelQuotaRequest(router, "/v1/responses", `{"model":"gpt-5.5","input":"hi","stream":true}`)
 	if other.Code != 200 {
 		t.Fatalf("other model blocked: %d %s", other.Code, other.Body.String())
 	}
@@ -190,7 +190,7 @@ func TestModelRequestQuotaWebsocketFramesAndOtherModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	for i, model := range []string{"gpt-6-astra", "gpt-6-astra", "gpt-5.4"} {
+	for i, model := range []string{"gpt-6-astra", "gpt-6-astra", "gpt-5.5"} {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":"hi"}`, model))); err != nil {
 			t.Fatal(err)
 		}

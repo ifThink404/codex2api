@@ -356,7 +356,7 @@ func defaultBootstrapSettings() *database.SystemSettings {
 		SiteName:                          database.DefaultSiteName,
 		MaxConcurrency:                    2,
 		GlobalRPM:                         0,
-		TestModel:                         "gpt-5.4",
+		TestModel:                         auth.DefaultTestModel,
 		TestContent:                       auth.DefaultTestContent,
 		TestConcurrency:                   50,
 		BackgroundRefreshIntervalMinutes:  2,

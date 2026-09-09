@@ -1089,6 +1089,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	var preContentErrorCandidate []byte
 	var completedResponsePayload []byte
 	outputCollector := newResponseOutputCollector()
+	emptyIncomplete := &emptyIncompleteTracker{}
 	terminalFailureEventType := ""
 	wroteAnyBody := false
 	var wsReplay *continuousRetryWSReplay
@@ -1138,6 +1139,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		outputCollector.Add(data)
 		parsed := gjson.ParseBytes(data)
 		eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+		eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
 		clientData := data
 		if options != nil && options.transformClientEvent != nil {
 			if transformed := options.transformClientEvent(data); len(transformed) > 0 {

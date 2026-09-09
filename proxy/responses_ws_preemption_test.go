@@ -76,8 +76,8 @@ func newResponsesWSPreemptTestContext(apiKeyID int64, row *database.APIKeyRow) *
 
 func TestResponsesWSSessionPreemptKeyIsolationAndStreamMultiplexing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	bodyA := []byte(`{"model":"gpt-5.4","prompt_cache_key":"conversation","stream_id":"stream-a","input":"hello"}`)
-	bodyB := []byte(`{"model":"gpt-5.4","prompt_cache_key":"conversation","stream_id":"stream-b","input":"hello"}`)
+	bodyA := []byte(`{"model":"gpt-5.5","prompt_cache_key":"conversation","stream_id":"stream-a","input":"hello"}`)
+	bodyB := []byte(`{"model":"gpt-5.5","prompt_cache_key":"conversation","stream_id":"stream-b","input":"hello"}`)
 	row := &database.APIKeyRow{ID: 11, AllowedGroupIDs: []int64{7, 3}}
 	c := newResponsesWSPreemptTestContext(11, row)
 	identityA := resolveRequestSessionIdentity(c.Request.Header, bodyA)
@@ -110,7 +110,7 @@ func TestResponsesWSSessionPreemptKeyIsolationAndStreamMultiplexing(t *testing.T
 func TestResponsesWSSessionPreemptKeySeparatesSubagentThreads(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	row := &database.APIKeyRow{ID: 11, AllowedGroupIDs: []int64{7}}
-	body := []byte(`{"model":"gpt-5.4","input":"hello"}`)
+	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	newThreadContext := func(threadID string) *gin.Context {
 		c := newResponsesWSPreemptTestContext(11, row)
 		c.Request.Header.Set("Session-Id", "shared-session")
@@ -194,7 +194,7 @@ func TestWatchResponsesWSSessionPreemptOwnerDetectsRemoteReplacement(t *testing.
 func TestBeginResponsesWSSessionPreemptionCancelsPreviousAndSupportsHandoff(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handler{}
-	body := []byte(`{"model":"gpt-5.4","prompt_cache_key":"conversation","input":"hello"}`)
+	body := []byte(`{"model":"gpt-5.5","prompt_cache_key":"conversation","input":"hello"}`)
 	row := &database.APIKeyRow{ID: 11}
 	firstGin := newResponsesWSPreemptTestContext(11, row)
 	firstIdentity := resolveRequestSessionIdentity(firstGin.Request.Header, body)
@@ -271,7 +271,7 @@ func TestResponsesWebSocketNewerSameSessionPreemptsBeforeConcurrencyAdmission(t 
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(sse))}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	t.Cleanup(store.Stop)
 	account := &auth.Account{DBID: 1, AccessToken: "at-1", AccountID: "acct-1", PlanType: "pro"}
 	store.AddAccount(account)
@@ -292,7 +292,7 @@ func TestResponsesWebSocketNewerSameSessionPreemptsBeforeConcurrencyAdmission(t 
 		t.Fatalf("dial first websocket: %v", err)
 	}
 	t.Cleanup(func() { _ = first.Close() })
-	body := []byte(`{"type":"response.create","model":"gpt-5.4","prompt_cache_key":"conversation","input":"hello"}`)
+	body := []byte(`{"type":"response.create","model":"gpt-5.5","prompt_cache_key":"conversation","input":"hello"}`)
 	if err := first.WriteMessage(websocket.TextMessage, body); err != nil {
 		t.Fatalf("write first request: %v", err)
 	}

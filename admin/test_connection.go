@@ -882,7 +882,7 @@ func (h *Handler) connectionTestModel(ctx context.Context) string {
 	if len(models) > 0 {
 		return models[0]
 	}
-	return "gpt-5.4"
+	return auth.DefaultTestModel
 }
 
 // defaultGrokConnectionTestModels：账号未声明 models 时的 Grok 连通性测试回落列表

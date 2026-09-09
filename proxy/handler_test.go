@@ -221,7 +221,7 @@ func TestRealtimeWebSocketTranslatesTextConversationToResponses(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(sse))}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at", PlanType: "plus", AccountID: "acct-realtime"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 	router := gin.New()
@@ -229,7 +229,7 @@ func TestRealtimeWebSocketTranslatesTextConversationToResponses(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/realtime?model=gpt-5.4"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/realtime?model=gpt-5.5"
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
@@ -272,7 +272,7 @@ func TestRealtimeWebSocketTranslatesTextConversationToResponses(t *testing.T) {
 		if gjson.GetBytes(gotBody, "type").Exists() {
 			t.Fatalf("upstream body should not carry envelope type: %s", gotBody)
 		}
-		if got := gjson.GetBytes(gotBody, "model").String(); got != "gpt-5.4" {
+		if got := gjson.GetBytes(gotBody, "model").String(); got != "gpt-5.5" {
 			t.Fatalf("upstream model = %q body=%s", got, gotBody)
 		}
 		if got := gjson.GetBytes(gotBody, "instructions").String(); got != "Answer briefly." {
@@ -375,7 +375,7 @@ func TestRealtimeResponsesClientEventOnlyRenamesTerminalEvent(t *testing.T) {
 }
 
 func TestNormalizeRealtimeTextClientEventRejectsAudioWithoutClosingTextSession(t *testing.T) {
-	state := &realtimeTextSession{Model: "gpt-5.4"}
+	state := &realtimeTextSession{Model: "gpt-5.5"}
 	ack, forward, apiErr := normalizeRealtimeTextClientEvent(state, []byte(`{"type":"input_audio_buffer.append","audio":"AAAA"}`))
 	if apiErr == nil || !strings.Contains(apiErr.Message, "text events only") {
 		t.Fatalf("audio event error = %#v", apiErr)
@@ -383,19 +383,19 @@ func TestNormalizeRealtimeTextClientEventRejectsAudioWithoutClosingTextSession(t
 	if len(ack) != 0 || len(forward) != 0 {
 		t.Fatalf("audio event produced ack=%s forward=%s", ack, forward)
 	}
-	if state.Model != "gpt-5.4" {
+	if state.Model != "gpt-5.5" {
 		t.Fatalf("text session state was mutated: %+v", state)
 	}
 }
 
 func TestNormalizeResponsesWebSocketClientPayload(t *testing.T) {
 	t.Run("defaults response create type", func(t *testing.T) {
-		got, model, apiErr := normalizeResponsesWebSocketClientPayload([]byte(`{"model":"gpt-5.4","input":"hi"}`))
+		got, model, apiErr := normalizeResponsesWebSocketClientPayload([]byte(`{"model":"gpt-5.5","input":"hi"}`))
 		if apiErr != nil {
 			t.Fatalf("unexpected error: %v", apiErr)
 		}
-		if model != "gpt-5.4" {
-			t.Fatalf("model = %q, want gpt-5.4", model)
+		if model != "gpt-5.5" {
+			t.Fatalf("model = %q, want gpt-5.5", model)
 		}
 		if eventType := gjson.GetBytes(got, "type").String(); eventType != "response.create" {
 			t.Fatalf("type = %q, want response.create; body=%s", eventType, got)
@@ -403,14 +403,14 @@ func TestNormalizeResponsesWebSocketClientPayload(t *testing.T) {
 	})
 
 	t.Run("rejects append", func(t *testing.T) {
-		_, _, apiErr := normalizeResponsesWebSocketClientPayload([]byte(`{"type":"response.append","model":"gpt-5.4"}`))
+		_, _, apiErr := normalizeResponsesWebSocketClientPayload([]byte(`{"type":"response.append","model":"gpt-5.5"}`))
 		if apiErr == nil || !strings.Contains(apiErr.Message, "response.append") {
 			t.Fatalf("error = %#v, want response.append rejection", apiErr)
 		}
 	})
 
 	t.Run("rejects message previous response id", func(t *testing.T) {
-		_, _, apiErr := normalizeResponsesWebSocketClientPayload([]byte(`{"type":"response.create","model":"gpt-5.4","previous_response_id":"msg_123"}`))
+		_, _, apiErr := normalizeResponsesWebSocketClientPayload([]byte(`{"type":"response.create","model":"gpt-5.5","previous_response_id":"msg_123"}`))
 		if apiErr == nil || !strings.Contains(apiErr.Message, "response.id") {
 			t.Fatalf("error = %#v, want previous_response_id rejection", apiErr)
 		}
@@ -458,8 +458,8 @@ func TestResponsesWebSocketForwardsResponsesEvents(t *testing.T) {
 		}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
-	store.SetCodexModelMapping(`{"client-ws-alias":"gpt-5.4"}`)
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
+	store.SetCodexModelMapping(`{"client-ws-alias":"gpt-5.5"}`)
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at", PlanType: "plus", AccountID: "acct-1"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
@@ -488,8 +488,8 @@ func TestResponsesWebSocketForwardsResponsesEvents(t *testing.T) {
 		if gjson.GetBytes(gotBody, "type").Exists() {
 			t.Fatalf("upstream body should not carry envelope type: %s", gotBody)
 		}
-		if model := gjson.GetBytes(gotBody, "model").String(); model != "gpt-5.4" {
-			t.Fatalf("upstream model = %q, want mapped gpt-5.4; body=%s", model, gotBody)
+		if model := gjson.GetBytes(gotBody, "model").String(); model != "gpt-5.5" {
+			t.Fatalf("upstream model = %q, want mapped gpt-5.5; body=%s", model, gotBody)
 		}
 		if prev := gjson.GetBytes(gotBody, "previous_response_id").String(); prev != "resp_prev" {
 			t.Fatalf("previous_response_id = %q, want resp_prev; body=%s", prev, gotBody)
@@ -520,7 +520,7 @@ func TestResponsesWebSocketForwardsResponsesEvents(t *testing.T) {
 		t.Fatalf("terminal event type = %q body=%s", eventType, second)
 	}
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.4","input":"again"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.5","input":"again"}`)); err != nil {
 		t.Fatalf("write second request: %v", err)
 	}
 	select {
@@ -565,7 +565,7 @@ func TestResponsesWebSocket1009FallbackStripsEnvelopeType(t *testing.T) {
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at", PlanType: "plus", AccountID: "acct-1"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
@@ -586,7 +586,7 @@ func TestResponsesWebSocket1009FallbackStripsEnvelopeType(t *testing.T) {
 
 	// 大输入让 1009 时的体积达到体积路由的学习样本下限（64KB）。
 	bigText := strings.Repeat("issue548 ", 8192)
-	payload := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"%s"}]}]}`, bigText)
+	payload := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"%s"}]}]}`, bigText)
 
 	readTurnEvents := func(turn string) {
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -680,7 +680,7 @@ func TestResponsesWebSocket1009FallbackExpandsPreviousResponseFromCache(t *testi
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at", PlanType: "plus", AccountID: "acct-1"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
@@ -699,7 +699,7 @@ func TestResponsesWebSocket1009FallbackExpandsPreviousResponseFromCache(t *testi
 	}
 	defer conn.Close()
 
-	payload := `{"type":"response.create","model":"gpt-5.4","previous_response_id":"resp_issue548","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`
+	payload := `{"type":"response.create","model":"gpt-5.5","previous_response_id":"resp_issue548","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -790,7 +790,7 @@ func TestResponsesWebSocketContinuationKeepsBoundAccountPastBoundedLimit(t *test
 		}, nil
 	}
 
-	store = auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store = auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	primary := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "plus", AccountID: "acct-1"}
 	primary.SetSchedulerPriority(10)
 	store.AddAccount(primary)
@@ -814,9 +814,9 @@ func TestResponsesWebSocketContinuationKeepsBoundAccountPastBoundedLimit(t *test
 
 	previousResponseID := ""
 	for turn := 1; turn <= 52; turn++ {
-		payload := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.4","prompt_cache_key":"conversation-1","input":"turn-%d"}`, turn)
+		payload := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.5","prompt_cache_key":"conversation-1","input":"turn-%d"}`, turn)
 		if previousResponseID != "" {
-			payload = fmt.Sprintf(`{"type":"response.create","model":"gpt-5.4","prompt_cache_key":"conversation-1","previous_response_id":"%s","input":"turn-%d","client_metadata":{"x-codex-turn-state":"turn-state-1"}}`, previousResponseID, turn)
+			payload = fmt.Sprintf(`{"type":"response.create","model":"gpt-5.5","prompt_cache_key":"conversation-1","previous_response_id":"%s","input":"turn-%d","client_metadata":{"x-codex-turn-state":"turn-state-1"}}`, previousResponseID, turn)
 		}
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
 			t.Fatalf("turn %d write request: %v", turn, err)
@@ -970,7 +970,7 @@ func TestResponsesWebSocketContinuationDegradesWhenUpstreamRejectsPreviousRespon
 				}, nil
 			}
 
-			store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+			store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 			store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "plus", AccountID: "acct-1"})
 			handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
@@ -989,7 +989,7 @@ func TestResponsesWebSocketContinuationDegradesWhenUpstreamRejectsPreviousRespon
 			}
 			defer conn.Close()
 
-			payload := `{"type":"response.create","model":"gpt-5.4","prompt_cache_key":"conversation-1","previous_response_id":"resp_stale","input":"continue"}`
+			payload := `{"type":"response.create","model":"gpt-5.5","prompt_cache_key":"conversation-1","previous_response_id":"resp_stale","input":"continue"}`
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
 				t.Fatalf("write request: %v", err)
 			}
@@ -1049,7 +1049,7 @@ func TestResponsesWebSocketContinuationDegradesWhenBoundAccountExcluded(t *testi
 		}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	primary := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "plus", AccountID: "acct-1"}
 	primary.SetSchedulerPriority(10)
 	store.AddAccount(primary)
@@ -1071,7 +1071,7 @@ func TestResponsesWebSocketContinuationDegradesWhenBoundAccountExcluded(t *testi
 	}
 	defer conn.Close()
 
-	payload := `{"type":"response.create","model":"gpt-5.4","prompt_cache_key":"conversation-1","previous_response_id":"resp_stale","input":"continue"}`
+	payload := `{"type":"response.create","model":"gpt-5.5","prompt_cache_key":"conversation-1","previous_response_id":"resp_stale","input":"continue"}`
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -1145,7 +1145,7 @@ func TestResponsesWebSocketSuccessPreservesNewerUsageLimitCooldown(t *testing.T)
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hi"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hi"}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	select {
@@ -1208,7 +1208,7 @@ func TestResponsesWebSocketFlushesSkeletonBeforeContent(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: pr}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
@@ -1224,7 +1224,7 @@ func TestResponsesWebSocketFlushesSkeletonBeforeContent(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hi"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hi"}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -1296,7 +1296,7 @@ func TestResponsesWebSocketRetriesFirstTokenTimeoutBeforeRelay(t *testing.T) {
 		}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, MaxRetries: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, MaxRetries: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
 	store.AddAccount(&auth.Account{DBID: 2, AccessToken: "at-2", PlanType: "free", AccountID: "acct-2"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
@@ -1316,7 +1316,7 @@ func TestResponsesWebSocketRetriesFirstTokenTimeoutBeforeRelay(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hello"}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -1421,7 +1421,7 @@ func TestResponsesWebSocketFallsBackToHTTPWhenUpstreamMessageTooBig(t *testing.T
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	primary := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
 	primary.SetDispatchCountLimit(1)
 	store.AddAccount(primary)
@@ -1560,7 +1560,7 @@ func TestResponsesHTTPIngressFallsBackToHTTPWhenForcedWebsocketMessageTooBig(t *
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	primary := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
 	primary.SetDispatchCountLimit(1)
 	store.AddAccount(primary)
@@ -1710,7 +1710,7 @@ func TestResponsesSkipsWebsocketWhenBodyReachesLearnedTooBigThreshold(t *testing
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
 	account.SetDispatchCountLimit(1)
 	store.AddAccount(account)
@@ -1719,7 +1719,7 @@ func TestResponsesSkipsWebsocketWhenBodyReachesLearnedTooBigThreshold(t *testing
 	// 预置学习状态:任何体积的请求都视为达到已知 1009 阈值
 	globalWSSizeRouter = websocketSizeRouter{minTooBig: 1, learnedAt: time.Now()}
 
-	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":true}`)
+	body := []byte(`{"model":"gpt-5.5","input":"hello","stream":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -1774,13 +1774,13 @@ func TestResponsesHTTPIngressRetainsAccountWhenWebsocketRequestReturnsMessageToo
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
 	account.SetDispatchCountLimit(1)
 	store.AddAccount(account)
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
-	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":true}`)
+	body := []byte(`{"model":"gpt-5.5","input":"hello","stream":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -1817,7 +1817,7 @@ func TestCompatibilityEndpointsRetainAccountForWebsocketMessageTooBigHTTPFallbac
 		{
 			name:       "chat completions",
 			path:       "/v1/chat/completions",
-			body:       `{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}]}`,
+			body:       `{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}`,
 			invoke:     func(handler *Handler, ctx *gin.Context) { handler.ChatCompletions(ctx) },
 			resultPath: "choices.0.message.content",
 		},
@@ -1877,7 +1877,7 @@ func TestCompatibilityEndpointsRetainAccountForWebsocketMessageTooBigHTTPFallbac
 			t.Cleanup(upstream.Close)
 			SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-			settings := &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"}
+			settings := &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"}
 			store := auth.NewStore(nil, nil, settings)
 			t.Cleanup(store.Stop)
 			primary := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
@@ -1971,7 +1971,7 @@ func TestResponsesHTTPFallbackRetryKeepsCorrelationThroughRelaySuccess(t *testin
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, MaxRetries: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, MaxRetries: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	primary := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
 	primary.SetDispatchCountLimit(1)
 	store.AddAccount(primary)
@@ -1980,11 +1980,11 @@ func TestResponsesHTTPFallbackRetryKeepsCorrelationThroughRelaySuccess(t *testin
 		UpstreamType: auth.UpstreamOpenAIResponses,
 		BaseURL:      upstream.URL,
 		APIKey:       "sk-relay",
-		Models:       []string{"gpt-5.4"},
+		Models:       []string{"gpt-5.5"},
 	})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
-	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":true}`)
+	body := []byte(`{"model":"gpt-5.5","input":"hello","stream":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -2052,12 +2052,12 @@ func TestResponsesDoesNotFallbackOrPenalizeAfterWebSocketContent(t *testing.T) {
 	defer upstream.Close()
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
 	store.AddAccount(account)
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
-	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":true}`)
+	body := []byte(`{"model":"gpt-5.5","input":"hello","stream":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -2113,7 +2113,7 @@ func TestResponsesWebSocketSilentRetryDisabledRelaysRetryableFailure(t *testing.
 		}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
 	store.AddAccount(&auth.Account{DBID: 2, AccessToken: "at-2", PlanType: "pro", AccountID: "acct-2"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
@@ -2133,7 +2133,7 @@ func TestResponsesWebSocketSilentRetryDisabledRelaysRetryableFailure(t *testing.
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hello"}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -2187,7 +2187,7 @@ func TestResponsesWebSocketHidesUpstreamErrorAfterSilentRetriesExhausted(t *test
 		}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
 	store.AddAccount(&auth.Account{DBID: 2, AccessToken: "at-2", PlanType: "pro", AccountID: "acct-2"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
@@ -2207,7 +2207,7 @@ func TestResponsesWebSocketHidesUpstreamErrorAfterSilentRetriesExhausted(t *test
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hello"}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -2314,7 +2314,7 @@ func TestResponsesEndpointsAllowCompactionInputType(t *testing.T) {
 
 	handler := NewHandler(auth.NewStore(nil, nil, nil), nil, nil, nil)
 	body := []byte(`{
-		"model":"gpt-5.4",
+		"model":"gpt-5.5",
 		"input":[
 			{"type":"message","role":"user","content":"hello"},
 			{"type":"compaction","summary":"previous context was compacted"}
@@ -2358,7 +2358,7 @@ func TestResponsesEndpointAllowsEncryptedContentInputType(t *testing.T) {
 
 	handler := NewHandler(auth.NewStore(nil, nil, nil), nil, nil, nil)
 	body := []byte(`{
-		"model":"gpt-5.4",
+		"model":"gpt-5.5",
 		"input":[
 			{"type":"encrypted_content","content":"opaque-ciphertext"},
 			{"type":"input_text","text":"hello"}
@@ -2805,7 +2805,7 @@ func newOpenAIResponsesRelayStoreWithModelMapping(upstreamURL string) *auth.Stor
 		MaxRetries:          0,
 		MaxRateLimitRetries: 0,
 	})
-	store.SetCodexModelMapping(`{"client-alias":"gpt-5.4"}`)
+	store.SetCodexModelMapping(`{"client-alias":"gpt-5.5"}`)
 	store.AddAccount(&auth.Account{
 		DBID:         1,
 		UpstreamType: auth.UpstreamOpenAIResponses,
@@ -3025,7 +3025,7 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		ctx.Set("raw_body", []byte(`{
-			"model":"gpt-5.4",
+			"model":"gpt-5.5",
 			"input":[
 				{"type":"message","role":"user","content":"hello"},
 				{"type":"compaction","encrypted_content":"opaque-history"}
@@ -3047,7 +3047,7 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		ctx.Set("raw_body", []byte(`{
-			"model":"gpt-5.4",
+			"model":"gpt-5.5",
 			"input":{"type":"context_compaction","id":"cmp_123"}
 		}`))
 		input := &database.UsageLogInput{Endpoint: "/v1/responses"}
@@ -3066,7 +3066,7 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		ctx.Set("raw_body", []byte(`{
-			"model":"gpt-5.4",
+			"model":"gpt-5.5",
 			"input":[
 				{"type":"message","role":"user","content":"hello"},
 				{"type":"compaction_trigger"}
@@ -3085,7 +3085,7 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		ctx.Set("raw_body", []byte(`{
-			"model":"gpt-5.4",
+			"model":"gpt-5.5",
 			"input":{"type":"compaction_trigger"}
 		}`))
 		input := &database.UsageLogInput{Endpoint: "/v1/responses"}
@@ -3160,7 +3160,7 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		ctx.Set("raw_body", []byte(`{
-			"model":"gpt-5.4",
+			"model":"gpt-5.5",
 			"input":[
 				{
 					"type":"function_call_output",
@@ -3184,7 +3184,7 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 	t.Run("normal responses request", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Set("raw_body", []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":"hello"}]}`))
+		ctx.Set("raw_body", []byte(`{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":"hello"}]}`))
 		input := &database.UsageLogInput{Endpoint: "/v1/responses"}
 
 		populateCompactUsageMetaFromRequest(ctx, input)
@@ -3390,7 +3390,7 @@ func TestResponsesNoAvailableAccountFailsFastWithoutCancelledContext(t *testing.
 	gin.SetMode(gin.TestMode)
 
 	handler := NewHandler(auth.NewStore(nil, nil, nil), nil, nil, nil)
-	body := []byte(`{"model":"gpt-5.4","input":"hello"}`)
+	body := []byte(`{"model":"gpt-5.5","input":"hello"}`)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
@@ -3416,7 +3416,7 @@ func TestResponsesEnforcesAPIKeyModelAllowlistBeforeDispatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	handler := NewHandler(auth.NewStore(nil, nil, nil), nil, nil, nil)
-	body := []byte(`{"model":"gpt-5.4","input":"hello"}`)
+	body := []byte(`{"model":"gpt-5.6-sol","input":"hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -3426,7 +3426,7 @@ func TestResponsesEnforcesAPIKeyModelAllowlistBeforeDispatch(t *testing.T) {
 		ID:   42,
 		Name: "limited",
 		Limits: database.APIKeyLimits{
-			ModelAllow: []string{"gpt-5.5", "gpt-5.4-mini"},
+			ModelAllow: []string{"gpt-5.5", "gpt-5.6-luna"},
 		},
 	})
 
@@ -3435,7 +3435,7 @@ func TestResponsesEnforcesAPIKeyModelAllowlistBeforeDispatch(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusForbidden, recorder.Body.String())
 	}
-	if got := gjson.GetBytes(recorder.Body.Bytes(), "error.message").String(); !strings.Contains(got, "gpt-5.4") || !strings.Contains(got, "not allowed") {
+	if got := gjson.GetBytes(recorder.Body.Bytes(), "error.message").String(); !strings.Contains(got, "gpt-5.6-sol") || !strings.Contains(got, "not allowed") {
 		t.Fatalf("error.message = %q, want model allowlist rejection; body=%s", got, recorder.Body.String())
 	}
 }
@@ -3745,7 +3745,7 @@ func TestSupportedModelIDsIncludesOpenAIResponsesAccountModels(t *testing.T) {
 
 func TestClassify429UsageLimitExactResetUsesAccountCooldown(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	decision := classify429RateLimit(&auth.Account{PlanType: "team"}, []byte(`{"error":{"type":"usage_limit_reached","resets_in_seconds":120}}`), nil, now, "gpt-5.4")
+	decision := classify429RateLimit(&auth.Account{PlanType: "team"}, []byte(`{"error":{"type":"usage_limit_reached","resets_in_seconds":120}}`), nil, now, "gpt-5.5")
 	if decision.Scope != rateLimitScopeAccount || decision.Reason != "usage_limit" {
 		t.Fatalf("decision = %#v, want account usage_limit", decision)
 	}
@@ -3757,7 +3757,7 @@ func TestClassify429UsageLimitExactResetUsesAccountCooldown(t *testing.T) {
 func TestClassify429CapacityUsesModelCooldown(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	body := []byte(`{"error":{"message":"Selected model is at capacity. Please try a different model."}}`)
-	decision := classify429RateLimit(&auth.Account{PlanType: "team"}, body, nil, now, "gpt-5.4")
+	decision := classify429RateLimit(&auth.Account{PlanType: "team"}, body, nil, now, "gpt-5.5")
 	if decision.Scope != rateLimitScopeModel || decision.Reason != "model_capacity" {
 		t.Fatalf("decision = %#v, want model capacity cooldown", decision)
 	}
@@ -3772,7 +3772,7 @@ func TestClassify429Header7dUsesAccountCooldown(t *testing.T) {
 	resp.Header.Set("x-codex-secondary-used-percent", "100")
 	resp.Header.Set("x-codex-secondary-window-minutes", "10080")
 	resp.Header.Set("x-codex-secondary-reset-after-seconds", "3600")
-	decision := classify429RateLimit(&auth.Account{PlanType: "team"}, nil, resp, now, "gpt-5.4")
+	decision := classify429RateLimit(&auth.Account{PlanType: "team"}, nil, resp, now, "gpt-5.5")
 	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited_7d" {
 		t.Fatalf("decision = %#v, want 7d account cooldown", decision)
 	}
@@ -3799,7 +3799,7 @@ func TestShouldRetryHTTPStatusSplitsRateLimitBudget(t *testing.T) {
 }
 
 func TestDeactivatedWorkspace402MarksAccountError(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 42, AccessToken: "at", AccountID: "team-A", Status: auth.StatusReady}
 	sibling := &auth.Account{DBID: 43, AccessToken: "at-2", AccountID: "team-A", Status: auth.StatusReady}
 	other := &auth.Account{DBID: 44, AccessToken: "at-3", AccountID: "team-B", Status: auth.StatusReady}
@@ -3816,7 +3816,7 @@ func TestDeactivatedWorkspace402MarksAccountError(t *testing.T) {
 		t.Fatalf("upstreamErrorKind = %q, want deactivated_workspace", got)
 	}
 
-	handler.applyCooldownForModel(account, http.StatusPaymentRequired, body, &http.Response{Header: make(http.Header)}, "gpt-5.4")
+	handler.applyCooldownForModel(account, http.StatusPaymentRequired, body, &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
 	if got := account.RuntimeStatus(); got != "error" {
 		t.Fatalf("RuntimeStatus() = %q, want error", got)
@@ -3842,14 +3842,14 @@ func TestDeactivatedWorkspace402MarksAccountError(t *testing.T) {
 }
 
 func TestGeneric402DoesNotLinkWorkspaceSiblings(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 42, AccessToken: "at", AccountID: "team-A", Status: auth.StatusReady}
 	sibling := &auth.Account{DBID: 43, AccessToken: "at-2", AccountID: "team-A", Status: auth.StatusReady}
 	store.AddAccount(account)
 	store.AddAccount(sibling)
 	handler := &Handler{store: store}
 
-	handler.applyCooldownForModel(account, http.StatusPaymentRequired, []byte(`{"error":{"message":"insufficient balance"}}`), &http.Response{Header: make(http.Header)}, "gpt-5.4")
+	handler.applyCooldownForModel(account, http.StatusPaymentRequired, []byte(`{"error":{"message":"insufficient balance"}}`), &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
 	if sibling.RuntimeStatus() == "error" {
 		t.Fatal("generic 402 must not fan out to workspace siblings")
@@ -3858,7 +3858,7 @@ func TestGeneric402DoesNotLinkWorkspaceSiblings(t *testing.T) {
 
 // TestAgentRuntimeDeleted403MarksAccountBanned 验证代理请求会将 runtime 已删除的账号标记为封禁。
 func TestAgentRuntimeDeleted403MarksAccountBanned(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 42, AccessToken: "at", Status: auth.StatusReady, HealthTier: auth.HealthTierHealthy}
 	handler := &Handler{store: store}
 	body := []byte(`{"error":{"message":"Agent runtime has been deleted.","type":null,"code":"biscuit_baker_service_agent_error_status","param":null},"status":403}`)
@@ -3873,7 +3873,7 @@ func TestAgentRuntimeDeleted403MarksAccountBanned(t *testing.T) {
 		t.Fatalf("upstreamErrorKind = %q, want agent_runtime_deleted", got)
 	}
 
-	handler.applyCooldownForModel(account, http.StatusForbidden, body, &http.Response{Header: make(http.Header)}, "gpt-5.4")
+	handler.applyCooldownForModel(account, http.StatusForbidden, body, &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
 	if got := account.RuntimeStatus(); got != "unauthorized" {
 		t.Fatalf("RuntimeStatus() = %q, want unauthorized", got)
@@ -3894,7 +3894,7 @@ func TestAgentRuntimeDeleted403MarksAccountBanned(t *testing.T) {
 }
 
 func TestApplyCooldownForModelUnauthorizedUsesPreviousFailureWindowAndDetail(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	defer store.Stop()
 
 	account := &auth.Account{
@@ -4220,14 +4220,14 @@ func TestCompute429CooldownPlusPrefersExactResetTime(t *testing.T) {
 }
 
 func TestApply429CooldownPremiumMarks5hRateLimitFromWindow(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 101, PlanType: "plus"}
 	resp := &http.Response{Header: make(http.Header)}
 	resp.Header.Set("x-codex-primary-used-percent", "100")
 	resp.Header.Set("x-codex-primary-window-minutes", "300")
 	resp.Header.Set("x-codex-primary-reset-after-seconds", "900")
 
-	decision := Apply429Cooldown(store, account, []byte(`{"error":{"type":"usage_limit_reached"}}`), resp, "gpt-5.4")
+	decision := Apply429Cooldown(store, account, []byte(`{"error":{"type":"usage_limit_reached"}}`), resp, "gpt-5.5")
 
 	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited_5h" {
 		t.Fatalf("decision = %#v, want premium 5h account decision", decision)
@@ -4248,7 +4248,7 @@ func TestApply429CooldownPremiumMarks5hRateLimitFromWindow(t *testing.T) {
 }
 
 func TestApply429CooldownSparkUsageLimitDoesNotMarkAccount(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 202, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
 	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
 
@@ -4281,7 +4281,7 @@ func TestApply429CooldownSparkUsageLimitDoesNotMarkAccount(t *testing.T) {
 }
 
 func TestApply429CooldownSparkUsageLimitDoesNotApplyFreePlanMetadata(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 203, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
 
 	decision := Apply429Cooldown(
@@ -4307,7 +4307,7 @@ func TestApply429CooldownSparkUsageLimitDoesNotApplyFreePlanMetadata(t *testing.
 }
 
 func TestApplyResponseFailedSemantic429IgnoresOuterHeadersForOrdinaryModel(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 204, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
 	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
 	handler := &Handler{store: store}
@@ -4317,7 +4317,7 @@ func TestApplyResponseFailedSemantic429IgnoresOuterHeadersForOrdinaryModel(t *te
 	resp.Header.Set("x-codex-primary-reset-after-seconds", "7200")
 	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_exceeded","message":"slow down"}}}`)
 
-	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.4")
+	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.5")
 
 	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited" {
 		t.Fatalf("decision = %#v, want ordinary semantic 429 account fallback", decision)
@@ -4331,13 +4331,13 @@ func TestApplyResponseFailedSemantic429IgnoresOuterHeadersForOrdinaryModel(t *te
 	if pct5h, ok := account.GetUsagePercent5h(); !ok || pct5h != 40 {
 		t.Fatalf("main 5h snapshot = (%v, %v), want unchanged 40", pct5h, ok)
 	}
-	if account.IsModelRateLimited("gpt-5.4") {
+	if account.IsModelRateLimited("gpt-5.5") {
 		t.Fatal("ordinary semantic 429 should not be rewritten as a model cooldown")
 	}
 }
 
 func TestApplyResponseFailedSemantic429KeepsExplicitModelCapacityScoped(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 209, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
 	handler := &Handler{store: store}
 	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
@@ -4346,12 +4346,12 @@ func TestApplyResponseFailedSemantic429KeepsExplicitModelCapacityScoped(t *testi
 	resp.Header.Set("x-codex-primary-reset-after-seconds", "7200")
 	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_exceeded","message":"Selected model is at capacity"}}}`)
 
-	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.4")
+	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.5")
 
-	if decision.Scope != rateLimitScopeModel || decision.Reason != "model_capacity" || decision.Model != "gpt-5.4" {
+	if decision.Scope != rateLimitScopeModel || decision.Reason != "model_capacity" || decision.Model != "gpt-5.5" {
 		t.Fatalf("decision = %#v, want model-scoped capacity cooldown", decision)
 	}
-	if !account.IsModelRateLimited("gpt-5.4") {
+	if !account.IsModelRateLimited("gpt-5.5") {
 		t.Fatal("explicit model capacity should cool only the requested model")
 	}
 	if account.HasActiveCooldown() || account.IsPremium5hRateLimited() {
@@ -4360,7 +4360,7 @@ func TestApplyResponseFailedSemantic429KeepsExplicitModelCapacityScoped(t *testi
 }
 
 func TestApplyResponseFailedSemantic429SparkUsesTransientModelCooldown(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 205, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
 	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
 	handler := &Handler{store: store}
@@ -4393,7 +4393,7 @@ func TestApplyResponseFailedSemantic429SparkUsesTransientModelCooldown(t *testin
 }
 
 func TestApplyResponseFailedSemantic429SparkUsesExplicitExhaustedWindow(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 208, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
 	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
 	handler := &Handler{store: store}
@@ -4425,7 +4425,7 @@ func TestApplyResponseFailedSemantic429SparkUsesExplicitExhaustedWindow(t *testi
 
 func TestApply429CooldownTransport429KeepsHeadersForOrdinaryAndSpark(t *testing.T) {
 	t.Run("ordinary account window", func(t *testing.T) {
-		store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+		store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 		account := &auth.Account{DBID: 206, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
 		handler := &Handler{store: store}
 		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
@@ -4433,7 +4433,7 @@ func TestApply429CooldownTransport429KeepsHeadersForOrdinaryAndSpark(t *testing.
 		resp.Header.Set("x-codex-primary-window-minutes", "300")
 		resp.Header.Set("x-codex-primary-reset-after-seconds", "900")
 
-		decision := handler.applyCooldownForModel(account, http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_exceeded"}}`), resp, "gpt-5.4")
+		decision := handler.applyCooldownForModel(account, http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_exceeded"}}`), resp, "gpt-5.5")
 
 		if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited_5h" {
 			t.Fatalf("decision = %#v, want transport header account window", decision)
@@ -4444,7 +4444,7 @@ func TestApply429CooldownTransport429KeepsHeadersForOrdinaryAndSpark(t *testing.
 	})
 
 	t.Run("Spark independent window", func(t *testing.T) {
-		store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+		store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 		account := &auth.Account{DBID: 207, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
 		account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
 		handler := &Handler{store: store}
@@ -4490,11 +4490,11 @@ func TestApply429CooldownUsageLimitUpdatesFreePlanMetadata(t *testing.T) {
 		t.Fatalf("InsertAccountWithCredentials 返回错误: %v", err)
 	}
 
-	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "pro"}
 	body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"free","resets_in_seconds":3600}}`)
 
-	decision := Apply429Cooldown(store, account, body, &http.Response{Header: make(http.Header)}, "gpt-5.4")
+	decision := Apply429Cooldown(store, account, body, &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
 	if decision.Scope != rateLimitScopeAccount || decision.Reason != "usage_limit" {
 		t.Fatalf("decision = %#v, want account usage_limit", decision)
@@ -4531,12 +4531,12 @@ func TestApply429CooldownUsageLimitUpdatesFreePlanMetadata(t *testing.T) {
 }
 
 func TestApplyCooldownUsageLimit500UpdatesFreePlanMetadata(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 201, AccessToken: "at", PlanType: "free"}
 	handler := &Handler{store: store}
 	body := []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"free","resets_in_seconds":7200}}`)
 
-	decision := handler.applyCooldownForModel(account, http.StatusInternalServerError, body, &http.Response{Header: make(http.Header)}, "gpt-5.4")
+	decision := handler.applyCooldownForModel(account, http.StatusInternalServerError, body, &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
 	if decision.Scope != rateLimitScopeAccount || decision.Reason != "usage_limit" {
 		t.Fatalf("decision = %#v, want account usage_limit", decision)
@@ -4554,13 +4554,13 @@ func TestApplyCooldownUsageLimit500UpdatesFreePlanMetadata(t *testing.T) {
 }
 
 func TestApplyResponseFailedUsageLimitRemovesAccountFromScheduling(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 301, AccessToken: "at", PlanType: "pro", Status: auth.StatusReady}
 	store.AddAccount(account)
 	handler := &Handler{store: store}
 	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"free","resets_in_seconds":3600}}}`)
 
-	decision := handler.applyResponseFailedCooldown(account, payload, &http.Response{Header: make(http.Header)}, "gpt-5.4")
+	decision := handler.applyResponseFailedCooldown(account, payload, &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
 	if decision.Scope != rateLimitScopeAccount || decision.Reason != "usage_limit" {
 		t.Fatalf("decision = %#v, want account usage_limit", decision)
@@ -4650,7 +4650,7 @@ func TestSyncCodexUsageStateUpdatesPlanTypeFromHeader(t *testing.T) {
 		t.Fatalf("InsertAccountWithCredentials returned error: %v", err)
 	}
 
-	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "free"}
 	resp := &http.Response{Header: make(http.Header)}
 	resp.Header.Set("x-codex-plan-type", "Enterprise")
@@ -4679,10 +4679,10 @@ func TestSyncCodexUsageStateUpdatesPlanTypeFromHeader(t *testing.T) {
 }
 
 func TestApply429CooldownUnknown429UsesModelCooldown(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 102, PlanType: "pro"}
 
-	decision := Apply429Cooldown(store, account, []byte(`{"error":{"type":"rate_limit_error","message":"Too many requests"}}`), &http.Response{Header: make(http.Header)}, "gpt-5.4")
+	decision := Apply429Cooldown(store, account, []byte(`{"error":{"type":"rate_limit_error","message":"Too many requests"}}`), &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
 	if decision.Scope != rateLimitScopeModel {
 		t.Fatalf("decision.Scope = %q, want model", decision.Scope)
@@ -4690,7 +4690,7 @@ func TestApply429CooldownUnknown429UsesModelCooldown(t *testing.T) {
 	if got := time.Until(decision.ResetAt); got < 4*time.Minute || got > 6*time.Minute {
 		t.Fatalf("resetAt delta = %v, want about 5m", got)
 	}
-	if !account.IsModelRateLimited("gpt-5.4") {
+	if !account.IsModelRateLimited("gpt-5.5") {
 		t.Fatal("expected model cooldown")
 	}
 }
@@ -4725,7 +4725,7 @@ func TestApply429CooldownRelayDefaultDoesNotPersistCooldown(t *testing.T) {
 }
 
 func TestSyncCodexUsageStateTriggersPremium5hLimitWith5hHeadersOnly(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 103, PlanType: "team"}
 	resp := &http.Response{Header: make(http.Header)}
 	resp.Header.Set("x-codex-primary-used-percent", "100")
@@ -4755,7 +4755,7 @@ func TestSyncCodexUsageStateTriggersPremium5hLimitWith5hHeadersOnly(t *testing.T
 }
 
 func TestSyncCodexUsageState5hOnlyDoesNotRefreshStale7dProbeFreshness(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{
 		DBID:                104,
 		AccessToken:         "at",
@@ -4802,7 +4802,7 @@ func TestSyncCodexUsageStateMarks7dUsageLimited(t *testing.T) {
 		t.Fatalf("InsertAccountWithCredentials returned error: %v", err)
 	}
 
-	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "team", Status: auth.StatusReady, HealthTier: auth.HealthTierHealthy}
 	resp := &http.Response{Header: make(http.Header)}
 	resp.Header.Set("x-codex-primary-used-percent", "20")
@@ -4916,7 +4916,7 @@ func TestSyncCodexUsageState_Clears5hWhenOnly7dHeaders(t *testing.T) {
 		t.Fatalf("InsertAccountWithCredentials: %v", err)
 	}
 
-	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "plus"}
 	account.SetUsageSnapshot5h(90, time.Now().Add(time.Hour))
 
@@ -4946,7 +4946,7 @@ func TestSyncCodexUsageState_Clears5hWhenOnly7dHeaders(t *testing.T) {
 		t.Errorf("persisted codex_5h_used_percent = %q, want cleared", got)
 	}
 
-	reloadedStore := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	reloadedStore := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	if err := reloadedStore.LoadAccountByID(ctx, id); err != nil {
 		t.Fatalf("LoadAccountByID: %v", err)
 	}
@@ -4960,7 +4960,7 @@ func TestSyncCodexUsageState_Clears5hWhenOnly7dHeaders(t *testing.T) {
 }
 
 func TestSyncCodexUsageState_Preserves5hWhenNoUsageHeaders(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 200, PlanType: "plus"}
 	resetAt := time.Now().Add(2 * time.Hour)
 	account.SetUsageSnapshot5h(55, resetAt)
@@ -4980,7 +4980,7 @@ func TestSyncCodexUsageState_Preserves5hWhenNoUsageHeaders(t *testing.T) {
 }
 
 func TestSyncCodexUsageState_PartialUsedPercentHeaderDoesNotClear5h(t *testing.T) {
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 201, PlanType: "plus"}
 	account.SetUsageSnapshot5h(63, time.Now().Add(2*time.Hour))
 
@@ -5050,7 +5050,7 @@ func TestSyncCodexUsageState_7dOnlyPreservesNewerUnauthorizedCooldown(t *testing
 		t.Fatalf("InsertAccountWithCredentials: %v", err)
 	}
 
-	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "plus", Status: auth.StatusReady, HealthTier: auth.HealthTierHealthy}
 	store.MarkPremium5hRateLimited(account, time.Now().Add(2*time.Hour))
 	atomic.StoreInt32(&account.Disabled, 1)
@@ -5136,6 +5136,75 @@ func TestAuthMiddlewareSetsAPIKeyContext(t *testing.T) {
 	}
 	if payload.Raw != key {
 		t.Fatalf("raw = %q, want %q", payload.Raw, key)
+	}
+}
+
+// Gemini 原生客户端(google-genai SDK、ADK、聚合网关的 Gemini 渠道)默认用
+// x-goog-api-key 传密钥,/v1beta 必须认它;?key= 查询串不认。
+func TestAuthMiddlewareAcceptsGoogleAPIKeyHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := database.New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("database.New 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	key := "sk-test-goog-1234567890"
+	id, err := db.InsertAPIKey(context.Background(), "Gemini client", key)
+	if err != nil {
+		t.Fatalf("InsertAPIKey 返回错误: %v", err)
+	}
+
+	handler := NewHandler(nil, db, nil, nil)
+	router := gin.New()
+	router.Use(handler.authMiddleware())
+	router.GET("/v1beta/models", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"id": c.MustGet(contextAPIKeyID), "raw": c.MustGet("apiKey")})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	req.Header.Set("x-goog-api-key", key)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("x-goog-api-key status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		ID  int64  `json:"id"`
+		Raw string `json:"raw"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal 返回错误: %v", err)
+	}
+	if payload.ID != id || payload.Raw != key {
+		t.Fatalf("api key context = %+v, want id %d / raw %q", payload, id, key)
+	}
+
+	// 查询串形态不接受:密钥会进 URL 与访问日志。
+	req = httptest.NewRequest(http.MethodGet, "/v1beta/models?key="+key, nil)
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("?key= status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestDownstreamAuthorizationHeaderPrecedence(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	req.Header.Set("x-goog-api-key", "goog-key")
+	if got := downstreamAuthorizationHeader(req); got != "Bearer goog-key" {
+		t.Fatalf("x-goog-api-key alone = %q, want Bearer goog-key", got)
+	}
+	req.Header.Set("Authorization", "Bearer auth-key")
+	if got := downstreamAuthorizationHeader(req); got != "Bearer auth-key" {
+		t.Fatalf("Authorization must win over x-goog-api-key, got %q", got)
+	}
+	req.Header.Del("Authorization")
+	req.Header.Set("x-api-key", "anthropic-key")
+	if got := downstreamAuthorizationHeader(req); got != "Bearer anthropic-key" {
+		t.Fatalf("x-api-key must win over x-goog-api-key, got %q", got)
 	}
 }
 
@@ -5453,7 +5522,7 @@ func TestResponsesWebSocketStripsInjectedImageTool(t *testing.T) {
 		}, nil
 	}
 
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at", PlanType: "plus", AccountID: "acct-1"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
@@ -5469,7 +5538,7 @@ func TestResponsesWebSocketStripsInjectedImageTool(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hello"}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -5638,13 +5707,13 @@ func TestResponses_BodySignalCompactStreamingUsesAccountCompactMapping(t *testin
 		BaseURL:      upstream.URL,
 		APIKey:       "sk-direct",
 		Models:       []string{"gpt-4.1-direct"},
-		ModelMapping: `{"gpt-5.4-openai-compact":"gpt-4.1-direct"}`,
+		ModelMapping: `{"gpt-5.5-openai-compact":"gpt-4.1-direct"}`,
 		PlanType:     "api",
 	})
 	handler := NewHandler(store, nil, nil, nil)
 
 	body := []byte(`{
-		"model":"gpt-5.4",
+		"model":"gpt-5.5",
 		"stream":true,
 		"input":[{"type":"compaction_trigger"}]
 	}`)
@@ -6042,7 +6111,7 @@ func TestResponses_NativeRemoteCompactionV2FallsBackToRelayWhenOfficialCannotSer
 	store.AddAccount(&auth.Account{
 		DBID:        2,
 		AccessToken: "at-codex",
-		Models:      []string{"gpt-5.4"},
+		Models:      []string{"gpt-5.5"},
 	})
 	store.AddAccount(&auth.Account{
 		DBID:         1,
@@ -6233,5 +6302,27 @@ func TestUsageLogErrorMessageGrokStringErrorField(t *testing.T) {
 	// error 为对象但无 message 时不得把整个 JSON 打进 message。
 	if got := usageLogErrorMessage(400, []byte(`{"error":{"foo":"bar"}}`)); got != "HTTP 400" {
 		t.Fatalf("object error without message must fall back: %q", got)
+	}
+}
+
+func TestCodexUnsupportedModelFromBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "detail field", body: `{"detail":"The 'gpt-5.6-luna' model is not supported when using Codex with a ChatGPT account."}`, want: "gpt-5.6-luna"},
+		{name: "error.message field", body: `{"error":{"message":"The 'gpt-5.2' model is not supported when using Codex with a ChatGPT account.","type":"invalid_request_error"}}`, want: "gpt-5.2"},
+		{name: "plain text", body: `the 'gpt-image-2' model is not supported here`, want: "gpt-image-2"},
+		{name: "unrelated", body: `{"detail":"Invalid 'size' parameter"}`, want: ""},
+		{name: "unknown provider form has no name", body: `{"detail":"Unknown provider for model"}`, want: ""},
+		{name: "empty", body: ``, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := codexUnsupportedModelFromBody([]byte(test.body)); got != test.want {
+				t.Fatalf("codexUnsupportedModelFromBody(%q) = %q, want %q", test.body, got, test.want)
+			}
+		})
 	}
 }

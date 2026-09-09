@@ -317,18 +317,18 @@ Each successful budget change receives a read-only generation and is polled by e
 
 ## Public API
 
-| Endpoint | Description |
-| --- | --- |
-| `POST /v1/chat/completions` | Chat Completions style endpoint |
-| `POST /v1/responses` | Responses style endpoint |
-| `POST /v1/images/generations` | OpenAI Images generation endpoint (gpt-image-2 via Codex, grok-imagine via Grok) |
-| `POST /v1/images/edits` | OpenAI Images edit endpoint |
-| `POST /v1/videos/generations` | Grok Imagine video generation (async, returns `request_id`) |
-| `POST /v1/videos/edits` / `POST /v1/videos/extensions` | Grok Imagine video edit / extension |
-| `GET /v1/videos/:id` | Poll video task status (`video.url` rewritten to the gateway content proxy) |
-| `GET /v1/videos/:id/content` | Download the generated video through the gateway (Range supported) |
-| `GET /v1/models` | List available models (includes gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-image-2, grok-imagine-*, etc.) |
-| `GET /health` | Health check |
+| Endpoint                                               | Description                                                                                                                           |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/chat/completions`                            | Chat Completions style endpoint                                                                                                       |
+| `POST /v1/responses`                                   | Responses style endpoint                                                                                                              |
+| `POST /v1/images/generations`                          | OpenAI Images generation endpoint (gpt-image-2 via Codex, grok-imagine via Grok)                                                      |
+| `POST /v1/images/edits`                                | OpenAI Images edit endpoint                                                                                                           |
+| `POST /v1/videos/generations`                          | Grok Imagine video generation (async, returns `request_id`)                                                                           |
+| `POST /v1/videos/edits` / `POST /v1/videos/extensions` | Grok Imagine video edit / extension                                                                                                   |
+| `GET /v1/videos/:id`                                   | Poll video task status (`video.url` rewritten to the gateway content proxy)                                                           |
+| `GET /v1/videos/:id/content`                           | Download the generated video through the gateway (Range supported)                                                                    |
+| `GET /v1/models`                                       | List available models (includes gpt-6-astra, gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.3-codex-spark, gpt-image-2, grok-imagine-*, etc.) |
+| `GET /health`                                          | Health check                                                                                                                          |
 
 > **Pricing**: gpt-5.5 is billed at $5.00/M input and $30.00/M output (standard tier). Priority tier: $12.50/M input, $75.00/M output. Other models follow pricing rules in the billing engine.
 

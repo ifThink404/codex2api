@@ -80,8 +80,8 @@ var builtinModelInfos = []ModelInfo{
 	modelInfoForID("gpt-5.6-terra", ModelSourceBuiltin),
 	modelInfoForID("gpt-5.6-luna", ModelSourceBuiltin),
 	modelInfoForID("gpt-5.5", ModelSourceBuiltin),
-	modelInfoForID("gpt-5.4", ModelSourceBuiltin),
-	modelInfoForID("gpt-5.4-mini", ModelSourceBuiltin),
+	// gpt-5.4 / gpt-5.4-mini 已下线（2026-09 上游 ChatGPT 账号 manifest 不再包含，
+	// 请求直接 400 "model is not supported when using Codex with a ChatGPT account"）；
 	// 5.3 只保留 spark 变体；gpt-5.3-codex 及 5.2/更低模型已下线（含上游同步过滤）。
 	modelInfoForID("gpt-5.3-codex-spark", ModelSourceBuiltin),
 	// codex-auto-review — Codex internal auto-review model.
@@ -95,6 +95,17 @@ var builtinModelInfos = []ModelInfo{
 	// would never be discovered there; manifest learning does admit non-versioned
 	// gpt-* slugs (issue #624), but a builtin row is still needed for cold start.
 	modelInfoForID("gpt-reserve", ModelSourceBuiltin),
+	// gpt-image-2.5 flare / sunburst 暂不公开:透传与尺寸档位逻辑已经就绪(见
+	// proxy/images.go 的 isGPTImage2FamilyModel / splitImageModelSizeAlias),
+	// 但不进内置模型表,因此 /v1/models 与管理后台生图台都不展示;对外仍只提供
+	// gpt-image-2 系列。正式推出时取消下面的注释即可(顺序保持在 gpt-image-2 之前)。
+	//
+	// modelInfoForID("gpt-image-2.5-flare", ModelSourceBuiltin),
+	// modelInfoForID("gpt-image-2.5-flare-2k", ModelSourceBuiltin),
+	// modelInfoForID("gpt-image-2.5-flare-4k", ModelSourceBuiltin),
+	// modelInfoForID("gpt-image-2.5-sunburst", ModelSourceBuiltin),
+	// modelInfoForID("gpt-image-2.5-sunburst-2k", ModelSourceBuiltin),
+	// modelInfoForID("gpt-image-2.5-sunburst-4k", ModelSourceBuiltin),
 	modelInfoForID("gpt-image-2", ModelSourceBuiltin),
 	modelInfoForID("gpt-image-2-2k", ModelSourceBuiltin),
 	modelInfoForID("gpt-image-2-4k", ModelSourceBuiltin),
@@ -340,9 +351,9 @@ func isInternalCodexModelVariant(id string) bool {
 }
 
 // isRetiredCodexModel 判断模型是否已下线（不再对外暴露 / 不参与校验）：
-// gpt-5.3 非 spark、gpt-5.2 及更低、gpt-4* 均退役；image、codex-auto-review、
-// 非 gpt- 前缀及 5.4+ 保留。是 isAllowedUpstreamCodexModel 的"暴露侧"补集，
-// 但对 image/非 gpt 模型返回 false（保留）。
+// gpt-5.4 全系、gpt-5.3 非 spark、gpt-5.2 及更低、gpt-4* 均退役；image、
+// codex-auto-review、非 gpt- 前缀及 5.5+ 保留。是 isAllowedUpstreamCodexModel 的
+// "暴露侧"补集，但对 image/非 gpt 模型返回 false（保留）。
 func isRetiredCodexModel(id string) bool {
 	id = strings.TrimSpace(strings.ToLower(id))
 	if !strings.HasPrefix(id, "gpt-") || strings.Contains(id, "image") {
@@ -370,7 +381,7 @@ func isRetiredCodexModel(id string) bool {
 	if major < 5 {
 		return true
 	}
-	if minor >= 4 {
+	if minor >= 5 {
 		return false
 	}
 	if minor == 3 {
@@ -550,9 +561,9 @@ func modelSortRank(id string) int {
 
 // isAllowedUpstreamCodexModel 判断上游发现的模型是否允许进入本地注册表
 // （官方文档同步 + manifest 学习共用）。策略：
-//   - gpt-5.4 及更高版本：允许
+//   - gpt-5.5 及更高版本：允许
 //   - gpt-5.3：只允许 spark 变体（gpt-5.3-codex-spark），其余 5.3 下线
-//   - gpt-5.2 及更低、image、非 gpt- 前缀：拒绝
+//   - gpt-5.4 全系、gpt-5.2 及更低、image、非 gpt- 前缀：拒绝
 //   - gpt- 后不是数字版本号的代号族（gpt-daybreak-blue-latest 这类稳定别名，
 //     issue #624）：允许——版本退役规则对它们无从判断，而清单里出现即代表
 //     账号真实权益，拒掉只会让探测看得见、调用却 404 的模型永远进不了注册表
@@ -596,7 +607,7 @@ func isAllowedUpstreamCodexModel(id string) bool {
 		return false
 	}
 	// major == 5
-	if minor >= 4 {
+	if minor >= 5 {
 		return true
 	}
 	if minor == 3 {

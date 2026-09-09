@@ -99,6 +99,8 @@ type openAIStreamChunk struct {
 	Model   string         `json:"model"`
 	Choices []streamChoice `json:"choices"`
 	Usage   *UsageInfo     `json:"usage,omitempty"`
+	// ServiceTier 回传上游实际处理档位（response.service_tier），只在终结块携带。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // streamChoice 流式块中的选项
@@ -145,6 +147,8 @@ type openAICompactResponse struct {
 	Model   string          `json:"model"`
 	Choices []compactChoice `json:"choices"`
 	Usage   *UsageInfo      `json:"usage,omitempty"`
+	// ServiceTier 回传上游实际处理档位（response.service_tier）。
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 // compactChoice 非流式响应中的选项
@@ -811,10 +815,11 @@ func normalizeResponsesImageOnlyModel(body map[string]any) bool {
 		body["tool_choice"] = map[string]any{"type": "image_generation"}
 		modified = true
 	}
-	if imageModel != defaultImagesMainModel {
+	mainModel := imagesMainModel()
+	if imageModel != mainModel {
 		modified = true
 	}
-	body["model"] = defaultImagesMainModel
+	body["model"] = mainModel
 	return modified
 }
 
@@ -1695,11 +1700,15 @@ func cachedOrParse(rawJSON []byte) openAIRequest {
 // TranslateRequest 将 OpenAI Chat Completions 请求转换为 Codex Responses 格式
 // 采用 Unmarshal→构造 map→Marshal 模式，只做一次 JSON 序列化
 func TranslateRequest(rawJSON []byte) ([]byte, error) {
-	req := sanitizeChatCompletionToolHistory(cachedOrParse(rawJSON))
+	parsed := cachedOrParse(rawJSON)
+	req := sanitizeChatCompletionToolHistory(parsed)
 	if err := validateChatCompletionFunctionNames(req); err != nil {
 		return nil, err
 	}
 	out := buildChatResponsesRequest(req)
+	// 工具名净化映射从净化历史前的解析结果推导，与响应侧 ChatToolNameRestoreMap
+	// 使用同一份输入，保证去重后缀两边一致。
+	applyCodexToolNameMap(out, buildCodexToolNameMap(collectChatToolNames(parsed)))
 	return json.Marshal(out)
 }
 
@@ -2156,8 +2165,11 @@ func normalizeFunctionToolsInArray(tools []any) ([]any, bool) {
 		if _, ok := tool["strict"]; !ok {
 			if strict, ok := function["strict"]; ok {
 				tool["strict"] = strict
-				modified = true
+			} else {
+				// Chat 形态（带 function 子对象）的工具按 Chat 默认：strict=false。
+				tool["strict"] = false
 			}
+			modified = true
 		}
 		delete(tool, "function")
 		modified = true
@@ -2940,6 +2952,11 @@ func convertToolsToCodexFormat(rawTools []json.RawMessage) []any {
 		normalizeFunctionToolParameters(item)
 		if parsed.Function.Strict != nil {
 			item["strict"] = *parsed.Function.Strict
+		} else {
+			// Chat Completions 的 strict 默认 false，Responses 默认 true。省略时
+			// 必须显式带 false，否则上游按 strict 校验 schema（可选属性、缺
+			// additionalProperties:false 等）直接 400。Codex CLI 自身的工具也全发 false。
+			item["strict"] = false
 		}
 		tools = append(tools, item)
 	}
@@ -3182,6 +3199,7 @@ func stripUnsupportedSchemaKeysWithPolicy(schema map[string]interface{}, policy 
 }
 
 func sanitizeSchemaForUpstream(schema map[string]interface{}) {
+	simplifyConstUnionSchemas(schema)
 	stripUnsupportedSchemaKeys(schema)
 	normalizeSchemaRequiredFields(schema)
 	ensureArrayItems(schema)
@@ -3744,6 +3762,11 @@ func newToolCallDeltaChunk(id, model string, created int64, tcIndex int, argsDel
 // (Rust/serde 系)把 delta 当必填字段,缺失会直接报
 // "missing field `delta`" 并让整轮对话失败。
 func newFinalChunk(id, model string, created int64, finishReason string, usage *UsageInfo) []byte {
+	return newFinalChunkWithTier(id, model, created, finishReason, usage, "")
+}
+
+// newFinalChunkWithTier 在终结块上附带上游实际 service_tier（空则省略）。
+func newFinalChunkWithTier(id, model string, created int64, finishReason string, usage *UsageInfo, serviceTier string) []byte {
 	chunk := openAIStreamChunk{
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []streamChoice{{
@@ -3751,7 +3774,8 @@ func newFinalChunk(id, model string, created int64, finishReason string, usage *
 			Delta:        &streamDelta{},
 			FinishReason: &finishReason,
 		}},
-		Usage: usage,
+		Usage:       usage,
+		ServiceTier: strings.TrimSpace(serviceTier),
 	}
 	b, _ := json.Marshal(chunk)
 	return b
@@ -3815,13 +3839,13 @@ func TranslateStreamChunk(eventData []byte, model string, chunkID string, create
 
 	case "response.completed":
 		usage := extractUsage(eventData)
-		return newFinalChunk(chunkID, model, created, "stop", usage), true
+		return newFinalChunkWithTier(chunkID, model, created, "stop", usage, gjson.GetBytes(eventData, "response.service_tier").String()), true
 
 	// max_output_tokens 截断的正常终态：Chat 侧对应 finish_reason=length。
 	case "response.incomplete":
 		usage := extractUsage(eventData)
 		reason := gjson.GetBytes(eventData, "response.incomplete_details.reason").String()
-		return newFinalChunk(chunkID, model, created, responsesIncompleteFinishReason(eventType, reason), usage), true
+		return newFinalChunkWithTier(chunkID, model, created, responsesIncompleteFinishReason(eventType, reason), usage, gjson.GetBytes(eventData, "response.service_tier").String()), true
 
 	case "response.failed":
 		errMsg := gjson.GetBytes(eventData, "response.error.message").String()
@@ -3876,6 +3900,16 @@ type StreamTranslator struct {
 	toolCallFinalized     map[int]bool
 	invalidToolArguments  error
 	nextIdx               int
+	// toolNameRestore 上游名 → 客户端原名（codex_tool_names.go），nil 表示无改写。
+	toolNameRestore map[string]string
+}
+
+// SetToolNameRestore 注册工具名还原映射；请求侧未改写任何名字时可传 nil。
+func (st *StreamTranslator) SetToolNameRestore(restore map[string]string) {
+	if st == nil {
+		return
+	}
+	st.toolNameRestore = restore
 }
 
 // NewStreamTranslator 创建流式翻译器实例
@@ -4042,7 +4076,7 @@ func (st *StreamTranslator) TranslateParsed(parsed gjson.Result) ([]byte, bool) 
 		if callID == "" {
 			callID = parsed.Get("item.id").String()
 		}
-		name := parsed.Get("item.name").String()
+		name := restoreCodexToolName(st.toolNameRestore, parsed.Get("item.name").String())
 		itemID := parsed.Get("item.id").String()
 		if itemID == "" {
 			itemID = callID
@@ -4126,7 +4160,7 @@ func (st *StreamTranslator) TranslateParsed(parsed gjson.Result) ([]byte, bool) 
 		if override := responsesIncompleteFinishReason(eventType, parsed.Get("response.incomplete_details.reason").String()); override != "" {
 			finishReason = override
 		}
-		return newFinalChunk(st.ChunkID, st.Model, st.Created, finishReason, usage), true
+		return newFinalChunkWithTier(st.ChunkID, st.Model, st.Created, finishReason, usage, parsed.Get("response.service_tier").String()), true
 
 	case "response.failed":
 		errMsg := parsed.Get("response.error.message").String()
@@ -4234,6 +4268,12 @@ func BuildCompactResponse(id, model string, created int64, content, reasoning st
 // 上游按 max_output_tokens 截断时终态是 response.incomplete，推导值 stop /
 // tool_calls 会把截断响应说成正常收尾，需要覆盖成 length。空串表示不覆盖。
 func BuildCompactResponseWithFinishReason(id, model string, created int64, content, reasoning string, toolCalls []ToolCallResult, usage *UsageInfo, finishReasonOverride string) []byte {
+	return BuildCompactChatResponse(id, model, created, content, reasoning, toolCalls, usage, finishReasonOverride, "")
+}
+
+// BuildCompactChatResponse 在 BuildCompactResponseWithFinishReason 基础上附带上游
+// 实际 service_tier（空则省略）。
+func BuildCompactChatResponse(id, model string, created int64, content, reasoning string, toolCalls []ToolCallResult, usage *UsageInfo, finishReasonOverride string, serviceTier string) []byte {
 	finishReason := "stop"
 	msg := compactMessage{
 		Role:    "assistant",
@@ -4279,7 +4319,8 @@ func BuildCompactResponseWithFinishReason(id, model string, created int64, conte
 			Message:      msg,
 			FinishReason: finishReason,
 		}},
-		Usage: usage,
+		Usage:       usage,
+		ServiceTier: strings.TrimSpace(serviceTier),
 	}
 	b, _ := json.Marshal(resp)
 	return b
