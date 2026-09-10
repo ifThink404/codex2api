@@ -2275,7 +2275,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		credentialUpdates[auth.ClaudeClientVersionCredentialKey] = claudeClientVersion.Value
 	}
 	if timezoneField.Set {
-		credentialUpdates["timezone"] = strings.TrimSpace(timezoneField.Value)
+		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
 	}
 	if autoPause5hThreshold.Set {
 		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
@@ -2377,6 +2377,9 @@ func validateAccountTimezone(value string) error {
 	v := strings.TrimSpace(value)
 	if v == "" {
 		return nil
+	}
+	if strings.EqualFold(v, "Local") {
+		return fmt.Errorf("timezone must identify a fixed IANA location, not Local")
 	}
 	if _, err := time.LoadLocation(v); err != nil {
 		return fmt.Errorf("timezone must be a valid IANA timezone, e.g. Asia/Shanghai")
@@ -2731,6 +2734,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.CodexFingerprintMode.Set {
 		h.store.ApplyAccountCodexFingerprintMode(id, update.CodexFingerprintMode.Value)
+	}
+	if update.Timezone.Set {
+		h.store.ApplyAccountTimezone(id, update.Timezone.Value)
 	}
 }
 

@@ -789,6 +789,7 @@ Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`inpu
 | `scheduler_priority` | integer/null | `-100..100`；`null` 恢复默认优先级 `0` |
 | `tags` | string[] | 替换账号标签；空数组清空 |
 | `group_ids` | integer[] | 替换账号分组；空数组清空 |
+| `timezone` | string | 绑定 IANA 时区（如 `America/New_York`）；空串清除。Codex 官方账号据此改写出站请求体 `environment_context` 里的 `<timezone>` 与 `<current_date>`（日期按账号时区与客户端时区的当日差整体平移），空=透传客户端值；中转与 Grok 账号忽略。Claude 账号沿用该字段做身份时区 |
 
 **响应:**
 
