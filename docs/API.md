@@ -82,7 +82,7 @@ X-Codex2API-Affinity-Key: tenant-user-or-conversation-id
 **配置方式:**
 
 1. 通过管理后台 `/admin/settings` 页面配置
-2. 如果没有配置任何 API Key，则 `/v1/*` 接口跳过鉴权（开发模式）
+2. 普通公共接口仅在没有配置任何 API Key 且显式开启 `CODEX_ALLOW_ANONYMOUS=true` 时允许匿名访问；默认禁止。异步图片任务要求后台创建的 API Key。
 
 ### Admin Secret 认证
 
@@ -137,8 +137,8 @@ Authorization: Bearer your-admin-secret
 | model            | string  | 是   | 模型名称，见 [支持模型](#支持模型)          |
 | messages         | array   | 是   | 消息列表                                    |
 | stream           | boolean | 否   | 是否启用流式响应，默认 false                |
-| reasoning_effort | string  | 否   | 推理强度: low/medium/high                   |
-| service_tier     | string  | 否   | 服务等级: fast/auto                         |
+| reasoning_effort | string  | 否   | Codex 支持 none/minimal/low/medium/high/xhigh/ultra；max 按最终模型能力保留或归一为 xhigh |
+| service_tier     | string  | 否   | Codex 的 fast 映射为 priority，ultrafast 保留；auto/default 不指定上游档位 |
 | max_tokens       | integer | 否   | 最大输出 token 数（Codex 不支持，会被过滤） |
 | temperature      | float   | 否   | 温度参数（Codex 不支持，会被过滤）          |
 
@@ -217,8 +217,8 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
 | model                | string       | 是   | 模型名称                                                                                           |
 | input                | array/string | 是   | 输入内容（支持数组或字符串）                                                                       |
 | stream               | boolean      | 否   | 是否启用流式响应，默认 false。仅当显式传 `stream=true` 时返回 SSE（流式响应），否则返回普通 JSON。 |
-| reasoning.effort     | string       | 否   | 推理强度: low/medium/high                                                                          |
-| service_tier         | string       | 否   | 服务等级: fast/auto                                                                                |
+| reasoning.effort     | string       | 否   | Codex 支持 none/minimal/low/medium/high/xhigh/ultra；max 按最终模型能力保留或归一为 xhigh |
+| service_tier         | string       | 否   | fast 映射为 priority，ultrafast 保留；auto/default 不指定上游档位 |
 | include              | array        | 否   | 包含的额外字段                                                                                     |
 | previous_response_id | string       | 否   | 上一响应 ID，用于上下文连续                                                                        |
 
@@ -263,7 +263,13 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
 
 **端点:** `POST /v1/images/generations`
 
-**说明:** OpenAI Images 兼容入口。外部请求使用 `gpt-image-2`（可加 `-2k` / `-4k` 档位后缀），内部按 `CLIProxyAPI/` 与 `sub2api/` 的链路转换为 Codex `/responses`：主模型默认 `gpt-5.6-luna`（可用环境变量 `CODEX_IMAGES_MAIN_MODEL` 覆盖；被上游拒绝时按 `gpt-5.5` → `gpt-5.6-terra` → `gpt-5.6-sol` → `gpt-6-astra` 顺序换驱动重试），图像模型写入 `tools[0].model`。
+**说明:** OpenAI Images 兼容入口。外部请求使用 `gpt-image-2`、`gpt-image-2.5-flare` 或 `gpt-image-2.5-sunburst`（支持日期快照及 `-2k` / `-4k` 档位后缀），内部按 `CLIProxyAPI/` 与 `sub2api/` 的链路转换为 Codex `/responses`：主模型默认 `gpt-5.6-luna`（优先使用「系统设置 → Codex → 生图设置」中的文本模型，未配置时沿用环境变量 `CODEX_IMAGES_MAIN_MODEL`；被上游拒绝时按 `gpt-5.5` → `gpt-5.6-terra` → `gpt-5.6-sol` → `gpt-6-astra` 顺序换驱动重试），图像模型写入 `tools[0].model`。
+
+GPT Image 2.5 支持 `auto`、`low`、`medium`、`high`、`xhigh`、`max`。质量参数原样传给图片工具；工作台切回旧型号时会将 `xhigh` / `max` 调整为 `high`。省略模型仍默认使用 `gpt-image-2`。`-2k` / `-4k` 是本项目的尺寸与超分别名，发往上游前会剥掉该后缀。
+
+直接使用 `/v1/responses` 时，文本主控放在顶层 `model`，图片模型放在 `tools[].model`；显式文本主控优先于后台生图设置及 `CODEX_IMAGES_MAIN_MODEL`。顶层 `model` 直接填图像模型时，则使用后台配置的文本主控。工具模型省略时仍补为 `gpt-image-2`。
+
+Images 入口的 2.5 token 计费区分文本输入、图片输入与各自缓存：内置费率分别为 $5、$8、$1.25、$2 / 百万 token，图片输出 $30 / 百万 token（[官方价格](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)，2026-09-09 核对）。Flare/Sunburst 各有独立定价键，日期快照和尺寸别名使用对应基础型号费率；自定义覆盖优先。usage 日志新增 `image_input_tokens`、`image_output_tokens`、`cached_image_input_tokens`，是总输入/输出/缓存的子集，不重复计费。历史日志无法补回未记录的图片 token 明细。
 
 **请求示例:**
 
@@ -360,6 +366,19 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
   }
 }
 ```
+
+#### 异步图片任务
+
+- `POST /v1/images/jobs`：以后台创建的 API Key 认证，返回 HTTP 202 和 `job`。
+- `GET /v1/images/jobs/:id`：使用创建时的同一 API Key 查询，其他密钥返回 404。
+
+请求示例：
+
+```json
+{"model":"gpt-image-2.5-flare","prompt":"A small orange cat","size":"1024x1024","quality":"high","n":1}
+```
+
+编辑模式在同一创建接口传入 `input_images`（图片 URL / data URL 数组）。`prompt` 必填，最多 8000 字符。轮询 `job.id`，根据 `job.status` 的 `queued/running/succeeded/failed` 判断状态；成功后使用 `job.assets[].proxy_url` 下载图片，相对路径按本服务地址解析。返回对象由 `ImageGenerationJob` 定义，错误信息在 `job.error_message`。
 
 ### 4. Videos (Grok 生视频)
 
@@ -505,6 +524,12 @@ Grok 账号编辑页支持账号级模型映射，可让只请求 GPT 模型名�
 ```
 
 ---
+
+### Token 估算与上下文压缩
+
+`POST /v1/messages/count_tokens` 接受 `messages/system/tools`，`POST /v1/responses/input_tokens` 接受 `input/instructions/tools`，均返回 `{"input_tokens":32}` 这样的本地估算结果。它们按 JSON 字符量粗估，不调用上游、不消耗账号额度，不能用作准确 tokenizer 或最终计费依据。
+
+`POST /v1/responses/compact` 接受 `model` 和完整必需 `input` 历史，用于压缩上下文。保留返回的 `output` 压缩项及不透明字段，用于后续请求；可用性取决于最终模型和渠道。交互示例见 `/admin/docs#api-compact`。
 
 ## 管理 API
 

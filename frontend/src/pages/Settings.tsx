@@ -193,6 +193,7 @@ const CHANNELS_STREAMING: readonly UpstreamChannel[] = ['codex', 'grok', 'antigr
 const CHANNELS_RELAY: readonly UpstreamChannel[] = ['codex', 'antigravity']
 const SETTINGS_TAB_KEYS: readonly SettingsTabKey[] = ['codex', 'claude', 'antigravity', 'grok', 'appearance', 'general']
 const DEFAULT_SETTINGS_TAB: SettingsTabKey = 'codex'
+const HIDDEN_IMAGE_DRIVER_MODELS = new Set(['gpt-5.3-codex-spark', 'codex-auto-review', 'gpt-reserve'])
 const isSettingsTabKey = (value: string | null): value is SettingsTabKey =>
   value !== null && (SETTINGS_TAB_KEYS as readonly string[]).includes(value)
 // 旧版单页锚点 → Tab 映射，保证外部深链不失效。
@@ -207,6 +208,7 @@ const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
   'settings-codex-quota': 'codex',
   'settings-codex-transport': 'codex',
   'settings-codex-client': 'codex',
+  'settings-codex-images': 'codex',
   'settings-grok': 'grok',
   'settings-claude': 'claude',
   'settings-antigravity': 'antigravity',
@@ -219,6 +221,7 @@ const SETTINGS_TAB_SECTION_INDEX: Record<SettingsTabKey, ReadonlyArray<{ id: str
     { id: 'settings-codex-quota', labelKey: 'settings.nav.codexQuota', icon: <Gauge /> },
     { id: 'settings-codex-transport', labelKey: 'settings.nav.codexTransport', icon: <Wifi /> },
     { id: 'settings-codex-client', labelKey: 'settings.nav.codexClient', icon: <Terminal /> },
+    { id: 'settings-codex-images', labelKey: 'settings.nav.codexImages', icon: <ImageIcon /> },
     { id: 'settings-models', labelKey: 'settings.nav.models', icon: <Layers /> },
   ],
   claude: [{ id: 'settings-claude', labelKey: 'settings.nav.claude', icon: <ChannelLogo channel="claude" size={16} /> }],
@@ -237,7 +240,7 @@ const SETTINGS_TAB_SECTION_INDEX: Record<SettingsTabKey, ReadonlyArray<{ id: str
 // 分区滚动高亮的判定线：分区顶部越过视口该高度即视为当前分区（要盖过粘性 Tab 栏）。
 const SETTINGS_SECTION_SPY_OFFSET_PX = 140
 // 手动保存字段的脏检查里跳过的键：生成号是服务端只读，自定义 Prompt 规则由规则页单独保存。
-const SETTINGS_DIRTY_IGNORED_KEYS: ReadonlySet<string> = new Set(['response_cache_config_generation', 'prompt_filter_custom_patterns'])
+const SETTINGS_DIRTY_IGNORED_KEYS: ReadonlySet<string> = new Set(['response_cache_config_generation', 'prompt_filter_custom_patterns', 'codex_images_default_main_model'])
 
 const getDefaultModelMappingEntries = (): ModelMappingEntry[] =>
   Object.entries(DEFAULT_CLAUDE_MODEL_MAP) as ModelMappingEntry[]
@@ -2148,6 +2151,7 @@ export default function Settings() {
     const cacheNormalized = normalizeResponseCacheSettings(settings)
     const normalized = {
       ...cacheNormalized,
+      codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: normalizeFirstTokenModeValue(cacheNormalized.first_token_mode),
       models_list_read_max_bytes:
@@ -2293,6 +2297,7 @@ export default function Settings() {
     prompt_filter_review_fail_closed: true,
     client_compat_mode: 'preserve',
     codex_min_cli_version: '0.153.3',
+    codex_images_main_model: '',
     codex_cli_version_sync_enabled: true,
     codex_cli_version_sync_interval_hours: 12,
     codex_user_agent_config: '{}',
@@ -2895,6 +2900,14 @@ export default function Settings() {
     )
     .map((model) => ({ label: model.id, value: model.id }))
   const enabledModelCount = visibleModelItems.filter((model) => model.enabled).length
+  const imagesDefaultMainModel = settingsForm.codex_images_default_main_model || 'gpt-5.6-luna'
+  const imagesMainModelOptions = [
+    { value: '', label: t('settings.codexImagesDefault', { model: imagesDefaultMainModel }) },
+    ...textModelOptions,
+  ]
+  if (settingsForm.codex_images_main_model && !imagesMainModelOptions.some((option) => option.value === settingsForm.codex_images_main_model)) {
+    imagesMainModelOptions.push({ value: settingsForm.codex_images_main_model, label: settingsForm.codex_images_main_model })
+  }
   const modelsLastSyncedLabel = modelsLastSyncedAt ? formatBeijingTime(modelsLastSyncedAt) : t('settings.modelsNeverSynced')
   const modelsSourceLabel = modelsSourceURL || 'https://developers.openai.com/codex/models'
   const anthropicMappingCount = useMemo(
@@ -4282,6 +4295,26 @@ export default function Settings() {
                   </div>
                 </div>
               </SettingsCard>
+              </SettingsSection>
+
+              <SettingsSection id="settings-codex-images" title={t('settings.nav.codexImages')} description={t('settings.nav.codexImagesDesc')} icon={<ImageIcon className="size-4" />}>
+                <SettingsCard title={t('settings.codexImagesDriver')} description={t('settings.codexImagesDriverDesc')} icon={<ImageIcon className="size-4" />}>
+                  <div className="space-y-4">
+                    <div className={SETTINGS_FIELD_GRID}>
+                      <SettingField label={t('settings.codexImagesMainModel')} description={t('settings.codexImagesMainModelDesc')}>
+                        <Select
+                          value={settingsForm.codex_images_main_model}
+                          options={imagesMainModelOptions.filter(({ value }) => !HIDDEN_IMAGE_DRIVER_MODELS.has(value.toLowerCase()))}
+                          onValueChange={(value) => autoSaveStringField('codex_images_main_model', value)}
+                        />
+                      </SettingField>
+                    </div>
+                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3.5 py-3 text-xs leading-relaxed text-muted-foreground">
+                      <p>{t('settings.codexImagesScope')}</p>
+                      <p className="mt-1.5">{t('settings.codexImagesFallback')}</p>
+                    </div>
+                  </div>
+                </SettingsCard>
               </SettingsSection>
 
               <SettingsSection id="settings-models" title={t('settings.nav.models')} description={t('settings.nav.modelsDesc')} icon={<Layers className="size-4" />}>

@@ -577,15 +577,19 @@ func (h *Handler) Messages(c *gin.Context) {
 
 	capacityShedRetries := map[int64]int{}
 	var affinityGuard auth.SessionAffinityGuard
+	var selectionErr error
 	grokQualityAttempts := 0
 	var lastClaudePolicyErr *Error
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
-			account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter)
+			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter)
 		}
 		if account == nil {
+			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolAnthropic) {
+				return
+			}
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolAnthropic) {
 				return
 			}
@@ -1121,6 +1125,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					retryLog.PromptTokens, retryLog.CompletionTokens, retryLog.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 					retryLog.InputTokens, retryLog.OutputTokens = usage.InputTokens, usage.OutputTokens
 					retryLog.ReasoningTokens, retryLog.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+					retryLog.ImageInputTokens, retryLog.ImageOutputTokens, retryLog.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 					applyUsageCacheWritesToLog(&retryLog, usage)
 				}
 				h.logUsageForRequest(c, &retryLog)
@@ -1175,6 +1180,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 				logInput.InputTokens, logInput.OutputTokens = usage.InputTokens, usage.OutputTokens
 				logInput.ReasoningTokens, logInput.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+				logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 				applyUsageCacheWritesToLog(logInput, usage)
 			}
 			if outcome.logStatusCode != http.StatusOK {
@@ -1669,6 +1675,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			logInput.OutputTokens = usage.OutputTokens
 			logInput.ReasoningTokens = usage.ReasoningTokens
 			logInput.CachedTokens = usage.CachedTokens
+			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 			applyUsageCacheWritesToLog(logInput, usage)
 		}
 		h.logUsageForRequest(c, logInput)

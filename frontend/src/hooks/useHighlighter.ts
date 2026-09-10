@@ -81,7 +81,25 @@ export function useHighlightedHtml(code: string, lang?: string) {
     }
 
     getHighlighter()
-      .then((hl) => {
+      .then(async (hl) => {
+        if (cancelled) return;
+        // SDK-only grammars load when their examples are opened.
+        if (
+          resolvedLang === "python" &&
+          !hl.getLoadedLanguages().includes("python")
+        ) {
+          await hl.loadLanguage(
+            (await import("shiki/langs/python.mjs")).default,
+          );
+        }
+        if (
+          resolvedLang === "javascript" &&
+          !hl.getLoadedLanguages().includes("javascript")
+        ) {
+          await hl.loadLanguage(
+            (await import("shiki/langs/javascript.mjs")).default,
+          );
+        }
         if (cancelled) return;
         try {
           const result = hl.codeToHtml(code, {

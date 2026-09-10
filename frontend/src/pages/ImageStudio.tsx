@@ -1,3 +1,4 @@
+import { IMAGE_MODELS, imageQualityOptions, normalizeImageQualityForModel } from '../lib/imageStudioModels'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
@@ -84,8 +85,6 @@ type ImageJobStatusFilter = 'all' | typeof IMAGE_JOB_STATUSES[number]
 const IMAGE_ASSET_CACHE_DB = 'codex2api-image-assets'
 const IMAGE_ASSET_CACHE_STORE = 'assets'
 const IMAGE_ASSET_CACHE_VERSION = 1
-const IMAGE_MODEL_2K_ALIAS = 'gpt-image-2-2k'
-const IMAGE_MODEL_4K_ALIAS = 'gpt-image-2-4k'
 const IMAGE_MODEL_2K_SUFFIX = '-2k'
 const IMAGE_MODEL_4K_SUFFIX = '-4k'
 type ImageSizeTier = '1k' | '2k' | '4k'
@@ -111,19 +110,6 @@ type TemplateEditorDraft = {
   style: string
 }
 
-// gpt-image-2.5 flare / sunburst 暂不公开：后端透传与尺寸档位逻辑已就绪，但不下发到
-// 下拉框；正式推出时取消注释即可（顺序保持在 gpt-image-2 之前）。
-const IMAGE_MODELS = [
-  // { label: 'gpt-image-2.5-flare', value: 'gpt-image-2.5-flare' },
-  // { label: 'gpt-image-2.5-flare-2k', value: 'gpt-image-2.5-flare-2k' },
-  // { label: 'gpt-image-2.5-flare-4k', value: 'gpt-image-2.5-flare-4k' },
-  // { label: 'gpt-image-2.5-sunburst', value: 'gpt-image-2.5-sunburst' },
-  // { label: 'gpt-image-2.5-sunburst-2k', value: 'gpt-image-2.5-sunburst-2k' },
-  // { label: 'gpt-image-2.5-sunburst-4k', value: 'gpt-image-2.5-sunburst-4k' },
-  { label: 'gpt-image-2', value: 'gpt-image-2' },
-  { label: IMAGE_MODEL_2K_ALIAS, value: IMAGE_MODEL_2K_ALIAS },
-  { label: IMAGE_MODEL_4K_ALIAS, value: IMAGE_MODEL_4K_ALIAS },
-]
 
 const SIZE_OPTIONS = [
   { label: 'Auto', value: 'auto' },
@@ -182,12 +168,6 @@ const ASPECT_RATIO_ICONS: Record<AspectRatioId, LucideIcon> = {
   '9:16': RectangleVertical,
 }
 
-const QUALITY_OPTIONS = [
-  { label: 'Auto', value: 'auto' },
-  { label: 'High', value: 'high' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'Low', value: 'low' },
-]
 
 const FORMAT_OPTIONS = [
   { label: 'PNG', value: 'png' },
@@ -573,6 +553,7 @@ export default function ImageStudio() {
   const [model, setModel] = useState('gpt-image-2')
   const [size, setSize] = useState('auto')
   const [quality, setQuality] = useState('auto')
+  useEffect(() => { setQuality(current => normalizeImageQualityForModel(current, model)) }, [model])
   const [outputFormat, setOutputFormat] = useState('png')
   const [background, setBackground] = useState('auto')
   const [upscale, setUpscale] = useState('')
@@ -1479,7 +1460,7 @@ export default function ImageStudio() {
           {advancedOpen && (
             <div id="studio-advanced-params" className="studio-advanced-content">
               <Field label={t('images.quality')}>
-                <Select value={quality} onValueChange={setQuality} options={QUALITY_OPTIONS.map(option => ({ ...option, label: t(`images.workspace.quality.${option.value}`) }))} compact />
+                <Select value={quality} onValueChange={setQuality} options={imageQualityOptions(model).map(option => ({ ...option, label: t(`images.workspace.quality.${option.value}`) }))} compact />
               </Field>
               <Field label={t('images.format')}>
                 <Select value={outputFormat} onValueChange={setOutputFormat} options={FORMAT_OPTIONS} compact />
@@ -2253,6 +2234,7 @@ function TemplateEditorDialog({
     onChange({
       model: value,
       size: normalizeImageSizeForModel(value, draft.size),
+      quality: normalizeImageQualityForModel(draft.quality, value),
     })
   }
 
@@ -2303,7 +2285,7 @@ function TemplateEditorDialog({
               <Select value={draft.size} onValueChange={value => onChange({ size: value })} options={sizeOptions} compact />
             </Field>
             <Field label={t('images.quality')}>
-              <Select value={draft.quality} onValueChange={value => onChange({ quality: value })} options={QUALITY_OPTIONS} compact />
+              <Select value={draft.quality} onValueChange={value => onChange({ quality: value })} options={imageQualityOptions(draft.model)} compact />
             </Field>
             <Field label={t('images.format')}>
               <Select value={draft.outputFormat} onValueChange={value => onChange({ outputFormat: value })} options={FORMAT_OPTIONS} compact />

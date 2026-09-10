@@ -15,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"golang.org/x/sync/singleflight"
 )
 
 const consoleUpstreamErrorLogMaxBytes = 4 * 1024
@@ -52,18 +54,22 @@ func upstreamErrorConsoleBody(body []byte) string {
 
 // Handler API 路由处理器
 type Handler struct {
-	store        *auth.Store
-	configKeys   map[string]bool // 配置文件中的静态 key
-	db           *database.DB
-	cfg          *config.Config       // 全局配置
-	deviceCfg    *DeviceProfileConfig // 设备指纹配置
-	cache        cache.TokenCache     // Redis/Memory 运行态缓存
-	apiKeyGateMu sync.Mutex
-	promptRiskMu sync.Mutex
-	apiKeyGate   *apiKeyConcurrencyLimiter
-	scopeUsageMu sync.Mutex
-	scopeUsage   *apiKeyScopeUsageTracker
-	liveStore    *liveCallStore
+	store           *auth.Store
+	configKeys      map[string]bool // 配置文件中的静态 key
+	db              *database.DB
+	cfg             *config.Config       // 全局配置
+	deviceCfg       *DeviceProfileConfig // 设备指纹配置
+	cache           cache.TokenCache     // Redis/Memory 运行态缓存
+	apiKeyLookups   singleflight.Group
+	authCache       *apiKeyAuthCache
+	apiKeyGateMu    sync.Mutex
+	promptRiskMu    sync.Mutex
+	apiKeyGate      *apiKeyConcurrencyLimiter
+	scopeUsageMu    sync.Mutex
+	scopeUsage      *apiKeyScopeUsageTracker
+	scopeDeltaInit  sync.Once
+	scopeDeltaSlots chan struct{}
+	liveStore       *liveCallStore
 	// Responses WebSocket 同作用域会话的本机抢占注册表；跨实例所有权由 runtime cache 协调。
 	responsesWSSessionPreemptions responsesWSSessionPreemptRegistry
 	// 指纹重放冷却的存在性闸门缓存(见 hasActiveFingerprintReplayLocks)。
@@ -934,6 +940,9 @@ func mergeGrokNativeUsage(current, next *UsageInfo) *UsageInfo {
 	current.ReasoningTokens = max(current.ReasoningTokens, next.ReasoningTokens)
 	current.CachedTokens = max(current.CachedTokens, next.CachedTokens)
 	current.CacheWriteTokens = max(current.CacheWriteTokens, next.CacheWriteTokens)
+	current.ImageInputTokens = max(current.ImageInputTokens, next.ImageInputTokens)
+	current.ImageOutputTokens = max(current.ImageOutputTokens, next.ImageOutputTokens)
+	current.CachedImageInputTokens = max(current.CachedImageInputTokens, next.CachedImageInputTokens)
 	current.CacheWrite5mTokens = max(current.CacheWrite5mTokens, next.CacheWrite5mTokens)
 	current.CacheWrite1hTokens = max(current.CacheWrite1hTokens, next.CacheWrite1hTokens)
 	current.TotalTokens = max(current.TotalTokens, next.TotalTokens)
@@ -1200,6 +1209,13 @@ func (h *Handler) SetRuntimeCache(tc cache.TokenCache) {
 		return
 	}
 	h.cache = tc
+	if h.authCache != nil {
+		h.authCache.close()
+		h.authCache = nil
+	}
+	if h.cfg != nil && h.cfg.APIKeyAuthCacheEnabled && h.db != nil {
+		h.authCache = newAPIKeyAuthCache(h.db, tc)
+	}
 }
 
 // NewHandlerWithDeviceProfile 创建处理器（带设备指纹配置）
@@ -1214,7 +1230,7 @@ func NewHandlerWithDeviceProfile(store *auth.Store, db *database.DB, deviceCfg *
 //
 // 关键：绝不能把"数据库连接耗尽/超时"这类暂时性故障当成"客户端 key 无效"
 // 返回 401，否则压测或 DB 抖动时客户端会误以为自己的凭证失效（issue #323）。
-func (h *Handler) resolveAPIKey(key string) (*database.APIKeyRow, bool, error) {
+func (h *Handler) resolveAPIKeyUnshared(key string) (*database.APIKeyRow, bool, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil, false, nil
@@ -1323,8 +1339,25 @@ func (h *Handler) isValidKey(key string) bool {
 
 // hasAnyKeys 检查是否配置了任何密钥
 func (h *Handler) hasAnyKeys() bool {
+	configured, err := h.hasAnyKeysWithError()
+	return err == nil && configured
+}
+
+func (h *Handler) hasAnyKeysWithError() (bool, error) {
 	if len(h.configKeys) > 0 {
-		return true
+		return true, nil
+	}
+	if h.authCache != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		for i := 0; i < 3; i++ {
+			state, _, err := h.authCache.revision(ctx)
+			if errors.Is(err, errAPIKeyAuthRetry) {
+				continue
+			}
+			return state.KeyCount > 0, err
+		}
+		return false, errAPIKeyAuthRetry
 	}
 	if h.cache != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1335,19 +1368,19 @@ func (h *Handler) hasAnyKeys() bool {
 		} else if ok {
 			var record apiKeyCountRuntimeRecord
 			if err := json.Unmarshal(raw, &record); err == nil {
-				return record.Count > 0
+				return record.Count > 0, nil
 			}
 		}
 	}
 	if h.db == nil {
-		return false
+		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	count, err := h.db.CountAPIKeys(ctx)
 	if err != nil {
 		log.Printf("统计 API Key 数量失败: %v", err)
-		return false
+		return false, err
 	}
 	if h.cache != nil {
 		payload, _ := json.Marshal(apiKeyCountRuntimeRecord{Count: count})
@@ -1357,7 +1390,7 @@ func (h *Handler) hasAnyKeys() bool {
 		}
 		cacheCancel()
 	}
-	return count > 0
+	return count > 0, nil
 }
 
 // logUsage 记录请求日志（非阻塞，写入内存缓冲由后台批量 flush）
@@ -3035,7 +3068,13 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 		attachWsAcquireAudit(c)
 		attachUpstreamTrace(c, h.store)
 		// 如果没有配置任何密钥
-		if !h.hasAnyKeys() {
+		hasKeys, presenceErr := h.hasAnyKeysWithError()
+		if presenceErr != nil {
+			api.SendError(c, api.ErrServiceUnavailable)
+			c.Abort()
+			return
+		}
+		if !hasKeys {
 			if allowAnonymous {
 				// 显式允许匿名访问（旧行为，仅在 CODEX_ALLOW_ANONYMOUS=true 时启用）
 				c.Next()
@@ -3064,7 +3103,7 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 		authHeader = security.SanitizeInput(authHeader)
 
 		key := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		apiKeyRow, ok, resolveErr := h.resolveAPIKey(key)
+		apiKeyRow, ok, resolveErr := h.resolveAPIKeyContext(c.Request.Context(), key)
 		if resolveErr != nil {
 			// DB/基础设施暂时性故障：返回 503，不当成客户端 key 无效（issue #323）。
 			// 不记 AUTH_FAILED 审计日志，避免污染凭证攻击告警。
@@ -3883,6 +3922,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	capacityShedRetries := map[int64]int{}
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
+	var selectionErr error
 	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
@@ -3896,12 +3936,15 @@ func (h *Handler) Responses(c *gin.Context) {
 			} else if continuationUnavailable && !relayContinuationAttempted {
 				account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
 			} else if turnContinuationPinned {
-				account, stickyProxyURL = h.nextRetryAccountForContinuationWithDispatch(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+				account, stickyProxyURL, selectionErr = h.nextRetryAccountForContinuationWithDispatch(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			} else {
-				account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+				account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			}
 		}
 		if account == nil {
+			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
+				return
+			}
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 				return
 			}
@@ -3930,11 +3973,17 @@ func (h *Handler) Responses(c *gin.Context) {
 				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
 				return
 			}
-			if h.store.HasUsageLimitedCandidateWithDispatch(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
-				if isStream && writeCommittedResponsesRetryError(c, "Codex account usage window limit reached") {
+			if limited := h.store.UsageLimitedCandidateSummary(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy); limited.Found {
+				// 瞬时 throttle 与额度耗尽要给下游不同信号：前者带 Retry-After 让它秒级
+				// 退避后重试同一上游，后者才值得 failover/标记账号。
+				msg := usageLimitedPoolMessages(limited)
+				if isStream && writeCommittedResponsesRetryError(c, msg.English) {
 					return
 				}
-				SendAPIKeyLimitError(c, http.StatusTooManyRequests, "Codex 账号用量窗口已达上限")
+				if msg.RetryAfterSeconds > 0 {
+					c.Header("Retry-After", strconv.Itoa(msg.RetryAfterSeconds))
+				}
+				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg.Chinese)
 				return
 			}
 			if continuationUnavailable && !relayContinuationAttempted {
@@ -4334,6 +4383,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 					logInput.InputTokens, logInput.OutputTokens = usage.InputTokens, usage.OutputTokens
 					logInput.ReasoningTokens, logInput.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+					logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 				}
 				if outcome.logStatusCode != http.StatusOK {
 					logInput.UpstreamErrorKind = outcome.failureKind
@@ -4750,6 +4800,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				logInput.OutputTokens = usage.OutputTokens
 				logInput.ReasoningTokens = usage.ReasoningTokens
 				logInput.CachedTokens = usage.CachedTokens
+				logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 			}
 			applyImageUsageLogInfo(logInput, imageLogInfo)
 			h.logUsageForRequest(c, logInput)
@@ -5669,6 +5720,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			logInput.OutputTokens = usage.OutputTokens
 			logInput.ReasoningTokens = usage.ReasoningTokens
 			logInput.CachedTokens = usage.CachedTokens
+			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
 		applyImageUsageLogInfo(logInput, imageLogInfo)
 		h.logUsageForRequest(c, logInput)
@@ -5849,6 +5901,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		var account *auth.Account
 		var stickyProxyURL string
 		var affinityGuard auth.SessionAffinityGuard
+		var selectionErr error
 		if attempt == 0 && compactionAffinity.Known {
 			account = h.store.TakePreferredAccountWithDispatch(compactionAffinity.PreferredAccountID, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
 			if account != nil {
@@ -5883,8 +5936,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
 				return
 			}
-			account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			if account == nil {
+				if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
+					return
+				}
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					return
 				}
@@ -6667,14 +6723,18 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	capacityShedRetries := map[int64]int{}
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
+	var selectionErr error
 	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
-			account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 		}
 		if account == nil {
+			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolChat) {
+				return
+			}
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolChat) {
 				return
 			}
@@ -7056,6 +7116,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 				logInput.InputTokens, logInput.OutputTokens = usage.InputTokens, usage.OutputTokens
 				logInput.ReasoningTokens, logInput.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+				logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 			}
 			if outcome.logStatusCode != http.StatusOK {
 				logInput.UpstreamErrorKind = outcome.failureKind
@@ -7590,6 +7651,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			logInput.OutputTokens = usage.OutputTokens
 			logInput.ReasoningTokens = usage.ReasoningTokens
 			logInput.CachedTokens = usage.CachedTokens
+			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
 		h.logUsageForRequest(c, logInput)
 
@@ -7941,10 +8003,10 @@ func responseHasCodex5hHeaders(resp *http.Response) bool {
 	return secondary.valid && codexWindowType(secondary.windowMin) == codexRateLimitWindow5h
 }
 
-// classifySpark429RateLimit keeps every Spark rejection scoped to the Spark
-// model. Explicit quota evidence (body reset or an exhausted 5h/7d window)
-// drives the independent Spark usage window; transient
-// rejections retain the normal short model cooldown.
+// classifySpark429RateLimit keeps Spark quota exhaustion on the Spark model.
+// Explicit quota evidence (body reset or an exhausted 5h/7d window) drives
+// the independent Spark usage window. Transient throttles freeze the whole
+// account so a model alias cannot bypass the shared budget.
 func classifySpark429RateLimit(account *auth.Account, body []byte, resp *http.Response, now time.Time, model string) codex429Decision {
 	decision := codex429Decision{
 		Scope:  rateLimitScopeModel,
@@ -7989,8 +8051,12 @@ func classifySpark429RateLimit(account *auth.Account, body []byte, resp *http.Re
 		decision.ResetAt = now.Add(decision.Cooldown)
 		return decision
 	}
-	decision.Cooldown = 5 * time.Minute
-	return decision
+	if decision.Reason == "model_capacity" {
+		decision.Cooldown = 5 * time.Minute
+		return decision
+	}
+	// Spark 瞬时 throttle 与主模型共享账号预算；只冻 Spark 模型会被别名绕过。
+	return transientAccountRateLimitDecision(body, resp, now)
 }
 
 func classify429RateLimit(account *auth.Account, body []byte, resp *http.Response, now time.Time, model string) codex429Decision {
@@ -8046,22 +8112,48 @@ func classify429RateLimit(account *auth.Account, body []byte, resp *http.Respons
 		return codex429Decision{Scope: rateLimitScopeAccount, Reason: "rate_limited_7d", ResetAt: resetAt, Cooldown: resetAt.Sub(now)}
 	}
 
-	if model != "" {
-		reason := "rate_limited_model"
-		if isCodexModelCapacityError(body) {
-			reason = "model_capacity"
-		}
+	if isCodexModelCapacityError(body) && model != "" {
 		return codex429Decision{
 			Scope:    rateLimitScopeModel,
-			Reason:   reason,
+			Reason:   "model_capacity",
 			Model:    model,
 			Cooldown: 5 * time.Minute,
 		}
 	}
 
-	cooldown := 5 * time.Minute
-	resetAt = now.Add(cooldown)
-	return codex429Decision{Scope: rateLimitScopeAccount, Reason: "rate_limited", ResetAt: resetAt, Cooldown: cooldown}
+	// 裸 429 / rate_limit* 是账号级瞬时限流。只冻当前模型时，同一号换个别名
+	// 会立刻再打上游。额度耗尽与 5h/7d=100% 已在上面分流。
+	return transientAccountRateLimitDecision(body, resp, now)
+}
+
+func transientAccountRateLimitDecision(body []byte, resp *http.Response, now time.Time) codex429Decision {
+	cooldown := auth.TransientRateLimitBackoffBase
+	if retryAfter := transient429RetryAfter(body, resp, now); retryAfter > cooldown {
+		cooldown = retryAfter
+	}
+	if cooldown > auth.TransientRateLimitBackoffMax {
+		cooldown = auth.TransientRateLimitBackoffMax
+	}
+	return codex429Decision{
+		Scope:    rateLimitScopeAccount,
+		Reason:   "rate_limited",
+		ResetAt:  now.Add(cooldown),
+		Cooldown: cooldown,
+	}
+}
+
+func transient429RetryAfter(body []byte, resp *http.Response, now time.Time) time.Duration {
+	if resp != nil {
+		if retryAfter := parseRetryAfterHeader(resp.Header.Get("Retry-After")); retryAfter > 0 {
+			return retryAfter
+		}
+	}
+	if resetAt, ok := parseRetryAfterResetAt(body, now); ok {
+		if remaining := resetAt.Sub(now); remaining > 0 {
+			return remaining
+		}
+	}
+	return 0
 }
 
 func usageLimitFallbackCooldown(account *auth.Account, body []byte) time.Duration {
@@ -8154,6 +8246,16 @@ func Apply429Cooldown(store *auth.Store, account *auth.Account, body []byte, res
 	}
 	if account.IsPremium5hPlan() && decision.Scope == rateLimitScopeAccount && decision.Reason == "rate_limited_5h" {
 		store.MarkResponsesPremium5hRateLimited(account, decision.ResetAt)
+		return decision
+	}
+	if decision.Scope == rateLimitScopeAccount && decision.Reason == "rate_limited" {
+		// Pass only an actual upstream hint. Reusing the synthetic 15s floor
+		// here would slide the same cooldown forward on every in-flight 429.
+		applied := store.MarkTransientRateLimited(account, transient429RetryAfter(body, resp, time.Now()))
+		decision.Cooldown = applied
+		if applied > 0 {
+			decision.ResetAt = time.Now().Add(applied)
+		}
 		return decision
 	}
 	store.MarkResponsesRateLimited(account, decision.Cooldown)

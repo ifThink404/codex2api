@@ -6,6 +6,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
@@ -139,21 +140,22 @@ type createAPIKeyResponse struct {
 }
 
 type opsOverviewResponse struct {
-	UpdatedAt      string                        `json:"updated_at"`
-	UptimeSeconds  int64                         `json:"uptime_seconds"`
-	DatabaseDriver string                        `json:"database_driver"`
-	DatabaseLabel  string                        `json:"database_label"`
-	CacheDriver    string                        `json:"cache_driver"`
-	CacheLabel     string                        `json:"cache_label"`
-	CPU            opsCPUResponse                `json:"cpu"`
-	Memory         opsMemoryResponse             `json:"memory"`
-	Runtime        opsRuntimeResponse            `json:"runtime"`
-	Requests       opsRequestsResponse           `json:"requests"`
-	Postgres       opsDatabaseResponse           `json:"postgres"`
-	Redis          opsRedisResponse              `json:"redis"`
-	Traffic        opsTrafficResponse            `json:"traffic"`
-	ResponseCache  opsResponseCache              `json:"response_cache"`
-	Scheduler      auth.SchedulerMetricsSnapshot `json:"scheduler"`
+	APIKeyAuthCache proxy.APIKeyAuthCacheStats    `json:"api_key_auth_cache"`
+	UpdatedAt       string                        `json:"updated_at"`
+	UptimeSeconds   int64                         `json:"uptime_seconds"`
+	DatabaseDriver  string                        `json:"database_driver"`
+	DatabaseLabel   string                        `json:"database_label"`
+	CacheDriver     string                        `json:"cache_driver"`
+	CacheLabel      string                        `json:"cache_label"`
+	CPU             opsCPUResponse                `json:"cpu"`
+	Memory          opsMemoryResponse             `json:"memory"`
+	Runtime         opsRuntimeResponse            `json:"runtime"`
+	Requests        opsRequestsResponse           `json:"requests"`
+	Postgres        opsDatabaseResponse           `json:"postgres"`
+	Redis           opsRedisResponse              `json:"redis"`
+	Traffic         opsTrafficResponse            `json:"traffic"`
+	ResponseCache   opsResponseCache              `json:"response_cache"`
+	Scheduler       auth.SchedulerMetricsSnapshot `json:"scheduler"`
 }
 
 type opsCPUResponse struct {
@@ -234,12 +236,16 @@ type opsDatabaseResponse struct {
 }
 
 type opsRedisResponse struct {
-	Healthy      bool    `json:"healthy"`
-	TotalConns   uint32  `json:"total_conns"`
-	IdleConns    uint32  `json:"idle_conns"`
-	StaleConns   uint32  `json:"stale_conns"`
-	PoolSize     int     `json:"pool_size"`
-	UsagePercent float64 `json:"usage_percent"`
+	WaitCount       uint32  `json:"wait_count"`
+	WaitDurationNs  int64   `json:"wait_duration_ns"`
+	Timeouts        uint32  `json:"timeouts"`
+	PendingRequests uint32  `json:"pending_requests"`
+	Healthy         bool    `json:"healthy"`
+	TotalConns      uint32  `json:"total_conns"`
+	IdleConns       uint32  `json:"idle_conns"`
+	StaleConns      uint32  `json:"stale_conns"`
+	PoolSize        int     `json:"pool_size"`
+	UsagePercent    float64 `json:"usage_percent"`
 }
 
 type opsTrafficResponse struct {
@@ -306,16 +312,20 @@ type runtimeDatabaseResponse struct {
 }
 
 type runtimeCacheResponse struct {
-	Status       string  `json:"status"`
-	Driver       string  `json:"driver"`
-	Label        string  `json:"label"`
-	Healthy      bool    `json:"healthy"`
-	Error        string  `json:"error,omitempty"`
-	TotalConns   uint32  `json:"total_conns"`
-	IdleConns    uint32  `json:"idle_conns"`
-	StaleConns   uint32  `json:"stale_conns"`
-	PoolSize     int     `json:"pool_size"`
-	UsagePercent float64 `json:"usage_percent"`
+	WaitCount       uint32  `json:"wait_count"`
+	WaitDurationNs  int64   `json:"wait_duration_ns"`
+	Timeouts        uint32  `json:"timeouts"`
+	PendingRequests uint32  `json:"pending_requests"`
+	Status          string  `json:"status"`
+	Driver          string  `json:"driver"`
+	Label           string  `json:"label"`
+	Healthy         bool    `json:"healthy"`
+	Error           string  `json:"error,omitempty"`
+	TotalConns      uint32  `json:"total_conns"`
+	IdleConns       uint32  `json:"idle_conns"`
+	StaleConns      uint32  `json:"stale_conns"`
+	PoolSize        int     `json:"pool_size"`
+	UsagePercent    float64 `json:"usage_percent"`
 }
 
 type runtimeUsageLogResponse struct {

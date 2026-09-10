@@ -1,3 +1,4 @@
+import { isImage25Model } from '../lib/imageStudioModels'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -98,6 +99,11 @@ const PRIMARY_FIELDS: FieldDef[] = [
   { key: 'output', labelKey: 'settings.pricing.output', shortKey: 'settings.pricing.shortOutput', tone: 'neutral' },
 ]
 
+const IMAGE_FIELDS: FieldDef[] = [
+  { key: 'image_input', labelKey: 'settings.pricing.imageInput', shortKey: 'settings.pricing.imageInput', tone: 'neutral' },
+  { key: 'cached_image_input', labelKey: 'settings.pricing.cachedImageInput', shortKey: 'settings.pricing.cachedImageInput', tone: 'neutral' },
+]
+
 const ADVANCED_FIELDS: FieldDef[] = [
   { key: 'input_priority', labelKey: 'settings.pricing.inputPriority', shortKey: 'settings.pricing.shortInputPriority', tone: 'accent' },
 	{ key: 'cached_input_priority', labelKey: 'settings.pricing.cachedInputPriority', shortKey: 'settings.pricing.shortCachedInputPriority', tone: 'accent' },
@@ -110,7 +116,7 @@ const ADVANCED_FIELDS: FieldDef[] = [
 	{ key: 'output_long_priority', labelKey: 'settings.pricing.outputLongPriority', shortKey: 'settings.pricing.shortOutputLongPriority', tone: 'accent' },
 ]
 
-const ALL_FIELDS = [...PRIMARY_FIELDS, ...ADVANCED_FIELDS]
+const ALL_FIELDS = [...PRIMARY_FIELDS, ...IMAGE_FIELDS, ...ADVANCED_FIELDS]
 
 const TONE_DOT: Record<FieldDef['tone'], string> = {
   neutral: 'bg-muted-foreground/40',
@@ -400,6 +406,12 @@ function BillingRulePreview({ pricing }: { pricing: ModelPricingOverride }) {
             input / cache read / output · USD/M
           </div>
         </div>
+        {preview.image ? (
+          <div className='rounded-lg border border-border/70 bg-background/70 px-3 py-2.5'>
+            <div className='text-[10px] font-semibold text-muted-foreground'>{t('settings.pricing.imageRate')}</div>
+            <div className='mt-1 font-mono text-xs font-semibold'>{formatPreviewRate(preview.image)}</div>
+          </div>
+        ) : null}
         {preview.long ? (
           <div className='rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2.5'>
             <div className='text-[10px] font-semibold uppercase tracking-wide text-primary'>
@@ -1391,8 +1403,10 @@ export default function ModelPricing() {
                 const outputVal = normalizePrice(draft.output)
                 const multiplier = getOutputMultiplier(inputVal, outputVal)
                 const pricingModel = (r.canonical_model?.trim() || r.model.trim()).toLowerCase()
-                const supportsLongContextPricing = pricingModel !== 'gpt-6-astra'
-                const advancedFields = supportsLongContextPricing
+                const imageModel = isImage25Model(pricingModel)
+                const primaryFields = imageModel ? [...PRIMARY_FIELDS.filter(field => !field.key.startsWith('cache_write')), ...IMAGE_FIELDS] : PRIMARY_FIELDS
+                const supportsLongContextPricing = pricingModel !== 'gpt-6-astra' && !imageModel
+                const advancedFields = imageModel ? [] : supportsLongContextPricing
                   ? ADVANCED_FIELDS
                   : ADVANCED_FIELDS.filter((field) => !field.key.includes('_long'))
                 const hasLongContextPricing = supportsLongContextPricing && (
@@ -1508,7 +1522,7 @@ export default function ModelPricing() {
 
                       {/* Primary rates */}
                       <div className="mt-4 grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-3">
-                        {PRIMARY_FIELDS.map((field) => (
+                        {primaryFields.map((field) => (
                           <PriceField
                             key={field.key}
                             field={field}
@@ -1526,7 +1540,7 @@ export default function ModelPricing() {
                       <BillingRulePreview pricing={draft} />
 
                       {/* Advanced rates */}
-                      <div className="mt-3">
+                      <div className={imageModel ? 'hidden' : 'mt-3'}>
                         <button
                           type="button"
                           onClick={() =>

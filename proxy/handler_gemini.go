@@ -205,14 +205,18 @@ func (h *Handler) handleGeminiCountTokens(c *gin.Context, model string, rawBody 
 	upstreamEndpoint := "/v1internal:countTokens"
 
 	var affinityGuard auth.SessionAffinityGuard
+	var selectionErr error
 	var account *auth.Account
 	var stickyProxyURL string
 	for attempt := 0; ; attempt++ {
 		affinityGuard = auth.SessionAffinityGuard{}
-		account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(
+		account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(
 			c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy,
 		)
 		if account == nil {
+			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolOpenAI) {
+				return
+			}
 			if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
 				h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
 				return
@@ -376,14 +380,18 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 	upstreamEndpoint := antigravityUpstreamEndpoint(stream)
 
 	var affinityGuard auth.SessionAffinityGuard
+	var selectionErr error
 	var account *auth.Account
 	var stickyProxyURL string
 	for attempt := 0; ; attempt++ {
 		affinityGuard = auth.SessionAffinityGuard{}
-		account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(
+		account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(
 			c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy,
 		)
 		if account == nil {
+			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
+				return
+			}
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 				return
 			}
@@ -477,7 +485,7 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:         account.ID(),
-				Endpoint:            inboundEndpoint,
+				Endpoint:          inboundEndpoint,
 				Model:             model,
 				EffectiveModel:    model,
 				StatusCode:        resp.StatusCode,

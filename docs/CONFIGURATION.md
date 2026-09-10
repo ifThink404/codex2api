@@ -49,6 +49,8 @@ Codex2API 采用三层配置架构：
 | `ADMIN_SECRET` | 否 | - | 管理后台登录密钥 |
 | `CODEX_ALLOW_ANONYMOUS` | 否 | `false` | 设为 `true` 时，未配置任何对外 API Key 也允许 `/v1/*` 直接调用（仅限内网测试场景） |
 | `CODEX_SCHEDULER_ENGINE` | 否 | 空 | 调度引擎强制值：`legacy` / `shadow` / `indexed`。设置后优先于数据库配置，适合容器级灰度或紧急回退 |
+| `CODEX_SCHEDULER_MAX_WAITERS` | 否 | `4096` | 本实例账号调度等待请求总上限，正整数，重启生效。队列满立即返回可重试的 503 |
+| `CODEX_SCHEDULER_MAX_WAITERS_PER_KEY` | 否 | `256` | 本实例每个 API Key 的调度等待上限，正整数，重启生效；匿名请求共用一个计数 |
 | `FAST_SCHEDULER_ENABLED` | 否 | `false` | 旧版兼容开关；未设置 `CODEX_SCHEDULER_ENGINE` 且数据库没有 `SchedulerEngine` 时，`true` 映射为 `indexed` |
 | `TZ` | 否 | UTC | 时区，如 `Asia/Shanghai` |
 
@@ -89,6 +91,7 @@ Codex2API 采用三层配置架构：
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
+| `CODEX_IMAGES_MAIN_MODEL` | 否 | `gpt-5.6-luna` | 生图文本驱动的部署默认值；后台「Codex → 生图设置」选择具体模型后优先使用后台配置 |
 | `IMAGE_ASSET_DIR` | 否 | `/data/images` | 管理台生图工作台保存图片文件的服务器目录；Docker 部署建议持久化 `/data` |
 | `IMAGE_ASSET_PUBLIC_BASE_URL` | 否 | 空 | 图片代理 URL 的公开基址，例如 `https://cdn.example.com`；仅改变返回地址，需由反向代理将 `/p/img/` 转发到 Codex2Api |
 | `IMAGE_ASSET_SIGNING_SECRET` | 否 | 随机值 | 图片代理 URL 的持久化签名密钥；生产环境应配置固定随机值，避免服务重启后历史图片链接失效 |
@@ -133,11 +136,43 @@ Codex2API 采用三层配置架构：
 |------|------|--------|------|
 | `CACHE_DRIVER` | 是 | memory | 固定值: memory |
 
+#### API Key 鉴权缓存
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `CODEX_API_KEY_AUTH_CACHE_ENABLED` | 否 | `true` | 启用鉴权 L1/L2；设置 `false` 并重启后恢复旧版鉴权缓存策略 |
+
+启用后，带分组、模型权限、有效期和限额配置的 Key 也可缓存。读取顺序为本地 L1 → Redis L2 → 数据库；Memory 模式只有 L1。L1 绝对 TTL 为 15 秒，最多 4,096 条、16 MiB 逻辑 JSON 快照，单条上限 64 KiB；超大条目直接回源。Redis L2 TTL 为 5 分钟，按数据库作用域、鉴权修订号和 Key 摘要隔离。缓存不保存原始 Key 或已用额度；确认不存在的 Key 只进入有界 L1，TTL 为 2 秒。字节预算不包含 Go 对象、map 或 allocator 开销，不是进程 RSS 上限。
+
+启用、停用、删除、修改 Key 配置会在同一数据库事务内推进 `api_key_auth_cache_state` 修订号；累计用量写入不推进修订号。每个实例在活跃鉴权时复核该修订号，复核结果最多复用 250 毫秒。本实例的管理端操作同步清理 L1，并通过 Redis Pub/Sub 通知其他实例；通知丢失或旧版本实例修改数据时，数据库复核仍会发现变化。250 毫秒是修订结果的复用上限，不包含在途请求和基础设施延迟。数据库复核失败返回 503，不使用无法确认的旧快照，也不会误开启匿名访问。
+
+设置了累计额度的 Key 每次鉴权仍查询数据库中的 `quota_used`；模型周预算仍在转发前执行数据库权威计数和请求幂等校验。窗口统计的原有 TTL、已建立长连接的校验策略不变。修订号变更会淘汰当前实例的全部鉴权条目；频繁修改 Key 配置会增加冷缓存回源。快照回填使用版本隔离和本地代际检查，延迟完成的旧查询不能恢复新版本的权限。
+
+启动自动创建修订表和 PostgreSQL/SQLite 触发器，无需手工迁移。关闭两级缓存后仍保留这些表和触发器，便于混合版本部署；旧版策略只对无访问约束的 Key 缓存元数据，并合并同一时刻的相同 Key 查询。
+
+`GET /api/admin/ops/overview` 的 `api_key_auth_cache` 提供开关、L1 条目/字节数、本地/远端命中、数据库配置加载次数、动态额度读取次数、修订号复核次数、失效、淘汰、超限旁路和错误计数。评估收益时应分开看配置回源与动态额度查询。
+
+#### 窗口用量与连接池
+
+API Key 启用多个 RPM/RPD/费用/Token 窗口时，Redis 会通过一次 `MGET` 读取这些窗口的统计缓存；缺失、损坏或读取失败仍按原有顺序回源数据库。自然日和滑动窗口的定义、60 秒统计缓存 TTL、错误码均保持不变。Memory 驱动提供同等批量读取语义。
+
+分组/账号预算的三个共享分钟桶通过 Pipeline 一起读取，同一个 Key 的并发回源合并为一次，继续复用原有 5 秒本地快照。共享增量最多启动 16 个后台写入，槽位满时由调用方同步写入并承受背压；Redis 故障时仍以数据库用量聚合为后备。
+
+运维概览和运行状态中的 Redis `usage_percent` 表示本进程连接池占用：`(total_conns - idle_conns) / pool_size`，不表示 Redis 服务端 CPU、内存或数据命中率。`stale_conns` 是累计移除连接数，不参与当前占用计算。`wait_count`、`wait_duration_ns`、`timeouts` 为累计连接池等待/超时指标，`pending_requests` 表示当前等待连接的请求数，可用于判断是否需要调整连接池。
+
 ---
 
 ## 系统设置（数据库）
 
 系统设置存储在数据库的 `SystemSettings` 表中，可通过管理后台 `/admin/settings` 实时修改。
+
+### Codex 生图设置
+
+管理后台「系统设置 → Codex → 生图设置」可选择生图使用的文本驱动模型。选择后自动保存，对本实例之后构造的生图请求立即生效，重启后从数据库恢复。
+
+管理 API `PUT /api/admin/settings` 使用 `codex_images_main_model` 字段，空字符串表示「使用部署默认值」。优先级为：后台配置 → `CODEX_IMAGES_MAIN_MODEL` → 内置 `gpt-5.6-luna`。`GET /api/admin/settings` 同时返回只读的 `codex_images_default_main_model`，用于展示部署默认值。模型名称长度不超过 128 字节，不含空白或控制字符，不能填 `gpt-image-*` 图像模型。
+
+设置覆盖管理与公开生图工作台、`/v1/images/generations`、`/v1/images/edits`，以及顶层 `model` 填写图像模型的 `/v1/responses` 请求。原生 Responses 请求若显式填写文本 `model`，则继续使用该模型。图像模型由工作台或 API 请求选择；Images 链路在上游明确拒绝文本驱动时仍会按现有候选顺序重试。
 
 ### 模型列表读取上限
 
@@ -182,7 +217,7 @@ Redis 模式会把 response context 保存到共享后端。后端值在重建�
 | `CodexWSHideUpstreamErrors` | bool | true | - | WS 上游最终失败时向客户端隐藏原始错误，返回统一友好提示；原始错误仍记录在后台日志/用量记录 |
 | `CodexWSSilentRetryEnabled` | bool | true | - | WS 首包前遇到限流、额度耗尽、5xx、读取错误或超时时，静默换账号并重建上游 WS |
 | `CodexWSSilentMaxRetries` | int | 2 | 0-10 | WS 首包前静默重试上限；`0` 禁用该预算 |
-| `SchedulerMode` | string | `round_robin` | - | 调度模式：`round_robin`（轮询，按调度分权重排序）、`remaining_quota`（优先使用用量少的账号）或 `fill_first`（顺序耗尽：集中使用剩余额度最少的账号，耗尽/限流后切下一个） |
+| `SchedulerMode` | string | `round_robin` | - | 调度模式：`round_robin`（轮询，按调度分权重排序）、`remaining_quota`（优先使用用量少的账号）或 `fill_first`（顺序耗尽：集中使用剩余额度最少的账号，耗尽/限流后切下一个）。索引引擎在同一优先级和健康档位内按最多 8 个可用候选的窗口比较实时占用；配额模式仍优先比较用量。窗口被过滤或并发占满时继续补选，不保证全池绝对最小占用。 |
 | `AffinityMode` | string | `bounded` | - | 会话亲和：`bounded`（账号不健康或绑定空闲超过 10 分钟时重新挑号，活跃会话不轮换以保住上游 prompt cache）、`off`（每次重选）、`strict`（长期粘连） |
 
 调度优先级先决定账号层级，同一优先级内再比较健康档位、调度分和当前负载；会话亲和只负责复用已绑定账号。多个最终用户共享同一个 API Key 时，下游可传 `X-Codex2API-Affinity-Key`，值会先哈希且仅用于本地账号绑定，不会转发给上游。
@@ -192,6 +227,18 @@ Redis 模式会把 response context 保存到共享后端。后端值在重建�
 - `legacy` 保留原有全池扫描，作为无停机回退路径。
 - `shadow` 仍由 legacy 选号，每 64 次请求抽样一次索引可用性并在运维页展示一致/差异计数；它用于短时灰度，不建议长期承载全量流量。
 - `indexed` 使用分层内存索引、稀疏 API Key 路由子池和事件驱动等待。账号数增长时，稳态选号不再复制或扫描完整账号切片。
+
+索引选号的过滤器与准入回调在调度锁外执行，返回后重新检查候选代次、账号状态和并发；`Disabled` / `DispatchPaused` 同样阻止最终占位。已有会话绑定、容量借号保护和有状态续链的账号约束保持生效。
+
+账号满载时，等待队列同时受全局与单个 API Key 上限约束，所有使用该账号池等待路径的协议和上游共用预算。HTTP 队列溢出返回 `503` 和 `Retry-After: 1`；已提交的 SSE 输出对应协议的失败事件，WebSocket 返回错误帧并以 `1013` 关闭，文案提示 1 秒后重试。该本地过载不会进入持续重试的上游换号循环，也不会被误报为账号额度耗尽。已有等待者不因调低上限而被取消；环境变量不是跨实例配额，也不限制已经在上游执行的请求。
+
+队列内按 API Key 轮转，同一 Key 按可尝试请求的入队顺序唤醒。普通单槽释放只唤醒一个等待者；已有续链绑定和排除账号用于跳过不匹配的通知，剩余模型、分组和 scope 过滤仍在锁外执行，失败后把机会交给后续等待者。一轮通知最多尝试当前等待集合一次，同时最多有 8 个通知驱动的选号；密集释放合并为后续容量检查。公平性针对已排队的请求，不承诺绕过快路径新请求的全局先来先服务，也不保证不同过滤条件获得相同吞吐。SSE/WS 心跳不重新入队。每个有等待者的账号池只使用一个每秒恢复检查定时器，空队列自动停止；账号冷却自身的到期恢复通知仍然生效。
+
+Codex 瞬时账号限流按 `15s → 30s → 60s → 120s → 240s → 300s` 退避。同一冻结窗口的并发 429 只推进一次；较长的真实 `Retry-After` 可延长该窗口（上限 5 分钟），普通重复 429 不顺延截止时间。短时冻结同样阻止 Spark 调度，但普通模型的 5h/7d 配额耗尽仍不占用 Spark 独立配额。短冻结不写数据库、不主动触发 WHAM 探测，到期直接恢复本地索引。原生 Redis/Memory 缓存保留限流类型和退避级别，并原子合并截止时间；迟到的短冻结不能覆盖配额或鉴权冷却。滚动升级期间旧实例无法识别新分类，建议完成全部实例升级后再评估短冻结行为。
+
+运维 API 的 `scheduler` 指标新增 `fast_scanned_accounts`（实际候选检查数）、`fast_filter_checks`、`fast_acquire_failures`、`fast_lock_wait_ns` 和 `model_cooldown_cache_reads`。这些是本进程累计计数，宜取时间差计算每次选号成本；快路径命中不再代表没有扫描。`selection_duration_buckets` 为 `10us/100us/1ms/10ms/100ms/1s/+Inf` 累积直方图，覆盖与 `selection_total` 相同的普通/新会话选号，已有绑定的直接复用不计入该直方图。跨实例共享冷却与 outbox 不提供账号全局并发限制，并发名额仍由每个实例独立计数。
+
+等待队列还暴露 `max_waiters`、`max_waiters_per_key`、`waiters`、`wait_rejected`（全部队列拒绝）、`wait_rejected_per_key`（其中因单 Key 上限被拒绝的子集）、`wait_granted`、`wait_duration_ns`，以及 `10ms/100ms/1s/10s/30s/+Inf` 的 `wait_duration_buckets` 累积直方图。等待耗时统计包含成功、取消和超时，拒绝入队不计入；`wait_wakeups / wait_granted` 的增量比可辅助观察无效唤醒，不能当作上游吞吐指标。Docker 部署应将两个新环境变量传给应用容器；项目标准/SQLite compose 的 `env_file` 会读取 `.env`，2004 专用 compose 可用 `environment` 覆盖。
 
 启动会自动创建 `scheduler_outbox` 和 `maintenance_jobs` 及相应索引/触发器，PostgreSQL 与 SQLite 均无需手工迁移。多实例对账号、API Key、分组、代理和调度设置的变化按 outbox 水位增量重放；高频用量计数不会产生调度事件。环境变量 `CODEX_SCHEDULER_ENGINE` 一旦设置，会固定本实例引擎并覆盖管理后台值。
 

@@ -1,3 +1,4 @@
+import { IMAGE_MODELS, imageQualityOptions, normalizeImageQualityForModel } from '../lib/imageStudioModels'
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -53,19 +54,6 @@ const STORAGE_KEY = 'codex2api_image_studio_api_key'
 const PORTAL_VIEWS = ['studio', 'history', 'gallery'] as const
 type PortalView = (typeof PORTAL_VIEWS)[number]
 
-// gpt-image-2.5 flare / sunburst 暂不公开：后端透传与尺寸档位逻辑已就绪，但不下发到
-// 下拉框；正式推出时取消注释即可（顺序保持在 gpt-image-2 之前）。
-const IMAGE_MODELS = [
-  // { label: 'gpt-image-2.5-flare', value: 'gpt-image-2.5-flare' },
-  // { label: 'gpt-image-2.5-flare-2k', value: 'gpt-image-2.5-flare-2k' },
-  // { label: 'gpt-image-2.5-flare-4k', value: 'gpt-image-2.5-flare-4k' },
-  // { label: 'gpt-image-2.5-sunburst', value: 'gpt-image-2.5-sunburst' },
-  // { label: 'gpt-image-2.5-sunburst-2k', value: 'gpt-image-2.5-sunburst-2k' },
-  // { label: 'gpt-image-2.5-sunburst-4k', value: 'gpt-image-2.5-sunburst-4k' },
-  { label: 'gpt-image-2', value: 'gpt-image-2' },
-  { label: 'gpt-image-2-2k', value: 'gpt-image-2-2k' },
-  { label: 'gpt-image-2-4k', value: 'gpt-image-2-4k' },
-]
 const SIZE_OPTIONS = [
   { label: 'Auto', value: 'auto' },
   { label: '1024x1024', value: '1024x1024' },
@@ -75,12 +63,7 @@ const SIZE_OPTIONS = [
   { label: '2560x1440', value: '2560x1440' },
   { label: '1440x2560', value: '1440x2560' },
 ]
-const QUALITY_OPTIONS = [
-  { label: 'Auto', value: 'auto' },
-  { label: 'Low', value: 'low' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'High', value: 'high' },
-]
+
 const FORMAT_OPTIONS = [
   { label: 'PNG', value: 'png' },
   { label: 'JPEG', value: 'jpeg' },
@@ -244,6 +227,7 @@ export default function ImageStudioPortal() {
   const [model, setModel] = useState('gpt-image-2')
   const [size, setSize] = useState('auto')
   const [quality, setQuality] = useState('auto')
+  useEffect(() => { setQuality(current => normalizeImageQualityForModel(current, model)) }, [model])
   const [outputFormat, setOutputFormat] = useState('png')
   const [style, setStyle] = useState('')
   const [imageToImageMode, setImageToImageMode] = useState(false)
@@ -1081,7 +1065,7 @@ export default function ImageStudioPortal() {
                     {advancedOpen ? (
                       <div className="grid grid-cols-2 gap-2.5 border-t border-border px-3 py-3">
                         <Field label={t('images.quality')}>
-                          <Select value={quality} onValueChange={setQuality} options={QUALITY_OPTIONS} compact />
+                          <Select value={quality} onValueChange={setQuality} options={imageQualityOptions(model)} compact />
                         </Field>
                         <Field label={t('images.format')}>
                           <Select value={outputFormat} onValueChange={setOutputFormat} options={FORMAT_OPTIONS} compact />

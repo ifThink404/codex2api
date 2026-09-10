@@ -69,32 +69,6 @@ Run it as a full **PostgreSQL + Redis** production stack or as a single-containe
 
 ---
 
-## Sponsors
-
-> Want to appear here? Open an issue on GitHub.
-
-<table>
-<tr>
-<td width="180" align="center" valign="middle"><a href="https://www.fastaitoken.com/register"><img src="assets/fastaitoken-logo.jpg" width="90" alt="FastAIToken"></a></td>
-<td valign="middle"><b><a href="https://www.fastaitoken.com/register">FastAIToken</a></b> is a developer-first AI API gateway providing unified access to leading models including OpenAI, Claude, and Gemini. Fully OpenAI-API compatible and works seamlessly with Claude Code, Codex, Gemini CLI, Cherry Studio, Cline, and Continue. With a 1:1 top-up ratio (¥1 = $1 API credit) and routes ranging from 0.02× OpenAI (limited time) to 1.2× Claude Max, plus a public status page and 24/7 human support. Enterprise-ready with invoice support and 99% SLA dedicated account pools.</td>
-</tr>
-</table>
-
-<table>
-<tr>
-<td width="180" align="center" valign="middle"><a href="https://aixor.org/sign-up?aff=LaKs"><img src="assets/aixor-logo.jpg" width="160" alt="AiXor"></a></td>
-<td valign="middle"><b><a href="https://aixor.org/sign-up?aff=LaKs">AiXor</a></b> provides cost-effective AI model API access with support for mainstream models including OpenAI, Claude, and Gemini. Top-up ratio of ¥0.2 = $1 credit, bringing per-call costs down to under 10% of official pricing. Plans start at ¥25/28 days; the Premium plan (¥129/28 days) includes about $4,752 in model credit (plans cover OpenAI models only), with high-concurrency support and 95%+ SLA stability.</td>
-</tr>
-</table>
-
-<table>
-<tr>
-<td width="180" align="center" valign="middle"><a href="https://ai.centos.hk"><b>星辰·AI</b></a></td>
-<td valign="middle"><b><a href="https://ai.centos.hk">星辰·AI</a></b> provides stable and high-speed relay services for Claude Code / Codex / Gemini, suitable for both individual developers and teams.</td>
-</tr>
-</table>
-
----
 
 ## Contents
 
@@ -195,6 +169,7 @@ Antigravity accounts are managed as a dedicated Google channel with browser/impo
 | Document | Description | Path |
 | --- | --- | --- |
 | [Chinese README](README.zh-CN.md) | Main Chinese project overview | `README.zh-CN.md` |
+| [Usage Guide](docs/USAGE.md) | Client setup, SDK examples, media workflows, and troubleshooting | `docs/USAGE.md` |
 | [API Documentation](docs/API.md) | API endpoints, request and response examples, error codes | `docs/API.md` |
 | [Antigravity Integration](docs/ANTIGRAVITY.md) | Google OAuth and experimental API Key channel, models, risks, and protocol status | `docs/ANTIGRAVITY.md` |
 | [Deployment Guide](docs/DEPLOYMENT.md) | Deployment modes, upgrade guide, backup and restore | `docs/DEPLOYMENT.md` |
@@ -321,7 +296,7 @@ Each successful budget change receives a read-only generation and is polled by e
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /v1/chat/completions`                            | Chat Completions style endpoint                                                                                                       |
 | `POST /v1/responses`                                   | Responses style endpoint                                                                                                              |
-| `POST /v1/images/generations`                          | OpenAI Images generation endpoint (gpt-image-2 via Codex, grok-imagine via Grok)                                                      |
+| `POST /v1/images/generations`                          | OpenAI Images generation endpoint (gpt-image-2 / gpt-image-2.5 via Codex, grok-imagine via Grok)                                                      |
 | `POST /v1/images/edits`                                | OpenAI Images edit endpoint                                                                                                           |
 | `POST /v1/videos/generations`                          | Grok Imagine video generation (async, returns `request_id`)                                                                           |
 | `POST /v1/videos/edits` / `POST /v1/videos/extensions` | Grok Imagine video edit / extension                                                                                                   |

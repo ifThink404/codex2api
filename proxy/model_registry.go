@@ -95,17 +95,12 @@ var builtinModelInfos = []ModelInfo{
 	// would never be discovered there; manifest learning does admit non-versioned
 	// gpt-* slugs (issue #624), but a builtin row is still needed for cold start.
 	modelInfoForID("gpt-reserve", ModelSourceBuiltin),
-	// gpt-image-2.5 flare / sunburst 暂不公开:透传与尺寸档位逻辑已经就绪(见
-	// proxy/images.go 的 isGPTImage2FamilyModel / splitImageModelSizeAlias),
-	// 但不进内置模型表,因此 /v1/models 与管理后台生图台都不展示;对外仍只提供
-	// gpt-image-2 系列。正式推出时取消下面的注释即可(顺序保持在 gpt-image-2 之前)。
-	//
-	// modelInfoForID("gpt-image-2.5-flare", ModelSourceBuiltin),
-	// modelInfoForID("gpt-image-2.5-flare-2k", ModelSourceBuiltin),
-	// modelInfoForID("gpt-image-2.5-flare-4k", ModelSourceBuiltin),
-	// modelInfoForID("gpt-image-2.5-sunburst", ModelSourceBuiltin),
-	// modelInfoForID("gpt-image-2.5-sunburst-2k", ModelSourceBuiltin),
-	// modelInfoForID("gpt-image-2.5-sunburst-4k", ModelSourceBuiltin),
+	modelInfoForID("gpt-image-2.5-flare", ModelSourceBuiltin),
+	modelInfoForID("gpt-image-2.5-flare-2k", ModelSourceBuiltin),
+	modelInfoForID("gpt-image-2.5-flare-4k", ModelSourceBuiltin),
+	modelInfoForID("gpt-image-2.5-sunburst", ModelSourceBuiltin),
+	modelInfoForID("gpt-image-2.5-sunburst-2k", ModelSourceBuiltin),
+	modelInfoForID("gpt-image-2.5-sunburst-4k", ModelSourceBuiltin),
 	modelInfoForID("gpt-image-2", ModelSourceBuiltin),
 	modelInfoForID("gpt-image-2-2k", ModelSourceBuiltin),
 	modelInfoForID("gpt-image-2-4k", ModelSourceBuiltin),

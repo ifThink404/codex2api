@@ -381,6 +381,21 @@ function UsageCostCell({ log }: { log: UsageLog }) {
           {log.input_cost > 0 && (
             <CostTooltipRow label={t('usage.inputCost')} value={formatUSD(log.input_cost)} />
           )}
+          {(log.image_input_tokens ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.imageInputTokens')} value={formatTokens(log.image_input_tokens ?? 0, true)} />
+          )}
+          {(log.image_output_tokens ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.imageOutputTokens')} value={formatTokens(log.image_output_tokens ?? 0, true)} />
+          )}
+          {(log.cached_image_input_tokens ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.cachedImageInputTokens')} value={formatTokens(log.cached_image_input_tokens ?? 0, true)} />
+          )}
+          {(log.image_input_cost ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.imageInputCost')} value={formatUSD(log.image_input_cost ?? 0)} />
+          )}
+          {(log.image_cache_read_cost ?? 0) > 0 && (
+            <CostTooltipRow label={t('usage.imageCacheReadCost')} value={formatUSD(log.image_cache_read_cost ?? 0)} />
+          )}
           {log.output_cost > 0 && (
             <CostTooltipRow label={t('usage.outputCost')} value={formatUSD(log.output_cost)} />
           )}

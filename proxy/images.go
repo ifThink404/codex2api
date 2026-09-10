@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/codex2api/auth"
@@ -41,7 +42,7 @@ const (
 	// 2026-09 起 ChatGPT 账号的 Codex manifest 已不含 gpt-5.4-mini,上游对它直接回
 	// 400 "The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT
 	// account",整条生图链路随之全断;free/plus/pro 三档 manifest 均含 gpt-5.6-luna,
-	// 故改用它。CODEX_IMAGES_MAIN_MODEL 可整体覆盖;上游再次下线时,
+	// 故改用它。系统生图设置或 CODEX_IMAGES_MAIN_MODEL 可覆盖;上游再次下线时,
 	// imagesMainModelFallbacks 会在同一账号上按序换驱动重试,不会把 400 记到生图模型头上。
 	defaultImagesMainModel = "gpt-5.6-luna"
 	defaultImagesToolModel = "gpt-image-2"
@@ -96,12 +97,34 @@ var imageStreamKeepaliveInterval = 15 * time.Second
 // 按 free/plus/pro 三档 manifest 的交集从便宜到贵排列。
 var imagesMainModelFallbacks = []string{"gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"}
 
-// imagesMainModel 返回生图链路当前的驱动主模型:环境变量优先,否则用内置默认。
-func imagesMainModel() string {
+// ImagesDefaultMainModel 返回未配置系统生图设置时的文本驱动，供后台展示。
+func ImagesDefaultMainModel() string {
 	if value := strings.TrimSpace(os.Getenv(imagesMainModelEnv)); value != "" {
 		return value
 	}
 	return defaultImagesMainModel
+}
+
+// NormalizeImagesMainModel 校验文本驱动名称；空值表示使用部署默认值。
+// 允许尚未同步到模型目录的名称，以便使用中转或新发布的文本模型。
+func NormalizeImagesMainModel(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) > 128 || strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return "", fmt.Errorf("codex_images_main_model 必须是不超过 128 字节且不含空白的模型名称")
+	}
+	if isImageOnlyModel(value) {
+		return "", fmt.Errorf("codex_images_main_model 必须是文本模型，不能使用图像模型")
+	}
+	return value, nil
+}
+
+// imagesMainModel 在每次构造生图请求时读取配置，后台保存后立即生效。
+// 优先级：系统设置 > 环境变量 > 内置默认值。
+func imagesMainModel() string {
+	if value := CurrentRuntimeSettings().CodexImagesMainModel; value != "" {
+		return value
+	}
+	return ImagesDefaultMainModel()
 }
 
 // imagesMainModelCandidates 返回驱动主模型的完整候选序列(首选 + 回退),去重且
@@ -1611,7 +1634,11 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				return
 			}
 			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
-			account, stickyProxyURL = h.waitForRetryAccountAvailable(c.Request.Context(), "", apiKeyID, retryExclusions.ForSelection(), h.applyScopeBudgetFilter(c, waitFilter), false, dispatchPolicyForModel(requestModel))
+			var selectionErr error
+			account, stickyProxyURL, selectionErr = h.waitForRetryAccountAvailable(c.Request.Context(), "", apiKeyID, retryExclusions.ForSelection(), h.applyScopeBudgetFilter(c, waitFilter), false, dispatchPolicyForModel(requestModel))
+			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
+				return
+			}
 			if account != nil && c.Request.Context().Err() != nil {
 				h.store.Release(account)
 				if continuousRetryDeadlineExceeded(c.Request.Context()) {
@@ -2010,6 +2037,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			logInput.OutputTokens = usage.OutputTokens
 			logInput.ReasoningTokens = usage.ReasoningTokens
 			logInput.CachedTokens = usage.CachedTokens
+			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
 		if imageCount > 0 && logInput.CompletionTokens == 0 {
 			logInput.CompletionTokens = imageCount
@@ -2069,6 +2097,7 @@ func buildImageErrorUsageLog(account *auth.Account, inboundEndpoint, logModel, l
 		logInput.OutputTokens = usage.OutputTokens
 		logInput.ReasoningTokens = usage.ReasoningTokens
 		logInput.CachedTokens = usage.CachedTokens
+		logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 	}
 	applyImageUsageLogInfo(logInput, imageLogInfo)
 	return logInput

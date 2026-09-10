@@ -3621,13 +3621,16 @@ type TokenDetails struct {
 }
 
 type UsageInfo struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-	InputTokens      int `json:"input_tokens,omitempty"`
-	OutputTokens     int `json:"output_tokens,omitempty"`
-	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
-	CachedTokens     int `json:"cached_tokens,omitempty"`
+	ImageInputTokens       int `json:"image_input_tokens,omitempty"`
+	ImageOutputTokens      int `json:"image_output_tokens,omitempty"`
+	CachedImageInputTokens int `json:"cached_image_input_tokens,omitempty"`
+	PromptTokens           int `json:"prompt_tokens"`
+	CompletionTokens       int `json:"completion_tokens"`
+	TotalTokens            int `json:"total_tokens"`
+	InputTokens            int `json:"input_tokens,omitempty"`
+	OutputTokens           int `json:"output_tokens,omitempty"`
+	ReasoningTokens        int `json:"reasoning_tokens,omitempty"`
+	CachedTokens           int `json:"cached_tokens,omitempty"`
 	// CacheWrite* 是 Anthropic 提示缓存写入 token（cache_creation_input_tokens 及其 5m/1h 细分）。
 	CacheWriteTokens   int `json:"cache_write_tokens,omitempty"`
 	CacheWrite5mTokens int `json:"cache_write_5m_tokens,omitempty"`
@@ -4342,7 +4345,11 @@ func extractUsageFromResult(usage gjson.Result) *UsageInfo {
 	outputTokens := int(usage.Get("output_tokens").Int())
 	reasoningTokens := int(usage.Get("output_tokens_details.reasoning_tokens").Int())
 	cachedTokens := int(usage.Get("input_tokens_details.cached_tokens").Int())
-	return newUsageInfo(inputTokens, outputTokens, reasoningTokens, cachedTokens)
+	result := newUsageInfo(inputTokens, outputTokens, reasoningTokens, cachedTokens)
+	result.ImageInputTokens = min(max(0, int(usage.Get("input_tokens_details.image_tokens").Int())), max(0, inputTokens))
+	result.ImageOutputTokens = min(max(0, int(usage.Get("output_tokens_details.image_tokens").Int())), max(0, outputTokens))
+	result.CachedImageInputTokens = min(max(0, int(usage.Get("input_tokens_details.cached_tokens_details.image_tokens").Int())), min(result.ImageInputTokens, max(0, cachedTokens)))
+	return result
 }
 
 // ExtractToolCallsFromOutputValidated extracts completed tool calls and rejects

@@ -3766,6 +3766,30 @@ func TestClassify429CapacityUsesModelCooldown(t *testing.T) {
 	}
 }
 
+func TestClassify429BareThrottleUsesAccountCooldown(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	decision := classify429RateLimit(&auth.Account{PlanType: "plus"}, nil, nil, now, "gpt-5.5")
+	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited" {
+		t.Fatalf("decision = %#v, want account-scoped transient throttle", decision)
+	}
+	if decision.Cooldown != auth.TransientRateLimitBackoffBase {
+		t.Fatalf("Cooldown = %v, want %v", decision.Cooldown, auth.TransientRateLimitBackoffBase)
+	}
+}
+
+func TestClassify429RetryAfterExtendsTransientHint(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("Retry-After", "45")
+	decision := classify429RateLimit(&auth.Account{PlanType: "plus"}, []byte(`{"error":{"type":"rate_limit_error"}}`), resp, now, "gpt-5.4")
+	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited" {
+		t.Fatalf("decision = %#v, want account-scoped transient throttle", decision)
+	}
+	if decision.Cooldown != 45*time.Second {
+		t.Fatalf("Cooldown = %v, want 45s Retry-After", decision.Cooldown)
+	}
+}
+
 func TestClassify429Header7dUsesAccountCooldown(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	resp := &http.Response{Header: make(http.Header)}
@@ -4359,7 +4383,7 @@ func TestApplyResponseFailedSemantic429KeepsExplicitModelCapacityScoped(t *testi
 	}
 }
 
-func TestApplyResponseFailedSemantic429SparkUsesTransientModelCooldown(t *testing.T) {
+func TestApplyResponseFailedSemantic429SparkUsesTransientAccountCooldown(t *testing.T) {
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 205, AccessToken: "token", PlanType: "pro", Status: auth.StatusReady}
 	account.SetUsageSnapshot5h(40, time.Now().Add(2*time.Hour))
@@ -4372,17 +4396,20 @@ func TestApplyResponseFailedSemantic429SparkUsesTransientModelCooldown(t *testin
 
 	decision := handler.applyResponseFailedCooldown(account, payload, resp, "gpt-5.3-codex-spark")
 
-	if decision.Scope != rateLimitScopeModel || decision.Reason != "rate_limited_model" {
-		t.Fatalf("decision = %#v, want transient Spark model cooldown", decision)
+	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited" {
+		t.Fatalf("decision = %#v, want transient Spark account cooldown", decision)
 	}
-	if !account.IsModelRateLimited("gpt-5.3-codex-spark") {
-		t.Fatal("transient Spark 429 should apply the configured model cooldown policy")
+	if account.IsModelRateLimited("gpt-5.3-codex-spark") {
+		t.Fatal("transient Spark 429 must not hide behind a model-only cooldown")
 	}
-	if decision.Cooldown < 4*time.Minute || decision.Cooldown > 6*time.Minute {
-		t.Fatalf("transient Spark cooldown = %v, want default OAuth model policy around 5m", decision.Cooldown)
+	if decision.Cooldown < 10*time.Second || decision.Cooldown > 20*time.Second {
+		t.Fatalf("transient Spark cooldown = %v, want about 15s", decision.Cooldown)
 	}
-	if account.HasActiveCooldown() || account.IsPremium5hRateLimited() {
-		t.Fatal("transient Spark 429 must not create an account-level cooldown")
+	if !account.HasActiveCooldown() || account.GetCooldownReason() != auth.ResponsesRateLimitedCooldownReason {
+		t.Fatal("transient Spark 429 should freeze the whole account")
+	}
+	if account.IsPremium5hRateLimited() {
+		t.Fatal("transient Spark 429 must not create a premium 5h cooldown")
 	}
 	if pct5h, ok := account.GetUsagePercent5h(); !ok || pct5h != 40 {
 		t.Fatalf("main 5h snapshot = (%v, %v), want unchanged 40", pct5h, ok)
@@ -4678,20 +4705,23 @@ func TestSyncCodexUsageStateUpdatesPlanTypeFromHeader(t *testing.T) {
 	}
 }
 
-func TestApply429CooldownUnknown429UsesModelCooldown(t *testing.T) {
+func TestApply429CooldownUnknown429UsesAccountCooldown(t *testing.T) {
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
 	account := &auth.Account{DBID: 102, PlanType: "pro"}
 
 	decision := Apply429Cooldown(store, account, []byte(`{"error":{"type":"rate_limit_error","message":"Too many requests"}}`), &http.Response{Header: make(http.Header)}, "gpt-5.5")
 
-	if decision.Scope != rateLimitScopeModel {
-		t.Fatalf("decision.Scope = %q, want model", decision.Scope)
+	if decision.Scope != rateLimitScopeAccount || decision.Reason != "rate_limited" {
+		t.Fatalf("decision = %#v, want account-scoped transient throttle", decision)
 	}
-	if got := time.Until(decision.ResetAt); got < 4*time.Minute || got > 6*time.Minute {
-		t.Fatalf("resetAt delta = %v, want about 5m", got)
+	if got := time.Until(decision.ResetAt); got < 10*time.Second || got > 20*time.Second {
+		t.Fatalf("resetAt delta = %v, want about 15s", got)
 	}
-	if !account.IsModelRateLimited("gpt-5.5") {
-		t.Fatal("expected model cooldown")
+	if account.IsModelRateLimited("gpt-5.5") {
+		t.Fatal("transient 429 must not cool only the requested model")
+	}
+	if !account.HasActiveCooldown() {
+		t.Fatal("expected account cooldown")
 	}
 }
 

@@ -341,6 +341,15 @@ type Account struct {
 	LastTimeoutAt       time.Time
 	LastServerErrorAt   time.Time
 	LastRecoveryProbeAt time.Time
+	// transientRateLimitBackoff is the in-memory progressive cooldown
+	// exponent for account-wide Codex throttle (bare 429 / rate_limit*).
+	// It is not persisted: a restart simply starts again at 15s.
+	transientRateLimitBackoff int
+	// transientRateLimitUntil mirrors CooldownUtil while the active cooldown
+	// was created by MarkTransientRateLimited. A later quota cooldown moves
+	// CooldownUtil away from it, which is how the two are told apart.
+	transientRateLimitUntil time.Time
+	transientRateLimitTimer *time.Timer // at most one recovery timer per throttled account
 
 	// 滑动窗口成功率（最近 N 次请求）
 	RecentResults    [20]uint8 // 1=成功, 0=失败
@@ -1956,6 +1965,15 @@ func (a *Account) SetCooldownWithReason(duration time.Duration, reason string) {
 func (a *Account) SetCooldownUntil(until time.Time, reason string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.setCooldownUntilLocked(until, reason)
+}
+
+func (a *Account) setCooldownUntilLocked(until time.Time, reason string) {
+	a.transientRateLimitUntil = time.Time{}
+	if a.transientRateLimitTimer != nil {
+		a.transientRateLimitTimer.Stop()
+		a.transientRateLimitTimer = nil
+	}
 	a.Status = StatusCooldown
 	a.CooldownUtil = until
 	a.CooldownReason = reason
@@ -3123,7 +3141,7 @@ func (a *Account) nextProbeBoundary(now time.Time) (time.Time, bool) {
 	if a.UsagePercent7dValid && a.UsageUpdatedAt.Before(a.Reset7dAt) {
 		consider(a.Reset7dAt)
 	}
-	if a.Status == StatusCooldown && a.CooldownReason != "unauthorized" {
+	if a.Status == StatusCooldown && a.CooldownReason != "unauthorized" && !a.isTransientRateLimitCooldownLocked() {
 		consider(a.CooldownUtil)
 	}
 	if next.IsZero() {
@@ -3483,13 +3501,7 @@ const (
 	runtimeCooldownCacheTimeout   = 300 * time.Millisecond
 )
 
-type runtimeCooldownRecord struct {
-	Model        string    `json:"model,omitempty"`
-	Reason       string    `json:"reason"`
-	ResetAt      time.Time `json:"reset_at"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
-	BackoffLevel int       `json:"backoff_level,omitempty"`
-}
+type runtimeCooldownRecord = cache.RuntimeCooldown
 
 func sessionAffinityTTL() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("CODEX_SESSION_AFFINITY_TTL"))
@@ -3558,27 +3570,40 @@ func (s *Store) setCachedAccountCooldown(accountID int64, reason string, resetAt
 	if normalizeCooldownReason(reason) != "unauthorized" {
 		s.WakeBoundaryProbe(resetAt)
 	}
-	if s == nil || s.tokenCache == nil || accountID == 0 {
-		return
-	}
-	ttl, ok := cooldownTTL(resetAt)
-	if !ok {
-		return
-	}
-	payload, err := json.Marshal(runtimeCooldownRecord{
-		Reason:    normalizeCooldownReason(reason),
-		ResetAt:   resetAt,
-		UpdatedAt: time.Now(),
+	s.cacheAccountCooldownRecord(accountID, runtimeCooldownRecord{
+		Reason: normalizeCooldownReason(reason), ResetAt: resetAt, UpdatedAt: time.Now(),
 	})
-	if err != nil {
-		log.Printf("[账号 %d] 序列化账号冷却缓存失败: %v", accountID, err)
-		return
+}
+
+// Publication is outside Account.mu and FastScheduler.mu. Native cache drivers
+// merge atomically; older/custom TokenCache implementations retain SetRuntime.
+func (s *Store) cacheAccountCooldownRecord(accountID int64, record runtimeCooldownRecord) runtimeCooldownRecord {
+	if s == nil || s.tokenCache == nil || accountID == 0 {
+		return record
+	}
+	ttl, ok := cooldownTTL(record.ResetAt)
+	if !ok {
+		return record
 	}
 	ctx, cancel := cooldownRuntimeContext()
 	defer cancel()
+	if merger, ok := s.tokenCache.(cache.RuntimeCooldownMerger); ok {
+		merged, err := merger.MergeRuntimeCooldown(ctx, accountCooldownCacheNamespace, accountCooldownRuntimeKey(accountID), record)
+		if err != nil {
+			log.Printf("[账号 %d] 合并账号冷却缓存失败: %v", accountID, err)
+			return record
+		}
+		return merged
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		log.Printf("[账号 %d] 序列化账号冷却缓存失败: %v", accountID, err)
+		return record
+	}
 	if err := s.tokenCache.SetRuntime(ctx, accountCooldownCacheNamespace, accountCooldownRuntimeKey(accountID), payload, ttl); err != nil {
 		log.Printf("[账号 %d] 写入账号冷却缓存失败: %v", accountID, err)
 	}
+	return record
 }
 
 func (s *Store) getCachedAccountCooldown(accountID int64) (runtimeCooldownRecord, bool) {
@@ -3637,10 +3662,35 @@ func (s *Store) applyCachedAccountCooldown(acc *Account, record runtimeCooldownR
 	reason := normalizeCooldownReason(record.Reason)
 	baseLimit := atomic.LoadInt64(&s.maxConcurrency)
 	acc.mu.Lock()
+	current := runtimeCooldownRecord{Reason: acc.CooldownReason, ResetAt: acc.CooldownUtil}
+	if acc.isTransientRateLimitCooldownLocked() {
+		current.Kind = cache.CooldownKindTransient
+	}
+	if record.Kind == cache.CooldownKindTransient && (acc.Status == StatusError || accountDispatchBlocked(acc) || acc.healthTierLocked() == HealthTierBanned) {
+		acc.mu.Unlock()
+		return
+	}
+	if acc.Status == StatusCooldown && current.ResetAt.After(time.Now()) &&
+		(current.Strength() > record.Strength() || current.Strength() == record.Strength() && current.ResetAt.After(record.ResetAt)) {
+		acc.mu.Unlock()
+		return
+	}
 	acc.Status = StatusCooldown
 	acc.CooldownUtil = record.ResetAt
 	acc.CooldownReason = reason
+	acc.transientRateLimitUntil = time.Time{}
+	if record.Kind == cache.CooldownKindTransient && reason == ResponsesRateLimitedCooldownReason {
+		acc.transientRateLimitUntil = record.ResetAt
+		acc.transientRateLimitBackoff = max(acc.transientRateLimitBackoff, record.BackoffLevel)
+		acc.armTransientRateLimitRecoveryLocked(s)
+	} else if acc.transientRateLimitTimer != nil {
+		acc.transientRateLimitTimer.Stop()
+		acc.transientRateLimitTimer = nil
+	}
 	now := time.Now()
+	if !record.UpdatedAt.IsZero() {
+		now = record.UpdatedAt
+	}
 	switch reason {
 	case "unauthorized":
 		acc.LastUnauthorizedAt = now
@@ -3726,6 +3776,9 @@ func (s *Store) getCachedModelCooldown(accountID int64, model string) (runtimeCo
 	}
 	ctx, cancel := cooldownRuntimeContext()
 	defer cancel()
+	if s.schedulerMetrics != nil {
+		s.schedulerMetrics.modelCooldownCacheReads.Add(1)
+	}
 	payload, ok, err := s.tokenCache.GetRuntime(ctx, modelCooldownCacheNamespace, modelCooldownRuntimeKey(accountID, key))
 	if err != nil {
 		log.Printf("[账号 %d] 读取模型冷却缓存失败 model=%s: %v", accountID, key, err)
@@ -4048,6 +4101,9 @@ func (s *Store) configureFastScheduler(scheduler *FastScheduler) {
 	if s == nil || scheduler == nil {
 		return
 	}
+	scheduler.mu.Lock()
+	scheduler.metrics = s.schedulerMetrics
+	scheduler.mu.Unlock()
 	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
 	scheduler.SetAcquireFunc(func(acc *Account, concurrencyLimit int64) bool {
 		return s.tryAcquireAccount(acc, concurrencyLimit, false)
@@ -4092,7 +4148,7 @@ func (s *Store) fastSchedulerUpdate(acc *Account) {
 	if scheduler != nil {
 		scheduler.Update(acc)
 	}
-	s.notifySchedulerAvailability()
+	s.notifySchedulerAccountAvailability(acc, true)
 }
 
 func (s *Store) fastSchedulerRemove(dbID int64) {
@@ -5929,8 +5985,22 @@ func (s *Store) flushGrokRateLimitSnapshots() {
 // Stop 停止后台刷新
 func (s *Store) Stop() {
 	s.stopOnce.Do(func() {
+		if hub := s.availability.Load(); hub != nil {
+			hub.stop()
+		}
 		if s.backgroundCancel != nil {
 			s.backgroundCancel()
+		}
+		for _, acc := range s.accountSnapshotAccounts() {
+			if acc == nil {
+				continue
+			}
+			acc.mu.Lock()
+			if acc.transientRateLimitTimer != nil {
+				acc.transientRateLimitTimer.Stop()
+				acc.transientRateLimitTimer = nil
+			}
+			acc.mu.Unlock()
 		}
 		if s.stopCh != nil {
 			close(s.stopCh)
@@ -6085,13 +6155,20 @@ const (
 	accountAcquireFailureNone accountAcquireFailure = iota
 	accountAcquireFailureCapacity
 	accountAcquireFailureDispatchLimit
+	accountAcquireFailureUnavailable
 )
 
 func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool) (bool, accountAcquireFailure) {
 	if acc == nil || limit <= 0 {
 		return false, accountAcquireFailureDispatchLimit
 	}
+	if accountDispatchBlocked(acc) {
+		return false, accountAcquireFailureUnavailable
+	}
 	if !reserveOccupiedAccountSlot(acc, limit) {
+		if accountDispatchBlocked(acc) {
+			return false, accountAcquireFailureUnavailable
+		}
 		return false, accountAcquireFailureCapacity
 	}
 	now := time.Now()
@@ -6131,8 +6208,12 @@ func accountOccupiedRequests(acc *Account) int64 {
 	return occupied
 }
 
+func accountDispatchBlocked(acc *Account) bool {
+	return acc == nil || atomic.LoadInt32(&acc.Disabled) != 0 || atomic.LoadInt32(&acc.DispatchPaused) != 0
+}
+
 func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
-	if acc == nil || limit <= 0 {
+	if limit <= 0 || accountDispatchBlocked(acc) {
 		return false
 	}
 	for {
@@ -6142,6 +6223,10 @@ func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
 		}
 		if atomic.CompareAndSwapInt64(&acc.OccupiedRequests, occupied, occupied+1) {
 			atomic.AddInt64(&acc.ActiveRequests, 1)
+			if accountDispatchBlocked(acc) {
+				releaseOccupiedAccountSlot(acc)
+				return false
+			}
 			return true
 		}
 	}
@@ -7221,10 +7306,32 @@ func (s *Store) HasUsageLimitedCandidateWithFilter(apiKeyID int64, exclude map[i
 }
 
 func (s *Store) HasUsageLimitedCandidateWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) bool {
+	return s.UsageLimitedCandidateSummary(apiKeyID, exclude, filter, policy).Found
+}
+
+// UsageLimitedCandidateSummary describes why an otherwise matching pool is
+// blocked by rate limits. Callers use it to tell a genuinely exhausted usage
+// window (downstream should fail over) from a short account-wide throttle
+// (downstream should just wait RetryAfter and try the same upstream again).
+type UsageLimitedCandidateSummary struct {
+	// Found is true when at least one matching account is usage-limited.
+	Found bool
+	// TransientOnly is true when every usage-limited candidate is blocked only
+	// by a MarkTransientRateLimited freeze, not by a quota window.
+	TransientOnly bool
+	// RetryAfter is the shortest remaining transient freeze. Zero unless
+	// TransientOnly.
+	RetryAfter time.Duration
+}
+
+func (s *Store) UsageLimitedCandidateSummary(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) UsageLimitedCandidateSummary {
+	var summary UsageLimitedCandidateSummary
 	if s == nil {
-		return false
+		return summary
 	}
 	filter = s.withUsableEgressFilter(filter)
+	now := time.Now()
+	quotaLimited := false
 	for _, acc := range s.accountSnapshotAccounts() {
 		if acc == nil || (exclude != nil && exclude[acc.DBID]) {
 			continue
@@ -7248,11 +7355,24 @@ func (s *Store) HasUsageLimitedCandidateWithDispatch(apiKeyID int64, exclude map
 				continue
 			}
 		}
-		if usageLimited {
-			return true
+		if !usageLimited {
+			continue
 		}
+		summary.Found = true
+		if remaining, ok := acc.transientRateLimitRemainingForPolicy(now, policy); ok {
+			if summary.RetryAfter == 0 || remaining < summary.RetryAfter {
+				summary.RetryAfter = remaining
+			}
+			continue
+		}
+		quotaLimited = true
 	}
-	return false
+	if summary.Found && !quotaLimited {
+		summary.TransientOnly = true
+	} else {
+		summary.RetryAfter = 0
+	}
+	return summary
 }
 
 func (s *Store) hasContinuationCandidateWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter) bool {
@@ -7304,36 +7424,46 @@ func (s *Store) hasContinuationCandidateWithDispatch(key string, apiKeyID int64,
 
 // WaitForSessionAvailableWithFilter waits for an account that satisfies the request-level filter.
 func (s *Store) WaitForSessionAvailableWithFilter(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter) (*Account, string) {
-	account, proxyURL, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, false, DispatchPolicyStandard)
+	account, proxyURL, _, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, false, DispatchPolicyStandard)
 	return account, proxyURL
 }
 
 func (s *Store) WaitForSessionAvailableWithDispatch(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) (*Account, string) {
-	account, proxyURL, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, false, policy)
+	account, proxyURL, _, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, false, policy)
 	return account, proxyURL
 }
 
 // WaitForSessionAvailableWithDispatchGuard is the binding-aware waiting path.
 // It preserves the capacity-spillover decision made by the successful retry.
 func (s *Store) WaitForSessionAvailableWithDispatchGuard(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) (*Account, string, SessionAffinityGuard) {
-	return s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, false, policy)
+	account, proxyURL, guard, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, false, policy)
+	return account, proxyURL, guard
 }
 
 // WaitForContinuationAvailableWithFilter waits for the account already bound
 // to a stateful continuation instead of falling through to another account.
 func (s *Store) WaitForContinuationAvailableWithFilter(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter) (*Account, string) {
-	account, proxyURL, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, true, DispatchPolicyStandard)
+	account, proxyURL, _, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, true, DispatchPolicyStandard)
 	return account, proxyURL
 }
 
 func (s *Store) WaitForContinuationAvailableWithDispatch(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) (*Account, string) {
-	account, proxyURL, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, true, policy)
+	account, proxyURL, _, _ := s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, true, policy)
 	return account, proxyURL
 }
 
-func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy) (*Account, string, SessionAffinityGuard) {
+// WaitForDispatchAvailable exposes queue admission failures to protocol handlers.
+// preserveBinding retains the same account-only semantics as continuation waits.
+func (s *Store) WaitForDispatchAvailable(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy, heartbeat ...SchedulerWaitHeartbeat) (*Account, string, SessionAffinityGuard, error) {
+	return s.waitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, filter, preserveBinding, policy, heartbeat...)
+}
+
+func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key string, timeout time.Duration, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy, heartbeat ...SchedulerWaitHeartbeat) (*Account, string, SessionAffinityGuard, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if timeout <= 0 || ctx.Err() != nil {
+		return nil, "", SessionAffinityGuard{}, ctx.Err()
 	}
 	hasCandidate := func() bool {
 		if preserveBinding {
@@ -7341,38 +7471,93 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		}
 		return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, policy)
 	}
-	// Legacy keeps its immediate "no eligible pool" response. Indexed/shadow
-	// engines rely on durable outbox notifications, so they register a waiter
-	// even when the current snapshot is empty; an account created by another
-	// replica can then wake the request without database polling.
+	// Indexed/shadow also wait on an empty snapshot: another replica may add
+	// an account and notify this process through the durable outbox.
 	if s.SchedulerEngine() == "legacy" && !hasCandidate() {
-		return nil, "", SessionAffinityGuard{}
+		return nil, "", SessionAffinityGuard{}, nil
 	}
-	if timeout <= 0 {
-		return nil, "", SessionAffinityGuard{}
+	bindingKey := strings.TrimSpace(key)
+	boundAccountID := func() int64 {
+		if !preserveBinding || bindingKey == "" {
+			return 0
+		}
+		// This is only a wakeup hint. Do not add Redis reads to a blocked
+		// continuation: selection still enforces cached owners when no local
+		// binding is known, and an unknown hint accepts any notification.
+		s.sessionMu.RLock()
+		binding, ok := s.sessionBindings[bindingKey]
+		s.sessionMu.RUnlock()
+		if ok && binding.expiresAt.After(time.Now()) {
+			return binding.accountID
+		}
+		return 0
 	}
-
-	metrics := s.schedulerMetrics
 	hub := s.schedulerAvailabilityHub()
-	releaseWaiter := hub.addWaiter()
-	defer releaseWaiter()
+	waiter, err := hub.join(apiKeyID, boundAccountID(), exclude)
+	metrics := s.schedulerMetrics
+	if err != nil {
+		if metrics != nil && errors.Is(err, ErrSchedulerQueueFull) {
+			metrics.waitRejected.Add(1)
+			if errors.Is(err, ErrSchedulerKeyQueueFull) {
+				metrics.waitRejectedPerKey.Add(1)
+			}
+		}
+		return nil, "", SessionAffinityGuard{}, err
+	}
+	defer hub.finish(waiter, false, true, 0)
 	if metrics != nil {
 		metrics.waitStarted.Add(1)
 		metrics.waiters.Add(1)
-		defer metrics.waiters.Add(-1)
+		started := time.Now()
+		defer func() {
+			metrics.waiters.Add(-1)
+			metrics.recordWaitDuration(time.Since(started))
+		}()
 	}
-
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
-	// 兜底重试:冷却/限流纯时间到期不产生任何事件,只靠 hub 唤醒会睡满整个
-	// 超时。每秒醒一次的代价远低于旧轮询(50-500ms),又保证时间性恢复可见。
-	recheck := time.NewTicker(time.Second)
-	defer recheck.Stop()
-
+	expires := time.Now().Add(timeout)
+	var heartbeatTimer *time.Timer
+	var heartbeatC <-chan time.Time
+	defer func() {
+		if heartbeatTimer != nil {
+			heartbeatTimer.Stop()
+		}
+	}()
+	resetHeartbeat := func() error {
+		if len(heartbeat) == 0 || heartbeat[0] == nil {
+			return nil
+		}
+		delay, err := heartbeat[0]()
+		if err != nil {
+			return err
+		}
+		if delay <= 0 {
+			delay = time.Millisecond
+		}
+		if heartbeatTimer == nil {
+			heartbeatTimer = time.NewTimer(delay)
+			heartbeatC = heartbeatTimer.C
+		} else {
+			heartbeatTimer.Reset(delay)
+		}
+		return nil
+	}
 	for {
-		// Subscribe before selection so a concurrent Release cannot be lost
-		// between a failed CAS and entering the blocking select below.
-		changed, _ := hub.subscribe()
+		// Check both before and after admission. Cancellation must never leak
+		// an acquired slot, including when ready and Done fire together.
+		if ctx.Err() != nil {
+			if metrics != nil {
+				metrics.waitCanceled.Add(1)
+			}
+			return nil, "", SessionAffinityGuard{}, ctx.Err()
+		}
+		if !time.Now().Before(expires) {
+			if metrics != nil {
+				metrics.waitTimeouts.Add(1)
+			}
+			return nil, "", SessionAffinityGuard{}, nil
+		}
 		var acc *Account
 		var proxyURL string
 		var guard SessionAffinityGuard
@@ -7382,30 +7567,57 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy)
 		}
 		if acc != nil {
-			return acc, proxyURL, guard
+			if ctx.Err() != nil || !time.Now().Before(expires) {
+				s.Release(acc)
+				if metrics != nil {
+					if ctx.Err() != nil {
+						metrics.waitCanceled.Add(1)
+					} else {
+						metrics.waitTimeouts.Add(1)
+					}
+				}
+				return nil, "", SessionAffinityGuard{}, ctx.Err()
+			}
+			hub.finish(waiter, true, true, 0)
+			if metrics != nil {
+				metrics.waitGranted.Add(1)
+			}
+			return acc, proxyURL, guard, nil
 		}
 		if s.SchedulerEngine() == "legacy" && !hasCandidate() {
-			return nil, "", SessionAffinityGuard{}
+			return nil, "", SessionAffinityGuard{}, nil
 		}
-
-		select {
-		case <-changed:
-			if metrics != nil {
-				metrics.waitWakeups.Add(1)
+		hub.finish(waiter, false, false, boundAccountID())
+		if heartbeatTimer == nil {
+			if err := resetHeartbeat(); err != nil {
+				return nil, "", SessionAffinityGuard{}, err
 			}
-			continue
-		case <-recheck.C:
-			continue
-		case <-ctx.Done():
-			if metrics != nil {
-				metrics.waitCanceled.Add(1)
+		}
+	waitLoop:
+		for {
+			select {
+			case <-heartbeatC:
+				if err := resetHeartbeat(); err != nil {
+					return nil, "", SessionAffinityGuard{}, err
+				}
+			case <-waiter.ready:
+				if metrics != nil {
+					metrics.waitWakeups.Add(1)
+				}
+				break waitLoop
+			case <-ctx.Done():
+				if metrics != nil {
+					metrics.waitCanceled.Add(1)
+				}
+				return nil, "", SessionAffinityGuard{}, ctx.Err()
+			case <-deadline.C:
+				if metrics != nil {
+					metrics.waitTimeouts.Add(1)
+				}
+				return nil, "", SessionAffinityGuard{}, nil
+			case <-hub.done:
+				return nil, "", SessionAffinityGuard{}, context.Canceled
 			}
-			return nil, "", SessionAffinityGuard{}
-		case <-deadline.C:
-			if metrics != nil {
-				metrics.waitTimeouts.Add(1)
-			}
-			return nil, "", SessionAffinityGuard{}
 		}
 	}
 }
@@ -7549,12 +7761,12 @@ func (s *Store) expireSessionSlot(acc *Account, sessionKey string, reservationID
 	s.sessionMu.Unlock()
 	if released {
 		atomicDecrementIfPositive(&acc.OccupiedRequests)
-		s.notifySchedulerAvailability()
+		s.notifySchedulerAccountAvailability(acc, false)
 	}
 }
 
 func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSchedulerOnLimit bool) bool {
-	if s == nil || acc == nil || strings.TrimSpace(sessionKey) == "" || !s.SessionSlotBufferEnabled() || s.GetSessionSlotBuffer() <= 0 {
+	if s == nil || accountDispatchBlocked(acc) || strings.TrimSpace(sessionKey) == "" || !s.SessionSlotBufferEnabled() || s.GetSessionSlotBuffer() <= 0 {
 		return false
 	}
 	sessionKey = strings.TrimSpace(sessionKey)
@@ -7581,12 +7793,18 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 	if !reclaimed {
 		return false
 	}
+	if accountDispatchBlocked(acc) {
+		if releaseOccupiedAccountSlot(acc) {
+			s.notifySchedulerAccountAvailability(acc, false)
+		}
+		return false
+	}
 
 	now := time.Now()
 	dispatchReservation := acc.reserveDispatchCount(now)
 	if !dispatchReservation.Allowed {
 		if releaseOccupiedAccountSlot(acc) {
-			s.notifySchedulerAvailability()
+			s.notifySchedulerAccountAvailability(acc, false)
 		}
 		s.markDispatchCountLimitCooldown(acc, dispatchReservation.ResetAt, updateSchedulerOnLimit)
 		return false
@@ -7606,7 +7824,7 @@ func (s *Store) Release(acc *Account) {
 		return
 	}
 	if releaseOccupiedAccountSlot(acc) {
-		s.notifySchedulerAvailability()
+		s.notifySchedulerAccountAvailability(acc, false)
 	}
 }
 
@@ -9383,6 +9601,11 @@ func (s *Store) markCooldownUntil(acc *Account, until time.Time, reason string, 
 	acc.Status = StatusCooldown
 	acc.CooldownUtil = until
 	acc.CooldownReason = reason
+	acc.transientRateLimitUntil = time.Time{}
+	if acc.transientRateLimitTimer != nil {
+		acc.transientRateLimitTimer.Stop()
+		acc.transientRateLimitTimer = nil
+	}
 	switch reason {
 	case "unauthorized":
 		acc.LastUnauthorizedAt = now
@@ -9465,10 +9688,9 @@ func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string
 		acc.ErrorMsg = errorMsg
 	}
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-	acc.mu.Unlock()
-
 	until := now.Add(duration)
-	acc.SetCooldownUntil(until, reason)
+	acc.setCooldownUntilLocked(until, reason)
+	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
 	s.setCachedAccountCooldown(acc.DBID, reason, until)
 
@@ -9823,6 +10045,12 @@ func (s *Store) ClearCooldown(acc *Account) {
 	acc.CooldownReason = ""
 	// 人工清理即重新给自愈机会:重置死 RT 判定,恢复探测资格随之恢复。
 	acc.PermanentRefreshFailures = 0
+	acc.transientRateLimitBackoff = 0
+	acc.transientRateLimitUntil = time.Time{}
+	if acc.transientRateLimitTimer != nil {
+		acc.transientRateLimitTimer.Stop()
+		acc.transientRateLimitTimer = nil
+	}
 	if wasCooling && !premium5hLimited {
 		acc.HealthTier = HealthTierWarm
 	} else if wasError && acc.HealthTier != HealthTierBanned {
@@ -10042,7 +10270,9 @@ func (s *Store) ReportRequestSuccess(acc *Account, latency time.Duration) {
 	acc.mu.Lock()
 	acc.recordLatencyLocked(latency)
 	acc.recordResultLocked(true)
-	acc.LastSuccessAt = time.Now()
+	now := time.Now()
+	acc.LastSuccessAt = now
+	acc.observeTransientRateLimitSuccessLocked(now)
 	acc.SuccessStreak = clampInt(acc.SuccessStreak+1, 0, 20)
 	acc.FailureStreak = 0
 	if acc.HealthTier == "" {

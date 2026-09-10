@@ -332,6 +332,7 @@ func main() {
 
 	// 5. 初始化账号管理器
 	store := auth.NewStore(db, tc, settings)
+	store.SetSchedulerWaitLimits(cfg.SchedulerMaxWaiters, cfg.SchedulerMaxWaitersPerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	if err := store.Init(ctx); err != nil {
@@ -414,6 +415,8 @@ func main() {
 	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
 	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
 	handler.SetRuntimeCache(tc)
+	defer handler.CloseAPIKeyAuthCache()
+	adminHandler.SetAPIKeyAuthCacheHandler(handler)
 
 	// 注册 WebSocket 执行函数（避免 proxy ↔ wsrelay 循环依赖）
 	proxy.WebsocketExecuteFunc = wsrelay.ExecuteRequestWebsocket

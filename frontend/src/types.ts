@@ -2088,6 +2088,8 @@ export interface SystemSettings {
   prompt_filter_review_fail_closed: boolean
   client_compat_mode: 'preserve' | 'auto' | 'force' | string
   codex_min_cli_version: string
+  codex_images_main_model: string
+  codex_images_default_main_model?: string
   codex_cli_version_sync_enabled: boolean
   codex_cli_version_sync_interval_hours: number
   codex_synced_cli_version?: string
@@ -3362,6 +3364,13 @@ export interface UsageLog {
   has_compaction_history: boolean
   via_websocket?: boolean
   cached_tokens: number
+  image_input_tokens?: number
+  image_output_tokens?: number
+  cached_image_input_tokens?: number
+  image_input_cost?: number
+  image_cache_read_cost?: number
+  image_input_price_per_mtoken?: number
+  cached_image_input_price_per_mtoken?: number
   cache_write_5m_tokens: number
   cache_write_1h_tokens: number
   service_tier: string
@@ -3445,6 +3454,8 @@ export interface ChartAggregation {
 }
 
 export interface ModelPricingOverride {
+  image_input?: number
+  cached_image_input?: number
   source?: string
   input?: number
   cached_input?: number

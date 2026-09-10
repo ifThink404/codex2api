@@ -249,9 +249,13 @@ func (tc *redisTokenCache) Ping(ctx context.Context) error {
 func (tc *redisTokenCache) Stats() PoolStats {
 	stats := tc.client.PoolStats()
 	return PoolStats{
-		TotalConns: stats.TotalConns,
-		IdleConns:  stats.IdleConns,
-		StaleConns: stats.StaleConns,
+		TotalConns:      stats.TotalConns,
+		IdleConns:       stats.IdleConns,
+		StaleConns:      stats.StaleConns,
+		WaitCount:       stats.WaitCount,
+		WaitDurationNs:  stats.WaitDurationNs,
+		Timeouts:        stats.Timeouts,
+		PendingRequests: stats.PendingRequests,
 	}
 }
 

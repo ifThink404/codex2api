@@ -64,9 +64,11 @@ const (
 )
 
 type RuntimeSettings struct {
-	ClientCompatMode      string
-	CodexMinCLIVersion    string
-	CodexUserAgentConfig  string
+	ClientCompatMode     string
+	CodexMinCLIVersion   string
+	CodexUserAgentConfig string
+	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
+	CodexImagesMainModel  string
 	StreamFlushPolicy     string
 	StreamFlushIntervalMS int
 	FirstTokenMode        string
@@ -268,6 +270,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.BillingTierPolicy = NormalizeBillingTierPolicy(settings.BillingTierPolicy)
 	settings.ModelsListReadMaxBytes = database.NormalizeModelsListReadMaxBytes(settings.ModelsListReadMaxBytes)
 	settings.RequestIsolationMode = NormalizeRequestIsolationMode(settings.RequestIsolationMode)
+	settings.CodexImagesMainModel, _ = NormalizeImagesMainModel(settings.CodexImagesMainModel)
 	if strings.TrimSpace(settings.CodexMinCLIVersion) == "" {
 		settings.CodexMinCLIVersion = defaults.CodexMinCLIVersion
 	} else {
@@ -338,6 +341,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.ClientCompatMode = settings.ClientCompatMode
 		next.CodexMinCLIVersion = settings.CodexMinCLIVersion
 		next.CodexUserAgentConfig = settings.CodexUserAgentConfig
+		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS
 		next.FirstTokenMode = settings.FirstTokenMode

@@ -213,7 +213,7 @@ curl -s -H "X-Admin-Key: your-secret" http://localhost:8080/api/admin/accounts |
 # 1. 检查是否配置了 API Key
 curl -s -H "X-Admin-Key: your-secret" http://localhost:8080/api/admin/keys
 
-# 2. 如果没有配置，请求不需要认证
+# 2. 默认仍要求认证；只有未配置任何 Key 且显式开启 CODEX_ALLOW_ANONYMOUS=true 才允许普通公共接口匿名访问
 # 3. 如果配置了，确认请求头格式
 curl -H "Authorization: Bearer sk-your-key" http://localhost:8080/v1/models
 ```
