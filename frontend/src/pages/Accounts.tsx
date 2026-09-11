@@ -193,6 +193,12 @@ import {
   Settings2,
   ListChecks,
 } from "lucide-react";
+import {
+  CLAUDE_TIMEZONE_CUSTOM,
+  CLAUDE_TIMEZONE_OPTIONS,
+  claudeTimezoneLabel,
+  findClaudeTimezoneOption,
+} from "../lib/claudeAccountOptions";
 import { useTranslation } from "react-i18next";
 import AccountUsageModal from "../components/AccountUsageModal";
 import AccountHealthBar from "../components/AccountHealthBar";
@@ -585,6 +591,68 @@ function parseModelTokens(value: string): string[] {
 /** Codex 官方 OAuth/AT 账号（非 OpenAI Responses 中转、非 Grok），即走 Codex 出站路径的账号。 */
 function isCodexOfficialAccount(account: AccountRow): boolean {
   return !account.openai_responses_api && !account.grok_api;
+}
+
+interface TimezoneSelectProps {
+  value: string;
+  custom: boolean;
+  onChange: (value: string) => void;
+  onCustomChange: (custom: boolean) => void;
+  disabled?: boolean;
+}
+
+/** 绑定时区下拉：常用 IANA 时区 + 自定义输入，与 Claude 账号页同一套选项。 */
+function TimezoneSelect({
+  value,
+  custom,
+  onChange,
+  onCustomChange,
+  disabled,
+}: TimezoneSelectProps) {
+  const { t } = useTranslation();
+  const choice = custom
+    ? CLAUDE_TIMEZONE_CUSTOM
+    : (findClaudeTimezoneOption(value)?.value ??
+      (value.trim() ? CLAUDE_TIMEZONE_CUSTOM : ""));
+  return (
+    <div className="mt-3 space-y-1.5">
+      <Select
+        value={choice}
+        disabled={disabled}
+        onValueChange={(next) => {
+          if (next === CLAUDE_TIMEZONE_CUSTOM) {
+            onCustomChange(true);
+            if (findClaudeTimezoneOption(value)) onChange("");
+            return;
+          }
+          onCustomChange(false);
+          onChange(next);
+        }}
+        options={[
+          { value: "", label: t("accounts.codexTimezoneUnset") },
+          ...CLAUDE_TIMEZONE_OPTIONS,
+          { value: CLAUDE_TIMEZONE_CUSTOM, label: t("accounts.codexTimezoneCustom") },
+        ]}
+      />
+      {findClaudeTimezoneOption(value) ? (
+        <p className="text-[10px] text-muted-foreground">
+          {claudeTimezoneLabel(value)}
+        </p>
+      ) : null}
+      {custom ? (
+        <Input
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={t("accounts.codexTimezonePlaceholder")}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function renderTimezoneSelect(props: TimezoneSelectProps) {
+  return <TimezoneSelect {...props} />;
 }
 
 function codexFingerprintModeOptions(
@@ -1806,6 +1874,8 @@ export default function Accounts() {
   const [editCustomHeadersText, setEditCustomHeadersText] = useState("");
   const [editCodexFingerprintMode, setEditCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
+  const [editTimezone, setEditTimezone] = useState("");
+  const [editTimezoneCustom, setEditTimezoneCustom] = useState(false);
   // 代理池条目：账号表单里"从代理池选择"下拉的数据源。加载失败静默留空
   // （选择器为空时自动隐藏，不影响手动填代理）。
   const [proxyPool, setProxyPool] = useState<ProxyRow[]>([]);
@@ -2060,6 +2130,9 @@ export default function Accounts() {
   ] = useState(false);
   const [batchCodexFingerprintMode, setBatchCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
+  const [batchUpdateTimezone, setBatchUpdateTimezone] = useState(false);
+  const [batchTimezone, setBatchTimezone] = useState("");
+  const [batchTimezoneCustom, setBatchTimezoneCustom] = useState(false);
   const [batchMetaSubmitting, setBatchMetaSubmitting] = useState(false);
   const [showBatchQuotaAutoPauseEditor, setShowBatchQuotaAutoPauseEditor] =
     useState(false);
@@ -4891,6 +4964,9 @@ export default function Accounts() {
     setBatchSchedulerPriorityInput("");
     setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
+    setBatchUpdateTimezone(false);
+    setBatchTimezone("");
+    setBatchTimezoneCustom(false);
     setShowBatchMetaEditor(true);
   };
 
@@ -4908,6 +4984,9 @@ export default function Accounts() {
     setBatchSchedulerPriorityInput("");
     setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
+    setBatchUpdateTimezone(false);
+    setBatchTimezone("");
+    setBatchTimezoneCustom(false);
     setShowBatchMetaEditor(true);
   };
 
@@ -5141,7 +5220,8 @@ export default function Accounts() {
     batchUpdateScoreBias ||
     batchUpdateBaseConcurrency ||
     batchUpdateSchedulerPriority ||
-    batchUpdateCodexFingerprintMode;
+    batchUpdateCodexFingerprintMode ||
+    batchUpdateTimezone;
   const batchMetaInvalid =
     batchScoreBiasInvalid ||
     batchBaseConcurrencyInvalid ||
@@ -5173,6 +5253,8 @@ export default function Accounts() {
           ),
           updateCodexFingerprintMode: batchUpdateCodexFingerprintMode,
           codexFingerprintMode: batchCodexFingerprintMode,
+          updateTimezone: batchUpdateTimezone,
+          timezone: batchTimezone,
         }),
       );
       showToast(
@@ -5419,6 +5501,10 @@ export default function Accounts() {
     setEditProxyUrl(account.proxy_url ?? "");
     setEditCustomHeadersText(formatCustomHeadersText(account.custom_headers));
     setEditCodexFingerprintMode(account.codex_fingerprint_mode ?? "off");
+    setEditTimezone(account.timezone ?? "");
+    setEditTimezoneCustom(
+      Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
+    );
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
     setEditOpenAIForm({
@@ -5476,6 +5562,8 @@ export default function Accounts() {
     setEditProxyUrl("");
     setEditCustomHeadersText("");
     setEditCodexFingerprintMode("off");
+    setEditTimezone("");
+    setEditTimezoneCustom(false);
     setEditTags([]);
     setEditGroupIds([]);
     setEditOpenAIForm({
@@ -5634,7 +5722,10 @@ export default function Accounts() {
         custom_headers: parsedCustomHeaders.value,
         // 指纹收敛只作用于 Codex 官方出站路径，中转/Grok 账号不下发该字段。
         ...(isCodexOfficialAccount(editingAccount)
-          ? { codex_fingerprint_mode: editCodexFingerprintMode }
+          ? {
+              codex_fingerprint_mode: editCodexFingerprintMode,
+              timezone: editTimezone.trim(),
+            }
           : {}),
       };
       await api.updateAccountScheduler(editingAccount.id, payload);
@@ -9640,6 +9731,25 @@ export default function Accounts() {
                           </div>
                         ) : null}
 
+                        {/* 绑定时区 */}
+                        {isCodexOfficialAccount(editingAccount) ? (
+                          <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
+                            <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
+                              <Globe className="size-4 text-sky-500" />
+                              <span>{t("accounts.codexTimezoneTitle")}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                              {t("accounts.codexTimezoneHint")}
+                            </p>
+                            {renderTimezoneSelect({
+                              value: editTimezone,
+                              custom: editTimezoneCustom,
+                              onChange: setEditTimezone,
+                              onCustomChange: setEditTimezoneCustom,
+                            })}
+                          </div>
+                        ) : null}
+
                         {/* 自定义请求头 */}
                         <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                           {renderCustomHeadersTextarea({
@@ -10222,6 +10332,30 @@ export default function Accounts() {
                     <div className="mt-1.5 text-xs text-muted-foreground">
                       {codexFingerprintModeDetail(t, batchCodexFingerprintMode)}
                     </div>
+                  </div>
+                  <div className="rounded-xl border border-border p-4 md:col-span-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-foreground">
+                          {t("accounts.codexTimezoneTitle")}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {t("accounts.codexTimezoneBatchHint")}
+                        </div>
+                      </div>
+                      <Switch
+                        checked={batchUpdateTimezone}
+                        onCheckedChange={setBatchUpdateTimezone}
+                        aria-label={`${t("accounts.batchMetaTitle")}: ${t("accounts.codexTimezoneTitle")}`}
+                      />
+                    </div>
+                    {renderTimezoneSelect({
+                      value: batchTimezone,
+                      custom: batchTimezoneCustom,
+                      onChange: setBatchTimezone,
+                      onCustomChange: setBatchTimezoneCustom,
+                      disabled: !batchUpdateTimezone,
+                    })}
                   </div>
                 </div>
               ) : null}

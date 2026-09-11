@@ -30,6 +30,9 @@ import { StatTile } from '../components/StatTile'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { SegmentedPillGroup } from '@/components/ui/segmented-pill-group'
+import { DraftNumberInput } from '@/components/ui/draft-number-input'
+import { supportsImageBilling } from '../lib/imageBilling'
 import { cn } from '@/lib/utils'
 import { useToast } from '../hooks/useToast'
 import { postAdminSSE } from '../hooks/useOperationProgress'
@@ -129,6 +132,7 @@ function normalizePrice(value: unknown): number {
 }
 
 function isDirty(draft: ModelPricingOverride | undefined, saved: ModelPricingOverride | undefined): boolean {
+  if ((draft?.user_billing_mode || 'token') !== (saved?.user_billing_mode || 'token') || normalizePrice(draft?.image_unit_price) !== normalizePrice(saved?.image_unit_price)) return true
   for (const field of ALL_FIELDS) {
     if (normalizePrice(draft?.[field.key]) !== normalizePrice(saved?.[field.key])) return true
   }
@@ -379,7 +383,7 @@ function BillingRulePreview({ pricing }: { pricing: ModelPricingOverride }) {
         <div className='flex items-center gap-2'>
           <span className='size-1.5 rounded-full bg-primary' aria-hidden />
           <h5 className='text-[12px] font-semibold text-foreground'>
-            {t('settings.pricing.billingPreview')}
+            {t(pricing.user_billing_mode === 'per_image' ? 'settings.pricing.imageBilling.upstreamRates' : 'settings.pricing.billingPreview')}
           </h5>
           <span className='rounded-full bg-background px-2 py-0.5 text-[10px] font-bold text-muted-foreground ring-1 ring-inset ring-border/70'>
             {badge}
@@ -1403,8 +1407,8 @@ export default function ModelPricing() {
                 const outputVal = normalizePrice(draft.output)
                 const multiplier = getOutputMultiplier(inputVal, outputVal)
                 const pricingModel = (r.canonical_model?.trim() || r.model.trim()).toLowerCase()
-                const imageModel = isImage25Model(pricingModel)
-                const primaryFields = imageModel ? [...PRIMARY_FIELDS.filter(field => !field.key.startsWith('cache_write')), ...IMAGE_FIELDS] : PRIMARY_FIELDS
+                const imageModel = supportsImageBilling(pricingModel)
+                const primaryFields = imageModel ? [...PRIMARY_FIELDS.filter(field => !field.key.startsWith('cache_write')), ...(isImage25Model(pricingModel) ? IMAGE_FIELDS : [])] : PRIMARY_FIELDS
                 const supportsLongContextPricing = pricingModel !== 'gpt-6-astra' && !imageModel
                 const advancedFields = imageModel ? [] : supportsLongContextPricing
                   ? ADVANCED_FIELDS
@@ -1520,6 +1524,29 @@ export default function ModelPricing() {
                         </div>
                       </div>
 
+                      {imageModel ? (
+                        <section className="mt-4 rounded-xl border border-primary/20 bg-primary/5 p-3.5 sm:p-4">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <h5 className="text-sm font-semibold">{t('settings.pricing.imageBilling.title')}</h5>
+                            <SegmentedPillGroup
+                              label={t('settings.pricing.imageBilling.title')}
+                              value={draft.user_billing_mode || 'token'}
+                              options={[{ value: 'token', label: t('settings.pricing.imageBilling.token') }, { value: 'per_image', label: t('settings.pricing.imageBilling.perImage') }]}
+                              onChange={(mode) => setDrafts(prev => ({ ...prev, [r.model]: { ...prev[r.model], user_billing_mode: mode } }))}
+                            />
+                          </div>
+                          {draft.user_billing_mode === 'per_image' ? (
+                            <div className="mt-3 grid gap-3 sm:grid-cols-[180px_1fr] sm:items-center">
+                              <label className="space-y-1.5 text-xs font-medium">
+                                <span>{t('settings.pricing.imageBilling.unitPrice')}</span>
+                                <DraftNumberInput aria-label={t('settings.pricing.imageBilling.unitPrice')} value={draft.image_unit_price || 0} integer={false} min={0} step="0.001" onValueChange={value => setField(r.model, 'image_unit_price', String(value))} />
+                              </label>
+                              <p className="text-xs leading-relaxed text-muted-foreground">{t('settings.pricing.imageBilling.hint')}</p>
+                            </div>
+                          ) : <p className="mt-2 text-xs text-muted-foreground">{t('settings.pricing.imageBilling.tokenHint')}</p>}
+                        </section>
+                      ) : null}
+                      {draft.user_billing_mode === 'per_image' ? <p className="mt-4 text-xs font-semibold text-muted-foreground">{t('settings.pricing.imageBilling.upstreamRates')}</p> : null}
                       {/* Primary rates */}
                       <div className="mt-4 grid grid-cols-1 gap-2.5 min-[480px]:grid-cols-3">
                         {primaryFields.map((field) => (

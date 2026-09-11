@@ -1,3 +1,4 @@
+import { ImageBillingCost } from '../components/image-studio/ImageBillingCost'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
@@ -248,6 +249,9 @@ function formatUsageAPIKeyLabel(name?: string, maskedKey?: string): string {
   return `${trimmedKey.slice(0, 4)}...${trimmedKey.slice(-4)}`
 }
 
+// 表格里可点击进入筛选的单元格(账号/模型):悬停变主色并加下划线提示可点。
+const usageClickableFilterClass = 'cursor-pointer transition-colors hover:text-primary hover:underline underline-offset-2 decoration-dotted'
+
 function formatUsageAccountLabel(log: UsageLog): string {
   // 邮箱优先：身份账号一律显示邮箱，账号名仅作为无邮箱账号（如 relay API-key 账号）的兜底。
   // 避免 AT 导入未命名时的占位名（at-account-N 等）盖过真实邮箱身份。
@@ -339,6 +343,7 @@ function formatServiceTierLabel(t: ReturnType<typeof useTranslation>['t'], tier?
 
 function UsageCostCell({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
+  if (log.user_billing_mode === 'per_image') return <ImageBillingCost count={log.billed_image_count} unitPrice={log.image_unit_price} userBilled={log.user_billed} accountBilled={log.account_billed} />
   const accountBilled = safeNumber(log.account_billed)
   const userBilled = safeNumber(log.user_billed)
   const totalCost = safeNumber(log.total_cost)
@@ -1780,6 +1785,8 @@ export default function Usage() {
   const [filterEndpoint, setFilterEndpoint] = useState('')
   const [filterApiKeyId, setFilterApiKeyId] = useState('')
   const [filterAccountId, setFilterAccountId] = useState(getInitialUsageAccountID)
+  // 从表格行点击进入账号筛选时记住邮箱/名称,筛选 chip 显示可读身份而不是裸 ID;URL 带入的只有 ID。
+  const [filterAccountLabel, setFilterAccountLabel] = useState('')
   const [filterFast, setFilterFast] = useState('')
   const [filterType, setFilterType] = useState<UsageTypeFilter>('')
   const [filterErrorKind, setFilterErrorKind] = useState('')
@@ -1817,24 +1824,6 @@ export default function Usage() {
     if (searchTimer.current) clearTimeout(searchTimer.current)
   }, [])
 
-  // 仅加载轻量统计（秒级）—— 联动同页 timeRange,与下方请求记录的范围保持一致
-  const loadStats = useCallback(async () => {
-    const { start, end } = resolveRangeISO(timeRange, customRange)
-    const [stats, settings] = await Promise.all([
-      api.getUsageStats({ start, end, channel: channel || undefined }),
-      api.getSettings().catch((): SystemSettings | null => null),
-    ])
-    return { stats, settings }
-  }, [timeRange, customRange, channel])
-
-  const { data, loading, error, reload, reloadSilently } = useDataLoader<{
-    stats: UsageStats | null
-    settings: SystemSettings | null
-  }>({
-    initialData: { stats: null, settings: null },
-    load: loadStats,
-  })
-
   const loadAPIKeys = useCallback(async () => {
     try {
       const response = await api.getAPIKeys()
@@ -1846,7 +1835,9 @@ export default function Usage() {
     }
   }, [])
 
-  const buildLogFilterParams = useCallback(() => {
+  // 维度筛选(时间范围 + 账号/密钥/模型/端点/搜索/形态):顶部区间卡片与下方请求记录共用。
+  // 状态类筛选(成功/错误/状态码)单独拼进列表参数,不影响卡片——卡片本身就按成功/错误拆分。
+  const buildDimensionFilterParams = useCallback(() => {
     const { start, end } = resolveRangeISO(timeRange, customRange)
     return {
       start,
@@ -1861,13 +1852,36 @@ export default function Usage() {
       compact: filterType === 'compact' ? 'true' : undefined,
       hasCompactionHistory: filterType === 'history' ? 'true' : undefined,
       channel: channel || undefined,
-      status: filterStatus && filterStatus !== 'error' ? filterStatus : undefined,
-      errorOnly: filterStatus === 'error' ? 'true' : undefined,
-      errorKind: filterErrorKind || undefined,
       retry: filterRetry || undefined,
       viaWebsocket: filterTransport === 'ws' ? 'true' : filterTransport === 'http' ? 'false' : undefined,
     }
-  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterType, channel, filterStatus, filterErrorKind, filterRetry, filterTransport])
+  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterType, channel, filterRetry, filterTransport])
+
+  const buildLogFilterParams = useCallback(() => {
+    return {
+      ...buildDimensionFilterParams(),
+      status: filterStatus && filterStatus !== 'error' ? filterStatus : undefined,
+      errorOnly: filterStatus === 'error' ? 'true' : undefined,
+      errorKind: filterErrorKind || undefined,
+    }
+  }, [buildDimensionFilterParams, filterStatus, filterErrorKind])
+
+  // 选中某个账号(或密钥/模型/搜索)后,卡片只统计命中的请求;累计字段始终全局。
+  const loadStats = useCallback(async () => {
+    const [stats, settings] = await Promise.all([
+      api.getUsageStats(buildDimensionFilterParams()),
+      api.getSettings().catch((): SystemSettings | null => null),
+    ])
+    return { stats, settings }
+  }, [buildDimensionFilterParams])
+
+  const { data, loading, error, reload, reloadSilently } = useDataLoader<{
+    stats: UsageStats | null
+    settings: SystemSettings | null
+  }>({
+    initialData: { stats: null, settings: null },
+    load: loadStats,
+  })
 
   // 服务端分页加载日志
   const loadLogs = useCallback(async () => {
@@ -1977,6 +1991,19 @@ export default function Usage() {
   const rangeAccountBilled = stats?.today_account_billed ?? 0
   const rangeUserBilled = stats?.today_user_billed ?? 0
   const modelStats = stats?.model_stats ?? []
+  // 统计现在跟随模型/账号等筛选,选中某个模型后 model_stats 只剩它自己;
+  // 下拉选项按渠道累积本会话见过的模型,避免筛选一次就把其它模型从下拉里挤掉。
+  const seenModelsRef = useRef<Record<string, string[]>>({})
+  const seenModels = useMemo(() => {
+    const bucket = seenModelsRef.current[channel] ?? []
+    const merged = [...bucket]
+    for (const item of modelStats) {
+      const key = (item.model || '').trim()
+      if (key && key !== 'unknown' && !merged.includes(key)) merged.push(key)
+    }
+    seenModelsRef.current[channel] = merged
+    return merged
+  }, [modelStats, channel])
   // 下拉选项跟随渠道过滤：codex 只列 Codex manifest 目录，grok 只列 Grok 账号声明模型，
   // 全部渠道两者都列；再并上当前范围实际用过的模型（统计已按渠道过滤），去重后目录顺序优先。
   const modelFilterOptions = useMemo(() => {
@@ -1993,12 +2020,13 @@ export default function Usage() {
       const key = m.trim()
       if (key && !seen.has(key)) { seen.add(key); merged.push(key) }
     }
-    for (const item of modelStats) {
-      const key = (item.model || '').trim()
-      if (key && key !== 'unknown' && !seen.has(key)) { seen.add(key); merged.push(key) }
+    for (const key of seenModels) {
+      if (!seen.has(key)) { seen.add(key); merged.push(key) }
     }
+    // 从表格行点进来的模型可能不在目录里,补进选项让下拉能显示当前选中值。
+    if (filterModel && !seen.has(filterModel)) merged.push(filterModel)
     return merged
-  }, [modelOptions, grokModelOptions, claudeModelOptions, modelStats, channel])
+  }, [modelOptions, grokModelOptions, claudeModelOptions, seenModels, channel, filterModel])
   const featureStats = stats?.feature_stats
   const endpointStats = stats?.endpoint_stats ?? []
   const apiKeyStats = stats?.api_key_stats ?? []
@@ -2060,6 +2088,7 @@ export default function Usage() {
     setFilterEndpoint('')
     setFilterApiKeyId('')
     setFilterAccountId('')
+    setFilterAccountLabel('')
     setFilterType('')
     setFilterFast('')
     setFilterErrorKind('')
@@ -2067,6 +2096,26 @@ export default function Usage() {
     setFilterTransport('')
     setPage(1)
   }
+
+  // 表格行的账号/模型可点击:点一下按它筛选,再点同一个取消。
+  const toggleAccountFilter = useCallback((log: UsageLog) => {
+    if (!(log.account_id > 0)) return
+    const nextId = String(log.account_id)
+    if (filterAccountId === nextId) {
+      setFilterAccountId('')
+      setFilterAccountLabel('')
+    } else {
+      setFilterAccountId(nextId)
+      setFilterAccountLabel(log.account_email?.trim() || log.account_name?.trim() || '')
+    }
+    setPage(1)
+  }, [filterAccountId])
+  const toggleModelFilter = useCallback((model: string | undefined) => {
+    const next = (model || '').trim()
+    if (!next) return
+    setFilterModel((current) => (current === next ? '' : next))
+    setPage(1)
+  }, [])
 
   return (
     <StateShell
@@ -2471,11 +2520,13 @@ export default function Usage() {
               {filterAccountId ? (
                 <button
                   type="button"
-                  onClick={() => { setFilterAccountId(''); setPage(1) }}
+                  onClick={() => { setFilterAccountId(''); setFilterAccountLabel(''); setPage(1) }}
                   className="mt-2 inline-flex h-8 items-center gap-1 rounded-lg border border-primary/30 bg-primary/10 px-2.5 text-[13px] font-medium text-primary transition-colors hover:bg-primary/15"
                   title={t('usage.accountIdFilterTitle', { id: filterAccountId })}
                 >
-                  {t('usage.accountIdFilter', { id: filterAccountId })}
+                  {filterAccountLabel
+                    ? t('usage.accountFilter', { account: filterAccountLabel })
+                    : t('usage.accountIdFilter', { id: filterAccountId })}
                   <X className="size-3.5" />
                 </button>
               ) : null}
@@ -2609,7 +2660,15 @@ export default function Usage() {
                             </Badge>
                           ) : null}
                           {visibleColumns.model && (
-                            <Badge variant="outline" className={usageTableBadgeClass}>
+                            <Badge
+                              variant="outline"
+                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
+                              role="button"
+                              tabIndex={0}
+                              title={t('usage.filterByModelHint', { model: log.model || '-' })}
+                              onClick={() => toggleModelFilter(log.model)}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
+                            >
                               {(log.channel === 'codex' || log.channel === 'grok' || log.channel === 'antigravity' || log.channel === 'claude') && (
                                 <ChannelLogo
                                   channel={log.channel}
@@ -2654,7 +2713,16 @@ export default function Usage() {
                           {visibleColumns.account && (
                             <div className="truncate" title={formatUsageAccountTitle(log)}>
                               <span className="font-semibold text-foreground/80">{t('usage.tableAccount')}: </span>
-                              {formatUsageAccountLabel(log)}
+                              {log.account_id > 0 ? (
+                                <button
+                                  type="button"
+                                  className={`${usageClickableFilterClass} ${filterAccountId === String(log.account_id) ? 'text-primary' : ''}`}
+                                  title={t('usage.filterByAccountHint', { account: formatUsageAccountTitle(log) })}
+                                  onClick={() => toggleAccountFilter(log)}
+                                >
+                                  {formatUsageAccountLabel(log)}
+                                </button>
+                              ) : formatUsageAccountLabel(log)}
                             </div>
                           )}
                           {visibleColumns.apiKey && (
@@ -2821,7 +2889,15 @@ export default function Usage() {
                                 ws
                               </Badge>
                             )}
-                            <Badge variant="outline" className={usageTableBadgeClass}>
+                            <Badge
+                              variant="outline"
+                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
+                              role="button"
+                              tabIndex={0}
+                              title={t('usage.filterByModelHint', { model: log.model || '-' })}
+                              onClick={() => toggleModelFilter(log.model)}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
+                            >
                               {(log.channel === 'codex' || log.channel === 'grok' || log.channel === 'antigravity' || log.channel === 'claude') && (
                                 <ChannelLogo
                                   channel={log.channel}
@@ -2856,9 +2932,20 @@ export default function Usage() {
                           </div>
                         </TableCell>}
                         {visibleColumns.account && <TableCell className={`${usageTableTextClass} text-muted-foreground`}>
-                          <span className="block max-w-[180px] truncate whitespace-nowrap" title={formatUsageAccountTitle(log)}>
-                            {formatUsageAccountLabel(log)}
-                          </span>
+                          {log.account_id > 0 ? (
+                            <button
+                              type="button"
+                              className={`block max-w-[180px] truncate whitespace-nowrap text-left ${usageClickableFilterClass} ${filterAccountId === String(log.account_id) ? 'text-primary' : ''}`}
+                              title={t('usage.filterByAccountHint', { account: formatUsageAccountTitle(log) })}
+                              onClick={() => toggleAccountFilter(log)}
+                            >
+                              {formatUsageAccountLabel(log)}
+                            </button>
+                          ) : (
+                            <span className="block max-w-[180px] truncate whitespace-nowrap" title={formatUsageAccountTitle(log)}>
+                              {formatUsageAccountLabel(log)}
+                            </span>
+                          )}
                         </TableCell>}
                         {visibleColumns.apiKey && <TableCell className={`${usageTableTextClass} text-muted-foreground`}>
                           <span className="block max-w-[180px] truncate whitespace-nowrap font-mono text-[12px]" title={formatUsageAPIKeyLabel(log.api_key_name, log.api_key_masked) || t('usage.unknownApiKey')}>

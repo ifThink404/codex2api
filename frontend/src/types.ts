@@ -236,6 +236,8 @@ export interface GrokPlanInfo {
 }
 
 export interface AccountRow {
+  codex_last_refresh_at?: string
+  codex_refresh_error?: string
   upstream_request_id_header?: string | null
   detail_loaded?: boolean
   id: number
@@ -1949,6 +1951,7 @@ export interface SystemSettings {
 	  usage_probe_responses_fallback_enabled: boolean
 	  recovery_probe_interval_minutes: number
   lazy_mode: boolean
+  codex_oauth_keepalive_enabled: boolean
   proxy_url?: string
   pg_max_conns: number
   redis_pool_size: number
@@ -1967,6 +1970,8 @@ export interface SystemSettings {
   fast_scheduler_enabled: boolean
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
+  codex_telemetry_enabled: boolean
+  codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean
   codex_ws_keepalive_enabled: boolean
@@ -3329,6 +3334,9 @@ export interface APIKeyAccountStatsResponse {
 }
 
 export interface UsageLog {
+  user_billing_mode?: '' | 'token' | 'per_image'
+  image_unit_price?: number
+  billed_image_count?: number
   request_id?: string
   upstream_request_id?: string
   upstream_proxy_id?: number
@@ -3454,6 +3462,8 @@ export interface ChartAggregation {
 }
 
 export interface ModelPricingOverride {
+  user_billing_mode?: 'token' | 'per_image'
+  image_unit_price?: number
   image_input?: number
   cached_image_input?: number
   source?: string
@@ -3721,6 +3731,16 @@ export interface UpdateAPIKeyRequest {
   enabled?: boolean
 }
 
+export interface ImageStudioQuota {
+  image_pricing?: Record<string, { user_billing_mode: 'token' | 'per_image'; image_unit_price?: number }>
+  quota_limit: number
+  quota_used: number
+  quota_remaining: number | null
+  expires_at: ISODateString | null
+  status: 'active' | 'expired' | 'quota_exhausted'
+  refresh_after_seconds: number
+}
+
 export interface PublicAPIKeyUsageKey {
   name: string
   key: string
@@ -3786,6 +3806,9 @@ export interface PublicAPIKeyUsageBreakdown {
 }
 
 export interface PublicAPIKeyUsageLog {
+  user_billing_mode?: '' | 'token' | 'per_image'
+  image_unit_price?: number
+  billed_image_count?: number
   id: number
   endpoint: string
   model: string

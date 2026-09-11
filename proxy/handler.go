@@ -459,17 +459,33 @@ func accountFilterForResponsesModelWithOriginal(originalModel string, effectiveM
 }
 
 func accountFilterForCompactResponsesModelWithOriginal(originalModel string, effectiveModel string, allowCodexAccounts bool) auth.AccountFilter {
-	candidates := compactMappingCandidates(originalModel, effectiveModel)
-	inner := accountFilterForResponsesModelResolver(effectiveModel, allowCodexAccounts, func(account *auth.Account) (string, bool) {
-		return resolveAccountCompactModelMappingForCandidates(account, candidates)
-	})
+	inner := accountFilterForInlineCompactionModelWithOriginal(originalModel, effectiveModel, allowCodexAccounts)
 	return func(account *auth.Account) bool {
-		// Grok/Antigravity 上游都没有 Responses compact 适配器。尤其不能让
-		// Antigravity Google bearer 落入官方 Codex executor。
-		if account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() {
+		// The dedicated compact executor has no Grok adapter. Inline compaction
+		// on ordinary Responses has a separate provider capability boundary.
+		return account != nil && !account.IsGrokAPI() && inner(account)
+	}
+}
+
+func accountFilterForInlineCompactionModelWithOriginal(originalModel string, effectiveModel string, allowCodexAccounts bool) auth.AccountFilter {
+	candidates := compactMappingCandidates(originalModel, effectiveModel)
+	resolveMapping := func(account *auth.Account) (string, bool) {
+		return resolveAccountCompactModelMappingForCandidates(account, candidates)
+	}
+	inner := accountFilterForResponsesModelResolver(effectiveModel, allowCodexAccounts, resolveMapping)
+	return func(account *auth.Account) bool {
+		if account == nil || account.IsAntigravityAPI() || account.IsClaudeOAuth() || !inner(account) {
 			return false
 		}
-		return inner(account)
+		if account.IsGrokAPI() {
+			model := effectiveModel
+			if mapped, ok := resolveMapping(account); ok {
+				model = mapped
+			}
+			// Chat/Messages conversion cannot represent compaction_trigger.
+			return ResolveGrokUpstreamRoute(account, model, GrokProtocolResponses, time.Now()).Protocol == GrokProtocolResponses
+		}
+		return true
 	}
 }
 
@@ -1003,6 +1019,12 @@ func forwardGrokNativeResponse(c *gin.Context, resp *http.Response, protocol Gro
 }
 
 func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol GrokProtocol, streaming bool, startedAt time.Time, firstVisible func(), output io.Writer, outputFlusher http.Flusher) (*UsageInfo, streamOutcome, bool, int) {
+	return forwardGrokNativeResponseObserved(c, resp, protocol, streaming, startedAt, firstVisible, output, outputFlusher, nil)
+}
+
+// observe stages metadata without changing the provider's wire bytes. The
+// handler commits that metadata only after this attempt and its replay succeed.
+func forwardGrokNativeResponseObserved(c *gin.Context, resp *http.Response, protocol GrokProtocol, streaming bool, startedAt time.Time, firstVisible func(), output io.Writer, outputFlusher http.Flusher, observe func([]byte)) (*UsageInfo, streamOutcome, bool, int) {
 	privateAttempt := output != nil && output != c.Writer
 	resp.Header.Del(grokNativeRouteHeader)
 	if !streaming {
@@ -1022,7 +1044,15 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 		if contentType == "" {
 			contentType = "application/json"
 		}
-		c.Data(resp.StatusCode, contentType, body)
+		c.Header("Content-Type", contentType)
+		c.Status(resp.StatusCode)
+		written, writeErr := c.Writer.Write(body)
+		if writeErr != nil {
+			return usage, classifyStreamOutcome(nil, nil, writeErr, true), written > 0, 0
+		}
+		if observe != nil {
+			observe(body)
+		}
 		return usage, streamOutcome{logStatusCode: http.StatusOK}, len(body) > 0, 0
 	}
 	if !privateAttempt {
@@ -1059,6 +1089,9 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 	frameErr := error(nil)
 	readErr := readRawGrokSSEFramesWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(frame rawGrokSSEFrame) bool {
 		if frame.HasData && !frame.Done {
+			if observe != nil {
+				observe(frame.Data)
+			}
 			usage = mergeGrokNativeUsage(usage, grokNativeUsage(protocol, frame.Data))
 			if auth.NormalizeGrokProtocol(string(protocol)) == GrokProtocolResponses &&
 				strings.EqualFold(normalizedUpstreamSSEEventType(frame.Event, frame.Data), "response.created") {
@@ -1403,6 +1436,7 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	// failure and transport-retry paths cannot accidentally omit it. A retry
 	// that switches accounts naturally resolves the replacement account here.
 	// Non-Grok and unresolved accounts deliberately remain legacy/unscoped (0).
+	input = database.SnapshotUsageLogBilling(input)
 	h.populateUsageCredentialGeneration(input)
 	// scope 维度预算（issue #439）在日志落库前先吃到这笔消耗，抵掉窗口聚合缓存的滞后。
 	h.recordAPIKeyScopeUsage(input)
@@ -1487,6 +1521,10 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateUpstreamTrace(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
+	input = database.SnapshotUsageLogBilling(input)
+	if deferImageUsage(c, h, input) {
+		return
+	}
 	h.logUsage(input)
 }
 
@@ -3056,12 +3094,22 @@ func (h *Handler) APIKeyAuthMiddleware() gin.HandlerFunc {
 	return h.authMiddleware()
 }
 
+// APIKeyReadAuthMiddleware permits exhausted keys to retrieve their own stored
+// results. All other authentication checks remain in force; writes stay blocked.
+func (h *Handler) APIKeyReadAuthMiddleware() gin.HandlerFunc {
+	return h.authMiddlewareWithQuotaRead(true)
+}
+
 // authMiddleware API Key 鉴权中间件（增强版，带安全日志）
 //
 // 安全策略（fail-closed）：
 //   - 默认情况下，未配置任何 API Key 时直接拒绝请求（503），避免裸奔账号池。
 //   - 仅当显式设置 CODEX_ALLOW_ANONYMOUS=true 时才在无密钥情况下放行（兼容内网/测试）。
 func (h *Handler) authMiddleware() gin.HandlerFunc {
+	return h.authMiddlewareWithQuotaRead(false)
+}
+
+func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFunc {
 	allowAnonymous := h.cfg != nil && h.cfg.AllowAnonymousV1
 	return func(c *gin.Context) {
 		attachUserAgentAudit(c)
@@ -3134,7 +3182,8 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		if apiKeyRow.IsQuotaExhausted() {
+		readOnly := allowQuotaRead && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead)
+		if apiKeyRow.IsQuotaExhausted() && !readOnly {
 			maskedKey := security.MaskAPIKey(key)
 			security.SecurityAuditLog("AUTH_FAILED_QUOTA_EXHAUSTED", fmt.Sprintf("path=%s ip=%s key=%s", c.Request.URL.Path, c.ClientIP(), maskedKey))
 			api.SendError(c, api.NewAPIError(api.ErrCodeRateLimitReached, "API key quota exhausted", api.ErrorTypeRateLimit))
@@ -3862,7 +3911,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	allowCodexAccounts := modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db))
 	var accountFilter auth.AccountFilter
 	if nativeRemoteCompactionV2 {
-		accountFilter = accountFilterForCompactResponsesModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
+		accountFilter = accountFilterForInlineCompactionModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
 	} else {
 		accountFilter = accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
 	}
@@ -3883,6 +3932,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	if compactionAffinity.Known {
 		accountFilter = compactionDomainFilter(compactionAffinity.CompatibilityDomain, accountFilter)
+		c.Request = c.Request.WithContext(withCompactionAffinity(c.Request.Context(), compactionAffinity))
 	}
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
@@ -4214,7 +4264,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 				}
 
-				if !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) {
+				if !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) && len(grokCompactionDigestsForAccount(upstreamCtx, account)) == 0 {
 					strippedRawBody, rawChanged := stripInvalidEncryptedContentFromResponsesBody(rawBody)
 					strippedCodexBody, codexChanged := stripInvalidEncryptedContentFromResponsesBody(codexBody)
 					if rawChanged || codexChanged {
@@ -4327,7 +4377,8 @@ func (h *Handler) Responses(c *gin.Context) {
 			if isGrokNativeRouteResponse(resp) {
 				downstreamFlusher, _ := c.Writer.(http.Flusher)
 				streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
-				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseTo(c, resp, GrokProtocolResponses, isStream, start, stopTTFTGuard, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher))
+				var compactionDigests compactionProvenanceDigests
+				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(c, resp, GrokProtocolResponses, isStream, start, stopTTFTGuard, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), compactionDigests.addPayload)
 				totalDuration := int(time.Since(start).Milliseconds())
 				stopTTFTGuard()
 				resp.Body.Close()
@@ -4359,6 +4410,8 @@ func (h *Handler) Responses(c *gin.Context) {
 							abortContinuousRetryCommitFailure(h, account, resp, streamAttempt)
 							return
 						}
+					} else {
+						h.recordCompactionProvenanceDigests(context.Background(), account, compactionDigests)
 					}
 				}
 				_ = streamAttempt.Close()
@@ -4441,7 +4494,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			var nonStreamFailure *streamOutcome
 			var nonStreamResponseBody []byte
 			nonStreamContentType := "application/json"
-			var compactionProvenancePayloads [][]byte
+			var compactionDigests compactionProvenanceDigests
 			promptPolicyIncidentID := ""
 			upstreamCyberPolicyLogged := false
 			var streamAttempt *continuousRetryStreamAttempt
@@ -4472,8 +4525,8 @@ func (h *Handler) Responses(c *gin.Context) {
 				emptyIncomplete := &emptyIncompleteTracker{}
 				readErr = readSSEStreamWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(sseEvent string, data []byte) bool {
 					streamDiag.markUpstreamFrame()
-					if continuousRetryBuffersAttempts(continuousRetryPolicy) {
-						compactionProvenancePayloads = append(compactionProvenancePayloads, bytes.Clone(data))
+					if account.IsGrokAPI() || continuousRetryBuffersAttempts(continuousRetryPolicy) {
+						compactionDigests.addPayload(data)
 					} else {
 						h.recordCompactionProvenanceFromPayload(context.Background(), account, data)
 					}
@@ -4696,9 +4749,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						return
 					}
 				} else {
-					for _, payload := range compactionProvenancePayloads {
-						h.recordCompactionProvenanceFromPayload(context.Background(), account, payload)
-					}
+					h.recordCompactionProvenanceDigests(context.Background(), account, compactionDigests)
 				}
 			}
 			_ = streamAttempt.Close()

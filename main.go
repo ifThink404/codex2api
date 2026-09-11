@@ -84,6 +84,7 @@ func main() {
 		settings = &database.SystemSettings{
 			SiteName:                          database.DefaultSiteName,
 			MaxConcurrency:                    2,
+			CodexTelemetryEnabled:             false, // 实验性:模拟遥测默认不外发,由部署者显式开启
 			GlobalRPM:                         0,
 			TestModel:                         auth.DefaultTestModel,
 			TestContent:                       auth.DefaultTestContent,
@@ -138,6 +139,7 @@ func main() {
 		settings = &database.SystemSettings{
 			SiteName:                          database.DefaultSiteName,
 			MaxConcurrency:                    2,
+			CodexTelemetryEnabled:             false, // 实验性:模拟遥测默认不外发,由部署者显式开启
 			GlobalRPM:                         0,
 			TestModel:                         auth.DefaultTestModel,
 			TestContent:                       auth.DefaultTestContent,

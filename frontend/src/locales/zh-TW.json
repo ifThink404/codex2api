@@ -1,4 +1,71 @@
 {
+  "imageStudioPortal": {
+    "quota": {
+      "title": "我的額度",
+      "description": "目前 API Key 的累計額度，以美元（USD）計。",
+      "remaining": "剩餘額度",
+      "lastKnownRemaining": "上次查詢的剩餘額度",
+      "remainingAmount": "剩餘 {{amount}}",
+      "unlimited": "不限額",
+      "unlimitedLabel": "總額度不限",
+      "limit": "總額度",
+      "used": "已使用",
+      "expiresAt": "有效期限",
+      "neverExpires": "長期有效",
+      "loading": "查詢額度中…",
+      "unavailable": "額度暫不可用",
+      "refreshFailed": "額度更新失敗，請重試",
+      "refresh": "重新整理額度",
+      "refreshing": "正在重新整理…",
+      "quota_exhausted": "額度已用盡，請聯絡管理員補充額度。已有作品仍可檢視及下載。",
+      "expired": "此 Key 已過期，請聯絡管理員延長有效期限。",
+      "settlementHint": "消費結算後自動更新，也可手動重新整理。模型次數、速率等限制仍各自生效。",
+      "imagePrice": "{{price}} / 張 · 僅成功出圖扣費"
+    },
+    "design": {
+      "eyebrow": "你的創作空間",
+      "title": "把想法，變成畫面",
+      "subtitle": "從一句描述開始，創作屬於你的圖像。",
+      "inspirationEyebrow": "一點靈感",
+      "inspirationTitle": "下一張作品，從這裡開始。",
+      "inspirationDesc": "選一個方向，提示詞與畫面尺寸會一起填入，隨後可以自由修改。",
+      "inspirationCaption": "插畫僅作靈感示意，點擊填入提示詞，不會自動生成。",
+      "mobileView": "工作台檢視",
+      "editPanel": "編輯",
+      "canvasPanel": "畫布",
+      "creationMode": "創作方式",
+      "yourPrompt": "始於一個想法",
+      "findInspiration": "找靈感",
+      "promptPlaceholder": "描述你想看到的主體、場景與風格……也可以先選一個靈感。",
+      "promptHint": "主體 · 場景 · 光線 · 風格",
+      "autoSize": "自動選擇",
+      "privateWorkspace": "作品僅目前金鑰可見",
+      "canvasReady": "你的靈感，即將在這裡成形",
+      "backToResult": "返回結果",
+      "runningHint": "任務正在處理中，完成後會出現在圖庫。",
+      "fullImageHint": "完整展示原圖，點擊可全螢幕檢視",
+      "recentTitle": "最近創作",
+      "allHistory": "全部歷史",
+      "recentEmpty": "還沒有作品，從一個靈感開始吧。",
+      "inspiration": {
+        "landscape": {
+          "title": "山野風景",
+          "description": "遠山 · 晨光 · 底片",
+          "prompt": "一幅電影感的山野風景：薄霧籠罩遠山，蜿蜒的小河穿過深綠色森林，清晨的金色陽光灑在山頂。自然底片色彩，寧靜而開闊的構圖，細膩的光影，橫向畫面。"
+        },
+        "product": {
+          "title": "靜物光影",
+          "description": "柔光 · 質感 · 留白",
+          "prompt": "一張極簡靜物攝影：霧面橄欖綠陶瓷花瓶，插著一枝自然舒展的綠葉，放在奶油白石台上。午後柔和側光，細膩材質與自然陰影，大面積留白，方形構圖。"
+        },
+        "architecture": {
+          "title": "建築空間",
+          "description": "拱門 · 暖色 · 幾何",
+          "prompt": "一處寧靜的地中海建築空間：奶油色石牆與層疊拱門，溫暖陽光穿過窗洞，在地面投下清晰的幾何陰影。極簡設計，細膩砂岩材質，陶土與奶油白配色，直向構圖。"
+        }
+      }
+    }
+  },
   "common": {
     "success": "成功",
     "failed": "失敗",
@@ -76,6 +143,8 @@
     }
   },
   "accounts": {
+    "lastTokenRefresh": "最近 Token 續期",
+    "tokenRefreshNotice": "授權續期提示",
     "todayStats": "今日統計",
     "todayStatsHint": "今日(0 點起)經由本閘道的請求數、Token 與成本",
     "largePoolSortDisabled": "後台正在聚合查詢中，請稍後再試",
@@ -160,6 +229,12 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "codexOAuthKeepalive": "惰性模式下保持 Codex 授權",
+    "codexOAuthKeepaliveDesc": "開啟後，惰性模式仍會為即將到期的 Codex Token 續期，包括額度冷卻中的帳號；不會解除冷卻或發送生成請求。預設關閉。",
+    "codexTelemetry": "用戶端遙測（實驗性）",
+    "codexTelemetryDesc": "使用所選用戶端身分傳送模擬的 Codex 分析事件與 OTLP 指標。事件為合成，並非來自真實工具呼叫。預設關閉；可用 CODEX_TELEMETRY_ENABLED=false 在部署層強制關閉。",
+    "codexTelemetryTiming": "遙測計時探針（臨時）",
+    "codexTelemetryTimingDesc": "僅診斷用：列印 [TELEMETRY-TIMING] 日誌（請求入口、啟動指標建構、串流解析耗時）。預設關閉、關閉時零開銷；也可用 CODEX_TELEMETRY_TIMING_DEBUG=1 開啟。",
     "pricing": {
       "contextThreshold": "長上下文閾值",
       "revertThreshold": "還原為 {{value}} tokens",
@@ -188,7 +263,16 @@
       "refreshNoAccounts": "無帳號",
       "refreshNoSummary": "重新整理未回傳彙總",
       "catalogMarkSeen": "標記已讀",
-      "newBadge": "新"
+      "newBadge": "新",
+      "imageBilling": {
+        "title": "使用者生圖計費",
+        "token": "按 Token",
+        "perImage": "按成功圖片張數",
+        "unitPrice": "每張單價（USD）",
+        "hint": "按成功圖片張數 × 單價扣除 Key 額度。失敗不收圖片費；多圖部分成功只收成功張數。下方 Token 價格僅用於上游成本核算。",
+        "tokenHint": "沿用 Token 用量扣費。切換後僅影響後續請求，已結算紀錄保留原單價。",
+        "upstreamRates": "上游 Token 成本（與使用者圖片費獨立）"
+      }
     },
     "continuousRetryCategoryStream": "串流內 error 事件 / 串流讀取失敗",
     "continuousRetryMaxDuration": "最長重試時間（秒）",
@@ -1245,7 +1329,10 @@
       "audit_hit": "稽核命中",
       "warn": "警告",
       "block": "攔截"
-    }
+    },
+    "imageBillingFormula": "成功 {{count}} 張 × {{price}} / 張 = {{total}}",
+    "imageBillingNoCharge": "沒有可交付圖片，不收取圖片費用。",
+    "imageUpstreamCost": "上游 Token 成本：{{amount}}"
   },
   "proxies": {
     "idle": "空閒",

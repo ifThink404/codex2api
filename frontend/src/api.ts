@@ -113,6 +113,7 @@ import type {
   PromptReviewTestResponse,
   PromptReviewAPIKeysResponse,
   PublicAPIKeyUsageResponse,
+  ImageStudioQuota,
   RecycleBinAccountsResponse,
   ResetCreditsDetailResponse,
   WhamDailyUsageResponse,
@@ -551,6 +552,8 @@ export const api = {
     if (params.pageSize) search.set('page_size', String(params.pageSize))
     return requestAPIKeyUsage<PublicAPIKeyUsageResponse>(`/summary?${search.toString()}`, apiKey)
   },
+  getPortalImageQuota: (apiKey: string) =>
+    requestImageStudioPortal<ImageStudioQuota>('/quota', apiKey),
   createPortalImageJob: (apiKey: string, data: CreateImageJobPayload) =>
     requestImageStudioPortal<ImageJobResponse>('/jobs', apiKey, { method: 'POST', body: JSON.stringify(data) }),
   createPortalImageEditJob: (apiKey: string, data: CreateImageJobPayload) =>
@@ -1104,17 +1107,17 @@ export const api = {
     const search = buildOpsErrorSearchParams(params)
     return requestBlob(`/ops/errors/export?${search.toString()}`)
   },
-  getUsageStats: (params: {
+  // 区间统计卡片可携带与 /usage/logs 同一套维度筛选(账号/密钥/模型/端点/搜索等),
+  // 后端会忽略状态类参数;累计字段始终全局。
+  getUsageStats: (params: Partial<Omit<UsageLogQueryParams, 'start' | 'end'>> & {
     start?: string
     end?: string
-    channel?: string
     detail?: 'summary'
     signal?: AbortSignal
   } = {}) => {
-    const searchParams = new URLSearchParams()
-    if (params.start) searchParams.set('start', params.start)
-    if (params.end) searchParams.set('end', params.end)
-    if (params.channel) searchParams.set('channel', params.channel)
+    const searchParams = buildUsageLogSearchParams({ ...params, start: params.start ?? '', end: params.end ?? '' })
+    if (!params.start) searchParams.delete('start')
+    if (!params.end) searchParams.delete('end')
     if (params.detail) searchParams.set('detail', params.detail)
     const qs = searchParams.toString()
     return request<UsageStats>(qs ? `/usage/stats?${qs}` : '/usage/stats', {

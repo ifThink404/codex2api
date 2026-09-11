@@ -259,6 +259,30 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
 
 ### 3. Images
 
+#### 公开工作台额度查询
+
+`GET /api/image-studio/quota` 使用 `Authorization: Bearer YOUR_API_KEY` 查询当前 Key 的累计美元额度。只受生图门户开关控制，不依赖公开用量页开关，也不接受通过查询参数指定其他 Key。
+
+```json
+{
+  "quota_limit": 25,
+  "quota_used": 6.4,
+  "quota_remaining": 18.6,
+  "expires_at": null,
+  "status": "active",
+  "refresh_after_seconds": 6,
+  "image_pricing": {
+    "gpt-image-2": { "user_billing_mode": "per_image", "image_unit_price": 0.05 }
+  }
+}
+```
+
+`quota_remaining` 为 `null` 表示没有累计额度上限，有限额度的剩余值最低为 `0`。`status` 为 `active`、`quota_exhausted` 或 `expired`；无效或停用的 Key 返回 `401`，生图门户关闭时返回 `404`。响应设置 `Cache-Control: no-store`，不返回原始 Key。
+
+公开工作台在 Key 旁显示剩余额度，可点击查看已用、总额和有效期。页面可见时每 30 秒刷新，回到页面或任务完成时也会刷新；消费异步结算，任务完成后按 `refresh_after_seconds` 再查询一次，该值为当前用量入库间隔加 1 秒。模型次数及其他限流规则仍单独生效。
+
+额度耗尽后，当前 Key 仍可查询自己的额度及读取公开工作台已有任务和图片；生成、编辑及删除操作继续拒绝。过期 Key 只能查询额度，不能读取作品或生成；停用 Key 无法使用这些接口。`/v1/*` 的现有额度检查不变。
+
 #### 生成图片
 
 **端点:** `POST /v1/images/generations`
@@ -506,6 +530,12 @@ Grok 账号编辑页支持账号级模型映射，可让只请求 GPT 模型名�
 推荐逐个配置精确别名，不要默认使用 `gpt-*`，以免把未来的专用或媒体模型也纳入映射。别名目标必须存在于该 Grok 账号的可见模型目录中；显式 `models` 白名单会进一步收窄目标，隐藏或目录外模型不会因映射重新开放。账号尚未同步目录且未声明白名单时，仅使用保守的 Grok 默认模型集。满足这些条件的精确别名会出现在该 API Key 的 `GET /v1/models` 结果中。
 
 映射适用于普通 HTTP `POST /v1/responses`、`POST /v1/chat/completions` 和 `POST /v1/messages`。Responses WebSocket 与 `/v1/responses/compact` 不会路由到 Grok。Codex 客户端的 function、namespace、custom、deferred `additional_tools` 和 `tool_search` 可经现有协议桥接；Web Search、File Search、Code Interpreter、Shell、MCP、图片生成等托管工具仍取决于具体 Grok 上游及协议能力，不能仅靠模型别名获得 OpenAI 后端的等价能力。
+
+Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`input` 含 `compaction_trigger`）允许路由到模型目录中使用 Responses 协议的 Grok 账号，沿用 compact 模型映射。该请求继续发送到 Grok 实际路由的 `/responses`。若上游以 400/422 明确拒绝 `compaction_trigger` 类型，网关使用同一账号、模型和上下文追加一次摘要请求，并返回可回传的 `compaction` 项；其他鉴权、限流或校验错误不会触发该兼容分支。摘要为空、不完整或产生工具调用时会返回失败，不会清空历史伪装成压缩成功。独立 `/v1/responses/compact` 和非流式触发器仍使用专用 compact 链路，不开放给 Grok。
+
+网关记录成功返回的压缩状态来源。已知 Grok 压缩状态只回到创建它的账号，并按项原样保留密文；来源账号不可用时返回 `503 compaction_upstream_unavailable`，不会改用其他账号。未知来源或来源缓存不可用时仍沿用既有调度和外来密文降级规则，不保证保留这些压缩项中的上下文。上游拒绝已知来源的 Grok 压缩状态时，网关保留错误，不通过删除该状态重试来掩盖上下文丢失。
+
+上述来源绑定适用于上游原生不透明状态。网关生成的兼容摘要使用 `codex2api-emulated-compaction-v1:` 前缀和 Base64 封装，是可解码的文本摘要，不是上游加密密文。续聊时会还原成摘要消息并恢复正常调度，无需依赖原账号或来源缓存；摘要请求的 token 用量沿用上游返回值计入本次请求。
 
 ### 6. Health Check
 
@@ -759,6 +789,7 @@ Grok 账号编辑页支持账号级模型映射，可让只请求 GPT 模型名�
 | `scheduler_priority` | integer/null | `-100..100`；`null` 恢复默认优先级 `0` |
 | `tags` | string[] | 替换账号标签；空数组清空 |
 | `group_ids` | integer[] | 替换账号分组；空数组清空 |
+| `timezone` | string | 绑定 IANA 时区（如 `America/New_York`）；空串清除。Codex 官方账号据此改写出站请求体 `environment_context` 里的 `<timezone>` 与 `<current_date>`（日期按账号时区与客户端时区的当日差整体平移），空=透传客户端值；中转与 Grok 账号忽略。Claude 账号沿用该字段做身份时区 |
 
 **响应:**
 
@@ -1643,6 +1674,24 @@ HTTP `/v1/*` 响应的 `X-Codex2API-Request-ID` 对应下方可检索的 `reques
   "message": "日志已清空"
 }
 ```
+
+### 模型生图计费设置
+
+`PUT /api/admin/model-pricing`（`X-Admin-Key` 鉴权）可配置图片模型的用户计费方式：
+
+```json
+{
+  "model": "gpt-image-2",
+  "pricing": {
+    "user_billing_mode": "per_image",
+    "image_unit_price": 0.05
+  }
+}
+```
+
+`user_billing_mode` 为 `token`（默认）或 `per_image`；按张模式仅接受图片模型，且 `image_unit_price` 必须是大于 0 的美元金额。`GET /api/admin/model-pricing` 返回当前生效设置。保存时 `pricing` 替换该模型的整份手工覆盖，要保留自定义 Token 成本价格时一并提交原字段；`{"model":"gpt-image-2","reset":true}` 清除手工覆盖。
+
+按张模式下，成功图片张数 × 单价写入 `user_billed`，上游 Token 成本仍写入 `account_billed`。用量日志及 Key 公开用量记录新增 `user_billing_mode`、`image_unit_price`、`billed_image_count`；失败或未交付的图片费用为 0，历史记录不随调价重新计费。公开工作台额度响应的 `image_pricing` 仅提供用户计费方式和单价，不提供上游成本费率。完整行为见 [生图按张计费](CONFIGURATION.md#生图按张计费)。
 
 ### API Key 管理
 
