@@ -212,6 +212,11 @@
     "testDiagRetry": "重新測試",
     "testDiagPending": "等待上游回應…",
     "openDetail": "查看詳情",
+    "cardDetails": "詳情",
+    "cardConfigure": "設定",
+    "cardUsage": "用量",
+    "cardUsageTitle": "額度與用量",
+    "cardUsageEmpty": "暫無用量資料",
     "pendingReview": {
       "title": "自助提交待審核",
       "desc": "他人透過帳號自助入口提交、等待審核的帳號",
