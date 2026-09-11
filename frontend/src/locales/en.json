@@ -606,6 +606,8 @@
     "heroChannelTitle": "{{channel}}: {{available}}/{{total}} accounts available · {{requests}} requests today"
   },
   "accounts": {
+    "lastTokenRefresh": "Last token refresh",
+    "tokenRefreshNotice": "Token refresh notice",
     "title": "Accounts",
     "description": "Manage Codex proxy accounts (Refresh Tokens)",
     "loadingTitle": "Loading Accounts",
@@ -3744,6 +3746,8 @@
     }
   },
   "settings": {
+    "codexOAuthKeepalive": "Keep Codex auth active in lazy mode",
+    "codexOAuthKeepaliveDesc": "Refresh expiring Codex tokens even in lazy mode, including accounts with quota cooldowns. Keeps cooldowns and sends no generation requests. Off by default.",
     "title": "Settings",
     "description": "Manage system configuration and runtime parameters. Most toggles auto-save immediately.",
     "loadingTitle": "Loading Settings",

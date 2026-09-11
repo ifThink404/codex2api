@@ -236,6 +236,8 @@ export interface GrokPlanInfo {
 }
 
 export interface AccountRow {
+  codex_last_refresh_at?: string
+  codex_refresh_error?: string
   upstream_request_id_header?: string | null
   detail_loaded?: boolean
   id: number
@@ -1949,6 +1951,7 @@ export interface SystemSettings {
 	  usage_probe_responses_fallback_enabled: boolean
 	  recovery_probe_interval_minutes: number
   lazy_mode: boolean
+  codex_oauth_keepalive_enabled: boolean
   proxy_url?: string
   pg_max_conns: number
   redis_pool_size: number

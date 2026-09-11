@@ -3306,6 +3306,7 @@ type Store struct {
 	autoCleanError                     atomic.Bool
 	autoCleanExpired                   atomic.Bool
 	lazyMode                           atomic.Bool
+	codexOAuthKeepalive                atomic.Bool
 	autoCleanupBatch                   atomic.Bool
 	maxRetries                         int64 // 请求失败最大重试次数（换号重试）
 	maxRateLimitRetries                int64 // 429 最大换号重试次数
@@ -3978,6 +3979,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.autoCleanError.Store(settings.AutoCleanError)
 	s.autoCleanExpired.Store(settings.AutoCleanExpired)
 	s.lazyMode.Store(settings.LazyMode)
+	s.codexOAuthKeepalive.Store(settings.CodexOAuthKeepaliveEnabled)
 	retries := int64(settings.MaxRetries)
 	if retries <= 0 {
 		retries = 2 // 默认重试 2 次
@@ -5904,6 +5906,9 @@ func (s *Store) StartBackgroundRefresh() {
 				catalogTimer.Reset(antigravityCatalogRefreshInterval)
 			case <-refreshTimer.C:
 				if s.GetLazyMode() {
+					if s.GetCodexOAuthKeepalive() {
+						s.parallelRefreshAll(backgroundCtx)
+					}
 					s.TriggerUsageProbeAsync()
 				} else {
 					s.parallelRefreshAll(backgroundCtx)
@@ -11329,26 +11334,7 @@ func (s *Store) parallelRefreshAll(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	for i, acc := range accounts {
-		if acc.IsAntigravityAPI() {
-			continue
-		}
-		if acc.Status == StatusError {
-			continue
-		}
-		if acc.IsBanned() {
-			continue
-		}
-		if acc.HasActiveCooldown() {
-			continue
-		}
-		// AT-only 账号无 RT，无法刷新
-		acc.mu.RLock()
-		hasRT := acc.RefreshToken != ""
-		acc.mu.RUnlock()
-		if !hasRT {
-			continue
-		}
-		if !acc.NeedsRefresh() {
+		if !s.shouldBackgroundRefresh(acc, s.GetLazyMode()) {
 			continue
 		}
 
@@ -11396,301 +11382,7 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 	if acc.IsClaudeOAuth() {
 		return s.refreshClaudeAccount(ctx, acc, forceRefresh)
 	}
-	acc.mu.RLock()
-	rt := acc.RefreshToken
-	st := acc.SessionToken
-	dbID := acc.DBID
-	cooldownUntil := acc.CooldownUtil
-	cooldownReason := acc.CooldownReason
-	now := time.Now()
-	activeCooldown := acc.Status == StatusCooldown && now.Before(acc.CooldownUtil)
-	expiredCooldown := acc.Status == StatusCooldown && !now.Before(acc.CooldownUtil)
-	acc.mu.RUnlock()
-
-	// 同一个 OAuth 登录凭据可以派生多个工作区路由。先按 RT 获取跨实例
-	// lease，再重新读库；等待期间其他实例可能已经完成 RT 轮换。
-	var activeOAuthRefreshLease *oauthRefreshLease
-	for strings.TrimSpace(rt) != "" {
-		lockedRT := strings.TrimSpace(rt)
-		acc.mu.RLock()
-		lockedAccessToken := acc.AccessToken
-		acc.mu.RUnlock()
-		lease, lockErr := s.acquireOAuthRefreshLease(ctx, lockedRT)
-		if lockErr != nil {
-			return lockErr
-		}
-		changed, usable, reloadErr := s.reloadOAuthCredentialsAfterLock(ctx, acc, lockedRT, lockedAccessToken)
-		if reloadErr != nil {
-			log.Printf("[账号 %d] 获取共享 OAuth 刷新锁后重新读取凭据失败: %v", dbID, reloadErr)
-		}
-		acc.mu.RLock()
-		rt = acc.RefreshToken
-		st = acc.SessionToken
-		acc.mu.RUnlock()
-		if changed {
-			lease.Release()
-			if !forceRefresh && usable {
-				s.finishReloadedOAuthRefresh(ctx, acc)
-				return nil
-			}
-			continue
-		}
-		activeOAuthRefreshLease = lease
-		defer activeOAuthRefreshLease.Release()
-		ctx = activeOAuthRefreshLease.Context()
-		break
-	}
-
-	// 1. 尝试从缓存读取 AT
-	cachedToken := ""
-	var err error
-	if s.tokenCache != nil && !forceRefresh {
-		cachedToken, err = s.tokenCache.GetAccessToken(ctx, dbID)
-	}
-	if cachedToken != "" {
-		acc.mu.Lock()
-		acc.AccessToken = cachedToken
-		if acc.ExpiresAt.IsZero() || time.Until(acc.ExpiresAt) < 5*time.Minute {
-			acc.ExpiresAt = time.Now().Add(30 * time.Minute)
-		}
-		if activeCooldown {
-			acc.Status = StatusCooldown
-			acc.CooldownUtil = cooldownUntil
-			acc.CooldownReason = cooldownReason
-		} else {
-			acc.Status = StatusReady
-			acc.CooldownUtil = time.Time{}
-			acc.CooldownReason = ""
-		}
-		acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-		acc.mu.Unlock()
-		s.fastSchedulerUpdate(acc)
-		if expiredCooldown {
-			s.deleteCachedAccountCooldown(dbID)
-			_ = s.db.ClearCooldown(ctx, dbID)
-		} else if !activeCooldown && s.db != nil {
-			_ = s.db.ClearError(ctx, dbID)
-		}
-		return nil
-	}
-
-	// 2. 获取刷新锁
-	if s.tokenCache != nil {
-		acquired, lockErr := s.tokenCache.AcquireRefreshLock(ctx, dbID, 30*time.Second)
-		if lockErr != nil {
-			log.Printf("[账号 %d] 获取刷新锁失败: %v", dbID, lockErr)
-		}
-		if !acquired && lockErr == nil {
-			// 另一个进程在刷新，等待它完成
-			token, waitErr := s.tokenCache.WaitForRefreshComplete(ctx, dbID, 30*time.Second)
-			if !forceRefresh && waitErr == nil && token != "" {
-				acc.mu.Lock()
-				acc.AccessToken = token
-				acc.ExpiresAt = time.Now().Add(55 * time.Minute)
-				if activeCooldown {
-					acc.Status = StatusCooldown
-					acc.CooldownUtil = cooldownUntil
-					acc.CooldownReason = cooldownReason
-				} else {
-					acc.Status = StatusReady
-					acc.CooldownUtil = time.Time{}
-					acc.CooldownReason = ""
-				}
-				acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-				acc.mu.Unlock()
-				s.fastSchedulerUpdate(acc)
-				if expiredCooldown && s.db != nil {
-					s.deleteCachedAccountCooldown(dbID)
-					_ = s.db.ClearCooldown(ctx, dbID)
-				} else if !activeCooldown && s.db != nil {
-					_ = s.db.ClearError(ctx, dbID)
-				}
-				return nil
-			}
-			if forceRefresh {
-				if waitErr != nil {
-					log.Printf("[账号 %d] 等待已有刷新任务完成失败，继续尝试强制刷新: %v", dbID, waitErr)
-				}
-				acquired, lockErr = s.tokenCache.AcquireRefreshLock(ctx, dbID, 30*time.Second)
-				if lockErr != nil {
-					log.Printf("[账号 %d] 获取强制刷新锁失败: %v", dbID, lockErr)
-				}
-				if !acquired && lockErr == nil {
-					return fmt.Errorf("账号 %d 正在刷新，请稍后重试", dbID)
-				}
-			}
-		}
-		if acquired {
-			defer s.tokenCache.ReleaseRefreshLock(ctx, dbID)
-		}
-	}
-
-	// 3. 执行 RT 刷新（Resin 启用时传入 DBID 用于粘性代理）
-	resinID := fmt.Sprintf("%d", dbID)
-	proxy := s.ResolveProxyForAccount(acc)
-	if strings.TrimSpace(proxy) == "" && s.GetProxyPoolEnabled() {
-		return fmt.Errorf("账号 %d 代理池已启用但无可用代理，已拒绝直连刷新", dbID)
-	}
-	var td *TokenData
-	var info *AccountInfo
-	if rt != "" {
-		td, info, err = RefreshWithRetry(ctx, rt, proxy, resinID)
-	} else {
-		err = fmt.Errorf("refresh_token 为空")
-	}
-	if err != nil && st != "" {
-		rtErr := err
-		if stTD, stInfo, stErr := RefreshWithSessionTokenRetry(ctx, st, proxy, resinID); stErr == nil {
-			td, info, err = stTD, stInfo, nil
-			if td.RefreshToken == "" {
-				td.RefreshToken = rt
-			}
-			log.Printf("[账号 %d] RT 刷新失败后已使用 session_token 回退刷新 AT", dbID)
-		} else {
-			err = fmt.Errorf("RT 刷新失败: %v；session_token 回退失败: %w", rtErr, stErr)
-		}
-	}
-	if err != nil {
-		if isNonRetryable(err) {
-			s.markPermanentRefreshFailure(acc, err)
-		}
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("OAuth 刷新超过共享 lease 的安全时限: %w", err)
-	}
-
-	// 在公开轮换后的 RT 前也持有新 RT 的 lease，封住旧 RT 到新 RT 的切换窗口。
-	var rotatedOAuthRefreshLease *oauthRefreshLease
-	newRefreshToken := strings.TrimSpace(td.RefreshToken)
-	if activeOAuthRefreshLease != nil && newRefreshToken != "" &&
-		oauthRefreshTokenFingerprint(newRefreshToken) != activeOAuthRefreshLease.fingerprint {
-		rotatedOAuthRefreshLease, err = s.acquireOAuthRefreshLease(ctx, newRefreshToken)
-		if err != nil {
-			return fmt.Errorf("锁定轮换后的 OAuth 凭据失败: %w", err)
-		}
-		defer rotatedOAuthRefreshLease.Release()
-	}
-
-	// 4. 更新内存状态
-	appliedPlanType := ""
-	skippedPlanType := ""
-	subExpCredential := ""
-	subExpCredentialSet := false
-	workspaceEmail, workspaceID := openaiidentity.TokenIdentity(td.IDToken, td.AccessToken)
-	if workspaceID != "" && info != nil {
-		info.Email = workspaceEmail
-		info.ChatGPTAccountID = workspaceID
-	}
-	acc.mu.Lock()
-	acc.AccessToken = td.AccessToken
-	if td.RefreshToken != "" {
-		acc.RefreshToken = td.RefreshToken
-	}
-	acc.SessionToken = st
-	acc.ExpiresAt = td.ExpiresAt
-	acc.ErrorMsg = ""
-	acc.PermanentRefreshFailures = 0
-	if info != nil {
-		if info.ChatGPTAccountID != "" {
-			acc.AccountID = info.ChatGPTAccountID
-		}
-		if info.Email != "" {
-			acc.Email = info.Email
-		}
-		// 不用空值覆盖已有的 PlanType，避免 plus 号被误标为 free
-		if info.PlanType != "" {
-			if plan, applied := acc.applyRefreshedPlanTypeLocked(info.PlanType, now); applied {
-				appliedPlanType = plan
-			} else {
-				skippedPlanType = plan
-			}
-		} else if acc.PlanType == "" {
-			log.Printf("[账号 %d] 刷新后 plan_type 为空，无法识别套餐类型", dbID)
-		}
-		// 续费后 JWT 的 chatgpt_subscription_active_until 长期停留在旧值：
-		// 付费套餐下已过去的到期时间视为陈旧，不写入；库里已有的陈旧值一并清掉，
-		// 否则每次刷新都会把旧值写回。(issue #360)
-		if !info.SubscriptionExpiresAt.IsZero() && !StaleSubscriptionExpiry(acc.PlanType, info.SubscriptionExpiresAt, now) {
-			acc.SubscriptionExpiresAt = info.SubscriptionExpiresAt
-			subExpCredential = info.SubscriptionExpiresAt.Format(time.RFC3339)
-			subExpCredentialSet = true
-		} else if StaleSubscriptionExpiry(acc.PlanType, acc.SubscriptionExpiresAt, now) {
-			acc.SubscriptionExpiresAt = time.Time{}
-			subExpCredentialSet = true
-		}
-	}
-	if activeCooldown {
-		acc.Status = StatusCooldown
-		acc.CooldownUtil = cooldownUntil
-		acc.CooldownReason = cooldownReason
-	} else {
-		acc.Status = StatusReady
-		acc.CooldownUtil = time.Time{}
-		acc.CooldownReason = ""
-	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-	acc.mu.Unlock()
-	if appliedPlanType != "" {
-		s.invalidateRoutingSchedulers()
-	}
-	s.fastSchedulerUpdate(acc)
-	if skippedPlanType != "" {
-		log.Printf("[账号 %d] 刷新返回 plan_type=%s，但 Codex free 7d 额度仍处于耗尽窗口，保留 plan_type=free", dbID, skippedPlanType)
-	}
-
-	// 5. 写入缓存
-	ttl := time.Until(td.ExpiresAt) - 5*time.Minute
-	if s.tokenCache != nil && ttl > 0 {
-		_ = s.tokenCache.SetAccessToken(ctx, dbID, td.AccessToken, ttl)
-	}
-
-	// 6. 更新数据库 credentials
-	credentials := map[string]interface{}{
-		"access_token": td.AccessToken,
-		"id_token":     td.IDToken,
-		"expires_at":   td.ExpiresAt.Format(time.RFC3339),
-	}
-	if td.RefreshToken != "" {
-		credentials["refresh_token"] = td.RefreshToken
-	}
-	if st != "" {
-		credentials["session_token"] = st
-	}
-	if info != nil {
-		if info.ChatGPTAccountID != "" {
-			credentials["account_id"] = info.ChatGPTAccountID
-		}
-		if info.Email != "" {
-			credentials["email"] = info.Email
-		}
-		if appliedPlanType != "" {
-			credentials["plan_type"] = appliedPlanType
-		}
-		if subExpCredentialSet {
-			credentials["subscription_expires_at"] = subExpCredential
-		}
-	}
-	if workspaceID != "" {
-		credentials["email"] = workspaceEmail
-		credentials["workspace_id"] = workspaceID
-	}
-	if err := s.db.UpdateCredentials(ctx, dbID, credentials); err != nil {
-		log.Printf("[账号 %d] 更新数据库失败: %v", dbID, err)
-	}
-	s.propagateSharedOAuthCredentials(ctx, acc, rt, td, credentials, ttl)
-	if err := s.db.ClearError(ctx, dbID); err != nil {
-		log.Printf("[账号 %d] 清理错误状态失败: %v", dbID, err)
-	}
-
-	if expiredCooldown {
-		s.deleteCachedAccountCooldown(dbID)
-		if err := s.db.ClearCooldown(ctx, dbID); err != nil {
-			log.Printf("[账号 %d] 清理过期冷却状态失败: %v", dbID, err)
-		}
-	}
-
-	return nil
+	return s.refreshCodexAccount(ctx, acc, forceRefresh)
 }
 
 func antigravityCredentialFromStoreRow(row *database.AccountRow) AntigravityCredential {

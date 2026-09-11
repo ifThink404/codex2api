@@ -220,6 +220,8 @@ func (h *Handler) buildAccountResponse(
 		EffectiveWorkspaceID:         effectiveWorkspaceID,
 		PlanType:                     planType,
 		SubscriptionExpiresAt:        row.GetCredential("subscription_expires_at"),
+		CodexLastRefreshAt:           row.GetCredential("codex_last_refresh_at"),
+		CodexRefreshError:            row.GetCredential("codex_refresh_error"),
 		Status:                       row.Status,
 		ErrorMessage:                 row.ErrorMessage,
 		ATOnly:                       !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",

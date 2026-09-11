@@ -587,3 +587,9 @@ curl -H "X-Admin-Key: your-secret" http://localhost:8080/api/admin/ops/overview
 - `DATABASE_HOST is empty` - 未配置数据库主机
 - `REDIS_ADDR is empty` - Redis 模式下未配置 Redis 地址
 - `DATABASE_PATH is empty` - SQLite 模式下未配置数据路径
+
+### 惰性模式下的 Codex 授权保活
+
+管理设置 `codex_oauth_keepalive_enabled`（默认 `false`）允许惰性模式单独运行 Codex Token 续期。它使用现有 `background_refresh_interval_minutes` 巡检间隔和 AT 到期前 5 分钟的阈值，不改变额度冷却、不启用生成探针，也不影响 Claude、Grok 或 Antigravity 的刷新策略。普通模式本来就运行 Codex 续期，不依赖此开关。
+
+Codex 刷新新增 `codex_oauth_refresh_attempts` 保护表，启动时自动创建，兼容 PostgreSQL 与 SQLite。表内只保存旧 RT 的 SHA-256 指纹、刷新操作 ID 和开始时间，不保存明文 Token。成功保存全部相关凭据后删除记录；结果不确定的记录保留，防止跨实例或重启后重复消费旧 RT。已有凭据无需重新导入；已经失效的授权需重新登录恢复。

@@ -1602,6 +1602,8 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
+	CodexLastRefreshAt      string `json:"codex_last_refresh_at,omitempty"`
+	CodexRefreshError       string `json:"codex_refresh_error,omitempty"`
 	UpstreamRequestIDHeader string `json:"upstream_request_id_header"`
 	DetailLoaded            bool   `json:"detail_loaded,omitempty"`
 	ID                      int64  `json:"id"`
@@ -9056,6 +9058,7 @@ type settingsResponse struct {
 	UsageProbeResponsesFallbackEnabled  bool   `json:"usage_probe_responses_fallback_enabled"`
 	RecoveryProbeIntervalMinutes        int    `json:"recovery_probe_interval_minutes"`
 	LazyMode                            bool   `json:"lazy_mode"`
+	CodexOAuthKeepaliveEnabled          bool   `json:"codex_oauth_keepalive_enabled"`
 	ProxyURL                            string `json:"proxy_url"`
 	PgMaxConns                          int    `json:"pg_max_conns"`
 	RedisPoolSize                       int    `json:"redis_pool_size"`
@@ -9238,6 +9241,7 @@ type updateSettingsReq struct {
 	UsageProbeResponsesFallbackEnabled  *bool                            `json:"usage_probe_responses_fallback_enabled"`
 	RecoveryProbeIntervalMinutes        *int                             `json:"recovery_probe_interval_minutes"`
 	LazyMode                            *bool                            `json:"lazy_mode"`
+	CodexOAuthKeepaliveEnabled          *bool                            `json:"codex_oauth_keepalive_enabled"`
 	ProxyURL                            *string                          `json:"proxy_url"`
 	PgMaxConns                          *int                             `json:"pg_max_conns"`
 	RedisPoolSize                       *int                             `json:"redis_pool_size"`
@@ -10065,6 +10069,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		UsageProbeResponsesFallbackEnabled:  h.store.UsageProbeResponsesFallbackEnabled(),
 		RecoveryProbeIntervalMinutes:        h.store.GetRecoveryProbeIntervalMinutes(),
 		LazyMode:                            h.store.GetLazyMode(),
+		CodexOAuthKeepaliveEnabled:          h.store.GetCodexOAuthKeepalive(),
 		ProxyURL:                            h.store.GetProxyURL(),
 		PgMaxConns:                          h.pgMaxConns,
 		RedisPoolSize:                       h.redisPoolSize,
@@ -10709,6 +10714,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: recovery_probe_interval_minutes = %d", v)
 	}
 
+	if req.CodexOAuthKeepaliveEnabled != nil {
+		h.store.SetCodexOAuthKeepalive(*req.CodexOAuthKeepaliveEnabled)
+	}
 	if req.LazyMode != nil {
 		h.store.SetLazyMode(*req.LazyMode)
 		log.Printf("设置已更新: lazy_mode = %t", *req.LazyMode)
@@ -11573,6 +11581,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		UsageProbeResponsesFallbackEnabled:  h.store.UsageProbeResponsesFallbackEnabled(),
 		RecoveryProbeIntervalMinutes:        h.store.GetRecoveryProbeIntervalMinutes(),
 		LazyMode:                            h.store.GetLazyMode(),
+		CodexOAuthKeepaliveEnabled:          h.store.GetCodexOAuthKeepalive(),
 		ProxyURL:                            h.store.GetProxyURL(),
 		PgMaxConns:                          h.pgMaxConns,
 		RedisPoolSize:                       h.redisPoolSize,
@@ -11895,6 +11904,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		UsageProbeResponsesFallbackEnabled:  h.store.UsageProbeResponsesFallbackEnabled(),
 		RecoveryProbeIntervalMinutes:        h.store.GetRecoveryProbeIntervalMinutes(),
 		LazyMode:                            h.store.GetLazyMode(),
+		CodexOAuthKeepaliveEnabled:          h.store.GetCodexOAuthKeepalive(),
 		ProxyURL:                            h.store.GetProxyURL(),
 		PgMaxConns:                          h.pgMaxConns,
 		RedisPoolSize:                       h.redisPoolSize,

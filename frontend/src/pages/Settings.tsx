@@ -2187,6 +2187,7 @@ export default function Settings() {
 	    usage_probe_responses_fallback_enabled: true,
 	    recovery_probe_interval_minutes: 30,
     lazy_mode: false,
+    codex_oauth_keepalive_enabled: false,
     pg_max_conns: 50,
     redis_pool_size: 30,
     auto_clean_unauthorized: false,
@@ -3312,6 +3313,13 @@ export default function Settings() {
                               auto_clean_full_usage: enabled ? false : settingsFormRef.current.auto_clean_full_usage,
                             })
                           }}
+                        />
+                      </SettingField>
+                      <SettingField label={t('settings.codexOAuthKeepalive')} description={t('settings.codexOAuthKeepaliveDesc')} layout="switch">
+                        <Switch
+                          aria-label={t('settings.codexOAuthKeepalive')}
+                          checked={settingsForm.codex_oauth_keepalive_enabled}
+                          onCheckedChange={(checked) => autoSaveBooleanField('codex_oauth_keepalive_enabled', checked)}
                         />
                       </SettingField>
                       {inviteGuideEnabled !== null && (
