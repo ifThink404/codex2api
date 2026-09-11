@@ -89,6 +89,10 @@ type codexTelemetryAttempt struct {
 	firstEvent time.Time
 	firstToken time.Time
 	done       sync.Once
+	// 临时计时探针：仅在 CODEX_TELEMETRY_TIMING_DEBUG=1 时采集，其余时候零开销。
+	timing     bool
+	parseNanos atomic.Int64
+	eventCount atomic.Int64
 }
 
 type codexTelemetryJob struct {
@@ -184,6 +188,22 @@ func codexStatsigAPIKey() string {
 	return codexStatsigAPIKeyDefault
 }
 
+// codexTelemetryTimingDebug 是临时计时探针开关：管理后台「客户端遥测计时探针」
+// 或环境变量 CODEX_TELEMETRY_TIMING_DEBUG=1 任一开启即生效。关闭时不采集任何
+// 耗时，行为与不插桩完全一致；开启时只额外打印 [TELEMETRY-TIMING] 日志，用于
+// 对比开启/关闭遥测时的请求入口与流式解析开销。
+func codexTelemetryTimingDebug() bool {
+	if CurrentRuntimeSettings().CodexTelemetryTimingDebug {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_TELEMETRY_TIMING_DEBUG"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // codexTelemetryEnabled 合并运行时开关与部署级关闭设置。
 //
 // 运行时开关默认关闭（实验性功能，事件是模拟生成的，是否外发由部署者决定），
@@ -220,6 +240,11 @@ func codexTelemetryEligible(body []byte, headers http.Header) bool {
 // `http.Response`（见 wsrelay.websocketResponseToHTTP），因此本链路基于 SSE 的
 // 解析对两种传输同样适用，不需要按传输分流。
 func beginCodexTelemetry(input codexTelemetryRequest) *codexTelemetryAttempt {
+	timing := codexTelemetryTimingDebug()
+	var startedAt time.Time
+	if timing {
+		startedAt = time.Now()
+	}
 	if input.account == nil || !codexTelemetryEligible(input.body, input.headers) {
 		return nil
 	}
@@ -232,9 +257,13 @@ func beginCodexTelemetry(input codexTelemetryRequest) *codexTelemetryAttempt {
 	profile.dynamicTool = codexTelemetryRandIntN(5) < 2
 	profile.command = profile.dynamicTool && codexTelemetryRandIntN(2) == 0
 	profile.fileChange = codexTelemetryRandIntN(5) == 0
-	attempt := &codexTelemetryAttempt{profile: profile}
+	attempt := &codexTelemetryAttempt{profile: profile, timing: timing}
 	codexTelemetryGlobal.enqueueAnalytics(codexInitializationEvents(profile))
 	codexTelemetryGlobal.touchMetrics(profile)
+	if timing {
+		log.Printf("[TELEMETRY-TIMING] begin account=%d model=%s first_thread=%t setup_ms=%d",
+			input.account.ID(), profile.model, profile.firstThread, time.Since(startedAt).Milliseconds())
+	}
 	return attempt
 }
 
@@ -352,6 +381,11 @@ func (a *codexTelemetryAttempt) finish(status string, terminal []byte) {
 		result := codexTelemetryTerminal{status: status, body: terminal, firstEvent: firstEvent, firstToken: firstToken}
 		codexTelemetryGlobal.enqueueAnalytics(codexTerminalEvents(a.profile, result))
 		codexTelemetryGlobal.recordTurnMetrics(a.profile, result)
+		if a.timing {
+			log.Printf("[TELEMETRY-TIMING] finish account=%d status=%s parse_ms=%d events=%d",
+				a.profile.client.account.ID(), status,
+				a.parseNanos.Load()/int64(time.Millisecond), a.eventCount.Load())
+		}
 	})
 }
 
@@ -366,7 +400,13 @@ type codexTelemetryBody struct {
 func (b *codexTelemetryBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if n > 0 {
-		b.observe(p[:n])
+		if b.attempt.timing {
+			startedAt := time.Now()
+			b.observe(p[:n])
+			b.attempt.parseNanos.Add(time.Since(startedAt).Nanoseconds())
+		} else {
+			b.observe(p[:n])
+		}
 	}
 	if err == io.EOF {
 		b.flushJSON()
@@ -430,6 +470,9 @@ func (b *codexTelemetryBody) processEvent(data []byte) {
 		b.attempt.firstToken = now
 	}
 	b.attempt.mu.Unlock()
+	if b.attempt.timing {
+		b.attempt.eventCount.Add(1)
+	}
 	switch typ {
 	case "response.completed":
 		b.attempt.finish("completed", data)

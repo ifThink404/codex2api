@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -240,6 +241,11 @@ func (m *codexTelemetryManager) ensureMetricStateLocked(profile codexTelemetryPr
 
 // enqueueStartupMetrics 发送账号首次出现时的启动指标批次。
 func (m *codexTelemetryManager) enqueueStartupMetrics(profile codexTelemetryProfile, started time.Time) {
+	timing := codexTelemetryTimingDebug()
+	var startedAt time.Time
+	if timing {
+		startedAt = time.Now()
+	}
 	points := make([]*codexMetricPoint, 0, 62)
 	for _, descriptor := range codexMetricDescriptors {
 		if !codexStartupMetric(descriptor.name) {
@@ -249,6 +255,10 @@ func (m *codexTelemetryManager) enqueueStartupMetrics(profile codexTelemetryProf
 		points = append(points, newCodexMetricPoint(descriptor, attributes, codexStartupMetricValue(profile, descriptor)))
 	}
 	m.enqueueMetrics(profile.client, buildCodexMetricsPayload(profile, started, points))
+	if timing {
+		log.Printf("[TELEMETRY-TIMING] startup_metrics account=%d points=%d build_ms=%d",
+			profile.client.account.ID(), len(points), time.Since(startedAt).Milliseconds())
+	}
 }
 
 // recordTurnMetrics 累积一次 turn 产生的增量指标。

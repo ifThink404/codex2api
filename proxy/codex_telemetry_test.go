@@ -367,6 +367,39 @@ func TestCodexTelemetryStartupMetricPartition(t *testing.T) {
 	}
 }
 
+// TestCodexTelemetryTimingProbeGate 校验临时计时探针默认关闭、按 env 开启。
+func TestCodexTelemetryTimingProbeGate(t *testing.T) {
+	t.Setenv("CODEX_TELEMETRY_TIMING_DEBUG", "")
+	if codexTelemetryTimingDebug() {
+		t.Fatal("timing probe must default off")
+	}
+	t.Setenv("CODEX_TELEMETRY_TIMING_DEBUG", "1")
+	if !codexTelemetryTimingDebug() {
+		t.Fatal("timing probe must honor CODEX_TELEMETRY_TIMING_DEBUG=1")
+	}
+}
+
+// TestCodexTelemetryTimingProbeRecordsParse 校验探针开启时统计事件数与解析耗时。
+func TestCodexTelemetryTimingProbeRecordsParse(t *testing.T) {
+	t.Setenv("CODEX_TELEMETRY_TIMING_DEBUG", "1")
+	attempt := &codexTelemetryAttempt{profile: testCodexTelemetryProfile(), timing: true}
+	stream := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws\"}}\n\n"
+	body := &codexTelemetryBody{ReadCloser: io.NopCloser(strings.NewReader(stream)), attempt: attempt}
+	buf := make([]byte, 128)
+	for {
+		if _, err := body.Read(buf); err != nil {
+			break
+		}
+	}
+	if attempt.eventCount.Load() != 2 {
+		t.Fatalf("probe event count = %d, want 2", attempt.eventCount.Load())
+	}
+	if attempt.firstToken.IsZero() {
+		t.Fatal("probe run must still record first token")
+	}
+}
+
 // TestCodexTelemetryParsesWebsocketSSE 校验 WS 上游的 SSE 包装流同样被解析：
 // wsrelay.websocketResponseToHTTP 把每个 WebSocket 帧写成 `data: <json>\n\n`，
 // 与 HTTP 路径同形，所以两种传输共用同一套观测逻辑。

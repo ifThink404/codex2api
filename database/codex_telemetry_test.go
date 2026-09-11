@@ -17,23 +17,25 @@ func TestSQLiteCodexTelemetrySettingRoundtrip(t *testing.T) {
 		t.Fatalf("insert defaults: %v", err)
 	}
 	settings, err := db.GetSystemSettings(ctx)
-	if err != nil || settings == nil || settings.CodexTelemetryEnabled {
-		t.Fatalf("default telemetry setting must be off: %#v, err = %v", settings, err)
+	if err != nil || settings == nil || settings.CodexTelemetryEnabled || settings.CodexTelemetryTimingDebug {
+		t.Fatalf("default telemetry settings must be off: %#v, err = %v", settings, err)
 	}
 	settings.CodexTelemetryEnabled = true
+	settings.CodexTelemetryTimingDebug = true
 	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
 		t.Fatalf("enable telemetry: %v", err)
 	}
 	settings, err = db.GetSystemSettings(ctx)
-	if err != nil || settings == nil || !settings.CodexTelemetryEnabled {
-		t.Fatalf("persisted telemetry setting = %#v, err = %v", settings, err)
+	if err != nil || settings == nil || !settings.CodexTelemetryEnabled || !settings.CodexTelemetryTimingDebug {
+		t.Fatalf("persisted telemetry settings = %#v, err = %v", settings, err)
 	}
 	settings.CodexTelemetryEnabled = false
+	settings.CodexTelemetryTimingDebug = false
 	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
 		t.Fatalf("disable telemetry: %v", err)
 	}
 	settings, err = db.GetSystemSettings(ctx)
-	if err != nil || settings == nil || settings.CodexTelemetryEnabled {
-		t.Fatalf("persisted telemetry setting = %#v, err = %v", settings, err)
+	if err != nil || settings == nil || settings.CodexTelemetryEnabled || settings.CodexTelemetryTimingDebug {
+		t.Fatalf("persisted telemetry settings = %#v, err = %v", settings, err)
 	}
 }
