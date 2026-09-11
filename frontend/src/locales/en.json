@@ -4169,6 +4169,8 @@
     "cliVersionSyncFailed": "Version sync failed",
     "codexCliVersionAutoSync": "Scheduled auto-sync",
     "codexCliVersionAutoSyncDesc": "When on, the emulated version is fetched and updated in the background at the interval below; when off, only manual \"Sync now\" remains. CODEX_DISABLE_CLI_VERSION_SYNC=1 forces it off.",
+    "codexTelemetry": "Client telemetry",
+    "codexTelemetryDesc": "Send Codex analytics events and OTLP metrics using the selected client identity. Enabled by default; CODEX_TELEMETRY_ENABLED=false is the deployment kill switch.",
     "codexCliVersionSyncInterval": "Auto-sync interval",
     "codexCliVersionSyncIntervalDesc": "Wait time between automatic syncs (hours, range 1-720).",
     "codexUserAgentRaw": "Raw User-Agent Override",

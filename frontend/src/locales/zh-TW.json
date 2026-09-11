@@ -227,6 +227,8 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "codexTelemetry": "用戶端遙測",
+    "codexTelemetryDesc": "使用所選用戶端身分傳送 Codex 分析事件與 OTLP 指標。預設開啟；可用 CODEX_TELEMETRY_ENABLED=false 在部署層強制關閉。",
     "pricing": {
       "contextThreshold": "長上下文閾值",
       "revertThreshold": "還原為 {{value}} tokens",
