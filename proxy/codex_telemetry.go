@@ -1,0 +1,383 @@
+package proxy
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log"
+	"math/rand/v2"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/codex2api/auth"
+	"github.com/tidwall/gjson"
+)
+
+const (
+	codexAnalyticsEndpointDefault = "https://chatgpt.com/backend-api/codex/analytics-events/events"
+	codexMetricsEndpointDefault   = "https://ab.chatgpt.com/otlp/v1/metrics"
+	codexStatsigAPIKeyDefault     = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO"
+	codexTelemetryQueueSize       = 256
+	codexTelemetryTimeout         = 10 * time.Second
+	codexTelemetryStateTTL        = 5 * time.Minute
+	codexTelemetryMaxEventBytes   = 8 << 20
+)
+
+var (
+	codexAnalyticsEndpoint = codexAnalyticsEndpointDefault
+	codexMetricsEndpoint   = codexMetricsEndpointDefault
+	codexTelemetryRandIntN = rand.IntN
+	codexTelemetryGlobal   = newCodexTelemetryManager()
+)
+
+type codexTelemetryClient struct {
+	account     *auth.Account
+	accessToken string
+	accountID   string
+	proxyURL    string
+	userAgent   string
+	originator  string
+	version     string
+}
+
+type codexTelemetryProfile struct {
+	client       codexTelemetryClient
+	sessionID    string
+	threadID     string
+	turnID       string
+	rootTurnID   string
+	model        string
+	effort       string
+	serviceTier  string
+	started      time.Time
+	firstThread  bool
+	websocket    bool
+	dynamicTool  bool
+	command      bool
+	fileChange   bool
+	turnMetadata gjson.Result
+}
+
+type codexTelemetryRequest struct {
+	account       *auth.Account
+	body          []byte
+	sessionID     string
+	proxyOverride string
+	apiKey        string
+	deviceCfg     *DeviceProfileConfig
+	headers       http.Header
+	websocket     bool
+}
+
+type codexTelemetryTerminal struct {
+	status     string
+	body       []byte
+	firstEvent time.Time
+	firstToken time.Time
+}
+
+type codexTelemetryAttempt struct {
+	profile    codexTelemetryProfile
+	firstEvent time.Time
+	firstToken time.Time
+	done       sync.Once
+}
+
+type codexTelemetryJob struct {
+	client  codexTelemetryClient
+	url     string
+	body    []byte
+	metrics bool
+}
+
+type codexTelemetryManager struct {
+	once    sync.Once
+	queue   chan codexTelemetryJob
+	mu      sync.Mutex
+	threads map[string]time.Time
+	metrics map[int64]*codexMetricState
+}
+
+func newCodexTelemetryManager() *codexTelemetryManager {
+	return &codexTelemetryManager{
+		queue:   make(chan codexTelemetryJob, codexTelemetryQueueSize),
+		threads: make(map[string]time.Time),
+		metrics: make(map[int64]*codexMetricState),
+	}
+}
+
+func (m *codexTelemetryManager) start() {
+	m.once.Do(func() {
+		go m.worker()
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				m.flushMetrics(now)
+			}
+		}()
+	})
+}
+
+func (m *codexTelemetryManager) worker() {
+	for job := range m.queue {
+		if err := sendCodexTelemetryJob(job); err != nil {
+			log.Printf("Codex 遥测发送失败: %v", err)
+		}
+	}
+}
+
+func (m *codexTelemetryManager) enqueue(job codexTelemetryJob) {
+	m.start()
+	select {
+	case m.queue <- job:
+	default:
+		log.Printf("Codex 遥测队列已满，丢弃本批数据")
+	}
+}
+
+func (m *codexTelemetryManager) markThread(accountID int64, threadID string, now time.Time) bool {
+	key := strconv.FormatInt(accountID, 10) + ":" + threadID
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, found := m.threads[key]
+	// ponytail: 固定上限比维护第二套 LRU 更小；超过时整体重建即可。
+	if len(m.threads) >= 4096 {
+		m.threads = make(map[string]time.Time)
+		found = false
+	}
+	m.threads[key] = now
+	return !found
+}
+
+func codexStatsigAPIKey() string {
+	if value := strings.TrimSpace(os.Getenv("CODEX_STATSIG_API_KEY")); value != "" {
+		return value
+	}
+	return codexStatsigAPIKeyDefault
+}
+
+func codexTelemetryEnabled() bool {
+	if !CurrentRuntimeSettings().CodexTelemetryEnabled {
+		return false
+	}
+	if (strings.HasSuffix(os.Args[0], ".test") || strings.HasSuffix(os.Args[0], ".test.exe")) && os.Getenv("CODEX_TELEMETRY_TEST_ENABLE") != "1" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_TELEMETRY_ENABLED"))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func codexTelemetryEligible(body []byte, headers http.Header) bool {
+	if !codexTelemetryEnabled() || headers == nil || !gjson.ValidBytes(body) {
+		return false
+	}
+	if !strings.HasPrefix(CodexBaseURL, "https://chatgpt.com/backend-api/codex") {
+		return false
+	}
+	if turnMetadataIndicatesCompaction(headers.Get(codexTurnMetadataHeader)) {
+		return false
+	}
+	return !responsesBodyRequestsImageGeneration(body) && !requestBodyCompactionMeta(body).UsageTriggered
+}
+
+func beginCodexTelemetry(input codexTelemetryRequest) *codexTelemetryAttempt {
+	if input.account == nil || !codexTelemetryEligible(input.body, input.headers) {
+		return nil
+	}
+	client, ok := snapshotCodexTelemetryClient(input)
+	if !ok {
+		return nil
+	}
+	profile := buildCodexTelemetryProfile(client, input)
+	profile.firstThread = codexTelemetryGlobal.markThread(input.account.ID(), profile.threadID, profile.started)
+	profile.dynamicTool = codexTelemetryRandIntN(5) < 2
+	profile.command = profile.dynamicTool && codexTelemetryRandIntN(2) == 0
+	profile.fileChange = codexTelemetryRandIntN(5) == 0
+	attempt := &codexTelemetryAttempt{profile: profile}
+	codexTelemetryGlobal.enqueueAnalytics(codexInitializationEvents(profile))
+	codexTelemetryGlobal.touchMetrics(profile)
+	return attempt
+}
+
+func snapshotCodexTelemetryClient(input codexTelemetryRequest) (codexTelemetryClient, bool) {
+	client := codexTelemetryClient{
+		account: input.account, accessToken: input.account.GetAccessToken(),
+		accountID: input.account.EffectiveAccountID(), proxyURL: input.account.GetProxyURL(),
+	}
+	if client.accessToken == "" || client.accountID == "" || input.account.IsCodexAgentIdentity() {
+		return codexTelemetryClient{}, false
+	}
+	if input.proxyOverride != "" {
+		client.proxyURL = input.proxyOverride
+	}
+	client.userAgent, client.version, _ = ResolveCodexOutboundClientHeadersWithDecision(input.account, input.apiKey, input.deviceCfg, input.headers)
+	client.originator = codexTelemetryOriginator(client.userAgent, input.headers)
+	userAgentOverridden, originatorOverridden := false, false
+	for name, value := range input.account.GetCustomHeaders() {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "user-agent":
+			client.userAgent = value
+			userAgentOverridden = true
+		case "originator":
+			client.originator = value
+			originatorOverridden = true
+		case "chatgpt-account-id":
+			client.accountID = value
+		case "version":
+			client.version = value
+		}
+	}
+	if userAgentOverridden && !originatorOverridden {
+		client.originator = CodexOriginatorForGeneratedUserAgent(client.userAgent)
+	}
+	return client, client.userAgent != "" && client.originator != ""
+}
+
+func codexTelemetryOriginator(userAgent string, headers http.Header) string {
+	if value := strings.TrimSpace(headers.Get("Originator")); IsCodexOfficialClientByHeaders(userAgent, value) && value != "" {
+		return value
+	}
+	return CodexOriginatorForGeneratedUserAgent(userAgent)
+}
+
+func (m *codexTelemetryManager) enqueueAnalytics(events []codexAnalyticsEvent) {
+	if len(events) == 0 {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"events": events})
+	if err == nil {
+		m.enqueue(codexTelemetryJob{client: events[0].client, url: codexAnalyticsEndpoint, body: body})
+	}
+}
+
+func (a *codexTelemetryAttempt) observeResult(resp *http.Response, err error) {
+	if a == nil {
+		return
+	}
+	if err != nil || resp == nil {
+		a.finish("failed", nil)
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
+		a.finish("failed", nil)
+		return
+	}
+	resp.Body = &codexTelemetryBody{ReadCloser: resp.Body, attempt: a}
+}
+
+func (a *codexTelemetryAttempt) finish(status string, terminal []byte) {
+	if a == nil {
+		return
+	}
+	a.done.Do(func() {
+		result := codexTelemetryTerminal{status: status, body: terminal, firstEvent: a.firstEvent, firstToken: a.firstToken}
+		codexTelemetryGlobal.enqueueAnalytics(codexTerminalEvents(a.profile, result))
+		codexTelemetryGlobal.recordTurnMetrics(a.profile, result)
+	})
+}
+
+type codexTelemetryBody struct {
+	io.ReadCloser
+	attempt  *codexTelemetryAttempt
+	pending  []byte
+	event    []byte
+	dropping bool
+}
+
+func (b *codexTelemetryBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		b.observe(p[:n])
+	}
+	if err == io.EOF {
+		b.flushJSON()
+		b.attempt.finish("interrupted", nil)
+	}
+	return n, err
+}
+
+func (b *codexTelemetryBody) Close() error {
+	b.attempt.finish("interrupted", nil)
+	return b.ReadCloser.Close()
+}
+
+func (b *codexTelemetryBody) observe(data []byte) {
+	for len(data) > 0 {
+		i := bytes.IndexByte(data, '\n')
+		part := data
+		if i >= 0 {
+			part = data[:i]
+		}
+		if !b.dropping && len(b.pending)+len(part) <= codexTelemetryMaxEventBytes {
+			b.pending = append(b.pending, part...)
+		} else {
+			b.pending, b.event, b.dropping = nil, nil, true
+		}
+		if i < 0 {
+			return
+		}
+		b.line(bytes.TrimSuffix(b.pending, []byte{'\r'}))
+		b.pending = b.pending[:0]
+		data = data[i+1:]
+	}
+}
+
+func (b *codexTelemetryBody) line(line []byte) {
+	if len(line) == 0 {
+		b.processEvent(b.event)
+		b.event, b.dropping = b.event[:0], false
+		return
+	}
+	if bytes.HasPrefix(line, []byte("data:")) && !b.dropping {
+		part := bytes.TrimSpace(line[5:])
+		if len(b.event)+len(part) <= codexTelemetryMaxEventBytes {
+			b.event = append(b.event, part...)
+		}
+	}
+}
+
+func (b *codexTelemetryBody) processEvent(data []byte) {
+	if !json.Valid(data) {
+		return
+	}
+	now := time.Now()
+	if b.attempt.firstEvent.IsZero() {
+		b.attempt.firstEvent = now
+	}
+	typ := gjson.GetBytes(data, "type").String()
+	if b.attempt.firstToken.IsZero() && strings.HasSuffix(typ, ".delta") {
+		b.attempt.firstToken = now
+	}
+	switch typ {
+	case "response.completed":
+		b.attempt.finish("completed", data)
+	case "response.failed", "error":
+		b.attempt.finish("failed", data)
+	case "response.incomplete":
+		b.attempt.finish("interrupted", data)
+	}
+}
+
+func (b *codexTelemetryBody) flushJSON() {
+	if len(b.event) > 0 {
+		b.processEvent(b.event)
+		return
+	}
+	if json.Valid(b.pending) {
+		status := gjson.GetBytes(b.pending, "status").String()
+		if status == "completed" {
+			b.attempt.finish("completed", b.pending)
+		} else if status == "failed" {
+			b.attempt.finish("failed", b.pending)
+		}
+	}
+}
