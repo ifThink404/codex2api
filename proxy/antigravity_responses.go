@@ -560,13 +560,19 @@ func responsesToGeminiInternal(raw []byte, project, model string) (map[string]an
 				if callID == "" || name == "" {
 					return nil, antigravityOAuthUnsupported("orphan function_call_output")
 				}
-				output, outputErr := antigravityFunctionOutputText(m["output"])
+				output, images, outputErr := antigravityFunctionOutput(m["output"])
 				if outputErr != nil {
 					return nil, outputErr
 				}
-				addParts("user", []any{map[string]any{"functionResponse": map[string]any{
-					"name": name, "response": map[string]any{"result": output}, "id": callID,
-				}}})
+				functionResponse := map[string]any{
+					"name":     name,
+					"response": map[string]any{"result": output},
+					"id":       callID,
+				}
+				if len(images) > 0 {
+					functionResponse["parts"] = images
+				}
+				addParts("user", []any{map[string]any{"functionResponse": functionResponse}})
 			case "reasoning":
 				// Codex and the Anthropic bridge echo previous reasoning items
 				// back as conversation history. Their payload is an opaque
@@ -776,35 +782,46 @@ func antigravityGeminiFunctionArguments(raw any) (any, error) {
 	return raw, nil
 }
 
-func antigravityFunctionOutputText(raw any) (string, error) {
+func antigravityFunctionOutput(raw any) (string, []any, error) {
 	if raw == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	if text, ok := raw.(string); ok {
-		return text, nil
+		return text, nil, nil
 	}
 	if parts, ok := raw.([]any); ok {
 		texts := make([]string, 0, len(parts))
+		images := make([]any, 0)
 		for _, part := range parts {
 			partValue, ok := part.(map[string]any)
 			if !ok {
-				return "", antigravityOAuthUnsupported("non-text function_call_output parts")
+				return "", nil, antigravityOAuthUnsupported("non-map function_call_output parts")
 			}
 			partType := lowerStringField(partValue, "type")
-			if partType != "" && partType != "input_text" && partType != "output_text" && partType != "text" {
-				return "", antigravityOAuthUnsupported("function_call_output part type " + partType)
-			}
-			if text, ok := partValue["text"].(string); ok {
-				texts = append(texts, text)
+			switch partType {
+			case "", "input_text", "output_text", "text":
+				if text, ok := partValue["text"].(string); ok {
+					texts = append(texts, text)
+				} else if text, ok := partValue["content"].(string); ok {
+					texts = append(texts, text)
+				}
+			case "input_image", "image_url":
+				inlinePart, err := antigravityExtractInlineImagePart(partValue)
+				if err != nil {
+					return "", nil, err
+				}
+				images = append(images, inlinePart)
+			default:
+				return "", nil, antigravityOAuthUnsupported("function_call_output part type " + partType)
 			}
 		}
-		return strings.Join(texts, "\n"), nil
+		return strings.Join(texts, "\n"), images, nil
 	}
 	encoded, err := json.Marshal(raw)
 	if err != nil {
-		return "", fmt.Errorf("encode function_call_output: %w", err)
+		return "", nil, fmt.Errorf("encode function_call_output: %w", err)
 	}
-	return string(encoded), nil
+	return string(encoded), nil, nil
 }
 
 func antigravityGeminiNeedsToolSignature(model string) bool {
