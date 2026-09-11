@@ -15,16 +15,33 @@ type codexMetricDescriptor struct {
 	attributes string
 }
 
-type codexMetricSample struct {
+// codexMetricPoint 是单个 (指标, 属性集合) 在一个导出周期内的聚合状态。
+//
+// 真实 Codex 客户端走 OpenTelemetry SDK 的 PeriodicReader + Delta 时间性：
+// SDK 会对每个 (instrument, attribute set) 维护 count/sum/min/max/bucketCounts，
+// 而不是把多轮观测压成一个标量。这里照搬同一模型，保证不同 model/session 的
+// 观测各自成点、直方图分布不丢失。
+type codexMetricPoint struct {
 	descriptor codexMetricDescriptor
-	value      float64
+	attributes map[string]string
+	// sum 指标（counter）：周期内累加值。
+	sumValue float64
+	// histogram：周期内逐观测累加的聚合量。
+	count        uint64
+	sum          float64
+	min          float64
+	max          float64
+	bucketCounts []uint64
+	// gauge：周期内最后一次观测值。
+	lastValue float64
+	observed  bool
 }
 
 type codexMetricState struct {
 	profile           codexTelemetryProfile
 	started           time.Time
 	lastSeen          time.Time
-	pending           map[string]float64
+	points            map[string]*codexMetricPoint
 	externalAgentSent bool
 }
 
@@ -97,6 +114,105 @@ var codexMetricDescriptors = []codexMetricDescriptor{
 	{"codex.rollout.size_bytes", "histogram", "", ""},
 }
 
+// codexMetricDescriptorIndex 按名称索引描述符，供记录路径按名字取类型/属性/单位。
+var codexMetricDescriptorIndex = func() map[string]codexMetricDescriptor {
+	index := make(map[string]codexMetricDescriptor, len(codexMetricDescriptors))
+	for _, descriptor := range codexMetricDescriptors {
+		index[descriptor.name] = descriptor
+	}
+	return index
+}()
+
+// codexDynamicMetricNames 是只随回合增量发送、不出现在启动批次的指标。
+// 用显式名单替代 `codexMetricDescriptors[:62]` 的位置契约：增删或重排目录
+// 都不会再静默改变启动/增量的划分。
+var codexDynamicMetricNames = map[string]struct{}{
+	"codex.hooks.run":                    {},
+	"codex.hooks.run.duration_ms":        {},
+	"codex.external_agent_config.detect": {},
+	"codex.rollout.size_bytes":           {},
+}
+
+// codexStartupMetric 报告指标是否属于账号首次出现时发送的启动批次。
+func codexStartupMetric(name string) bool {
+	_, dynamic := codexDynamicMetricNames[name]
+	return !dynamic
+}
+
+// codexStatsigDisabledMetrics 是真实 Codex 客户端明确不通过 Statsig 路由发送的
+// 指标（codex-rs/otel/src/metrics/config.rs 的 STATSIG_DISABLED_METRICS）。当前
+// 目录未包含这些名字，这里保留护栏，避免后续新增时误发。
+var codexStatsigDisabledMetrics = map[string]struct{}{
+	"codex.api_request":                                   {},
+	"codex.api_request.duration_ms":                       {},
+	"codex.conversation.turn.count":                       {},
+	"exec_server_client_requests_total":                   {},
+	"codex.responses_api_engine_iapi_ttft.duration_ms":    {},
+	"codex.responses_api_engine_service_tbt.duration_ms":  {},
+	"codex.responses_api_engine_service_ttft.duration_ms": {},
+	"codex.tool.call":                                     {},
+	"codex.tool.call.duration_ms":                         {},
+	"codex.turn.cost_microusd":                            {},
+	"codex.turn.token_usage":                              {},
+}
+
+// codexTelemetryStatsigAllowed 报告某指标是否允许走 Statsig。
+func codexTelemetryStatsigAllowed(name string) bool {
+	_, disabled := codexStatsigDisabledMetrics[name]
+	return !disabled
+}
+
+// newCodexMetricPoint 用一次观测初始化聚合点。
+func newCodexMetricPoint(descriptor codexMetricDescriptor, attributes map[string]string, value float64) *codexMetricPoint {
+	bounds := codexBoundsFor(descriptor)
+	point := &codexMetricPoint{
+		descriptor: descriptor, attributes: attributes, min: value, max: value,
+		bucketCounts: make([]uint64, len(bounds)+1), observed: true,
+	}
+	switch descriptor.kind {
+	case "sum":
+		point.sumValue = value
+	case "histogram":
+		point.count, point.sum = 1, value
+		point.bucketCounts[codexBucketIndex(bounds, value)] = 1
+	default:
+		point.lastValue = value
+	}
+	return point
+}
+
+// recordCodexMetricPoint 把一次观测并入聚合点。调用方需持有 manager 锁。
+func recordCodexMetricPoint(state *codexMetricState, profile codexTelemetryProfile, name string, value float64) {
+	descriptor, ok := codexMetricDescriptorIndex[name]
+	if !ok {
+		return
+	}
+	attributes := codexMetricAttributeMap(profile, descriptor)
+	key := name + "\x00" + codexMetricAttributeSignature(attributes)
+	point := state.points[key]
+	if point == nil {
+		state.points[key] = newCodexMetricPoint(descriptor, attributes, value)
+		return
+	}
+	switch descriptor.kind {
+	case "sum":
+		point.sumValue += value
+	case "histogram":
+		if value < point.min {
+			point.min = value
+		}
+		if value > point.max {
+			point.max = value
+		}
+		point.count++
+		point.sum += value
+		bounds := codexBoundsFor(descriptor)
+		point.bucketCounts[codexBucketIndex(bounds, value)]++
+	default:
+		point.lastValue, point.observed = value, true
+	}
+}
+
 // touchMetrics 初始化账号级指标状态并发送启动指标。
 func (m *codexTelemetryManager) touchMetrics(profile codexTelemetryProfile) {
 	m.mu.Lock()
@@ -117,18 +233,22 @@ func (m *codexTelemetryManager) ensureMetricStateLocked(profile codexTelemetryPr
 		state.profile, state.lastSeen = profile, now
 		return state, false
 	}
-	state := &codexMetricState{profile: profile, started: now, lastSeen: now, pending: make(map[string]float64)}
+	state := &codexMetricState{profile: profile, started: now, lastSeen: now, points: make(map[string]*codexMetricPoint)}
 	m.metrics[accountID] = state
 	return state, true
 }
 
 // enqueueStartupMetrics 发送账号首次出现时的启动指标批次。
 func (m *codexTelemetryManager) enqueueStartupMetrics(profile codexTelemetryProfile, started time.Time) {
-	samples := make([]codexMetricSample, 0, 62)
-	for _, descriptor := range codexMetricDescriptors[:62] {
-		samples = append(samples, codexMetricSample{descriptor: descriptor, value: codexStartupMetricValue(profile, descriptor)})
+	points := make([]*codexMetricPoint, 0, 62)
+	for _, descriptor := range codexMetricDescriptors {
+		if !codexStartupMetric(descriptor.name) {
+			continue
+		}
+		attributes := codexMetricAttributeMap(profile, descriptor)
+		points = append(points, newCodexMetricPoint(descriptor, attributes, codexStartupMetricValue(profile, descriptor)))
 	}
-	m.enqueueMetrics(profile.client, buildCodexMetricsPayload(profile, started, samples))
+	m.enqueueMetrics(profile.client, buildCodexMetricsPayload(profile, started, points))
 }
 
 // recordTurnMetrics 累积一次 turn 产生的增量指标。
@@ -140,19 +260,24 @@ func (m *codexTelemetryManager) recordTurnMetrics(profile codexTelemetryProfile,
 	m.mu.Lock()
 	state, created := m.ensureMetricStateLocked(profile, now)
 	started := state.started
-	state.pending["codex.turn.e2e_duration_ms"] += float64(max(now.Sub(profile.started).Milliseconds(), 0))
-	state.pending["codex.turn.ttft.duration_ms"] += float64(elapsedMillis(profile.started, result.firstEvent, now))
-	state.pending["codex.turn.ttfm.duration_ms"] += float64(elapsedMillis(profile.started, result.firstToken, now))
-	state.pending["codex.hooks.run"], state.pending["codex.hooks.run.duration_ms"] = state.pending["codex.hooks.run"]+4, state.pending["codex.hooks.run.duration_ms"]+4
-	state.pending["codex.turn.tool.call"] += float64(boolInt(profile.dynamicTool) + boolInt(profile.fileChange))
+	recordCodexMetricPoint(state, profile, "codex.turn.e2e_duration_ms", float64(max(now.Sub(profile.started).Milliseconds(), 0)))
+	recordCodexMetricPoint(state, profile, "codex.turn.ttft.duration_ms", float64(elapsedMillis(profile.started, result.firstEvent, now)))
+	recordCodexMetricPoint(state, profile, "codex.turn.ttfm.duration_ms", float64(elapsedMillis(profile.started, result.firstToken, now)))
+	// 每轮 4 个 hook 执行：计数累加 4，时长为 4 个独立观测。
+	recordCodexMetricPoint(state, profile, "codex.hooks.run", 4)
+	for index := range 4 {
+		duration := float64(50 + simulatedInt(profile.turnID+":hook:"+strconv.Itoa(index), 1500))
+		recordCodexMetricPoint(state, profile, "codex.hooks.run.duration_ms", duration)
+	}
+	recordCodexMetricPoint(state, profile, "codex.turn.tool.call", float64(boolInt(profile.dynamicTool)+boolInt(profile.fileChange)))
 	if profile.command {
-		state.pending["codex.tool.unified_exec"]++
+		recordCodexMetricPoint(state, profile, "codex.tool.unified_exec", 1)
 	}
 	if profile.fileChange {
-		state.pending["codex.rollout.size_bytes"] += float64(1024 + simulatedInt(profile.turnID+":rollout", 196608))
+		recordCodexMetricPoint(state, profile, "codex.rollout.size_bytes", float64(1024+simulatedInt(profile.turnID+":rollout", 196608)))
 	}
 	if !state.externalAgentSent {
-		state.pending["codex.external_agent_config.detect"]++
+		recordCodexMetricPoint(state, profile, "codex.external_agent_config.detect", 1)
 		state.externalAgentSent = true
 	}
 	m.mu.Unlock()
@@ -167,14 +292,18 @@ func (m *codexTelemetryManager) flushMetrics(now time.Time) {
 		client  codexTelemetryClient
 		profile codexTelemetryProfile
 		started time.Time
-		values  map[string]float64
+		points  []*codexMetricPoint
 	}
 	m.mu.Lock()
 	batches := make([]batch, 0, len(m.metrics))
 	for accountID, state := range m.metrics {
-		if len(state.pending) > 0 {
-			batches = append(batches, batch{state.profile.client, state.profile, state.started, state.pending})
-			state.pending = make(map[string]float64)
+		if len(state.points) > 0 {
+			points := make([]*codexMetricPoint, 0, len(state.points))
+			for _, point := range state.points {
+				points = append(points, point)
+			}
+			batches = append(batches, batch{state.profile.client, state.profile, state.started, points})
+			state.points = make(map[string]*codexMetricPoint)
 		}
 		if now.Sub(state.lastSeen) > codexTelemetryStateTTL {
 			delete(m.metrics, accountID)
@@ -187,19 +316,8 @@ func (m *codexTelemetryManager) flushMetrics(now time.Time) {
 	}
 	m.mu.Unlock()
 	for _, item := range batches {
-		m.enqueueMetrics(item.client, buildCodexMetricsPayload(item.profile, item.started, codexMetricSamples(item.values)))
+		m.enqueueMetrics(item.client, buildCodexMetricsPayload(item.profile, item.started, item.points))
 	}
-}
-
-// codexMetricSamples 按固定描述符顺序生成指标样本。
-func codexMetricSamples(values map[string]float64) []codexMetricSample {
-	samples := make([]codexMetricSample, 0, len(values))
-	for _, descriptor := range codexMetricDescriptors {
-		if value, ok := values[descriptor.name]; ok {
-			samples = append(samples, codexMetricSample{descriptor: descriptor, value: value})
-		}
-	}
-	return samples
 }
 
 // enqueueMetrics 将非空 OTLP payload 放入异步发送队列。
@@ -209,11 +327,14 @@ func (m *codexTelemetryManager) enqueueMetrics(client codexTelemetryClient, body
 	}
 }
 
-// buildCodexMetricsPayload 将样本编码为 OTLP JSON 请求体。
-func buildCodexMetricsPayload(profile codexTelemetryProfile, started time.Time, samples []codexMetricSample) []byte {
-	metrics := make([]any, 0, len(samples))
-	for _, sample := range samples {
-		metrics = append(metrics, codexOTLPMetric(profile, started, sample))
+// buildCodexMetricsPayload 将聚合点编码为 OTLP JSON 请求体。
+func buildCodexMetricsPayload(profile codexTelemetryProfile, started time.Time, points []*codexMetricPoint) []byte {
+	metrics := make([]any, 0, len(points))
+	for _, point := range points {
+		if !codexTelemetryStatsigAllowed(point.descriptor.name) {
+			continue
+		}
+		metrics = append(metrics, codexOTLPMetricPoint(started, point))
 	}
 	resource := map[string]any{"attributes": codexResourceAttributes(profile), "droppedAttributesCount": 0, "entityRefs": []any{}}
 	scope := map[string]any{"name": "codex", "version": "", "attributes": []any{}, "droppedAttributesCount": 0}
@@ -223,52 +344,97 @@ func buildCodexMetricsPayload(profile codexTelemetryProfile, started time.Time, 
 	return body
 }
 
-// codexOTLPMetric 将单个样本转换为 OTLP sum 或 histogram。
-func codexOTLPMetric(profile codexTelemetryProfile, started time.Time, sample codexMetricSample) map[string]any {
+// codexOTLPMetricPoint 将聚合点转换为 OTLP sum、histogram 或 gauge。
+func codexOTLPMetricPoint(started time.Time, point *codexMetricPoint) map[string]any {
 	nowNanos := strconv.FormatInt(time.Now().UnixNano(), 10)
 	startNanos := strconv.FormatInt(started.UnixNano(), 10)
-	point := map[string]any{
-		"attributes": codexMetricAttributes(profile, sample.descriptor), "startTimeUnixNano": startNanos,
+	dataPoint := map[string]any{
+		"attributes": codexOTLPAttributes(point.attributes), "startTimeUnixNano": startNanos,
 		"timeUnixNano": nowNanos, "exemplars": []any{}, "flags": 0,
 	}
-	metric := map[string]any{"name": sample.descriptor.name, "description": "", "unit": sample.descriptor.unit, "metadata": []any{}}
-	if sample.descriptor.kind == "sum" {
-		point["asInt"] = int64(sample.value)
-		metric["sum"] = map[string]any{"dataPoints": []any{point}, "aggregationTemporality": 1, "isMonotonic": true}
-		return metric
+	metric := map[string]any{"name": point.descriptor.name, "description": "", "unit": point.descriptor.unit, "metadata": []any{}}
+	switch point.descriptor.kind {
+	case "sum":
+		dataPoint["asInt"] = int64(point.sumValue)
+		metric["sum"] = map[string]any{"dataPoints": []any{dataPoint}, "aggregationTemporality": 1, "isMonotonic": true}
+	case "gauge":
+		dataPoint["asInt"] = int64(point.lastValue)
+		metric["gauge"] = map[string]any{"dataPoints": []any{dataPoint}}
+	default:
+		if point.descriptor.unit == "ms" {
+			metric["description"] = "Duration in milliseconds."
+		}
+		dataPoint["count"], dataPoint["sum"], dataPoint["min"], dataPoint["max"] = point.count, point.sum, point.min, point.max
+		dataPoint["explicitBounds"] = codexBoundsFor(point.descriptor)
+		dataPoint["bucketCounts"] = point.bucketCounts
+		metric["histogram"] = map[string]any{"dataPoints": []any{dataPoint}, "aggregationTemporality": 1}
 	}
-	if sample.descriptor.unit == "ms" {
-		metric["description"] = "Duration in milliseconds."
-	}
-	count, minimum, maximum := uint64(1), sample.value, sample.value
-	if sample.descriptor.name == "codex.hooks.run.duration_ms" {
-		count, minimum, maximum = 4, 0, max(sample.value/4, 1)
-	}
-	point["count"], point["sum"], point["min"], point["max"] = count, sample.value, minimum, maximum
-	point["explicitBounds"] = codexHistogramBounds
-	buckets := codexHistogramBuckets(sample.value/float64(count), count)
-	if sample.descriptor.name == "codex.hooks.run.duration_ms" {
-		buckets[0], buckets[1] = 1, count-1
-	}
-	point["bucketCounts"] = buckets
-	metric["histogram"] = map[string]any{"dataPoints": []any{point}, "aggregationTemporality": 1}
 	return metric
 }
 
+// codexHistogramBounds 是 Codex duration 直方图使用的毫秒边界，与客户端
+// MILLISECOND_DURATION_BOUNDARIES 完全一致。
 var codexHistogramBounds = []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 3000, 3500, 4000, 4500, 5000, 6000, 7000, 7500, 8000, 9000, 10000, 12000, 15000, 20000, 30000, 60000, 120000}
 
-// codexHistogramBuckets 将观测值归入 Codex 使用的显式边界。
-func codexHistogramBuckets(value float64, count uint64) []uint64 {
-	buckets := make([]uint64, len(codexHistogramBounds)+1)
-	index := len(codexHistogramBounds)
-	for i, bound := range codexHistogramBounds {
+// codexSecondHistogramBounds 对应客户端 SECOND_DURATION_BOUNDARIES。
+var codexSecondHistogramBounds = []float64{0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 12.0, 15.0, 20.0, 30.0, 60.0, 120.0}
+
+// codexOtelDefaultHistogramBounds 是 OpenTelemetry SDK 对未指定边界的直方图
+// 使用的默认桶。
+var codexOtelDefaultHistogramBounds = []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000}
+
+// codexBoundsFor 按单位返回指标应使用的显式边界。真实客户端只给 duration
+// 指标配置边界，其它直方图走 SDK 默认桶。
+func codexBoundsFor(descriptor codexMetricDescriptor) []float64 {
+	switch descriptor.unit {
+	case "ms":
+		return codexHistogramBounds
+	case "s":
+		return codexSecondHistogramBounds
+	default:
+		return codexOtelDefaultHistogramBounds
+	}
+}
+
+// codexBucketIndex 返回观测值落入的桶下标（最后一个为 +Inf 桶）。
+func codexBucketIndex(bounds []float64, value float64) int {
+	for index, bound := range bounds {
 		if value <= bound {
-			index = i
-			break
+			return index
 		}
 	}
-	buckets[index] = count
-	return buckets
+	return len(bounds)
+}
+
+// codexMetricAttributeMap 返回指标属性集合。
+func codexMetricAttributeMap(profile codexTelemetryProfile, descriptor codexMetricDescriptor) map[string]string {
+	values := make(map[string]string)
+	if descriptor.attributes == "" {
+		return values
+	}
+	for _, name := range strings.Split(descriptor.attributes, ",") {
+		if value := codexMetricAttributeValue(profile, descriptor.name, name); value != "" {
+			values[name] = value
+		}
+	}
+	return values
+}
+
+// codexMetricAttributeSignature 生成稳定的属性集签名，用于把观测归并到同一个点。
+func codexMetricAttributeSignature(attributes map[string]string) string {
+	keys := make([]string, 0, len(attributes))
+	for key := range attributes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var builder strings.Builder
+	for _, key := range keys {
+		builder.WriteString(key)
+		builder.WriteByte('=')
+		builder.WriteString(attributes[key])
+		builder.WriteByte('\x1f')
+	}
+	return builder.String()
 }
 
 // codexResourceAttributes 构造 OTLP resource 级客户端属性。
@@ -279,20 +445,6 @@ func codexResourceAttributes(profile codexTelemetryProfile) []any {
 		"telemetry.sdk.version": "0.31.0", "telemetry.sdk.language": "rust",
 		"service.name": codexMetricResourceService(profile), "telemetry.sdk.name": "opentelemetry",
 	})
-}
-
-// codexMetricAttributes 构造指定指标的属性集合。
-func codexMetricAttributes(profile codexTelemetryProfile, descriptor codexMetricDescriptor) []any {
-	if descriptor.attributes == "" {
-		return []any{}
-	}
-	values := make(map[string]string)
-	for _, name := range strings.Split(descriptor.attributes, ",") {
-		if value := codexMetricAttributeValue(profile, descriptor.name, name); value != "" {
-			values[name] = value
-		}
-	}
-	return codexOTLPAttributes(values)
 }
 
 // codexOTLPAttributes 按 key 排序编码 OTLP 字符串属性。

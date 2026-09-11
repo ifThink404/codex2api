@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,18 +78,22 @@ func TestCodexTelemetryDoesNotInferResume(t *testing.T) {
 	}
 }
 
+func testCodexMetricPoint(descriptor codexMetricDescriptor, value float64) *codexMetricPoint {
+	return newCodexMetricPoint(descriptor, codexMetricAttributeMap(testCodexTelemetryProfile(), descriptor), value)
+}
+
 func TestCodexTelemetryMetricsContract(t *testing.T) {
 	if len(codexMetricDescriptors) != 66 {
 		t.Fatalf("metric descriptor count = %d, want 66", len(codexMetricDescriptors))
 	}
 	names := make(map[string]bool, len(codexMetricDescriptors))
-	samples := make([]codexMetricSample, 0, len(codexMetricDescriptors))
+	points := make([]*codexMetricPoint, 0, len(codexMetricDescriptors))
 	for _, descriptor := range codexMetricDescriptors {
 		if names[descriptor.name] {
 			t.Fatalf("duplicate metric %q", descriptor.name)
 		}
 		names[descriptor.name] = true
-		samples = append(samples, codexMetricSample{descriptor: descriptor, value: 1})
+		points = append(points, testCodexMetricPoint(descriptor, 1))
 	}
 	for _, name := range []string{"codex.hooks.run", "codex.hooks.run.duration_ms", "codex.external_agent_config.detect", "codex.rollout.size_bytes"} {
 		if !names[name] {
@@ -96,7 +101,7 @@ func TestCodexTelemetryMetricsContract(t *testing.T) {
 		}
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(buildCodexMetricsPayload(testCodexTelemetryProfile(), time.Now(), samples), &payload); err != nil {
+	if err := json.Unmarshal(buildCodexMetricsPayload(testCodexTelemetryProfile(), time.Now(), points), &payload); err != nil {
 		t.Fatalf("decode OTLP payload: %v", err)
 	}
 	resourceMetrics := payload["resourceMetrics"].([]any)
@@ -112,12 +117,186 @@ func TestCodexTelemetryMetricsContract(t *testing.T) {
 				t.Fatalf("metric %q is not delta temporality", metric["name"])
 			}
 		}
-		if metric["name"] == "codex.hooks.run.duration_ms" {
-			points := metric["histogram"].(map[string]any)["dataPoints"].([]any)
-			if points[0].(map[string]any)["count"] != float64(4) {
-				t.Fatal("hook duration histogram must contain four hook observations")
+		histogram, ok := metric["histogram"].(map[string]any)
+		if !ok {
+			continue
+		}
+		dataPoint := histogram["dataPoints"].([]any)[0].(map[string]any)
+		buckets := dataPoint["bucketCounts"].([]any)
+		var bucketTotal float64
+		for _, bucket := range buckets {
+			bucketTotal += bucket.(float64)
+		}
+		if bucketTotal != dataPoint["count"].(float64) {
+			t.Fatalf("metric %q bucket total %v != count %v", metric["name"], bucketTotal, dataPoint["count"])
+		}
+		if len(dataPoint["explicitBounds"].([]any)) != len(buckets)-1 {
+			t.Fatalf("metric %q bounds/buckets mismatch", metric["name"])
+		}
+	}
+}
+
+// TestCodexTelemetryMetricAggregationKeepsObservations 回归 CodeRabbit 的
+// "preserve per-profile histogram observations" 问题：不同 model 的同一轮指标必须
+// 各自成点、保留独立 count/属性，同一 model 的多轮才累加。
+func TestCodexTelemetryMetricAggregationKeepsObservations(t *testing.T) {
+	m := newCodexTelemetryManager()
+	m.once.Do(func() {}) // 不启动 worker，直接检查内部状态
+	base := testCodexTelemetryProfile()
+	accountID := base.client.account.ID()
+
+	profileA := base
+	profileA.model = "gpt-6-astra"
+	profileA.started = time.Now().Add(-200 * time.Millisecond)
+	profileA.dynamicTool, profileA.command, profileA.fileChange = false, false, false
+	m.recordTurnMetrics(profileA, codexTelemetryTerminal{status: "completed"})
+
+	profileB := base
+	profileB.model = "gpt-5.6-sol"
+	profileB.turnID = "turn-2"
+	profileB.started = time.Now().Add(-4 * time.Second)
+	profileB.dynamicTool, profileB.command, profileB.fileChange = false, false, false
+	m.recordTurnMetrics(profileB, codexTelemetryTerminal{status: "completed"})
+
+	state := m.metrics[accountID]
+	if state == nil {
+		t.Fatal("metric state missing")
+	}
+	byModel := make(map[string]*codexMetricPoint)
+	for _, point := range state.points {
+		if point.descriptor.name != "codex.turn.e2e_duration_ms" {
+			continue
+		}
+		if point.count != 1 {
+			t.Fatalf("per-model point count = %d, want 1", point.count)
+		}
+		byModel[point.attributes["model"]] = point
+	}
+	fast, slow := byModel["gpt-6-astra"], byModel["gpt-5.6-sol"]
+	if fast == nil || slow == nil {
+		t.Fatalf("per-model attribute points missing: %#v", byModel)
+	}
+	if slow.sum <= fast.sum {
+		t.Fatalf("durations collapsed across profiles: fast=%v slow=%v", fast.sum, slow.sum)
+	}
+
+	// 同一 model 再来一轮，应并入同一个点，count 累加而不是新建。
+	m.recordTurnMetrics(profileA, codexTelemetryTerminal{status: "completed"})
+	if fast.count != 2 {
+		t.Fatalf("same-profile observations must accumulate, count = %d", fast.count)
+	}
+	if len(byModel) != 2 {
+		t.Fatalf("aggregation created extra points: %d", len(byModel))
+	}
+}
+
+// TestCodexTelemetryHookHistogramCountsObservations 校验 hook 时长直方图按真实
+// 观测数累加，而不是旧实现的量纲特判。
+func TestCodexTelemetryHookHistogramCountsObservations(t *testing.T) {
+	m := newCodexTelemetryManager()
+	m.once.Do(func() {})
+	profile := testCodexTelemetryProfile()
+	m.recordTurnMetrics(profile, codexTelemetryTerminal{status: "completed"})
+	state := m.metrics[profile.client.account.ID()]
+	if state == nil {
+		t.Fatal("metric state missing")
+	}
+	for _, point := range state.points {
+		if point.descriptor.name != "codex.hooks.run.duration_ms" {
+			continue
+		}
+		if point.count != 4 {
+			t.Fatalf("hook duration histogram count = %d, want 4", point.count)
+		}
+		var bucketTotal uint64
+		for _, bucket := range point.bucketCounts {
+			bucketTotal += bucket
+		}
+		if bucketTotal != point.count {
+			t.Fatalf("hook bucket total = %d, want %d", bucketTotal, point.count)
+		}
+		return
+	}
+	t.Fatal("hook duration histogram missing")
+}
+
+// TestCodexTelemetryRedirectRejected 校验遥测请求拒绝跟随重定向，避免携带
+// Bearer 凭证被转发到重定向目标。
+func TestCodexTelemetryRedirectRejected(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		http.Redirect(w, request, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	profile := testCodexTelemetryProfile()
+	err := sendCodexTelemetryJob(codexTelemetryJob{client: profile.client, url: redirector.URL, body: []byte(`{}`)})
+	if err == nil {
+		t.Fatal("telemetry client must not follow redirects")
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target received credentials %d times", targetHits)
+	}
+}
+
+// TestCodexTelemetryAcceptedLinesIsolatedRequest 校验 accepted-line-fingerprints
+// 独占一个请求，其余事件合并成批。
+func TestCodexTelemetryAcceptedLinesIsolatedRequest(t *testing.T) {
+	m := newCodexTelemetryManager()
+	m.once.Do(func() {})
+	profile := testCodexTelemetryProfile()
+	events := codexTerminalEvents(profile, codexTelemetryTerminal{status: "completed"})
+	m.enqueueAnalytics(events)
+
+	var batches [][]map[string]any
+	for len(m.queue) > 0 {
+		job := <-m.queue
+		var payload struct {
+			Events []map[string]any `json:"events"`
+		}
+		if err := json.Unmarshal(job.body, &payload); err != nil {
+			t.Fatalf("decode analytics batch: %v", err)
+		}
+		batches = append(batches, payload.Events)
+	}
+	if len(batches) < 2 {
+		t.Fatalf("analytics batch count = %d, want accepted-lines split out", len(batches))
+	}
+	isolatedAccepted := 0
+	for _, batch := range batches {
+		hasAccepted := false
+		for _, event := range batch {
+			if event["event_type"] == "codex_accepted_line_fingerprints" {
+				hasAccepted = true
 			}
 		}
+		if !hasAccepted {
+			continue
+		}
+		if len(batch) != 1 {
+			t.Fatalf("accepted-line-fingerprints must be isolated, batch = %#v", batch)
+		}
+		isolatedAccepted++
+	}
+	if isolatedAccepted != 1 {
+		t.Fatalf("isolated accepted-line-fingerprints batches = %d, want 1", isolatedAccepted)
+	}
+}
+
+// TestCodexTelemetryStatsigGuard 校验客户端明确禁用的指标不会被发往 Statsig。
+func TestCodexTelemetryStatsigGuard(t *testing.T) {
+	for _, name := range []string{"codex.tool.call", "codex.tool.call.duration_ms", "codex.turn.token_usage", "codex.api_request"} {
+		if codexTelemetryStatsigAllowed(name) {
+			t.Fatalf("metric %q must be blocked from Statsig", name)
+		}
+	}
+	if !codexTelemetryStatsigAllowed("codex.turn.e2e_duration_ms") {
+		t.Fatal("normal metric must stay allowed")
 	}
 }
 
@@ -156,11 +335,57 @@ func TestCodexTelemetryTransportHeaders(t *testing.T) {
 		}
 	}
 	analytics, metrics := <-requests, <-requests
-	if analytics.Get("Authorization") != "Bearer test-token" || analytics.Get("Chatgpt-Account-Id") != "acct-test" || analytics.Get("Originator") != "codex_cli_rs" {
+	if analytics.Get("Authorization") != "Bearer test-token" || analytics.Get("Chatgpt-Account-Id") != "acct-test" || analytics.Get("Originator") != "codex_cli_rs" || analytics.Get("User-Agent") != profile.client.userAgent {
 		t.Fatalf("analytics headers = %#v", analytics)
 	}
 	if metrics.Get("Authorization") != "" || metrics.Get("statsig-api-key") != "test-statsig-key" || metrics.Get("User-Agent") != "OTel-OTLP-Exporter-Rust/0.31.0" {
 		t.Fatalf("metrics headers = %#v", metrics)
+	}
+}
+
+// TestCodexTelemetryStartupMetricPartition 校验启动/动态指标的划分来自显式名单，
+// 而不是 `codexMetricDescriptors[:62]` 的位置契约。
+func TestCodexTelemetryStartupMetricPartition(t *testing.T) {
+	catalog := make(map[string]bool, len(codexMetricDescriptors))
+	startup := 0
+	for _, descriptor := range codexMetricDescriptors {
+		catalog[descriptor.name] = true
+		if codexStartupMetric(descriptor.name) {
+			startup++
+		}
+	}
+	for name := range codexDynamicMetricNames {
+		if !catalog[name] {
+			t.Fatalf("dynamic metric %q missing from catalog", name)
+		}
+	}
+	if startup != len(codexMetricDescriptors)-len(codexDynamicMetricNames) {
+		t.Fatalf("startup=%d catalog=%d dynamic=%d", startup, len(codexMetricDescriptors), len(codexDynamicMetricNames))
+	}
+	if startup != 62 {
+		t.Fatalf("startup metric count = %d, want 62", startup)
+	}
+}
+
+// TestCodexTelemetryParsesWebsocketSSE 校验 WS 上游的 SSE 包装流同样被解析：
+// wsrelay.websocketResponseToHTTP 把每个 WebSocket 帧写成 `data: <json>\n\n`，
+// 与 HTTP 路径同形，所以两种传输共用同一套观测逻辑。
+func TestCodexTelemetryParsesWebsocketSSE(t *testing.T) {
+	attempt := &codexTelemetryAttempt{profile: testCodexTelemetryProfile()}
+	stream := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws\"}}\n\n"
+	body := &codexTelemetryBody{ReadCloser: io.NopCloser(strings.NewReader(stream)), attempt: attempt}
+	buf := make([]byte, 128)
+	for {
+		if _, err := body.Read(buf); err != nil {
+			break
+		}
+	}
+	if attempt.firstEvent.IsZero() {
+		t.Fatal("WebSocket-shaped SSE stream did not record first event")
+	}
+	if attempt.firstToken.IsZero() {
+		t.Fatal("WebSocket-shaped SSE stream did not record first token")
 	}
 }
 

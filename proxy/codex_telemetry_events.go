@@ -65,7 +65,7 @@ func buildCodexTelemetryProfile(client codexTelemetryClient, input codexTelemetr
 		rootTurnID: firstNonEmptyString(metadata.Get("root_turn_id").String(), turnID),
 		model:      firstNonEmptyString(gjson.GetBytes(input.body, "model").String(), "gpt-6-astra"),
 		effort:     effort, serviceTier: firstNonEmptyString(gjson.GetBytes(input.body, "service_tier").String(), "default"),
-		started: time.Now(), websocket: input.websocket, turnMetadata: metadata,
+		started: time.Now(), turnMetadata: metadata,
 	}
 }
 
@@ -213,7 +213,7 @@ func codexTurnEventBase(profile codexTelemetryProfile, spec codexTurnSpec) map[s
 		"session_id": profile.sessionID, "shell_command_count": commandCount, "started_at": profile.started.Unix(),
 		"steer_count": 0, "subagent_source": nil, "subagent_tool_call_count": 0, "submission_type": nil,
 		"thread_id": spec.threadID, "thread_source": "user", "tool_blocking_ms": 0,
-		"total_tokens": 0, "total_tool_call_count": dynamicCount + fileCount, "turn_error": nil,
+		"total_tokens": 0, "total_tool_call_count": dynamicCount + commandCount + fileCount, "turn_error": nil,
 		"turn_id": spec.turnID, "turn_trigger": "composer", "web_search_count": 0, "workspace_kind": "projectless",
 	}
 }

@@ -29,10 +29,10 @@ func sendCodexTelemetryJob(job codexTelemetryJob) error {
 	} else {
 		applyCodexAnalyticsHeaders(req.Header, job.client)
 	}
-	client := getPooledClient(job.client.account, job.client.proxyURL)
+	client := codexTelemetryHTTPClient(getPooledClient(job.client.account, job.client.proxyURL))
 	if viaResin {
 		req.Header.Set("X-Resin-Account", ResinAccountID(job.client.account))
-		client = resinClient
+		client = codexTelemetryHTTPClient(resinClient)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -46,12 +46,36 @@ func sendCodexTelemetryJob(job codexTelemetryJob) error {
 	return nil
 }
 
+// codexTelemetryHTTPClient 克隆共享池化客户端并禁止跟随重定向。
+//
+// 分析请求携带账号的 Bearer access token；Go 默认策略只在跨 host 重定向时剥离
+// Authorization，同 host 的 https→http 降级不会剥离。池化客户端按账号复用、
+// 不可就地改写，因此这里浅拷贝一份并覆盖 CheckRedirect，避免凭证被转发到
+// 重定向目标。与 grok_media.go / claude_api_key.go 的既有做法一致。
+func codexTelemetryHTTPClient(base *http.Client) *http.Client {
+	if base == nil {
+		return &http.Client{CheckRedirect: codexTelemetryRejectRedirect}
+	}
+	clone := *base
+	clone.CheckRedirect = codexTelemetryRejectRedirect
+	return &clone
+}
+
+// codexTelemetryRejectRedirect 拒绝跟随一切重定向。
+func codexTelemetryRejectRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 type codexTelemetryHTTPError struct{ status int }
 
 // Error 返回遥测上游的 HTTP 状态描述。
 func (e *codexTelemetryHTTPError) Error() string { return http.StatusText(e.status) }
 
 // applyCodexAnalyticsHeaders 添加 Codex 分析接口要求的客户端身份头。
+//
+// 真实客户端 send_track_events_request 只显式加 auth 头与 Content-Type，但其
+// create_client() 经 default_headers() 给所有请求注入 originator 与 User-Agent
+// （codex-rs/login/src/auth/default_client.rs），因此这里同样带上这两个头。
 func applyCodexAnalyticsHeaders(headers http.Header, client codexTelemetryClient) {
 	headers.Set("Authorization", "Bearer "+client.accessToken)
 	headers.Set("Chatgpt-Account-Id", client.accountID)

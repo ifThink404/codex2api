@@ -58,7 +58,6 @@ type codexTelemetryProfile struct {
 	serviceTier  string
 	started      time.Time
 	firstThread  bool
-	websocket    bool
 	dynamicTool  bool
 	command      bool
 	fileChange   bool
@@ -73,7 +72,6 @@ type codexTelemetryRequest struct {
 	apiKey        string
 	deviceCfg     *DeviceProfileConfig
 	headers       http.Header
-	websocket     bool
 }
 
 type codexTelemetryTerminal struct {
@@ -217,6 +215,10 @@ func codexTelemetryEligible(body []byte, headers http.Header) bool {
 }
 
 // beginCodexTelemetry 为符合条件的请求创建观测并发送初始化数据。
+//
+// HTTP 与 WebSocket 两条上游都覆盖：WS 执行器会把 WebSocket 帧包装成标准 SSE
+// `http.Response`（见 wsrelay.websocketResponseToHTTP），因此本链路基于 SSE 的
+// 解析对两种传输同样适用，不需要按传输分流。
 func beginCodexTelemetry(input codexTelemetryRequest) *codexTelemetryAttempt {
 	if input.account == nil || !codexTelemetryEligible(input.body, input.headers) {
 		return nil
@@ -279,8 +281,40 @@ func codexTelemetryOriginator(userAgent string, headers http.Header) string {
 	return CodexOriginatorForGeneratedUserAgent(userAgent)
 }
 
-// enqueueAnalytics 编码并排队发送一批分析事件。
+// codexAnalyticsIsolatedEvent 是需要单独成批发送的事件类型。真实客户端
+// TrackEventRequest::should_send_in_isolated_request 只对 accepted-line-fingerprints
+// 返回 true，即该事件必须独占一个 HTTP 请求。
+func codexAnalyticsIsolatedEvent(eventType string) bool {
+	return eventType == "codex_accepted_line_fingerprints"
+}
+
+// enqueueAnalytics 按真实客户端的批处理规则编码并排队发送分析事件：
+// isolated 事件（accepted-line-fingerprints）单独成批，其余事件合并发送。
 func (m *codexTelemetryManager) enqueueAnalytics(events []codexAnalyticsEvent) {
+	if len(events) == 0 {
+		return
+	}
+	batch := make([]codexAnalyticsEvent, 0, len(events))
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		m.enqueueAnalyticsBatch(batch)
+		batch = batch[:0]
+	}
+	for _, event := range events {
+		if codexAnalyticsIsolatedEvent(event.EventType) {
+			flush()
+			m.enqueueAnalyticsBatch([]codexAnalyticsEvent{event})
+			continue
+		}
+		batch = append(batch, event)
+	}
+	flush()
+}
+
+// enqueueAnalyticsBatch 编码一个非空事件批次并入队。
+func (m *codexTelemetryManager) enqueueAnalyticsBatch(events []codexAnalyticsEvent) {
 	if len(events) == 0 {
 		return
 	}

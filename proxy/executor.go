@@ -562,7 +562,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	}
 	telemetryAttempt := beginCodexTelemetry(codexTelemetryRequest{
 		account: account, body: requestBody, sessionID: sessionID, proxyOverride: proxyOverride,
-		apiKey: apiKey, deviceCfg: deviceCfg, headers: headers, websocket: wantWebsocket,
+		apiKey: apiKey, deviceCfg: deviceCfg, headers: headers,
 	})
 	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
 	poolRouteKey := ""
