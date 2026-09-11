@@ -560,6 +560,11 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if account.IsCodexAgentIdentity() {
 		wantWebsocket = false
 	}
+	telemetryAttempt := beginCodexTelemetry(codexTelemetryRequest{
+		account: account, body: requestBody, sessionID: sessionID, proxyOverride: proxyOverride,
+		apiKey: apiKey, deviceCfg: deviceCfg, headers: headers, websocket: wantWebsocket,
+	})
+	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
 	poolRouteKey := ""
 	if wantWebsocket {
 		sessionID = strings.TrimSpace(sessionID)

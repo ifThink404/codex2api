@@ -162,6 +162,16 @@ Codex2API 采用三层配置架构：
 
 `GET /api/admin/ops/overview` 的 `api_key_auth_cache` 提供开关、L1 条目/字节数、本地/远端命中、数据库配置加载次数、动态额度读取次数、修订号复核次数、失效、淘汰、超限旁路和错误计数。评估收益时应分开看配置回源与动态额度查询。
 
+#### Codex 客户端遥测
+
+Codex OAuth 的普通 Responses 请求默认按所选 Codex Desktop/CLI 指纹异步发送客户端遥测。分析事件发送到 `chatgpt.com/backend-api/codex/analytics-events/events`，OTLP metrics 发送到 `ab.chatgpt.com/otlp/v1/metrics`；失败不会影响代理响应，并沿用账号的代理地址。
+
+管理后台「系统设置 → Codex → 客户端遥测」可实时开关，字段为 `codex_telemetry_enabled`。`CODEX_TELEMETRY_ENABLED=false` 是部署层强制关闭开关。`CODEX_STATSIG_API_KEY` 可覆盖内置的公开 SDK key；当前 Codex Desktop 与 Codex CLI 使用同一个 key。
+
+事件按 Codex CLI 的结构模拟：首次观察到的 thread 使用 `codex_thread_initialized`，每轮生成 `codex_turn_event`，结束时生成 4 个 `codex_hook_run`。`codex_dynamic_tool_call_event` 每轮随机 40%，命中后其中 50% 同时生成 `codex_command_execution_event`；`codex_file_change_event` 每轮随机 20%，并同时生成 `codex_accepted_line_fingerprints`，其 `repo_hash` 固定为 `null`。这些随机事件不解析请求中的命令、工具调用或 diff。
+
+原生 `codex_turn_steer_event` 只对应 App Server 的 `turn/steer` RPC；Responses 请求无法可靠识别，因此不会模拟。普通 turn 固定 `steer_count=0`，历史 assistant/tool 内容、`previous_response_id` 和恢复标记也不会被推断为 resumed。标题和 guardian 子流程使用独立的初始化事件。OTLP 首批发送 HAR 中的 62 个启动指标，随后每 60 秒增量发送本轮产生的 turn/hook/tool 指标；包含仅在后续样本出现的 4 个名称，共覆盖 66 个名称。
+
 #### 窗口用量与连接池
 
 API Key 启用多个 RPM/RPD/费用/Token 窗口时，Redis 会通过一次 `MGET` 读取这些窗口的统计缓存；缺失、损坏或读取失败仍按原有顺序回源数据库。自然日和滑动窗口的定义、60 秒统计缓存 TTL、错误码均保持不变。Memory 驱动提供同等批量读取语义。
