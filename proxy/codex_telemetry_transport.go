@@ -8,10 +8,16 @@ import (
 )
 
 // sendCodexTelemetryJob 使用账号网络配置发送一批遥测数据。
+//
+// 遥测与 /responses 一样携带账号身份打 chatgpt.com。Resin 启用时必须同样经反代
+// 发出，否则所有账号会共享本机出口 IP 直连，与该账号 /responses 流量的出口不一致
+// （issue #372 的不变量）。metrics 端点虽不带 Bearer，但真实客户端从同一出口发出，
+// 这里保持一致。
 func sendCodexTelemetryJob(job codexTelemetryJob) error {
 	ctx, cancel := context.WithTimeout(context.Background(), codexTelemetryTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, job.url, bytes.NewReader(job.body))
+	finalURL, resinClient, viaResin := resinMaintenanceTarget(job.client.account, job.url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, finalURL, bytes.NewReader(job.body))
 	if err != nil {
 		return err
 	}
@@ -23,7 +29,12 @@ func sendCodexTelemetryJob(job codexTelemetryJob) error {
 	} else {
 		applyCodexAnalyticsHeaders(req.Header, job.client)
 	}
-	resp, err := getPooledClient(job.client.account, job.client.proxyURL).Do(req)
+	client := getPooledClient(job.client.account, job.client.proxyURL)
+	if viaResin {
+		req.Header.Set("X-Resin-Account", ResinAccountID(job.client.account))
+		client = resinClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

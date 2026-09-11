@@ -99,36 +99,47 @@ var codexMetricDescriptors = []codexMetricDescriptor{
 
 // touchMetrics 初始化账号级指标状态并发送启动指标。
 func (m *codexTelemetryManager) touchMetrics(profile codexTelemetryProfile) {
-	accountID := profile.client.account.ID()
 	m.mu.Lock()
-	state := m.metrics[accountID]
-	if state != nil {
-		state.profile, state.lastSeen = profile, profile.started
-		m.mu.Unlock()
-		return
-	}
-	state = &codexMetricState{profile: profile, started: profile.started, lastSeen: profile.started, pending: make(map[string]float64)}
-	m.metrics[accountID] = state
+	state, created := m.ensureMetricStateLocked(profile, profile.started)
+	started := state.started
 	m.mu.Unlock()
+	if created {
+		m.enqueueStartupMetrics(profile, started)
+	}
+}
+
+// ensureMetricStateLocked 在持锁状态下取得或创建账号级指标状态。
+// 创建时 lastSeen 取当前观测时间而非 profile.started：超过 TTL 的长回合结束后
+// 若仍以回合开始时间登记，下一次 flush 会立刻把状态清掉。
+func (m *codexTelemetryManager) ensureMetricStateLocked(profile codexTelemetryProfile, now time.Time) (*codexMetricState, bool) {
+	accountID := profile.client.account.ID()
+	if state := m.metrics[accountID]; state != nil {
+		state.profile, state.lastSeen = profile, now
+		return state, false
+	}
+	state := &codexMetricState{profile: profile, started: now, lastSeen: now, pending: make(map[string]float64)}
+	m.metrics[accountID] = state
+	return state, true
+}
+
+// enqueueStartupMetrics 发送账号首次出现时的启动指标批次。
+func (m *codexTelemetryManager) enqueueStartupMetrics(profile codexTelemetryProfile, started time.Time) {
 	samples := make([]codexMetricSample, 0, 62)
 	for _, descriptor := range codexMetricDescriptors[:62] {
 		samples = append(samples, codexMetricSample{descriptor: descriptor, value: codexStartupMetricValue(profile, descriptor)})
 	}
-	m.enqueueMetrics(profile.client, buildCodexMetricsPayload(profile, state.started, samples))
+	m.enqueueMetrics(profile.client, buildCodexMetricsPayload(profile, started, samples))
 }
 
 // recordTurnMetrics 累积一次 turn 产生的增量指标。
+//
+// 状态查找与创建在同一次持锁内完成：此前先解锁调 touchMetrics 再重新加锁查表，
+// 若分钟级 flush 恰好在中间按 TTL 清掉刚创建的状态，这里会对 nil 解引用。
 func (m *codexTelemetryManager) recordTurnMetrics(profile codexTelemetryProfile, result codexTelemetryTerminal) {
 	now := time.Now()
 	m.mu.Lock()
-	state := m.metrics[profile.client.account.ID()]
-	if state == nil {
-		m.mu.Unlock()
-		m.touchMetrics(profile)
-		m.mu.Lock()
-		state = m.metrics[profile.client.account.ID()]
-	}
-	state.profile, state.lastSeen = profile, now
+	state, created := m.ensureMetricStateLocked(profile, now)
+	started := state.started
 	state.pending["codex.turn.e2e_duration_ms"] += float64(max(now.Sub(profile.started).Milliseconds(), 0))
 	state.pending["codex.turn.ttft.duration_ms"] += float64(elapsedMillis(profile.started, result.firstEvent, now))
 	state.pending["codex.turn.ttfm.duration_ms"] += float64(elapsedMillis(profile.started, result.firstToken, now))
@@ -145,6 +156,9 @@ func (m *codexTelemetryManager) recordTurnMetrics(profile codexTelemetryProfile,
 		state.externalAgentSent = true
 	}
 	m.mu.Unlock()
+	if created {
+		m.enqueueStartupMetrics(profile, started)
+	}
 }
 
 // flushMetrics 发送待处理指标并清理过期账号和 thread 状态。

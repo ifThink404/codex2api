@@ -2152,7 +2152,7 @@ export default function Settings() {
     const normalized = {
       ...cacheNormalized,
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
-      codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? true,
+      codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: normalizeFirstTokenModeValue(cacheNormalized.first_token_mode),
       models_list_read_max_bytes:
@@ -2203,7 +2203,7 @@ export default function Settings() {
     auto_reset_credits_before_expiry_min: 60,
     auto_activate_5h_window_enabled: false,
     codex_force_websocket: false,
-    codex_telemetry_enabled: true,
+    codex_telemetry_enabled: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
     codex_ws_keepalive_enabled: false,

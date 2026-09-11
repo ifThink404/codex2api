@@ -163,3 +163,92 @@ func TestCodexTelemetryTransportHeaders(t *testing.T) {
 		t.Fatalf("metrics headers = %#v", metrics)
 	}
 }
+
+func TestCodexTelemetryDefaultOff(t *testing.T) {
+	if DefaultRuntimeSettings().CodexTelemetryEnabled {
+		t.Fatal("simulated telemetry must be opt-in")
+	}
+}
+
+func TestCodexTelemetryJobRoutesThroughResin(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		requests <- request.Clone(request.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	SetResinConfig(&ResinConfig{BaseURL: server.URL + "/token", PlatformName: "test"})
+	defer SetResinConfig(nil)
+	profile := testCodexTelemetryProfile()
+	job := codexTelemetryJob{client: profile.client, url: "https://chatgpt.com/backend-api/codex/analytics-events/events", body: []byte(`{}`)}
+	if err := sendCodexTelemetryJob(job); err != nil {
+		t.Fatalf("send telemetry via resin: %v", err)
+	}
+	got := <-requests
+	if got.URL.Path != "/token/test/https/chatgpt.com/backend-api/codex/analytics-events/events" {
+		t.Fatalf("resin path = %q", got.URL.Path)
+	}
+	if got.Header.Get("X-Resin-Account") != ResinAccountID(profile.client.account) || got.Header.Get("Authorization") != "Bearer test-token" {
+		t.Fatalf("resin headers = %#v", got.Header)
+	}
+}
+
+func TestCodexTelemetryRecordTurnWithoutStateDoesNotPanic(t *testing.T) {
+	m := newCodexTelemetryManager()
+	m.once.Do(func() {}) // 不启动 worker，直接观察队列内容
+	profile := testCodexTelemetryProfile()
+	profile.started = time.Now().Add(-2 * codexTelemetryStateTTL)
+	m.recordTurnMetrics(profile, codexTelemetryTerminal{status: "completed"})
+	if len(m.queue) != 1 {
+		t.Fatalf("startup batch count = %d, want 1", len(m.queue))
+	}
+	state := m.metrics[profile.client.account.ID()]
+	if state == nil || time.Since(state.lastSeen) > time.Minute {
+		t.Fatalf("state after long turn = %#v", state)
+	}
+	// 分钟级 flush 不应把刚结束的长回合状态清掉，也不应再发第二批启动指标。
+	m.flushMetrics(time.Now())
+	if m.metrics[profile.client.account.ID()] == nil {
+		t.Fatal("state evicted right after a long turn")
+	}
+	m.recordTurnMetrics(profile, codexTelemetryTerminal{status: "completed"})
+	if len(m.queue) != 2 { // 1 startup + 1 flush batch；第二轮不再发启动指标
+		t.Fatalf("queue after second turn = %d, want 2", len(m.queue))
+	}
+}
+
+func TestCodexTelemetryProfileIgnoresLocalAffinityKey(t *testing.T) {
+	profile := testCodexTelemetryProfile()
+	headers := http.Header{}
+	headers.Set(downstreamAffinityHeader, "tenant-secret-42")
+	profile = buildCodexTelemetryProfile(profile.client, codexTelemetryRequest{account: profile.client.account, body: []byte(`{"model":"gpt-6-astra"}`), sessionID: "upstream-session", headers: headers})
+	if profile.sessionID != "upstream-session" || profile.threadID != "upstream-session" {
+		t.Fatalf("session identity = %q/%q, must not derive from local affinity key", profile.sessionID, profile.threadID)
+	}
+}
+
+func TestCodexTelemetryBodyCloseRacesRead(t *testing.T) {
+	pr, pw := io.Pipe()
+	attempt := &codexTelemetryAttempt{profile: testCodexTelemetryProfile()}
+	body := &codexTelemetryBody{ReadCloser: pr, attempt: attempt}
+	go func() {
+		for i := 0; i < 50; i++ {
+			_, _ = pw.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n"))
+		}
+		_ = pw.Close()
+	}()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		for {
+			if _, err := body.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(time.Millisecond)
+	_ = body.Close()
+	<-done
+}

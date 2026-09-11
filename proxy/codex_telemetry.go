@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codex2api/auth"
@@ -21,8 +22,10 @@ const (
 	codexAnalyticsEndpointDefault = "https://chatgpt.com/backend-api/codex/analytics-events/events"
 	codexMetricsEndpointDefault   = "https://ab.chatgpt.com/otlp/v1/metrics"
 	codexStatsigAPIKeyDefault     = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO"
-	codexTelemetryQueueSize       = 256
+	codexTelemetryQueueSize       = 1024
+	codexTelemetryWorkers         = 4
 	codexTelemetryTimeout         = 10 * time.Second
+	codexTelemetryDropLogInterval = time.Minute
 	codexTelemetryStateTTL        = 5 * time.Minute
 	codexTelemetryMaxEventBytes   = 8 << 20
 )
@@ -81,7 +84,10 @@ type codexTelemetryTerminal struct {
 }
 
 type codexTelemetryAttempt struct {
-	profile    codexTelemetryProfile
+	profile codexTelemetryProfile
+	// mu 保护 firstEvent/firstToken：读流 goroutine 在 processEvent 里写，
+	// 上游超时或下游断开时 Close 可能从另一个 goroutine 触发 finish 读取。
+	mu         sync.Mutex
 	firstEvent time.Time
 	firstToken time.Time
 	done       sync.Once
@@ -100,6 +106,9 @@ type codexTelemetryManager struct {
 	mu      sync.Mutex
 	threads map[string]time.Time
 	metrics map[int64]*codexMetricState
+	// 队列满丢弃只按间隔汇总打日志，避免高流量下逐条刷屏。
+	dropped     atomic.Int64
+	dropLogUnix atomic.Int64
 }
 
 // newCodexTelemetryManager 创建进程内遥测队列与状态容器。
@@ -112,9 +121,14 @@ func newCodexTelemetryManager() *codexTelemetryManager {
 }
 
 // start 按需启动发送 worker 和指标刷新循环。
+//
+// 每个 job 是一次同步 POST（可能经账号代理，几百毫秒到 10s 超时），单 worker
+// 串行在几 QPS 就会把队列打满；用一小组并发 worker 撑住常规流量，队列满时仍丢弃。
 func (m *codexTelemetryManager) start() {
 	m.once.Do(func() {
-		go m.worker()
+		for range codexTelemetryWorkers {
+			go m.worker()
+		}
 		go func() {
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
@@ -134,13 +148,18 @@ func (m *codexTelemetryManager) worker() {
 	}
 }
 
-// enqueue 非阻塞地加入遥测任务，队列满时直接丢弃。
+// enqueue 非阻塞地加入遥测任务，队列满时直接丢弃并按间隔汇总记日志。
 func (m *codexTelemetryManager) enqueue(job codexTelemetryJob) {
 	m.start()
 	select {
 	case m.queue <- job:
 	default:
-		log.Printf("Codex 遥测队列已满，丢弃本批数据")
+		dropped := m.dropped.Add(1)
+		now := time.Now().Unix()
+		last := m.dropLogUnix.Load()
+		if now-last >= int64(codexTelemetryDropLogInterval/time.Second) && m.dropLogUnix.CompareAndSwap(last, now) {
+			log.Printf("Codex 遥测队列已满，累计丢弃 %d 批数据", dropped)
+		}
 	}
 }
 
@@ -168,11 +187,11 @@ func codexStatsigAPIKey() string {
 }
 
 // codexTelemetryEnabled 合并运行时开关与部署级关闭设置。
+//
+// 运行时开关默认关闭（实验性功能，事件是模拟生成的，是否外发由部署者决定），
+// 因此测试里调用 ExecuteRequest 不会把真实令牌打到上游，不需要按二进制名特判。
 func codexTelemetryEnabled() bool {
 	if !CurrentRuntimeSettings().CodexTelemetryEnabled {
-		return false
-	}
-	if (strings.HasSuffix(os.Args[0], ".test") || strings.HasSuffix(os.Args[0], ".test.exe")) && os.Getenv("CODEX_TELEMETRY_TEST_ENABLE") != "1" {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_TELEMETRY_ENABLED"))) {
@@ -293,7 +312,10 @@ func (a *codexTelemetryAttempt) finish(status string, terminal []byte) {
 		return
 	}
 	a.done.Do(func() {
-		result := codexTelemetryTerminal{status: status, body: terminal, firstEvent: a.firstEvent, firstToken: a.firstToken}
+		a.mu.Lock()
+		firstEvent, firstToken := a.firstEvent, a.firstToken
+		a.mu.Unlock()
+		result := codexTelemetryTerminal{status: status, body: terminal, firstEvent: firstEvent, firstToken: firstToken}
 		codexTelemetryGlobal.enqueueAnalytics(codexTerminalEvents(a.profile, result))
 		codexTelemetryGlobal.recordTurnMetrics(a.profile, result)
 	})
@@ -365,13 +387,15 @@ func (b *codexTelemetryBody) processEvent(data []byte) {
 		return
 	}
 	now := time.Now()
+	typ := gjson.GetBytes(data, "type").String()
+	b.attempt.mu.Lock()
 	if b.attempt.firstEvent.IsZero() {
 		b.attempt.firstEvent = now
 	}
-	typ := gjson.GetBytes(data, "type").String()
 	if b.attempt.firstToken.IsZero() && strings.HasSuffix(typ, ".delta") {
 		b.attempt.firstToken = now
 	}
+	b.attempt.mu.Unlock()
 	switch typ {
 	case "response.completed":
 		b.attempt.finish("completed", data)
