@@ -97,6 +97,7 @@ var codexMetricDescriptors = []codexMetricDescriptor{
 	{"codex.rollout.size_bytes", "histogram", "", ""},
 }
 
+// touchMetrics 初始化账号级指标状态并发送启动指标。
 func (m *codexTelemetryManager) touchMetrics(profile codexTelemetryProfile) {
 	accountID := profile.client.account.ID()
 	m.mu.Lock()
@@ -116,6 +117,7 @@ func (m *codexTelemetryManager) touchMetrics(profile codexTelemetryProfile) {
 	m.enqueueMetrics(profile.client, buildCodexMetricsPayload(profile, state.started, samples))
 }
 
+// recordTurnMetrics 累积一次 turn 产生的增量指标。
 func (m *codexTelemetryManager) recordTurnMetrics(profile codexTelemetryProfile, result codexTelemetryTerminal) {
 	now := time.Now()
 	m.mu.Lock()
@@ -145,6 +147,7 @@ func (m *codexTelemetryManager) recordTurnMetrics(profile codexTelemetryProfile,
 	m.mu.Unlock()
 }
 
+// flushMetrics 发送待处理指标并清理过期账号和 thread 状态。
 func (m *codexTelemetryManager) flushMetrics(now time.Time) {
 	type batch struct {
 		client  codexTelemetryClient
@@ -174,6 +177,7 @@ func (m *codexTelemetryManager) flushMetrics(now time.Time) {
 	}
 }
 
+// codexMetricSamples 按固定描述符顺序生成指标样本。
 func codexMetricSamples(values map[string]float64) []codexMetricSample {
 	samples := make([]codexMetricSample, 0, len(values))
 	for _, descriptor := range codexMetricDescriptors {
@@ -184,12 +188,14 @@ func codexMetricSamples(values map[string]float64) []codexMetricSample {
 	return samples
 }
 
+// enqueueMetrics 将非空 OTLP payload 放入异步发送队列。
 func (m *codexTelemetryManager) enqueueMetrics(client codexTelemetryClient, body []byte) {
 	if len(body) > 0 {
 		m.enqueue(codexTelemetryJob{client: client, url: codexMetricsEndpoint, body: body, metrics: true})
 	}
 }
 
+// buildCodexMetricsPayload 将样本编码为 OTLP JSON 请求体。
 func buildCodexMetricsPayload(profile codexTelemetryProfile, started time.Time, samples []codexMetricSample) []byte {
 	metrics := make([]any, 0, len(samples))
 	for _, sample := range samples {
@@ -203,6 +209,7 @@ func buildCodexMetricsPayload(profile codexTelemetryProfile, started time.Time, 
 	return body
 }
 
+// codexOTLPMetric 将单个样本转换为 OTLP sum 或 histogram。
 func codexOTLPMetric(profile codexTelemetryProfile, started time.Time, sample codexMetricSample) map[string]any {
 	nowNanos := strconv.FormatInt(time.Now().UnixNano(), 10)
 	startNanos := strconv.FormatInt(started.UnixNano(), 10)
@@ -236,6 +243,7 @@ func codexOTLPMetric(profile codexTelemetryProfile, started time.Time, sample co
 
 var codexHistogramBounds = []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 3000, 3500, 4000, 4500, 5000, 6000, 7000, 7500, 8000, 9000, 10000, 12000, 15000, 20000, 30000, 60000, 120000}
 
+// codexHistogramBuckets 将观测值归入 Codex 使用的显式边界。
 func codexHistogramBuckets(value float64, count uint64) []uint64 {
 	buckets := make([]uint64, len(codexHistogramBounds)+1)
 	index := len(codexHistogramBounds)
@@ -249,6 +257,7 @@ func codexHistogramBuckets(value float64, count uint64) []uint64 {
 	return buckets
 }
 
+// codexResourceAttributes 构造 OTLP resource 级客户端属性。
 func codexResourceAttributes(profile codexTelemetryProfile) []any {
 	_, _, osName, osVersion, _ := codexUserAgentParts(profile.client.userAgent, profile.client.version)
 	return codexOTLPAttributes(map[string]string{
@@ -258,6 +267,7 @@ func codexResourceAttributes(profile codexTelemetryProfile) []any {
 	})
 }
 
+// codexMetricAttributes 构造指定指标的属性集合。
 func codexMetricAttributes(profile codexTelemetryProfile, descriptor codexMetricDescriptor) []any {
 	if descriptor.attributes == "" {
 		return []any{}
@@ -271,6 +281,7 @@ func codexMetricAttributes(profile codexTelemetryProfile, descriptor codexMetric
 	return codexOTLPAttributes(values)
 }
 
+// codexOTLPAttributes 按 key 排序编码 OTLP 字符串属性。
 func codexOTLPAttributes(values map[string]string) []any {
 	attributes := make([]any, 0, len(values))
 	keys := make([]string, 0, len(values))
@@ -285,6 +296,7 @@ func codexOTLPAttributes(values map[string]string) []any {
 	return attributes
 }
 
+// codexMetricAttributeValue 返回指标属性的模拟值。
 func codexMetricAttributeValue(profile codexTelemetryProfile, metric, name string) string {
 	if name == "originator" && (metric == "codex.process.start" || strings.HasPrefix(metric, "codex.sqlite.")) {
 		return codexMetricResourceService(profile)
@@ -312,6 +324,7 @@ func codexMetricAttributeValue(profile codexTelemetryProfile, metric, name strin
 	return "default"
 }
 
+// codexMetricResourceService 返回客户端对应的 OTLP resource service。
 func codexMetricResourceService(profile codexTelemetryProfile) string {
 	if strings.EqualFold(codexClientName(profile), "Codex Desktop") {
 		return "codex-app-server"
@@ -319,6 +332,7 @@ func codexMetricResourceService(profile codexTelemetryProfile) string {
 	return firstNonEmptyString(profile.client.originator, "codex_cli_rs")
 }
 
+// codexMetricOriginator 按 Codex 规则清洗 originator。
 func codexMetricOriginator(profile codexTelemetryProfile) string {
 	value := strings.Map(func(char rune) rune {
 		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("._-/", char) {
@@ -336,6 +350,7 @@ func codexMetricOriginator(profile codexTelemetryProfile) string {
 	return value
 }
 
+// codexMetricProductService 返回 Desktop 或编辑器客户端的产品服务名。
 func codexMetricProductService(profile codexTelemetryProfile) string {
 	name := strings.ToLower(codexClientName(profile))
 	if name == "codex desktop" {
@@ -347,6 +362,7 @@ func codexMetricProductService(profile codexTelemetryProfile) string {
 	return ""
 }
 
+// codexMetricSessionSource 返回指标使用的会话来源。
 func codexMetricSessionSource(profile codexTelemetryProfile) string {
 	if service := codexMetricProductService(profile); service != "" {
 		return "vscode"
@@ -354,6 +370,7 @@ func codexMetricSessionSource(profile codexTelemetryProfile) string {
 	return "cli"
 }
 
+// codexStartupMetricValue 为启动指标生成符合类型的模拟观测值。
 func codexStartupMetricValue(profile codexTelemetryProfile, descriptor codexMetricDescriptor) float64 {
 	if descriptor.name == "codex.turn.unified_exec.running_processes" || descriptor.name == "codex.turn.tool.call" {
 		return 0

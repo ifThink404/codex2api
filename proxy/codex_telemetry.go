@@ -102,6 +102,7 @@ type codexTelemetryManager struct {
 	metrics map[int64]*codexMetricState
 }
 
+// newCodexTelemetryManager 创建进程内遥测队列与状态容器。
 func newCodexTelemetryManager() *codexTelemetryManager {
 	return &codexTelemetryManager{
 		queue:   make(chan codexTelemetryJob, codexTelemetryQueueSize),
@@ -110,6 +111,7 @@ func newCodexTelemetryManager() *codexTelemetryManager {
 	}
 }
 
+// start 按需启动发送 worker 和指标刷新循环。
 func (m *codexTelemetryManager) start() {
 	m.once.Do(func() {
 		go m.worker()
@@ -123,6 +125,7 @@ func (m *codexTelemetryManager) start() {
 	})
 }
 
+// worker 串行发送队列中的遥测任务。
 func (m *codexTelemetryManager) worker() {
 	for job := range m.queue {
 		if err := sendCodexTelemetryJob(job); err != nil {
@@ -131,6 +134,7 @@ func (m *codexTelemetryManager) worker() {
 	}
 }
 
+// enqueue 非阻塞地加入遥测任务，队列满时直接丢弃。
 func (m *codexTelemetryManager) enqueue(job codexTelemetryJob) {
 	m.start()
 	select {
@@ -140,6 +144,7 @@ func (m *codexTelemetryManager) enqueue(job codexTelemetryJob) {
 	}
 }
 
+// markThread 记录账号观察到的 thread，并报告它是否首次出现。
 func (m *codexTelemetryManager) markThread(accountID int64, threadID string, now time.Time) bool {
 	key := strconv.FormatInt(accountID, 10) + ":" + threadID
 	m.mu.Lock()
@@ -154,6 +159,7 @@ func (m *codexTelemetryManager) markThread(accountID int64, threadID string, now
 	return !found
 }
 
+// codexStatsigAPIKey 返回环境覆盖或官方公开 Statsig SDK key。
 func codexStatsigAPIKey() string {
 	if value := strings.TrimSpace(os.Getenv("CODEX_STATSIG_API_KEY")); value != "" {
 		return value
@@ -161,6 +167,7 @@ func codexStatsigAPIKey() string {
 	return codexStatsigAPIKeyDefault
 }
 
+// codexTelemetryEnabled 合并运行时开关与部署级关闭设置。
 func codexTelemetryEnabled() bool {
 	if !CurrentRuntimeSettings().CodexTelemetryEnabled {
 		return false
@@ -176,6 +183,7 @@ func codexTelemetryEnabled() bool {
 	}
 }
 
+// codexTelemetryEligible 判断请求是否应模拟官方 Codex 遥测。
 func codexTelemetryEligible(body []byte, headers http.Header) bool {
 	if !codexTelemetryEnabled() || headers == nil || !gjson.ValidBytes(body) {
 		return false
@@ -189,6 +197,7 @@ func codexTelemetryEligible(body []byte, headers http.Header) bool {
 	return !responsesBodyRequestsImageGeneration(body) && !requestBodyCompactionMeta(body).UsageTriggered
 }
 
+// beginCodexTelemetry 为符合条件的请求创建观测并发送初始化数据。
 func beginCodexTelemetry(input codexTelemetryRequest) *codexTelemetryAttempt {
 	if input.account == nil || !codexTelemetryEligible(input.body, input.headers) {
 		return nil
@@ -208,6 +217,7 @@ func beginCodexTelemetry(input codexTelemetryRequest) *codexTelemetryAttempt {
 	return attempt
 }
 
+// snapshotCodexTelemetryClient 固化本次请求实际使用的账号和客户端身份。
 func snapshotCodexTelemetryClient(input codexTelemetryRequest) (codexTelemetryClient, bool) {
 	client := codexTelemetryClient{
 		account: input.account, accessToken: input.account.GetAccessToken(),
@@ -242,6 +252,7 @@ func snapshotCodexTelemetryClient(input codexTelemetryRequest) (codexTelemetryCl
 	return client, client.userAgent != "" && client.originator != ""
 }
 
+// codexTelemetryOriginator 复用合法下游值或按 User-Agent 推导 originator。
 func codexTelemetryOriginator(userAgent string, headers http.Header) string {
 	if value := strings.TrimSpace(headers.Get("Originator")); IsCodexOfficialClientByHeaders(userAgent, value) && value != "" {
 		return value
@@ -249,6 +260,7 @@ func codexTelemetryOriginator(userAgent string, headers http.Header) string {
 	return CodexOriginatorForGeneratedUserAgent(userAgent)
 }
 
+// enqueueAnalytics 编码并排队发送一批分析事件。
 func (m *codexTelemetryManager) enqueueAnalytics(events []codexAnalyticsEvent) {
 	if len(events) == 0 {
 		return
@@ -259,6 +271,7 @@ func (m *codexTelemetryManager) enqueueAnalytics(events []codexAnalyticsEvent) {
 	}
 }
 
+// observeResult 根据上游结果立即结束观测或包装响应流。
 func (a *codexTelemetryAttempt) observeResult(resp *http.Response, err error) {
 	if a == nil {
 		return
@@ -274,6 +287,7 @@ func (a *codexTelemetryAttempt) observeResult(resp *http.Response, err error) {
 	resp.Body = &codexTelemetryBody{ReadCloser: resp.Body, attempt: a}
 }
 
+// finish 仅一次地提交终止事件和本轮指标。
 func (a *codexTelemetryAttempt) finish(status string, terminal []byte) {
 	if a == nil {
 		return
@@ -345,6 +359,7 @@ func (b *codexTelemetryBody) line(line []byte) {
 	}
 }
 
+// processEvent 解析 SSE 事件并记录首包、首 token 与终态。
 func (b *codexTelemetryBody) processEvent(data []byte) {
 	if !json.Valid(data) {
 		return
@@ -367,6 +382,7 @@ func (b *codexTelemetryBody) processEvent(data []byte) {
 	}
 }
 
+// flushJSON 在非流式响应结束时解析最终状态。
 func (b *codexTelemetryBody) flushJSON() {
 	if len(b.event) > 0 {
 		b.processEvent(b.event)

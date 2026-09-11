@@ -7,6 +7,7 @@ import (
 	"net/http"
 )
 
+// sendCodexTelemetryJob 使用账号网络配置发送一批遥测数据。
 func sendCodexTelemetryJob(job codexTelemetryJob) error {
 	ctx, cancel := context.WithTimeout(context.Background(), codexTelemetryTimeout)
 	defer cancel()
@@ -36,8 +37,10 @@ func sendCodexTelemetryJob(job codexTelemetryJob) error {
 
 type codexTelemetryHTTPError struct{ status int }
 
+// Error 返回遥测上游的 HTTP 状态描述。
 func (e *codexTelemetryHTTPError) Error() string { return http.StatusText(e.status) }
 
+// applyCodexAnalyticsHeaders 添加 Codex 分析接口要求的客户端身份头。
 func applyCodexAnalyticsHeaders(headers http.Header, client codexTelemetryClient) {
 	headers.Set("Authorization", "Bearer "+client.accessToken)
 	headers.Set("Chatgpt-Account-Id", client.accountID)
