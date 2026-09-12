@@ -79,6 +79,10 @@ func (h *Handler) applyResponsesUsageLimitFailure(account *auth.Account, resp *h
 // TestConnection 测试账号连接（SSE 流式返回）
 // GET /api/admin/accounts/:id/test
 func (h *Handler) TestConnection(c *gin.Context) {
+	h.testConnection(c, nil)
+}
+
+func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -91,6 +95,10 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	account := h.store.FindByID(id)
 	isTransient := false
 	if account == nil {
+		if quality != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "账号不在运行时池中"})
+			return
+		}
 		transient, buildErr := h.store.BuildTransientAccountByID(c.Request.Context(), id)
 		if buildErr != nil || transient == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "账号不在运行时池中"})
@@ -126,10 +134,27 @@ func (h *Handler) TestConnection(c *gin.Context) {
 		}
 	}
 
-	testModel, err := h.connectionTestModelForAccount(c.Request.Context(), account, strings.TrimSpace(c.Query("model")))
+	requestedModel := strings.TrimSpace(c.Query("model"))
+	if quality != nil {
+		requestedModel = quality.Model
+		if err := h.validateQualityTestForAccount(c.Request.Context(), account, *quality); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	testModel, err := h.connectionTestModelForAccount(c.Request.Context(), account, requestedModel)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	claudeSecurityCfg := h.store.ClaudeSecurityConfig()
+	payload := h.buildAccountConnectionTestPayload(c.Request.Context(), account, testModel, claudeSecurityCfg)
+	if quality != nil {
+		payload, err = buildQualityTestPayload(account, testModel, *quality, claudeSecurityCfg)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	// 设置 SSE 响应头
@@ -152,8 +177,6 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	}
 
 	// 构建最小测试请求体（参考 sub2api createOpenAITestPayload）
-	claudeSecurityCfg := h.store.ClaudeSecurityConfig()
-	payload := h.buildAccountConnectionTestPayload(c.Request.Context(), account, testModel, claudeSecurityCfg)
 	claudeFingerprintMode := ""
 	if isClaudeAccount {
 		claudeFingerprintMode = account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
@@ -187,7 +210,7 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 	if isClaudeAccount {
-		h.handleClaudeConnectionTest(c, account, resp, testModel, start, claudeFingerprintMode, isTransient, restoreOnSuccess, &transientOutcome, id)
+		h.handleClaudeConnectionTest(c, account, resp, testModel, start, claudeFingerprintMode, isTransient, restoreOnSuccess, &transientOutcome, id, quality != nil)
 		return
 	}
 
@@ -351,11 +374,13 @@ func (h *Handler) TestConnection(c *gin.Context) {
 					}
 				}
 			}
-			duration := time.Since(start).Milliseconds()
-			sendTestEvent(c, testEvent{
-				Type: "content",
-				Text: fmt.Sprintf("\n\n--- 耗时 %dms ---", duration),
-			})
+			if quality == nil {
+				duration := time.Since(start).Milliseconds()
+				sendTestEvent(c, testEvent{
+					Type: "content",
+					Text: fmt.Sprintf("\n\n--- 耗时 %dms ---", duration),
+				})
+			}
 			sendTestEvent(c, testEvent{Type: "test_complete", Success: true})
 			sentTerminal = true
 			return false
@@ -455,6 +480,7 @@ func (h *Handler) handleClaudeConnectionTest(
 	restoreOnSuccess bool,
 	transientOutcome *string,
 	id int64,
+	preserveWhitespace bool,
 ) {
 	// For API Key accounts fingerprintMode already carries the account-level
 	// client-identity emulation mode (empty = passthrough), so it is reported
@@ -512,11 +538,15 @@ func (h *Handler) handleClaudeConnectionTest(
 		proxy.SyncClaudeUsageState(usageStore, account, resp)
 	}
 	status, detail := readClaudeMessagesStreamObserved(c.Request.Context(), resp, func(text string) {
-		if strings.TrimSpace(text) != "" {
+		if text != "" && (preserveWhitespace || strings.TrimSpace(text) != "") {
 			recorder.contentReceived()
 			sendTestEvent(c, testEvent{Type: "content", Text: text})
 		}
-	}, recorder.observe)
+	}, recorder.observe, preserveWhitespace)
+	if preserveWhitespace && recorder.details.StopReason == "max_tokens" {
+		sendTestEvent(c, testEvent{Type: "error", Error: "输出达到模型 token 上限，HTML 可能不完整"})
+		return
+	}
 	if status != "success" {
 		if !isTransient {
 			applyClaudeConnectionStreamFailure(h, account, testModel, status, detail, resp)

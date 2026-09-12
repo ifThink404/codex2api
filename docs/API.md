@@ -598,6 +598,38 @@ Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`inpu
 
 ### 账号管理
 
+#### HTML 动画降智检测
+
+管理后台侧边栏「降智检测」位于 `/admin/quality-test`，可切换「检测工作台」和「检测记录」（`?view=history`）。默认题目为用 SVG 绘制鹈鹕骑自行车的 2D 动画，可以编辑提示词并选择账号、模型和思考强度；账号下拉按订阅类型显示颜色标识。
+
+检测作为服务端后台任务执行，切换页面、刷新或关闭标签页不会取消任务。账号身份与订阅快照、模型、思考强度、提示词、检测时间、状态、用量及生成内容保存在数据库中。记录分页展示，点击结果可重新预览和下载 HTML；`?job=<id>` 可直接定位结果。
+
+预览使用隔离 iframe，仅允许内联脚本、样式及数据资源，不授予后台同源访问权限。`GET /api/quality-test/preview` 是无凭据、无用户数据的静态预览容器，通过父页面消息接收 HTML；它不接收持久化写入，其独立 CSP 不放宽管理后台的脚本限制。
+
+- `GET /api/admin/accounts/:id/quality-test/options`：返回所选运行时账号的 `models` 和 `reasoning_efforts`。空字符串表示模型默认；Antigravity 的强度由模型名称固定，因此只返回默认项。
+- `POST /api/admin/accounts/:id/quality-test`：创建指定账号的后台检测任务，返回 `202 {"job": {...}}`，不切换到其他账号。
+- `GET /api/admin/quality-tests?page=1&page_size=20`：返回 `jobs`、`total`、`active_jobs` 和 `concurrency_limit`。列表不包含完整提示词与 HTML；每页最多 50 条。
+- `GET /api/admin/quality-tests/:id`：返回 `{"job": {...}}`，包含完整提示词、当前生成内容与统计；运行中可轮询。
+- `POST /api/admin/quality-tests/:id/cancel`：将运行任务标记为 `cancelling`，执行器收到停止请求后取消上游并保存 `stopped` 结果。
+
+创建请求示例：
+
+```json
+{
+  "model": "gpt-5.5",
+  "reasoning_effort": "high",
+  "prompt": "创建一个 HTML，内容是用 SVG 绘制一个鹈鹕骑自行车的 2D 动画。"
+}
+```
+
+以上 `/api/admin/*` 端点均要求 `X-Admin-Key`。模型及提示词必填；提示词不超过 16000 字节，单次任务最多 10 分钟，生成内容不超过 1 MiB。数据库唯一槽位将全部管理员、标签页及共享数据库实例的运行任务合计限制为 3 个，同一账号仅允许 1 个活动任务；名额用满或账号重复时返回 `409`，不排队。正在停止的任务仍占用名额，执行器退出后释放。
+
+任务状态为 `running`、`cancelling`、`completed`、`error`、`stopped`、`interrupted`。正常关闭服务会取消活动任务并保存中断结果；进程崩溃留下的任务在原 10 分钟截止时间加 30 秒宽限后清理，不自动重试上游。新表 `quality_test_jobs` 自动创建，兼容 PostgreSQL 和 SQLite。原先仅存在页面内存中的结果无法追溯迁移。
+
+思考强度按渠道构造：Codex/Responses/Grok 使用 `reasoning.effort`，Claude 使用原生 Messages 的自适应 `thinking` 与 `output_config.effort`；具体模型不支持该档位时会返回上游错误。测试沿用账号连接测试的代理、凭据、用量及冷却处理，会消耗上游额度，不经过公共 `/v1/*` 的 API Key 调度、计费或请求体重写规则。
+
+后台执行器消费完整上游流，保留纯模型文本和完成事件之后到达的最终统计，前端通过任务接口读取进度。耗时、首段输出时间及上游提供的 token 数据用于辅助比较，不返回自动「降智评分」；一次动画结果不能证明模型质量下降。
+
 #### GET /api/admin/accounts
 
 获取账号列表。

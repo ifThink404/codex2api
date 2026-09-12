@@ -45,19 +45,21 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	store             *auth.Store
-	modelRefreshFuncs map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
-	proxyRiskJobsMu   sync.RWMutex
-	proxyRiskJobs     map[string]*proxyRiskScoringJob
-	cache             cache.TokenCache
-	authCacheProxy    *proxy.Handler
-	db                *database.DB
-	cacheCfgStore     responseCacheSettingsStore
-	rateLimiter       *proxy.RateLimiter
-	systemUpdate      *systemUpdater
-	systemUpdateOnce  sync.Once
-	refreshAccount    func(context.Context, int64) error
-	probeUsage        func(context.Context, *auth.Account) error
+	qualityTestContext context.Context
+	qualityTestWG      sync.WaitGroup
+	store              *auth.Store
+	modelRefreshFuncs  map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
+	proxyRiskJobsMu    sync.RWMutex
+	proxyRiskJobs      map[string]*proxyRiskScoringJob
+	cache              cache.TokenCache
+	authCacheProxy     *proxy.Handler
+	db                 *database.DB
+	cacheCfgStore      responseCacheSettingsStore
+	rateLimiter        *proxy.RateLimiter
+	systemUpdate       *systemUpdater
+	systemUpdateOnce   sync.Once
+	refreshAccount     func(context.Context, int64) error
+	probeUsage         func(context.Context, *auth.Account) error
 
 	codexUsageRefreshRunning atomic.Bool
 
@@ -1089,6 +1091,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// 这两个端点必须注册在 adminAuthMiddleware 之外，否则会被 fail-closed 拦截。
 	r.GET("/api/admin/bootstrap-status", h.GetBootstrapStatus)
 	r.POST("/api/admin/bootstrap", h.PostBootstrap)
+	// Static, credential-free shell. Generated HTML is delivered by the parent via
+	// postMessage and remains in an opaque-origin sandbox, never stored by the server.
+	r.GET("/api/quality-test/preview", serveQualityTestPreview)
 
 	api := r.Group("/api/admin")
 	api.Use(h.adminAuthMiddleware())
@@ -1186,6 +1191,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/invite/plan", h.GetInviteGuidePlan)
 	api.POST("/accounts/invite/plan/probe", h.ProbeInviteGuidePlan)
 	api.GET("/accounts/:id/test", h.TestConnection)
+	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
+	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
+	api.GET("/quality-tests", h.ListQualityTests)
+	api.GET("/quality-tests/:id", h.GetQualityTest)
+	api.POST("/quality-tests/:id/cancel", h.CancelQualityTest)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
 	api.POST("/accounts/:id/usage/refresh", h.RefreshAccountUsage)
 	api.GET("/accounts/:id/subscription", h.GetAccountSubscription)

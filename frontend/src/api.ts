@@ -1,3 +1,4 @@
+import type { QualityTestJob, QualityTestJobsResponse } from './lib/qualityTest'
 import type {
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
@@ -1464,6 +1465,16 @@ export const api = {
   dismissPromptIntelligenceCandidate: (id: number) =>
     request<import('./types').PromptIntelligenceCandidate>(`/prompt-filter/intelligence/candidates/${id}/dismiss`, { method: 'POST' }),
   getModels: () => request<ModelsResponse>('/models'),
+  getQualityTestOptions: (id: number, signal?: AbortSignal) =>
+    request<{ models: string[]; reasoning_efforts: string[] }>(`/accounts/${id}/quality-test/options`, { signal }),
+  createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string }) =>
+    request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
+  getQualityTests: (page = 1, signal?: AbortSignal) =>
+    request<QualityTestJobsResponse>(`/quality-tests?page=${page}&page_size=20`, { signal }),
+  getQualityTest: (id: number, signal?: AbortSignal) =>
+    request<{ job: QualityTestJob }>(`/quality-tests/${id}`, { signal }),
+  cancelQualityTest: (id: number) =>
+    request<{ job: QualityTestJob }>(`/quality-tests/${id}/cancel`, { method: 'POST' }),
   syncModels: () => request<ModelSyncResponse>('/models/sync', { method: 'POST' }),
   syncCodexCLIVersion: () =>
     request<{
