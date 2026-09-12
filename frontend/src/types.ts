@@ -235,6 +235,37 @@ export interface GrokPlanInfo {
   billing: boolean
 }
 
+export type SubscriptionBusinessStatus = 'active' | 'expiring_today' | 'expired' | 'grace_period' | 'unknown'
+export type SubscriptionSyncState = 'confirmed' | 'pending' | 'failed' | 'unknown' | 'unsupported'
+export type SubscriptionAutoRenew = 'enabled' | 'disabled' | 'unsupported' | 'unknown'
+
+/** 订阅状态对象:业务状态(到期判定)与同步状态(数据新鲜度)分开表达。 */
+export interface SubscriptionStatus {
+  business_status: SubscriptionBusinessStatus
+  plan?: string
+  expires_at?: ISODateString
+  days_remaining: number
+  days_overdue: number
+  last_known_status?: SubscriptionBusinessStatus
+  auto_renew: SubscriptionAutoRenew
+  grace_until?: ISODateString
+  last_checked_at?: ISODateString
+  source?: 'jwt' | 'plan_header' | 'provider_api' | string
+  sync_state: SubscriptionSyncState
+  renewal_detected_at?: ISODateString
+  error?: string
+  timezone: string
+}
+
+export type SubscriptionRefreshOutcome = 'updated' | 'unchanged' | 'no_subscription' | 'unsupported' | 'failed'
+
+export interface SubscriptionRefreshResponse {
+  outcome: SubscriptionRefreshOutcome
+  error?: string
+  subscription?: SubscriptionStatus
+  subscription_expires_at?: ISODateString
+}
+
 export interface AccountRow {
   codex_last_refresh_at?: string
   codex_refresh_error?: string
@@ -250,6 +281,8 @@ export interface AccountRow {
   effective_workspace_id?: string
   plan_type: string
   subscription_expires_at?: string
+  /** 服务端按业务时区计算的订阅状态对象;不跟踪订阅的套餐(api/无到期时间的 free)缺省。 */
+  subscription?: SubscriptionStatus
   status: AccountStatus
   error_message?: string
   at_only?: boolean
@@ -487,6 +520,31 @@ export interface AccountLiveStateResponse {
   session_slot_buffer_enabled: boolean
 }
 
+export type SubscriptionFilter =
+  | 'all'
+  | 'active'
+  | 'expiring_9d'
+  | 'expiring_3d'
+  | 'expiring_today'
+  | 'expired'
+  | 'grace_period'
+  | 'pending'
+  | 'failed'
+  | 'unknown'
+
+export const SUBSCRIPTION_FILTER_OPTIONS: SubscriptionFilter[] = [
+  'all',
+  'expiring_9d',
+  'expiring_3d',
+  'expiring_today',
+  'expired',
+  'grace_period',
+  'active',
+  'pending',
+  'failed',
+  'unknown',
+]
+
 export interface AccountsPageParams {
   channel?: UpstreamChannel
   page: number
@@ -503,6 +561,8 @@ export interface AccountsPageParams {
   healthTier?: 'healthy' | 'warm' | 'risky' | 'banned' | 'attention'
   proxyUrl?: string
   proxyFilter?: 'all' | 'unbound' | 'this' | 'other'
+  /** 订阅状态筛选(Codex 渠道),值见 SUBSCRIPTION_FILTER_OPTIONS。 */
+  subscription?: SubscriptionFilter
   sort?: 'requests' | 'today' | 'usage' | 'created_at' | 'updated_at' | 'scheduler_priority' | 'group' | 'risk' | 'dispatch_score' | 'latency_penalty' | 'unauthorized'
   order?: 'asc' | 'desc'
 }
@@ -588,6 +648,7 @@ export interface AccountOperationSelector {
   ungrouped?: boolean
   refreshable_only?: boolean
   subscription_unlocked?: boolean
+  subscription?: SubscriptionFilter
 }
 
 // 单张「主动重置次数」券的有效期明细（issue #322）。

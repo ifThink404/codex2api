@@ -7,6 +7,7 @@ import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
+import SubscriptionBadge from "../components/SubscriptionBadge";
 import {
   buildProxyBindingContext,
   type ProxyBindingContext,
@@ -74,7 +75,9 @@ import type {
   AccountLiveStateResponse,
   UpstreamChannel,
   OpenAIResponsesBalanceResponse,
+  SubscriptionFilter,
 } from "../types";
+import { SUBSCRIPTION_FILTER_OPTIONS } from "../types";
 import { getErrorMessage } from "../utils/error";
 import { formatRelativeTime, formatBeijingTime } from "../utils/time";
 import { buildBatchMetadataUpdate } from "../lib/accountBatchUpdate";
@@ -359,6 +362,7 @@ const ACCOUNT_TABLE_COLUMNS = [
   "proxy",
   "priority",
   "plan",
+  "subscription",
   "status",
   "today",
   "requests",
@@ -1402,16 +1406,19 @@ const AccountTableRow = memo(function AccountTableRow({
                             )}
                             {visibleColumns.plan && (
                               <TableCell>
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <PlanBadge
-                                    planType={account.plan_type}
-                                    workspaceId={accountWorkspaceId(account)}
-                                  />
-                                  <ExpiryBadge
-                                    expiresAt={account.subscription_expires_at}
-                                    planType={account.plan_type}
-                                  />
-                                </div>
+                                <PlanBadge
+                                  planType={account.plan_type}
+                                  workspaceId={accountWorkspaceId(account)}
+                                />
+                              </TableCell>
+                            )}
+                            {visibleColumns.subscription && (
+                              <TableCell>
+                                <SubscriptionBadge
+                                  accountId={account.id}
+                                  subscription={account.subscription}
+                                  canRefresh
+                                />
                               </TableCell>
                             )}
                             {visibleColumns.status && (
@@ -1769,6 +1776,8 @@ export default function Accounts() {
   const [planFilter, setPlanFilter] = useState<
     "all" | "pro" | "prolite" | "plus" | "team" | "k12" | "free"
   >("all");
+  // 订阅状态筛选：按服务端算好的业务/同步状态过滤（到期临近、已过期、待确认等）。
+  const [subscriptionFilter, setSubscriptionFilter] = useState<SubscriptionFilter>("all");
   // 账号类型：oauth=官方 OAuth 账号，api_key=Responses API 中转账号（issue #522）
   const [authFilter, setAuthFilter] = useState<"all" | "oauth" | "api_key">(
     "all",
@@ -2610,6 +2619,7 @@ export default function Accounts() {
       search: debouncedSearchQuery,
       status: statusFilter,
       plan: planFilter,
+      subscription: subscriptionFilter,
       authKind: authFilter,
       tag: tagFilter,
       emailDomain: domainFilter,
@@ -2633,7 +2643,7 @@ export default function Accounts() {
       statsState: accountsResponse.stats_state,
       disabledSorts: accountsResponse.disabled_sorts ?? [],
     };
-  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, tagFilter]);
+  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter]);
 
   const loadAccountAnalysis = useCallback(async (opts?: { silent?: boolean }) => {
     accountAnalysisAbortRef.current?.abort();
@@ -3139,13 +3149,14 @@ export default function Accounts() {
     search: debouncedSearchQuery || undefined,
     status: statusFilter === "all" ? undefined : statusFilter,
     plan: planFilter === "all" ? undefined : planFilter,
+    subscription: subscriptionFilter === "all" ? undefined : subscriptionFilter,
     auth_kind: authFilter === "all" ? undefined : authFilter,
     tag: tagFilter || undefined,
     email_domain: domainFilter || undefined,
     group_include: groupFilter.include.length > 0 ? groupFilter.include : undefined,
     group_exclude: groupFilter.exclude.length > 0 ? groupFilter.exclude : undefined,
     ungrouped: groupFilter.ungrouped || undefined,
-  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, tagFilter]);
+  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter]);
 
   // 服务端已完成全池筛选、排序和分页。
   const filteredAccounts = accounts;
@@ -6706,7 +6717,23 @@ export default function Accounts() {
 
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
                 <Select
-                  className="w-full min-w-0 sm:w-36"
+                  className="w-full min-w-0 sm:w-32"
+                  compact
+                  value={subscriptionFilter}
+                  onValueChange={(value) => {
+                    setSubscriptionFilter(value as SubscriptionFilter);
+                    setPage(1);
+                  }}
+                  options={SUBSCRIPTION_FILTER_OPTIONS.map((key) => ({
+                    value: key,
+                    label:
+                      key === "all"
+                        ? t("accounts.subscriptionFilter")
+                        : t(`accounts.subscriptionFilterOption.${key}`),
+                  }))}
+                />
+                <Select
+                  className="w-full min-w-0 sm:w-28"
                   compact
                   value={tagFilter || "all"}
                   onValueChange={(value) => {
@@ -6719,7 +6746,7 @@ export default function Accounts() {
                   ]}
                 />
                 <Select
-                  className="w-full min-w-0 sm:w-44 lg:w-52"
+                  className="w-full min-w-0 sm:w-40"
                   compact
                   value={domainFilter || "all"}
                   onValueChange={(value) => {
@@ -6740,7 +6767,7 @@ export default function Accounts() {
                   ]}
                 />
                 <AccountGroupFilterSelect
-                  className="w-full min-w-0 sm:w-40"
+                  className="w-full min-w-0 sm:w-36"
                   groups={codexGroups}
                   value={groupFilter}
                   onChange={(value) => {
@@ -6944,6 +6971,7 @@ export default function Accounts() {
                         sequence: t("accounts.sequence"),
                         email: t("accounts.email"),
                         plan: t("accounts.plan"),
+                        subscription: t("accounts.subscriptionColumn"),
                         tags: t("accounts.tagsLabel"),
                         groups: t("accounts.groupsLabel"),
                         proxy: t("accounts.proxyColumn"),
@@ -6962,10 +6990,12 @@ export default function Accounts() {
                   )}
                 </div>
               )}
+
             </div>
 
             {(statusFilter !== "all" ||
               planFilter !== "all" ||
+              subscriptionFilter !== "all" ||
               Boolean(tagFilter) ||
               Boolean(domainFilter) ||
               !isAccountGroupFilterEmpty(groupFilter)) && (
@@ -7016,6 +7046,19 @@ export default function Accounts() {
                     <X className="size-3" />
                   </button>
                 )}
+                {subscriptionFilter !== "all" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSubscriptionFilter("all");
+                      setPage(1);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted/80"
+                  >
+                    {t(`accounts.subscriptionFilterOption.${subscriptionFilter}`)}
+                    <X className="size-3" />
+                  </button>
+                )}
                 {tagFilter && (
                   <button
                     type="button"
@@ -7060,6 +7103,7 @@ export default function Accounts() {
                   onClick={() => {
                     setStatusFilter("all");
                     setPlanFilter("all");
+                    setSubscriptionFilter("all");
                     setTagFilter("");
                     setDomainFilter("");
                     setGroupFilter(EMPTY_ACCOUNT_GROUP_FILTER);
@@ -7353,6 +7397,11 @@ export default function Accounts() {
                         {visibleColumns.plan && (
                           <TableHead className="text-[13px] font-semibold">
                             {t("accounts.plan")}
+                          </TableHead>
+                        )}
+                        {visibleColumns.subscription && (
+                          <TableHead className="text-[13px] font-semibold">
+                            {t("accounts.subscriptionColumn")}
                           </TableHead>
                         )}
                         {visibleColumns.status && (
@@ -12838,53 +12887,6 @@ function formatPlanLabel(planType?: string): string {
   return raw;
 }
 
-function ExpiryBadge({ expiresAt, planType }: { expiresAt?: string; planType?: string }) {
-  const { t, i18n } = useTranslation();
-  if (!expiresAt) return null;
-  const plan = (planType || "").toLowerCase().trim();
-  if (plan === "" || plan === "free" || plan === "api") return null;
-
-  const timestamp = Date.parse(expiresAt);
-  if (Number.isNaN(timestamp)) return null;
-
-  const days = Math.floor((timestamp - Date.now()) / 86_400_000);
-  const localDate = new Date(timestamp).toLocaleDateString(i18n.language);
-
-  if (days < 0) {
-    return (
-      <span
-        title={t("accounts.subscriptionExpiredTitle", { date: localDate })}
-        className="inline-flex items-center rounded-md bg-zinc-200 px-1.5 py-0.5 text-[11px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-400/30 dark:bg-zinc-700/50 dark:text-zinc-300 dark:ring-zinc-500/30"
-      >
-        {t("accounts.subscriptionExpiredDays", { days: -days })}
-      </span>
-    );
-  }
-  if (days <= 3) {
-    return (
-      <span
-        title={t("accounts.subscriptionExpiresTitle", { date: localDate })}
-        className="inline-flex items-center rounded-md bg-red-100 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-500/30 dark:bg-red-500/20 dark:text-red-300 dark:ring-red-400/30"
-      >
-        {days === 0
-          ? t("accounts.subscriptionExpiresToday")
-          : t("accounts.subscriptionExpiresDays", { days })}
-      </span>
-    );
-  }
-  if (days <= 7) {
-    return (
-      <span
-        title={t("accounts.subscriptionExpiresTitle", { date: localDate })}
-        className="inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-500/30 dark:bg-amber-500/20 dark:text-amber-300 dark:ring-amber-400/30"
-      >
-        {t("accounts.subscriptionExpiresDays", { days })}
-      </span>
-    );
-  }
-  return null;
-}
-
 function isWorkspacePlan(planType?: string): boolean {
   const normalized = normalizePlanType(planType);
   return (
@@ -13573,9 +13575,10 @@ function AccountMobileCard({
               </span>
             )}
             <div className="codex-account-card__flags">
-              <ExpiryBadge
-                expiresAt={account.subscription_expires_at}
-                planType={account.plan_type}
+              <SubscriptionBadge
+                accountId={account.id}
+                subscription={account.subscription}
+                canRefresh
               />
               {account.at_only && (
                 <span className="codex-account-card__flag">

@@ -234,12 +234,22 @@ func codexRefreshedCredentials(acc *Account, td *TokenData, info *AccountInfo, w
 		acc.mu.RLock()
 		planSnapshot := Account{PlanType: acc.PlanType, UsagePercent7dValid: acc.UsagePercent7dValid, Reset7dAt: acc.Reset7dAt}
 		oldSubscription := acc.SubscriptionExpiresAt
+		subscriptionSource := acc.subscriptionMeta.Source
 		acc.mu.RUnlock()
 		if plan, applied := planSnapshot.applyRefreshedPlanTypeLocked(info.PlanType, now); applied {
 			updates["plan_type"] = plan
 		}
 		if !info.SubscriptionExpiresAt.IsZero() && !StaleSubscriptionExpiry(planSnapshot.PlanType, info.SubscriptionExpiresAt, now) {
-			updates["subscription_expires_at"] = info.SubscriptionExpiresAt.Format(time.RFC3339)
+			// 令牌里的 chatgpt_subscription_active_until 续费后长期停留在旧值：
+			// 已有订阅提供方权威到期时间时，不让更早的令牌值把它打回去。
+			jwtOlderThanAuthoritative := subscriptionSource == SubscriptionSourceProviderAPI &&
+				!oldSubscription.IsZero() && info.SubscriptionExpiresAt.Before(oldSubscription)
+			if !jwtOlderThanAuthoritative {
+				updates["subscription_expires_at"] = info.SubscriptionExpiresAt.Format(time.RFC3339)
+				if !info.SubscriptionExpiresAt.Equal(oldSubscription) {
+					updates[SubscriptionSourceCredentialKey] = SubscriptionSourceJWT
+				}
+			}
 		} else if StaleSubscriptionExpiry(planSnapshot.PlanType, oldSubscription, now) {
 			updates["subscription_expires_at"] = ""
 		}
@@ -272,6 +282,13 @@ func applyCodexCredentialValues(acc *Account, credentials map[string]any, genera
 	}
 	if expiry, ok := credentials["subscription_expires_at"]; ok {
 		acc.SubscriptionExpiresAt = parseOAuthCredentialExpiry(fmt.Sprint(expiry))
+	}
+	if _, ok := credentials[SubscriptionSyncStateCredentialKey]; ok {
+		// 整行重载：以库中元数据为准。
+		acc.subscriptionMeta = SubscriptionMetaFromCredentials(row.GetCredential)
+	} else if src, ok := credentials[SubscriptionSourceCredentialKey]; ok {
+		// 无库路径只带了来源一个键，别用空值覆盖其余元数据。
+		acc.subscriptionMeta.Source = strings.TrimSpace(fmt.Sprint(src))
 	}
 	acc.CredentialGeneration = generation
 	acc.PermanentRefreshFailures = 0

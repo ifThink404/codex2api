@@ -618,6 +618,7 @@ export const api = {
     if (params.healthTier) searchParams.set('health_tier', params.healthTier)
     if (params.proxyUrl) searchParams.set('proxy_url', params.proxyUrl)
     if (params.proxyFilter && params.proxyFilter !== 'all') searchParams.set('proxy_filter', params.proxyFilter)
+    if (params.subscription && params.subscription !== 'all') searchParams.set('subscription', params.subscription)
     if (params.sort) searchParams.set('sort', params.sort)
     if (params.order) searchParams.set('order', params.order)
     return request<AccountsPageResponse>(`/accounts?${searchParams.toString()}`, { signal })
@@ -871,6 +872,11 @@ export const api = {
       claude_usage_windows?: import('./types').ClaudeUsageWindow[]
       claude_usage_windows_probed?: boolean
     }>(`/accounts/${id}/usage/refresh`, { method: 'POST' }),
+  // 订阅状态:GET 只读服务端已算好的状态对象;POST 立即向订阅提供方查一次(绕过后台节流,30s 内重复点会 429)。
+  getAccountSubscription: (id: number, signal?: AbortSignal) =>
+    request<{ supported: boolean; subscription?: import('./types').SubscriptionStatus }>(`/accounts/${id}/subscription`, { signal }),
+  refreshAccountSubscription: (id: number) =>
+    request<import('./types').SubscriptionRefreshResponse>(`/accounts/${id}/subscription/refresh`, { method: 'POST', timeoutMs: 30_000 }),
   updateAccountScheduler: (id: number, data: UpdateAccountSchedulerRequest) =>
     request<MessageResponse>(`/accounts/${id}/scheduler`, { method: 'PATCH', body: JSON.stringify(data) }),
   // 设置 OAuth 账号的支持模型白名单;空数组表示清空(该账号可调度所有模型)。返回归一化后的白名单。
