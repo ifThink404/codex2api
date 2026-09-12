@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,29 +26,100 @@ type QualityTestMetrics struct {
 
 // Account identity is a snapshot, so renaming/deleting an account cannot rewrite history.
 type QualityTestJob struct {
-	ID              int64      `json:"id"`
-	AccountID       int64      `json:"account_id"`
-	AccountName     string     `json:"account_name"`
-	PlanType        string     `json:"plan_type"`
-	Channel         string     `json:"channel"`
-	Model           string     `json:"model"`
-	ReasoningEffort string     `json:"reasoning_effort"`
-	Prompt          string     `json:"prompt,omitempty"`
-	Status          string     `json:"status"`
-	Output          string     `json:"output,omitempty"`
-	Error           string     `json:"error,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-	DeadlineAt      time.Time  `json:"-"`
+	ID              int64  `json:"id"`
+	AccountID       int64  `json:"account_id"`
+	AccountName     string `json:"account_name"`
+	PlanType        string `json:"plan_type"`
+	Channel         string `json:"channel"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	Prompt          string `json:"prompt,omitempty"`
+	// Preset provenance is a snapshot: "builtin" refs a shipped key, "custom" refs a
+	// quality_test_prompts id; an empty kind means the prompt was typed by hand.
+	PresetKind  string     `json:"preset_kind"`
+	PresetRef   string     `json:"preset_ref"`
+	PresetName  string     `json:"preset_name"`
+	Status      string     `json:"status"`
+	Output      string     `json:"output,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	DeadlineAt  time.Time  `json:"-"`
 	QualityTestMetrics
 }
 
+// QualityTestFilter narrows the history list; empty fields match everything.
+// ReasoningEffort filters on the stored value, so "" cannot be expressed here;
+// HasEffort marks an explicit effort filter (including the model default "").
+type QualityTestFilter struct {
+	PlanType        string
+	Model           string
+	ReasoningEffort string
+	HasEffort       bool
+	AccountID       int64
+	// HasPreset with an empty PresetKind selects hand-typed prompts.
+	HasPreset  bool
+	PresetKind string
+	PresetRef  string
+}
+
+type QualityTestPresetFacet struct {
+	Kind string `json:"kind"`
+	Ref  string `json:"ref"`
+	Name string `json:"name"`
+}
+
+type QualityTestAccountFacet struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// Facets list every distinct value in the table (unfiltered) so filter menus stay stable.
+type QualityTestFacets struct {
+	Plans    []string                  `json:"plans"`
+	Models   []string                  `json:"models"`
+	Efforts  []string                  `json:"efforts"`
+	Accounts []QualityTestAccountFacet `json:"accounts"`
+	Presets  []QualityTestPresetFacet  `json:"presets"`
+}
+
 type QualityTestPage struct {
-	Jobs       []QualityTestJob `json:"jobs"`
-	ActiveJobs []QualityTestJob `json:"active_jobs"`
-	Total      int              `json:"total"`
-	Limit      int              `json:"concurrency_limit"`
+	Jobs       []QualityTestJob  `json:"jobs"`
+	ActiveJobs []QualityTestJob  `json:"active_jobs"`
+	Total      int               `json:"total"`
+	Limit      int               `json:"concurrency_limit"`
+	Facets     QualityTestFacets `json:"facets"`
+}
+
+func (f QualityTestFilter) where() (string, []any) {
+	clauses, args := []string{}, []any{}
+	add := func(column string, value any) {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf("%s=$%d", column, len(args)))
+	}
+	if f.PlanType != "" {
+		add("plan_type", f.PlanType)
+	}
+	if f.Model != "" {
+		add("model", f.Model)
+	}
+	if f.HasEffort {
+		add("reasoning_effort", f.ReasoningEffort)
+	}
+	if f.AccountID > 0 {
+		add("account_id", f.AccountID)
+	}
+	if f.HasPreset {
+		add("preset_kind", f.PresetKind)
+		if f.PresetKind != "" {
+			add("preset_ref", f.PresetRef)
+		}
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
 func (db *DB) ensureQualityTestSchema(ctx context.Context) error {
@@ -61,6 +133,7 @@ func (db *DB) ensureQualityTestSchema(ctx context.Context) error {
 		 account_id BIGINT NOT NULL, account_name TEXT NOT NULL, plan_type TEXT NOT NULL,
 		 channel TEXT NOT NULL, model TEXT NOT NULL, reasoning_effort TEXT NOT NULL,
 		 prompt TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', output TEXT NOT NULL DEFAULT '',
+		 preset_kind TEXT NOT NULL DEFAULT '', preset_ref TEXT NOT NULL DEFAULT '', preset_name TEXT NOT NULL DEFAULT '',
 		 metrics_json TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '',
 		 created_at %s NOT NULL, updated_at %s NOT NULL, deadline_at %s NOT NULL, completed_at %s,
 		 CHECK ((slot IS NOT NULL AND status IN ('running','cancelling')) OR (slot IS NULL AND status IN ('completed','error','stopped','interrupted')))
@@ -73,7 +146,19 @@ func (db *DB) ensureQualityTestSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	// Tables created before preset tracking gain the provenance columns in place.
+	for _, column := range []string{"preset_kind", "preset_ref", "preset_name"} {
+		if db.isSQLite() {
+			if err := db.ensureSQLiteColumn(ctx, "quality_test_jobs", column, "TEXT NOT NULL DEFAULT ''"); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := db.conn.ExecContext(ctx, `ALTER TABLE quality_test_jobs ADD COLUMN IF NOT EXISTS `+column+` TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return db.ensureQualityTestPromptSchema(ctx)
 }
 
 // Nullable UNIQUE slots enforce the limit across processes and replicas, not just browsers.
@@ -82,14 +167,14 @@ func (db *DB) CreateQualityTestJob(ctx context.Context, job QualityTestJob) (*Qu
 	if err := db.ExpireQualityTests(ctx, time.Now()); err != nil {
 		return nil, err
 	}
-	query := `INSERT INTO quality_test_jobs(slot,account_id,account_name,plan_type,channel,model,reasoning_effort,prompt,created_at,updated_at,deadline_at)
-	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10) ON CONFLICT DO NOTHING`
+	query := `INSERT INTO quality_test_jobs(slot,account_id,account_name,plan_type,channel,model,reasoning_effort,prompt,created_at,updated_at,deadline_at,preset_kind,preset_ref,preset_name)
+	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13) ON CONFLICT DO NOTHING`
 	now := time.Now().UTC()
 	for slot := 1; slot <= QualityTestConcurrency; slot++ {
 		var id int64
 		err := db.withSQLiteWriteLock(ctx, func() error {
 			var err error
-			id, err = db.insertRowID(ctx, query+" RETURNING id", query, slot, job.AccountID, job.AccountName, job.PlanType, job.Channel, job.Model, job.ReasoningEffort, job.Prompt, db.timeArg(now), db.timeArg(now.Add(10*time.Minute)))
+			id, err = db.insertRowID(ctx, query+" RETURNING id", query, slot, job.AccountID, job.AccountName, job.PlanType, job.Channel, job.Model, job.ReasoningEffort, job.Prompt, db.timeArg(now), db.timeArg(now.Add(10*time.Minute)), job.PresetKind, job.PresetRef, job.PresetName)
 			return err
 		})
 		if err == nil {
@@ -117,13 +202,13 @@ func (db *DB) ExpireQualityTests(ctx context.Context, now time.Time) error {
 	return err
 }
 
-const qualityTestColumns = `id,account_id,account_name,plan_type,channel,model,reasoning_effort,status,metrics_json,error,created_at,updated_at,completed_at,deadline_at`
+const qualityTestColumns = `id,account_id,account_name,plan_type,channel,model,reasoning_effort,status,metrics_json,error,created_at,updated_at,completed_at,deadline_at,preset_kind,preset_ref,preset_name`
 
 func scanQualityTestJob(scanner interface{ Scan(...any) error }, detail bool) (*QualityTestJob, error) {
 	var job QualityTestJob
 	var metrics string
 	var created, updated, completed, deadline any
-	args := []any{&job.ID, &job.AccountID, &job.AccountName, &job.PlanType, &job.Channel, &job.Model, &job.ReasoningEffort, &job.Status, &metrics, &job.Error, &created, &updated, &completed, &deadline}
+	args := []any{&job.ID, &job.AccountID, &job.AccountName, &job.PlanType, &job.Channel, &job.Model, &job.ReasoningEffort, &job.Status, &metrics, &job.Error, &created, &updated, &completed, &deadline, &job.PresetKind, &job.PresetRef, &job.PresetName}
 	if detail {
 		args = append(args, &job.Prompt, &job.Output)
 	}
@@ -160,15 +245,21 @@ func (db *DB) GetQualityTestJob(ctx context.Context, id int64) (*QualityTestJob,
 	return scanQualityTestJob(db.conn.QueryRowContext(ctx, `SELECT `+qualityTestColumns+`,prompt,output FROM quality_test_jobs WHERE id=$1`, id), true)
 }
 
-func (db *DB) ListQualityTests(ctx context.Context, page, pageSize int) (*QualityTestPage, error) {
+func (db *DB) ListQualityTests(ctx context.Context, page, pageSize int, filter QualityTestFilter) (*QualityTestPage, error) {
 	if err := db.ExpireQualityTests(ctx, time.Now()); err != nil {
 		return nil, err
 	}
 	page, pageSize = normalizePage(page, pageSize)
 	result := &QualityTestPage{Jobs: []QualityTestJob{}, ActiveJobs: []QualityTestJob{}, Limit: QualityTestConcurrency}
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM quality_test_jobs`).Scan(&result.Total); err != nil {
+	where, args := filter.where()
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM quality_test_jobs`+where, args...).Scan(&result.Total); err != nil {
 		return nil, err
 	}
+	facets, err := db.qualityTestFacets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result.Facets = *facets
 	read := func(query string, args ...any) ([]QualityTestJob, error) {
 		rows, err := db.conn.QueryContext(ctx, query, args...)
 		if err != nil {
@@ -185,13 +276,67 @@ func (db *DB) ListQualityTests(ctx context.Context, page, pageSize int) (*Qualit
 		}
 		return jobs, rows.Err()
 	}
-	var err error
-	result.Jobs, err = read(`SELECT `+qualityTestColumns+` FROM quality_test_jobs ORDER BY id DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
+	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
+	result.Jobs, err = read(fmt.Sprintf(`SELECT `+qualityTestColumns+` FROM quality_test_jobs%s ORDER BY id DESC LIMIT $%d OFFSET $%d`, where, len(args)+1, len(args)+2), pageArgs...)
 	if err != nil {
 		return nil, err
 	}
+	// Active jobs stay unfiltered: they describe global capacity, not the current view.
 	result.ActiveJobs, err = read(`SELECT ` + qualityTestColumns + ` FROM quality_test_jobs WHERE slot IS NOT NULL ORDER BY id DESC`)
 	return result, err
+}
+
+func (db *DB) qualityTestFacets(ctx context.Context) (*QualityTestFacets, error) {
+	facets := &QualityTestFacets{Plans: []string{}, Models: []string{}, Efforts: []string{}, Accounts: []QualityTestAccountFacet{}, Presets: []QualityTestPresetFacet{}}
+	distinct := func(column string, dest *[]string) error {
+		rows, err := db.conn.QueryContext(ctx, `SELECT DISTINCT `+column+` FROM quality_test_jobs ORDER BY `+column)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var value string
+			if err := rows.Scan(&value); err != nil {
+				return err
+			}
+			*dest = append(*dest, value)
+		}
+		return rows.Err()
+	}
+	for column, dest := range map[string]*[]string{"plan_type": &facets.Plans, "model": &facets.Models, "reasoning_effort": &facets.Efforts} {
+		if err := distinct(column, dest); err != nil {
+			return nil, err
+		}
+	}
+	// The latest snapshot name wins for accounts renamed between runs.
+	rows, err := db.conn.QueryContext(ctx, `SELECT account_id, account_name FROM quality_test_jobs WHERE id IN (SELECT MAX(id) FROM quality_test_jobs GROUP BY account_id) ORDER BY account_name, account_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item QualityTestAccountFacet
+		if err := rows.Scan(&item.ID, &item.Name); err != nil {
+			return nil, err
+		}
+		facets.Accounts = append(facets.Accounts, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	presetRows, err := db.conn.QueryContext(ctx, `SELECT preset_kind, preset_ref, preset_name FROM quality_test_jobs WHERE preset_kind<>'' AND id IN (SELECT MAX(id) FROM quality_test_jobs GROUP BY preset_kind, preset_ref) ORDER BY preset_kind, preset_name, preset_ref`)
+	if err != nil {
+		return nil, err
+	}
+	defer presetRows.Close()
+	for presetRows.Next() {
+		var item QualityTestPresetFacet
+		if err := presetRows.Scan(&item.Kind, &item.Ref, &item.Name); err != nil {
+			return nil, err
+		}
+		facets.Presets = append(facets.Presets, item)
+	}
+	return facets, presetRows.Err()
 }
 
 func (db *DB) QualityTestStatus(ctx context.Context, id int64) (string, error) {

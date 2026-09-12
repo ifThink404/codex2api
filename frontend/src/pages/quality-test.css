@@ -36,6 +36,10 @@
 .quality-test-records-heading p { margin-top: 5px; color: var(--color-muted-foreground); font-size: 12px; line-height: 1.6; }
 .quality-test-records-tools { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .quality-test-records-count { padding: 3px 8px; border-radius: 999px; background: color-mix(in srgb, var(--color-primary) 8%, transparent); color: var(--color-primary); font: 600 11px/1.3 ui-monospace, monospace; }
+.quality-test-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 12px; background: color-mix(in srgb, var(--color-muted) 40%, transparent); }
+.quality-test-filters-label { display: inline-flex; align-items: center; gap: 6px; margin-right: 4px; color: var(--color-muted-foreground); font-size: 11px; font-weight: 600; }
+.quality-test-filters > div { min-width: 150px; max-width: 260px; flex: 1 1 150px; }
+.quality-test-filters > button { margin-left: auto; }
 .quality-test-records-scroll { position: relative; overflow-x: auto; max-width: 100%; border: 1px solid var(--color-border); border-radius: 12px; }
 .quality-test-records table { width: 100%; border-collapse: separate; border-spacing: 0; white-space: nowrap; text-align: left; }
 .quality-test-records th { padding: 10px 14px; font-size: 11px; font-weight: 550; letter-spacing: .02em; color: var(--color-muted-foreground); background: color-mix(in srgb, var(--color-muted) 70%, transparent); border-bottom: 1px solid var(--color-border); }
@@ -57,6 +61,10 @@
 .quality-test-record-action button { opacity: .75; transition: opacity .15s; }
 .quality-test-records tbody tr:hover .quality-test-record-action button, .quality-test-records tr.is-selected .quality-test-record-action button { opacity: 1; }
 .quality-test-effort-chip { padding: 3px 7px; border: 1px solid var(--color-border); background: var(--color-background); border-radius: 5px; font: 11px ui-monospace, monospace; }
+.quality-test-preset-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 200px; padding: 3px 7px; border-radius: 5px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quality-test-preset-chip.is-builtin { background: color-mix(in srgb, var(--color-primary) 8%, transparent); color: var(--color-primary); }
+.quality-test-preset-chip.is-custom { border: 1px solid var(--color-border); background: var(--color-background); color: var(--color-foreground); }
+.quality-test-preset-chip.is-custom:not([title]) { color: var(--color-muted-foreground); border-style: dashed; }
 .quality-test-status-pill { padding: 3px 8px 3px 7px; border-radius: 999px; background: color-mix(in srgb, currentColor 8%, transparent); }
 .quality-test-records-empty { display: flex; align-items: center; flex-direction: column; justify-content: center; min-height: 300px; gap: 12px; color: var(--color-muted-foreground); text-align: center; }
 .quality-test-records-empty h4 { color: var(--color-foreground); font-size: 15px; font-weight: 600; }
@@ -100,6 +108,8 @@
 .quality-test-status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
 .quality-test-canvas { display: flex; flex: 1 1 470px; align-items: stretch; justify-content: center; min-height: 470px; background-color: color-mix(in srgb, var(--color-muted) 45%, transparent); background-image: radial-gradient(color-mix(in srgb, var(--color-muted-foreground) 16%, transparent) .7px, transparent .7px); background-size: 16px 16px; overflow: hidden; }
 .quality-test-canvas iframe { height: 100%; width: 100%; border: 0; background: white; color-scheme: light; }
+.quality-test-canvas.is-measured { flex: none; height: auto; min-height: 0; }
+.quality-test-canvas.is-measured iframe { flex-shrink: 0; transition: height .25s ease; }
 .quality-test-canvas iframe.is-narrow { max-width: 390px; box-shadow: 0 0 0 1px var(--color-border); }
 .quality-test-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 28px; max-width: 410px; }
 .quality-test-empty h4 { font-size: 21px; font-weight: 600; margin: 16px 0 8px; letter-spacing: -.03em; }
@@ -135,7 +145,9 @@
 .quality-test-dialog-header > [role=group] { flex-shrink: 0; }
 .quality-test-dialog-layout { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(0, 1fr) 300px; }
 .quality-test-dialog-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.quality-test-dialog-stage .quality-test-canvas { flex: 1; min-height: 0; }
+.quality-test-dialog-stage .quality-test-canvas { flex: 1; min-height: 0; overflow: auto; }
+.quality-test-dialog-stage .quality-test-canvas.is-measured { flex: 1; align-items: flex-start; }
+.quality-test-dialog-stage .quality-test-canvas.is-measured iframe { min-height: 100%; }
 .quality-test-dialog-stage .quality-test-source { height: 100%; }
 .quality-test-dialog-info { min-height: 0; padding: 20px; overflow-y: auto; border-left: 1px solid var(--color-border); }
 .quality-test-dialog-info h3 { margin-bottom: 12px; font-size: 12px; font-weight: 600; }
@@ -156,4 +168,22 @@
   .quality-test-dialog-header { flex-wrap: wrap; padding-right: 20px; }
   .quality-test-dialog-footer { padding: 10px; gap: 8px; }
 }
+.quality-test-preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 14px; }
+.quality-test-preset-card { display: flex; flex-direction: column; min-width: 0; min-height: 220px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-background); transition: border-color .18s, box-shadow .18s; }
+.quality-test-preset-card:hover { border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border)); box-shadow: 0 5px 20px #00000008; }
+.quality-test-preset-card.is-builtin { background: color-mix(in srgb, var(--color-primary) 3%, var(--color-background)); border-style: dashed; }
+.quality-test-preset-body { display: flex; flex: 1; flex-direction: column; gap: 8px; min-width: 0; padding: 16px 18px 10px; text-align: left; background: none; border: 0; color: inherit; cursor: pointer; }
+.quality-test-preset-card.is-builtin .quality-test-preset-body { cursor: default; }
+.quality-test-preset-body h3 { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+.quality-test-preset-body p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; color: var(--color-muted-foreground); font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quality-test-preset-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 18px 10px; color: var(--color-muted-foreground); font-size: 11px; }
+.quality-test-preset-footer { display: flex; align-items: center; gap: 4px; padding: 10px 12px; border-top: 1px solid var(--color-border); }
+.quality-test-preset-footer > button:first-child { margin-right: auto; }
+.quality-test-preset-add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 220px; padding: 20px; border: 1px dashed var(--color-border); border-radius: 14px; background: none; color: var(--color-muted-foreground); text-align: center; cursor: pointer; transition: border-color .18s, color .18s; }
+.quality-test-preset-add:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.quality-test-preset-add > span { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; background: color-mix(in srgb, var(--color-primary) 8%, transparent); color: var(--color-primary); }
+.quality-test-preset-add strong { font-size: 13px; color: var(--color-foreground); }
+.quality-test-preset-add small { font-size: 11px; line-height: 1.6; }
+.quality-test-prompt-label > span { display: inline-flex; align-items: center; gap: 2px; }
+.quality-test-preset-dialog .quality-test-fields textarea { min-height: 180px; }
 @media (prefers-reduced-motion: reduce) { .quality-test-progress span { animation: none; width: 100%; } }

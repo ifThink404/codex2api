@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/proxy"
@@ -39,6 +41,34 @@ type qualityTestRequest struct {
 	Model           string `json:"model"`
 	Prompt          string `json:"prompt"`
 	ReasoningEffort string `json:"reasoning_effort"`
+	// PromptID references the custom preset the prompt came from; PresetKey names a
+	// built-in one. PresetName is the client's display name, kept as a fallback only.
+	PromptID   int64  `json:"prompt_id,omitempty"`
+	PresetKey  string `json:"preset_key,omitempty"`
+	PresetName string `json:"preset_name,omitempty"`
+}
+
+var builtinPresetKey = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+
+// resolveQualityTestPreset snapshots the preset a run came from. Custom presets
+// take their name from the database; a vanished preset degrades to "hand-typed".
+func (h *Handler) resolveQualityTestPreset(ctx context.Context, req qualityTestRequest) (kind, ref, name string) {
+	if req.PromptID > 0 {
+		preset, err := h.db.GetQualityTestPrompt(ctx, req.PromptID)
+		if err != nil || preset.Prompt != req.Prompt {
+			return "", "", ""
+		}
+		return "custom", strconv.FormatInt(preset.ID, 10), preset.Name
+	}
+	key := strings.ToLower(strings.TrimSpace(req.PresetKey))
+	if key == "" || !builtinPresetKey.MatchString(key) {
+		return "", "", ""
+	}
+	name = strings.TrimSpace(req.PresetName)
+	if utf8.RuneCountInString(name) > qualityTestPromptNameLimit {
+		name = string([]rune(name)[:qualityTestPromptNameLimit])
+	}
+	return "builtin", key, name
 }
 
 type qualityTestOptions struct {

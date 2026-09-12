@@ -1,4 +1,4 @@
-import type { QualityTestJob, QualityTestJobsResponse } from './lib/qualityTest'
+import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
@@ -1467,10 +1467,18 @@ export const api = {
   getModels: () => request<ModelsResponse>('/models'),
   getQualityTestOptions: (id: number, signal?: AbortSignal) =>
     request<{ models: string[]; reasoning_efforts: string[] }>(`/accounts/${id}/quality-test/options`, { signal }),
-  createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string }) =>
+  getQualityTestPrompts: (signal?: AbortSignal) =>
+    request<{ prompts: QualityTestPrompt[] }>('/quality-test-prompts', { signal }),
+  createQualityTestPrompt: (body: { name: string; prompt: string }) =>
+    request<{ prompt: QualityTestPrompt }>('/quality-test-prompts', { method: 'POST', body: JSON.stringify(body) }),
+  updateQualityTestPrompt: (id: number, body: { name?: string; prompt?: string }) =>
+    request<{ prompt: QualityTestPrompt }>(`/quality-test-prompts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteQualityTestPrompt: (id: number) =>
+    request<{ message: string }>(`/quality-test-prompts/${id}`, { method: 'DELETE' }),
+  createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string; prompt_id?: number; preset_key?: string; preset_name?: string }) =>
     request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
-  getQualityTests: (page = 1, signal?: AbortSignal) =>
-    request<QualityTestJobsResponse>(`/quality-tests?page=${page}&page_size=20`, { signal }),
+  getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
+    request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
   getQualityTest: (id: number, signal?: AbortSignal) =>
     request<{ job: QualityTestJob }>(`/quality-tests/${id}`, { signal }),
   cancelQualityTest: (id: number) =>

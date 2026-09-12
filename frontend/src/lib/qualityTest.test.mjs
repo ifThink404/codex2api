@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { extractQualityTestHTML, extractQualityTestSVG, qualityTestPreviewDocument, isQualityTestActive, qualityTestPlanTone } from './qualityTest.ts'
+import { extractQualityTestHTML, qualityTestPreviewDocument, isQualityTestActive, qualityTestPlanTone, clampQualityTestFrameHeight, QUALITY_TEST_SIZE_SCRIPT, qualityTestFilterQuery } from './qualityTest.ts'
 import { readClaudeTestEvents } from './claudeConnectionTest.ts'
 
 test('quality preview extracts documents and SVG without rendering explanatory prose', () => {
@@ -14,23 +14,20 @@ test('quality preview extracts documents and SVG without rendering explanatory p
   assert.equal(extractQualityTestHTML(''), '')
 })
 
-test('svg export picks the largest top-level svg, adds xmlns and carries page styles', () => {
-  const page = '<html><head><style>.wheel{animation:spin 1s linear infinite}</style></head><body><svg viewBox="0 0 4 4"><circle r="1"/></svg><svg viewBox="0 0 800 600"><g class="wheel"><svg width="2" height="2"><rect/></svg></g></svg></body></html>'
-  const svg = extractQualityTestSVG(page)
-  assert.ok(svg.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"><style>.wheel{animation:spin 1s linear infinite}</style>'))
-  assert.ok(svg.endsWith('<g class="wheel"><svg width="2" height="2"><rect/></svg></g></svg>'))
-  assert.ok(!svg.includes('viewBox="0 0 4 4"'))
-  assert.equal(extractQualityTestSVG('<svg xmlns="http://www.w3.org/2000/svg"><use xlink:href="#a"/></svg>'), '<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg"><use xlink:href="#a"/></svg>')
-  assert.equal(extractQualityTestSVG('<html><body><canvas></canvas></body></html>'), '')
-  assert.equal(extractQualityTestSVG('<svg><g>unterminated'), '')
-})
-
 test('preview policy is installed before untrusted content, allowing inline animation only', () => {
   const malicious = '<html><head><script src="https://example.invalid/x.js"></script></head><body><svg /></body></html>'
   const document = qualityTestPreviewDocument(malicious)
   assert.ok(document.indexOf('Content-Security-Policy') < document.indexOf(malicious))
   for (const policy of ["default-src 'none'", "script-src 'unsafe-inline'", "style-src 'unsafe-inline'", "connect-src 'none'", "frame-src 'none'", "base-uri 'none'", "form-action 'none'"]) assert.ok(document.includes(policy))
   assert.ok(document.includes(malicious))
+  assert.ok(document.indexOf(QUALITY_TEST_SIZE_SCRIPT) > document.indexOf(malicious))
+})
+
+test('frame height from the sandboxed preview is clamped and rejects garbage', () => {
+  assert.equal(clampQualityTestFrameHeight(812.4), 812)
+  assert.equal(clampQualityTestFrameHeight(12), 320)
+  assert.equal(clampQualityTestFrameHeight(99999), 1400)
+  for (const junk of [undefined, null, '', 'tall', NaN, -5, 0, Infinity]) assert.equal(clampQualityTestFrameHeight(junk), undefined)
 })
 
 test('quality stream preserves split Unicode, whitespace and diagnostics arriving after completion', async () => {
@@ -57,7 +54,8 @@ test('stopping tasks still occupy a slot and subscription variants keep their di
   assert.equal(qualityTestPlanTone('custom'), 'other')
 })
 
-test('svg export retargets html/body rules to the root element without touching similar class or id names', () => {
-  const page = '<html><head><style>html, body { margin: 0; background: linear-gradient(#8fd7ff, #71bd50); }\nbody .stage { width: 100vw; }\n.body-part, #html { fill: red; }</style></head><body><svg class="stage"><rect fill="url(#missing)"/></svg></body></html>'
-  assert.ok(extractQualityTestSVG(page).includes('<style>svg:root, svg:root { margin: 0; background: linear-gradient(#8fd7ff, #71bd50); }\nsvg:root .stage { width: 100vw; }\n.body-part, #html { fill: red; }</style>'))
+test('history filter query only carries the active filters and keeps the model-default effort sentinel', () => {
+  assert.equal(qualityTestFilterQuery(2), 'page=2&page_size=20')
+  assert.equal(qualityTestFilterQuery(1, { plan: 'pro', model: 'gpt-5.5', effort: 'default', account_id: 7, preset: 'builtin:clock' }), 'page=1&page_size=20&plan=pro&model=gpt-5.5&effort=default&account_id=7&preset=builtin%3Aclock')
+  assert.equal(qualityTestFilterQuery(1, { plan: '', model: '', effort: '', account_id: 0 }), 'page=1&page_size=20')
 })

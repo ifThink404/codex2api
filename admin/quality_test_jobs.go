@@ -79,7 +79,8 @@ func (h *Handler) CreateQualityTestJob(c *gin.Context) {
 	// a committed record without its runner. Database uniqueness arbitrates all replicas.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	job, err := h.db.CreateQualityTestJob(ctx, database.QualityTestJob{AccountID: id, AccountName: name, PlanType: plan, Channel: channel, Model: req.Model, ReasoningEffort: req.ReasoningEffort, Prompt: req.Prompt})
+	presetKind, presetRef, presetName := h.resolveQualityTestPreset(ctx, req)
+	job, err := h.db.CreateQualityTestJob(ctx, database.QualityTestJob{AccountID: id, AccountName: name, PlanType: plan, Channel: channel, Model: req.Model, ReasoningEffort: req.ReasoningEffort, Prompt: req.Prompt, PresetKind: presetKind, PresetRef: presetRef, PresetName: presetName})
 	if err != nil {
 		if errors.Is(err, database.ErrQualityTestCapacity) || errors.Is(err, database.ErrQualityTestAccountBusy) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
@@ -87,6 +88,11 @@ func (h *Handler) CreateQualityTestJob(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存检测任务失败"})
 		return
+	}
+	if presetKind == "custom" {
+		if err := h.db.IncrementQualityTestPromptUsage(ctx, req.PromptID); err != nil {
+			log.Printf("[quality-test] job=%d preset=%d usage bookkeeping failed: %v", job.ID, req.PromptID, err)
+		}
 	}
 	h.qualityTestWG.Add(1)
 	if !h.startDBBackgroundTaskWithParent(h.qualityTestContext, func(parent context.Context) { defer h.qualityTestWG.Done(); h.runQualityTestJob(parent, *job, req) }) {
@@ -107,7 +113,28 @@ func (h *Handler) ListQualityTests(c *gin.Context) {
 	if size < 1 || size > 50 {
 		size = 20
 	}
-	jobs, err := h.db.ListQualityTests(c.Request.Context(), page, size)
+	filter := database.QualityTestFilter{PlanType: strings.TrimSpace(c.Query("plan")), Model: strings.TrimSpace(c.Query("model"))}
+	if effort, ok := c.GetQuery("effort"); ok {
+		// "default" selects runs that used the model default (stored as "").
+		filter.HasEffort = true
+		if effort = strings.ToLower(strings.TrimSpace(effort)); effort != "default" {
+			filter.ReasoningEffort = effort
+		}
+	}
+	if id, err := strconv.ParseInt(c.Query("account_id"), 10, 64); err == nil && id > 0 {
+		filter.AccountID = id
+	}
+	// preset=none | builtin:<key> | custom:<id>
+	if preset, ok := c.GetQuery("preset"); ok {
+		preset = strings.TrimSpace(preset)
+		filter.HasPreset = true
+		if kind, ref, found := strings.Cut(preset, ":"); found && (kind == "builtin" || kind == "custom") && ref != "" {
+			filter.PresetKind, filter.PresetRef = kind, ref
+		} else if preset != "none" {
+			filter.HasPreset = false
+		}
+	}
+	jobs, err := h.db.ListQualityTests(c.Request.Context(), page, size, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取检测记录失败"})
 		return

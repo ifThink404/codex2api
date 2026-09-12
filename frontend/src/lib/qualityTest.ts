@@ -1,8 +1,21 @@
 import type { ClaudeTestEvent } from './claudeConnectionTest'
 import type { CodexTestDiagnostics } from './codexConnectionTest'
 
-export const PELICAN_PROMPT = '创建一个 HTML，内容是用 SVG 绘制一个鹈鹕骑自行车的 2D 动画。'
+export const PELICAN_PROMPT = '创建一个 HTML，内容是用 SVG 绘制一个鹈鹕骑自行车的 2D 动画。你不需要任何测试。'
 export const QUALITY_TEST_OUTPUT_LIMIT = 1024 * 1024
+
+// Built-in presets ship with the studio and are not stored; names live in the locale
+// files under qualityTest.presets.builtins.<key>. The pelican prompt is the default.
+export interface QualityTestBuiltinPreset { key: string; prompt: string }
+export const QUALITY_TEST_BUILTIN_PRESETS: QualityTestBuiltinPreset[] = [
+  { key: 'pelican', prompt: PELICAN_PROMPT },
+  { key: 'clock', prompt: "创建一个 HTML，用 SVG 绘制一个模拟时钟：有表盘刻度、时针、分针、秒针，读取浏览器本地时间实时走针，秒针平滑扫动，时针随分钟联动偏移。表盘下方用数字显示当前时间。所有样式与脚本内联，不引用外部资源。你不需要任何测试。" },
+  { key: 'solar', prompt: "创建一个 HTML，用 SVG 绘制太阳系动画：太阳居中，至少包含水星、金星、地球、火星、木星、土星六颗行星沿各自轨道公转，公转周期按真实比例缩放（地球 1 圈时水星约 4 圈、土星约 1/29 圈），地球带一颗绕转的月球，土星有光环，每颗行星标注中文名称。深色星空背景带闪烁星点。所有样式与脚本内联。你不需要任何测试。" },
+  { key: 'balls', prompt: "创建一个 HTML，用 Canvas 或 SVG 实现弹跳小球物理模拟：初始生成 8 个不同颜色和半径的小球，受重力作用下落，碰到容器四壁反弹并有能量损耗，小球之间发生碰撞时按动量守恒交换速度，不允许相互穿透或卡在墙内。点击画面任意位置新增一个小球。所有样式与脚本内联。你不需要任何测试。" },
+  { key: 'gears', prompt: "创建一个 HTML，用 SVG 绘制一组相互啮合的齿轮传动动画：至少 4 个齿轮，齿数分别为 12、24、36、18，齿形要真实可辨，相邻齿轮的齿必须正确啮合而不重叠或穿透，转速与齿数成反比，转向相邻相反。用不同颜色区分齿轮，并在每个齿轮中心标注齿数。所有样式与脚本内联。你不需要任何测试。" },
+  { key: 'city', prompt: "创建一个 HTML，用 SVG 绘制一幅横向无限滚动的城市夜景：至少三层视差（远景山脉与月亮、中景楼群、近景马路），层速由远到近递增；楼窗随机点亮熄灭，马路上有汽车往返行驶并带车灯，天空偶尔划过流星。画面循环时不能出现接缝或跳变。所有样式与脚本内联。你不需要任何测试。" },
+  { key: 'strokes', prompt: "创建一个 HTML，用 SVG 路径动画演示汉字「永」的书写过程：按正确笔顺逐笔书写，共 5 笔（点、横折钩、横撇、撇、捺），每一笔用 stroke-dashoffset 动画呈现毛笔运笔效果，笔画粗细有提按变化，写完一笔再写下一笔，全部写完后暂停两秒重新开始。旁边列出笔顺编号。所有样式与脚本内联。你不需要任何测试。" },
+]
 
 export interface QualityTestJob {
   id: number
@@ -15,6 +28,9 @@ export interface QualityTestJob {
   prompt?: string
   output?: string
   status: 'running' | 'cancelling' | 'completed' | 'error' | 'stopped' | 'interrupted'
+  preset_kind?: '' | 'builtin' | 'custom'
+  preset_ref?: string
+  preset_name?: string
   error?: string
   created_at: string
   updated_at: string
@@ -27,11 +43,46 @@ export interface QualityTestJob {
   reasoning_tokens?: number
 }
 
+export interface QualityTestPrompt {
+  id: number
+  name: string
+  prompt: string
+  usage_count: number
+  last_used_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface QualityTestFacets {
+  plans: string[]
+  models: string[]
+  efforts: string[]
+  accounts: { id: number; name: string }[]
+  presets: { kind: 'builtin' | 'custom'; ref: string; name: string }[]
+}
+
 export interface QualityTestJobsResponse {
   jobs: QualityTestJob[]
   active_jobs: QualityTestJob[]
   total: number
   concurrency_limit: number
+  facets?: QualityTestFacets
+}
+
+// Filter values are the raw stored strings; effort "default" selects runs that used the model default.
+// preset: 'none' | 'builtin:<key>' | 'custom:<id>'
+export interface QualityTestJobsFilter { plan?: string; model?: string; effort?: string; account_id?: number; preset?: string }
+
+export const EMPTY_QUALITY_TEST_FACETS: QualityTestFacets = { plans: [], models: [], efforts: [], accounts: [], presets: [] }
+
+export function qualityTestFilterQuery(page: number, filter: QualityTestJobsFilter = {}): string {
+  const params = new URLSearchParams({ page: String(page), page_size: '20' })
+  if (filter.plan) params.set('plan', filter.plan)
+  if (filter.model) params.set('model', filter.model)
+  if (filter.effort) params.set('effort', filter.effort)
+  if (filter.account_id) params.set('account_id', String(filter.account_id))
+  if (filter.preset) params.set('preset', filter.preset)
+  return params.toString()
 }
 
 export function isQualityTestActive(job?: Pick<QualityTestJob, 'status'> | null): boolean {
@@ -65,40 +116,24 @@ export function extractQualityTestHTML(output: string): string {
   return end >= 0 ? html.slice(0, end + 7) : html
 }
 
-// Pull the largest top-level <svg> out of the generated markup as a standalone file.
-// Page-level <style> blocks are copied inside so class-based CSS animations keep running.
-export function extractQualityTestSVG(html: string): string {
-  const tags = [...html.matchAll(/<svg[\s>]|<\/svg\s*>/gi)]
-  let depth = 0, start = -1, best = ''
-  for (const tag of tags) {
-    if (tag[0].toLowerCase().startsWith('<svg')) {
-      if (depth === 0) start = tag.index
-      depth++
-    } else if (depth > 0 && --depth === 0 && start >= 0) {
-      const candidate = html.slice(start, tag.index + tag[0].length)
-      if (candidate.length > best.length) best = candidate
-      start = -1
-    }
-  }
-  if (!best) return ''
-  const outer = html.slice(0, html.indexOf(best)) + html.slice(html.indexOf(best) + best.length)
-  // Rules aimed at html/body (page background, fonts) have no host in a standalone
-  // SVG; point them at the root element so the viewport keeps the same look.
-  const styles = [...outer.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)]
-    .map((match) => match[1].trim().replace(/(^|[\s,}])(?:html|body|:root)(?=[\s,{.:>[])/g, '$1svg:root'))
-    .filter(Boolean)
-  const openEnd = best.indexOf('>')
-  let open = best.slice(0, openEnd + 1)
-  if (!/\sxmlns=/.test(open)) open = open.replace(/^<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"')
-  if (/xlink:/.test(best) && !/\sxmlns:xlink=/.test(open)) open = open.replace(/^<svg/i, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"')
-  const styleBlock = styles.length ? `<style>${styles.join('\n')}</style>` : ''
-  return `<?xml version="1.0" encoding="UTF-8"?>\n${open}${styleBlock}${best.slice(openEnd + 1)}`
-}
-
 // The policy precedes every byte of generated markup. The iframe must additionally
 // use sandbox="allow-scripts" (never allow-same-origin). Inline animation is allowed;
 // network requests, external resources, forms, workers and nested frames are blocked.
-export function qualityTestPreviewDocument(html: string): string {
+export function qualityTestPreviewDocument(html: string, exportScript = ''): string {
   const policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{margin:0;min-height:100%;}svg{max-width:100%;}</style></head><body>${html}</body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{margin:0;min-height:100%;}svg{max-width:100%;}</style></head><body>${html}${QUALITY_TEST_SIZE_SCRIPT}${exportScript}</body></html>`
+}
+
+// Reports the rendered content height so the host can size the frame to fit.
+// Re-measures only on width changes: a height-triggered resize would loop with
+// viewport-relative layouts. Values are untrusted; the host clamps them.
+export const QUALITY_TEST_SIZE_SCRIPT = `<script>(function(){var w=innerWidth;function m(){var d=document.documentElement,b=document.body;parent.postMessage({type:'quality-test-preview-size',width:innerWidth,height:Math.max(d?d.scrollHeight:0,b?b.scrollHeight:0)},'*')}addEventListener('load',m);setTimeout(m,400);setTimeout(m,1200);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(m);addEventListener('resize',function(){if(innerWidth!==w){w=innerWidth;m()}})})()</script>`
+
+export const QUALITY_TEST_FRAME_MIN = 320
+export const QUALITY_TEST_FRAME_MAX = 1400
+
+export function clampQualityTestFrameHeight(value: unknown): number | undefined {
+  const height = Number(value)
+  if (!Number.isFinite(height) || height <= 0) return undefined
+  return Math.round(Math.min(QUALITY_TEST_FRAME_MAX, Math.max(QUALITY_TEST_FRAME_MIN, height)))
 }

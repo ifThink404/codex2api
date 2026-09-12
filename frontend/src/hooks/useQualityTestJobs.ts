@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import { isQualityTestActive, type QualityTestJob, type QualityTestJobsResponse } from '../lib/qualityTest'
+import { isQualityTestActive, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse } from '../lib/qualityTest'
 import { getErrorMessage } from '../utils/error'
 
-export function useQualityTestJobs(page: number, revision: number) {
+export function useQualityTestJobs(page: number, revision: number, filter: QualityTestJobsFilter = {}) {
+  const { plan, model, effort, account_id, preset } = filter
   const [data, setData] = useState<QualityTestJobsResponse>({ jobs: [], active_jobs: [], total: 0, concurrency_limit: 3 })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -14,7 +15,7 @@ export function useQualityTestJobs(page: number, revision: number) {
     const poll = async () => {
       let delay = 3000
       try {
-        const result = await api.getQualityTests(page, controller.signal)
+        const result = await api.getQualityTests(page, { plan, model, effort, account_id, preset }, controller.signal)
         if (controller.signal.aborted) return
         setData(result); setError('')
         delay = result.active_jobs.length > 0 ? 1500 : 5000
@@ -26,7 +27,7 @@ export function useQualityTestJobs(page: number, revision: number) {
     void poll()
     // Only polling is cancelled; the server owns each task's lifetime.
     return () => { controller.abort(); clearTimeout(timer) }
-  }, [page, revision])
+  }, [page, revision, plan, model, effort, account_id, preset])
   return { ...data, error, loading }
 }
 

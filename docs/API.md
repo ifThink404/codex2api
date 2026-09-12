@@ -600,17 +600,26 @@ Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`inpu
 
 #### HTML 动画降智检测
 
-管理后台侧边栏「降智检测」位于 `/admin/quality-test`，可切换「检测工作台」和「检测记录」（`?view=history`）。默认题目为用 SVG 绘制鹈鹕骑自行车的 2D 动画，可以编辑提示词并选择账号、模型和思考强度；账号下拉按订阅类型显示颜色标识。
+管理后台侧边栏「降智检测」位于 `/admin/quality-test`，可切换「检测工作台」、「提示词预设」（`?view=presets`）和「检测记录」（`?view=history`）。默认题目为用 SVG 绘制鹈鹕骑自行车的 2D 动画，可以编辑提示词并选择账号、模型和思考强度；账号下拉按订阅类型显示颜色标识。
+
+提示词预设分两类：内置预设随前端发布（鹈鹕骑自行车、模拟时钟、太阳系轨道、弹跳小球物理、齿轮传动、城市夜景视差、汉字笔顺共 7 套），不落库、不可编辑，可「复制为自定义预设」后修改；自定义预设保存在数据库表 `quality_test_prompts` 中。工作台的「提示词预设」下拉两类都能选用；不选预设或恢复默认时使用内置鹈鹕题目。当前提示词与某条预设完全一致即视为选中该预设，改动后视为「自定义」，可从工作台一键存为新预设或更新原预设。
 
 检测作为服务端后台任务执行，切换页面、刷新或关闭标签页不会取消任务。账号身份与订阅快照、模型、思考强度、提示词、检测时间、状态、用量及生成内容保存在数据库中。记录分页展示，点击结果可重新预览和下载 HTML；`?job=<id>` 可直接定位结果。
 
 预览使用隔离 iframe，仅允许内联脚本、样式及数据资源，不授予后台同源访问权限。`GET /api/quality-test/preview` 是无凭据、无用户数据的静态预览容器，通过父页面消息接收 HTML；它不接收持久化写入，其独立 CSP 不放宽管理后台的脚本限制。
+
+「下载 HTML」保留模型生成的完整动画和交互；「导出 SVG 静态快照」需要先打开预览，保存当前最大的可见 SVG 图形，包含脚本生成的路径、当前变换和图形样式，不包含 HTML 标题、控制按钮或动画脚本。导出通过隔离预览的消息通道完成，不开放同源访问；重放、切换记录或离开预览会取消尚未完成的导出。Canvas、包含 `foreignObject` 或依赖外部资源的图形应下载 HTML。SVG 导出最多处理 10000 个元素、8 MiB 内容，超过限制或导出超时会提示重试或下载 HTML。
 
 - `GET /api/admin/accounts/:id/quality-test/options`：返回所选运行时账号的 `models` 和 `reasoning_efforts`。空字符串表示模型默认；Antigravity 的强度由模型名称固定，因此只返回默认项。
 - `POST /api/admin/accounts/:id/quality-test`：创建指定账号的后台检测任务，返回 `202 {"job": {...}}`，不切换到其他账号。
 - `GET /api/admin/quality-tests?page=1&page_size=20`：返回 `jobs`、`total`、`active_jobs` 和 `concurrency_limit`。列表不包含完整提示词与 HTML；每页最多 50 条。
 - `GET /api/admin/quality-tests/:id`：返回 `{"job": {...}}`，包含完整提示词、当前生成内容与统计；运行中可轮询。
 - `POST /api/admin/quality-tests/:id/cancel`：将运行任务标记为 `cancelling`，执行器收到停止请求后取消上游并保存 `stopped` 结果。
+- `GET /api/admin/quality-test-prompts`：返回 `{"prompts": [...]}`，按更新时间倒序；每条包含 `id`、`name`、`prompt`、`usage_count`、`last_used_at`、`created_at`、`updated_at`。
+- `POST /api/admin/quality-test-prompts`：创建预设，请求体 `{"name": "...", "prompt": "..."}`。`prompt` 必填且不超过 16000 字节；`name` 留空时取提示词前 24 个字符，最长 100 字符。返回 `{"prompt": {...}}`。
+- `PATCH /api/admin/quality-test-prompts/:id`：局部更新，只传需要修改的字段；不存在返回 `404`。
+- `DELETE /api/admin/quality-test-prompts/:id`：删除预设，已发起的检测记录不受影响。
+- 创建检测任务时可附带 `prompt_id`，仅用于累计该预设的 `usage_count` 与 `last_used_at`，预设已删除时静默忽略。
 
 创建请求示例：
 
@@ -618,7 +627,7 @@ Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`inpu
 {
   "model": "gpt-5.5",
   "reasoning_effort": "high",
-  "prompt": "创建一个 HTML，内容是用 SVG 绘制一个鹈鹕骑自行车的 2D 动画。"
+  "prompt": "创建一个 HTML，内容是用 SVG 绘制一个鹈鹕骑自行车的 2D 动画。你不需要任何测试。"
 }
 ```
 
