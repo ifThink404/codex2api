@@ -3370,6 +3370,7 @@ export interface UsageLog {
   stream: boolean
   compact: boolean
   has_compaction_history: boolean
+  ultra?: boolean
   via_websocket?: boolean
   cached_tokens: number
   image_input_tokens?: number
@@ -3834,6 +3835,7 @@ export interface PublicAPIKeyUsageLog {
   stream: boolean
   compact: boolean
   has_compaction_history: boolean
+  ultra?: boolean
   via_websocket: boolean
   upstream_error_kind: string
   created_at: ISODateString

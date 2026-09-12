@@ -1520,6 +1520,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateWsAcquireFromRequest(c, input)
 	populateUpstreamTrace(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
+	populateUltraUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
@@ -3745,6 +3746,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	bodyReadDone := time.Now()
 	compactionMeta := requestCompactionMetaForHTTP(c, rawBody)
 	cacheRequestCompactionMeta(c, compactionMeta)
+	cacheRequestUltraMode(c, resolveRequestUltraMode(c.Request.Header, rawBody))
 
 	// Native remote compaction v2：较新的 Codex 客户端把会话压缩触发器作为
 	// input item（type=compaction_trigger）嵌进普通 /responses，并带 stream=true。

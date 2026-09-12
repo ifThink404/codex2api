@@ -2241,6 +2241,7 @@
     "accountFilter": "账号 {{account}}",
     "filterByAccountHint": "点击按账号 {{account}} 筛选,再点取消",
     "filterByModelHint": "点击按模型 {{model}} 筛选,再点取消",
+    "ultraModeHint": "Ultra 档:xhigh 推理 + 主动多代理委派(Codex 客户端行为)",
     "allApiKeys": "全部密钥",
     "allModels": "全部模型",
     "allEndpoints": "全部端点",

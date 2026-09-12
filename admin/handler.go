@@ -8192,6 +8192,10 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 	if !ok {
 		return database.UsageLogFilter{}, false
 	}
+	filter.UltraOnly, ok = parseUsageLogBoolFilter(c, "ultra")
+	if !ok {
+		return database.UsageLogFilter{}, false
+	}
 
 	errorOnly, ok := parseUsageLogBoolFilter(c, "error_only")
 	if !ok {

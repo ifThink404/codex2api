@@ -35,7 +35,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Activity, Box, Clock, Zap, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw } from 'lucide-react'
+import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 
@@ -1788,6 +1788,7 @@ export default function Usage() {
   // 从表格行点击进入账号筛选时记住邮箱/名称,筛选 chip 显示可读身份而不是裸 ID;URL 带入的只有 ID。
   const [filterAccountLabel, setFilterAccountLabel] = useState('')
   const [filterFast, setFilterFast] = useState('')
+  const [filterUltra, setFilterUltra] = useState('')
   const [filterType, setFilterType] = useState<UsageTypeFilter>('')
   const [filterErrorKind, setFilterErrorKind] = useState('')
   const [filterRetry, setFilterRetry] = useState<UsageRetryFilter>('')
@@ -1848,6 +1849,7 @@ export default function Usage() {
       apiKeyId: filterApiKeyId || undefined,
       accountId: filterAccountId || undefined,
       fast: filterFast || undefined,
+      ultra: filterUltra || undefined,
       stream: filterType === 'stream' ? 'true' : filterType === 'sync' ? 'false' : undefined,
       compact: filterType === 'compact' ? 'true' : undefined,
       hasCompactionHistory: filterType === 'history' ? 'true' : undefined,
@@ -1855,7 +1857,7 @@ export default function Usage() {
       retry: filterRetry || undefined,
       viaWebsocket: filterTransport === 'ws' ? 'true' : filterTransport === 'http' ? 'false' : undefined,
     }
-  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterType, channel, filterRetry, filterTransport])
+  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterType, channel, filterRetry, filterTransport])
 
   const buildLogFilterParams = useCallback(() => {
     return {
@@ -2040,6 +2042,7 @@ export default function Usage() {
     filterEndpoint,
     filterType,
     filterFast,
+    filterUltra,
     filterErrorKind,
     filterRetry,
     filterTransport,
@@ -2053,6 +2056,7 @@ export default function Usage() {
     || filterAccountId
     || filterType
     || filterFast
+    || filterUltra
     || filterErrorKind
     || filterRetry
     || filterTransport,
@@ -2063,6 +2067,7 @@ export default function Usage() {
     { value: 'error', label: t('usage.statusErrors'), tone: 'text-red-600 dark:text-red-300' },
     { value: '4xx', label: '4xx', tone: 'text-amber-600 dark:text-amber-300' },
     { value: '5xx', label: '5xx', tone: 'text-red-600 dark:text-red-300' },
+    { value: '500', label: '500', tone: 'text-red-600 dark:text-red-300' },
     { value: '401', label: '401', tone: 'text-red-600 dark:text-red-300' },
     { value: '429', label: '429', tone: 'text-amber-600 dark:text-amber-300' },
     { value: '499', label: '499', tone: 'text-slate-600 dark:text-slate-300' },
@@ -2091,6 +2096,7 @@ export default function Usage() {
     setFilterAccountLabel('')
     setFilterType('')
     setFilterFast('')
+    setFilterUltra('')
     setFilterErrorKind('')
     setFilterRetry('')
     setFilterTransport('')
@@ -2601,12 +2607,13 @@ export default function Usage() {
                       { label: 'WebSocket', value: 'ws' },
                     ]}
                   />
+                  <div className="flex min-w-0 gap-2">
                   {showFastFilter ? (
                     <button
                       type="button"
                       onClick={() => { setFilterFast(filterFast === 'true' ? '' : 'true'); setPage(1) }}
                       className={cn(
-                        'inline-flex h-8 items-center justify-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
+                        'inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
                         filterFast === 'true'
                           ? 'border-blue-500/40 bg-blue-500/12 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400'
                           : 'border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground',
@@ -2616,6 +2623,21 @@ export default function Usage() {
                       Fast
                     </button>
                   ) : null}
+                  <button
+                    type="button"
+                    title={t('usage.ultraModeHint')}
+                    onClick={() => { setFilterUltra(filterUltra === 'true' ? '' : 'true'); setPage(1) }}
+                    className={cn(
+                      'inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
+                      filterUltra === 'true'
+                        ? 'border-violet-500/40 bg-violet-500/12 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300'
+                        : 'border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                    )}
+                  >
+                    <Sparkles className="size-3.5" />
+                    Ultra
+                  </button>
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -2662,10 +2684,10 @@ export default function Usage() {
                           {visibleColumns.model && (
                             <Badge
                               variant="outline"
-                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
+                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
                               role="button"
                               tabIndex={0}
-                              title={t('usage.filterByModelHint', { model: log.model || '-' })}
+                              title={`${log.ultra ? `${t('usage.ultraModeHint')} · ` : ''}${t('usage.filterByModelHint', { model: log.model || '-' })}`}
                               onClick={() => toggleModelFilter(log.model)}
                               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
                             >
@@ -2891,10 +2913,10 @@ export default function Usage() {
                             )}
                             <Badge
                               variant="outline"
-                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
+                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
                               role="button"
                               tabIndex={0}
-                              title={t('usage.filterByModelHint', { model: log.model || '-' })}
+                              title={`${log.ultra ? `${t('usage.ultraModeHint')} · ` : ''}${t('usage.filterByModelHint', { model: log.model || '-' })}`}
                               onClick={() => toggleModelFilter(log.model)}
                               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
                             >

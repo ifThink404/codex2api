@@ -2241,6 +2241,7 @@
     "accountFilter": "Account {{account}}",
     "filterByAccountHint": "Click to filter by account {{account}}; click again to clear",
     "filterByModelHint": "Click to filter by model {{model}}; click again to clear",
+    "ultraModeHint": "Ultra: xhigh reasoning + proactive multi-agent delegation (Codex client mode)",
     "allApiKeys": "All API Keys",
     "allModels": "All Models",
     "allEndpoints": "All Endpoints",

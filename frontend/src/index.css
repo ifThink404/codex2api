@@ -1477,3 +1477,110 @@
 .thin-scrollbar::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in oklab, var(--color-muted-foreground) 65%, transparent);
 }
+
+/* Codex Ultra 档的模型徽章:半透明玻璃质感 + 星空紫蓝渐变 + 闪烁星点
+   (对应 Codex 客户端的 Ultra 进度条视觉)。放在 layer 之外,稳定压过
+   Badge 自带的 outline 底色/文字色工具类。 */
+@keyframes usage-ultra-flow {
+  0% { background-position: 0 0, 0% 50%; }
+  100% { background-position: 0 0, 200% 50%; }
+}
+
+@keyframes usage-ultra-twinkle {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.usage-ultra-model {
+  position: relative;
+  isolation: isolate;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  /* 顶层是玻璃高光,底层是流动的星空渐变;两层各自控制尺寸与位移。 */
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0.08) 48%, rgba(255, 255, 255, 0) 100%),
+    linear-gradient(
+      100deg,
+      rgba(49, 52, 150, 0.88) 0%,
+      rgba(79, 70, 229, 0.85) 22%,
+      rgba(124, 58, 237, 0.86) 48%,
+      rgba(168, 85, 247, 0.84) 64%,
+      rgba(91, 70, 210, 0.86) 82%,
+      rgba(49, 52, 150, 0.88) 100%
+    );
+  background-size: 100% 100%, 200% 100%;
+  background-position: 0 0, 0% 50%;
+  background-clip: padding-box;
+  backdrop-filter: blur(6px) saturate(1.4);
+  -webkit-backdrop-filter: blur(6px) saturate(1.4);
+  animation: usage-ultra-flow 7s linear infinite;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 rgba(60, 40, 140, 0.18),
+    0 2px 10px rgba(99, 76, 224, 0.28);
+  text-shadow: 0 1px 1px rgba(30, 20, 80, 0.35);
+}
+
+.dark .usage-ultra-model {
+  border-color: rgba(196, 181, 253, 0.32);
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 48%, rgba(255, 255, 255, 0) 100%),
+    linear-gradient(
+      100deg,
+      rgba(44, 46, 128, 0.8) 0%,
+      rgba(70, 66, 196, 0.78) 22%,
+      rgba(118, 70, 230, 0.8) 48%,
+      rgba(160, 100, 240, 0.78) 64%,
+      rgba(86, 68, 200, 0.8) 82%,
+      rgba(44, 46, 128, 0.8) 100%
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 2px 12px rgba(124, 92, 246, 0.35);
+}
+
+.usage-ultra-model:hover {
+  color: #fff;
+  filter: brightness(1.06) saturate(1.1);
+}
+
+.usage-ultra-model::before,
+.usage-ultra-model::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background-repeat: no-repeat;
+  animation: usage-ultra-twinkle 2.6s ease-in-out infinite;
+}
+
+.usage-ultra-model::before {
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.95) 0 1px, transparent 1.6px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.8) 0 0.8px, transparent 1.4px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.9) 0 1px, transparent 1.6px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.7) 0 0.8px, transparent 1.4px);
+  background-size: 4px 4px, 3px 3px, 4px 4px, 3px 3px;
+  background-position: 12% 28%, 34% 70%, 61% 22%, 86% 64%;
+}
+
+.usage-ultra-model::after {
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.85) 0 0.8px, transparent 1.4px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.9) 0 1px, transparent 1.6px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.75) 0 0.8px, transparent 1.4px);
+  background-size: 3px 3px, 4px 4px, 3px 3px;
+  background-position: 22% 72%, 48% 30%, 74% 78%;
+  animation-delay: -1.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-ultra-model,
+  .usage-ultra-model::before,
+  .usage-ultra-model::after {
+    animation: none;
+  }
+}
