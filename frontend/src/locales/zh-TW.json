@@ -143,6 +143,13 @@
     }
   },
   "accounts": {
+    "refreshAllUsage": "一鍵重新整理用量",
+    "refreshAllUsageHint": "查詢執行池中所有支援 WHAM 的 Codex 帳號，更新 5 小時和週用量進度條。",
+    "batchUsageRefreshing": "正在重新整理用量",
+    "batchUsageRefreshEmpty": "沒有可查詢用量的 Codex 帳號",
+    "batchUsageRefreshDone": "用量更新完成：成功 {{success}}，失敗 {{fail}}",
+    "batchUsageRefreshFailed": "用量更新失敗：{{error}}",
+    "operationUsageRefreshResultsTitle": "用量更新結果",
     "lastTokenRefresh": "最近 Token 續期",
     "tokenRefreshNotice": "授權續期提示",
     "todayStats": "今日統計",
@@ -1300,6 +1307,14 @@
     "cyberRiskSubjectEvents": "{{count}} 筆事件"
   },
   "usage": {
+    "usageAnalysis": "用量分析",
+    "modelStatsDesc": "主要模型的請求、Token 與金額分布。",
+    "modelStatsScope": "占比依金額排名前 10 的模型計算。",
+    "modelSubtotal": "主要模型合計",
+    "featureStatsDesc": "查看請求方式、能力使用與異常情況。",
+    "featureTraits": "請求特徵",
+    "featureOverlapHint": "各項可重疊，占比依總請求計算",
+    "requestShare": "請求占比",
     "tableCached": "快取",
     "cacheReadTooltip": "讀取快取：{{tokens}}",
     "cacheCreateTooltip": "建立快取：{{tokens}}（5 分鐘 {{m5}} · 1 小時 {{h1}}）",

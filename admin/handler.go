@@ -58,6 +58,9 @@ type Handler struct {
 	systemUpdateOnce  sync.Once
 	refreshAccount    func(context.Context, int64) error
 	probeUsage        func(context.Context, *auth.Account) error
+
+	codexUsageRefreshRunning atomic.Bool
+
 	// executeClaudeUsageProbe is injectable for tests; production uses the
 	// provider-native Anthropic Messages request directly.
 	executeClaudeUsageProbe func(context.Context, *auth.Account, []byte) (*http.Response, error)
@@ -1189,6 +1192,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PATCH("/accounts/:id/credit", h.UpdateAccountCredit)
 	api.POST("/accounts/batch-test", h.BatchTest)
 	api.POST("/accounts/batch-refresh", h.BatchRefreshAccounts)
+	api.POST("/accounts/batch-refresh-usage", h.BatchRefreshCodexUsage)
 	api.POST("/accounts/batch-delete", h.BatchDeleteAccounts)
 	api.POST("/accounts/batch-update", h.BatchUpdateAccounts)
 	api.POST("/accounts/batch-reset-status", h.BatchResetStatus)

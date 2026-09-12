@@ -830,6 +830,24 @@ Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`inpu
 }
 ```
 
+#### POST /api/admin/accounts/batch-refresh-usage
+
+批量刷新当前运行池中所有支持 WHAM 的 Codex 账号用量，对应账号管理页
+「管理 → 一键刷新用量」。目标范围覆盖所有分页，独立于当前搜索、筛选和勾选；
+无 Access Token、Agent Identity、第三方中转及其他渠道账号不参与。
+
+此操作只查询 `/backend-api/wham/usage`，更新 5 小时/周用量快照，不刷新登录
+令牌，也不回退到会消耗 Token 的 `/responses` 探针。查询失败保留原用量，
+单独的 WHAM 401 不会将账号判为凭据失效。
+
+无需请求参数。默认返回 `type: "complete"`、`total`、`current`、`success` 和
+`failed`；追加 `?stream=true` 返回 `start` / `progress` / `complete` SSE 事件，
+`action` 固定为 `batch_usage_refresh`。逐账号进度包含账号标识、状态和错误说明。
+
+并发数遵循 `usage_probe_concurrency`，单个查询最多 15 秒。同一实例正在执行
+此批量操作时，再次调用返回 409；客户端断开后取消查询和待处理任务。完成事件
+发出前会使账号列表与分析缓存失效，随后读取即可更新用量进度条。
+
 ### Claude 凭据与原生 Messages
 
 Claude Code OAuth 账号使用原生 Anthropic Messages 上游，不会进入 Codex WHAM

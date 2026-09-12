@@ -919,7 +919,7 @@ function useMediaQuery(query: string) {
   return matches;
 }
 
-type BatchOperationAction = "batch_test" | "batch_delete" | "batch_refresh" | "clean";
+type BatchOperationAction = "batch_test" | "batch_delete" | "batch_refresh" | "batch_usage_refresh" | "clean";
 
 interface BatchOperationEvent {
   type: "start" | "progress" | "complete";
@@ -1809,6 +1809,7 @@ export default function Accounts() {
   } | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchRefreshing, setBatchRefreshing] = useState(false);
+  const [batchUsageRefreshing, setBatchUsageRefreshing] = useState(false);
   const [batchTesting, setBatchTesting] = useState(false);
   const [operationProgress, setOperationProgress] =
     useState<OperationProgressState | null>(null);
@@ -2499,7 +2500,8 @@ export default function Accounts() {
         if (
           showOperationResultsRef.current &&
           (event.action === "batch_test" ||
-            event.action === "batch_refresh")
+            event.action === "batch_refresh" ||
+            event.action === "batch_usage_refresh")
         ) {
           setOperationResults({
             action: event.action,
@@ -4798,6 +4800,33 @@ export default function Accounts() {
     }
   };
 
+  const handleBatchUsageRefresh = async () => {
+    if (batchLoading || batchTesting) return;
+    setBatchLoading(true);
+    setBatchUsageRefreshing(true);
+    try {
+      const result = await runStreamingAccountOperation(
+        "/accounts/batch-refresh-usage?stream=true",
+        {},
+        t("accounts.batchUsageRefreshing"),
+      );
+      if (!result) throw new Error(t("accounts.usageRefreshFailed"));
+      showToast(
+        result.total === 0
+          ? t("accounts.batchUsageRefreshEmpty")
+          : t("accounts.batchUsageRefreshDone", { success: result.success ?? 0, fail: result.failed ?? 0 }),
+        (result.failed ?? 0) > 0 ? "error" : "success",
+      );
+    } catch (error) {
+      showToast(t("accounts.batchUsageRefreshFailed", { error: getErrorMessage(error) }), "error");
+    } finally {
+      await reloadSilently();
+      if (showAnalysisCharts) void loadAccountAnalysis({ silent: true });
+      setBatchLoading(false);
+      setBatchUsageRefreshing(false);
+    }
+  };
+
   const handleBatchLock = async (locked: boolean) => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
@@ -6159,6 +6188,16 @@ export default function Accounts() {
                             data.total === 0,
                           onSelect: () =>
                             void handleBatchRefresh(undefined, true),
+                        },
+                        {
+                          key: "refresh-usage",
+                          label: batchUsageRefreshing
+                            ? t("accounts.batchUsageRefreshing")
+                            : t("accounts.refreshAllUsage"),
+                          icon: <RefreshCw className={`size-3.5 ${batchUsageRefreshing ? "animate-spin" : ""}`} />,
+                          disabled: batchLoading || batchTesting,
+                          title: t("accounts.refreshAllUsageHint"),
+                          onSelect: () => void handleBatchUsageRefresh(),
                         },
                         {
                           key: "lock-subscription",
