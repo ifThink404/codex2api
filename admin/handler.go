@@ -1185,6 +1185,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/test", h.TestConnection)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
 	api.POST("/accounts/:id/usage/refresh", h.RefreshAccountUsage)
+	api.GET("/accounts/:id/subscription", h.GetAccountSubscription)
+	api.POST("/accounts/:id/subscription/refresh", h.RefreshAccountSubscription)
 	api.GET("/accounts/:id/auth-json", h.GetAccountAuthJSON)
 	api.PATCH("/accounts/:id/credit", h.UpdateAccountCredit)
 	api.POST("/accounts/batch-test", h.BatchTest)
@@ -1616,11 +1618,14 @@ type accountResponse struct {
 	EffectiveWorkspaceID    string `json:"effective_workspace_id,omitempty"`
 	PlanType                string `json:"plan_type"`
 	SubscriptionExpiresAt   string `json:"subscription_expires_at,omitempty"`
-	Status                  string `json:"status"`
-	ErrorMessage            string `json:"error_message,omitempty"`
-	ATOnly                  bool   `json:"at_only"`
-	CreditEnabled           bool   `json:"credit_enabled"`
-	CreditSkipUsageWindow   bool   `json:"credit_skip_usage_window"`
+	// Subscription 服务端计算的订阅状态对象（业务状态 + 同步状态）；不跟踪订阅的
+	// 套餐（api/无到期时间的 free）为空。
+	Subscription          *auth.SubscriptionStatusView `json:"subscription,omitempty"`
+	Status                string                       `json:"status"`
+	ErrorMessage          string                       `json:"error_message,omitempty"`
+	ATOnly                bool                         `json:"at_only"`
+	CreditEnabled         bool                         `json:"credit_enabled"`
+	CreditSkipUsageWindow bool                         `json:"credit_skip_usage_window"`
 	// UsingCredits 是与 Status 并列的独立信号：用量窗口已打满但积分顶着，
 	// 状态仍是 active（可调度），前端据此在状态徽章旁并列一个「使用积分」徽章。
 	UsingCredits                  bool                        `json:"using_credits,omitempty"`
