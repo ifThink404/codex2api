@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
-import { Bike, Check, Code2, Copy, Download, Eye, FlaskConical, RefreshCw, Play, RotateCcw, Square, History, Clock3, ArrowUpRight, X, ExternalLink, Loader2, FileImage, BookmarkPlus, Pencil, Trash2, Plus, Lock, Wand2, CopyPlus, Filter, FilterX } from 'lucide-react'
+import { Check, Code2, Gauge, Copy, Download, Eye, FlaskConical, RefreshCw, Play, RotateCcw, Square, History, Clock3, ArrowUpRight, X, ExternalLink, Loader2, FileImage, BookmarkPlus, Pencil, Trash2, Plus, Lock, Wand2, CopyPlus, Filter, FilterX } from 'lucide-react'
 import { api } from '../api'
 import type { AccountRow, UpstreamChannel } from '../types'
 import PageHeader from '../components/PageHeader'
@@ -100,8 +100,8 @@ function ResultCanvas({ run, view, html, svgExport, previewKey, narrow, loading 
       view === 'source' ? <SourceView source={html || run?.output || ''} /> : preview ?
       <iframe ref={frameRef} key={`${run?.id}-${previewKey}`} title={t('qualityTest.previewTitle')} src="/api/quality-test/preview" sandbox="allow-scripts" referrerPolicy="no-referrer" onLoad={(event) => event.currentTarget.contentWindow?.postMessage({ type: 'quality-test-preview', html: preview }, '*')} className={narrow ? 'is-narrow' : ''} style={frameHeight !== undefined ? { height: frameHeight } : undefined} /> :
       <div className="quality-test-empty">
-        <div className="quality-test-illustration"><Bike strokeWidth={1.2} className="size-20" /><span>SVG</span></div>
-        <span className="quality-test-tag">PELICAN BENCH</span>
+        <div className="quality-test-illustration"><Gauge strokeWidth={1.2} className="size-20" /><span>HTML</span></div>
+        <span className="quality-test-tag">{t('qualityTest.emptyTag')}</span>
         <h4>{t(running ? 'qualityTest.generating' : run ? 'qualityTest.noHTML' : 'qualityTest.emptyTitle')}</h4>
         <p>{t(running ? 'qualityTest.generatingHint' : run ? 'qualityTest.noHTMLHint' : 'qualityTest.emptyHint')}</p>
         {running ? <div className="quality-test-progress"><span /></div> : null}
@@ -133,8 +133,8 @@ function PreviewActions({ run, html, view, narrow, svgExport, onToggleNarrow, on
   </div>
 }
 
-function DetailMeta({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
-  return <div className="quality-test-dialog-meta"><dt>{label}</dt><dd className={mono ? 'is-mono' : ''}>{value}</dd></div>
+function DetailMeta({ label, value, mono = true, hint }: { label: string; value: string; mono?: boolean; hint?: string }) {
+  return <div className="quality-test-dialog-meta" title={hint}><dt>{label}</dt><dd className={mono ? 'is-mono' : ''}>{value}</dd></div>
 }
 
 // 检测记录的结果弹窗:全屏拟态窗口,左侧渲染动画,右侧列出账号/模型/耗时等详情。
@@ -187,7 +187,7 @@ function ResultDialog({ id, revision, onClose, onOpenStudio }: { id: number | un
             <div className="quality-test-dialog-meta"><dt>{t('qualityTest.filters.preset')}</dt><dd>{run ? <PresetLabel job={run} /> : '—'}</dd></div>
             <DetailMeta label={t('qualityTest.testTime')} value={run ? formatBeijingTime(run.created_at) : '—'} />
             <DetailMeta label={t('qualityTest.duration')} value={run ? formatSeconds(run.duration_ms) : '—'} />
-            <DetailMeta label={t('qualityTest.firstContent')} value={formatSeconds(run?.first_content_ms)} />
+            <DetailMeta label={t('qualityTest.firstContent')} value={formatSeconds(run?.first_content_ms)} hint={t('qualityTest.firstContentHint')} />
             <DetailMeta label={t('qualityTest.outputTokens')} value={run?.output_tokens?.toLocaleString() ?? '—'} />
             <DetailMeta label={t('qualityTest.reasoningTokens')} value={run?.reasoning_tokens?.toLocaleString() ?? '—'} />
           </dl>
@@ -296,7 +296,9 @@ export default function QualityTest() {
   const records = useQualityTestJobs(recordPage, revision, recordFilter)
   const facets = records.facets ?? EMPTY_QUALITY_TEST_FACETS
   const requestedID = Number(searchParams.get('job'))
-  const selectedID = requestedID > 0 ? requestedID : records.active_jobs[0]?.id ?? records.jobs[0]?.id
+  // 结果面板只跟随显式选中(URL job 参数)或正在运行的任务;不回退到历史第一条,
+  // 否则每次打开页面都会先看到上一次生成的结果。
+  const selectedID = requestedID > 0 ? requestedID : records.active_jobs[0]?.id
   const detail = useQualityTestDetail(pane === 'studio' ? selectedID : undefined, revision)
   const openRecord = (id: number) => setModalID(id)
   const run = detail.job
@@ -508,7 +510,7 @@ export default function QualityTest() {
           {filterActive ? <Button size="sm" variant="ghost" onClick={() => { setRecordFilter({}); setRecordPage(1) }}><FilterX className="size-3.5" />{t('qualityTest.filters.clear')}</Button> : null}
         </div>
         {records.jobs.length === 0 ? <div className="quality-test-records-empty"><History className="size-9" /><h4>{t(records.loading ? 'qualityTest.loadingRecords' : filterActive ? 'qualityTest.filters.noMatch' : 'qualityTest.emptyRecords')}</h4><p>{t(filterActive && !records.loading ? 'qualityTest.filters.noMatchHint' : 'qualityTest.emptyRecordsHint')}</p></div> : <div className="quality-test-records-scroll"><table>
-          <thead><tr><th>{t('qualityTest.recordID')}</th><th>{t('qualityTest.account')}</th><th>{t('qualityTest.model')}</th><th>{t('qualityTest.effort')}</th><th>{t('qualityTest.filters.preset')}</th><th>{t('qualityTest.testTime')}</th><th>{t('qualityTest.recordStatus')}</th><th className="is-numeric">{t('qualityTest.duration')}</th><th className="is-numeric">{t('qualityTest.firstContent')}</th><th className="is-numeric">{t('qualityTest.outputTokens')}</th><th><span className="sr-only">{t('qualityTest.viewResult')}</span></th></tr></thead>
+          <thead><tr><th>{t('qualityTest.recordID')}</th><th>{t('qualityTest.account')}</th><th>{t('qualityTest.model')}</th><th>{t('qualityTest.effort')}</th><th>{t('qualityTest.filters.preset')}</th><th>{t('qualityTest.testTime')}</th><th>{t('qualityTest.recordStatus')}</th><th className="is-numeric">{t('qualityTest.duration')}</th><th className="is-numeric" title={t('qualityTest.firstContentHint')}>{t('qualityTest.firstContent')}</th><th className="is-numeric">{t('qualityTest.outputTokens')}</th><th><span className="sr-only">{t('qualityTest.viewResult')}</span></th></tr></thead>
           <tbody>{records.jobs.map((job) => <tr key={job.id} className={modalID === job.id ? 'is-selected' : ''} onClick={() => openRecord(job.id)}>
             <td className="quality-test-record-id">#{job.id}</td>
             <td><div className="quality-test-record-account"><span title={job.account_name}>{job.account_name}</span><small>#{job.account_id}<PlanBadge plan={job.plan_type} /></small></div></td>
@@ -573,7 +575,7 @@ export default function QualityTest() {
             <PreviewActions run={run} html={html} view={view} narrow={narrowPreview} svgExport={svgExport} onToggleNarrow={() => setNarrowPreview((value) => !value)} onReplay={() => setPreviewKey((key) => key + 1)} onCopy={() => void copySource()} />
           </div>
           <dl className="quality-test-metrics">
-            {[[t('qualityTest.duration'), run ? formatTime(run.duration_ms) : '—'], [t('qualityTest.firstContent'), formatTime(run?.first_content_ms)], [t('qualityTest.outputTokens'), run?.output_tokens?.toLocaleString() ?? '—'], [t('qualityTest.reasoningTokens'), run?.reasoning_tokens?.toLocaleString() ?? '—']].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+            {([[t('qualityTest.duration'), run ? formatTime(run.duration_ms) : '—'], [t('qualityTest.firstContent'), formatTime(run?.first_content_ms), t('qualityTest.firstContentHint')], [t('qualityTest.outputTokens'), run?.output_tokens?.toLocaleString() ?? '—'], [t('qualityTest.reasoningTokens'), run?.reasoning_tokens?.toLocaleString() ?? '—']] as [string, string, string?][]).map(([label, value, hint]) => <div key={label} title={hint}><dt>{label}</dt><dd>{value}</dd>{hint ? <small className="quality-test-metric-hint">{hint}</small> : null}</div>)}
           </dl>
           {run?.response_model ? <p className="quality-test-response-model">{t('qualityTest.responseModel')}: {run.response_model}</p> : null}
           {run?.prompt ? <details className="quality-test-saved-prompt"><summary>{t('qualityTest.savedPrompt')}</summary><p>{run.prompt}</p>{run.completed_at ? <small>{t('qualityTest.finishedAt')}: {formatBeijingTime(run.completed_at)}</small> : null}</details> : null}

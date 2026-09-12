@@ -125,6 +125,7 @@
 .quality-test-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 18px 20px; border-top: 1px solid var(--color-border); gap: 12px; }
 .quality-test-metrics dt { font-size: 11px; color: var(--color-muted-foreground); }
 .quality-test-metrics dd { margin-top: 5px; font: 20px/1.3 ui-monospace, SFMono-Regular, monospace; letter-spacing: -.04em; }
+.quality-test-metric-hint { display: block; margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--color-muted-foreground); opacity: .85; }
 .quality-test-response-model { padding: 0 20px 14px; font-size: 11px; color: var(--color-muted-foreground); overflow-wrap: anywhere; }
 .quality-test-error { padding: 12px; margin-top: 12px; background: color-mix(in srgb, var(--color-destructive) 6%, transparent); color: var(--color-destructive); border-radius: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 .quality-test-error button { display: block; margin-top: 8px; }

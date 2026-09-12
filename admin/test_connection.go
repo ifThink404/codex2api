@@ -157,6 +157,11 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		}
 	}
 
+	// 探针本身也进用量记录:测连 / 降智检测各有独立内部原因,用量页据此打标。
+	usageReason := connectionTestReason(quality)
+	usageEndpoint := connectionTestEndpoint(account)
+	usageEffort := connectionTestReasoningEffort(payload)
+
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -196,6 +201,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
 	}
 	if reqErr != nil {
+		h.logConnectionTestTransportFailure(c, account, usageReason, usageEndpoint, testModel, usageEffort, start, reqErr)
 		event := testEvent{Type: "error", Error: fmt.Sprintf("请求失败: %s", reqErr.Error())}
 		if isClaudeAccount {
 			event.Diagnostics = newClaudeTestRecorder(nil, testModel, claudeFingerprintMode, account.GetAccessToken(), start).finish()
@@ -210,7 +216,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	}
 	defer resp.Body.Close()
 	if isClaudeAccount {
-		h.handleClaudeConnectionTest(c, account, resp, testModel, start, claudeFingerprintMode, isTransient, restoreOnSuccess, &transientOutcome, id, quality != nil)
+		h.handleClaudeConnectionTest(c, account, resp, testModel, start, claudeFingerprintMode, isTransient, restoreOnSuccess, &transientOutcome, id, quality != nil, usageReason, usageEffort)
 		return
 	}
 
@@ -218,7 +224,13 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	// 再补最终帧(耗时、终态、usage、正文预览)。最终帧在终止事件之后,客户端要读到
 	// SSE 关闭再刷新账号快照。
 	recorder := newCodexTestRecorder(resp, testModel, account, start)
-	defer func() { sendTestEvent(c, testEvent{Type: "diagnostics", CodexDiagnostics: recorder.finish()}) }()
+	defer func() {
+		diagnostics := recorder.finish()
+		sendTestEvent(c, testEvent{Type: "diagnostics", CodexDiagnostics: diagnostics})
+		usage := connectionTestUsageFromCodex(diagnostics, testModel)
+		usage.Reason, usage.Endpoint, usage.ReasoningEffort = usageReason, usageEndpoint, usageEffort
+		h.logConnectionTestUsage(c, account, usage)
+	}()
 	sendTestEvent(c, testEvent{Type: "diagnostics", CodexDiagnostics: recorder.details})
 
 	if resp.StatusCode != http.StatusOK {
@@ -481,6 +493,8 @@ func (h *Handler) handleClaudeConnectionTest(
 	transientOutcome *string,
 	id int64,
 	preserveWhitespace bool,
+	usageReason string,
+	usageEffort string,
 ) {
 	// For API Key accounts fingerprintMode already carries the account-level
 	// client-identity emulation mode (empty = passthrough), so it is reported
@@ -488,7 +502,13 @@ func (h *Handler) handleClaudeConnectionTest(
 	recorder := newClaudeTestRecorder(resp, testModel, fingerprintMode, account.GetAccessToken(), start)
 	// The final diagnostics follow the terminal result; clients must drain the
 	// SSE response before refreshing the invalidated account snapshot.
-	defer func() { sendTestEvent(c, testEvent{Type: "diagnostics", Diagnostics: recorder.finish()}) }()
+	defer func() {
+		diagnostics := recorder.finish()
+		sendTestEvent(c, testEvent{Type: "diagnostics", Diagnostics: diagnostics})
+		usage := connectionTestUsageFromClaude(diagnostics, testModel)
+		usage.Reason, usage.Endpoint, usage.ReasoningEffort = usageReason, connectionTestEndpoint(account), usageEffort
+		h.logConnectionTestUsage(c, account, usage)
+	}()
 	if resp == nil {
 		sendTestEvent(c, testEvent{Type: "error", Error: "Claude 上游未返回响应"})
 		return
@@ -759,6 +779,7 @@ func applyUsageLimitedTestState(store *auth.Store, account *auth.Account, state 
 
 // sendTestEvent 发送 SSE 事件
 func sendTestEvent(c *gin.Context, event testEvent) {
+	rememberConnectionTestError(c, event)
 	data, err := json.Marshal(event)
 	if err != nil {
 		log.Printf("序列化测试事件失败: %v", err)

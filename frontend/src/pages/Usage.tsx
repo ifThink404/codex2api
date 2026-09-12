@@ -37,7 +37,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw } from 'lucide-react'
+import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 
@@ -81,17 +81,26 @@ function ReasoningEffortBadge({ effort }: { effort: string }) {
   )
 }
 
+// 网关自身发起的请求按 internal_reason 细分:测连 / 降智检测 / 超窗摘要,
+// 其余未知原因统一显示为"内部请求"。
+const INTERNAL_REQUEST_PRESENTATION: Record<string, { labelKey: string; tooltipKey: string; Icon: typeof Brain }> = {
+  connection_test: { labelKey: 'usage.internalConnectionTest', tooltipKey: 'usage.internalConnectionTestTooltip', Icon: PlugZap },
+  quality_test: { labelKey: 'usage.internalQualityTest', tooltipKey: 'usage.internalQualityTestTooltip', Icon: FlaskConical },
+  overflow_compact_summary: { labelKey: 'usage.internalOverflowSummary', tooltipKey: 'usage.internalRequestTooltip', Icon: Brain },
+}
+
 function InternalRequestBadge({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
   const reason = log.internal_reason?.trim()
   if (!reason) return null
 
-  const label = reason === 'overflow_compact_summary'
-    ? t('usage.internalOverflowSummary')
-    : t('usage.internalRequest')
-  const title = log.parent_request_id?.trim()
-    ? t('usage.internalRequestParentTooltip', { parentRequestId: log.parent_request_id.trim() })
-    : t('usage.internalRequestTooltip')
+  const presentation = INTERNAL_REQUEST_PRESENTATION[reason]
+  const Icon = presentation?.Icon ?? Brain
+  const label = presentation ? t(presentation.labelKey) : t('usage.internalRequest')
+  const parentRequestId = log.parent_request_id?.trim()
+  const title = parentRequestId
+    ? t('usage.internalRequestParentTooltip', { parentRequestId })
+    : t(presentation?.tooltipKey ?? 'usage.internalRequestTooltip')
 
   return (
     <Badge
@@ -99,7 +108,7 @@ function InternalRequestBadge({ log }: { log: UsageLog }) {
       className="gap-0.5 whitespace-nowrap border-transparent bg-fuchsia-500/12 text-[11px] font-semibold text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300"
       title={title}
     >
-      <Brain className="size-3" />
+      <Icon className="size-3" />
       {label}
     </Badge>
   )
