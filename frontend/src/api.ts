@@ -1,3 +1,4 @@
+import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
@@ -495,6 +496,7 @@ export type UsageLogQueryParams = {
   apiKeyId?: string
   accountId?: string
   fast?: string
+  ultra?: string
   stream?: string
   compact?: string
   hasCompactionHistory?: string
@@ -518,6 +520,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
   if (params.accountId) search.set('account_id', params.accountId)
   if (params.fast) search.set('fast', params.fast)
+  if (params.ultra) search.set('ultra', params.ultra)
   if (params.stream) search.set('stream', params.stream)
   if (params.compact) search.set('compact', params.compact)
   if (params.hasCompactionHistory) search.set('has_compaction_history', params.hasCompactionHistory)
@@ -616,6 +619,7 @@ export const api = {
     if (params.healthTier) searchParams.set('health_tier', params.healthTier)
     if (params.proxyUrl) searchParams.set('proxy_url', params.proxyUrl)
     if (params.proxyFilter && params.proxyFilter !== 'all') searchParams.set('proxy_filter', params.proxyFilter)
+    if (params.subscription && params.subscription !== 'all') searchParams.set('subscription', params.subscription)
     if (params.sort) searchParams.set('sort', params.sort)
     if (params.order) searchParams.set('order', params.order)
     return request<AccountsPageResponse>(`/accounts?${searchParams.toString()}`, { signal })
@@ -869,6 +873,11 @@ export const api = {
       claude_usage_windows?: import('./types').ClaudeUsageWindow[]
       claude_usage_windows_probed?: boolean
     }>(`/accounts/${id}/usage/refresh`, { method: 'POST' }),
+  // 订阅状态:GET 只读服务端已算好的状态对象;POST 立即向订阅提供方查一次(绕过后台节流,30s 内重复点会 429)。
+  getAccountSubscription: (id: number, signal?: AbortSignal) =>
+    request<{ supported: boolean; subscription?: import('./types').SubscriptionStatus }>(`/accounts/${id}/subscription`, { signal }),
+  refreshAccountSubscription: (id: number) =>
+    request<import('./types').SubscriptionRefreshResponse>(`/accounts/${id}/subscription/refresh`, { method: 'POST', timeoutMs: 30_000 }),
   updateAccountScheduler: (id: number, data: UpdateAccountSchedulerRequest) =>
     request<MessageResponse>(`/accounts/${id}/scheduler`, { method: 'PATCH', body: JSON.stringify(data) }),
   // 设置 OAuth 账号的支持模型白名单;空数组表示清空(该账号可调度所有模型)。返回归一化后的白名单。
@@ -1456,6 +1465,24 @@ export const api = {
   dismissPromptIntelligenceCandidate: (id: number) =>
     request<import('./types').PromptIntelligenceCandidate>(`/prompt-filter/intelligence/candidates/${id}/dismiss`, { method: 'POST' }),
   getModels: () => request<ModelsResponse>('/models'),
+  getQualityTestOptions: (id: number, signal?: AbortSignal) =>
+    request<{ models: string[]; reasoning_efforts: string[] }>(`/accounts/${id}/quality-test/options`, { signal }),
+  getQualityTestPrompts: (signal?: AbortSignal) =>
+    request<{ prompts: QualityTestPrompt[] }>('/quality-test-prompts', { signal }),
+  createQualityTestPrompt: (body: { name: string; prompt: string }) =>
+    request<{ prompt: QualityTestPrompt }>('/quality-test-prompts', { method: 'POST', body: JSON.stringify(body) }),
+  updateQualityTestPrompt: (id: number, body: { name?: string; prompt?: string }) =>
+    request<{ prompt: QualityTestPrompt }>(`/quality-test-prompts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteQualityTestPrompt: (id: number) =>
+    request<{ message: string }>(`/quality-test-prompts/${id}`, { method: 'DELETE' }),
+  createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string; prompt_id?: number; preset_key?: string; preset_name?: string }) =>
+    request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
+  getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
+    request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
+  getQualityTest: (id: number, signal?: AbortSignal) =>
+    request<{ job: QualityTestJob }>(`/quality-tests/${id}`, { signal }),
+  cancelQualityTest: (id: number) =>
+    request<{ job: QualityTestJob }>(`/quality-tests/${id}/cancel`, { method: 'POST' }),
   syncModels: () => request<ModelSyncResponse>('/models/sync', { method: 'POST' }),
   syncCodexCLIVersion: () =>
     request<{

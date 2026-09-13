@@ -341,6 +341,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	// prior frame's compaction badges.
 	compactionMeta := requestBodyCompactionMeta(rawBody)
 	cacheRequestCompactionMeta(c, compactionMeta)
+	cacheRequestUltraMode(c, resolveRequestUltraMode(nil, rawBody))
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)

@@ -290,9 +290,11 @@ type Account struct {
 	// 「主动重置次数」只能通过 wham 探针刷新（普通 /responses 流量不携带该字段），
 	// 因此用它独立判断重置次数是否过期，避免活跃账号因用量快照一直被流量刷新而长期不探针。
 	resetCreditsProbedAt time.Time
-	// subscriptionExpiryProbedAt 记录最近一次网页端 /subscriptions 订阅到期探针的
-	// 尝试时间（无论成败），用于节流，避免高频访问网页端点。(issue #360)
-	subscriptionExpiryProbedAt time.Time
+	// subscriptionMeta 订阅同步元数据（最近查询时间/同步状态/来源/宽限期等），
+	// 持久化在 credentials；CheckedAt 兼作网页端 /subscriptions 探针节流。(issue #360)
+	subscriptionMeta SubscriptionMeta
+	// subscriptionSyncInFlight 标记异步权威订阅同步在途，避免同一账号并发发起。
+	subscriptionSyncInFlight bool
 
 	usageProbeInFlight          bool
 	recoveryProbeInFlight       bool
@@ -2527,7 +2529,7 @@ func (a *Account) NeedsSubscriptionExpiryProbe(now time.Time, minInterval time.D
 	if plan == "" || plan == "free" || plan == "api" {
 		return false
 	}
-	if !a.subscriptionExpiryProbedAt.IsZero() && now.Sub(a.subscriptionExpiryProbedAt) < minInterval {
+	if !a.subscriptionMeta.CheckedAt.IsZero() && now.Sub(a.subscriptionMeta.CheckedAt) < minInterval {
 		return false
 	}
 	if a.SubscriptionExpiresAt.IsZero() {
@@ -2537,13 +2539,14 @@ func (a *Account) NeedsSubscriptionExpiryProbe(now time.Time, minInterval time.D
 }
 
 // MarkSubscriptionExpiryProbed 记录订阅到期探针的尝试时间（无论成败），用于节流。
+// 只改内存；同步流程结束后会连同结果一起持久化。
 func (a *Account) MarkSubscriptionExpiryProbed(t time.Time) {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.subscriptionExpiryProbedAt = t
+	a.subscriptionMeta.CheckedAt = t
 }
 
 // ClearUsageCache 清除内存中的用量缓存，下次请求时从上游重新获取
@@ -5495,6 +5498,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 			account.SubscriptionExpiresAt = parsed
 		}
 	}
+	account.subscriptionMeta = SubscriptionMetaFromCredentials(row.GetCredential)
 	if row.CooldownUntil.Valid {
 		if time.Now().Before(row.CooldownUntil.Time) {
 			account.SetCooldownUntil(row.CooldownUntil.Time, row.CooldownReason)
@@ -10452,8 +10456,17 @@ func StaleSubscriptionExpiry(planType string, expiresAt time.Time, now time.Time
 	return plan != "" && plan != "free" && plan != "api"
 }
 
+// OnStaleSubscriptionCleared 在陈旧到期时间被清理（推断已续费）后触发，供上层
+// 立即发起一次权威订阅同步以把「待确认」尽快落成「已确认」。由 proxy 包注入。
+var OnStaleSubscriptionCleared func(store *Store, acc *Account)
+
 // ClearStaleSubscriptionExpiresAt 在观测到上游权威付费 plan_type 后清理陈旧的
 // 订阅到期时间，避免账号已续费仍长期显示「已过期」。返回是否发生清理。(issue #360)
+//
+// 清理不再是静默抹掉：同步状态切到 pending、来源记为 plan_header、记录
+// renewal_detected_at 与清理前的 last_known_status，前端据此显示「已续费 · 待确认」
+// 而不是空白；随后触发一次权威同步。宽限期内（订阅提供方明确给了 grace 结束时间）
+// 的已过去到期时间不算陈旧。
 func (s *Store) ClearStaleSubscriptionExpiresAt(acc *Account) bool {
 	if s == nil || acc == nil {
 		return false
@@ -10461,8 +10474,20 @@ func (s *Store) ClearStaleSubscriptionExpiresAt(acc *Account) bool {
 	now := time.Now()
 	acc.mu.Lock()
 	stale := StaleSubscriptionExpiry(acc.PlanType, acc.SubscriptionExpiresAt, now)
+	if stale && !acc.subscriptionMeta.GraceUntil.IsZero() && acc.subscriptionMeta.GraceUntil.After(now) {
+		stale = false
+	}
+	var meta SubscriptionMeta
 	if stale {
+		lastKnown, _, _ := ComputeSubscriptionBusinessStatus(acc.SubscriptionExpiresAt, time.Time{}, now, time.Local)
 		acc.SubscriptionExpiresAt = time.Time{}
+		acc.subscriptionMeta.SyncState = SubscriptionSyncPending
+		acc.subscriptionMeta.Source = SubscriptionSourcePlanHeader
+		acc.subscriptionMeta.LastKnownStatus = lastKnown
+		acc.subscriptionMeta.RenewalDetectedAt = now
+		acc.subscriptionMeta.Error = ""
+		acc.subscriptionMeta.GraceUntil = time.Time{}
+		meta = acc.subscriptionMeta
 		acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	}
 	acc.mu.Unlock()
@@ -10470,13 +10495,10 @@ func (s *Store) ClearStaleSubscriptionExpiresAt(acc *Account) bool {
 		return false
 	}
 	s.fastSchedulerUpdate(acc)
-	log.Printf("[账号 %d] 套餐仍为付费但订阅到期时间已过去（应已续费），清理陈旧到期时间", acc.DBID)
-	if s.db != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := s.db.UpdateCredentials(ctx, acc.DBID, map[string]interface{}{"subscription_expires_at": ""}); err != nil {
-			log.Printf("[账号 %d] 清理陈旧 subscription_expires_at 失败: %v", acc.DBID, err)
-		}
+	log.Printf("[账号 %d] 套餐仍为付费但订阅到期时间已过去（应已续费），清理陈旧到期时间并等待权威确认", acc.DBID)
+	s.persistSubscriptionMeta(acc.DBID, meta, map[string]interface{}{"subscription_expires_at": ""})
+	if hook := OnStaleSubscriptionCleared; hook != nil {
+		hook(s, acc)
 	}
 	return true
 }
@@ -11839,6 +11861,7 @@ func (s *Store) propagateSharedOAuthCredentials(
 	sourceEmail := source.Email
 	sourcePlanType := source.PlanType
 	sourceSubscriptionExpiresAt := source.SubscriptionExpiresAt
+	sourceSubscriptionMeta := source.subscriptionMeta
 	source.mu.RUnlock()
 
 	for _, sibling := range s.accountSnapshotAccounts() {
@@ -11870,6 +11893,7 @@ func (s *Store) propagateSharedOAuthCredentials(
 			sibling.PlanType = sourcePlanType
 		}
 		sibling.SubscriptionExpiresAt = sourceSubscriptionExpiresAt
+		sibling.subscriptionMeta = sourceSubscriptionMeta
 		sibling.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 		sibling.mu.Unlock()
 		s.fastSchedulerUpdate(sibling)

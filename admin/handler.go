@@ -45,19 +45,24 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	store             *auth.Store
-	modelRefreshFuncs map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
-	proxyRiskJobsMu   sync.RWMutex
-	proxyRiskJobs     map[string]*proxyRiskScoringJob
-	cache             cache.TokenCache
-	authCacheProxy    *proxy.Handler
-	db                *database.DB
-	cacheCfgStore     responseCacheSettingsStore
-	rateLimiter       *proxy.RateLimiter
-	systemUpdate      *systemUpdater
-	systemUpdateOnce  sync.Once
-	refreshAccount    func(context.Context, int64) error
-	probeUsage        func(context.Context, *auth.Account) error
+	qualityTestContext context.Context
+	qualityTestWG      sync.WaitGroup
+	store              *auth.Store
+	modelRefreshFuncs  map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
+	proxyRiskJobsMu    sync.RWMutex
+	proxyRiskJobs      map[string]*proxyRiskScoringJob
+	cache              cache.TokenCache
+	authCacheProxy     *proxy.Handler
+	db                 *database.DB
+	cacheCfgStore      responseCacheSettingsStore
+	rateLimiter        *proxy.RateLimiter
+	systemUpdate       *systemUpdater
+	systemUpdateOnce   sync.Once
+	refreshAccount     func(context.Context, int64) error
+	probeUsage         func(context.Context, *auth.Account) error
+
+	codexUsageRefreshRunning atomic.Bool
+
 	// executeClaudeUsageProbe is injectable for tests; production uses the
 	// provider-native Anthropic Messages request directly.
 	executeClaudeUsageProbe func(context.Context, *auth.Account, []byte) (*http.Response, error)
@@ -1086,6 +1091,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// 这两个端点必须注册在 adminAuthMiddleware 之外，否则会被 fail-closed 拦截。
 	r.GET("/api/admin/bootstrap-status", h.GetBootstrapStatus)
 	r.POST("/api/admin/bootstrap", h.PostBootstrap)
+	// Static, credential-free shell. Generated HTML is delivered by the parent via
+	// postMessage and remains in an opaque-origin sandbox, never stored by the server.
+	r.GET("/api/quality-test/preview", serveQualityTestPreview)
 
 	api := r.Group("/api/admin")
 	api.Use(h.adminAuthMiddleware())
@@ -1183,12 +1191,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/invite/plan", h.GetInviteGuidePlan)
 	api.POST("/accounts/invite/plan/probe", h.ProbeInviteGuidePlan)
 	api.GET("/accounts/:id/test", h.TestConnection)
+	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
+	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
+	api.GET("/quality-tests", h.ListQualityTests)
+	api.GET("/quality-tests/:id", h.GetQualityTest)
+	api.POST("/quality-tests/:id/cancel", h.CancelQualityTest)
+	api.GET("/quality-test-prompts", h.ListQualityTestPrompts)
+	api.POST("/quality-test-prompts", h.CreateQualityTestPrompt)
+	api.PATCH("/quality-test-prompts/:id", h.UpdateQualityTestPrompt)
+	api.DELETE("/quality-test-prompts/:id", h.DeleteQualityTestPrompt)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
 	api.POST("/accounts/:id/usage/refresh", h.RefreshAccountUsage)
+	api.GET("/accounts/:id/subscription", h.GetAccountSubscription)
+	api.POST("/accounts/:id/subscription/refresh", h.RefreshAccountSubscription)
 	api.GET("/accounts/:id/auth-json", h.GetAccountAuthJSON)
 	api.PATCH("/accounts/:id/credit", h.UpdateAccountCredit)
 	api.POST("/accounts/batch-test", h.BatchTest)
 	api.POST("/accounts/batch-refresh", h.BatchRefreshAccounts)
+	api.POST("/accounts/batch-refresh-usage", h.BatchRefreshCodexUsage)
 	api.POST("/accounts/batch-delete", h.BatchDeleteAccounts)
 	api.POST("/accounts/batch-update", h.BatchUpdateAccounts)
 	api.POST("/accounts/batch-reset-status", h.BatchResetStatus)
@@ -1616,11 +1636,14 @@ type accountResponse struct {
 	EffectiveWorkspaceID    string `json:"effective_workspace_id,omitempty"`
 	PlanType                string `json:"plan_type"`
 	SubscriptionExpiresAt   string `json:"subscription_expires_at,omitempty"`
-	Status                  string `json:"status"`
-	ErrorMessage            string `json:"error_message,omitempty"`
-	ATOnly                  bool   `json:"at_only"`
-	CreditEnabled           bool   `json:"credit_enabled"`
-	CreditSkipUsageWindow   bool   `json:"credit_skip_usage_window"`
+	// Subscription 服务端计算的订阅状态对象（业务状态 + 同步状态）；不跟踪订阅的
+	// 套餐（api/无到期时间的 free）为空。
+	Subscription          *auth.SubscriptionStatusView `json:"subscription,omitempty"`
+	Status                string                       `json:"status"`
+	ErrorMessage          string                       `json:"error_message,omitempty"`
+	ATOnly                bool                         `json:"at_only"`
+	CreditEnabled         bool                         `json:"credit_enabled"`
+	CreditSkipUsageWindow bool                         `json:"credit_skip_usage_window"`
 	// UsingCredits 是与 Status 并列的独立信号：用量窗口已打满但积分顶着，
 	// 状态仍是 active（可调度），前端据此在状态徽章旁并列一个「使用积分」徽章。
 	UsingCredits                  bool                        `json:"using_credits,omitempty"`
@@ -8189,6 +8212,10 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 		return database.UsageLogFilter{}, false
 	}
 	filter.ViaWebsocketOnly, ok = parseUsageLogBoolFilter(c, "via_websocket")
+	if !ok {
+		return database.UsageLogFilter{}, false
+	}
+	filter.UltraOnly, ok = parseUsageLogBoolFilter(c, "ultra")
 	if !ok {
 		return database.UsageLogFilter{}, false
 	}
