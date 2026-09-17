@@ -485,6 +485,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	if err := db.ensureProxyRiskScoringTables(ctx); err != nil {
 		return nil, fmt.Errorf("创建代理风险评分表失败: %w", err)
 	}
+	if err := db.ensureSessionAutoLocksTable(ctx); err != nil {
+		return nil, fmt.Errorf("创建会话自动锁表失败: %w", err)
+	}
 
 	if err := db.ensureAPIKeyAuthCacheSchema(ctx); err != nil {
 		backgroundTaskCancel()
