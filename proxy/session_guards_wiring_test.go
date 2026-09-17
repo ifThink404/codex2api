@@ -29,8 +29,8 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(ws, -1); len(got) != 1 {
 		t.Fatalf("responses_ws.go policy call sites = %d, want 1", len(got))
 	}
-	if got := regexp.MustCompile(`noteCodexTurnStateProvenance\(affinityKey, account\)`).FindAll(handler, -1); len(got) < 2 {
-		t.Fatalf("handler.go provenance notes = %d, want >= 2", len(got))
+	if got := regexp.MustCompile(`noteCodexTurnStateProvenance\(affinityKey, account\)`).FindAll(handler, -1); len(got) != 1 {
+		t.Fatalf("handler.go provenance notes = %d, want 1 (official Codex success site only)", len(got))
 	}
 	if got := regexp.MustCompile(`noteCodexTurnStateProvenance\(affinityKey, account\)`).FindAll(ws, -1); len(got) != 1 {
 		t.Fatalf("responses_ws.go provenance notes = %d, want 1", len(got))

@@ -4443,9 +4443,6 @@ func (h *Handler) Responses(c *gin.Context) {
 				_ = streamAttempt.Close()
 				if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 					h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
-					// 成功尝试的账号就是客户端下一轮会回带的 turn-state 铸造者（WS 上游
-					// 没有响应头可转发，只能在这里记）。
-					noteCodexTurnStateProvenance(affinityKey, account)
 				}
 				if outcome.terminalLocal && c.Request.Context().Err() == nil {
 					writeContinuousRetryLocalResponsesError(c)
@@ -5649,6 +5646,8 @@ func (h *Handler) Responses(c *gin.Context) {
 
 		if !continuousRetryBuffersAttempts(continuousRetryPolicy) || continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 			h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
+			// 成功尝试的账号就是客户端下一轮会回带的 turn-state 铸造者。上游走 WS 时没有响应头可转发
+			// （relayCodexTurnStateResponseHeader 记不到），所以在这里统一记一次；重复记录只是刷新 TTL。
 			noteCodexTurnStateProvenance(affinityKey, account)
 		}
 		logStatusCode := outcome.logStatusCode
