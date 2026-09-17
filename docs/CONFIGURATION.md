@@ -56,6 +56,7 @@ Codex2API 采用三层配置架构：
 | `CODEX_PORT` | 否 | 8080 | HTTP 服务端口 |
 | `BIND_HOST` | 否 | `127.0.0.1`（SQLite）/ `0.0.0.0`（PostgreSQL） | Docker 端口发布绑定地址（非进程监听地址，由 `CODEX_BIND` 控制）。SQLite compose 默认 `127.0.0.1` 仅本机访问；标准 compose 默认 `0.0.0.0` 所有网络接口 |
 | `CODEX_MAX_REQUEST_BODY_SIZE_MB` | 否 | 48 | HTTP 请求体上限。后台 MP4 动态壁纸上传最大 40MB，默认值为 multipart 上传预留余量 |
+| `CODEX_REQUEST_MEMORY_BUDGET_MB` | 否 | 至少 128 | 单进程 HTTP/WS 逻辑正文总预算（MiB），包括读入/解压、排队和处理中正文及 Realtime 会话正文；默认取 128 与单请求上限的较大值，显式配置不能小于单请求上限，重启生效。预算不足时 HTTP 返回 503 和 `Retry-After: 1`，WS 关闭码为 1013。不是 RSS 硬上限，账号导入的流式 multipart 路径仍按独立导入上限处理 |
 | `ADMIN_SECRET` | 否 | - | 管理后台登录密钥 |
 | `CODEX_ALLOW_ANONYMOUS` | 否 | `false` | 设为 `true` 时，未配置任何对外 API Key 也允许 `/v1/*` 直接调用（仅限内网测试场景） |
 | `CODEX_SCHEDULER_ENGINE` | 否 | 空 | 调度引擎强制值：`legacy` / `shadow` / `indexed`。设置后优先于数据库配置，适合容器级灰度或紧急回退 |
@@ -81,6 +82,8 @@ Codex2API 采用三层配置架构：
 | `CODEX_STATSIG_API_KEY` | 否 | 内置公开 key | 覆盖 Codex Desktop/CLI 共用的公开 Statsig SDK key，仅遥测开启时使用 |
 | `CODEX_SESSION_HEADER_MODE` | 否 | `native` | 出站会话头形态。`native` 发真实客户端的 `session-id` / `thread-id` / `x-client-request-id`；`legacy` 回退到旧的 `Session_id`（WS 另带 `Conversation_id`） |
 | `CODEX_SESSION_HEADER_ALIGN_CONVERGED` | 否 | `false` | 开启后 `session-id` 头改用指纹收敛后的会话身份，与 turn metadata 的 `session_id` 对齐。默认关：请求体 `prompt_cache_key` 始终独立隔离，但上游是否也拿该头参与缓存分组无法从客户端源码确认 |
+| `DOWNSTREAM_HTTP_KEEPALIVE_INTERVAL` | 否 | `30s` | 下游 HTTP/SSE 保活周期，使用 Go duration；`0` 关闭。流式端点从首个心跳起建立 SSE 200，发送注释或 Messages ping；非流式端点发送 HTTP 102 |
+| `DOWNSTREAM_WS_KEEPALIVE_INTERVAL` | 否 | `45s` | 下游 WebSocket Ping 周期，使用 Go duration；`0` 关闭。覆盖 Responses、Realtime 与 Live Sideband |
 
 > `CODEX_UPSTREAM_TRANSPORT` 只控制 HTTP 入站请求转发到 Codex 上游时使用 `http` 还是 `ws`。客户端侧 WebSocket 入口独立可用：使用 `GET ws://<host>/v1/responses` 建连，首帧发送 `response.create` JSON，服务端会通过 Codex 上游 WS 返回 Responses 事件帧。
 
@@ -217,7 +220,11 @@ Redis 模式会把 response context 保存到共享后端。后端值在重建�
 
 只有预算实际变化时才会分配并递增 generation；同值更新或空更新不会递增。当前实例在数据库提交后立即应用，其他实例每 5 秒轮询一次，只应用更新的 generation；单次读取最多等待 3 秒。同步失败时保留最后一次有效配置，并在运维页显示错误，后续轮询成功后自动恢复。
 
-这些预算只控制本地重建的 HTTP Responses/Compact 上下文。客户端原生 Responses WebSocket 入口不查询本地 response cache，会保留 `previous_response_id` 交给上游处理。
+这些预算覆盖 HTTP Responses/Compact 和原生 Responses WebSocket 的本地回放上下文。健康的原生 WS 续链仍保留 `previous_response_id` 交给上游；需要降级时可使用完整本地快照。原生 WS 显式 `store:false` 的请求不写回放缓存。
+
+共享后端写入的异步与同步路径统一限制为最多 16 个在途写、64 MiB 在途逻辑正文、64 个等待者；在复制/编码之前获取额度，最多等待 5 秒。超过 64 MiB 的既有合法单条上下文可独占写入器，因此其逻辑上限为普通预算与最大在途单条的较大值，不会静默丢弃大快照。普通写入 I/O deadline 为 2 秒，关停同步写为 500 毫秒。饱和时响应收尾及同 WS 后续轮次可能等待写入额度；写失败后 L1 仍可服务，必须依赖该快照但 L1/共享后端均缺失时返回 503。
+
+运维 API `/api/admin/ops/overview` 的 `request_memory` 提供正文预算、当前值、高水位与拒绝数，`response_cache_writer` 提供在途/等待写数、逻辑字节、超时和拒绝数；`response_cache.backend_write_failures` 统计后端写入失败。L1 `current_bytes` 是各快照逻辑大小之和，`shared_payload_bytes` 是去重后的正文大小；两者均不包含 JSON 编码副本、Go 分配器和容器开销。
 
 这里的“字节”是保留 `json.RawMessage` 长度之和，不包含 map、切片、LRU、Go 堆或容器开销，因此不是 RSS 或进程内存硬上限。滚动升级时，新前端对旧后端缺失的设置使用 64/8/64 MiB 展示默认值、generation `0`；旧后端缺少 response-cache 运维对象时，前端显示兼容等待状态而不会崩溃。
 
@@ -280,7 +287,11 @@ Codex 瞬时账号限流按 `15s → 30s → 60s → 120s → 240s → 300s` 退
 
 `catch_all` 是默认关闭的超级模式。开启后不再依赖已知类别或错误码清单；除明确的上游 `cyber_policy` 外，任何真实上游 HTTP、传输、流读取、`error`、`response.failed` 或未知失败都会进入持续重试，包括永久额度、余额、鉴权、无效请求和其他结构化安全策略错误。明确的上游 `cyber_policy` 始终终止当前请求，不换号、不重放。文本推理只接受上游 HTTP `200` 及协议正常终态；其他状态、失败终态及无终态 EOF 都会丢弃整次尝试并继续。管理界面的超级开关会在一次保存中同时设置 `enabled=true` 和 `catch_all=true`；关闭总开关会同步清除 `catch_all`，避免隐藏启用。
 
-持续重试会把每次流式上游尝试完整暂存；失败整次丢弃，正常终态才一次性回放。因此客户端等待时由 SSE 注释或 Responses WebSocket Ping 保活，但不再实时逐 token 收到生成结果。非流式 JSON（包括 Grok media）在进入无限重试后，会在退避、等待账号、等待响应头和读取响应体时发送标准 HTTP `102 Processing` 信息响应；它不会提交最终 JSON 状态，但中间代理可能丢弃 1xx，仍需依赖墙钟上限和客户端超时。`max_duration_seconds` 设置无限预算的墙钟时间上限（默认 600 秒，范围 1 到 900 秒），从请求第一次进入无限重试时开始，后续尝试不会重置。期限到达会立即取消上游并返回最近一次真实上游失败；仅在尚无失败可返回时使用 `504 upstream_timeout`。普通自选模式不会无限重试未选中的结构化安全策略拒绝；`catch_all` 可覆盖其他拒绝，但不能覆盖明确的上游 `cyber_policy` 或本地重试期限。
+持续重试会把每次流式上游尝试完整暂存；失败整次丢弃，正常终态才一次性回放。目标端点等待上游响应头、读取响应体或流数据时保持下游连接：Responses、Chat Completions 和 Images 在首个保活周期到达时建立 SSE 200 并发送 `: keepalive` 注释，Messages 发送 Anthropic 原生 `event: ping`；Responses、Realtime 与 Live Sideband WebSocket 使用 Ping 控制帧。原生 Grok SSE 仍保留上游帧格式并允许插入保活帧。心跳提交 SSE 后，随后的上游错误会使用协议错误事件，不再改变 HTTP 200。非流式 JSON（包括 relay/native Responses、compact、Images、Grok 图片和 Alpha Search）使用标准 HTTP `102 Processing` 信息响应，不提交最终状态或 JSON；Cloudflare 收到 102 后仍要求在 125 秒内收到最终响应，因此它只能延长等待，不是无限期保活。`max_duration_seconds` 设置无限预算的墙钟时间上限（默认 600 秒，范围 1 到 900 秒），从请求第一次进入无限重试时开始，后续尝试不会重置。期限到达会立即取消上游并返回最近一次真实上游失败；仅在尚无失败可返回时使用 `504 upstream_timeout`。普通自选模式不会无限重试未选中的结构化安全策略拒绝；`catch_all` 可覆盖其他拒绝，但不能覆盖明确的上游 `cyber_policy` 或本地重试期限。
+
+上述 HTTP/SSE 保活覆盖 `/v1/responses`（含 relay/native、stream 与 non-stream）、`/v1/chat/completions`、`/v1/messages`、`/v1/responses/compact`、`/v1/alpha/search`、`/v1/images/generations` 和 `/v1/images/edits`；视频、image jobs 与 `POST /v1/live` 不启用这套保活。Claude 原生 Messages 的首字前及已提交流保活继续由 `stream_keepalive_enabled` 共同控制，缺省为开启。
+
+配置 API Key 模型请求次数预算时，额度准入完成前不会因保活提交 SSE 200；准入或重试也不会重新开启已关闭的 Claude 保活。普通 Responses、Chat Completions 和 Messages 请求在下游取消后停止发送心跳，并沿用最多 5 秒的上游 usage 补读窗口；持续重试的响应读取仍随下游取消立即结束。
 
 单次流式尝试的暂存上限为 64 MiB，前 8 MiB 使用内存，之后写入立即 unlink 的 mode-0600 临时文件；暂存超限或存储失败会作为本地错误立即停止。当前没有跨请求的进程级暂存总预算，高并发环境需要另行限制并发并监控内存与临时磁盘。Responses HTTP 等待期间若 SSE 心跳已提交响应头，最终成功账号的 `X-Codex-Turn-State` 无法再补发，因此实现会省略该头而不会转发失败账号的状态；无法安全展开为自包含请求的账号绑定 continuation 也不会强行换号。
 
@@ -304,6 +315,18 @@ Codex 瞬时账号限流按 `15s → 30s → 60s → 120s → 240s → 300s` 退
 |------|------|--------|------|
 | `ProxyURL` | string | "" | 全局代理 URL |
 | `ProxyPoolEnabled` | bool | false | 启用代理池。开启后未绑定账号从启用代理中粘性分配；绑定到已禁用/测挂托管代理的账号不会直连；池空且无全局代理时拒绝调度 |
+| `ResinURL` | string | "" | Resin 粘性代理池地址（含 token，形如 `http://127.0.0.1:2260/<token>`）。日志与设置接口只回显打码后的 `scheme://host` |
+| `ResinPlatformName` | string | "" | Resin 侧平台标识。与 `ResinURL` 同时填写才启用，清空任一即禁用 |
+
+#### 出口链路优先级
+
+Codex 渠道的出站有三套配置并存，生效关系是固定的、逐层覆盖而不是叠加：
+
+1. **Resin 反代**（全局）：启用后 Codex 渠道所有携带账号身份的出站（`/responses`、compact、WebSocket、wham 用量/重置券/订阅查询、客户端遥测、令牌刷新）全部改经 Resin，出口 IP 由 Resin 按账号粘性提供。此时下面第 2 层选出的代理只保留在审计标签里、不参与拨号；代理池的 fail-closed（池空、绑定的托管代理已禁用）对 Codex 账号也不再成立，账号不会因此被跳过。
+2. **代理链**：账号 `proxy_url` > 分组代理 > 代理池（按账号 ID 粘性）> 全局 `ProxyURL`。
+3. **直连**：代理池关闭且以上都为空时直连上游。
+
+Claude / Grok / Antigravity 等中继型账号不经 Resin，始终按第 2、3 层解析。管理后台在「系统设置 → Resin」卡片、代理池页顶部与 Codex 账号列表的代理徽章上标出当前由谁承担出站；设置接口的只读字段 `codex_egress` 给出同一结论（`mode` 为 `resin` 或 `proxy_chain`）。
 
 ### 账号级设置（单账号）
 

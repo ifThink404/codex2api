@@ -40,6 +40,7 @@ func migrateOnlyEnabled() bool {
 	return value == "1" || strings.EqualFold(value, "true")
 }
 
+// main 加载配置、初始化存储与路由，并启动 Codex2API HTTP 服务。
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Codex2API v2 启动中...")
@@ -49,6 +50,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载核心环境配置失败 (请检查 .env 文件): %v", err)
 	}
+	proxy.ConfigureDownstreamKeepaliveFromEnv()
 	log.Printf("物理层配置加载成功: port=%d, database=%s, cache=%s, tz=%s", cfg.Port, cfg.Database.Label(), cfg.Cache.Label(), time.Local)
 
 	// 2. 初始化数据库
@@ -116,7 +118,7 @@ func main() {
 			UsageLogFlushIntervalSeconds:      5,
 			StreamFlushPolicy:                 proxy.StreamFlushPolicyImmediate,
 			StreamFlushIntervalMS:             20,
-			FirstTokenMode:                    proxy.FirstTokenModeStrict,
+			FirstTokenMode:                    proxy.FirstTokenModeLoose,
 			FirstTokenTimeoutSeconds:          0,
 			BillingTierPolicy:                 proxy.NormalizeBillingTierPolicy(os.Getenv("CODEX_BILLING_TIER_POLICY")),
 			ImageStorageConfig:                "{}",
@@ -168,7 +170,7 @@ func main() {
 			UsageLogFlushIntervalSeconds:      5,
 			StreamFlushPolicy:                 proxy.StreamFlushPolicyImmediate,
 			StreamFlushIntervalMS:             20,
-			FirstTokenMode:                    proxy.FirstTokenModeStrict,
+			FirstTokenMode:                    proxy.FirstTokenModeLoose,
 			FirstTokenTimeoutSeconds:          0,
 			BillingTierPolicy:                 proxy.NormalizeBillingTierPolicy(os.Getenv("CODEX_BILLING_TIER_POLICY")),
 			ImageStorageConfig:                "{}",
@@ -395,6 +397,7 @@ func main() {
 	r.Use(api.RequestContextMiddleware())
 	r.Use(api.VersionMiddleware())
 	security.MaxRequestBodySize = cfg.MaxRequestBodySize
+	security.ConfigureRequestMemoryBudget(cfg.RequestMemoryBudgetBytes)
 	// 账号导入端点(multipart 文件上传)单独放宽体积上限,默认 200MB,可用
 	// CODEX_MAX_IMPORT_BODY_SIZE_MB 覆盖。前端按大小分批发送,单批控制在此上限内。
 	if v := strings.TrimSpace(os.Getenv("CODEX_MAX_IMPORT_BODY_SIZE_MB")); v != "" {
