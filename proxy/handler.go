@@ -1526,6 +1526,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateUpstreamTrace(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
+	h.observeSessionAutoLock(c, input)
 	markCyberPolicyUsageKind(input)
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
@@ -3889,6 +3890,11 @@ func (h *Handler) Responses(c *gin.Context) {
 	affinityKey := sessionAffinityKey(sessionIdentity.affinityID, apiKeyID)
 	turnContinuation := codexTurnContinuationToken(c.Request.Header, rawBody) != ""
 	_, turnHasBinding := h.store.SessionAffinityAccountID(affinityKey)
+	h.rememberSessionAutoLockKey(c, affinityKey)
+	if failure := h.checkSessionAutoLock(c, affinityKey); failure != nil {
+		api.SendErrorWithStatus(c, failure, http.StatusBadRequest)
+		return
+	}
 	if failure := h.checkInitialSessionAdmission(c.Request.Header, rawBody, sessionIdentity, turnHasBinding, handlerStart); failure != nil {
 		// codex_session_identity_unavailable 不在 api.HTTPStatusCode 的显式分支里，
 		// 走普通 SendError 会落到 default 的 500；这里和仓库里其它临时 ErrorCode

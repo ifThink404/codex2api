@@ -47,4 +47,15 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if !regexp.MustCompile(`api\.SendErrorWithStatus\(c, failure, http\.StatusBadRequest\)`).Match(handler) {
 		t.Fatal("handler.go must reject initial-session admission failures with HTTP 400 (SendErrorWithStatus), not the default 500")
 	}
+	for name, src := range map[string][]byte{"handler.go": handler, "responses_ws.go": ws} {
+		if got := regexp.MustCompile(`h\.checkSessionAutoLock\(c, affinityKey\)`).FindAll(src, -1); len(got) != 1 {
+			t.Fatalf("%s auto-lock check sites = %d, want 1", name, len(got))
+		}
+		if got := regexp.MustCompile(`h\.rememberSessionAutoLockKey\(c, affinityKey\)`).FindAll(src, -1); len(got) != 1 {
+			t.Fatalf("%s auto-lock key sites = %d, want 1", name, len(got))
+		}
+	}
+	if !regexp.MustCompile(`h\.observeSessionAutoLock\(c, input\)`).Match(handler) {
+		t.Fatal("logUsageForRequest must feed the auto-lock streaks")
+	}
 }

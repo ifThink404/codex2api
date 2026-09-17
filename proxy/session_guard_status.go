@@ -31,6 +31,7 @@ type SessionGuardStatus struct {
 	TurnState      SessionGuardTurnStateStatus `json:"turn_state"`
 	Borrow         auth.SessionBorrowStats     `json:"borrow"`
 	InitialSession SessionGuardInitialStatus   `json:"initial_session"`
+	AutoLock       SessionGuardAutoLockStatus  `json:"auto_lock"`
 }
 
 // SessionGuardStatusSnapshot 供 /api/admin/runtime 使用：全部是进程内计数，重启清零。
@@ -57,5 +58,17 @@ func SessionGuardStatusSnapshot(store *auth.Store) SessionGuardStatus {
 		status.Settings.NoBorrowHoldSeconds = int(store.SessionNoBorrowHold() / time.Second)
 		status.Borrow = store.SessionBorrowStats()
 	}
+	return status
+}
+
+// SessionGuardStatusSnapshotForHandler 在 SessionGuardStatusSnapshot 之上补上自动锁定
+// 计数（需要 *Handler 才能读 DB 预热锁表），供拿到 Handler 的调用方使用。
+func SessionGuardStatusSnapshotForHandler(h *Handler) SessionGuardStatus {
+	var store *auth.Store
+	if h != nil {
+		store = h.store
+	}
+	status := SessionGuardStatusSnapshot(store)
+	status.AutoLock = sessionAutoLockSnapshot(h)
 	return status
 }

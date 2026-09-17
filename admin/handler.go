@@ -11359,6 +11359,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexTurnStateVaultEnabled = *req.CodexTurnStateVaultEnabled
 		log.Printf("设置已更新: codex_turn_state_vault_enabled = %t", runtimeCfg.CodexTurnStateVaultEnabled)
 	}
+	if req.CodexSessionAutoLockEnabled != nil || req.CodexSessionAutoLockThreshold != nil {
+		proxy.ResetSessionAutoLockStreaks()
+	}
 	if req.StreamFlushPolicy != nil {
 		runtimeCfg.StreamFlushPolicy = proxy.NormalizeStreamFlushPolicy(*req.StreamFlushPolicy)
 		log.Printf("设置已更新: stream_flush_policy = %s", runtimeCfg.StreamFlushPolicy)
