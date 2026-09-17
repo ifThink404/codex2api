@@ -153,15 +153,17 @@ func TestUsageLogTextClampedToColumnWidth(t *testing.T) {
 
 	long := strings.Repeat("x", 300)
 	if err := db.InsertUsageLog(context.Background(), &UsageLogInput{
-		Endpoint:             long,
-		Model:                long,
-		EffectiveModel:       long,
-		ReasoningEffort:      long,
-		ServiceTier:          long,
-		RequestedServiceTier: long,
-		ActualServiceTier:    long,
-		Channel:              long,
-		StatusCode:           200,
+		Endpoint:              long,
+		Model:                 long,
+		EffectiveModel:        long,
+		ReasoningEffort:       long,
+		UpstreamResponseModel: long,
+		WindowNumber:          long,
+		ServiceTier:           long,
+		RequestedServiceTier:  long,
+		ActualServiceTier:     long,
+		Channel:               long,
+		StatusCode:            200,
 	}); err != nil {
 		t.Fatalf("InsertUsageLog 返回错误: %v", err)
 	}
@@ -184,6 +186,8 @@ func TestUsageLogTextClampedToColumnWidth(t *testing.T) {
 		{"model", got.Model, usageLogTextMaxLen},
 		{"effective_model", got.EffectiveModel, usageLogTextMaxLen},
 		{"reasoning_effort", got.ReasoningEffort, usageLogTextMaxLen},
+		{"upstream_response_model", got.UpstreamResponseModel, usageLogTextMaxLen},
+		{"window_number", got.WindowNumber, usageLogWindowNumberMaxLen},
 		{"service_tier", got.ServiceTier, usageLogTextMaxLen},
 		{"requested_service_tier", got.RequestedServiceTier, usageLogTextMaxLen},
 		{"actual_service_tier", got.ActualServiceTier, usageLogTextMaxLen},
@@ -455,5 +459,97 @@ func TestSalvageDropsPoisonRowAgainstPostgres(t *testing.T) {
 	}
 	if stats.BufferLength != 0 {
 		t.Fatalf("BufferLength = %d，want 0（脏数据不应留在缓冲区反复重试）", stats.BufferLength)
+	}
+}
+
+// TestUsageLogUpstreamModelAndWindowNumberRoundTrip 覆盖新增的两列：上游自报模型与
+// Codex 客户端窗口号必须在「写缓冲 → 批量 INSERT → 三条读路径」上原样往返。
+// 列表 / 分页 / 导出用的是三份各自手写的 SELECT + Scan，漏改任何一处都会错位到
+// 相邻列上（而不是报错），所以三条路径都要断言。
+func TestUsageLogUpstreamModelAndWindowNumberRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.InsertUsageLog(ctx, &UsageLogInput{
+		Endpoint:              "/v1/responses",
+		InboundEndpoint:       "/v1/responses",
+		Model:                 "gpt-5.4",
+		EffectiveModel:        "gpt-5.4",
+		UpstreamResponseModel: "gpt-5.4-codex",
+		WindowNumber:          "7",
+		ReasoningEffort:       "high",
+		StatusCode:            200,
+		TotalTokens:           10,
+	}); err != nil {
+		t.Fatalf("InsertUsageLog 返回错误: %v", err)
+	}
+	db.FlushUsageLogs()
+
+	assertRow := func(name string, got *UsageLog) {
+		t.Helper()
+		if got.UpstreamResponseModel != "gpt-5.4-codex" {
+			t.Fatalf("%s: upstream_response_model = %q, want %q", name, got.UpstreamResponseModel, "gpt-5.4-codex")
+		}
+		if got.WindowNumber != "7" {
+			t.Fatalf("%s: window_number = %q, want %q", name, got.WindowNumber, "7")
+		}
+		// 错位插入最典型的症状是把相邻列读串，这里顺带锁住两个邻居。
+		if got.ReasoningEffort != "high" || got.Model != "gpt-5.4" {
+			t.Fatalf("%s: 相邻列被读串: reasoning_effort=%q model=%q", name, got.ReasoningEffort, got.Model)
+		}
+	}
+
+	recent, err := db.ListRecentUsageLogs(ctx, 10)
+	if err != nil || len(recent) != 1 {
+		t.Fatalf("ListRecentUsageLogs = %d 条, err = %v", len(recent), err)
+	}
+	assertRow("ListRecentUsageLogs", recent[0])
+
+	window := UsageLogFilter{Start: time.Now().Add(-time.Hour), End: time.Now().Add(time.Hour), Page: 1, PageSize: 10}
+	page, err := db.ListUsageLogsByTimeRangePaged(ctx, window)
+	if err != nil || page == nil || len(page.Logs) != 1 {
+		t.Fatalf("ListUsageLogsByTimeRangePaged = %#v, err = %v", page, err)
+	}
+	assertRow("ListUsageLogsByTimeRangePaged", page.Logs[0])
+
+	exported, err := db.ListUsageLogsByFilter(ctx, window)
+	if err != nil || len(exported) != 1 {
+		t.Fatalf("ListUsageLogsByFilter = %d 条, err = %v", len(exported), err)
+	}
+	assertRow("ListUsageLogsByFilter", exported[0])
+
+	byRange, err := db.ListUsageLogsByTimeRange(ctx, window.Start, window.End)
+	if err != nil || len(byRange) != 1 {
+		t.Fatalf("ListUsageLogsByTimeRange = %d 条, err = %v", len(byRange), err)
+	}
+	assertRow("ListUsageLogsByTimeRange", byRange[0])
+}
+
+// 没观测到上游自报模型 / 窗口号时必须落成空串而不是 NULL：读路径有 COALESCE 兜底，
+// 新库建表也带空串默认值，这里锁住「不写值也能往返」。
+func TestUsageLogUpstreamModelAndWindowNumberDefaultEmpty(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	insertUsageLogs(t, db, 1)
+	db.FlushUsageLogs()
+
+	logs, err := db.ListRecentUsageLogs(ctx, 10)
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("ListRecentUsageLogs = %d 条, err = %v", len(logs), err)
+	}
+	if logs[0].UpstreamResponseModel != "" || logs[0].WindowNumber != "" {
+		t.Fatalf("未观测时必须为空串: upstream_response_model=%q window_number=%q",
+			logs[0].UpstreamResponseModel, logs[0].WindowNumber)
 	}
 }

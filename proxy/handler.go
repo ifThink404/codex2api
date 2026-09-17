@@ -1524,6 +1524,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateUserAgentMetaFromRequest(c, input)
 	populateWsAcquireFromRequest(c, input)
 	populateUpstreamTrace(c, input)
+	populateUsageWindowNumber(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
 	h.observeSessionAutoLock(c, input)
@@ -1548,21 +1549,22 @@ func (h *Handler) logContinueThinkingRounds(c *gin.Context, res continueFoldResu
 			statusCode = http.StatusOK
 		}
 		logInput := &database.UsageLogInput{
-			AccountID:            account.ID(),
-			Endpoint:             "/v1/responses",
-			Model:                logModel,
-			EffectiveModel:       logEffectiveModel,
-			StatusCode:           statusCode,
-			DurationMs:           round.DurationMs,
-			ReasoningEffort:      reasoningEffort,
-			InboundEndpoint:      "/v1/responses",
-			UpstreamEndpoint:     "/v1/responses",
-			Stream:               true,
-			ViaWebsocket:         useWebsocket,
-			ServiceTier:          usageTiers.ServiceTier,
-			RequestedServiceTier: usageTiers.RequestedServiceTier,
-			ActualServiceTier:    usageTiers.ActualServiceTier,
-			BillingServiceTier:   usageTiers.BillingServiceTier,
+			AccountID:             account.ID(),
+			Endpoint:              "/v1/responses",
+			Model:                 logModel,
+			EffectiveModel:        logEffectiveModel,
+			StatusCode:            statusCode,
+			DurationMs:            round.DurationMs,
+			ReasoningEffort:       reasoningEffort,
+			UpstreamResponseModel: round.UpstreamModel,
+			InboundEndpoint:       "/v1/responses",
+			UpstreamEndpoint:      "/v1/responses",
+			Stream:                true,
+			ViaWebsocket:          useWebsocket,
+			ServiceTier:           usageTiers.ServiceTier,
+			RequestedServiceTier:  usageTiers.RequestedServiceTier,
+			ActualServiceTier:     usageTiers.ActualServiceTier,
+			BillingServiceTier:    usageTiers.BillingServiceTier,
 			// 隐藏的续想轮不是「重试」：不置 IsRetryAttempt/AttemptIndex，
 			// 否则会污染重试统计并与外层 attempt 编号混淆。
 		}
@@ -4413,7 +4415,14 @@ func (h *Handler) Responses(c *gin.Context) {
 				downstreamFlusher, _ := c.Writer.(http.Flusher)
 				streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
 				var compactionDigests compactionProvenanceDigests
-				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolResponses, isStream, start, stopTTFTGuard, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), compactionDigests.addPayload)
+				// 原样透传分支同样要记上游自报模型：observe 回调在读帧的同一 goroutine 里
+				// 同步调用（流式逐帧、非流式整体一次），闭包写局部变量无需加锁。
+				var upstreamResponseModel string
+				observeNativePayload := func(payload []byte) {
+					compactionDigests.addPayload(payload)
+					upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, payload, "")
+				}
+				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolResponses, isStream, start, stopTTFTGuard, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), observeNativePayload)
 				totalDuration := int(time.Since(start).Milliseconds())
 				stopTTFTGuard()
 				resp.Body.Close()
@@ -4464,7 +4473,8 @@ func (h *Handler) Responses(c *gin.Context) {
 					AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel,
 					EffectiveModel: attemptLogEffectiveModel, StatusCode: outcome.logStatusCode,
 					DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint,
+					UpstreamResponseModel: upstreamResponseModel,
+					InboundEndpoint:       "/v1/responses", UpstreamEndpoint: upstreamEndpoint,
 					Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 				}
 				if usage != nil {
@@ -4504,6 +4514,9 @@ func (h *Handler) Responses(c *gin.Context) {
 			var firstTokenMs int
 			var usage *UsageInfo
 			var actualServiceTier string
+			// 上游自报模型：仅记录上游响应信封里自己声明的模型，与请求模型不一致时在用量页标出。
+			// 每个 attempt 一份：换号重试后上一轮的观测值不能带到这一轮的日志行上。
+			var upstreamResponseModel string
 			ttftRecorded := false
 			// contentTokenSeen is deliberately strict and independent from the
 			// operator's TTFT mode. In loose mode, preflight metadata records TTFT
@@ -4567,6 +4580,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 					parsed := gjson.ParseBytes(data)
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+					upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 					ttftGuard.MarkProgress(eventType)
 					isFirstToken := isLooseFirstTokenResult(parsed)
 					if !ttftRecorded && isFirstToken {
@@ -4676,6 +4690,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 					nonStreamResponseBody = append([]byte(nil), respBody...)
 					usage = extractUsageFromResult(gjson.GetBytes(respBody, "usage"))
+					upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, respBody, "")
 					actualServiceTier = gjson.GetBytes(respBody, "service_tier").String()
 					imageLogInfo = imageUsageLogInfoFromResponseJSON(respBody)
 					gotTerminal = true
@@ -4742,7 +4757,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				clearNewAPIUpstreamCyberPolicyDecision(c)
 				h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 					AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
-					StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
+					StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: upstreamResponseModel,
 					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 					AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -4863,6 +4878,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				DurationMs:             totalDuration,
 				FirstTokenMs:           firstTokenMs,
 				ReasoningEffort:        reasoningEffort,
+				UpstreamResponseModel:  upstreamResponseModel,
 				InboundEndpoint:        "/v1/responses",
 				UpstreamEndpoint:       upstreamEndpoint,
 				Stream:                 isStream,
@@ -5161,6 +5177,9 @@ func (h *Handler) Responses(c *gin.Context) {
 		var firstTokenMs int
 		var usage *UsageInfo
 		var actualServiceTier string
+		// 上游自报模型：仅记录上游响应信封里自己声明的模型，与请求模型不一致时在用量页标出。
+		// 每个 attempt 一份：换号重试后上一轮的观测值不能带到这一轮的日志行上。
+		var upstreamResponseModel string
 		ttftRecorded := false
 		gotTerminal := false // 是否收到 response.completed 或 response.failed
 		deltaCharCount := 0  // 累计 delta 字符数（用于断流时估算 token）
@@ -5244,6 +5263,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 
 				// TTFT: 记录第一个实际内容事件的时间
 				ttftGuard.MarkProgress(eventType)
@@ -5493,6 +5513,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 				if eventType == "error" {
 					terminalFailurePayload = terminalUpstreamErrorPayload(data)
 					gotTerminal = true
@@ -5609,7 +5630,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: logEffectiveModel,
-				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
+				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: upstreamResponseModel,
 				InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -5763,6 +5784,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			DurationMs:             totalDuration,
 			FirstTokenMs:           firstTokenMs,
 			ReasoningEffort:        reasoningEffort,
+			UpstreamResponseModel:  upstreamResponseModel,
 			InboundEndpoint:        "/v1/responses",
 			UpstreamEndpoint:       "/v1/responses",
 			Stream:                 isStream,
@@ -6246,6 +6268,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			cachedTokens := int(gjson.GetBytes(respBody, "usage.input_tokens_details.cached_tokens").Int())
 
 			actualServiceTier := gjson.GetBytes(respBody, "service_tier").String()
+			upstreamResponseModel := observeUpstreamResponseModel("", respBody, "")
 			usageTiers := resolveUsageServiceTiers(actualServiceTier, serviceTier)
 
 			c.Set("x-account-email", baseURL)
@@ -6255,26 +6278,27 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			c.Set("x-service-tier", usageTiers.ServiceTier)
 
 			h.logUsageForRequest(c, &database.UsageLogInput{
-				AccountID:            account.ID(),
-				Endpoint:             "/v1/responses/compact",
-				Model:                logModel,
-				EffectiveModel:       attemptLogEffectiveModel,
-				StatusCode:           http.StatusOK,
-				DurationMs:           durationMs,
-				PromptTokens:         promptTokens,
-				CompletionTokens:     completionTokens,
-				TotalTokens:          totalTokens,
-				InputTokens:          promptTokens,
-				OutputTokens:         completionTokens,
-				ReasoningTokens:      reasoningTokens,
-				CachedTokens:         cachedTokens,
-				ReasoningEffort:      reasoningEffort,
-				InboundEndpoint:      "/v1/responses/compact",
-				UpstreamEndpoint:     upstreamEndpoint,
-				ServiceTier:          usageTiers.ServiceTier,
-				RequestedServiceTier: usageTiers.RequestedServiceTier,
-				ActualServiceTier:    usageTiers.ActualServiceTier,
-				BillingServiceTier:   usageTiers.BillingServiceTier,
+				AccountID:             account.ID(),
+				Endpoint:              "/v1/responses/compact",
+				Model:                 logModel,
+				EffectiveModel:        attemptLogEffectiveModel,
+				StatusCode:            http.StatusOK,
+				DurationMs:            durationMs,
+				PromptTokens:          promptTokens,
+				CompletionTokens:      completionTokens,
+				TotalTokens:           totalTokens,
+				InputTokens:           promptTokens,
+				OutputTokens:          completionTokens,
+				ReasoningTokens:       reasoningTokens,
+				CachedTokens:          cachedTokens,
+				ReasoningEffort:       reasoningEffort,
+				UpstreamResponseModel: upstreamResponseModel,
+				InboundEndpoint:       "/v1/responses/compact",
+				UpstreamEndpoint:      upstreamEndpoint,
+				ServiceTier:           usageTiers.ServiceTier,
+				RequestedServiceTier:  usageTiers.RequestedServiceTier,
+				ActualServiceTier:     usageTiers.ActualServiceTier,
+				BillingServiceTier:    usageTiers.BillingServiceTier,
 			})
 
 			h.store.ReleaseForSessionWithGuard(account, affinityKey, affinityGuard)
@@ -6626,30 +6650,32 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		cachedTokens := int(gjson.GetBytes(respBody, "usage.input_tokens_details.cached_tokens").Int())
 
 		actualServiceTier := gjson.GetBytes(respBody, "service_tier").String()
+		upstreamResponseModel := observeUpstreamResponseModel("", respBody, "")
 		usageTiers := resolveUsageServiceTiers(actualServiceTier, serviceTier)
 
 		totalDuration := int(time.Since(start).Milliseconds())
 		h.logUsageForRequest(c, &database.UsageLogInput{
-			AccountID:            account.ID(),
-			Endpoint:             "/v1/responses/compact",
-			Model:                logModel,
-			EffectiveModel:       logEffectiveModel,
-			StatusCode:           http.StatusOK,
-			DurationMs:           totalDuration,
-			PromptTokens:         promptTokens,
-			CompletionTokens:     completionTokens,
-			TotalTokens:          totalTokens,
-			InputTokens:          promptTokens,
-			OutputTokens:         completionTokens,
-			ReasoningTokens:      reasoningTokens,
-			CachedTokens:         cachedTokens,
-			ReasoningEffort:      reasoningEffort,
-			InboundEndpoint:      "/v1/responses/compact",
-			UpstreamEndpoint:     upstreamEndpointLabel,
-			ServiceTier:          usageTiers.ServiceTier,
-			RequestedServiceTier: usageTiers.RequestedServiceTier,
-			ActualServiceTier:    usageTiers.ActualServiceTier,
-			BillingServiceTier:   usageTiers.BillingServiceTier,
+			AccountID:             account.ID(),
+			Endpoint:              "/v1/responses/compact",
+			Model:                 logModel,
+			EffectiveModel:        logEffectiveModel,
+			StatusCode:            http.StatusOK,
+			DurationMs:            totalDuration,
+			PromptTokens:          promptTokens,
+			CompletionTokens:      completionTokens,
+			TotalTokens:           totalTokens,
+			InputTokens:           promptTokens,
+			OutputTokens:          completionTokens,
+			ReasoningTokens:       reasoningTokens,
+			CachedTokens:          cachedTokens,
+			ReasoningEffort:       reasoningEffort,
+			UpstreamResponseModel: upstreamResponseModel,
+			InboundEndpoint:       "/v1/responses/compact",
+			UpstreamEndpoint:      upstreamEndpointLabel,
+			ServiceTier:           usageTiers.ServiceTier,
+			RequestedServiceTier:  usageTiers.RequestedServiceTier,
+			ActualServiceTier:     usageTiers.ActualServiceTier,
+			BillingServiceTier:    usageTiers.BillingServiceTier,
 		})
 
 		h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
@@ -7223,6 +7249,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		var firstTokenMs int
 		var usage *UsageInfo
 		var actualServiceTier string
+		// 上游自报模型：仅记录上游响应信封里自己声明的模型，与请求模型不一致时在用量页标出。
+		// 每个 attempt 一份：换号重试后上一轮的观测值不能带到这一轮的日志行上。
+		var upstreamResponseModel string
 		ttftRecorded := false
 		// TTFT may use loose structural progress, but retry safety is based on
 		// actual content. Chat translation drops many structural events, so
@@ -7278,6 +7307,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			readErr = readSSEStreamWithContinuousRetryKeepalive(readCtx, resp.Body, func(sseEvent string, data []byte) bool {
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 				if eventType == "response.failed" {
 					statusCode := classifyResponseFailedOutcome(data).logStatusCode
 					var incidentID string
@@ -7445,6 +7475,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				outputCollector.Add(data)
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 				ttftGuard.MarkProgress(eventType)
 				if !ttftRecorded && isLooseFirstTokenResult(parsed) {
 					firstTokenMs = int(time.Since(start).Milliseconds())
@@ -7553,7 +7584,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
-				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
+				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: upstreamResponseModel,
 				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -7666,6 +7697,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			DurationMs:             totalDuration,
 			FirstTokenMs:           firstTokenMs,
 			ReasoningEffort:        reasoningEffort,
+			UpstreamResponseModel:  upstreamResponseModel,
 			InboundEndpoint:        "/v1/chat/completions",
 			UpstreamEndpoint:       upstreamEndpoint,
 			Stream:                 isStream,

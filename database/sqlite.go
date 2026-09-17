@@ -173,6 +173,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			first_token_ms INTEGER DEFAULT 0,
 			ws_acquire_ms INTEGER DEFAULT 0,
 			reasoning_effort TEXT DEFAULT '',
+			upstream_response_model TEXT DEFAULT '',
+			window_number TEXT DEFAULT '',
 			effective_model TEXT DEFAULT '',
 			inbound_endpoint TEXT DEFAULT '',
 			upstream_endpoint TEXT DEFAULT '',
@@ -553,6 +555,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "first_token_ms", "INTEGER DEFAULT 0"},
 		{"usage_logs", "ws_acquire_ms", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_effort", "TEXT DEFAULT ''"},
+		// 上游自报模型 / Codex 客户端窗口号：老库升级走这里回填，新库在上面的建表里。
+		{"usage_logs", "upstream_response_model", "TEXT DEFAULT ''"},
+		{"usage_logs", "window_number", "TEXT DEFAULT ''"},
 		{"usage_logs", "effective_model", "TEXT DEFAULT ''"},
 		{"usage_logs", "inbound_endpoint", "TEXT DEFAULT ''"},
 		{"usage_logs", "upstream_endpoint", "TEXT DEFAULT ''"},

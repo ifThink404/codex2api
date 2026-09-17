@@ -1124,6 +1124,8 @@ func (h *Handler) streamResponsesWSUpstream(
 	outputBuffer := newWSPromptOutputBuffer(h.promptFilterConfigForRequest(c))
 	var usage *UsageInfo
 	var actualServiceTier string
+	// 上游自报模型：仅记录上游响应信封里自己声明的模型，与请求模型不一致时在用量页标出。
+	var upstreamResponseModel string
 	ttftRecorded := false
 	// contentTokenSeen 用严格判定（与宽松首字统计无关）。宽松口径下
 	// codex.rate_limits / metadata 会置位 ttftRecorded；本机 2004 还开了
@@ -1194,6 +1196,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		outputCollector.Add(data)
 		parsed := gjson.ParseBytes(data)
 		eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+		upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 		eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
 		clientData := data
 		if options != nil && options.transformClientEvent != nil {
@@ -1434,7 +1437,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		clearNewAPIUpstreamCyberPolicyDecision(c)
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
-			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
+			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: upstreamResponseModel,
 			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -1522,6 +1525,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		DurationMs:             totalDuration,
 		FirstTokenMs:           firstTokenMs,
 		ReasoningEffort:        reasoningEffort,
+		UpstreamResponseModel:  upstreamResponseModel,
 		InboundEndpoint:        "/v1/responses",
 		UpstreamEndpoint:       "/v1/responses",
 		Stream:                 true,

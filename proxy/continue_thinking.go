@@ -74,11 +74,12 @@ const (
 
 // continueRoundStat 记录一轮上游请求的真实消耗，供逐轮 usage 记账。
 type continueRoundStat struct {
-	Trace      upstreamTraceSnapshot
-	Usage      *UsageInfo
-	StatusCode int
-	DurationMs int
-	ErrMessage string
+	Trace         upstreamTraceSnapshot
+	Usage         *UsageInfo
+	UpstreamModel string
+	StatusCode    int
+	DurationMs    int
+	ErrMessage    string
 }
 
 // continueFoldResult 是一次折叠的汇总结果。
@@ -327,6 +328,7 @@ func (st *foldState) syntheticIncompleteEvent(reason string, finalRoundUsage *Us
 type roundOutcome struct {
 	terminal       []byte            // terminal 事件原始字节（nil = EOF 无终态）
 	usage          *UsageInfo        // 本轮 usage
+	upstreamModel  string            // 本轮上游自报的模型（仅用于日志核对）
 	roundReasoning []json.RawMessage // 本轮 reasoning items（output_item.done 的快照）
 	buffered       []*bufferedOutputItem
 	aborted        bool  // forward 返回 false
@@ -343,6 +345,9 @@ func (st *foldState) readRound(body io.Reader, roundNo int, f *continueFold) rou
 	out.readErr = ReadSSEStream(body, func(data []byte) bool {
 		parsed := gjson.ParseBytes(data)
 		eventType := parsed.Get("type").String()
+		// 每一轮续想都是一次独立的上游请求，各自记一份上游自报模型：
+		// 折叠隐藏的轮次在用量页是独立行，模型对不上时需要能各自定位。
+		out.upstreamModel = observeUpstreamResponseModel(out.upstreamModel, data, eventType)
 
 		switch eventType {
 		case "response.created", "response.in_progress":
@@ -534,10 +539,11 @@ func runContinueThinkingFold(firstResp *http.Response, f *continueFold) continue
 			}
 		}
 		stat := continueRoundStat{
-			Trace:      f.snapshotTrace(),
-			Usage:      outcome.usage,
-			StatusCode: statusCode,
-			DurationMs: int(time.Since(roundStart).Milliseconds()),
+			Trace:         f.snapshotTrace(),
+			Usage:         outcome.usage,
+			UpstreamModel: outcome.upstreamModel,
+			StatusCode:    statusCode,
+			DurationMs:    int(time.Since(roundStart).Milliseconds()),
 		}
 		result.Rounds = append(result.Rounds, stat)
 		if roundNo == 1 {
