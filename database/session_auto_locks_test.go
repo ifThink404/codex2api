@@ -3,7 +3,9 @@ package database
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSessionAutoLocksCRUD(t *testing.T) {
@@ -44,5 +46,10 @@ func TestSessionAutoLocksCRUD(t *testing.T) {
 	lock, _, err = db.InsertSessionAutoLock(ctx, long)
 	if err != nil || len(lock.ErrorMessage) != 255 || lock.Threshold != 3 {
 		t.Fatalf("clamping: len=%d threshold=%d err=%v", len(lock.ErrorMessage), lock.Threshold, err)
+	}
+	cjk := SessionAutoLockInput{SessionKey: "sess-3", SessionIDPrefix: strings.Repeat("会", 40), ErrorMessage: strings.Repeat("服务器过载", 100), Threshold: 3}
+	lock, _, err = db.InsertSessionAutoLock(ctx, cjk)
+	if err != nil || !utf8.ValidString(lock.ErrorMessage) || utf8.RuneCountInString(lock.ErrorMessage) != 255 || utf8.RuneCountInString(lock.SessionIDPrefix) != 32 || !utf8.ValidString(lock.SessionIDPrefix) {
+		t.Fatalf("cjk clamping: errLen=%d errValid=%v prefixLen=%d prefixValid=%v err=%v", utf8.RuneCountInString(lock.ErrorMessage), utf8.ValidString(lock.ErrorMessage), utf8.RuneCountInString(lock.SessionIDPrefix), utf8.ValidString(lock.SessionIDPrefix), err)
 	}
 }

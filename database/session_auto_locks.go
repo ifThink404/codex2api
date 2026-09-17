@@ -77,11 +77,7 @@ func scanSessionAutoLock(scanner interface{ Scan(...any) error }) (*SessionAutoL
 }
 
 func clampSessionAutoLockText(value string, max int) string {
-	value = strings.TrimSpace(value)
-	if len(value) > max {
-		return value[:max]
-	}
-	return value
+	return clampUsageLogText(strings.TrimSpace(value), max)
 }
 
 // InsertSessionAutoLock 按 session_key 幂等：已存在时返回现有行且 created=false。
