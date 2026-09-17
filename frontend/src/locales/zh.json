@@ -2256,6 +2256,8 @@
     "error": "错误",
     "lockedAt": "锁定时间",
     "refreshLocks": "刷新",
+    "locksLoadFailed": "加载已锁定会话失败",
+    "unlockFailed": "解锁失败",
     "initialSessionRecentHour": "首次会话（最近 1 小时）",
     "initialSessionSinceStart": "首次会话（启动以来）",
     "allowed": "放行",

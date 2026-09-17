@@ -452,6 +452,8 @@
     "error": "錯誤",
     "lockedAt": "鎖定時間",
     "refreshLocks": "重新整理",
+    "locksLoadFailed": "載入已鎖定工作階段失敗",
+    "unlockFailed": "解鎖失敗",
     "initialSessionRecentHour": "首次工作階段（最近 1 小時）",
     "initialSessionSinceStart": "首次工作階段（啟動以來）",
     "allowed": "放行",

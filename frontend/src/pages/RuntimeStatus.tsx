@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Activity,
@@ -21,6 +21,7 @@ import { StatTile } from '../components/StatTile'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import type { RuntimeCheck, RuntimeHealthStatus, RuntimeStatusResponse, SessionLockItem } from '../types'
+import { getErrorMessage } from '../utils/error'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -39,19 +40,31 @@ export default function RuntimeStatus() {
 
   const loadSessionLocks = useCallback(async () => (await api.getSessionLocks()).locks, [])
 
-  const { data: locks, reload: reloadLocks } = useDataLoader<SessionLockItem[]>({
+  const { data: locks, error: locksError, reload: reloadLocks } = useDataLoader<SessionLockItem[]>({
     initialData: [],
     load: loadSessionLocks,
   })
 
+  const [unlockError, setUnlockError] = useState<string | null>(null)
+
+  // 锁表读写失败必须显形：上面的面板报「当前锁定 7」而这张卡片写着「没有锁定会话」
+  // 是最坏的组合，解锁失败同样不能只留在控制台里。
   const unlock = useCallback(async (id: number) => {
+    setUnlockError(null)
     try {
       await api.deleteSessionLock(id)
+    } catch (err) {
+      setUnlockError(getErrorMessage(err))
     } finally {
       await reloadLocks()
       void reloadSilently()
     }
   }, [reloadLocks, reloadSilently])
+
+  const refreshLocks = useCallback(() => {
+    setUnlockError(null)
+    void reloadLocks()
+  }, [reloadLocks])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -208,37 +221,41 @@ export default function RuntimeStatus() {
                   <CardContent className="space-y-3 p-4 sm:p-6">
                     <div className="flex items-center justify-between">
                       <h2 className="font-semibold">{t('runtime.lockedSessions')}</h2>
-                      <Button variant="outline" size="sm" onClick={() => void reloadLocks()}>{t('runtime.refreshLocks')}</Button>
+                      <Button variant="outline" size="sm" onClick={refreshLocks}>{t('runtime.refreshLocks')}</Button>
                     </div>
+                    {locksError ? <p className="text-sm text-destructive">{t('runtime.locksLoadFailed')}</p> : null}
+                    {unlockError ? <p className="text-sm text-destructive">{`${t('runtime.unlockFailed')}: ${unlockError}`}</p> : null}
                     {locks.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">{t('runtime.lockedSessionsEmpty')}</p>
+                      locksError ? null : <p className="text-sm text-muted-foreground">{t('runtime.lockedSessionsEmpty')}</p>
                     ) : (
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>{t('runtime.sessionPrefix')}</TableHead>
-                            <TableHead>API Key</TableHead>
-                            <TableHead>{t('runtime.account')}</TableHead>
-                            <TableHead>{t('runtime.error')}</TableHead>
-                            <TableHead>{t('runtime.lockedAt')}</TableHead>
-                            <TableHead />
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {locks.map((lock) => (
-                            <TableRow key={lock.id}>
-                              <TableCell className="font-mono text-xs">{lock.session_id_prefix}</TableCell>
-                              <TableCell>#{lock.api_key_id}</TableCell>
-                              <TableCell>{lock.account_name || `#${lock.account_id}`}</TableCell>
-                              <TableCell className="max-w-[320px] truncate text-xs" title={lock.error_message}>{lock.error_message || '-'}</TableCell>
-                              <TableCell className="text-xs">{new Date(lock.locked_at).toLocaleString()}</TableCell>
-                              <TableCell className="text-right">
-                                <Button variant="outline" size="sm" onClick={() => void unlock(lock.id)}>{t('runtime.unlock')}</Button>
-                              </TableCell>
+                      <div className="data-table-shell">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>{t('runtime.sessionPrefix')}</TableHead>
+                              <TableHead>API Key</TableHead>
+                              <TableHead>{t('runtime.account')}</TableHead>
+                              <TableHead>{t('runtime.error')}</TableHead>
+                              <TableHead>{t('runtime.lockedAt')}</TableHead>
+                              <TableHead />
                             </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                          </TableHeader>
+                          <TableBody>
+                            {locks.map((lock) => (
+                              <TableRow key={lock.id}>
+                                <TableCell className="font-mono text-xs">{lock.session_id_prefix}</TableCell>
+                                <TableCell>#{lock.api_key_id}</TableCell>
+                                <TableCell>{lock.account_name || `#${lock.account_id}`}</TableCell>
+                                <TableCell className="max-w-[320px] truncate text-xs" title={lock.error_message}>{lock.error_message || '-'}</TableCell>
+                                <TableCell className="text-xs">{new Date(lock.locked_at).toLocaleString()}</TableCell>
+                                <TableCell className="text-right">
+                                  <Button variant="outline" size="sm" onClick={() => void unlock(lock.id)}>{t('runtime.unlock')}</Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
                     )}
                   </CardContent>
                 </Card>

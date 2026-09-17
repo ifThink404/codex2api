@@ -81,3 +81,49 @@ test('auto-lock and vault settings, locked-sessions card and copy exist', () => 
     }
   }
 })
+
+// DESIGN.md:40 要求新增设置区块断言「用了哪个共享组件」：只断言 API 方法的话，把开关
+// 换成裸 <input type="checkbox">、把数字输入换成裸 <input type="number"> 仍然全绿。
+function settingFieldBlock(source, labelKey) {
+  const at = source.indexOf(`t('settings.${labelKey}')`)
+  assert.notEqual(at, -1, `Settings.tsx lacks the ${labelKey} field`)
+  const end = source.indexOf('</SettingField>', at)
+  assert.notEqual(end, -1, `the ${labelKey} field is never closed`)
+  return source.slice(at, end)
+}
+
+test('auto-lock and vault settings render with the shared controls', () => {
+  const autoLock = settingFieldBlock(settingsSource, 'codexSessionAutoLock')
+  assert.ok(autoLock.includes('<Switch'), 'the auto-lock toggle must be components/ui/switch')
+  assert.ok(autoLock.includes("autoSaveBooleanField('codex_session_auto_lock_enabled'"), 'the auto-lock toggle must autosave')
+
+  const threshold = settingFieldBlock(settingsSource, 'codexSessionAutoLockThreshold')
+  assert.ok(threshold.includes('<DraftNumberInput'), 'the threshold must be components/ui/draft-number-input')
+  assert.ok(threshold.includes('min={1}') && threshold.includes('max={10000}'), 'the threshold must keep its 1–10000 bounds')
+  assert.ok(threshold.includes('disabled={!settingsForm.codex_session_auto_lock_enabled}'), 'the threshold must grey out when the toggle is off')
+
+  const vault = settingFieldBlock(settingsSource, 'codexTurnStateVault')
+  assert.ok(vault.includes('<Switch'), 'the vault toggle must be components/ui/switch')
+  assert.ok(vault.includes("autoSaveBooleanField('codex_turn_state_vault_enabled'"), 'the vault toggle must autosave')
+
+  assert.equal(/<input\s+type="checkbox"/.test(settingsSource), false, 'no raw checkbox anywhere in Settings.tsx')
+  assert.equal(/<select[\s>]/.test(settingsSource), false, 'no hand-written <select> anywhere in Settings.tsx')
+})
+
+test('locked-sessions card uses shared components, the table shell and error copy', () => {
+  for (const specifier of ['@/components/ui/table', '@/components/ui/button', '@/components/ui/card']) {
+    assert.ok(runtimeSource.includes(`from '${specifier}'`), `RuntimeStatus.tsx must use the shared components from ${specifier}`)
+  }
+  assert.ok(runtimeSource.includes('lg:col-span-2'), 'the locked-sessions card must span the full grid row')
+  assert.ok(runtimeSource.includes('data-table-shell'), 'the locks table must sit in a data-table-shell (border, sticky header, own scroll)')
+  assert.match(runtimeSource, /finally\s*\{\s*await reloadLocks\(\)/, 'unlock must reload the locks even when the request fails')
+  assert.ok(runtimeSource.includes("t('runtime.locksLoadFailed')"), 'a failed locks fetch must not render as "no locked sessions"')
+  assert.ok(runtimeSource.includes("t('runtime.unlockFailed')"), 'a failed unlock must surface in the card, not just in the console')
+  assert.equal(/<input\s+type="checkbox"/.test(runtimeSource), false, 'no raw checkbox in RuntimeStatus.tsx')
+  assert.equal(/<select[\s>]/.test(runtimeSource), false, 'no hand-written <select> in RuntimeStatus.tsx')
+  for (const [name, locale] of Object.entries(locales)) {
+    for (const key of ['locksLoadFailed', 'unlockFailed']) {
+      assert.equal(typeof locale.runtime?.[key], 'string', `${name}.json runtime.${key} missing`)
+    }
+  }
+})

@@ -2256,6 +2256,8 @@
     "error": "Error",
     "lockedAt": "Locked at",
     "refreshLocks": "Refresh",
+    "locksLoadFailed": "Failed to load locked sessions",
+    "unlockFailed": "Unlock failed",
     "initialSessionRecentHour": "Initial sessions (last hour)",
     "initialSessionSinceStart": "Initial sessions (since start)",
     "allowed": "allowed",
