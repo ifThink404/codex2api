@@ -171,7 +171,7 @@ export default function RuntimeStatus() {
               {status.session_guards && (
                 <StatusPanel
                   title={t('runtime.sessionGuards')}
-                  status={status.status}
+                  status="ok"
                   icon={<ShieldCheck className="size-5" />}
                   rows={[
                     [t('runtime.sessionGuardsSwitches'), formatSessionGuardSwitches(status.session_guards.settings, t)],

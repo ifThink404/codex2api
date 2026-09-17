@@ -6992,7 +6992,8 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 }
 
 // nextForSessionWithFilterBorrow 是带借用开关的实现。allowBorrow=false 时，绑定
-// 账号并发满不再借用其他账号而是返回 nil，由等待循环决定何时放开。
+// 账号并发满不再借用其他账号而是返回 nil，由等待循环决定何时放开。开关只约束
+// Codex 官方绑定账号（sessionNoBorrowAppliesTo）；relay-style 绑定按旧逻辑借用。
 func (s *Store) nextForSessionWithFilterBorrow(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy, allowBorrow bool) (*Account, string, SessionAffinityGuard) {
 	if s == nil {
 		return nil, "", SessionAffinityGuard{}
@@ -7059,7 +7060,7 @@ func (s *Store) nextForSessionWithFilterBorrow(key string, apiKeyID int64, exclu
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				if !allowBorrow {
+				if !allowBorrow && s.sessionNoBorrowAppliesTo(binding.accountID) {
 					s.sessionBorrowHeld.Add(1)
 					return nil, "", SessionAffinityGuard{}
 				}
@@ -7103,7 +7104,7 @@ func (s *Store) nextForSessionWithFilterBorrow(key string, apiKeyID int64, exclu
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				if !allowBorrow {
+				if !allowBorrow && s.sessionNoBorrowAppliesTo(binding.accountID) {
 					s.sessionBorrowHeld.Add(1)
 					return nil, "", SessionAffinityGuard{}
 				}
@@ -7740,6 +7741,13 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 	expires := time.Now().Add(timeout)
 	waitStarted := time.Now()
 	noBorrow := !preserveBinding && s.SessionNoBorrowEnabled()
+	if noBorrow {
+		// 本地已知绑定的是 relay-style 账号时不受不借用约束，不必挂 hold 计时器；
+		// 绑定未知（仅在缓存里）时保持扣住，由选号处的同一判定决定是否借用。
+		if id := boundAccountID(); id != 0 && !s.sessionNoBorrowAppliesTo(id) {
+			noBorrow = false
+		}
+	}
 	noBorrowHold := s.SessionNoBorrowHold()
 	var holdC <-chan time.Time
 	if noBorrow {
@@ -7839,8 +7847,11 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 				}
 				break waitLoop
 			case <-holdC:
-				// hold 到期只触发一次；跳出内层 select 让外层循环立刻用 allowBorrow=true 重选一次。
+				// hold 到期只触发一次；先把仍在排队的等待者摘出 lane，再跳出内层 select
+				// 让外层循环立刻用 allowBorrow=true 重选一次。不摘的话重选失败后的
+				// finish 会把同一等待者二次入队，残留元素会让后续 Release 永久卡死。
 				holdC = nil
+				hub.detach(waiter)
 				break waitLoop
 			case <-ctx.Done():
 				if metrics != nil {
@@ -7912,6 +7923,17 @@ func (s *Store) SessionNoBorrowHold() time.Duration {
 		return time.Duration(ns)
 	}
 	return 20 * time.Second
+}
+
+// sessionNoBorrowAppliesTo 判断不借用策略是否约束该绑定账号：开关是 Codex 专属的，
+// 只有 Codex 官方账号才被扣住等待；中转/Grok/Antigravity/Claude OAuth 等
+// relay-style 账号沿用旧的容量溢出借用逻辑。
+func (s *Store) sessionNoBorrowAppliesTo(accountID int64) bool {
+	if s == nil || accountID == 0 {
+		return false
+	}
+	acc := s.FindByID(accountID)
+	return acc != nil && !acc.IsRelayStyle()
 }
 
 // SessionBorrowStats 进程内计数：Borrowed = 实际发生的容量溢出借用；Held = 因

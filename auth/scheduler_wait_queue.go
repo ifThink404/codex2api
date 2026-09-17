@@ -114,7 +114,13 @@ func (h *availabilityHub) join(keyID, boundID int64, exclude map[int64]bool) (*a
 	return w, nil
 }
 
+// enqueueLocked parks a waiter at most once: a second push would leave an
+// orphaned element that dequeueLocked never removes and every later wave
+// dispatches to first.
 func (h *availabilityHub) enqueueLocked(w *availabilityWaiter) {
+	if w.element != nil {
+		return
+	}
 	lane := w.lane
 	w.element = lane.ready.PushBack(w)
 	if lane.element == nil {
@@ -245,6 +251,27 @@ func (h *availabilityHub) finish(w *availabilityWaiter, acquired, leave bool, bo
 			h.timer = nil
 		}
 	}
+}
+
+// detach takes a parked waiter out of its lane so the request goroutine can run
+// a selection on its own initiative (no-borrow hold expiry) and park again via
+// finish without leaving a duplicate element behind. A wave dispatched
+// concurrently stays attached and is handed on by that finish; its wakeup is
+// dropped because the selection runs now. Refreshing the generation makes a
+// release between this call and the re-park force a fresh pass, exactly as a
+// dispatched wakeup would.
+func (h *availabilityHub) detach(w *availabilityWaiter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if w.left {
+		return
+	}
+	h.dequeueLocked(w)
+	select {
+	case <-w.ready:
+	default:
+	}
+	w.generation = h.generation
 }
 
 func (h *availabilityHub) armRecheckLocked() {

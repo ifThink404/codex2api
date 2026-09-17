@@ -93,35 +93,6 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 	return nil
 }
 
-// guardCodexTurnStateEcho 出站守卫:客户端回带的 turn-state 若已知由其他账号
-// 铸造则从下游头剥离(HTTP 直传与 WS 握手都从这份头取值),同账号或无溯源
-// 记录时保持原样。按 attempt 调用:failover 换号后同一请求的下一次尝试必须
-// 重新裁决。
-func guardCodexTurnStateEcho(affinityKey string, account *auth.Account, headers http.Header) {
-	if headers == nil || account == nil || strings.TrimSpace(affinityKey) == "" {
-		return
-	}
-	if strings.TrimSpace(headers.Get(codexTurnStateHeader)) == "" {
-		return
-	}
-	raw, ok := codexTurnStateOrigins.Load(affinityKey)
-	if !ok {
-		return
-	}
-	origin, ok := raw.(codexTurnStateOrigin)
-	if !ok {
-		codexTurnStateOrigins.Delete(affinityKey)
-		return
-	}
-	if !origin.expiresAt.IsZero() && time.Now().After(origin.expiresAt) {
-		codexTurnStateOrigins.Delete(affinityKey)
-		return
-	}
-	if origin.accountID != account.ID() {
-		headers.Del(codexTurnStateHeader)
-	}
-}
-
 func noteCodexTurnStateProvenance(affinityKey string, account *auth.Account) {
 	if strings.TrimSpace(affinityKey) == "" || account == nil || account.ID() <= 0 {
 		return
