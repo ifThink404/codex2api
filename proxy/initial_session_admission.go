@@ -171,7 +171,7 @@ func isCodexNativeRequest(headers http.Header, body []byte) bool {
 func initialSessionAdmissionError() *api.APIError {
 	return api.NewAPIErrorWithDetails(
 		api.ErrorCode("codex_session_identity_unavailable"),
-		"当前会话无法继续处理,请重新打开对话;仍失败时请新建对话。",
+		"当前会话无法继续处理，请重新打开对话；仍失败时请新建对话。",
 		api.ErrorTypeInvalidRequest,
 		// gin.H 是具名类型，err.Details.(map[string]any) 断言不到它的底层类型，
 		// 必须用字面 map[string]any 让调用方（及测试）能直接断言取出 retry 字段。

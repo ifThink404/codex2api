@@ -44,4 +44,7 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if got := regexp.MustCompile(`checkInitialSessionAdmission\(c\.Request\.Header, rawBody, sessionIdentity, turnHasBinding,`).FindAll(ws, -1); len(got) != 1 {
 		t.Fatalf("responses_ws.go admission call sites = %d, want 1", len(got))
 	}
+	if !regexp.MustCompile(`api\.SendErrorWithStatus\(c, failure, http\.StatusBadRequest\)`).Match(handler) {
+		t.Fatal("handler.go must reject initial-session admission failures with HTTP 400 (SendErrorWithStatus), not the default 500")
+	}
 }
