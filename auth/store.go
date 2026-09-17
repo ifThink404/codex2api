@@ -3609,6 +3609,8 @@ type Store struct {
 	sessionSlotBufferEnabled      atomic.Bool
 	sessionNoBorrowEnabled        atomic.Bool
 	sessionNoBorrowHoldNS         atomic.Int64
+	sessionBorrowed               atomic.Uint64
+	sessionBorrowHeld             atomic.Uint64
 	sessionSlotBufferNS           atomic.Int64
 	sessionSlotSequence           uint64
 	sessionSlotReservations       map[int64]map[string][]uint64
@@ -6982,6 +6984,16 @@ func (s *Store) NextForContinuationWithDispatch(key string, apiKeyID int64, excl
 // 绑定本身不存在时仍走完整挑号，与普通请求一致；TTL 过期只影响普通请求，
 // preserveBinding=true 的续链请求仍保留原账号。
 func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy) (*Account, string, SessionAffinityGuard) {
+	allowBorrow := true
+	if s != nil && s.SessionNoBorrowEnabled() {
+		allowBorrow = false
+	}
+	return s.nextForSessionWithFilterBorrow(key, apiKeyID, exclude, filter, preserveBinding, policy, allowBorrow)
+}
+
+// nextForSessionWithFilterBorrow 是带借用开关的实现。allowBorrow=false 时，绑定
+// 账号并发满不再借用其他账号而是返回 nil，由等待循环决定何时放开。
+func (s *Store) nextForSessionWithFilterBorrow(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy, allowBorrow bool) (*Account, string, SessionAffinityGuard) {
 	if s == nil {
 		return nil, "", SessionAffinityGuard{}
 	}
@@ -7047,10 +7059,15 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
+				if !allowBorrow {
+					s.sessionBorrowHeld.Add(1)
+					return nil, "", SessionAffinityGuard{}
+				}
 				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
+				s.sessionBorrowed.Add(1)
 				log.Printf("会话粘性容量溢出: 绑定账号=%d 并发满,本请求借用账号=%d(该请求预期上游缓存未命中)", binding.accountID, fallback.DBID)
 				return fallback, "", SessionAffinityGuard{preserveAccountID: binding.accountID}
 			}
@@ -7086,10 +7103,15 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
+				if !allowBorrow {
+					s.sessionBorrowHeld.Add(1)
+					return nil, "", SessionAffinityGuard{}
+				}
 				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
+				s.sessionBorrowed.Add(1)
 				log.Printf("会话粘性容量溢出: 绑定账号=%d 并发满,本请求借用账号=%d(该请求预期上游缓存未命中)", binding.accountID, fallback.DBID)
 				return fallback, "", SessionAffinityGuard{preserveAccountID: binding.accountID}
 			}
@@ -7716,6 +7738,15 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	expires := time.Now().Add(timeout)
+	waitStarted := time.Now()
+	noBorrow := !preserveBinding && s.SessionNoBorrowEnabled()
+	noBorrowHold := s.SessionNoBorrowHold()
+	var holdC <-chan time.Time
+	if noBorrow {
+		holdTimer := time.NewTimer(noBorrowHold)
+		defer holdTimer.Stop()
+		holdC = holdTimer.C
+	}
 	var heartbeatTimer *time.Timer
 	var heartbeatC <-chan time.Time
 	defer func() {
@@ -7762,6 +7793,9 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		var guard SessionAffinityGuard
 		if preserveBinding {
 			acc, proxyURL = s.NextForContinuationWithDispatch(key, apiKeyID, exclude, filter, policy)
+		} else if noBorrow {
+			// hold 期内只认绑定账号；到期后放开借用，避免把等待超时变成硬失败。
+			acc, proxyURL, guard = s.nextForSessionWithFilterBorrow(key, apiKeyID, exclude, filter, false, policy, time.Since(waitStarted) >= noBorrowHold)
 		} else {
 			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy)
 		}
@@ -7803,6 +7837,10 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 				if metrics != nil {
 					metrics.waitWakeups.Add(1)
 				}
+				break waitLoop
+			case <-holdC:
+				// hold 到期只触发一次；跳出内层 select 让外层循环立刻用 allowBorrow=true 重选一次。
+				holdC = nil
 				break waitLoop
 			case <-ctx.Done():
 				if metrics != nil {
@@ -7874,6 +7912,20 @@ func (s *Store) SessionNoBorrowHold() time.Duration {
 		return time.Duration(ns)
 	}
 	return 20 * time.Second
+}
+
+// SessionBorrowStats 进程内计数：Borrowed = 实际发生的容量溢出借用；Held = 因
+// 不借用策略被扣住（返回 nil 进入等待）的次数。
+type SessionBorrowStats struct {
+	Borrowed uint64 `json:"borrowed"`
+	Held     uint64 `json:"held"`
+}
+
+func (s *Store) SessionBorrowStats() SessionBorrowStats {
+	if s == nil {
+		return SessionBorrowStats{}
+	}
+	return SessionBorrowStats{Borrowed: s.sessionBorrowed.Load(), Held: s.sessionBorrowHeld.Load()}
 }
 
 // SetSessionSlotBufferEnabled hot-updates buffering. Disabling releases all
