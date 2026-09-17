@@ -9171,96 +9171,101 @@ type settingsResponse struct {
 	GrokOAuthClientIDEffective   string `json:"grok_oauth_client_id_effective"`
 	// Antigravity OAuth client 配置视图（嵌入展平）。
 	antigravityOAuthSettingsView
-	MaxRetries                         int                              `json:"max_retries"`
-	MaxRateLimitRetries                int                              `json:"max_rate_limit_retries"`
-	RetryIntervalMS                    int                              `json:"retry_interval_ms"`
-	TransportRetryPolicy               string                           `json:"transport_retry_policy"`
-	ContinuousRetryEnabled             bool                             `json:"continuous_retry_enabled"`
-	ContinuousRetryCatchAll            bool                             `json:"continuous_retry_catch_all"`
-	ContinuousRetryCategories          []string                         `json:"continuous_retry_categories"`
-	ContinuousRetryStatusCodes         []int                            `json:"continuous_retry_status_codes"`
-	ContinuousRetryErrorCodes          []string                         `json:"continuous_retry_error_codes"`
-	ContinuousRetryMaxDurationSeconds  int                              `json:"continuous_retry_max_duration_seconds"`
-	CodexFingerprintDefaultMode        string                           `json:"codex_fingerprint_default_mode"`
-	AllowRemoteMigration               bool                             `json:"allow_remote_migration"`
-	DatabaseDriver                     string                           `json:"database_driver"`
-	DatabaseLabel                      string                           `json:"database_label"`
-	CacheDriver                        string                           `json:"cache_driver"`
-	CacheLabel                         string                           `json:"cache_label"`
-	ExpiredCleaned                     int                              `json:"expired_cleaned,omitempty"`
-	ModelMapping                       string                           `json:"model_mapping"`
-	CodexModelMapping                  string                           `json:"codex_model_mapping"`
-	PayloadRules                       string                           `json:"payload_rules"`
-	ReasoningEffortModels              string                           `json:"reasoning_effort_models"`
-	ResinURL                           string                           `json:"resin_url"`
-	ResinPlatformName                  string                           `json:"resin_platform_name"`
+	MaxRetries                        int      `json:"max_retries"`
+	MaxRateLimitRetries               int      `json:"max_rate_limit_retries"`
+	RetryIntervalMS                   int      `json:"retry_interval_ms"`
+	TransportRetryPolicy              string   `json:"transport_retry_policy"`
+	ContinuousRetryEnabled            bool     `json:"continuous_retry_enabled"`
+	ContinuousRetryCatchAll           bool     `json:"continuous_retry_catch_all"`
+	ContinuousRetryCategories         []string `json:"continuous_retry_categories"`
+	ContinuousRetryStatusCodes        []int    `json:"continuous_retry_status_codes"`
+	ContinuousRetryErrorCodes         []string `json:"continuous_retry_error_codes"`
+	ContinuousRetryMaxDurationSeconds int      `json:"continuous_retry_max_duration_seconds"`
+	CodexFingerprintDefaultMode       string   `json:"codex_fingerprint_default_mode"`
+	AllowRemoteMigration              bool     `json:"allow_remote_migration"`
+	DatabaseDriver                    string   `json:"database_driver"`
+	DatabaseLabel                     string   `json:"database_label"`
+	CacheDriver                       string   `json:"cache_driver"`
+	CacheLabel                        string   `json:"cache_label"`
+	ExpiredCleaned                    int      `json:"expired_cleaned,omitempty"`
+	ModelMapping                      string   `json:"model_mapping"`
+	CodexModelMapping                 string   `json:"codex_model_mapping"`
+	PayloadRules                      string   `json:"payload_rules"`
+	ReasoningEffortModels             string   `json:"reasoning_effort_models"`
+	ResinURL                          string   `json:"resin_url"`
+	ResinPlatformName                 string   `json:"resin_platform_name"`
 	// CodexEgress 是后端权威的"Codex 渠道当前由谁承担出站"摘要:Resin 启用时代理池与
 	// proxy_url 对 Codex 不生效,界面据此标注,避免三套配置并存看不出谁在生效(issue #679)。
-	CodexEgress                        proxy.CodexEgressSummary         `json:"codex_egress"`
-	PromptFilterEnabled                bool                             `json:"prompt_filter_enabled"`
-	PromptFilterMode                   string                           `json:"prompt_filter_mode"`
-	PromptFilterThreshold              int                              `json:"prompt_filter_threshold"`
-	PromptFilterStrictThreshold        int                              `json:"prompt_filter_strict_threshold"`
-	PromptFilterStrictTerminalEnabled  bool                             `json:"prompt_filter_strict_terminal_enabled"`
-	PromptFilterAdvancedConfig         string                           `json:"prompt_filter_advanced_config"`
-	PromptFilterLogMatches             bool                             `json:"prompt_filter_log_matches"`
-	PromptFilterMaxTextLength          int                              `json:"prompt_filter_max_text_length"`
-	PromptFilterSensitiveWords         string                           `json:"prompt_filter_sensitive_words"`
-	PromptFilterCustomPatterns         string                           `json:"prompt_filter_custom_patterns"`
-	PromptFilterPatternQuarantines     []promptfilter.PatternQuarantine `json:"prompt_filter_pattern_quarantines,omitempty"`
-	PromptFilterDisabledPatterns       string                           `json:"prompt_filter_disabled_patterns"`
-	PromptFilterReviewEnabled          bool                             `json:"prompt_filter_review_enabled"`
-	PromptFilterReviewAPIKeyConfigured bool                             `json:"prompt_filter_review_api_key_configured"`
-	PromptFilterReviewAPIKeyCount      int                              `json:"prompt_filter_review_api_key_count"`
-	PromptFilterReviewBaseURL          string                           `json:"prompt_filter_review_base_url"`
-	PromptFilterReviewModel            string                           `json:"prompt_filter_review_model"`
-	PromptFilterReviewTimeoutSeconds   int                              `json:"prompt_filter_review_timeout_seconds"`
-	PromptFilterReviewFailClosed       bool                             `json:"prompt_filter_review_fail_closed"`
-	ClientCompatMode                   string                           `json:"client_compat_mode"`
-	CodexMinCLIVersion                 string                           `json:"codex_min_cli_version"`
-	CodexUserAgentConfig               string                           `json:"codex_user_agent_config"`
-	CodexTelemetryEnabled              bool                             `json:"codex_telemetry_enabled"`
-	CodexTelemetryTimingDebug          bool                             `json:"codex_telemetry_timing_debug"`
-	UsageLogMode                       string                           `json:"usage_log_mode"`
-	UsageLogBatchSize                  int                              `json:"usage_log_batch_size"`
-	UsageLogFlushIntervalSeconds       int                              `json:"usage_log_flush_interval_seconds"`
-	StreamFlushPolicy                  string                           `json:"stream_flush_policy"`
-	StreamFlushIntervalMS              int                              `json:"stream_flush_interval_ms"`
-	FirstTokenMode                     string                           `json:"first_token_mode"`
-	FirstTokenTimeoutSeconds           int                              `json:"first_token_timeout_seconds"`
-	BillingTierPolicy                  string                           `json:"billing_tier_policy"`
-	ModelsListReadMaxBytes             int64                            `json:"models_list_read_max_bytes"`
-	ShowFullUsageNumbers               bool                             `json:"show_full_usage_numbers"`
-	PublicKeyUsagePageEnabled          bool                             `json:"public_key_usage_page_enabled"`
-	PublicImageStudioPageEnabled       bool                             `json:"public_image_studio_page_enabled"`
-	PublicAccountPortalPageEnabled     bool                             `json:"public_account_portal_page_enabled"`
-	ImageStorageBackend                string                           `json:"image_storage_backend"`
-	ImageS3Endpoint                    string                           `json:"image_s3_endpoint"`
-	ImageS3Region                      string                           `json:"image_s3_region"`
-	ImageS3Bucket                      string                           `json:"image_s3_bucket"`
-	ImageS3AccessKey                   string                           `json:"image_s3_access_key"`
-	ImageS3SecretKey                   string                           `json:"image_s3_secret_key"`
-	ImageS3Prefix                      string                           `json:"image_s3_prefix"`
-	ImageS3ForcePathStyle              bool                             `json:"image_s3_force_path_style"`
-	AutoPause5hThreshold               float64                          `json:"auto_pause_5h_threshold"`
-	AutoPause7dThreshold               float64                          `json:"auto_pause_7d_threshold"`
-	AutoPause5hGuardBandPercent        float64                          `json:"auto_pause_5h_guard_band_percent"`
-	AutoPause5hGuardConcurrency        int                              `json:"auto_pause_5h_guard_concurrency"`
-	SmartPacingEnabled                 bool                             `json:"smart_pacing_enabled"`
-	SmartPacingMinConcurrency          int                              `json:"smart_pacing_min_concurrency"`
-	SmartPacingWindows                 string                           `json:"smart_pacing_windows"`
-	IgnoreUsageLimitStatus             bool                             `json:"ignore_usage_limit_status"`
-	ResponseCacheLocalMaxBytes         int64                            `json:"response_cache_local_max_bytes"`
-	ResponseCacheLocalMaxEntryBytes    int64                            `json:"response_cache_local_max_entry_bytes"`
-	ResponseCacheReconstructMaxBytes   int64                            `json:"response_cache_reconstruct_max_bytes"`
-	ResponseCacheWritePolicy           string                           `json:"response_cache_write_policy"`
-	ResponseCacheConfigGeneration      int64                            `json:"response_cache_config_generation"`
-	RelayModelCooldownMode             string                           `json:"relay_model_cooldown_mode"`
-	RelayModelCooldownSeconds          int                              `json:"relay_model_cooldown_seconds"`
-	RelayModelCooldownBackoffEnabled   bool                             `json:"relay_model_cooldown_backoff_enabled"`
-	OAuthModelCooldownMode             string                           `json:"oauth_model_cooldown_mode"`
-	OAuthModelCooldownSeconds          int                              `json:"oauth_model_cooldown_seconds"`
-	OAuthModelCooldownBackoffEnabled   bool                             `json:"oauth_model_cooldown_backoff_enabled"`
+	CodexEgress                         proxy.CodexEgressSummary         `json:"codex_egress"`
+	PromptFilterEnabled                 bool                             `json:"prompt_filter_enabled"`
+	PromptFilterMode                    string                           `json:"prompt_filter_mode"`
+	PromptFilterThreshold               int                              `json:"prompt_filter_threshold"`
+	PromptFilterStrictThreshold         int                              `json:"prompt_filter_strict_threshold"`
+	PromptFilterStrictTerminalEnabled   bool                             `json:"prompt_filter_strict_terminal_enabled"`
+	PromptFilterAdvancedConfig          string                           `json:"prompt_filter_advanced_config"`
+	PromptFilterLogMatches              bool                             `json:"prompt_filter_log_matches"`
+	PromptFilterMaxTextLength           int                              `json:"prompt_filter_max_text_length"`
+	PromptFilterSensitiveWords          string                           `json:"prompt_filter_sensitive_words"`
+	PromptFilterCustomPatterns          string                           `json:"prompt_filter_custom_patterns"`
+	PromptFilterPatternQuarantines      []promptfilter.PatternQuarantine `json:"prompt_filter_pattern_quarantines,omitempty"`
+	PromptFilterDisabledPatterns        string                           `json:"prompt_filter_disabled_patterns"`
+	PromptFilterReviewEnabled           bool                             `json:"prompt_filter_review_enabled"`
+	PromptFilterReviewAPIKeyConfigured  bool                             `json:"prompt_filter_review_api_key_configured"`
+	PromptFilterReviewAPIKeyCount       int                              `json:"prompt_filter_review_api_key_count"`
+	PromptFilterReviewBaseURL           string                           `json:"prompt_filter_review_base_url"`
+	PromptFilterReviewModel             string                           `json:"prompt_filter_review_model"`
+	PromptFilterReviewTimeoutSeconds    int                              `json:"prompt_filter_review_timeout_seconds"`
+	PromptFilterReviewFailClosed        bool                             `json:"prompt_filter_review_fail_closed"`
+	ClientCompatMode                    string                           `json:"client_compat_mode"`
+	CodexMinCLIVersion                  string                           `json:"codex_min_cli_version"`
+	CodexUserAgentConfig                string                           `json:"codex_user_agent_config"`
+	CodexTelemetryEnabled               bool                             `json:"codex_telemetry_enabled"`
+	CodexTelemetryTimingDebug           bool                             `json:"codex_telemetry_timing_debug"`
+	CodexTurnStateStrict                bool                             `json:"codex_turn_state_strict"`
+	CodexSessionNoBorrowEnabled         bool                             `json:"codex_session_no_borrow_enabled"`
+	CodexSessionNoBorrowHoldSeconds     int                              `json:"codex_session_no_borrow_hold_seconds"`
+	CodexInitialSessionAdmissionEnabled bool                             `json:"codex_initial_session_admission_enabled"`
+	CodexInitialSessionMaxAgeSeconds    int                              `json:"codex_initial_session_max_age_seconds"`
+	UsageLogMode                        string                           `json:"usage_log_mode"`
+	UsageLogBatchSize                   int                              `json:"usage_log_batch_size"`
+	UsageLogFlushIntervalSeconds        int                              `json:"usage_log_flush_interval_seconds"`
+	StreamFlushPolicy                   string                           `json:"stream_flush_policy"`
+	StreamFlushIntervalMS               int                              `json:"stream_flush_interval_ms"`
+	FirstTokenMode                      string                           `json:"first_token_mode"`
+	FirstTokenTimeoutSeconds            int                              `json:"first_token_timeout_seconds"`
+	BillingTierPolicy                   string                           `json:"billing_tier_policy"`
+	ModelsListReadMaxBytes              int64                            `json:"models_list_read_max_bytes"`
+	ShowFullUsageNumbers                bool                             `json:"show_full_usage_numbers"`
+	PublicKeyUsagePageEnabled           bool                             `json:"public_key_usage_page_enabled"`
+	PublicImageStudioPageEnabled        bool                             `json:"public_image_studio_page_enabled"`
+	PublicAccountPortalPageEnabled      bool                             `json:"public_account_portal_page_enabled"`
+	ImageStorageBackend                 string                           `json:"image_storage_backend"`
+	ImageS3Endpoint                     string                           `json:"image_s3_endpoint"`
+	ImageS3Region                       string                           `json:"image_s3_region"`
+	ImageS3Bucket                       string                           `json:"image_s3_bucket"`
+	ImageS3AccessKey                    string                           `json:"image_s3_access_key"`
+	ImageS3SecretKey                    string                           `json:"image_s3_secret_key"`
+	ImageS3Prefix                       string                           `json:"image_s3_prefix"`
+	ImageS3ForcePathStyle               bool                             `json:"image_s3_force_path_style"`
+	AutoPause5hThreshold                float64                          `json:"auto_pause_5h_threshold"`
+	AutoPause7dThreshold                float64                          `json:"auto_pause_7d_threshold"`
+	AutoPause5hGuardBandPercent         float64                          `json:"auto_pause_5h_guard_band_percent"`
+	AutoPause5hGuardConcurrency         int                              `json:"auto_pause_5h_guard_concurrency"`
+	SmartPacingEnabled                  bool                             `json:"smart_pacing_enabled"`
+	SmartPacingMinConcurrency           int                              `json:"smart_pacing_min_concurrency"`
+	SmartPacingWindows                  string                           `json:"smart_pacing_windows"`
+	IgnoreUsageLimitStatus              bool                             `json:"ignore_usage_limit_status"`
+	ResponseCacheLocalMaxBytes          int64                            `json:"response_cache_local_max_bytes"`
+	ResponseCacheLocalMaxEntryBytes     int64                            `json:"response_cache_local_max_entry_bytes"`
+	ResponseCacheReconstructMaxBytes    int64                            `json:"response_cache_reconstruct_max_bytes"`
+	ResponseCacheWritePolicy            string                           `json:"response_cache_write_policy"`
+	ResponseCacheConfigGeneration       int64                            `json:"response_cache_config_generation"`
+	RelayModelCooldownMode              string                           `json:"relay_model_cooldown_mode"`
+	RelayModelCooldownSeconds           int                              `json:"relay_model_cooldown_seconds"`
+	RelayModelCooldownBackoffEnabled    bool                             `json:"relay_model_cooldown_backoff_enabled"`
+	OAuthModelCooldownMode              string                           `json:"oauth_model_cooldown_mode"`
+	OAuthModelCooldownSeconds           int                              `json:"oauth_model_cooldown_seconds"`
+	OAuthModelCooldownBackoffEnabled    bool                             `json:"oauth_model_cooldown_backoff_enabled"`
 }
 
 type rawJSON = json.RawMessage
@@ -9390,6 +9395,11 @@ type updateSettingsReq struct {
 	CodexUserAgentConfig                *string                          `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled               *bool                            `json:"codex_telemetry_enabled"`
 	CodexTelemetryTimingDebug           *bool                            `json:"codex_telemetry_timing_debug"`
+	CodexTurnStateStrict                *bool                            `json:"codex_turn_state_strict"`
+	CodexSessionNoBorrowEnabled         *bool                            `json:"codex_session_no_borrow_enabled"`
+	CodexSessionNoBorrowHoldSeconds     *int                             `json:"codex_session_no_borrow_hold_seconds"`
+	CodexInitialSessionAdmissionEnabled *bool                            `json:"codex_initial_session_admission_enabled"`
+	CodexInitialSessionMaxAgeSeconds    *int                             `json:"codex_initial_session_max_age_seconds"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
@@ -10227,6 +10237,11 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
+		CodexTurnStateStrict:                runtimeCfg.CodexTurnStateStrict,
+		CodexSessionNoBorrowEnabled:         h.store.SessionNoBorrowEnabled(),
+		CodexSessionNoBorrowHoldSeconds:     int(h.store.SessionNoBorrowHold() / time.Second),
+		CodexInitialSessionAdmissionEnabled: runtimeCfg.CodexInitialSessionAdmissionEnabled,
+		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
@@ -10544,6 +10559,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	modelsListReadMaxBytes := database.DefaultModelsListReadMaxBytes
 	sessionSlotBufferEnabled := h.store.SessionSlotBufferEnabled()
 	sessionSlotBufferSeconds := database.NormalizeSessionSlotBufferSeconds(int(h.store.GetSessionSlotBuffer() / time.Second))
+	sessionNoBorrowEnabled := h.store.SessionNoBorrowEnabled()
+	sessionNoBorrowHoldSeconds := database.NormalizeSessionNoBorrowHoldSeconds(int(h.store.SessionNoBorrowHold() / time.Second))
 	existingSettings, settingsErr := h.db.GetSystemSettings(c.Request.Context())
 	if settingsErr != nil {
 		writeError(c, http.StatusInternalServerError, "读取现有设置失败："+settingsErr.Error())
@@ -10568,6 +10585,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		modelsListReadMaxBytes = database.NormalizeModelsListReadMaxBytes(existingSettings.ModelsListReadMaxBytes)
 		sessionSlotBufferEnabled = existingSettings.SessionSlotBufferEnabled
 		sessionSlotBufferSeconds = database.NormalizeSessionSlotBufferSeconds(existingSettings.SessionSlotBufferSeconds)
+		sessionNoBorrowEnabled = existingSettings.CodexSessionNoBorrowEnabled
+		sessionNoBorrowHoldSeconds = database.NormalizeSessionNoBorrowHoldSeconds(existingSettings.CodexSessionNoBorrowHoldSeconds)
 	}
 	if req.SessionSlotBufferEnabled != nil {
 		sessionSlotBufferEnabled = *req.SessionSlotBufferEnabled
@@ -10577,6 +10596,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	if req.SessionSlotBufferSeconds != nil {
 		sessionSlotBufferSeconds = database.NormalizeSessionSlotBufferSeconds(*req.SessionSlotBufferSeconds)
+	}
+	if req.CodexSessionNoBorrowEnabled != nil {
+		sessionNoBorrowEnabled = *req.CodexSessionNoBorrowEnabled
+	}
+	if req.CodexSessionNoBorrowHoldSeconds != nil {
+		sessionNoBorrowHoldSeconds = database.NormalizeSessionNoBorrowHoldSeconds(*req.CodexSessionNoBorrowHoldSeconds)
 	}
 	modelsListReadLimitChanged := false
 	if req.ModelsListReadMaxBytes != nil {
@@ -11301,6 +11326,18 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexTelemetryTimingDebug = *req.CodexTelemetryTimingDebug
 		log.Printf("设置已更新: codex_telemetry_timing_debug = %t", runtimeCfg.CodexTelemetryTimingDebug)
 	}
+	if req.CodexTurnStateStrict != nil {
+		runtimeCfg.CodexTurnStateStrict = *req.CodexTurnStateStrict
+		log.Printf("设置已更新: codex_turn_state_strict = %t", runtimeCfg.CodexTurnStateStrict)
+	}
+	if req.CodexInitialSessionAdmissionEnabled != nil {
+		runtimeCfg.CodexInitialSessionAdmissionEnabled = *req.CodexInitialSessionAdmissionEnabled
+		log.Printf("设置已更新: codex_initial_session_admission_enabled = %t", runtimeCfg.CodexInitialSessionAdmissionEnabled)
+	}
+	if req.CodexInitialSessionMaxAgeSeconds != nil {
+		runtimeCfg.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(*req.CodexInitialSessionMaxAgeSeconds)
+		log.Printf("设置已更新: codex_initial_session_max_age_seconds = %d", runtimeCfg.CodexInitialSessionMaxAgeSeconds)
+	}
 	if req.StreamFlushPolicy != nil {
 		runtimeCfg.StreamFlushPolicy = proxy.NormalizeStreamFlushPolicy(*req.StreamFlushPolicy)
 		log.Printf("设置已更新: stream_flush_policy = %s", runtimeCfg.StreamFlushPolicy)
@@ -11719,6 +11756,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
+		CodexTurnStateStrict:                runtimeCfg.CodexTurnStateStrict,
+		CodexSessionNoBorrowEnabled:         sessionNoBorrowEnabled,
+		CodexSessionNoBorrowHoldSeconds:     sessionNoBorrowHoldSeconds,
+		CodexInitialSessionAdmissionEnabled: runtimeCfg.CodexInitialSessionAdmissionEnabled,
+		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
@@ -11753,6 +11795,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		if req.SessionSlotBufferEnabled != nil || req.SessionSlotBufferSeconds != nil {
 			writeError(c, http.StatusInternalServerError, "保存会话并发槽缓冲设置失败，设置未生效")
+			return
+		}
+		if req.CodexSessionNoBorrowEnabled != nil || req.CodexSessionNoBorrowHoldSeconds != nil {
+			writeError(c, http.StatusInternalServerError, "保存不借用设置失败，设置未生效")
 			return
 		}
 		if modelCooldownUpdateRequested {
@@ -11798,6 +11844,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if req.SessionSlotBufferEnabled != nil {
 			h.store.SetSessionSlotBufferEnabled(sessionSlotBufferEnabled)
 			log.Printf("设置已更新: session_slot_buffer_enabled = %t", sessionSlotBufferEnabled)
+		}
+		if req.CodexSessionNoBorrowEnabled != nil || req.CodexSessionNoBorrowHoldSeconds != nil {
+			h.store.SetSessionNoBorrow(sessionNoBorrowEnabled, time.Duration(sessionNoBorrowHoldSeconds)*time.Second)
+			log.Printf("设置已更新: codex_session_no_borrow_enabled = %t, hold = %ds", sessionNoBorrowEnabled, sessionNoBorrowHoldSeconds)
 		}
 		if continuousRetryChanged {
 			committed, updateErr := h.db.UpdateContinuousRetryPolicy(c.Request.Context(), continuousRetryUpdate)
@@ -12071,6 +12121,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
+		CodexTurnStateStrict:                runtimeCfg.CodexTurnStateStrict,
+		CodexSessionNoBorrowEnabled:         h.store.SessionNoBorrowEnabled(),
+		CodexSessionNoBorrowHoldSeconds:     int(h.store.SessionNoBorrowHold() / time.Second),
+		CodexInitialSessionAdmissionEnabled: runtimeCfg.CodexInitialSessionAdmissionEnabled,
+		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
