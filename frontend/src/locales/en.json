@@ -2251,7 +2251,6 @@
     "lockedSessions": "Locked sessions",
     "lockedSessionsEmpty": "No auto-locked sessions",
     "unlock": "Unlock",
-    "unlocked": "Unlocked",
     "sessionPrefix": "Session prefix",
     "account": "Account",
     "error": "Error",

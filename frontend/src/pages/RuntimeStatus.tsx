@@ -45,9 +45,12 @@ export default function RuntimeStatus() {
   })
 
   const unlock = useCallback(async (id: number) => {
-    await api.deleteSessionLock(id)
-    await reloadLocks()
-    void reloadSilently()
+    try {
+      await api.deleteSessionLock(id)
+    } finally {
+      await reloadLocks()
+      void reloadSilently()
+    }
   }, [reloadLocks, reloadSilently])
 
   useEffect(() => {
@@ -201,7 +204,7 @@ export default function RuntimeStatus() {
               )}
 
               {status.session_guards && (
-                <Card>
+                <Card className="lg:col-span-2">
                   <CardContent className="space-y-3 p-4 sm:p-6">
                     <div className="flex items-center justify-between">
                       <h2 className="font-semibold">{t('runtime.lockedSessions')}</h2>

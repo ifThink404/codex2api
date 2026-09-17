@@ -447,7 +447,6 @@
     "lockedSessions": "已鎖定工作階段",
     "lockedSessionsEmpty": "暫無被自動鎖定的工作階段",
     "unlock": "解鎖",
-    "unlocked": "已解鎖",
     "sessionPrefix": "工作階段前綴",
     "account": "帳號",
     "error": "錯誤",

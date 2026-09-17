@@ -2251,7 +2251,6 @@
     "lockedSessions": "已锁定会话",
     "lockedSessionsEmpty": "暂无被自动锁定的会话",
     "unlock": "解锁",
-    "unlocked": "已解锁",
     "sessionPrefix": "会话前缀",
     "account": "账号",
     "error": "错误",

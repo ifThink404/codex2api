@@ -76,7 +76,7 @@ test('auto-lock and vault settings, locked-sessions card and copy exist', () => 
     for (const key of ['codexSessionAutoLock', 'codexSessionAutoLockDesc', 'codexSessionAutoLockThreshold', 'codexSessionAutoLockThresholdDesc', 'codexTurnStateVault', 'codexTurnStateVaultDesc']) {
       assert.equal(typeof locale.settings?.[key], 'string', `${name}.json settings.${key} missing`)
     }
-    for (const key of ['autoLock', 'lockedSessions', 'lockedSessionsEmpty', 'unlock', 'unlocked', 'sessionPrefix', 'lockedAt', 'vault']) {
+    for (const key of ['autoLock', 'lockedSessions', 'lockedSessionsEmpty', 'unlock', 'sessionPrefix', 'lockedAt', 'vault']) {
       assert.equal(typeof locale.runtime?.[key], 'string', `${name}.json runtime.${key} missing`)
     }
   }
