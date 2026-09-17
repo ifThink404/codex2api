@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/codex2api/api"
+	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -198,4 +200,27 @@ func (h *Handler) checkInitialSessionAdmission(headers http.Header, body []byte,
 		return initialSessionAdmissionError()
 	}
 	return nil
+}
+
+const initialSessionVerdictContextKey = "codex2api.initial_session.verdict"
+
+// enforceInitialSessionAdmission 选号之后调用：中转账号直接放行；同一请求只判定一次，
+// failover 换号重试沿用首次结论（年龄不会因为换号而变）。
+func (h *Handler) enforceInitialSessionAdmission(c *gin.Context, account *auth.Account, headers http.Header, body []byte, identity requestSessionIdentity, hasBinding bool, received time.Time) *api.APIError {
+	if account == nil || account.IsRelayStyle() {
+		return nil
+	}
+	if c != nil {
+		if cached, ok := c.Get(initialSessionVerdictContextKey); ok {
+			if failure, _ := cached.(*api.APIError); failure != nil {
+				return failure
+			}
+			return nil
+		}
+	}
+	failure := h.checkInitialSessionAdmission(headers, body, identity, hasBinding, received)
+	if c != nil {
+		c.Set(initialSessionVerdictContextKey, failure)
+	}
+	return failure
 }

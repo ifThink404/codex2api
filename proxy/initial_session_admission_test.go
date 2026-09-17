@@ -2,11 +2,13 @@ package proxy
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -112,5 +114,43 @@ func TestCheckInitialSessionAdmission(t *testing.T) {
 	}
 	if since.MaxAgeMillis < 3_599_000 {
 		t.Fatalf("max age must reflect the hour-old sample: %d", since.MaxAgeMillis)
+	}
+}
+
+func TestEnforceInitialSessionAdmissionSkipsRelayAndMemoizes(t *testing.T) {
+	resetSessionGuardStatsForTest()
+	setInitialAdmission(t, true, 180)
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+	h := &Handler{store: store}
+	relay := &auth.Account{DBID: 300, UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "sk"}
+	if !relay.IsRelayStyle() {
+		t.Fatal("test setup: relay account must satisfy IsRelayStyle()")
+	}
+	official := &auth.Account{DBID: 244, AccessToken: "tok"}
+	now := time.Now()
+	old := v7At(t, now.Add(-time.Hour))
+	body := []byte(`{"model":"gpt-5.5","input":[]}`)
+	newCtx := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		return c
+	}
+	if err := h.enforceInitialSessionAdmission(newCtx(), relay, codexHeaders(old), body, resolveRequestSessionIdentity(codexHeaders(old), body), false, now); err != nil {
+		t.Fatalf("relay-style account must be exempt: %v", err)
+	}
+	if _, since := sessionGuardInitialSnapshot(time.Now()); since.Samples != 0 {
+		t.Fatalf("relay exemption must not even sample: %+v", since)
+	}
+	c := newCtx()
+	first := h.enforceInitialSessionAdmission(c, official, codexHeaders(old), body, resolveRequestSessionIdentity(codexHeaders(old), body), false, now)
+	if first == nil {
+		t.Fatal("old unbound session on an official account must be rejected")
+	}
+	second := h.enforceInitialSessionAdmission(c, official, codexHeaders(old), body, resolveRequestSessionIdentity(codexHeaders(old), body), false, now)
+	if second == nil || second != first {
+		t.Fatal("second attempt on the same request must return the memoized verdict")
+	}
+	if _, since := sessionGuardInitialSnapshot(time.Now()); since.Samples != 1 {
+		t.Fatalf("memoized verdict must be sampled once: %+v", since)
 	}
 }

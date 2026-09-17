@@ -446,10 +446,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		_ = writeResponsesWSError(conn, failure)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
 	}
-	if failure := h.checkInitialSessionAdmission(c.Request.Header, rawBody, sessionIdentity, turnHasBinding, time.Now()); failure != nil {
-		_ = writeResponsesWSError(conn, failure)
-		return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
-	}
 	respCacheOwner := responseCacheOwner(apiKeyID)
 	markResponsesWSContinuationCapable(respCacheOwner, rawBody)
 	ruleIdentity := h.payloadRuleIdentity(c)
@@ -700,6 +696,11 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			deviceCfg = &DeviceProfileConfig{StabilizeDeviceProfile: false}
 		}
 		downstreamHeaders := c.Request.Header.Clone()
+		if failure := h.enforceInitialSessionAdmission(c, account, c.Request.Header, rawBody, sessionIdentity, turnHasBinding, time.Now()); failure != nil {
+			h.store.Release(account)
+			_ = writeResponsesWSError(conn, failure)
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
+		}
 
 		if lastUpstreamCancel != nil {
 			lastUpstreamCancel()
