@@ -1902,6 +1902,18 @@ export interface InitialSessionSummary {
   average_age_ms: number
 }
 
+export interface SessionLockItem {
+  id: number
+  session_id_prefix: string
+  api_key_id: number
+  account_id: number
+  account_name: string
+  error_message: string
+  threshold: number
+  source: string
+  locked_at: ISODateString
+}
+
 export interface RuntimeStatusResponse {
   updated_at: ISODateString
   status: RuntimeHealthStatus
@@ -2000,8 +2012,10 @@ export interface RuntimeStatusResponse {
     turn_state: {
       totals: { same: number; cross: number; unknown: number; stripped: number }
       accounts: Array<{ account_id: number; counters: { same: number; cross: number; unknown: number; stripped: number } }>
+      vault: { issued: number; restored: number; foreign_stripped: number }
     }
     borrow: { borrowed: number; held: number }
+    auto_lock: { enabled: boolean; threshold: number; active_locks: number; locked_total: number; unlocked_total: number; streak_entries: number }
     initial_session: {
       recent_hour: InitialSessionSummary
       since_start: InitialSessionSummary
@@ -2111,6 +2125,9 @@ export interface SystemSettings {
   codex_session_no_borrow_hold_seconds?: number
   codex_initial_session_admission_enabled?: boolean
   codex_initial_session_max_age_seconds?: number
+  codex_session_auto_lock_enabled?: boolean
+  codex_session_auto_lock_threshold?: number
+  codex_turn_state_vault_enabled?: boolean
   grok_affinity_mode?: string
   grok_probe_enabled?: boolean
   grok_probe_interval_minutes?: number

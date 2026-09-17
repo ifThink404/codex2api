@@ -119,6 +119,7 @@ import type {
   ResetCreditsDetailResponse,
   WhamDailyUsageResponse,
   RuntimeStatusResponse,
+  SessionLockItem,
   SiteBranding,
   StatsResponse,
   SystemUpdateInfo,
@@ -1063,6 +1064,8 @@ export const api = {
     request<MessageResponse>(`/prompt-filter/newapi-bindings/${apiKeyId}`, { method: 'DELETE' }),
   getOpsOverview: (signal?: AbortSignal) => request<OpsOverviewResponse>('/ops/overview', { signal }),
   getRuntimeStatus: () => request<RuntimeStatusResponse>('/runtime-status'),
+  getSessionLocks: (limit = 200) => request<{ locks: SessionLockItem[]; total: number }>(`/session-locks?limit=${limit}`),
+  deleteSessionLock: (id: number) => request<MessageResponse>(`/session-locks/${id}`, { method: 'DELETE' }),
   getSystemUpdate: () => request<SystemUpdateInfo>('/system/update', { timeoutMs: 20_000 }),
   performSystemUpdate: () =>
     // 后端下载上游二进制最长约 10 分钟,客户端给到 11 分钟兜底:既不会误伤慢下载,

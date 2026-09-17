@@ -59,3 +59,25 @@ test('runtime status renders the session guards panel with shared StatusPanel', 
     }
   }
 })
+
+test('auto-lock and vault settings, locked-sessions card and copy exist', () => {
+  for (const key of ['codex_session_auto_lock_enabled', 'codex_session_auto_lock_threshold', 'codex_turn_state_vault_enabled']) {
+    assert.ok(typesSource.includes(`${key}?:`), `types.ts lacks ${key}`)
+    assert.ok(settingsSource.includes(`${key}:`), `Settings.tsx defaults lack ${key}`)
+  }
+  assert.ok(settingsSource.includes("autoSaveBooleanField('codex_session_auto_lock_enabled'"))
+  assert.ok(settingsSource.includes('autoSaveSettingsPatch({ codex_session_auto_lock_threshold: value })'))
+  assert.ok(settingsSource.includes("autoSaveBooleanField('codex_turn_state_vault_enabled'"))
+  assert.ok(runtimeSource.includes('api.getSessionLocks'), 'locked sessions must be loaded')
+  assert.ok(runtimeSource.includes('api.deleteSessionLock('), 'unlock action missing')
+  assert.ok(runtimeSource.includes('status.session_guards.auto_lock'), 'auto-lock row missing')
+  assert.ok(typesSource.includes('export interface SessionLockItem'))
+  for (const [name, locale] of Object.entries(locales)) {
+    for (const key of ['codexSessionAutoLock', 'codexSessionAutoLockDesc', 'codexSessionAutoLockThreshold', 'codexSessionAutoLockThresholdDesc', 'codexTurnStateVault', 'codexTurnStateVaultDesc']) {
+      assert.equal(typeof locale.settings?.[key], 'string', `${name}.json settings.${key} missing`)
+    }
+    for (const key of ['autoLock', 'lockedSessions', 'lockedSessionsEmpty', 'unlock', 'unlocked', 'sessionPrefix', 'lockedAt', 'vault']) {
+      assert.equal(typeof locale.runtime?.[key], 'string', `${name}.json runtime.${key} missing`)
+    }
+  }
+})

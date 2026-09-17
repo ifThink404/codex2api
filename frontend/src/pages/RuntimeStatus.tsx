@@ -20,10 +20,11 @@ import PageHeader from '../components/PageHeader'
 import { StatTile } from '../components/StatTile'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
-import type { RuntimeCheck, RuntimeHealthStatus, RuntimeStatusResponse } from '../types'
+import type { RuntimeCheck, RuntimeHealthStatus, RuntimeStatusResponse, SessionLockItem } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 type StatusTone = 'ok' | 'degraded' | 'error'
 
@@ -35,6 +36,19 @@ export default function RuntimeStatus() {
     initialData: null,
     load: loadRuntimeStatus,
   })
+
+  const loadSessionLocks = useCallback(async () => (await api.getSessionLocks()).locks, [])
+
+  const { data: locks, reload: reloadLocks } = useDataLoader<SessionLockItem[]>({
+    initialData: [],
+    load: loadSessionLocks,
+  })
+
+  const unlock = useCallback(async (id: number) => {
+    await api.deleteSessionLock(id)
+    await reloadLocks()
+    void reloadSilently()
+  }, [reloadLocks, reloadSilently])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -178,10 +192,53 @@ export default function RuntimeStatus() {
                     [t('runtime.turnStateTotals'), formatTurnStateCounters(status.session_guards.turn_state.totals)],
                     [t('runtime.turnStateTopAccounts'), status.session_guards.turn_state.accounts.slice(0, 5).map((row) => `#${row.account_id} ${formatTurnStateCounters(row.counters)}`).join(' · ') || '-'],
                     [t('runtime.sessionBorrow'), `${t('runtime.borrowed')} ${formatNumber(status.session_guards.borrow.borrowed)} / ${t('runtime.held')} ${formatNumber(status.session_guards.borrow.held)}`],
+                    [t('runtime.vault'), `${t('runtime.vaultIssued')} ${formatNumber(status.session_guards.turn_state.vault.issued)} · ${t('runtime.vaultRestored')} ${formatNumber(status.session_guards.turn_state.vault.restored)} · ${t('runtime.vaultForeign')} ${formatNumber(status.session_guards.turn_state.vault.foreign_stripped)}`],
+                    [t('runtime.autoLock'), `${status.session_guards.auto_lock.enabled ? t('common.enabled') : t('common.disabled')} (${status.session_guards.auto_lock.threshold}) · ${t('runtime.activeLocks')} ${formatNumber(status.session_guards.auto_lock.active_locks)} · ${t('runtime.lockedTotal')} ${formatNumber(status.session_guards.auto_lock.locked_total)} · ${t('runtime.unlockedTotal')} ${formatNumber(status.session_guards.auto_lock.unlocked_total)}`],
                     [t('runtime.initialSessionRecentHour'), formatInitialSessionSummary(status.session_guards.initial_session.recent_hour, t)],
                     [t('runtime.initialSessionSinceStart'), formatInitialSessionSummary(status.session_guards.initial_session.since_start, t)],
                   ]}
                 />
+              )}
+
+              {status.session_guards && (
+                <Card>
+                  <CardContent className="space-y-3 p-4 sm:p-6">
+                    <div className="flex items-center justify-between">
+                      <h2 className="font-semibold">{t('runtime.lockedSessions')}</h2>
+                      <Button variant="outline" size="sm" onClick={() => void reloadLocks()}>{t('runtime.refreshLocks')}</Button>
+                    </div>
+                    {locks.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">{t('runtime.lockedSessionsEmpty')}</p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>{t('runtime.sessionPrefix')}</TableHead>
+                            <TableHead>API Key</TableHead>
+                            <TableHead>{t('runtime.account')}</TableHead>
+                            <TableHead>{t('runtime.error')}</TableHead>
+                            <TableHead>{t('runtime.lockedAt')}</TableHead>
+                            <TableHead />
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {locks.map((lock) => (
+                            <TableRow key={lock.id}>
+                              <TableCell className="font-mono text-xs">{lock.session_id_prefix}</TableCell>
+                              <TableCell>#{lock.api_key_id}</TableCell>
+                              <TableCell>{lock.account_name || `#${lock.account_id}`}</TableCell>
+                              <TableCell className="max-w-[320px] truncate text-xs" title={lock.error_message}>{lock.error_message || '-'}</TableCell>
+                              <TableCell className="text-xs">{new Date(lock.locked_at).toLocaleString()}</TableCell>
+                              <TableCell className="text-right">
+                                <Button variant="outline" size="sm" onClick={() => void unlock(lock.id)}>{t('runtime.unlock')}</Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </CardContent>
+                </Card>
               )}
 
               <StatusPanel

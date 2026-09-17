@@ -2152,6 +2152,9 @@ export default function Settings() {
       codex_session_no_borrow_hold_seconds: cacheNormalized.codex_session_no_borrow_hold_seconds ?? 20,
       codex_initial_session_admission_enabled: cacheNormalized.codex_initial_session_admission_enabled ?? false,
       codex_initial_session_max_age_seconds: cacheNormalized.codex_initial_session_max_age_seconds ?? 180,
+      codex_session_auto_lock_enabled: cacheNormalized.codex_session_auto_lock_enabled ?? false,
+      codex_session_auto_lock_threshold: cacheNormalized.codex_session_auto_lock_threshold ?? 3,
+      codex_turn_state_vault_enabled: cacheNormalized.codex_turn_state_vault_enabled ?? true,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
       models_list_read_max_bytes:
@@ -2239,6 +2242,9 @@ export default function Settings() {
     codex_session_no_borrow_hold_seconds: 20,
     codex_initial_session_admission_enabled: false,
     codex_initial_session_max_age_seconds: 180,
+    codex_session_auto_lock_enabled: false,
+    codex_session_auto_lock_threshold: 3,
+    codex_turn_state_vault_enabled: true,
     grok_affinity_mode: 'strict',
     grok_probe_enabled: false,
     grok_probe_interval_minutes: 30,
@@ -5566,6 +5572,33 @@ export default function Settings() {
                         value={settingsForm.codex_initial_session_max_age_seconds ?? 180}
                         onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_initial_session_max_age_seconds: value }))}
                         onValueCommit={(value) => void autoSaveSettingsPatch({ codex_initial_session_max_age_seconds: value })}
+                      />
+                    </SettingField>
+                    <SettingField label={t('settings.codexSessionAutoLock')} description={t('settings.codexSessionAutoLockDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
+                      <Switch
+                        checked={settingsForm.codex_session_auto_lock_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_session_auto_lock_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.codexSessionAutoLockThreshold')}
+                      description={t('settings.codexSessionAutoLockThresholdDesc')}
+                      className={cn(!settingsForm.codex_session_auto_lock_enabled && 'opacity-60')}
+                      channels={CHANNELS_CODEX_ONLY}
+                    >
+                      <DraftNumberInput
+                        min={1}
+                        max={10000}
+                        disabled={!settingsForm.codex_session_auto_lock_enabled}
+                        value={settingsForm.codex_session_auto_lock_threshold ?? 3}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_session_auto_lock_threshold: value }))}
+                        onValueCommit={(value) => void autoSaveSettingsPatch({ codex_session_auto_lock_threshold: value })}
+                      />
+                    </SettingField>
+                    <SettingField label={t('settings.codexTurnStateVault')} description={t('settings.codexTurnStateVaultDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
+                      <Switch
+                        checked={settingsForm.codex_turn_state_vault_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_turn_state_vault_enabled', checked)}
                       />
                     </SettingField>
                   </div>
