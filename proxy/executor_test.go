@@ -2084,3 +2084,103 @@ func TestExecuteRequestHTTPStripsTopLevelEnvelopeType(t *testing.T) {
 		t.Fatal("timed out waiting for upstream request")
 	}
 }
+
+// 白名单透传是所有上游出站头的收口（官方 executor.go、中转 passthrough、live.go 共用），
+// 也是 turn-state 替身的最后一道闸：官方路径出站前已经把替身换回真实 token，而 HTTP
+// 中转分支根本不过 applyCodexTurnStateEchoPolicy——混合账号池里失败切换/重绑到中转账号
+// 的那一轮，客户端手上的 `c2a-ts-v1.…` 会原样走到这里，送出去等于自曝网关身份。
+func TestApplyCodexAllowedForwardHeadersDropsTurnStateSubstitute(t *testing.T) {
+	resetTurnStateVaultForTest()
+	substitute := codexTurnStateSubstitutePrefix + strings.Repeat("cd", 16)
+	req, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	downstream := http.Header{
+		codexTurnStateHeader:    []string{substitute},
+		"X-Codex-Turn-Metadata": []string{"meta"},
+		"X-Client-Request-Id":   []string{"req-1"},
+	}
+	applyCodexAllowedForwardHeaders(req, downstream)
+	if got := req.Header.Get(codexTurnStateHeader); got != "" {
+		t.Fatalf("substitute forwarded upstream: %q", got)
+	}
+	if got := req.Header.Get("X-Codex-Turn-Metadata"); got != "meta" {
+		t.Fatalf("sibling allowlist headers must still be forwarded, got %q", got)
+	}
+	if got := req.Header.Get("X-Client-Request-Id"); got != "req-1" {
+		t.Fatalf("sibling allowlist headers must still be forwarded, got %q", got)
+	}
+
+	// 出站头上已经有一枚替身时也要清掉，而不是只跳过覆盖。
+	stale, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	stale.Header.Set(codexTurnStateHeader, substitute)
+	applyCodexAllowedForwardHeaders(stale, downstream)
+	if got := stale.Header.Get(codexTurnStateHeader); got != "" {
+		t.Fatalf("a substitute already on the outbound request must be dropped, got %q", got)
+	}
+
+	// 真实 token 不受影响：中转保持第一轮的透传语义。
+	real, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	applyCodexAllowedForwardHeaders(real, http.Header{codexTurnStateHeader: []string{"t-state"}})
+	if got := real.Header.Get(codexTurnStateHeader); got != "t-state" {
+		t.Fatalf("a real turn-state must still be forwarded, got %q", got)
+	}
+
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 2 {
+		t.Fatalf("dropped substitutes must be counted as foreign: %+v", v)
+	}
+}
+
+// 走完整的中转出站头构造：passthrough auto / always 都必须把替身拦下来。
+func TestApplyOpenAIResponsesRequestHeadersNeverForwardsTurnStateSubstitute(t *testing.T) {
+	resetTurnStateVaultForTest()
+	substitute := codexTurnStateSubstitutePrefix + strings.Repeat("ef", 16)
+	downstreamUA := "codex-tui/0.150.0 (Mac OS 15.5.0; arm64) xterm-256color (codex-tui; 0.150.0)"
+	for _, mode := range []string{auth.CodexPassthroughModeAuto, auth.CodexPassthroughModeAlways} {
+		account := &auth.Account{
+			DBID: 42, CodexPassthroughMode: mode,
+			UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: "https://relay.example/v1", APIKey: "relay-key",
+		}
+		if !account.IsRelayStyle() {
+			t.Fatalf("%s: fixture must be a relay-style account for this scenario", mode)
+		}
+		headers := http.Header{
+			"User-Agent":         []string{downstreamUA},
+			"Originator":         []string{"codex-tui"},
+			"Session-Id":         []string{"sess-123"},
+			codexTurnStateHeader: []string{substitute},
+		}
+		req, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest() error = %v", err)
+		}
+		applyOpenAIResponsesRequestHeaders(req, account, "relay-token", headers)
+		if got := req.Header.Get(codexTurnStateHeader); got != "" {
+			t.Fatalf("%s: relay upstream received a gateway substitute: %q", mode, got)
+		}
+		if got := req.Header.Get("Session-Id"); got != "sess-123" {
+			t.Fatalf("%s: passthrough identity must be unaffected, Session-Id = %q", mode, got)
+		}
+
+		// 同样的设置换成真实 token：第一轮语义不变，原样转发。
+		headers.Set(codexTurnStateHeader, "t-state")
+		realReq, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest() error = %v", err)
+		}
+		applyOpenAIResponsesRequestHeaders(realReq, account, "relay-token", headers)
+		if got := realReq.Header.Get(codexTurnStateHeader); got != "t-state" {
+			t.Fatalf("%s: a real turn-state must still reach the relay, got %q", mode, got)
+		}
+	}
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 2 {
+		t.Fatalf("dropped substitutes must be counted as foreign: %+v", v)
+	}
+}

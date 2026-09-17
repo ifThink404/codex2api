@@ -78,6 +78,14 @@ func newCodexTurnStateSubstitute() string {
 	return codexTurnStateSubstitutePrefix + hex.EncodeToString(raw[:])
 }
 
+// isCodexTurnStateSubstitute 判断一个 turn-state 值是不是网关自己铸造的替身。
+// 回带策略（applyCodexTurnStateEchoPolicy）与出站白名单透传
+// （applyCodexAllowedForwardHeaders）共用这一个判据：替身是网关独有的标记，
+// 换不回真实 token 时无论走哪条路都不许出网关。
+func isCodexTurnStateSubstitute(value string) bool {
+	return strings.HasPrefix(strings.TrimSpace(value), codexTurnStateSubstitutePrefix)
+}
+
 // issueCodexTurnStateSubstitute 记录真实 token 并返回替身；托管不适用该账号
 // （关闭 / relay 账号）或输入为空返回 ""，由调用方按失败关闭处理。
 func issueCodexTurnStateSubstitute(affinityKey string, account *auth.Account, real string) string {

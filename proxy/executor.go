@@ -1156,15 +1156,39 @@ func ResolveCodexOutboundClientHeadersWithDecision(account *auth.Account, apiKey
 	return resolveCodexOutboundClientHeaders(account, apiKey, deviceCfg, downstreamHeaders)
 }
 
+// applyCodexAllowedForwardHeaders 是所有上游（官方与中转）出站头的白名单透传收口，
+// 因此也是 turn-state 替身的最后一道闸：网关自造的 `c2a-ts-v1.…` 是一枚唯一、稳定、
+// 可直接归因到本网关的标记，送到任何上游都等于自曝身份。官方路径出站前已经在
+// applyCodexTurnStateEchoPolicy 里把替身换回了真实 token，所以这里只会命中换不回来的：
+// HTTP 中转分支在策略之前就返回了，混合账号池里失败切换/重绑到中转账号的那一轮，
+// 客户端手上的替身会原样走到这里。真实 token 不受影响，中转仍保持第一轮的透传语义。
 func applyCodexAllowedForwardHeaders(req *http.Request, downstreamHeaders http.Header) {
 	if req == nil || downstreamHeaders == nil {
 		return
 	}
 	for _, name := range codexAllowedForwardHeaders {
-		if value := strings.TrimSpace(downstreamHeaders.Get(name)); value != "" {
-			req.Header.Set(name, value)
+		value := strings.TrimSpace(downstreamHeaders.Get(name))
+		if value == "" {
+			continue
 		}
+		if strings.EqualFold(name, codexTurnStateHeader) && isCodexTurnStateSubstitute(value) {
+			req.Header.Del(name)
+			turnStateVaultForeign.Add(1)
+			log.Printf("[TURN-STATE] substitute dropped before upstream host=%s", upstreamHostForLog(req))
+			continue
+		}
+		req.Header.Set(name, value)
 	}
+}
+
+func upstreamHostForLog(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if req.URL != nil && req.URL.Host != "" {
+		return req.URL.Host
+	}
+	return req.Host
 }
 
 func applyAccountCustomHeaders(req *http.Request, account *auth.Account) {
