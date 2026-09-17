@@ -3491,6 +3491,10 @@ export interface UsageLog {
   first_token_ms: number
   ws_acquire_ms?: number
   reasoning_effort: string
+  // 上游响应信封里自报的模型;上游没声明时为空,历史行也为空
+  upstream_response_model?: string
+  // Codex 客户端窗口号(x-codex-window-id 的 <n> 段),非 Codex 请求为空
+  window_number?: string
   inbound_endpoint: string
   upstream_endpoint: string
   stream: boolean

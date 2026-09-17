@@ -14,6 +14,8 @@ import ModelLogo from '../components/ModelLogo'
 import Modal from '../components/Modal'
 import ColumnSettingsMenu from '../components/ColumnSettingsMenu'
 import StateShell from '../components/StateShell'
+import UsageResponseModel from '../components/UsageResponseModel'
+import { UsageWindowNumberBadge } from '../components/UsageWindowNumberBadge'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useToast } from '../hooks/useToast'
@@ -2475,6 +2477,7 @@ export default function Usage() {
                           {log.reasoning_effort ? (
                             <ReasoningEffortBadge effort={log.reasoning_effort} />
                           ) : null}
+                          <UsageWindowNumberBadge log={log} />
                           {visibleColumns.type && isFastTier(log.billing_service_tier || log.service_tier) ? (
                             <Badge
                               variant="outline"
@@ -2490,6 +2493,7 @@ export default function Usage() {
                             hasCompactionHistory={log.has_compaction_history}
                           />
                           <InternalRequestBadge log={log} />
+                          <UsageResponseModel log={log} />
                         </div>
                         {visibleColumns.time && (
                           <div className="shrink-0 whitespace-nowrap text-right text-[11px] tabular-nums text-muted-foreground">
@@ -2708,6 +2712,7 @@ export default function Usage() {
                             {log.reasoning_effort ? (
                               <ReasoningEffortBadge effort={log.reasoning_effort} />
                             ) : null}
+                            <UsageWindowNumberBadge log={log} />
                             {isImageUsageLog(log) && (
                               <ImageUsageBadge log={log} />
                             )}
@@ -2721,6 +2726,7 @@ export default function Usage() {
                                 {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
                               </Badge>
                             )}
+                            <UsageResponseModel log={log} />
                           </div>
                         </TableCell>}
                         {visibleColumns.account && <TableCell className={`${usageTableTextClass} text-muted-foreground`}>
