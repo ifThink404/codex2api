@@ -7162,7 +7162,15 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		if isGrokNativeRouteResponse(resp) {
 			downstreamFlusher, _ := c.Writer.(http.Flusher)
 			streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
-			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseTo(readCtx, c, resp, GrokProtocolChatCompletions, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher))
+			// Chat Completions 信封把模型放在顶层 model，每个 chunk 都重复一遍，
+			// 没有「终态覆盖」这回事；取到一次就够，后续 chunk 不必再解析。
+			var upstreamResponseModel string
+			observeNativeChatPayload := func(payload []byte) {
+				if upstreamResponseModel == "" {
+					upstreamResponseModel = observeUpstreamResponseModel("", payload, "")
+				}
+			}
+			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolChatCompletions, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), observeNativeChatPayload)
 			totalDuration := int(time.Since(start).Milliseconds())
 			ttftGuard.Stop()
 			resp.Body.Close()
@@ -7210,7 +7218,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel,
 				EffectiveModel: attemptLogEffectiveModel, StatusCode: outcome.logStatusCode,
 				DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint,
+				UpstreamResponseModel: upstreamResponseModel,
+				InboundEndpoint:       "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint,
 				Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 			}
 			if usage != nil {

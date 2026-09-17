@@ -32,6 +32,8 @@ test('the upstream model is highlighted only when it differs from the requested 
   assert.ok(responseModelSource.includes('log.effective_model || log.model'), 'the comparison must use the effective model first')
   assert.ok(/toLowerCase\(\)/.test(responseModelSource), 'the comparison must be case-insensitive')
   assert.ok(responseModelSource.includes('text-amber-700 dark:text-amber-300'), 'a differing model must be amber in both themes')
+  // 请求侧没有模型名时标琥珀等于报一个不存在的「被换模型」告警。
+  assert.match(responseModelSource, /!!requestedModel\s*&&/, 'amber must not fire when there is no requested model to compare against')
 })
 
 test('the window-number badge uses the shared Badge and Tooltip', () => {

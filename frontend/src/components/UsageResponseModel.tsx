@@ -14,8 +14,9 @@ export default function UsageResponseModel({ log }: { log: UsageLog }) {
   const upstreamModel = log.upstream_response_model
   if (!upstreamModel) return null
 
+  // 请求侧压根没有模型名时不标琥珀：那不是「上游换了模型」，只是没东西可比。
   const requestedModel = log.effective_model || log.model
-  const differs = upstreamModel.toLowerCase() !== (requestedModel || '').toLowerCase()
+  const differs = !!requestedModel && upstreamModel.toLowerCase() !== requestedModel.toLowerCase()
 
   return (
     <div

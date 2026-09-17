@@ -15,7 +15,7 @@ import (
 // 或协议翻译器合成的字段（那些值是网关自己造的，不是上游声明）。
 const upstreamResponseModelMaxLen = 100
 
-// upstreamResponseModelTerminalEvents 是会「覆盖」已观测值的终态事件。
+// isUpstreamResponseModelTerminalEvent 是会「覆盖」已观测值的终态事件。
 // 非终态事件按先到先得：response.created 早于一切，最能代表上游接单时的模型；
 // 终态则是上游最后的自我声明，中途换模型（如降级/回落）时以它为准。
 func isUpstreamResponseModelTerminalEvent(event string) bool {
@@ -27,11 +27,34 @@ func isUpstreamResponseModelTerminalEvent(event string) bool {
 	return false
 }
 
+// isUpstreamResponseModelEnvelopeEvent 是唯一可能携带 response 信封的事件集合。
+// 其余事件（delta / output_item.done / codex.rate_limits ...）按协议就不带
+// response.model，解析它们只是白跑。
+func isUpstreamResponseModelEnvelopeEvent(event string) bool {
+	switch event {
+	case "response.created", "response.in_progress":
+		return true
+	}
+	return isUpstreamResponseModelTerminalEvent(event)
+}
+
 // observeUpstreamResponseModel 返回观测后的模型名：current 为已累积值，payload 为
 // 一帧 SSE 事件数据或一份非流式响应体，eventType 为事件名（空则退回载荷里的 type）。
 // 任何不合规的取值都保持 current 不变，绝不返回半截或被污染的字符串。
 func observeUpstreamResponseModel(current string, payload []byte, eventType string) string {
 	if len(payload) == 0 {
+		return current
+	}
+	// SSE 读循环是全系统最热的路径：一次串流几百上千帧，其中只有信封事件带模型。
+	// 不设闸门的话每一帧都要先做一遍 ValidBytes 全量扫描，而 output_item.done 里
+	// 的 reasoning encrypted_content 动辄 20KB——成本跟着正文体积涨，跟要取的那个
+	// 模型名毫无关系。调用方没给事件名时（非流式整体 JSON）退回载荷里的 type，
+	// 两者都没有才真的解析：非流式响应体本身不带 type 字段。
+	event := strings.TrimSpace(eventType)
+	if event == "" {
+		event = strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	}
+	if event != "" && !isUpstreamResponseModelEnvelopeEvent(event) {
 		return current
 	}
 	// 先验 JSON 合法性：gjson 对残缺 JSON 也会尽力取值，截断的帧可能取出半个模型名。
@@ -44,17 +67,17 @@ func observeUpstreamResponseModel(current string, payload []byte, eventType stri
 		if value.Type != gjson.String {
 			continue
 		}
-		if model = strings.TrimSpace(value.String()); model != "" {
+		// 信封里的 response.model 被污染时继续看顶层 model：两个位置是同一个声明的
+		// 两种写法，前者不合规不等于后者也不可信，直接放弃会白丢一条可用观测。
+		if candidate := strings.TrimSpace(value.String()); validUpstreamResponseModel(candidate) {
+			model = candidate
 			break
 		}
 	}
-	if !validUpstreamResponseModel(model) {
+	if model == "" {
 		return current
 	}
-	if strings.TrimSpace(eventType) == "" {
-		eventType = gjson.GetBytes(payload, "type").String()
-	}
-	if current == "" || isUpstreamResponseModelTerminalEvent(strings.TrimSpace(eventType)) {
+	if current == "" || isUpstreamResponseModelTerminalEvent(event) {
 		return model
 	}
 	return current
