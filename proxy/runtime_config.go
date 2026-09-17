@@ -72,6 +72,12 @@ type RuntimeSettings struct {
 	CodexTelemetryEnabled bool
 	// CodexTelemetryTimingDebug 打开模拟遥测的临时计时探针（仅打日志，默认关闭）。
 	CodexTelemetryTimingDebug bool
+	// CodexTurnStateStrict 来源未知的 X-Codex-Turn-State 回带也剥离，并让上游 WS 按帧携带 token。
+	CodexTurnStateStrict bool
+	// CodexInitialSessionAdmissionEnabled 无绑定的 Codex 会话按 UUIDv7 年龄准入。
+	CodexInitialSessionAdmissionEnabled bool
+	// CodexInitialSessionMaxAgeSeconds 首次会话 ID 允许的最大年龄（秒），1..86400，默认 180。
+	CodexInitialSessionMaxAgeSeconds int
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -174,35 +180,38 @@ func init() {
 
 func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
-		ClientCompatMode:                 defaultClientCompatMode,
-		CodexMinCLIVersion:               defaultCodexMinCLIVersion,
-		CodexUserAgentConfig:             DefaultCodexUserAgentConfigJSON(),
-		CodexTelemetryEnabled:            false,
-		CodexTelemetryTimingDebug:        false,
-		StreamFlushPolicy:                defaultStreamFlushPolicy,
-		StreamFlushIntervalMS:            defaultStreamFlushIntervalMS,
-		FirstTokenMode:                   defaultFirstTokenMode,
-		FirstTokenTimeoutSec:             defaultFirstTokenTimeoutSec,
-		BillingTierPolicy:                defaultBillingTierPolicy,
-		ModelsListReadMaxBytes:           database.DefaultModelsListReadMaxBytes,
-		CodexRequestCompression:          defaultCodexRequestCompression,
-		CodexWSHideErrors:                defaultCodexWSHideErrors,
-		CodexWSSilentRetry:               defaultCodexWSSilentRetry,
-		CodexWSSilentRetries:             defaultCodexWSSilentRetries,
-		ContinuousRetryPolicy:            database.DefaultContinuousRetryPolicy(),
-		CodexWSSizeRouter:                defaultCodexWSSizeRouter,
-		CodexWSBusyMaxWaitSec:            defaultCodexWSBusyMaxWaitSec,
-		CodexWSBusyPatienceSec:           defaultCodexWSBusyPatienceSec,
-		CodexWSStatelessSlots:            defaultCodexWSStatelessSlots,
-		CodexOverloadThresholdPercent:    database.NormalizeCodexOverloadThresholdPercent(0),
-		CodexOverloadPauseMinutes:        database.NormalizeCodexOverloadPauseMinutes(0),
-		CodexOverloadWindowMinutes:       database.NormalizeCodexOverloadWindowMinutes(0),
-		CodexContinueMaxRounds:           defaultCodexContinueMaxRounds,
-		RequestIsolationMode:             defaultRequestIsolationMode(),
-		CodexCLIVersionSyncEnabled:       true,
-		CodexCLIVersionSyncIntervalHours: 12,
-		AutoResetCreditsBeforeExpiryMin:  60,
-		UTLSShutdownTimeoutMin:           database.NormalizeUTLSShutdownTimeoutMinutes(0),
+		ClientCompatMode:                    defaultClientCompatMode,
+		CodexMinCLIVersion:                  defaultCodexMinCLIVersion,
+		CodexUserAgentConfig:                DefaultCodexUserAgentConfigJSON(),
+		CodexTelemetryEnabled:               false,
+		CodexTelemetryTimingDebug:           false,
+		CodexTurnStateStrict:                false,
+		CodexInitialSessionAdmissionEnabled: false,
+		CodexInitialSessionMaxAgeSeconds:    180,
+		StreamFlushPolicy:                   defaultStreamFlushPolicy,
+		StreamFlushIntervalMS:               defaultStreamFlushIntervalMS,
+		FirstTokenMode:                      defaultFirstTokenMode,
+		FirstTokenTimeoutSec:                defaultFirstTokenTimeoutSec,
+		BillingTierPolicy:                   defaultBillingTierPolicy,
+		ModelsListReadMaxBytes:              database.DefaultModelsListReadMaxBytes,
+		CodexRequestCompression:             defaultCodexRequestCompression,
+		CodexWSHideErrors:                   defaultCodexWSHideErrors,
+		CodexWSSilentRetry:                  defaultCodexWSSilentRetry,
+		CodexWSSilentRetries:                defaultCodexWSSilentRetries,
+		ContinuousRetryPolicy:               database.DefaultContinuousRetryPolicy(),
+		CodexWSSizeRouter:                   defaultCodexWSSizeRouter,
+		CodexWSBusyMaxWaitSec:               defaultCodexWSBusyMaxWaitSec,
+		CodexWSBusyPatienceSec:              defaultCodexWSBusyPatienceSec,
+		CodexWSStatelessSlots:               defaultCodexWSStatelessSlots,
+		CodexOverloadThresholdPercent:       database.NormalizeCodexOverloadThresholdPercent(0),
+		CodexOverloadPauseMinutes:           database.NormalizeCodexOverloadPauseMinutes(0),
+		CodexOverloadWindowMinutes:          database.NormalizeCodexOverloadWindowMinutes(0),
+		CodexContinueMaxRounds:              defaultCodexContinueMaxRounds,
+		RequestIsolationMode:                defaultRequestIsolationMode(),
+		CodexCLIVersionSyncEnabled:          true,
+		CodexCLIVersionSyncIntervalHours:    12,
+		AutoResetCreditsBeforeExpiryMin:     60,
+		UTLSShutdownTimeoutMin:              database.NormalizeUTLSShutdownTimeoutMinutes(0),
 	}
 }
 
@@ -265,6 +274,7 @@ func NormalizeBillingTierPolicy(policy string) string {
 }
 
 func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
+	settings.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)
 	defaults := DefaultRuntimeSettings()
 	settings.ClientCompatMode = NormalizeClientCompatMode(settings.ClientCompatMode)
 	settings.StreamFlushPolicy = NormalizeStreamFlushPolicy(settings.StreamFlushPolicy)
@@ -345,6 +355,9 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexUserAgentConfig = settings.CodexUserAgentConfig
 		next.CodexTelemetryEnabled = settings.CodexTelemetryEnabled
 		next.CodexTelemetryTimingDebug = settings.CodexTelemetryTimingDebug
+		next.CodexTurnStateStrict = settings.CodexTurnStateStrict
+		next.CodexInitialSessionAdmissionEnabled = settings.CodexInitialSessionAdmissionEnabled
+		next.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)
 		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS
@@ -446,7 +459,6 @@ func currentFirstTokenTimeout() time.Duration {
 	}
 	return time.Duration(seconds) * time.Second
 }
-
 
 // codexContinueThinkingSettings 返回续想折叠开关与最大轮数（一次快照读取）。
 func codexContinueThinkingSettings() (bool, int) {

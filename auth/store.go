@@ -3607,6 +3607,8 @@ type Store struct {
 	sessionMu                     sync.RWMutex
 	sessionBindings               map[string]sessionAffinity
 	sessionSlotBufferEnabled      atomic.Bool
+	sessionNoBorrowEnabled        atomic.Bool
+	sessionNoBorrowHoldNS         atomic.Int64
 	sessionSlotBufferNS           atomic.Int64
 	sessionSlotSequence           uint64
 	sessionSlotReservations       map[int64]map[string][]uint64
@@ -4140,6 +4142,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.publishAccountSnapshot(nil)
 	s.sessionSlotBufferEnabled.Store(settings.SessionSlotBufferEnabled)
 	s.SetSessionSlotBuffer(time.Duration(database.NormalizeSessionSlotBufferSeconds(settings.SessionSlotBufferSeconds)) * time.Second)
+	s.SetSessionNoBorrow(settings.CodexSessionNoBorrowEnabled, time.Duration(settings.CodexSessionNoBorrowHoldSeconds)*time.Second)
 	if db != nil {
 		s.proxyPoolLoader = db.ListEnabledProxies
 		s.proxyInventoryLoader = db.ListProxies
@@ -7842,6 +7845,35 @@ func (s *Store) GetSessionSlotBuffer() time.Duration {
 
 func (s *Store) SessionSlotBufferEnabled() bool {
 	return s != nil && s.sessionSlotBufferEnabled.Load()
+}
+
+// SetSessionNoBorrow hot-updates the no-borrow policy: while enabled, a bound
+// session whose account is at concurrency waits up to hold before the capacity
+// spillover fallback is allowed. hold is normalized to 1..30s (default 20s).
+func (s *Store) SetSessionNoBorrow(enabled bool, hold time.Duration) {
+	if s == nil {
+		return
+	}
+	seconds := database.NormalizeSessionNoBorrowHoldSeconds(int(hold / time.Second))
+	s.sessionNoBorrowEnabled.Store(enabled)
+	s.sessionNoBorrowHoldNS.Store(int64(time.Duration(seconds) * time.Second))
+}
+
+func (s *Store) SessionNoBorrowEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return s.sessionNoBorrowEnabled.Load()
+}
+
+func (s *Store) SessionNoBorrowHold() time.Duration {
+	if s == nil {
+		return 20 * time.Second
+	}
+	if ns := s.sessionNoBorrowHoldNS.Load(); ns > 0 {
+		return time.Duration(ns)
+	}
+	return 20 * time.Second
 }
 
 // SetSessionSlotBufferEnabled hot-updates buffering. Disabling releases all
