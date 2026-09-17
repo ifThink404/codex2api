@@ -266,17 +266,18 @@ type opsTrafficResponse struct {
 }
 
 type runtimeStatusResponse struct {
-	UpdatedAt    string                       `json:"updated_at"`
-	Status       string                       `json:"status"`
-	Service      runtimeServiceStatusResponse `json:"service"`
-	Database     runtimeDatabaseResponse      `json:"database"`
-	Cache        runtimeCacheResponse         `json:"cache"`
-	UsageLog     runtimeUsageLogResponse      `json:"usage_log"`
-	Probes       runtimeProbesResponse        `json:"probes"`
-	Accounts     runtimeAccountsResponse      `json:"accounts"`
-	ImageStorage runtimeImageStorageResponse  `json:"image_storage"`
-	AdminAuth    runtimeAdminAuthResponse     `json:"admin_auth"`
-	Checks       []runtimeCheckResponse       `json:"checks"`
+	UpdatedAt     string                       `json:"updated_at"`
+	Status        string                       `json:"status"`
+	Service       runtimeServiceStatusResponse `json:"service"`
+	Database      runtimeDatabaseResponse      `json:"database"`
+	Cache         runtimeCacheResponse         `json:"cache"`
+	UsageLog      runtimeUsageLogResponse      `json:"usage_log"`
+	Probes        runtimeProbesResponse        `json:"probes"`
+	Accounts      runtimeAccountsResponse      `json:"accounts"`
+	ImageStorage  runtimeImageStorageResponse  `json:"image_storage"`
+	AdminAuth     runtimeAdminAuthResponse     `json:"admin_auth"`
+	SessionGuards proxy.SessionGuardStatus     `json:"session_guards"`
+	Checks        []runtimeCheckResponse       `json:"checks"`
 }
 
 type runtimeCheckResponse struct {

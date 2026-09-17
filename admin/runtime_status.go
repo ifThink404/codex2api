@@ -10,6 +10,7 @@ import (
 
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/imagestore"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
@@ -87,17 +88,18 @@ func (h *Handler) buildRuntimeStatus(ctx context.Context, r *http.Request) runti
 	}
 
 	return runtimeStatusResponse{
-		UpdatedAt:    time.Now().Format(time.RFC3339),
-		Status:       overallRuntimeStatus(checks),
-		Service:      service,
-		Database:     dbStatus,
-		Cache:        cacheStatus,
-		UsageLog:     usageLog,
-		Probes:       probes,
-		Accounts:     accounts,
-		ImageStorage: imageStorage,
-		AdminAuth:    adminAuth,
-		Checks:       checks,
+		UpdatedAt:     time.Now().Format(time.RFC3339),
+		Status:        overallRuntimeStatus(checks),
+		Service:       service,
+		Database:      dbStatus,
+		Cache:         cacheStatus,
+		UsageLog:      usageLog,
+		Probes:        probes,
+		Accounts:      accounts,
+		ImageStorage:  imageStorage,
+		AdminAuth:     adminAuth,
+		SessionGuards: proxy.SessionGuardStatusSnapshot(h.store),
+		Checks:        checks,
 	}
 }
 

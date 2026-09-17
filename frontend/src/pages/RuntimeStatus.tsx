@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Server,
   ShieldAlert,
+  ShieldCheck,
   Signal,
   Users,
 } from 'lucide-react'
@@ -166,6 +167,22 @@ export default function RuntimeStatus() {
                   [t('runtime.statusCounts'), formatStatusCounts(status.accounts.status_counts, t)],
                 ]}
               />
+
+              {status.session_guards && (
+                <StatusPanel
+                  title={t('runtime.sessionGuards')}
+                  status={status.status}
+                  icon={<ShieldCheck className="size-5" />}
+                  rows={[
+                    [t('runtime.sessionGuardsSwitches'), formatSessionGuardSwitches(status.session_guards.settings, t)],
+                    [t('runtime.turnStateTotals'), formatTurnStateCounters(status.session_guards.turn_state.totals)],
+                    [t('runtime.turnStateTopAccounts'), status.session_guards.turn_state.accounts.slice(0, 5).map((row) => `#${row.account_id} ${formatTurnStateCounters(row.counters)}`).join(' · ') || '-'],
+                    [t('runtime.sessionBorrow'), `${t('runtime.borrowed')} ${formatNumber(status.session_guards.borrow.borrowed)} / ${t('runtime.held')} ${formatNumber(status.session_guards.borrow.held)}`],
+                    [t('runtime.initialSessionRecentHour'), formatInitialSessionSummary(status.session_guards.initial_session.recent_hour, t)],
+                    [t('runtime.initialSessionSinceStart'), formatInitialSessionSummary(status.session_guards.initial_session.since_start, t)],
+                  ]}
+                />
+              )}
 
               <StatusPanel
                 title={t('runtime.imageStorage')}
@@ -370,4 +387,31 @@ function formatStatusCounts(counts: Record<string, number>, t: (key: string, opt
   return entries
     .map(([status, count]) => `${t(`status.${status}`, { defaultValue: status })}: ${count}`)
     .join(' · ')
+}
+
+function formatTurnStateCounters(c: { same: number; cross: number; unknown: number; stripped: number }): string {
+  return `same ${formatNumber(c.same)} · cross ${formatNumber(c.cross)} · unknown ${formatNumber(c.unknown)} · stripped ${formatNumber(c.stripped)}`
+}
+
+function formatSessionGuardSwitches(
+  s: { turn_state_strict: boolean; no_borrow_enabled: boolean; no_borrow_hold_seconds: number; initial_session_admission_enabled: boolean; initial_session_max_age_seconds: number },
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const on = t('common.enabled')
+  const off = t('common.disabled')
+  return [
+    `${t('runtime.turnStateStrict')}: ${s.turn_state_strict ? on : off}`,
+    `${t('runtime.noBorrow')}: ${s.no_borrow_enabled ? `${on} (${s.no_borrow_hold_seconds}s)` : off}`,
+    `${t('runtime.initialSessionAdmission')}: ${s.initial_session_admission_enabled ? `${on} (${s.initial_session_max_age_seconds}s)` : off}`,
+  ].join(' · ')
+}
+
+function formatInitialSessionSummary(
+  s: { samples: number; allowed: number; expired: number; future: number; invalid: number; max_age_ms: number; average_age_ms: number },
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (!s.samples) return t('runtime.noSamples')
+  const avg = s.average_age_ms ? `${(s.average_age_ms / 1000).toFixed(1)}s` : '-'
+  const max = s.max_age_ms ? `${(s.max_age_ms / 1000).toFixed(1)}s` : '-'
+  return `${formatNumber(s.samples)} · ${t('runtime.allowed')} ${formatNumber(s.allowed)} · ${t('runtime.expired')} ${formatNumber(s.expired)} · ${t('runtime.future')} ${formatNumber(s.future)} · ${t('runtime.invalidId')} ${formatNumber(s.invalid)} · avg ${avg} · max ${max}`
 }

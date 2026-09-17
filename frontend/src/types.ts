@@ -1892,6 +1892,16 @@ export interface RuntimeCheck {
   message: string
 }
 
+export interface InitialSessionSummary {
+  samples: number
+  allowed: number
+  expired: number
+  future: number
+  invalid: number
+  max_age_ms: number
+  average_age_ms: number
+}
+
 export interface RuntimeStatusResponse {
   updated_at: ISODateString
   status: RuntimeHealthStatus
@@ -1977,6 +1987,25 @@ export interface RuntimeStatusResponse {
     status: RuntimeHealthStatus
     source: string
     configured: boolean
+  }
+  session_guards?: {
+    started_at: ISODateString
+    settings: {
+      turn_state_strict: boolean
+      no_borrow_enabled: boolean
+      no_borrow_hold_seconds: number
+      initial_session_admission_enabled: boolean
+      initial_session_max_age_seconds: number
+    }
+    turn_state: {
+      totals: { same: number; cross: number; unknown: number; stripped: number }
+      accounts: Array<{ account_id: number; counters: { same: number; cross: number; unknown: number; stripped: number } }>
+    }
+    borrow: { borrowed: number; held: number }
+    initial_session: {
+      recent_hour: InitialSessionSummary
+      since_start: InitialSessionSummary
+    }
   }
   checks: RuntimeCheck[]
 }

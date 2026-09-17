@@ -44,3 +44,18 @@ test('session guard copy exists in every locale', () => {
     }
   }
 })
+
+const runtimeSource = readFileSync(new URL('../pages/RuntimeStatus.tsx', import.meta.url), 'utf8')
+
+test('runtime status renders the session guards panel with shared StatusPanel', () => {
+  assert.ok(runtimeSource.includes("t('runtime.sessionGuards')"), 'panel title missing')
+  assert.ok(runtimeSource.includes('status.session_guards.turn_state.totals'), 'turn-state totals row missing')
+  assert.ok(runtimeSource.includes('status.session_guards.borrow.borrowed'), 'borrow row missing')
+  assert.ok(runtimeSource.includes('status.session_guards.initial_session.recent_hour'), 'initial session row missing')
+  assert.ok(typesSource.includes('session_guards?:'), 'RuntimeStatusResponse.session_guards missing')
+  for (const [name, locale] of Object.entries(locales)) {
+    for (const key of ['sessionGuards', 'turnStateTotals', 'sessionBorrow', 'initialSessionRecentHour', 'noSamples']) {
+      assert.equal(typeof locale.runtime?.[key], 'string', `${name}.json runtime.${key} missing`)
+    }
+  }
+})
