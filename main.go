@@ -134,6 +134,8 @@ func main() {
 			SmartPacingWindows:                "5h,7d",
 			AutoResetCreditsBeforeExpiryMin:   60,
 			UTLSShutdownTimeoutMinutes:        30,
+			CodexSessionAutoLockThreshold:     3,
+			CodexTurnStateVaultEnabled:        true,
 		}
 		_ = db.UpdateSystemSettings(context.Background(), settings)
 	} else if err != nil {
@@ -186,6 +188,8 @@ func main() {
 			SmartPacingWindows:                "5h,7d",
 			AutoResetCreditsBeforeExpiryMin:   60,
 			UTLSShutdownTimeoutMinutes:        30,
+			CodexSessionAutoLockThreshold:     3,
+			CodexTurnStateVaultEnabled:        true,
 		}
 	} else {
 		log.Printf("已加载持久化业务设置: ProxyURL=%s, MaxConcurrency=%d, GlobalRPM=%d, PgMaxConns=%d, RedisPoolSize=%d",
