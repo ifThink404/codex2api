@@ -25,6 +25,9 @@ func newTurnStateTestContext(t *testing.T) (*gin.Context, *httptest.ResponseReco
 // 上游无 turn-state 时必须清除 writer 上残留的上一 failover attempt 的值,
 // 防止旧账号的 blob 粘到新账号的响应上。
 func TestRelayCodexTurnStateClearsStaleHeaderOnFailover(t *testing.T) {
+	// 中继语义本身（真实 token 透传 + 换号后清除）；托管开启时下发的是替身，
+	// 由 TestRelayCodexTurnStateResponseHeaderEmitsSubstitute 覆盖。
+	disableTurnStateVault(t)
 	affinityKey := "turn-guard-conv-stale::api-key:9"
 	t.Cleanup(func() { codexTurnStateOrigins.Delete(affinityKey) })
 
@@ -43,6 +46,7 @@ func TestRelayCodexTurnStateClearsStaleHeaderOnFailover(t *testing.T) {
 }
 
 func TestCommitResponsesStreamAttemptStagesWinningTurnStateBeforeHeadersCommit(t *testing.T) {
+	disableTurnStateVault(t)
 	affinityKey := "turn-guard-winning-header::api-key:9"
 	t.Cleanup(func() { codexTurnStateOrigins.Delete(affinityKey) })
 	c, recorder := newTurnStateTestContext(t)

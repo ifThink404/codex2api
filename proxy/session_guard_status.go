@@ -18,6 +18,7 @@ type SessionGuardSettingsStatus struct {
 type SessionGuardTurnStateStatus struct {
 	Totals   SessionGuardTurnStateCounters  `json:"totals"`
 	Accounts []SessionGuardTurnStateAccount `json:"accounts"`
+	Vault    SessionGuardVaultCounters      `json:"vault"`
 }
 
 type SessionGuardInitialStatus struct {
@@ -50,7 +51,7 @@ func SessionGuardStatusSnapshot(store *auth.Store) SessionGuardStatus {
 			InitialSessionMaxAgeSeconds:    database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds),
 			NoBorrowHoldSeconds:            20,
 		},
-		TurnState:      SessionGuardTurnStateStatus{Totals: totals, Accounts: accounts},
+		TurnState:      SessionGuardTurnStateStatus{Totals: totals, Accounts: accounts, Vault: turnStateVaultCountersSnapshot()},
 		InitialSession: SessionGuardInitialStatus{RecentHour: recent, SinceStart: since},
 	}
 	if store != nil {

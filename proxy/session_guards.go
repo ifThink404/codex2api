@@ -170,8 +170,29 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 	if token == "" || affinityKey == "" {
 		return body, turnStateEchoNone, false
 	}
-	class := h.classifyCodexTurnStateEcho(affinityKey, account)
-	strip := class == turnStateEchoCross || (class == turnStateEchoUnknown && CurrentRuntimeSettings().CodexTurnStateStrict)
+	class := turnStateEchoUnknown
+	restored := ""
+	if turnStateVaultEnabled() {
+		// 托管开启：只有本会话当前替身能换回真实值；其余（外来真实 token、旧替身）一律剥离。
+		restored, class = resolveCodexTurnStateSubstitute(affinityKey, account, token)
+		if class == turnStateEchoUnknown {
+			turnStateVaultForeign.Add(1)
+		}
+	} else {
+		class = h.classifyCodexTurnStateEcho(affinityKey, account)
+	}
+	strip := class == turnStateEchoCross || (class == turnStateEchoUnknown && (turnStateVaultEnabled() || CurrentRuntimeSettings().CodexTurnStateStrict))
+	if restored != "" && class == turnStateEchoSame {
+		if headers != nil && headers.Get(codexTurnStateHeader) != "" {
+			headers.Set(codexTurnStateHeader, restored)
+		}
+		if bodyToken != "" {
+			if updated, err := sjson.SetBytes(body, codexTurnStateBodyPath, restored); err == nil {
+				body = updated
+			}
+		}
+		turnStateVaultRestore.Add(1)
+	}
 	stripped := false
 	if strip {
 		if headers != nil && headers.Get(codexTurnStateHeader) != "" {

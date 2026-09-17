@@ -19,15 +19,32 @@ func newSessionGuardTestHandler(t *testing.T, accounts ...*auth.Account) *Handle
 	return &Handler{store: store}
 }
 
+// disableTurnStateVault 关掉 turn-state 托管（默认开）。托管开启时分类只看替身归属、
+// 真实 token 不出网关，溯源表/绑定回退那套 legacy 语义测不到，所以测这套的用例必须
+// 显式关掉它。
+func disableTurnStateVault(t *testing.T) {
+	t.Helper()
+	previous := CurrentRuntimeSettings()
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexTurnStateVaultEnabled = false; return s })
+	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
+}
+
+// setStrictTurnState 固定 legacy/strict 两态的分类语义：托管开启时 unknown 一律剥离，
+// strict 开关就看不出差别，所以一并关掉托管。
 func setStrictTurnState(t *testing.T, strict bool) {
 	t.Helper()
 	previous := CurrentRuntimeSettings()
-	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexTurnStateStrict = strict; return s })
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
+		s.CodexTurnStateStrict = strict
+		s.CodexTurnStateVaultEnabled = false
+		return s
+	})
 	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
 }
 
 func TestApplyCodexTurnStateEchoPolicyClassifiesByExactOrigin(t *testing.T) {
 	resetSessionGuardStatsForTest()
+	disableTurnStateVault(t)
 	minter := &auth.Account{DBID: 101}
 	other := &auth.Account{DBID: 202}
 	h := newSessionGuardTestHandler(t, minter, other)
@@ -58,6 +75,7 @@ func TestApplyCodexTurnStateEchoPolicyClassifiesByExactOrigin(t *testing.T) {
 
 func TestApplyCodexTurnStateEchoPolicyFallsBackToBindingThenUnknown(t *testing.T) {
 	resetSessionGuardStatsForTest()
+	disableTurnStateVault(t)
 	bound := &auth.Account{DBID: 301, AccessToken: "tok"}
 	other := &auth.Account{DBID: 302, AccessToken: "tok"}
 	h := newSessionGuardTestHandler(t, bound, other)

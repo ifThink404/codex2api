@@ -1205,6 +1205,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		// 一旦要透传给客户端就改写为可重试的 server_error。冷却/计费/日志用的
 		// terminalFailurePayload 取改写前的原始 data，不受影响。
 		clientData = sanitizeCapacityShedEventForClient(eventType, clientData)
+		clientData = h.vaultCodexTurnStateEvent(affinityKey, account, eventType, clientData)
 		ttftGuard.MarkProgress(eventType)
 		isFirstToken := isLooseFirstTokenResult(parsed)
 		if !ttftRecorded && isFirstToken {

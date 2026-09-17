@@ -246,6 +246,9 @@ func TestResponsesReconcilesEndpointEnabledDirectlyInDatabase(t *testing.T) {
 }
 
 func TestResponsesCopiesCodexTurnStateResponseHeader(t *testing.T) {
+	// 中继链路本身把上游头带到下游；托管开启时下发的是替身（见 turn_state_vault_test.go），
+	// 这里关掉托管才能断言原值。
+	disableTurnStateVault(t)
 	gin.SetMode(gin.TestMode)
 	var hits atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

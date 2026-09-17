@@ -48,6 +48,9 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 		c.Writer.Header().Del(codexTurnStateHeader)
 		return
 	}
+	if substitute := issueCodexTurnStateSubstitute(affinityKey, account, token); substitute != "" {
+		token = substitute
+	}
 	c.Header(codexTurnStateHeader, token)
 	noteCodexTurnStateProvenance(affinityKey, account)
 }
@@ -67,6 +70,9 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 	stagedHeader := false
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
+		if substitute := issueCodexTurnStateSubstitute(affinityKey, account, token); substitute != "" {
+			token = substitute
+		}
 	}
 	if c != nil && c.Writer != nil && !c.Writer.Written() {
 		stagedHeader = true

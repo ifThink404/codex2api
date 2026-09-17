@@ -68,4 +68,12 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if !regexp.MustCompile(`h\.observeSessionAutoLock\(c, input\)`).Match(handler) {
 		t.Fatal("logUsageForRequest must feed the auto-lock streaks")
 	}
+	// turn-state 托管只挂在官方 Codex 出站事件流上：HTTP 中继分支（relay 账号不铸造
+	// turn-state）不改写，所以每个文件恰好一处。
+	vaultEvent := regexp.MustCompile(`h\.vaultCodexTurnStateEvent\(affinityKey, account, eventType, `)
+	for name, src := range map[string][]byte{"handler.go": handler, "responses_ws.go": ws} {
+		if got := vaultEvent.FindAll(src, -1); len(got) != 1 {
+			t.Fatalf("%s turn-state vault event sites = %d, want 1", name, len(got))
+		}
+	}
 }

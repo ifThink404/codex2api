@@ -5349,7 +5349,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 进不了首包前静默换号/超窗压缩分支。必须写出时改写降载码。
 					shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
 						(!contentTokenSeen && !visibleBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy))
-					wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, sanitizeCapacityShedEventForClient(eventType, data), shouldDefer)
+					wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, h.vaultCodexTurnStateEvent(affinityKey, account, eventType, sanitizeCapacityShedEventForClient(eventType, data)), shouldDefer)
 					if err != nil {
 						writeErr = err
 						clientGone = true

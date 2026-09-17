@@ -1,0 +1,175 @@
+package proxy
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/codex2api/auth"
+	"github.com/tidwall/gjson"
+)
+
+func setVault(t *testing.T, on bool) {
+	t.Helper()
+	previous := CurrentRuntimeSettings()
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
+		s.CodexTurnStateVaultEnabled = on
+		s.CodexTurnStateStrict = false
+		return s
+	})
+	t.Cleanup(func() { ApplyRuntimeSettings(previous); resetTurnStateVaultForTest() })
+	resetTurnStateVaultForTest()
+}
+
+func TestTurnStateVaultIssueAndResolve(t *testing.T) {
+	setVault(t, true)
+	minter := &auth.Account{DBID: 101}
+	other := &auth.Account{DBID: 202}
+	key := "vault-1::api-key:9"
+	sub := issueCodexTurnStateSubstitute(key, minter, "real-blob")
+	if !strings.HasPrefix(sub, "c2a-ts-v1.") || len(sub) != len("c2a-ts-v1.")+32 || sub == "real-blob" {
+		t.Fatalf("substitute = %q", sub)
+	}
+	if real, class := resolveCodexTurnStateSubstitute(key, minter, sub); real != "real-blob" || class != turnStateEchoSame {
+		t.Fatalf("same-account resolve = %q %s", real, class)
+	}
+	if real, class := resolveCodexTurnStateSubstitute(key, other, sub); real != "" || class != turnStateEchoCross {
+		t.Fatalf("cross-account resolve = %q %s", real, class)
+	}
+	if real, class := resolveCodexTurnStateSubstitute(key, minter, "real-blob"); real != "" || class != turnStateEchoUnknown {
+		t.Fatalf("a real token echoed back must be treated as foreign: %q %s", real, class)
+	}
+	second := issueCodexTurnStateSubstitute(key, minter, "real-blob-2")
+	if _, class := resolveCodexTurnStateSubstitute(key, minter, sub); class != turnStateEchoUnknown {
+		t.Fatal("a previous turn's substitute must not resolve after a new mint")
+	}
+	if real, _ := resolveCodexTurnStateSubstitute(key, minter, second); real != "real-blob-2" {
+		t.Fatal("latest mint must resolve")
+	}
+	setVault(t, false)
+	if sub := issueCodexTurnStateSubstitute(key, minter, "real"); sub != "" {
+		t.Fatalf("disabled vault must not issue: %q", sub)
+	}
+}
+
+// 同一轮的真实 token 经两个载体下发（HTTP 响应头 + response.metadata 事件）时，
+// 客户端不论回带哪个载体上的替身都必须能换回真实值。
+func TestTurnStateVaultReusesSubstituteAcrossCarriersWithinTurn(t *testing.T) {
+	setVault(t, true)
+	minter := &auth.Account{DBID: 101}
+	key := "vault-carriers::api-key:9"
+	fromHeader := issueCodexTurnStateSubstitute(key, minter, "real-blob")
+	out := (&Handler{}).vaultCodexTurnStateEvent(key, minter, "response.metadata",
+		[]byte(`{"type":"response.metadata","headers":{"x-codex-turn-state":"real-blob"}}`))
+	fromEvent := gjson.GetBytes(out, "headers.x-codex-turn-state").String()
+	if fromHeader == "" || fromEvent != fromHeader {
+		t.Fatalf("one turn must use one substitute: header=%q event=%q", fromHeader, fromEvent)
+	}
+	if real, class := resolveCodexTurnStateSubstitute(key, minter, fromHeader); real != "real-blob" || class != turnStateEchoSame {
+		t.Fatalf("header substitute must survive the event carrier: %q %s", real, class)
+	}
+	if v := turnStateVaultCountersSnapshot(); v.Issued != 1 {
+		t.Fatalf("carrier reuse must not double-count mints: %+v", v)
+	}
+	if next := issueCodexTurnStateSubstitute(key, minter, "real-blob-2"); next == fromHeader {
+		t.Fatal("a new turn's token must mint a new substitute")
+	}
+}
+
+func TestTurnStateVaultExpires(t *testing.T) {
+	setVault(t, true)
+	minter := &auth.Account{DBID: 101}
+	key := "vault-exp::api-key:9"
+	sub := issueCodexTurnStateSubstitute(key, minter, "real")
+	turnStateVault.Range(func(k, v any) bool {
+		if k == key {
+			entry := v.(*turnStateVaultEntry)
+			entry.expiresAt = time.Now().Add(-time.Second)
+		}
+		return true
+	})
+	if _, class := resolveCodexTurnStateSubstitute(key, minter, sub); class != turnStateEchoUnknown {
+		t.Fatalf("expired entry must be unknown, got %s", class)
+	}
+}
+
+func TestVaultCodexTurnStateEventRewritesMetadataHeaders(t *testing.T) {
+	setVault(t, true)
+	h := &Handler{}
+	minter := &auth.Account{DBID: 101}
+	key := "vault-ev::api-key:9"
+	for _, eventType := range []string{"response.metadata", "codex.response.metadata"} {
+		data := []byte(`{"type":"` + eventType + `","headers":{"X-Codex-Turn-State":"real-blob","openai-model":"gpt-5.5"},"metadata":{"k":"v"}}`)
+		out := h.vaultCodexTurnStateEvent(key, minter, eventType, data)
+		got := gjson.GetBytes(out, "headers.X-Codex-Turn-State").String()
+		if got == "real-blob" || !strings.HasPrefix(got, "c2a-ts-v1.") {
+			t.Fatalf("%s: token not substituted: %s", eventType, out)
+		}
+		if gjson.GetBytes(out, "headers.openai-model").String() != "gpt-5.5" || gjson.GetBytes(out, "metadata.k").String() != "v" {
+			t.Fatalf("%s: sibling fields damaged: %s", eventType, out)
+		}
+		if real, class := resolveCodexTurnStateSubstitute(key, minter, got); real != "real-blob" || class != turnStateEchoSame {
+			t.Fatalf("%s: substitute must resolve: %q %s", eventType, real, class)
+		}
+	}
+	untouched := []byte(`{"type":"response.output_text.delta","delta":"hi"}`)
+	if out := h.vaultCodexTurnStateEvent(key, minter, "response.output_text.delta", untouched); string(out) != string(untouched) {
+		t.Fatal("non-metadata events must pass through unchanged")
+	}
+	noToken := []byte(`{"type":"response.metadata","headers":{"openai-model":"gpt-5.5"}}`)
+	if out := h.vaultCodexTurnStateEvent(key, minter, "response.metadata", noToken); string(out) != string(noToken) {
+		t.Fatal("metadata without a token must pass through unchanged")
+	}
+}
+
+func TestApplyCodexTurnStateEchoPolicyRestoresSubstitute(t *testing.T) {
+	setVault(t, true)
+	resetSessionGuardStatsForTest()
+	minter := &auth.Account{DBID: 101, AccessToken: "tok"}
+	other := &auth.Account{DBID: 202, AccessToken: "tok"}
+	h := newSessionGuardTestHandler(t, minter, other)
+	key := "vault-policy::api-key:9"
+	sub := issueCodexTurnStateSubstitute(key, minter, "real-blob")
+	headers := http.Header{}
+	headers.Set(codexTurnStateHeader, sub)
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+	if class != turnStateEchoSame || stripped || headers.Get(codexTurnStateHeader) != "real-blob" || gjson.GetBytes(body, "client_metadata.x-codex-turn-state").String() != "real-blob" {
+		t.Fatalf("substitute must be restored on both carriers: class=%s stripped=%v header=%q body=%s", class, stripped, headers.Get(codexTurnStateHeader), body)
+	}
+	headers.Set(codexTurnStateHeader, sub)
+	if _, class, stripped := h.applyCodexTurnStateEchoPolicy(key, other, headers, []byte(`{}`)); class != turnStateEchoCross || !stripped || headers.Get(codexTurnStateHeader) != "" {
+		t.Fatalf("cross-account substitute must be stripped: %s %v", class, stripped)
+	}
+	headers.Set(codexTurnStateHeader, "foreign-real-token")
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"foreign-real-token"}}`))
+	if class != turnStateEchoUnknown || !stripped || headers.Get(codexTurnStateHeader) != "" || gjson.GetBytes(body, "client_metadata.x-codex-turn-state").Exists() {
+		t.Fatalf("foreign token must always be stripped under the vault even with strict off: %s %v", class, stripped)
+	}
+	_, accounts := sessionGuardTurnStateSnapshot()
+	if len(accounts) == 0 {
+		t.Fatal("observations must still be counted")
+	}
+	if v := turnStateVaultCountersSnapshot(); v.Issued != 1 || v.Restored != 1 || v.ForeignStripped != 1 {
+		t.Fatalf("vault counters = %+v", v)
+	}
+}
+
+func TestRelayCodexTurnStateResponseHeaderEmitsSubstitute(t *testing.T) {
+	setVault(t, true)
+	minter := &auth.Account{DBID: 101}
+	key := "vault-relay::api-key:9"
+	t.Cleanup(func() { codexTurnStateOrigins.Delete(key) })
+	c, rec := newTurnStateTestContext(t)
+	upstream := http.Header{}
+	upstream.Set(codexTurnStateHeader, "real-blob")
+	relayCodexTurnStateResponseHeader(c, key, minter, upstream)
+	got := c.Writer.Header().Get(codexTurnStateHeader)
+	_ = rec
+	if got == "" || got == "real-blob" || !strings.HasPrefix(got, "c2a-ts-v1.") {
+		t.Fatalf("client must receive a substitute, got %q", got)
+	}
+	if real, class := resolveCodexTurnStateSubstitute(key, minter, got); real != "real-blob" || class != turnStateEchoSame {
+		t.Fatalf("relayed substitute must resolve: %q %s", real, class)
+	}
+}
