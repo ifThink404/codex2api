@@ -155,6 +155,133 @@ func TestApplyCodexTurnStateEchoPolicyRestoresSubstitute(t *testing.T) {
 	}
 }
 
+func newRelayStyleVaultAccount(t *testing.T, dbid int64) *auth.Account {
+	t.Helper()
+	account := &auth.Account{
+		DBID:         dbid,
+		UpstreamType: auth.UpstreamOpenAIResponses,
+		BaseURL:      "https://relay.example.com/v1",
+		APIKey:       "relay-key",
+	}
+	if !account.IsRelayStyle() {
+		t.Fatal("test account must be relay-style")
+	}
+	return account
+}
+
+// relay/Grok/Antigravity/Claude 账号的出站不经 applyCodexTurnStateEchoPolicy，
+// 给它们发替身等于下一轮把网关自造的值交给上游，续链会断：托管必须放行。
+func TestTurnStateVaultSkipsRelayStyleAccounts(t *testing.T) {
+	setVault(t, true)
+	resetSessionGuardStatsForTest()
+	relay := newRelayStyleVaultAccount(t, 505)
+	key := "vault-relay-style::api-key:9"
+	t.Cleanup(func() { codexTurnStateOrigins.Delete(key) })
+
+	if sub := issueCodexTurnStateSubstitute(key, relay, "real-blob"); sub != "" {
+		t.Fatalf("relay account must not mint a substitute: %q", sub)
+	}
+
+	c, _ := newTurnStateTestContext(t)
+	upstream := http.Header{}
+	upstream.Set(codexTurnStateHeader, "real-blob")
+	relayCodexTurnStateResponseHeader(c, key, relay, upstream)
+	if got := c.Writer.Header().Get(codexTurnStateHeader); got != "real-blob" {
+		t.Fatalf("relay account header = %q, want the real token passed through", got)
+	}
+
+	event := []byte(`{"type":"response.metadata","headers":{"x-codex-turn-state":"real-blob"}}`)
+	if out := (&Handler{}).vaultCodexTurnStateEvent(key, relay, "response.metadata", event); string(out) != string(event) {
+		t.Fatalf("relay account event rewritten: %s", out)
+	}
+
+	// 托管开着也按第一轮语义分类：strict 关闭时无溯源的回带原样透传。
+	h := newSessionGuardTestHandler(t, relay)
+	headers := http.Header{}
+	headers.Set(codexTurnStateHeader, "real-blob")
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy("vault-relay-unknown::api-key:9", relay, headers,
+		[]byte(`{"client_metadata":{"x-codex-turn-state":"real-blob"}}`))
+	if class != turnStateEchoUnknown || stripped || headers.Get(codexTurnStateHeader) != "real-blob" ||
+		gjson.GetBytes(body, "client_metadata.x-codex-turn-state").String() != "real-blob" {
+		t.Fatalf("relay echo must follow round-one policy: class=%s stripped=%v header=%q body=%s", class, stripped, headers.Get(codexTurnStateHeader), body)
+	}
+}
+
+// 替身铸不出来时必须失败关闭：删头/删事件字段，绝不把真实 token 交给客户端。
+func TestTurnStateVaultFailsClosedWhenIssueFails(t *testing.T) {
+	setVault(t, true)
+	previousGenerator := turnStateSubstituteGenerator
+	turnStateSubstituteGenerator = func() string { return "" }
+	t.Cleanup(func() { turnStateSubstituteGenerator = previousGenerator })
+
+	minter := &auth.Account{DBID: 101}
+	key := "vault-failclosed::api-key:9"
+	t.Cleanup(func() { codexTurnStateOrigins.Delete(key) })
+	codexTurnStateOrigins.Delete(key)
+
+	c, _ := newTurnStateTestContext(t)
+	c.Writer.Header().Set(codexTurnStateHeader, "stale-from-previous-attempt")
+	upstream := http.Header{}
+	upstream.Set(codexTurnStateHeader, "real-blob")
+	relayCodexTurnStateResponseHeader(c, key, minter, upstream)
+	if got := c.Writer.Header().Get(codexTurnStateHeader); got != "" {
+		t.Fatalf("failed mint must drop the header, got %q", got)
+	}
+	if _, ok := codexTurnStateOrigins.Load(key); ok {
+		t.Fatal("undelivered turn-state must not record provenance")
+	}
+
+	out := (&Handler{}).vaultCodexTurnStateEvent(key, minter, "response.metadata",
+		[]byte(`{"type":"response.metadata","headers":{"x-codex-turn-state":"real-blob","openai-model":"gpt-5.5"}}`))
+	if gjson.GetBytes(out, "headers.x-codex-turn-state").Exists() {
+		t.Fatalf("failed mint must drop the event field, got %s", out)
+	}
+	if gjson.GetBytes(out, "headers.openai-model").String() != "gpt-5.5" {
+		t.Fatalf("sibling headers damaged: %s", out)
+	}
+}
+
+// 无会话标识时没有键可以存真实值，托管仍然不许把真实 token 交给客户端：丢头。
+func TestTurnStateVaultDropsHeaderWithoutSessionIdentity(t *testing.T) {
+	setVault(t, true)
+	minter := &auth.Account{DBID: 101}
+	c, _ := newTurnStateTestContext(t)
+	upstream := http.Header{}
+	upstream.Set(codexTurnStateHeader, "real-blob")
+	relayCodexTurnStateResponseHeader(c, "", minter, upstream)
+	if got := c.Writer.Header().Get(codexTurnStateHeader); got != "" {
+		t.Fatalf("sessionless official request must not receive the real token, got %q", got)
+	}
+}
+
+func TestCommitResponsesStreamAttemptEmitsSubstitute(t *testing.T) {
+	setVault(t, true)
+	minter := &auth.Account{DBID: 303}
+	key := "vault-commit::api-key:9"
+	t.Cleanup(func() { codexTurnStateOrigins.Delete(key) })
+
+	c, recorder := newTurnStateTestContext(t)
+	flusher, _ := c.Writer.(http.Flusher)
+	attempt := newContinuousRetryStreamAttempt(true, c.Writer, flusher)
+	t.Cleanup(func() { _ = attempt.Close() })
+	if _, err := attempt.replay.Write([]byte("data: {\"type\":\"response.completed\"}\n\n")); err != nil {
+		t.Fatalf("buffer attempt: %v", err)
+	}
+	upstream := http.Header{}
+	upstream.Set(codexTurnStateHeader, "real-blob")
+
+	if err := (&Handler{}).commitResponsesStreamAttempt(c, attempt, key, minter, upstream); err != nil {
+		t.Fatalf("commit response attempt: %v", err)
+	}
+	got := recorder.Result().Header.Get(codexTurnStateHeader)
+	if got == "" || got == "real-blob" || !strings.HasPrefix(got, codexTurnStateSubstitutePrefix) {
+		t.Fatalf("client must receive a substitute, got %q", got)
+	}
+	if real, class := resolveCodexTurnStateSubstitute(key, minter, got); real != "real-blob" || class != turnStateEchoSame {
+		t.Fatalf("committed substitute must resolve: %q %s", real, class)
+	}
+}
+
 func TestRelayCodexTurnStateResponseHeaderEmitsSubstitute(t *testing.T) {
 	setVault(t, true)
 	minter := &auth.Account{DBID: 101}

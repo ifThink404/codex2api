@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,17 @@ func turnStateVaultCountersSnapshot() SessionGuardVaultCounters {
 
 func turnStateVaultEnabled() bool { return CurrentRuntimeSettings().CodexTurnStateVaultEnabled }
 
+// turnStateVaultAppliesTo 托管只作用于官方 Codex 账号；relay/Grok/Antigravity/Claude
+// 账号的 token 原样透传（第一轮语义）。这些账号走 Responses 的 relay 分支，出站不经
+// applyCodexTurnStateEchoPolicy，替身没人换得回去——下一轮上游会收到网关自造的值，
+// 续链直接断掉。
+func turnStateVaultAppliesTo(account *auth.Account) bool {
+	return turnStateVaultEnabled() && account != nil && account.ID() > 0 && !account.IsRelayStyle()
+}
+
+// turnStateSubstituteGenerator 是替身生成的测试接缝（crypto/rand 失败无法在测试里触发）。
+var turnStateSubstituteGenerator = newCodexTurnStateSubstitute
+
 func newCodexTurnStateSubstitute() string {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -66,10 +78,11 @@ func newCodexTurnStateSubstitute() string {
 	return codexTurnStateSubstitutePrefix + hex.EncodeToString(raw[:])
 }
 
-// issueCodexTurnStateSubstitute 记录真实 token 并返回替身；托管关闭或输入为空返回 ""。
+// issueCodexTurnStateSubstitute 记录真实 token 并返回替身；托管不适用该账号
+// （关闭 / relay 账号）或输入为空返回 ""，由调用方按失败关闭处理。
 func issueCodexTurnStateSubstitute(affinityKey string, account *auth.Account, real string) string {
 	affinityKey, real = strings.TrimSpace(affinityKey), strings.TrimSpace(real)
-	if !turnStateVaultEnabled() || affinityKey == "" || real == "" || account == nil || account.ID() <= 0 {
+	if !turnStateVaultAppliesTo(account) || affinityKey == "" || real == "" {
 		return ""
 	}
 	// 同一轮的真实 token 会经两个载体下发（HTTP 响应头 + response.metadata 事件的
@@ -82,7 +95,7 @@ func issueCodexTurnStateSubstitute(affinityKey string, account *auth.Account, re
 			return entry.substitute
 		}
 	}
-	substitute := newCodexTurnStateSubstitute()
+	substitute := turnStateSubstituteGenerator()
 	if substitute == "" {
 		return ""
 	}
@@ -121,7 +134,7 @@ func resolveCodexTurnStateSubstitute(affinityKey string, account *auth.Account, 
 // vaultCodexTurnStateEvent 改写 response.metadata / codex.response.metadata 事件里
 // headers 对象的 x-codex-turn-state（官方客户端从这里读 token），其余事件原样返回。
 func (h *Handler) vaultCodexTurnStateEvent(affinityKey string, account *auth.Account, eventType string, data []byte) []byte {
-	if !turnStateVaultEnabled() {
+	if !turnStateVaultAppliesTo(account) {
 		return data
 	}
 	switch strings.TrimSpace(eventType) {
@@ -149,6 +162,14 @@ func (h *Handler) vaultCodexTurnStateEvent(affinityKey string, account *auth.Acc
 	}
 	substitute := issueCodexTurnStateSubstitute(affinityKey, account, token)
 	if substitute == "" {
+		// 失败关闭：托管该管这个账号却没铸出替身时，宁可把字段删掉，也不能把真实
+		// token 留在给客户端的事件里。无会话标识同样丢弃，但那不是故障，不记日志。
+		if strings.TrimSpace(affinityKey) != "" {
+			log.Printf("[TURN-STATE] vault issue failed, event field dropped account=%d affinity=%s", account.ID(), hashRiskIdentity(affinityKey))
+		}
+		if pruned, err := sjson.DeleteBytes(data, "headers."+name); err == nil {
+			return pruned
+		}
 		return data
 	}
 	noteCodexTurnStateProvenance(affinityKey, account)

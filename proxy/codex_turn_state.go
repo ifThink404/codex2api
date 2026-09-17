@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -48,7 +49,19 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 		c.Writer.Header().Del(codexTurnStateHeader)
 		return
 	}
-	if substitute := issueCodexTurnStateSubstitute(affinityKey, account, token); substitute != "" {
+	if turnStateVaultAppliesTo(account) {
+		// 失败关闭：该托管却铸不出替身时不下发真实 token，也不记溯源——少一次续链，
+		// 好过把真实 blob 交到客户端手里。relay 账号不适用托管，原样透传。
+		// 无会话标识（affinityKey 为空）时同样丢弃：没有键就存不下真实值，而这种请求
+		// 本来就没有粘性路由可言，不是故障，不记日志。
+		substitute := issueCodexTurnStateSubstitute(affinityKey, account, token)
+		if substitute == "" {
+			c.Writer.Header().Del(codexTurnStateHeader)
+			if strings.TrimSpace(affinityKey) != "" {
+				log.Printf("[TURN-STATE] vault issue failed, header dropped account=%d affinity=%s", account.ID(), hashRiskIdentity(affinityKey))
+			}
+			return
+		}
 		token = substitute
 	}
 	c.Header(codexTurnStateHeader, token)
@@ -70,8 +83,12 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 	stagedHeader := false
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
-		if substitute := issueCodexTurnStateSubstitute(affinityKey, account, token); substitute != "" {
-			token = substitute
+		if token != "" && turnStateVaultAppliesTo(account) {
+			// 失败关闭：铸不出替身就当作没有 token（删头 + 不记溯源）。
+			// 无会话标识不算故障，同上不记日志。
+			if token = issueCodexTurnStateSubstitute(affinityKey, account, token); token == "" && strings.TrimSpace(affinityKey) != "" {
+				log.Printf("[TURN-STATE] vault issue failed, header dropped account=%d affinity=%s", account.ID(), hashRiskIdentity(affinityKey))
+			}
 		}
 	}
 	if c != nil && c.Writer != nil && !c.Writer.Written() {

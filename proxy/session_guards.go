@@ -172,7 +172,10 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 	}
 	class := turnStateEchoUnknown
 	restored := ""
-	if turnStateVaultEnabled() {
+	// 是否托管必须和下发侧同一判据（官方 Codex 账号才托管），否则 relay 账号会被按
+	// 替身语义剥离；relay 走 else 分支，保持第一轮的溯源分类。
+	vaultApplies := turnStateVaultAppliesTo(account)
+	if vaultApplies {
 		// 托管开启：只有本会话当前替身能换回真实值；其余（外来真实 token、旧替身）一律剥离。
 		restored, class = resolveCodexTurnStateSubstitute(affinityKey, account, token)
 		if class == turnStateEchoUnknown {
@@ -181,7 +184,7 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 	} else {
 		class = h.classifyCodexTurnStateEcho(affinityKey, account)
 	}
-	strip := class == turnStateEchoCross || (class == turnStateEchoUnknown && (turnStateVaultEnabled() || CurrentRuntimeSettings().CodexTurnStateStrict))
+	strip := class == turnStateEchoCross || (class == turnStateEchoUnknown && (vaultApplies || CurrentRuntimeSettings().CodexTurnStateStrict))
 	if restored != "" && class == turnStateEchoSame {
 		if headers != nil && headers.Get(codexTurnStateHeader) != "" {
 			headers.Set(codexTurnStateHeader, restored)
