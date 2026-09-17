@@ -9226,6 +9226,9 @@ type settingsResponse struct {
 	CodexSessionNoBorrowHoldSeconds     int                              `json:"codex_session_no_borrow_hold_seconds"`
 	CodexInitialSessionAdmissionEnabled bool                             `json:"codex_initial_session_admission_enabled"`
 	CodexInitialSessionMaxAgeSeconds    int                              `json:"codex_initial_session_max_age_seconds"`
+	CodexSessionAutoLockEnabled         bool                             `json:"codex_session_auto_lock_enabled"`
+	CodexSessionAutoLockThreshold       int                              `json:"codex_session_auto_lock_threshold"`
+	CodexTurnStateVaultEnabled          bool                             `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        string                           `json:"usage_log_mode"`
 	UsageLogBatchSize                   int                              `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        int                              `json:"usage_log_flush_interval_seconds"`
@@ -9400,6 +9403,9 @@ type updateSettingsReq struct {
 	CodexSessionNoBorrowHoldSeconds     *int                             `json:"codex_session_no_borrow_hold_seconds"`
 	CodexInitialSessionAdmissionEnabled *bool                            `json:"codex_initial_session_admission_enabled"`
 	CodexInitialSessionMaxAgeSeconds    *int                             `json:"codex_initial_session_max_age_seconds"`
+	CodexSessionAutoLockEnabled         *bool                            `json:"codex_session_auto_lock_enabled"`
+	CodexSessionAutoLockThreshold       *int                             `json:"codex_session_auto_lock_threshold"`
+	CodexTurnStateVaultEnabled          *bool                            `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
@@ -10242,6 +10248,9 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexSessionNoBorrowHoldSeconds:     int(h.store.SessionNoBorrowHold() / time.Second),
 		CodexInitialSessionAdmissionEnabled: runtimeCfg.CodexInitialSessionAdmissionEnabled,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
+		CodexSessionAutoLockEnabled:         runtimeCfg.CodexSessionAutoLockEnabled,
+		CodexSessionAutoLockThreshold:       runtimeCfg.CodexSessionAutoLockThreshold,
+		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
@@ -11338,6 +11347,18 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(*req.CodexInitialSessionMaxAgeSeconds)
 		log.Printf("设置已更新: codex_initial_session_max_age_seconds = %d", runtimeCfg.CodexInitialSessionMaxAgeSeconds)
 	}
+	if req.CodexSessionAutoLockEnabled != nil {
+		runtimeCfg.CodexSessionAutoLockEnabled = *req.CodexSessionAutoLockEnabled
+		log.Printf("设置已更新: codex_session_auto_lock_enabled = %t", runtimeCfg.CodexSessionAutoLockEnabled)
+	}
+	if req.CodexSessionAutoLockThreshold != nil {
+		runtimeCfg.CodexSessionAutoLockThreshold = database.NormalizeSessionAutoLockThreshold(*req.CodexSessionAutoLockThreshold)
+		log.Printf("设置已更新: codex_session_auto_lock_threshold = %d", runtimeCfg.CodexSessionAutoLockThreshold)
+	}
+	if req.CodexTurnStateVaultEnabled != nil {
+		runtimeCfg.CodexTurnStateVaultEnabled = *req.CodexTurnStateVaultEnabled
+		log.Printf("设置已更新: codex_turn_state_vault_enabled = %t", runtimeCfg.CodexTurnStateVaultEnabled)
+	}
 	if req.StreamFlushPolicy != nil {
 		runtimeCfg.StreamFlushPolicy = proxy.NormalizeStreamFlushPolicy(*req.StreamFlushPolicy)
 		log.Printf("设置已更新: stream_flush_policy = %s", runtimeCfg.StreamFlushPolicy)
@@ -11761,6 +11782,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexSessionNoBorrowHoldSeconds:     sessionNoBorrowHoldSeconds,
 		CodexInitialSessionAdmissionEnabled: runtimeCfg.CodexInitialSessionAdmissionEnabled,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
+		CodexSessionAutoLockEnabled:         runtimeCfg.CodexSessionAutoLockEnabled,
+		CodexSessionAutoLockThreshold:       runtimeCfg.CodexSessionAutoLockThreshold,
+		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
@@ -12126,6 +12150,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexSessionNoBorrowHoldSeconds:     int(h.store.SessionNoBorrowHold() / time.Second),
 		CodexInitialSessionAdmissionEnabled: runtimeCfg.CodexInitialSessionAdmissionEnabled,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
+		CodexSessionAutoLockEnabled:         runtimeCfg.CodexSessionAutoLockEnabled,
+		CodexSessionAutoLockThreshold:       runtimeCfg.CodexSessionAutoLockThreshold,
+		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,

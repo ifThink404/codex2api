@@ -78,6 +78,12 @@ type RuntimeSettings struct {
 	CodexInitialSessionAdmissionEnabled bool
 	// CodexInitialSessionMaxAgeSeconds 首次会话 ID 允许的最大年龄（秒），1..86400，默认 180。
 	CodexInitialSessionMaxAgeSeconds int
+	// CodexSessionAutoLockEnabled 同一会话连续最终 500 达阈值后自动锁定（默认关）。
+	CodexSessionAutoLockEnabled bool
+	// CodexSessionAutoLockThreshold 连续 500 次数阈值，1..10000，默认 3。
+	CodexSessionAutoLockThreshold int
+	// CodexTurnStateVaultEnabled 真实 X-Codex-Turn-State 留在网关，客户端只拿替身（默认开）。
+	CodexTurnStateVaultEnabled bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -188,6 +194,9 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexTurnStateStrict:                false,
 		CodexInitialSessionAdmissionEnabled: false,
 		CodexInitialSessionMaxAgeSeconds:    180,
+		CodexSessionAutoLockEnabled:         false,
+		CodexSessionAutoLockThreshold:       3,
+		CodexTurnStateVaultEnabled:          true,
 		StreamFlushPolicy:                   defaultStreamFlushPolicy,
 		StreamFlushIntervalMS:               defaultStreamFlushIntervalMS,
 		FirstTokenMode:                      defaultFirstTokenMode,
@@ -275,6 +284,7 @@ func NormalizeBillingTierPolicy(policy string) string {
 
 func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)
+	settings.CodexSessionAutoLockThreshold = database.NormalizeSessionAutoLockThreshold(settings.CodexSessionAutoLockThreshold)
 	defaults := DefaultRuntimeSettings()
 	settings.ClientCompatMode = NormalizeClientCompatMode(settings.ClientCompatMode)
 	settings.StreamFlushPolicy = NormalizeStreamFlushPolicy(settings.StreamFlushPolicy)
@@ -358,6 +368,9 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexTurnStateStrict = settings.CodexTurnStateStrict
 		next.CodexInitialSessionAdmissionEnabled = settings.CodexInitialSessionAdmissionEnabled
 		next.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)
+		next.CodexSessionAutoLockEnabled = settings.CodexSessionAutoLockEnabled
+		next.CodexSessionAutoLockThreshold = database.NormalizeSessionAutoLockThreshold(settings.CodexSessionAutoLockThreshold)
+		next.CodexTurnStateVaultEnabled = settings.CodexTurnStateVaultEnabled
 		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS

@@ -1449,6 +1449,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_session_no_borrow_hold_seconds INT DEFAULT 20;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_initial_session_admission_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_initial_session_max_age_seconds INT DEFAULT 180;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_session_auto_lock_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_session_auto_lock_threshold INT DEFAULT 3;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_turn_state_vault_enabled BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_images_main_model TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS usage_log_mode VARCHAR(20) DEFAULT 'full';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS usage_log_batch_size INT DEFAULT 200;
@@ -2388,6 +2391,9 @@ type SystemSettings struct {
 	CodexSessionNoBorrowHoldSeconds     int    // 等待多久后才允许借用，1..30，默认 20
 	CodexInitialSessionAdmissionEnabled bool   // 无绑定的 Codex 会话按 UUIDv7 年龄准入
 	CodexInitialSessionMaxAgeSeconds    int    // 首次会话 ID 最大年龄，1..86400，默认 180
+	CodexSessionAutoLockEnabled         bool   // 同一会话连续最终 500 达阈值后自动锁定
+	CodexSessionAutoLockThreshold       int    // 连续 500 次数阈值，1..10000，默认 3
+	CodexTurnStateVaultEnabled          bool   // 真实 X-Codex-Turn-State 留在网关，客户端只拿替身
 	CodexImagesMainModel                string // 空值沿用部署默认的生图文本驱动模型
 	UsageLogMode                        string
 	UsageLogBatchSize                   int
@@ -2580,6 +2586,15 @@ func NormalizeCodexInitialSessionMaxAgeSeconds(seconds int) int {
 	return seconds
 }
 
+// NormalizeSessionAutoLockThreshold bounds the consecutive-500 count that locks
+// a session (1..10000, default 3).
+func NormalizeSessionAutoLockThreshold(value int) int {
+	if value < 1 || value > 10000 {
+		return 3
+	}
+	return value
+}
+
 // NormalizeSchedulerEngine preserves the old fast_scheduler_enabled setting
 // for upgraded databases whose new scheduler_engine column is still blank.
 func NormalizeSchedulerEngine(value string, legacyFastEnabled bool) string {
@@ -2716,7 +2731,10 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(codex_session_no_borrow_enabled, false),
 		       COALESCE(codex_session_no_borrow_hold_seconds, 20),
 		       COALESCE(codex_initial_session_admission_enabled, false),
-		       COALESCE(codex_initial_session_max_age_seconds, 180)
+		       COALESCE(codex_initial_session_max_age_seconds, 180),
+		       COALESCE(codex_session_auto_lock_enabled, false),
+		       COALESCE(codex_session_auto_lock_threshold, 3),
+		       COALESCE(codex_turn_state_vault_enabled, true)
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2806,6 +2824,9 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.CodexSessionNoBorrowHoldSeconds,
 		&s.CodexInitialSessionAdmissionEnabled,
 		&s.CodexInitialSessionMaxAgeSeconds,
+		&s.CodexSessionAutoLockEnabled,
+		&s.CodexSessionAutoLockThreshold,
+		&s.CodexTurnStateVaultEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -2844,6 +2865,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s.SessionSlotBufferSeconds = NormalizeSessionSlotBufferSeconds(s.SessionSlotBufferSeconds)
 	s.CodexSessionNoBorrowHoldSeconds = NormalizeSessionNoBorrowHoldSeconds(s.CodexSessionNoBorrowHoldSeconds)
 	s.CodexInitialSessionMaxAgeSeconds = NormalizeCodexInitialSessionMaxAgeSeconds(s.CodexInitialSessionMaxAgeSeconds)
+	s.CodexSessionAutoLockThreshold = NormalizeSessionAutoLockThreshold(s.CodexSessionAutoLockThreshold)
 	s.ModelsListReadMaxBytes = NormalizeModelsListReadMaxBytes(s.ModelsListReadMaxBytes)
 	s.SchedulerEngine = NormalizeSchedulerEngine(s.SchedulerEngine, s.FastSchedulerEnabled)
 	s.FastSchedulerEnabled = s.SchedulerEngine != "legacy"
@@ -3062,9 +3084,12 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_session_no_borrow_enabled,
 					codex_session_no_borrow_hold_seconds,
 					codex_initial_session_admission_enabled,
-					codex_initial_session_max_age_seconds
+					codex_initial_session_max_age_seconds,
+					codex_session_auto_lock_enabled,
+					codex_session_auto_lock_threshold,
+					codex_turn_state_vault_enabled
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $131)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3104,10 +3129,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				prompt_filter_log_matches = EXCLUDED.prompt_filter_log_matches,
 				prompt_filter_max_text_length = EXCLUDED.prompt_filter_max_text_length,
 				prompt_filter_sensitive_words = EXCLUDED.prompt_filter_sensitive_words,
-				prompt_filter_custom_patterns = CASE WHEN $129 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
+				prompt_filter_custom_patterns = CASE WHEN $132 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
 				prompt_filter_disabled_patterns = EXCLUDED.prompt_filter_disabled_patterns,
 				prompt_filter_review_enabled = EXCLUDED.prompt_filter_review_enabled,
-				prompt_filter_review_api_key = CASE WHEN $130 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
+				prompt_filter_review_api_key = CASE WHEN $133 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
 				prompt_filter_review_base_url = EXCLUDED.prompt_filter_review_base_url,
 				prompt_filter_review_model = EXCLUDED.prompt_filter_review_model,
 				prompt_filter_review_timeout_seconds = EXCLUDED.prompt_filter_review_timeout_seconds,
@@ -3190,7 +3215,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_session_no_borrow_enabled = EXCLUDED.codex_session_no_borrow_enabled,
 					codex_session_no_borrow_hold_seconds = EXCLUDED.codex_session_no_borrow_hold_seconds,
 					codex_initial_session_admission_enabled = EXCLUDED.codex_initial_session_admission_enabled,
-					codex_initial_session_max_age_seconds = EXCLUDED.codex_initial_session_max_age_seconds
+					codex_initial_session_max_age_seconds = EXCLUDED.codex_initial_session_max_age_seconds,
+					codex_session_auto_lock_enabled = EXCLUDED.codex_session_auto_lock_enabled,
+					codex_session_auto_lock_threshold = EXCLUDED.codex_session_auto_lock_threshold,
+					codex_turn_state_vault_enabled = EXCLUDED.codex_turn_state_vault_enabled
 			`, NormalizeSiteName(s.SiteName), strings.TrimSpace(s.SiteLogo),
 		s.MaxConcurrency, s.GlobalRPM, s.TestModel, testContent, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
 		s.AutoCleanUnauthorized, s.AutoCleanRateLimited, s.AdminSecret, s.AutoCleanFullUsage, s.ProxyPoolEnabled,
@@ -3249,6 +3277,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeSessionNoBorrowHoldSeconds(s.CodexSessionNoBorrowHoldSeconds),
 		s.CodexInitialSessionAdmissionEnabled,
 		NormalizeCodexInitialSessionMaxAgeSeconds(s.CodexInitialSessionMaxAgeSeconds),
+		s.CodexSessionAutoLockEnabled,
+		NormalizeSessionAutoLockThreshold(s.CodexSessionAutoLockThreshold),
+		s.CodexTurnStateVaultEnabled,
 		s.PreservePromptFilterCustomPatterns,
 		s.PreservePromptFilterReviewAPIKey)
 	return err
