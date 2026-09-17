@@ -2,12 +2,15 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codex2api/api"
 	"github.com/codex2api/database"
@@ -27,6 +30,8 @@ const (
 	sessionAutoLockKeyContextKey = "codex2api.session_auto_lock.key"
 	sessionAutoLockStreakCap     = 50000
 	sessionAutoLockSource        = "automatic"
+	// sessionAutoLockKeyMaxRunes 是 session_key 列宽（VARCHAR(255) 按字符计）。
+	sessionAutoLockKeyMaxRunes = 255
 	// sessionAutoLockWarmupRetry 是锁表预热失败后的最小重试间隔，避免不可用的 DB
 	// 拖慢每一次请求路径上的判断。
 	sessionAutoLockWarmupRetry = 30 * time.Second
@@ -80,11 +85,27 @@ func ResetSessionAutoLockStreaks() {
 	sessionAutoLock.mu.Unlock()
 }
 
+// canonicalSessionAutoLockKey 把会话键收敛成 DB 能原样存回的形状。会话键里的会话 ID
+// 直接来自客户端（Session-Id / Conversation-Id / Idempotency-Key / prompt_cache_key），
+// 长度不设上限，而 session_key 列只有 255 字符：内存留全值、DB 留截断值的话，管理员
+// 解锁会静默失效（删掉了行、内存锁还在）、重启预热也永远对不上号，且前 255 字符相同的
+// 两个会话会在 UNIQUE 索引上撞车。超长键一律换成 SHA-256，保证内存 / DB / 预热 / 解锁
+// 看到的是同一把键。
+func canonicalSessionAutoLockKey(key string) string {
+	if utf8.RuneCountInString(key) <= sessionAutoLockKeyMaxRunes {
+		return key
+	}
+	sum := sha256.Sum256([]byte(key))
+	return "h:" + hex.EncodeToString(sum[:])
+}
+
+// rememberSessionAutoLockKey 是会话键进入自动锁定子系统的唯一入口：在这里收敛一次，
+// 计数、锁判断、落库、预热合并、管理员解锁便都用同一把键。
 func (h *Handler) rememberSessionAutoLockKey(c *gin.Context, affinityKey string) {
 	if c == nil {
 		return
 	}
-	if key := strings.TrimSpace(affinityKey); key != "" {
+	if key := canonicalSessionAutoLockKey(strings.TrimSpace(affinityKey)); key != "" {
 		c.Set(sessionAutoLockKeyContextKey, key)
 	}
 }
@@ -118,16 +139,21 @@ func (h *Handler) kickSessionAutoLockWarmup() {
 // loadSessionAutoLocks 在后台 goroutine 里跑：查询期间不持锁，查完再夺锁写入结果，
 // 避免 DB 慢/不可用时拖住任何持有 sessionAutoLock.mu 的请求路径。
 func (h *Handler) loadSessionAutoLocks() {
+	// 单飞标记用 defer 归位：查询或合并里一旦 panic，loading 留在 true 就再也没有
+	// 预热会被触发，进程直到重启为止都不认 DB 里的锁。
+	defer func() {
+		sessionAutoLock.mu.Lock()
+		sessionAutoLock.loading = false
+		sessionAutoLock.mu.Unlock()
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	keys, err := h.db.ListSessionAutoLockKeys(ctx)
-	sessionAutoLock.mu.Lock()
-	sessionAutoLock.loading = false
 	if err != nil {
-		sessionAutoLock.mu.Unlock()
 		log.Printf("[SESSION-AUTO-LOCK] 预热锁表失败: %v", err)
 		return
 	}
+	sessionAutoLock.mu.Lock()
 	for _, key := range keys {
 		if _, skip := sessionAutoLock.pendingUnlocks[key]; skip {
 			continue
@@ -144,8 +170,13 @@ func sessionAutoLockError() *api.APIError {
 }
 
 // checkSessionAutoLock 入口检查：命中锁即拒绝，与账号类型无关（计数阶段已排除中转）。
+// 键优先取 rememberSessionAutoLockKey 收敛好的那把；没有（独立调用）时就地收敛，
+// 两条路都落在 canonicalSessionAutoLockKey 的同一个结果上。
 func (h *Handler) checkSessionAutoLock(c *gin.Context, affinityKey string) *api.APIError {
-	key := strings.TrimSpace(affinityKey)
+	key := sessionAutoLockKeyFromContext(c)
+	if key == "" {
+		key = canonicalSessionAutoLockKey(strings.TrimSpace(affinityKey))
+	}
 	if key == "" {
 		return nil
 	}

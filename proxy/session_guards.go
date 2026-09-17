@@ -156,6 +156,7 @@ func (h *Handler) classifyCodexTurnStateEcho(affinityKey string, account *auth.A
 
 // applyCodexTurnStateEchoPolicy 在选号之后、出站之前调用一次（HTTP 与下游 WS 两条
 // 尝试循环都调）。cross 一律剥离头 + 体；unknown 仅 strict 剥离；same/none 不动。
+// 还有一条无条件规则：入站值带替身前缀又没换回真实 token 的，不看开关一律剥离。
 // headers 原地修改（调用方传的是本次尝试的下游头副本），body 返回可能改写后的副本。
 func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *auth.Account, headers http.Header, body []byte) ([]byte, turnStateEchoClass, bool) {
 	affinityKey = strings.TrimSpace(affinityKey)
@@ -184,7 +185,22 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 	} else {
 		class = h.classifyCodexTurnStateEcho(affinityKey, account)
 	}
-	strip := class == turnStateEchoCross || (class == turnStateEchoUnknown && (vaultApplies || CurrentRuntimeSettings().CodexTurnStateStrict))
+	// 没能换回真实值的替身绝不能出网关：`c2a-ts-v1.` 是网关自造的、唯一且可稳定识别的
+	// 标记，交给上游等于把「这个客户端在走 codex2api」直接送进风控管线——正是托管要
+	// 消除的那类信号。托管关闭（运维对比开关）、relay 账号、上一轮的死替身都会落到这里，
+	// 因此这条与 vaultApplies / strict 无关，一律剥离。
+	unresolvedSubstitute := restored == "" && (strings.HasPrefix(token, codexTurnStateSubstitutePrefix) || strings.HasPrefix(bodyToken, codexTurnStateSubstitutePrefix))
+	if unresolvedSubstitute {
+		// cross（替身属于别的账号）已经是最准确的归类，保留；其余一律记为 unknown。
+		if class != turnStateEchoCross {
+			class = turnStateEchoUnknown
+		}
+		// 托管路径上的 unknown 已经在上面计过数，这里只补托管不生效时的那部分。
+		if !vaultApplies {
+			turnStateVaultForeign.Add(1)
+		}
+	}
+	strip := unresolvedSubstitute || class == turnStateEchoCross || (class == turnStateEchoUnknown && (vaultApplies || CurrentRuntimeSettings().CodexTurnStateStrict))
 	if restored != "" && class == turnStateEchoSame {
 		if headers != nil && headers.Get(codexTurnStateHeader) != "" {
 			headers.Set(codexTurnStateHeader, restored)

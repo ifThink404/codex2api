@@ -257,3 +257,54 @@ func TestSessionIDPrefixFromAffinityKeyIsRuneSafe(t *testing.T) {
 }
 
 func c0() context.Context { return context.Background() }
+
+// 超长会话键：会话 ID 直接来自客户端（Session-Id / prompt_cache_key 都没有长度上限），
+// 而 session_key 列只有 255 字符。键一旦在内存和 DB 之间长得不一样，管理员解锁就变成
+// 静默失败（DB 行删了、内存锁还在，只能重启），重启预热也永远对不上号。
+func TestSessionAutoLockCanonicalizesOverlongKeys(t *testing.T) {
+	h, official, _ := newAutoLockTestHandler(t)
+	raw := strings.Repeat("会", 300) + "::api-key:9"
+	canonical := canonicalSessionAutoLockKey(raw)
+	if canonical == raw || !strings.HasPrefix(canonical, "h:") || len(canonical) != len("h:")+64 {
+		t.Fatalf("overlong key must collapse to a hash, got %q", canonical)
+	}
+	if got := canonicalSessionAutoLockKey(canonical); got != canonical {
+		t.Fatalf("canonicalisation must be idempotent, got %q", got)
+	}
+	if short := "thread-1::api-key:9"; canonicalSessionAutoLockKey(short) != short {
+		t.Fatal("keys inside the column width must pass through unchanged")
+	}
+	if boundary := strings.Repeat("会", 255); canonicalSessionAutoLockKey(boundary) != boundary {
+		t.Fatal("255 runes is the column width, not 255 bytes: it must pass through unchanged")
+	}
+
+	for i := 0; i < 3; i++ {
+		h.observeSessionAutoLock(autoLockTestContext(h, raw), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_is_overloaded"})
+	}
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, raw), raw); err == nil {
+		t.Fatal("an overlong key must still lock once the threshold is reached")
+	}
+	locks, err := h.db.ListSessionAutoLocks(c0(), 10)
+	if err != nil || len(locks) != 1 {
+		t.Fatalf("persisted locks = %#v err=%v", locks, err)
+	}
+	if locks[0].SessionKey != canonical {
+		t.Fatalf("persisted key = %q, want the canonical key %q (a clamped key can never round-trip)", locks[0].SessionKey, canonical)
+	}
+
+	// 重启：内存清空后由预热从 DB 读回，同一个会话必须仍然被拦住。
+	resetSessionAutoLockForTest()
+	h.loadSessionAutoLocks()
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, raw), raw); err == nil {
+		t.Fatal("the persisted lock must be re-enforced after a restart")
+	}
+
+	// 管理员解锁用的是 DB 行里的键（admin/session_locks.go），必须命中同一个内存锁。
+	h.UnlockSessionAutoLock(locks[0].SessionKey)
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, raw), raw); err != nil {
+		t.Fatalf("admin unlock must release the session: %v", err)
+	}
+	if status := sessionAutoLockSnapshot(h); status.ActiveLocks != 0 {
+		t.Fatalf("status after unlock = %+v", status)
+	}
+}

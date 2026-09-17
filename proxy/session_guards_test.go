@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,5 +151,104 @@ func TestProjectCodexTurnStateForWebsocket(t *testing.T) {
 	body, out = projectCodexTurnStateForWebsocket([]byte(`{"client_metadata":{"x-codex-turn-state":"frame"}}`), headers)
 	if out.Get(codexTurnStateHeader) != "" || gjson.GetBytes(body, "client_metadata.x-codex-turn-state").String() != "frame" {
 		t.Fatalf("existing frame token must win: header=%q body=%s", out.Get(codexTurnStateHeader), body)
+	}
+}
+
+// 网关自造的替身一旦没能换回真实 token，就绝不能出网关：`c2a-ts-v1.<32 hex>` 是一枚
+// 唯一、稳定、可直接归因到 codex2api 的标记，送到上游等于把托管要消除的那类信号亲手
+// 交进对方的风控管线。触发路径就是文档推荐的灰度动作——托管默认开着，运维为了对比把它
+// 关掉，在手的客户端下一轮照样回带替身，而溯源表仍把它判成 same、原样放行。
+func TestApplyCodexTurnStateEchoPolicyStripsUnresolvedSubstitute(t *testing.T) {
+	setVault(t, true)
+	resetSessionGuardStatsForTest()
+	minter := &auth.Account{DBID: 101, AccessToken: "tok"}
+	h := newSessionGuardTestHandler(t, minter)
+	key := "vault-dead-substitute::api-key:9"
+	t.Cleanup(func() { codexTurnStateOrigins.Delete(key) })
+	sub := issueCodexTurnStateSubstitute(key, minter, "real-blob")
+	if sub == "" {
+		t.Fatal("fixture: the vault must mint a substitute")
+	}
+
+	// 回归：本会话当前的替身仍然要换回真实值，剥离规则不能误伤活着的替身。
+	live := http.Header{}
+	live.Set(codexTurnStateHeader, sub)
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, minter, live, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+	if class != turnStateEchoSame || stripped || live.Get(codexTurnStateHeader) != "real-blob" ||
+		gjson.GetBytes(body, codexTurnStateBodyPath).String() != "real-blob" {
+		t.Fatalf("a live substitute must still be restored: class=%s stripped=%v header=%q body=%s", class, stripped, live.Get(codexTurnStateHeader), body)
+	}
+
+	// 托管关闭 + strict 关闭 + 官方账号 + 溯源命中同一账号：修复前分类是 same，原样出站。
+	setVault(t, false)
+	resetSessionGuardStatsForTest()
+	noteCodexTurnStateProvenance(key, minter)
+	if got := h.classifyCodexTurnStateEcho(key, minter); got != turnStateEchoSame {
+		t.Fatalf("fixture: provenance must classify as same (the pre-fix passthrough), got %s", got)
+	}
+
+	headers := http.Header{}
+	headers.Set(codexTurnStateHeader, sub)
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`","thread_id":"t"}}`))
+	if class != turnStateEchoUnknown || !stripped {
+		t.Fatalf("a dead substitute must be stripped with the vault off: class=%s stripped=%v", class, stripped)
+	}
+	if got := headers.Get(codexTurnStateHeader); got != "" {
+		t.Fatalf("substitute forwarded upstream in the header: %q", got)
+	}
+	if gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
+		t.Fatalf("substitute forwarded upstream in the body: %s", body)
+	}
+	if gjson.GetBytes(body, "client_metadata.thread_id").String() != "t" {
+		t.Fatalf("sibling body fields damaged: %s", body)
+	}
+
+	// 只走帧体的载体（下游 WS 的 client_metadata）同样要剥。
+	bodyOnly := http.Header{}
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(key, minter, bodyOnly, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+	if class != turnStateEchoUnknown || !stripped || gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
+		t.Fatalf("body-only substitute must be stripped: class=%s stripped=%v body=%s", class, stripped, body)
+	}
+
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 2 {
+		t.Fatalf("stripped substitutes must be counted as foreign: %+v", v)
+	}
+	if totals, _ := sessionGuardTurnStateSnapshot(); totals.Unknown != 2 || totals.Stripped != 2 {
+		t.Fatalf("observation counters = %+v", totals)
+	}
+}
+
+// relay 账号不托管（替身没人换得回去），但替身照样不能带去中转上游：同一条无条件规则。
+// 这也是评审里「strict 关闭时中转会话的死替身透传」那条延后项的根因。
+func TestApplyCodexTurnStateEchoPolicyStripsSubstituteForRelayAccount(t *testing.T) {
+	setVault(t, true)
+	resetSessionGuardStatsForTest()
+	relay := newRelayStyleVaultAccount(t, 505)
+	h := newSessionGuardTestHandler(t, relay)
+	sub := "c2a-ts-v1." + strings.Repeat("ab", 16)
+
+	for _, tc := range []struct {
+		name       string
+		key        string
+		provenance bool
+	}{
+		{name: "unknown", key: "relay-substitute-unknown::api-key:9"},
+		{name: "same", key: "relay-substitute-same::api-key:9", provenance: true},
+	} {
+		key := tc.key
+		t.Cleanup(func() { codexTurnStateOrigins.Delete(key) })
+		if tc.provenance {
+			noteCodexTurnStateProvenance(key, relay)
+		}
+		headers := http.Header{}
+		headers.Set(codexTurnStateHeader, sub)
+		body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, relay, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+		if class != turnStateEchoUnknown || !stripped || headers.Get(codexTurnStateHeader) != "" || gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
+			t.Fatalf("%s: relay upstream must never receive a substitute: class=%s stripped=%v header=%q body=%s",
+				tc.name, class, stripped, headers.Get(codexTurnStateHeader), body)
+		}
+	}
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 2 {
+		t.Fatalf("relay strips must be counted as foreign: %+v", v)
 	}
 }
