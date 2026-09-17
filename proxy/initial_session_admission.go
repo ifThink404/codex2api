@@ -204,23 +204,33 @@ func (h *Handler) checkInitialSessionAdmission(headers http.Header, body []byte,
 
 const initialSessionVerdictContextKey = "codex2api.initial_session.verdict"
 
-// enforceInitialSessionAdmission 选号之后调用：中转账号直接放行；同一请求只判定一次，
-// failover 换号重试沿用首次结论（年龄不会因为换号而变）。
+// initialSessionMemo 按 session ID 缓存的准入结论。WS 出站在同一个 gin.Context 上
+// 跑完一整条连接的多个 turn，每个 turn 都会重新解析 sessionIdentity；如果只按
+// context 记一次结论，后续 turn 换了 session ID（客户端在同一连接里重放旧 ID）
+// 会被直接放行。按 sessionID 校验命中才复用，其余情况一律重新判定并覆盖。
+type initialSessionMemo struct {
+	sessionID string
+	failure   *api.APIError
+}
+
+// enforceInitialSessionAdmission 选号之后调用：中转账号直接放行；同一 session ID
+// 在同一 gin.Context 内只判定一次，failover 换号重试沿用首次结论（年龄不会因为
+// 换号而变）。HTTP 请求一个 context 只有一个 session ID，行为等价于按请求判定一次。
 func (h *Handler) enforceInitialSessionAdmission(c *gin.Context, account *auth.Account, headers http.Header, body []byte, identity requestSessionIdentity, hasBinding bool, received time.Time) *api.APIError {
 	if account == nil || account.IsRelayStyle() {
 		return nil
 	}
+	sessionID := strings.TrimSpace(identity.explicitUpstreamID)
 	if c != nil {
 		if cached, ok := c.Get(initialSessionVerdictContextKey); ok {
-			if failure, _ := cached.(*api.APIError); failure != nil {
-				return failure
+			if memo, ok := cached.(initialSessionMemo); ok && memo.sessionID == sessionID {
+				return memo.failure
 			}
-			return nil
 		}
 	}
 	failure := h.checkInitialSessionAdmission(headers, body, identity, hasBinding, received)
 	if c != nil {
-		c.Set(initialSessionVerdictContextKey, failure)
+		c.Set(initialSessionVerdictContextKey, initialSessionMemo{sessionID: sessionID, failure: failure})
 	}
 	return failure
 }

@@ -153,4 +153,41 @@ func TestEnforceInitialSessionAdmissionSkipsRelayAndMemoizes(t *testing.T) {
 	if _, since := sessionGuardInitialSnapshot(time.Now()); since.Samples != 1 {
 		t.Fatalf("memoized verdict must be sampled once: %+v", since)
 	}
+
+	old2 := v7At(t, now.Add(-2*time.Hour))
+	third := h.enforceInitialSessionAdmission(c, official, codexHeaders(old2), body, resolveRequestSessionIdentity(codexHeaders(old2), body), false, now)
+	if third == nil {
+		t.Fatal("a different session id on the same context must be evaluated afresh, not reuse the memo, and still rejected")
+	}
+	if _, since := sessionGuardInitialSnapshot(time.Now()); since.Samples != 2 {
+		t.Fatalf("a different session id must be sampled again: %+v", since)
+	}
+
+	fresh := v7At(t, now.Add(-5*time.Second))
+	fourth := h.enforceInitialSessionAdmission(c, official, codexHeaders(fresh), body, resolveRequestSessionIdentity(codexHeaders(fresh), body), false, now)
+	if fourth != nil {
+		t.Fatalf("a fresh session id on the same context must be evaluated afresh and allowed: %v", fourth)
+	}
+	if _, since := sessionGuardInitialSnapshot(time.Now()); since.Samples != 3 {
+		t.Fatalf("fresh session id must be sampled once more: %+v", since)
+	}
+}
+
+// TestUnbindSessionAffinityClearsRejectedBinding pins the store API that
+// enforceInitialSessionAdmission's rejection cleanup relies on: releasing the
+// slot alone leaves the binding live, so a rejected attempt must also unbind.
+func TestUnbindSessionAffinityClearsRejectedBinding(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+	h := &Handler{store: store}
+	official := &auth.Account{DBID: 244, AccessToken: "tok"}
+	store.AddAccount(official)
+	key := sessionAffinityKey("thread-x", 9)
+	h.store.BindSessionAffinity(key, official, "")
+	if _, ok := h.store.SessionAffinityAccountID(key); !ok {
+		t.Fatal("setup: binding must exist before unbind")
+	}
+	h.store.UnbindSessionAffinity(key, official.ID())
+	if _, ok := h.store.SessionAffinityAccountID(key); ok {
+		t.Fatal("UnbindSessionAffinity must clear the rejected binding")
+	}
 }

@@ -47,6 +47,13 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if regexp.MustCompile(`h\.checkInitialSessionAdmission\(`).Match(handler) || regexp.MustCompile(`h\.checkInitialSessionAdmission\(`).Match(ws) {
 		t.Fatal("pre-selection admission call must be gone")
 	}
+	unbindAfterAdmission := regexp.MustCompile(`(?s)h\.enforceInitialSessionAdmission\([^\n]*\n(?:[^\n]*\n){0,5}?[^\n]*h\.store\.UnbindSessionAffinity\(affinityKey, account\.ID\(\)\)`)
+	if got := unbindAfterAdmission.FindAll(handler, -1); len(got) != 1 {
+		t.Fatalf("handler.go admission-rejection cleanup must unbind the session affinity exactly once, got %d", len(got))
+	}
+	if got := unbindAfterAdmission.FindAll(ws, -1); len(got) != 1 {
+		t.Fatalf("responses_ws.go admission-rejection cleanup must unbind the session affinity exactly once, got %d", len(got))
+	}
 	if !regexp.MustCompile(`api\.SendErrorWithStatus\(c, failure, http\.StatusBadRequest\)`).Match(handler) {
 		t.Fatal("handler.go must reject initial-session admission failures with HTTP 400 (SendErrorWithStatus), not the default 500")
 	}

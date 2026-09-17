@@ -698,6 +698,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		downstreamHeaders := c.Request.Header.Clone()
 		if failure := h.enforceInitialSessionAdmission(c, account, c.Request.Header, rawBody, sessionIdentity, turnHasBinding, time.Now()); failure != nil {
 			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			_ = writeResponsesWSError(conn, failure)
 			return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
 		}

@@ -4908,6 +4908,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 		if failure := h.enforceInitialSessionAdmission(c, account, c.Request.Header, rawBody, sessionIdentity, turnHasBinding, handlerStart); failure != nil {
 			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			// codex_session_identity_unavailable 不在 api.HTTPStatusCode 的显式分支里，显式给 400。
 			api.SendErrorWithStatus(c, failure, http.StatusBadRequest)
 			return
