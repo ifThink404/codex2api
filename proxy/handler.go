@@ -3889,6 +3889,13 @@ func (h *Handler) Responses(c *gin.Context) {
 	affinityKey := sessionAffinityKey(sessionIdentity.affinityID, apiKeyID)
 	turnContinuation := codexTurnContinuationToken(c.Request.Header, rawBody) != ""
 	_, turnHasBinding := h.store.SessionAffinityAccountID(affinityKey)
+	if failure := h.checkInitialSessionAdmission(c.Request.Header, rawBody, sessionIdentity, turnHasBinding, handlerStart); failure != nil {
+		// codex_session_identity_unavailable 不在 api.HTTPStatusCode 的显式分支里，
+		// 走普通 SendError 会落到 default 的 500；这里和仓库里其它临时 ErrorCode
+		// (prompt_blocked、compaction_provenance_conflict 等) 一样显式给 400。
+		api.SendErrorWithStatus(c, failure, http.StatusBadRequest)
+		return
+	}
 	turnContinuationPinned := turnContinuation && turnHasBinding
 	ruleIdentity := h.payloadRuleIdentity(c)
 	reasoningEffort := extractReasoningEffort(rawBody)

@@ -218,6 +218,3 @@ func projectCodexTurnStateForWebsocket(body []byte, headers http.Header) ([]byte
 	}
 	return updated, out
 }
-
-// 临时桩：Task 7 会用真实实现替换。
-func resetInitialSessionStatsForTest() {}

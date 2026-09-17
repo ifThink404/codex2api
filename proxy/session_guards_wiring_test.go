@@ -38,4 +38,10 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if !regexp.MustCompile(`projectCodexTurnStateForWebsocket\(requestBody, headers\)`).Match(executor) {
 		t.Fatal("executor.go WS branch must project the turn-state into the frame")
 	}
+	if got := regexp.MustCompile(`checkInitialSessionAdmission\(c\.Request\.Header, rawBody, sessionIdentity, turnHasBinding,`).FindAll(handler, -1); len(got) != 1 {
+		t.Fatalf("handler.go admission call sites = %d, want 1", len(got))
+	}
+	if got := regexp.MustCompile(`checkInitialSessionAdmission\(c\.Request\.Header, rawBody, sessionIdentity, turnHasBinding,`).FindAll(ws, -1); len(got) != 1 {
+		t.Fatalf("responses_ws.go admission call sites = %d, want 1", len(got))
+	}
 }

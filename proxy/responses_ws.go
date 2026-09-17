@@ -441,6 +441,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	hasPreviousResponse := strings.TrimSpace(gjson.GetBytes(rawBody, "previous_response_id").String()) != ""
 	turnContinuation := codexWSTurnContinuationToken(rawBody) != ""
 	_, turnHasBinding := h.store.SessionAffinityAccountID(affinityKey)
+	if failure := h.checkInitialSessionAdmission(c.Request.Header, rawBody, sessionIdentity, turnHasBinding, time.Now()); failure != nil {
+		_ = writeResponsesWSError(conn, failure)
+		return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
+	}
 	respCacheOwner := responseCacheOwner(apiKeyID)
 	markResponsesWSContinuationCapable(respCacheOwner, rawBody)
 	ruleIdentity := h.payloadRuleIdentity(c)
