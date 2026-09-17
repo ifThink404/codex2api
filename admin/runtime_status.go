@@ -87,6 +87,11 @@ func (h *Handler) buildRuntimeStatus(ctx context.Context, r *http.Request) runti
 		addCheck("admin_auth", runtimeStatusError, "admin_auth_disabled", "管理密钥未配置")
 	}
 
+	sessionGuards := proxy.SessionGuardStatusSnapshot(h.store)
+	if h.authCacheProxy != nil {
+		sessionGuards = proxy.SessionGuardStatusSnapshotForHandler(h.authCacheProxy)
+	}
+
 	return runtimeStatusResponse{
 		UpdatedAt:     time.Now().Format(time.RFC3339),
 		Status:        overallRuntimeStatus(checks),
@@ -98,7 +103,7 @@ func (h *Handler) buildRuntimeStatus(ctx context.Context, r *http.Request) runti
 		Accounts:      accounts,
 		ImageStorage:  imageStorage,
 		AdminAuth:     adminAuth,
-		SessionGuards: proxy.SessionGuardStatusSnapshot(h.store),
+		SessionGuards: sessionGuards,
 		Checks:        checks,
 	}
 }

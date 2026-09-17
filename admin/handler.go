@@ -1249,6 +1249,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/account-groups/:id", h.DeleteAccountGroup)
 	api.GET("/health", h.GetHealth)
 	api.GET("/runtime-status", h.GetRuntimeStatus)
+	api.GET("/session-locks", h.ListSessionLocks)
+	api.DELETE("/session-locks/:id", h.DeleteSessionLock)
 	api.GET("/system/update", h.GetSystemUpdate)
 	api.POST("/system/update", h.PerformSystemUpdate)
 	api.GET("/ops/overview", h.GetOpsOverview)
