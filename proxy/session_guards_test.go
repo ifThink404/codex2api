@@ -252,3 +252,52 @@ func TestApplyCodexTurnStateEchoPolicyStripsSubstituteForRelayAccount(t *testing
 		t.Fatalf("relay strips must be counted as foreign: %+v", v)
 	}
 }
+
+// strict 模式把出站头里的 token 投进 client_metadata，这是替身绕开握手头那道闸的唯一
+// 通路：/v1/chat/completions 与 /v1/messages 都不经 applyCodexTurnStateEchoPolicy，
+// 投进去就等于把网关的唯一标记送进上游帧体。替身只删不投，真实 token 照旧。
+func TestProjectCodexTurnStateForWebsocketNeverProjectsSubstitute(t *testing.T) {
+	setStrictTurnState(t, true)
+	resetTurnStateVaultForTest()
+	substitute := codexTurnStateSubstitutePrefix + strings.Repeat("9a", 16)
+
+	headers := http.Header{}
+	headers.Set(codexTurnStateHeader, substitute)
+	body, out := projectCodexTurnStateForWebsocket([]byte(`{"model":"gpt-5.5"}`), headers)
+	if out.Get(codexTurnStateHeader) != "" {
+		t.Fatalf("substitute must be dropped from the handshake headers, got %q", out.Get(codexTurnStateHeader))
+	}
+	if gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
+		t.Fatalf("substitute must never be projected into client_metadata: %s", body)
+	}
+	if gjson.GetBytes(body, "model").String() != "gpt-5.5" {
+		t.Fatalf("the frame body must be returned unchanged: %s", body)
+	}
+	if headers.Get(codexTurnStateHeader) != substitute {
+		t.Fatal("caller headers must not be mutated")
+	}
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 1 {
+		t.Fatalf("a dropped projection must be counted as foreign: %+v", v)
+	}
+
+	// 回归：真实 token 仍按官方 WS v2 契约挪进帧体。
+	headers.Set(codexTurnStateHeader, "real-blob")
+	body, out = projectCodexTurnStateForWebsocket([]byte(`{"model":"gpt-5.5"}`), headers)
+	if out.Get(codexTurnStateHeader) != "" || gjson.GetBytes(body, codexTurnStateBodyPath).String() != "real-blob" {
+		t.Fatalf("a real token must still be projected: header=%q body=%s", out.Get(codexTurnStateHeader), body)
+	}
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 1 {
+		t.Fatalf("a real token must not be counted as a drop: %+v", v)
+	}
+
+	// strict 关闭：投影整体不生效，替身原样留在头里，交给出站白名单/握手那两道闸处理。
+	setStrictTurnState(t, false)
+	headers.Set(codexTurnStateHeader, substitute)
+	body, out = projectCodexTurnStateForWebsocket([]byte(`{"model":"gpt-5.5"}`), headers)
+	if out.Get(codexTurnStateHeader) != substitute || gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
+		t.Fatalf("legacy mode must leave both carriers untouched: header=%q body=%s", out.Get(codexTurnStateHeader), body)
+	}
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 1 {
+		t.Fatalf("legacy mode must not count a drop here: %+v", v)
+	}
+}

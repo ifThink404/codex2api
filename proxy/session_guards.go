@@ -239,6 +239,10 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 // projectCodexTurnStateForWebsocket 严格模式下把仍留在出站头里的 token 挪进帧体
 // （官方 WS v2 契约：token 走 response.create.client_metadata，握手头逐连接冻结、
 // 不能承载逐轮状态）。帧体已有 token 时以帧体为准。legacy 模式原样返回。
+//
+// 替身例外：网关自造的 `c2a-ts-v1.…` 只删不投。strict 打开时这里是它绕开握手头那道闸
+// 的唯一通路——/v1/chat/completions 与 /v1/messages 都不经 applyCodexTurnStateEchoPolicy，
+// 投进 client_metadata 就等于把网关的唯一标记送进上游帧体。
 func projectCodexTurnStateForWebsocket(body []byte, headers http.Header) ([]byte, http.Header) {
 	if !CurrentRuntimeSettings().CodexTurnStateStrict || headers == nil {
 		return body, headers
@@ -249,6 +253,12 @@ func projectCodexTurnStateForWebsocket(body []byte, headers http.Header) ([]byte
 	}
 	out := headers.Clone()
 	out.Del(codexTurnStateHeader)
+	if IsCodexTurnStateSubstitute(token) {
+		// 头已经从副本里删掉，帧体原样返回：整枚丢弃，不投也不带。
+		NoteCodexTurnStateSubstituteDropped()
+		log.Printf("[TURN-STATE] substitute dropped before websocket projection")
+		return body, out
+	}
 	if gjson.GetBytes(body, codexTurnStateBodyPath).Exists() || !gjson.ValidBytes(body) {
 		return body, out
 	}
