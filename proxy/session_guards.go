@@ -268,3 +268,24 @@ func projectCodexTurnStateForWebsocket(body []byte, headers http.Header) ([]byte
 	}
 	return updated, out
 }
+
+// dropCodexTurnStateSubstituteFromBody 把帧体里网关自造的替身摘掉，返回改写后的 body
+// 和是否摘过。给的是中转（relay）分支：它在 applyCodexTurnStateEchoPolicy 之前就返回，
+// 转发的又是 PrepareOpenAIResponsesBody 原样保留的客户端 body（未知字段照抄，
+// client_metadata 会活下来），所以帧体位置的回带在那条路上没有别的闸。
+// 真实 token 不动——中转保持第一轮的透传语义。
+func dropCodexTurnStateSubstituteFromBody(body []byte) ([]byte, bool) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body, false
+	}
+	if token := strings.TrimSpace(gjson.GetBytes(body, codexTurnStateBodyPath).String()); token == "" || !IsCodexTurnStateSubstitute(token) {
+		return body, false
+	}
+	updated, err := sjson.DeleteBytes(body, codexTurnStateBodyPath)
+	if err != nil {
+		return body, false
+	}
+	NoteCodexTurnStateSubstituteDropped()
+	log.Printf("[TURN-STATE] substitute dropped from the outbound request body")
+	return updated, true
+}

@@ -4179,6 +4179,9 @@ func (h *Handler) Responses(c *gin.Context) {
 				attemptEffectiveModel = mappedModel
 				attemptLogEffectiveModel = usageEffectiveModelForMapping(logModel, attemptEffectiveModel, true)
 			}
+			// 中转分支在 applyCodexTurnStateEchoPolicy 之前就返回，头由出站白名单兜底，
+			// 帧体位置的回带只有这一处能拦：网关自造的替身绝不能进中转上游的 body。
+			upstreamBody, _ = dropCodexTurnStateSubstituteFromBody(upstreamBody)
 			resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				if account.IsAntigravityAPI() {
 					resp, err := ExecuteAntigravityResponsesRequest(upstreamCtx, account, attemptEffectiveModel, upstreamBody, isStream, proxyURL)

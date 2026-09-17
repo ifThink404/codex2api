@@ -1,13 +1,17 @@
 package proxy
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -299,5 +303,94 @@ func TestProjectCodexTurnStateForWebsocketNeverProjectsSubstitute(t *testing.T) 
 	}
 	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 1 {
 		t.Fatalf("legacy mode must not count a drop here: %+v", v)
+	}
+}
+
+func TestDropCodexTurnStateSubstituteFromBody(t *testing.T) {
+	resetTurnStateVaultForTest()
+	substitute := codexTurnStateSubstitutePrefix + strings.Repeat("7b", 16)
+
+	body, dropped := dropCodexTurnStateSubstituteFromBody([]byte(`{"model":"gpt-5.5","client_metadata":{"x-codex-turn-state":"` + substitute + `","thread_id":"t"}}`))
+	if !dropped || gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
+		t.Fatalf("substitute must be removed from the body: dropped=%v body=%s", dropped, body)
+	}
+	if gjson.GetBytes(body, "client_metadata.thread_id").String() != "t" || gjson.GetBytes(body, "model").String() != "gpt-5.5" {
+		t.Fatalf("sibling fields damaged: %s", body)
+	}
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 1 {
+		t.Fatalf("a dropped body substitute must be counted as foreign: %+v", v)
+	}
+
+	realBody := []byte(`{"client_metadata":{"x-codex-turn-state":"real-blob"}}`)
+	out, dropped := dropCodexTurnStateSubstituteFromBody(realBody)
+	if dropped || gjson.GetBytes(out, codexTurnStateBodyPath).String() != "real-blob" {
+		t.Fatalf("a real token must keep round-one passthrough: dropped=%v body=%s", dropped, out)
+	}
+
+	for _, untouched := range [][]byte{[]byte(`not json`), []byte(``), []byte(`{"model":"gpt-5.5"}`)} {
+		out, dropped := dropCodexTurnStateSubstituteFromBody(untouched)
+		if dropped || string(out) != string(untouched) {
+			t.Fatalf("input %q must pass through unchanged: dropped=%v out=%s", untouched, dropped, out)
+		}
+	}
+	if v := turnStateVaultCountersSnapshot(); v.ForeignStripped != 1 {
+		t.Fatalf("only the substitute may be counted: %+v", v)
+	}
+}
+
+// 端到端：/v1/responses 的中转分支在回带策略之前就返回，转发的又是保留了 client_metadata
+// 的客户端 body。这里用真实的上游桩把出站 body 抓下来，确认替身没跟着出去。
+func TestResponsesRelayBranchNeverForwardsBodySubstitute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousRuntime := CurrentRuntimeSettings()
+	t.Cleanup(func() { ApplyRuntimeSettings(previousRuntime); resetTurnStateVaultForTest() })
+	UpdateRuntimeSettings(func(current RuntimeSettings) RuntimeSettings {
+		current.CodexForceWebsocket = false
+		current.CodexTurnStateVaultEnabled = true
+		current.CodexTurnStateStrict = false
+		return current
+	})
+	resetTurnStateVaultForTest()
+
+	var upstreamBody atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		upstreamBody.Store(string(raw))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_relay","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	handler, _ := newPromptConversationLockTestHandler(t)
+	t.Cleanup(handler.store.Stop)
+	relay := &auth.Account{
+		DBID: 1, UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: upstream.URL,
+		APIKey: "relay-body-substitute", Models: []string{"gpt-4.1-direct"}, PlanType: "api",
+	}
+	if !relay.IsRelayStyle() {
+		t.Fatal("test fixture must be a relay-style account for this branch to run")
+	}
+	handler.store.AddAccount(relay)
+
+	substitute := codexTurnStateSubstitutePrefix + strings.Repeat("5c", 16)
+	body := []byte(`{"model":"gpt-4.1-direct","input":"ordinary request","stream":true,"client_metadata":{"x-codex-turn-state":"` + substitute + `","thread_id":"t"}}`)
+	c, recorder := signedBoundPromptConversationContextWithRecorder(t, "relay-body-substitute", newAPIIdentity{
+		UserID: "42", ClientIP: "203.0.113.9",
+	}, body, "0123456789abcdef0123456789abcdef")
+
+	handler.Responses(c)
+
+	forwarded, _ := upstreamBody.Load().(string)
+	if forwarded == "" {
+		t.Fatalf("the relay upstream was never called: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(forwarded, codexTurnStateSubstitutePrefix) {
+		t.Fatalf("a gateway substitute reached the relay upstream body: %s", forwarded)
+	}
+	if gjson.Get(forwarded, codexTurnStateBodyPath).Exists() {
+		t.Fatalf("client_metadata.x-codex-turn-state survived: %s", forwarded)
+	}
+	if gjson.Get(forwarded, "client_metadata.thread_id").String() != "t" {
+		t.Fatalf("sibling client_metadata fields must survive: %s", forwarded)
 	}
 }
