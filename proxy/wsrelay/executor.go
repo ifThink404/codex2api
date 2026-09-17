@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -359,10 +360,27 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 	}
 	// X-Oai-Attestation：DeviceCheck 设备认证头（上游 openai/codex#20619），
 	// 仅在下游携带时透传，本代理不伪造（假 token 服务端验证必败，反而暴露）。
+	//
+	// X-Codex-Turn-State 多一道闸：网关自造的替身（`c2a-ts-v1.…`）绝不能进上游握手。
+	// 走这条 WS 上游的 /v1/chat/completions 与 /v1/messages 都不经
+	// applyCodexTurnStateEchoPolicy，客户端手上换不回真实值的替身会原样走到这里；
+	// 判据与计数都用 proxy 包导出的那一对，前缀只有一个定义处。真实 token 不受影响。
 	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Client-Request-Id", "X-Responsesapi-Include-Timing-Metrics", "X-Oai-Attestation"} {
-		if value := strings.TrimSpace(ginHeaders.Get(name)); value != "" {
-			headers.Set(name, value)
+		value := strings.TrimSpace(ginHeaders.Get(name))
+		if value == "" {
+			continue
 		}
+		if strings.EqualFold(name, "X-Codex-Turn-State") && proxy.IsCodexTurnStateSubstitute(value) {
+			headers.Del(name)
+			proxy.NoteCodexTurnStateSubstituteDropped()
+			accountID := int64(0)
+			if account != nil {
+				accountID = account.ID()
+			}
+			log.Printf("[TURN-STATE] substitute dropped before upstream ws handshake account=%d", accountID)
+			continue
+		}
+		headers.Set(name, value)
 	}
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与

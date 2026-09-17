@@ -189,7 +189,7 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 	// 标记，交给上游等于把「这个客户端在走 codex2api」直接送进风控管线——正是托管要
 	// 消除的那类信号。托管关闭（运维对比开关）、relay 账号、上一轮的死替身都会落到这里，
 	// 因此这条与 vaultApplies / strict 无关，一律剥离。
-	unresolvedSubstitute := restored == "" && (isCodexTurnStateSubstitute(token) || isCodexTurnStateSubstitute(bodyToken))
+	unresolvedSubstitute := restored == "" && (IsCodexTurnStateSubstitute(token) || IsCodexTurnStateSubstitute(bodyToken))
 	if unresolvedSubstitute {
 		// cross（替身属于别的账号）已经是最准确的归类，保留；其余一律记为 unknown。
 		if class != turnStateEchoCross {

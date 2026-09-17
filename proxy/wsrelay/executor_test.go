@@ -666,3 +666,42 @@ func TestPrepareWebsocketHeadersGeneratedDesktopClientSendsMatchingOriginator(t 
 		t.Fatalf("Version = %q, want 0.153.3", got)
 	}
 }
+
+// 上游 WS 握手头是第二个出站装配点（第一个是 HTTP 的 applyCodexAllowedForwardHeaders）。
+// 走这条路的 /v1/chat/completions 与 /v1/messages 都不经 applyCodexTurnStateEchoPolicy，
+// 客户端手上换不回真实值的替身会原样进握手头——`c2a-ts-v1.…` 是网关独有的标记，
+// 送到上游等于自曝身份。
+func TestPrepareWebsocketHeadersDropsTurnStateSubstitute(t *testing.T) {
+	exec := NewExecutor()
+	account := &auth.Account{DBID: 42, AccountID: "42"}
+	substitute := "c2a-ts-v1." + strings.Repeat("ab", 16)
+	if !proxy.IsCodexTurnStateSubstitute(substitute) {
+		t.Fatalf("fixture: %q must be recognised as a gateway substitute", substitute)
+	}
+	before := proxy.SessionGuardStatusSnapshot(nil).TurnState.Vault.ForeignStripped
+
+	headers := exec.prepareWebsocketHeaders("token-123", account, "42", "session-123", "api-key-1", nil, http.Header{
+		"X-Codex-Turn-State":    []string{substitute},
+		"X-Codex-Turn-Metadata": []string{"meta"},
+	}, nil)
+	if got := headers.Get("X-Codex-Turn-State"); got != "" {
+		t.Fatalf("substitute reached the upstream handshake: %q", got)
+	}
+	if got := headers.Get("X-Codex-Turn-Metadata"); got != "meta" {
+		t.Fatalf("sibling passthrough headers must survive, got %q", got)
+	}
+	if after := proxy.SessionGuardStatusSnapshot(nil).TurnState.Vault.ForeignStripped; after != before+1 {
+		t.Fatalf("foreign_stripped = %d, want %d", after, before+1)
+	}
+
+	// 真实 token 不受影响：第一轮的透传语义不变。
+	real := exec.prepareWebsocketHeaders("token-123", account, "42", "session-123", "api-key-1", nil, http.Header{
+		"X-Codex-Turn-State": []string{"t-state"},
+	}, nil)
+	if got := real.Get("X-Codex-Turn-State"); got != "t-state" {
+		t.Fatalf("a real turn-state must still reach the handshake, got %q", got)
+	}
+	if after := proxy.SessionGuardStatusSnapshot(nil).TurnState.Vault.ForeignStripped; after != before+1 {
+		t.Fatalf("a real token must not be counted as a drop, foreign_stripped = %d", after)
+	}
+}

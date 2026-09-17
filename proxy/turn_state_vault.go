@@ -78,12 +78,21 @@ func newCodexTurnStateSubstitute() string {
 	return codexTurnStateSubstitutePrefix + hex.EncodeToString(raw[:])
 }
 
-// isCodexTurnStateSubstitute 判断一个 turn-state 值是不是网关自己铸造的替身。
-// 回带策略（applyCodexTurnStateEchoPolicy）与出站白名单透传
-// （applyCodexAllowedForwardHeaders）共用这一个判据：替身是网关独有的标记，
-// 换不回真实 token 时无论走哪条路都不许出网关。
-func isCodexTurnStateSubstitute(value string) bool {
+// IsCodexTurnStateSubstitute 判断一个 turn-state 值是不是网关自己铸造的替身。
+// 前缀只此一处：回带策略（applyCodexTurnStateEchoPolicy）、HTTP 出站白名单透传
+// （applyCodexAllowedForwardHeaders）与上游 WS 握手头装配
+// （wsrelay.Executor.prepareWebsocketHeaders）共用同一个判据——替身是网关独有的标记，
+// 换不回真实 token 时无论走哪条路都不许出网关。wsrelay 导入 proxy（反向没有依赖），
+// 所以判据与计数钩子从这里导出给它用。
+func IsCodexTurnStateSubstitute(value string) bool {
 	return strings.HasPrefix(strings.TrimSpace(value), codexTurnStateSubstitutePrefix)
+}
+
+// NoteCodexTurnStateSubstituteDropped 记一次「替身在出站前被拦下」，计入
+// session_guards.turn_state.vault.foreign_stripped。所有拦截点都走这里，
+// 包内包外只有这一个累加入口。
+func NoteCodexTurnStateSubstituteDropped() {
+	turnStateVaultForeign.Add(1)
 }
 
 // issueCodexTurnStateSubstitute 记录真实 token 并返回替身；托管不适用该账号

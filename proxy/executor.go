@@ -1156,12 +1156,18 @@ func ResolveCodexOutboundClientHeadersWithDecision(account *auth.Account, apiKey
 	return resolveCodexOutboundClientHeaders(account, apiKey, deviceCfg, downstreamHeaders)
 }
 
-// applyCodexAllowedForwardHeaders 是所有上游（官方与中转）出站头的白名单透传收口，
-// 因此也是 turn-state 替身的最后一道闸：网关自造的 `c2a-ts-v1.…` 是一枚唯一、稳定、
-// 可直接归因到本网关的标记，送到任何上游都等于自曝身份。官方路径出站前已经在
-// applyCodexTurnStateEchoPolicy 里把替身换回了真实 token，所以这里只会命中换不回来的：
-// HTTP 中转分支在策略之前就返回了，混合账号池里失败切换/重绑到中转账号的那一轮，
-// 客户端手上的替身会原样走到这里。真实 token 不受影响，中转仍保持第一轮的透传语义。
+// applyCodexAllowedForwardHeaders 是 HTTP 出站头白名单透传的收口（官方与中转两条路
+// 都走它，Live 亦然），也是 turn-state 替身在 HTTP 上的最后一道闸：网关自造的
+// `c2a-ts-v1.…` 是一枚唯一、稳定、可直接归因到本网关的标记，送到任何上游都等于自曝身份。
+// 官方路径出站前已经在 applyCodexTurnStateEchoPolicy 里把替身换回了真实 token，所以这里
+// 只会命中换不回来的：HTTP 中转分支在策略之前就返回了，混合账号池里失败切换/重绑到中转
+// 账号的那一轮，客户端手上的替身会原样走到这里。真实 token 不受影响，中转仍保持第一轮
+// 的透传语义。
+//
+// 注意这不是唯一的出站装配点：上游 WS 握手头由
+// wsrelay.Executor.prepareWebsocketHeaders 自己拼（它有自己的白名单循环），那里用同一对
+// proxy.IsCodexTurnStateSubstitute / proxy.NoteCodexTurnStateSubstituteDropped 做了同样
+// 的拦截。新增任何出站头装配点都要一并加这道闸。
 func applyCodexAllowedForwardHeaders(req *http.Request, downstreamHeaders http.Header) {
 	if req == nil || downstreamHeaders == nil {
 		return
@@ -1171,9 +1177,9 @@ func applyCodexAllowedForwardHeaders(req *http.Request, downstreamHeaders http.H
 		if value == "" {
 			continue
 		}
-		if strings.EqualFold(name, codexTurnStateHeader) && isCodexTurnStateSubstitute(value) {
+		if strings.EqualFold(name, codexTurnStateHeader) && IsCodexTurnStateSubstitute(value) {
 			req.Header.Del(name)
-			turnStateVaultForeign.Add(1)
+			NoteCodexTurnStateSubstituteDropped()
 			log.Printf("[TURN-STATE] substitute dropped before upstream host=%s", upstreamHostForLog(req))
 			continue
 		}
