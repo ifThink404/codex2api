@@ -17,11 +17,19 @@ import (
 // 连续 500 自动锁定：以会话粘性键为身份，只统计官方 Codex 账号上最终完成的 500
 // （中转账号、内部重试、内部子请求不计），达阈值写锁（DB + 内存），入口按键拒绝。
 // 连击只在内存里，重启和保存设置都清零；锁没有 TTL，只有管理员解锁。
+//
+// 锁表预热是异步、单飞的：请求路径只在已持有的互斥锁下做一次内存判断，从不等待 DB。
+// 进程启动后第一次调用 checkSessionAutoLock/sessionAutoLockSnapshot 会在后台触发一次
+// 加载，成功后（通常是首个请求之后的几毫秒）DB 里持久化的锁才开始在内存里生效；加载
+// 失败只记日志，至多每 30 秒重试一次，不会让请求路径卡在不可用的 DB 上。
 
 const (
 	sessionAutoLockKeyContextKey = "codex2api.session_auto_lock.key"
 	sessionAutoLockStreakCap     = 50000
 	sessionAutoLockSource        = "automatic"
+	// sessionAutoLockWarmupRetry 是锁表预热失败后的最小重试间隔，避免不可用的 DB
+	// 拖慢每一次请求路径上的判断。
+	sessionAutoLockWarmupRetry = 30 * time.Second
 )
 
 type sessionAutoLockStreak struct {
@@ -30,24 +38,36 @@ type sessionAutoLockStreak struct {
 }
 
 type sessionAutoLockState struct {
-	mu            sync.Mutex
-	streaks       map[string]*sessionAutoLockStreak
-	locked        map[string]struct{}
-	loaded        bool
-	lockedTotal   atomic.Uint64
-	unlockedTotal atomic.Uint64
+	mu      sync.Mutex
+	streaks map[string]*sessionAutoLockStreak
+	locked  map[string]struct{}
+	loaded  bool
+	// loading 为真时已有一个预热 goroutine 在途，避免重复并发加载。
+	loading bool
+	// lastLoadAttempt 记录最近一次触发预热的时间，配合 sessionAutoLockWarmupRetry 做冷却。
+	lastLoadAttempt time.Time
+	// pendingUnlocks 记录预热完成前被管理员解锁的键：加载结果落地时会跳过这些键，
+	// 防止一次仍在途的旧查询把刚解的锁又写回内存。loaded 之后清空、不再使用。
+	pendingUnlocks map[string]struct{}
+	lockedTotal    atomic.Uint64
+	unlockedTotal  atomic.Uint64
 }
 
 var sessionAutoLock = newSessionAutoLockState()
 
 func newSessionAutoLockState() *sessionAutoLockState {
-	return &sessionAutoLockState{streaks: make(map[string]*sessionAutoLockStreak), locked: make(map[string]struct{})}
+	return &sessionAutoLockState{
+		streaks:        make(map[string]*sessionAutoLockStreak),
+		locked:         make(map[string]struct{}),
+		pendingUnlocks: make(map[string]struct{}),
+	}
 }
 
 func resetSessionAutoLockForTest() {
 	fresh := newSessionAutoLockState()
 	sessionAutoLock.mu.Lock()
 	sessionAutoLock.streaks, sessionAutoLock.locked, sessionAutoLock.loaded = fresh.streaks, fresh.locked, false
+	sessionAutoLock.loading, sessionAutoLock.lastLoadAttempt, sessionAutoLock.pendingUnlocks = false, time.Time{}, fresh.pendingUnlocks
 	sessionAutoLock.mu.Unlock()
 	sessionAutoLock.lockedTotal.Store(0)
 	sessionAutoLock.unlockedTotal.Store(0)
@@ -81,22 +101,42 @@ func sessionAutoLockKeyFromContext(c *gin.Context) string {
 	return ""
 }
 
-// ensureLoadedLocked 首次使用时从 DB 预热锁表；失败只打日志（下次再试）。
-func (h *Handler) ensureSessionAutoLocksLoadedLocked() {
-	if sessionAutoLock.loaded || h == nil || h.db == nil {
+// kickSessionAutoLockWarmup 由已持有 sessionAutoLock.mu 的调用方触发：至多每
+// sessionAutoLockWarmupRetry 尝试一次后台预热，本身从不等待 DB，请求路径不会被卡住。
+func (h *Handler) kickSessionAutoLockWarmup() {
+	if sessionAutoLock.loaded || sessionAutoLock.loading || h == nil || h.db == nil {
 		return
 	}
+	if time.Since(sessionAutoLock.lastLoadAttempt) < sessionAutoLockWarmupRetry {
+		return
+	}
+	sessionAutoLock.loading = true
+	sessionAutoLock.lastLoadAttempt = time.Now()
+	go h.loadSessionAutoLocks()
+}
+
+// loadSessionAutoLocks 在后台 goroutine 里跑：查询期间不持锁，查完再夺锁写入结果，
+// 避免 DB 慢/不可用时拖住任何持有 sessionAutoLock.mu 的请求路径。
+func (h *Handler) loadSessionAutoLocks() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	keys, err := h.db.ListSessionAutoLockKeys(ctx)
+	sessionAutoLock.mu.Lock()
+	sessionAutoLock.loading = false
 	if err != nil {
+		sessionAutoLock.mu.Unlock()
 		log.Printf("[SESSION-AUTO-LOCK] 预热锁表失败: %v", err)
 		return
 	}
 	for _, key := range keys {
+		if _, skip := sessionAutoLock.pendingUnlocks[key]; skip {
+			continue
+		}
 		sessionAutoLock.locked[key] = struct{}{}
 	}
+	sessionAutoLock.pendingUnlocks = make(map[string]struct{})
 	sessionAutoLock.loaded = true
+	sessionAutoLock.mu.Unlock()
 }
 
 func sessionAutoLockError() *api.APIError {
@@ -110,7 +150,7 @@ func (h *Handler) checkSessionAutoLock(c *gin.Context, affinityKey string) *api.
 		return nil
 	}
 	sessionAutoLock.mu.Lock()
-	h.ensureSessionAutoLocksLoadedLocked()
+	h.kickSessionAutoLockWarmup()
 	_, locked := sessionAutoLock.locked[key]
 	sessionAutoLock.mu.Unlock()
 	if !locked {
@@ -119,13 +159,21 @@ func (h *Handler) checkSessionAutoLock(c *gin.Context, affinityKey string) *api.
 	return sessionAutoLockError()
 }
 
+// sessionIDPrefixFromAffinityKey 截取会话前缀写入 DB 的 session_id_prefix 列（宽度 32，
+// 这里保守取 12）。affinityID 来自客户端、未必是 ASCII，按字节切会切碎多字节 rune，
+// 落到 PostgreSQL 上会被拒绝导致锁只留在内存里；这里按 rune 计数截断。
 func sessionIDPrefixFromAffinityKey(key string) string {
 	session := key
 	if idx := strings.Index(key, "::api-key:"); idx >= 0 {
 		session = key[:idx]
 	}
-	if len(session) > 12 {
-		session = session[:12]
+	count := 0
+	for i := range session {
+		count++
+		if count > 12 {
+			session = session[:i]
+			break
+		}
 	}
 	return session
 }
@@ -227,17 +275,19 @@ func evictOldestSessionAutoLockStreaksLocked(n int) {
 	}
 }
 
-// UnlockSessionAutoLock 管理员解锁后从内存移除（DB 行由 admin 层删除）。
+// UnlockSessionAutoLock 管理员解锁后从内存移除（DB 行由 admin 层删除，调用方只在 DB
+// 删除成功后才会调用这里，因此计数无条件累加）。预热尚未完成时，把键记进
+// pendingUnlocks，防止一次仍在途的旧查询把刚解的锁又写回内存。
 func (h *Handler) UnlockSessionAutoLock(key string) {
 	key = strings.TrimSpace(key)
 	sessionAutoLock.mu.Lock()
-	_, existed := sessionAutoLock.locked[key]
 	delete(sessionAutoLock.locked, key)
 	delete(sessionAutoLock.streaks, key)
-	sessionAutoLock.mu.Unlock()
-	if existed {
-		sessionAutoLock.unlockedTotal.Add(1)
+	if !sessionAutoLock.loaded {
+		sessionAutoLock.pendingUnlocks[key] = struct{}{}
 	}
+	sessionAutoLock.mu.Unlock()
+	sessionAutoLock.unlockedTotal.Add(1)
 }
 
 type SessionGuardAutoLockStatus struct {
@@ -252,9 +302,7 @@ type SessionGuardAutoLockStatus struct {
 func sessionAutoLockSnapshot(h *Handler) SessionGuardAutoLockStatus {
 	settings := CurrentRuntimeSettings()
 	sessionAutoLock.mu.Lock()
-	if h != nil {
-		h.ensureSessionAutoLocksLoadedLocked()
-	}
+	h.kickSessionAutoLockWarmup()
 	active, streaks := uint64(len(sessionAutoLock.locked)), uint64(len(sessionAutoLock.streaks))
 	sessionAutoLock.mu.Unlock()
 	return SessionGuardAutoLockStatus{

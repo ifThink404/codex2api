@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -125,8 +128,131 @@ func TestSessionAutoLockWarmsExistingLocksFromDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	resetSessionAutoLockForTest()
-	if err := h.checkSessionAutoLock(autoLockTestContext(h, "old::api-key:1"), "old::api-key:1"); err == nil {
-		t.Fatal("lock persisted in the database must be enforced after a restart")
+	key := "old::api-key:1"
+	// The warm-up is async: the first call only kicks it off in the background.
+	h.checkSessionAutoLock(autoLockTestContext(h, key), key)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("lock persisted in the database must be enforced after a restart")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSessionAutoLockWarmupFailureDoesNotBlockRequests 验证 GitNexus 评审发现 1 的修复：
+// DB 不可用时预热失败绝不能让请求路径卡住，且失败后至少 sessionAutoLockWarmupRetry
+// 之内不会重试（单飞冷却）。不复用 newAutoLockTestHandler：那个 helper 会在 t.Cleanup
+// 里再 Close 一次数据库，而 database.DB.Close 对已关闭的连接不是幂等的（会 panic）。
+func TestSessionAutoLockWarmupFailureDoesNotBlockRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "autolock-closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetSessionAutoLockForTest()
+	previous := CurrentRuntimeSettings()
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
+		s.CodexSessionAutoLockEnabled = true
+		s.CodexSessionAutoLockThreshold = 3
+		return s
+	})
+	t.Cleanup(func() { ApplyRuntimeSettings(previous); resetSessionAutoLockForTest() })
+	h := &Handler{db: db}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	key := "closed-db::api-key:1"
+
+	start := time.Now()
+	for i := 0; i < 50; i++ {
+		if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
+			t.Fatalf("a closed DB must never surface as a lock: %v", err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("50 checks against a closed DB took %v, want < 500ms (must not block on DB)", elapsed)
+	}
+
+	// Let the async warm-up attempt (which will fail against the closed DB) settle.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		sessionAutoLock.mu.Lock()
+		loading := sessionAutoLock.loading
+		sessionAutoLock.mu.Unlock()
+		if !loading {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("warm-up goroutine never settled loading back to false")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	sessionAutoLock.mu.Lock()
+	firstAttempt := sessionAutoLock.lastLoadAttempt
+	sessionAutoLock.mu.Unlock()
+	if firstAttempt.IsZero() {
+		t.Fatal("a warm-up attempt should have been kicked off")
+	}
+
+	start = time.Now()
+	for i := 0; i < 50; i++ {
+		if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
+			t.Fatalf("a closed DB must never surface as a lock: %v", err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("second burst of 50 checks took %v, want < 500ms", elapsed)
+	}
+
+	sessionAutoLock.mu.Lock()
+	secondAttempt, stillLoading := sessionAutoLock.lastLoadAttempt, sessionAutoLock.loading
+	sessionAutoLock.mu.Unlock()
+	if stillLoading {
+		t.Fatal("second burst must not be left mid-load: the cooldown should have skipped a new attempt")
+	}
+	if !secondAttempt.Equal(firstAttempt) {
+		t.Fatalf("second burst is within the 30s cooldown and must not retry: first=%v second=%v", firstAttempt, secondAttempt)
+	}
+}
+
+func TestSessionAutoLockDisabledKeepsExistingLocks(t *testing.T) {
+	h, official, _ := newAutoLockTestHandler(t)
+	key := "thread-disable::api-key:9"
+	for i := 0; i < 3; i++ {
+		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID})
+	}
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err == nil {
+		t.Fatal("three failures must lock while the guard is enabled")
+	}
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexSessionAutoLockEnabled = false; return s })
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err == nil {
+		t.Fatal("disabling the guard must not release an existing lock")
+	}
+}
+
+func TestSessionIDPrefixFromAffinityKeyIsRuneSafe(t *testing.T) {
+	cjkKey := strings.Repeat("会", 20) + "::api-key:9"
+	prefix := sessionIDPrefixFromAffinityKey(cjkKey)
+	if !utf8.ValidString(prefix) {
+		t.Fatalf("prefix is not valid UTF-8: %q", prefix)
+	}
+	if got := utf8.RuneCountInString(prefix); got != 12 {
+		t.Fatalf("rune count = %d, want 12 (prefix=%q)", got, prefix)
+	}
+	if id := apiKeyIDFromAffinityKey(cjkKey); id != 9 {
+		t.Fatalf("api key id = %d, want 9", id)
+	}
+
+	asciiKey := "abcdef12-3456-7890-abcd-ef1234567890::api-key:9"
+	if got := sessionIDPrefixFromAffinityKey(asciiKey); got != "abcdef12-345" {
+		t.Fatalf("ascii prefix = %q, want first 12 characters", got)
+	}
+	if id := apiKeyIDFromAffinityKey(asciiKey); id != 9 {
+		t.Fatalf("api key id = %d, want 9", id)
 	}
 }
 
