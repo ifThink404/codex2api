@@ -85,7 +85,7 @@ Codex2API 采用三层配置架构：
 | `DOWNSTREAM_HTTP_KEEPALIVE_INTERVAL` | 否 | `30s` | 下游 HTTP/SSE 保活周期，使用 Go duration；`0` 关闭。流式端点从首个心跳起建立 SSE 200，发送注释或 Messages ping；非流式端点发送 HTTP 102 |
 | `DOWNSTREAM_WS_KEEPALIVE_INTERVAL` | 否 | `45s` | 下游 WebSocket Ping 周期，使用 Go duration；`0` 关闭。覆盖 Responses、Realtime 与 Live Sideband |
 
-会话防护（turn-state 严格模式、不借用、首次会话准入）是管理后台设置项而非环境变量，说明见 [session-guards.md](session-guards.md)。
+会话防护（turn-state 严格模式、不借用、首次会话准入、连续 500 自动锁定会话、turn-state 托管）是管理后台设置项而非环境变量，说明见 [session-guards.md](session-guards.md)。
 
 > `CODEX_UPSTREAM_TRANSPORT` 只控制 HTTP 入站请求转发到 Codex 上游时使用 `http` 还是 `ws`。客户端侧 WebSocket 入口独立可用：使用 `GET ws://<host>/v1/responses` 建连，首帧发送 `response.create` JSON，服务端会通过 Codex 上游 WS 返回 Responses 事件帧。
 
