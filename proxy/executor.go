@@ -596,6 +596,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	}
 	if wantWebsocket && WebsocketExecuteFunc != nil {
 		requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, true, responsesLite)
+		// strict 模式：turn-state 只放当前帧，不固化到逐连接冻结的握手头里。
+		requestBody, headers = projectCodexTurnStateForWebsocket(requestBody, headers)
 		if responsesLite {
 			requestBody = normalizeCodexResponsesLiteBody(requestBody, false)
 		}

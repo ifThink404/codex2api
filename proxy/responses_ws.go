@@ -741,6 +741,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 		// service_tier 记账按 payload 规则改写后的值归因（覆写 service_tier 的规则才生效）。
 		serviceTier = EffectiveRequestedServiceTier(upstreamBody, effectiveModel, downstreamHeaders, attemptIdentity)
+		// 下游 WS 的 token 在帧体 client_metadata 里，之前从未被守卫过；这里与 HTTP 路径共用同一策略。
+		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(affinityKey, account, downstreamHeaders, upstreamBody)
 		// 在 useWebsocket 最终确定后再派生上游身份键：与 handler.go 的
 		// Responses/ChatCompletions 路径一致——无显式会话默认每请求隔离上游身份，
 		// WS 路径交给 ExecuteRequest 的 stateless 槽位池处理。
@@ -1480,6 +1482,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	_ = wsReplay.Close()
 	if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 		h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
+		noteCodexTurnStateProvenance(affinityKey, account)
 	}
 	if outcome.logStatusCode != http.StatusOK {
 		log.Printf("Responses WebSocket stream ended abnormally (account %d, status %d): %s, relayed about %d chars", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)

@@ -4443,6 +4443,9 @@ func (h *Handler) Responses(c *gin.Context) {
 				_ = streamAttempt.Close()
 				if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 					h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
+					// 成功尝试的账号就是客户端下一轮会回带的 turn-state 铸造者（WS 上游
+					// 没有响应头可转发，只能在这里记）。
+					noteCodexTurnStateProvenance(affinityKey, account)
 				}
 				if outcome.terminalLocal && c.Request.Context().Err() == nil {
 					writeContinuousRetryLocalResponsesError(c)
@@ -4925,8 +4928,9 @@ func (h *Handler) Responses(c *gin.Context) {
 		// service_tier 记账按 payload 规则改写后的值归因（覆写 service_tier 的规则才生效）。
 		// 按尝试重算：不同尝试的生效模型/账号可能不同，规则按模型或账号门匹配则结果随之变化。
 		serviceTier = EffectiveRequestedServiceTier(upstreamBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
-		// 换号后剥离旧账号铸造的 turn-state 回带,防止跨账号矛盾信号打到上游。
-		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+		// 跨账号 turn-state 回带一律剥离（头 + 体）；来源未知的按 strict 开关处理，
+		// 并计数到会话防护统计。见 session_guards.go。
+		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(affinityKey, account, downstreamHeaders, upstreamBody)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
@@ -5645,6 +5649,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 		if !continuousRetryBuffersAttempts(continuousRetryPolicy) || continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 			h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
+			noteCodexTurnStateProvenance(affinityKey, account)
 		}
 		logStatusCode := outcome.logStatusCode
 		if logStatusCode != http.StatusOK {
