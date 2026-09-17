@@ -2147,6 +2147,11 @@ export default function Settings() {
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
+      codex_turn_state_strict: cacheNormalized.codex_turn_state_strict ?? false,
+      codex_session_no_borrow_enabled: cacheNormalized.codex_session_no_borrow_enabled ?? false,
+      codex_session_no_borrow_hold_seconds: cacheNormalized.codex_session_no_borrow_hold_seconds ?? 20,
+      codex_initial_session_admission_enabled: cacheNormalized.codex_initial_session_admission_enabled ?? false,
+      codex_initial_session_max_age_seconds: cacheNormalized.codex_initial_session_max_age_seconds ?? 180,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
       models_list_read_max_bytes:
@@ -2229,6 +2234,11 @@ export default function Settings() {
     session_affinity_spread: false,
     session_slot_buffer_enabled: false,
     session_slot_buffer_seconds: 10,
+    codex_turn_state_strict: false,
+    codex_session_no_borrow_enabled: false,
+    codex_session_no_borrow_hold_seconds: 20,
+    codex_initial_session_admission_enabled: false,
+    codex_initial_session_max_age_seconds: 180,
     grok_affinity_mode: 'strict',
     grok_probe_enabled: false,
     grok_probe_interval_minutes: 30,
@@ -5508,6 +5518,54 @@ export default function Settings() {
                         value={settingsForm.session_slot_buffer_seconds}
                         onValueChange={(value) => setSettingsForm(f => ({ ...f, session_slot_buffer_seconds: value }))}
                         onValueCommit={(value) => void autoSaveSettingsPatch({ session_slot_buffer_seconds: value })}
+                      />
+                    </SettingField>
+                    <SettingField label={t('settings.codexTurnStateStrict')} description={t('settings.codexTurnStateStrictDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
+                      <Switch
+                        checked={settingsForm.codex_turn_state_strict}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_turn_state_strict', checked)}
+                      />
+                    </SettingField>
+                    <SettingField label={t('settings.codexSessionNoBorrow')} description={t('settings.codexSessionNoBorrowDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
+                      <Switch
+                        checked={settingsForm.codex_session_no_borrow_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_session_no_borrow_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.codexSessionNoBorrowHoldSeconds')}
+                      description={t('settings.codexSessionNoBorrowHoldSecondsDesc')}
+                      className={cn(!settingsForm.codex_session_no_borrow_enabled && 'opacity-60')}
+                      channels={CHANNELS_CODEX_ONLY}
+                    >
+                      <DraftNumberInput
+                        min={1}
+                        max={30}
+                        disabled={!settingsForm.codex_session_no_borrow_enabled}
+                        value={settingsForm.codex_session_no_borrow_hold_seconds ?? 20}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_session_no_borrow_hold_seconds: value }))}
+                        onValueCommit={(value) => void autoSaveSettingsPatch({ codex_session_no_borrow_hold_seconds: value })}
+                      />
+                    </SettingField>
+                    <SettingField label={t('settings.codexInitialSessionAdmission')} description={t('settings.codexInitialSessionAdmissionDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
+                      <Switch
+                        checked={settingsForm.codex_initial_session_admission_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_initial_session_admission_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.codexInitialSessionMaxAge')}
+                      description={t('settings.codexInitialSessionMaxAgeDesc')}
+                      className={cn(!settingsForm.codex_initial_session_admission_enabled && 'opacity-60')}
+                      channels={CHANNELS_CODEX_ONLY}
+                    >
+                      <DraftNumberInput
+                        min={1}
+                        max={86400}
+                        disabled={!settingsForm.codex_initial_session_admission_enabled}
+                        value={settingsForm.codex_initial_session_max_age_seconds ?? 180}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_initial_session_max_age_seconds: value }))}
+                        onValueCommit={(value) => void autoSaveSettingsPatch({ codex_initial_session_max_age_seconds: value })}
                       />
                     </SettingField>
                   </div>

@@ -2077,6 +2077,11 @@ export interface SystemSettings {
   session_affinity_spread?: boolean
   session_slot_buffer_enabled: boolean
   session_slot_buffer_seconds: number
+  codex_turn_state_strict?: boolean
+  codex_session_no_borrow_enabled?: boolean
+  codex_session_no_borrow_hold_seconds?: number
+  codex_initial_session_admission_enabled?: boolean
+  codex_initial_session_max_age_seconds?: number
   grok_affinity_mode?: string
   grok_probe_enabled?: boolean
   grok_probe_interval_minutes?: number
