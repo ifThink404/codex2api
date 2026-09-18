@@ -165,14 +165,14 @@ func TestPersistProxyTestResultRefreshesRuntimePool(t *testing.T) {
 	store := newAdminProxyTestStore(t, db)
 	handler := &Handler{db: db, store: store}
 
-	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusError, "", "", 0); err != nil {
+	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("persistProxyTestResult(error) returned error: %v", err)
 	}
 	if got := store.NextProxy(); got != "" {
 		t.Fatalf("NextProxy after error = %q, want empty", got)
 	}
 
-	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
+	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
 		t.Fatalf("persistProxyTestResult(success) returned error: %v", err)
 	}
 	if got := store.NextProxy(); got != "http://proxy.example:8080" {
@@ -204,6 +204,7 @@ func TestPersistProxyTestResultFailsClosedBeforeReloadFailure(t *testing.T) {
 		database.ProxyTestStatusError,
 		"",
 		"",
+		"",
 		0,
 	)
 	if err == nil || !strings.Contains(err.Error(), "reload unavailable") {
@@ -222,7 +223,7 @@ func TestTestProxyRejectsMismatchedURLWithoutChangingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
 		t.Fatalf("seed successful test result: %v", err)
 	}
 	store := newAdminProxyTestStore(t, db)
@@ -409,7 +410,7 @@ func TestTestProxyProbeServiceFailuresAreInconclusive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("InsertProxy returned error: %v", err)
 			}
-			if err := db.UpdateProxyTestResult(ctx, id, proxyServer.URL, database.ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
+			if err := db.UpdateProxyTestResult(ctx, id, proxyServer.URL, database.ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
 				t.Fatalf("seed successful test result: %v", err)
 			}
 			store := newAdminProxyTestStore(t, db)
@@ -852,7 +853,7 @@ func TestTestAllProxiesPersistsResultsAndReloadsPoolOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy(inconclusive) returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, inconclusiveID, inconclusiveURL, database.ProxyTestStatusSuccess, "9.8.7.6", "old", 321); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, inconclusiveID, inconclusiveURL, database.ProxyTestStatusSuccess, "9.8.7.6", "old", "", 321); err != nil {
 		t.Fatalf("seed inconclusive proxy state: %v", err)
 	}
 
@@ -1315,7 +1316,7 @@ func TestCleanErrorProxiesHandlerSynchronizesRuntimeAccounts(t *testing.T) {
 	if _, err := db.InsertProxy(ctx, healthyURL, ""); err != nil {
 		t.Fatalf("InsertProxy(healthy) returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("mark proxy error: %v", err)
 	}
 	accountID, err := db.InsertAccount(ctx, "bound", "rt-bound", errorURL)
@@ -1511,7 +1512,7 @@ func TestCleanErrorProxiesPreservesConcurrentRuntimeRebind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("mark proxy error: %v", err)
 	}
 	accountID, err := db.InsertAccount(ctx, "bound", "rt-bound", errorURL)
@@ -1551,7 +1552,7 @@ func TestCleanErrorProxiesReportsReloadFailureAfterFailClosedRemoval(t *testing.
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
 	store := newAdminProxyTestStore(t, db)
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("mark proxy error: %v", err)
 	}
 

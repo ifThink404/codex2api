@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -26,7 +27,8 @@ const (
 	proxyBatchTestMaxIDs      = 100
 	proxyBatchTestMaxBody     = 64 << 10
 	proxyProbeMaxBody         = 1 << 20
-	proxyProbeIPAPIFields     = "status,message,country,regionName,city,isp,query"
+	proxyProbeIPAPIFields     = "status,message,country,regionName,city,isp,query,timezone"
+	proxyProbeTimezoneMaxLen  = 64
 )
 
 var (
@@ -46,6 +48,7 @@ type proxyProbeResult struct {
 	ISP        string `json:"isp,omitempty"`
 	LatencyMs  int    `json:"latency_ms,omitempty"`
 	Location   string `json:"location,omitempty"`
+	Timezone   string `json:"timezone,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -296,7 +299,21 @@ func parseIPAPIProbeBody(body []byte, latencyMs int) proxyProbeResult {
 		ISP:        isp,
 		LatencyMs:  latencyMs,
 		Location:   joinProxyProbeLocation(country, region, city),
+		Timezone:   validProxyProbeTimezone(result.Get("timezone").String()),
 	}
+}
+
+// validProxyProbeTimezone 仅接受 time.LoadLocation 能加载、且不超过
+// proxyProbeTimezoneMaxLen 个字符的 IANA 时区名，否则返回空字符串。
+func validProxyProbeTimezone(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || utf8.RuneCountInString(raw) > proxyProbeTimezoneMaxLen {
+		return ""
+	}
+	if _, err := time.LoadLocation(raw); err != nil {
+		return ""
+	}
+	return raw
 }
 
 func parseProxyProbeEchoBody(body []byte, latencyMs int) proxyProbeResult {
@@ -511,6 +528,7 @@ func (h *Handler) saveProxyTestResult(ctx context.Context, id int64, expectedURL
 		status,
 		result.IP,
 		result.Location,
+		result.Timezone,
 		result.LatencyMs,
 	); err != nil {
 		return err

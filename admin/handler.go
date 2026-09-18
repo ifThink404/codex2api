@@ -13347,13 +13347,13 @@ func (h *Handler) CleanErrorProxies(c *gin.Context) {
 	})
 }
 
-func (h *Handler) persistProxyTestResult(ctx context.Context, id int64, expectedURL, status, ip, location string, latencyMs int) error {
+func (h *Handler) persistProxyTestResult(ctx context.Context, id int64, expectedURL, status, ip, location, timezone string, latencyMs int) error {
 	if id <= 0 {
 		return nil
 	}
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	if err := h.db.UpdateProxyTestResult(saveCtx, id, expectedURL, status, ip, location, latencyMs); err != nil {
+	if err := h.db.UpdateProxyTestResult(saveCtx, id, expectedURL, status, ip, location, timezone, latencyMs); err != nil {
 		return err
 	}
 	if status == database.ProxyTestStatusError {
@@ -13428,6 +13428,7 @@ func (h *Handler) TestProxy(c *gin.Context) {
 			status,
 			result.IP,
 			result.Location,
+			result.Timezone,
 			result.LatencyMs,
 		); err != nil {
 			respondProxyTestSaveError(c, err, result.Error)

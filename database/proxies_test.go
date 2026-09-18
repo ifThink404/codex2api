@@ -98,10 +98,10 @@ func TestProxyTestStatusLifecycleAndPoolFiltering(t *testing.T) {
 	if got := findProxyRow(t, db, untestedID).TestStatus; got != ProxyTestStatusUntested {
 		t.Fatalf("new proxy test_status = %q, want %q", got, ProxyTestStatusUntested)
 	}
-	if err := db.UpdateProxyTestResult(ctx, successID, "http://success.example:8080", ProxyTestStatusSuccess, "1.2.3.4", "US", 123); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, successID, "http://success.example:8080", ProxyTestStatusSuccess, "1.2.3.4", "US", "", 123); err != nil {
 		t.Fatalf("UpdateProxyTestResult(success) returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID, "http://error.example:8080", ProxyTestStatusError, "stale-ip", "stale-location", 999); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, "http://error.example:8080", ProxyTestStatusError, "stale-ip", "stale-location", "", 999); err != nil {
 		t.Fatalf("UpdateProxyTestResult(error) returned error: %v", err)
 	}
 	disabled := false
@@ -138,7 +138,7 @@ func TestUpdateProxyURLResetsTestStatusOnlyWhenURLChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, id, "http://old.example:8080", ProxyTestStatusSuccess, "1.2.3.4", "US", 123); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, id, "http://old.example:8080", ProxyTestStatusSuccess, "1.2.3.4", "US", "", 123); err != nil {
 		t.Fatalf("UpdateProxyTestResult returned error: %v", err)
 	}
 
@@ -198,13 +198,13 @@ func TestCleanErrorProxiesDeletesAndUnbindsAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy(healthy) returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID1, errorURL1, ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID1, errorURL1, ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("mark error one: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID2, errorURL2, ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID2, errorURL2, ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("mark error two: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, healthyID, healthyURL, ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, healthyID, healthyURL, ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
 		t.Fatalf("mark healthy: %v", err)
 	}
 
@@ -283,10 +283,10 @@ func TestCleanErrorProxiesUsesStableProxySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy(late error) returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("mark initial proxy error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, lateID, lateURL, ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, lateID, lateURL, ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
 		t.Fatalf("mark late proxy healthy: %v", err)
 	}
 	if _, err := db.InsertAccount(ctx, "bound", "rt-bound", errorURL); err != nil {
@@ -327,7 +327,7 @@ func TestCleanErrorProxiesReturnsOnlyActuallyUnboundAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("mark proxy error: %v", err)
 	}
 	unboundID, err := db.InsertAccount(ctx, "unbound", "rt-unbound", errorURL)

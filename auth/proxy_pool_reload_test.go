@@ -45,7 +45,7 @@ func TestReloadProxyPoolLoadsCurrentEnabledRows(t *testing.T) {
 		t.Fatalf("reloaded proxy %q is missing from the membership index", proxyURL)
 	}
 
-	if err := db.UpdateProxyTestResult(ctx, id, proxyURL, database.ProxyTestStatusError, "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, id, proxyURL, database.ProxyTestStatusError, "", "", "", 0); err != nil {
 		t.Fatalf("UpdateProxyTestResult(error) returned error: %v", err)
 	}
 	if err := store.ReloadProxyPool(); err != nil {
