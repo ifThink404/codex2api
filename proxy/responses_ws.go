@@ -431,6 +431,13 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 
 	rawBody = normalizeServiceTierField(rawBody)
 	if err := ValidateResponsesFunctionNames(rawBody); err != nil {
+		// 拦截优先于校验拒绝：见 abortIfPromptBlockPending。
+		if blocked, delegated := h.abortIfPromptBlockPendingWS(c, conn, policyEventID); blocked {
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		apiErr = api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest)
 		_ = writeResponsesWSError(conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, err)
@@ -444,6 +451,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	_, turnHasBinding := h.store.SessionAffinityAccountID(affinityKey)
 	h.rememberSessionAutoLockKey(c, affinityKey)
 	if failure := h.checkSessionAutoLock(c, affinityKey); failure != nil {
+		if blocked, delegated := h.abortIfPromptBlockPendingWS(c, conn, policyEventID); blocked {
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		_ = writeResponsesWSError(conn, failure)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
 	}
@@ -464,6 +477,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	// strip 策略：剥离图片工具能力声明后作为普通文本请求继续（issue #411）。
 	codexBody = applyImageGenerationStripPolicy(c, codexBody)
 	if err := validateResponsesImageGenerationSizes(codexBody); err != nil {
+		if blocked, delegated := h.abortIfPromptBlockPendingWS(c, conn, policyEventID); blocked {
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		apiErr = api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest)
 		_ = writeResponsesWSError(conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, err)
@@ -471,6 +490,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	effectiveModel := effectiveRequestModel(codexBody, model)
 	logEffectiveModel := usageEffectiveModelForMapping(logModel, effectiveModel, mappingApplied)
 	if status, msg := h.enforceAPIKeyLimits(c, effectiveModel); status != 0 {
+		if blocked, delegated := h.abortIfPromptBlockPendingWS(c, conn, policyEventID); blocked {
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		errType := api.ErrorTypeRateLimit
 		errCode := api.ErrCodeRateLimitReached
 		closeCode := websocket.CloseTryAgainLater
@@ -504,6 +529,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}
 	releaseAPIKeyConcurrency, concurrencyErr, ok := h.acquireAPIKeyConcurrencyForWebSocket(c)
 	if !ok {
+		if blocked, delegated := h.abortIfPromptBlockPendingWS(c, conn, policyEventID); blocked {
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		_ = writeResponsesWSError(conn, concurrencyErr)
 		return newResponsesWSCloseError(websocket.CloseTryAgainLater, concurrencyErr.Message, concurrencyErr)
 	}
@@ -519,6 +550,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
 	if compactionAffinityErr != nil {
+		if blocked, delegated := h.abortIfPromptBlockPendingWS(c, conn, policyEventID); blocked {
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		apiErr = compactionProvenanceConflictAPIError()
 		_ = writeResponsesWSError(conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
@@ -630,6 +667,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				if boundID, bound := h.store.SessionAffinityAccountID(affinityKey); bound {
 					if exclude := retryExclusions.ForSelection(); exclude[boundID] {
 						if contextErr := degradeContinuation(fmt.Sprintf("bound account %d excluded by this request", boundID), attempt+1); contextErr != nil {
+							if blocked, delegated := h.abortIfPromptBlockPendingWS(c, conn, policyEventID); blocked {
+								if delegated {
+									return nil
+								}
+								return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+							}
 							_ = writeResponsesWSError(conn, contextErr)
 							return newResponsesWSCloseError(responsesWSContextCloseCode(contextErr), contextErr.Message, contextErr)
 						}
@@ -681,6 +724,18 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			_ = writeResponsesWSError(conn, apiErr)
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
 		}
+		// 选到账号才知道拦不拦；与四个 HTTP 入口对齐：在占 scope 并发位和绑定
+		// 会话亲和之前执行，注定被拦的轮次不会留下「先绑后解」的中间态。
+		// 按这一轮只执行一次，一定早于上游握手。
+		if blocked, delegated := h.enforcePendingPromptBlockWS(c, conn, account, policyEventID); blocked {
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			// 与入口处的语义一致：委托给 NewAPI 的决定保持连接，其余按策略违例关闭。
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		if attempt > 0 {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}
@@ -704,16 +759,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			deviceCfg = &DeviceProfileConfig{StabilizeDeviceProfile: false}
 		}
 		downstreamHeaders := c.Request.Header.Clone()
-		// 选到账号才知道拦不拦；在上游握手之前执行，按这一轮只执行一次。
-		if blocked, delegated := h.enforcePendingPromptBlockWS(c, conn, account, policyEventID); blocked {
-			h.store.Release(account)
-			h.store.UnbindSessionAffinity(affinityKey, account.ID())
-			// 与入口处的语义一致：委托给 NewAPI 的决定保持连接，其余按策略违例关闭。
-			if delegated {
-				return nil
-			}
-			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
-		}
 		if failure := h.enforceInitialSessionAdmission(c, account, c.Request.Header, rawBody, sessionIdentity, turnHasBinding, time.Now()); failure != nil {
 			h.store.Release(account)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())

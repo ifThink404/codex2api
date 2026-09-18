@@ -3890,6 +3890,10 @@ func (h *Handler) Responses(c *gin.Context) {
 
 	rawBody = normalizeServiceTierField(rawBody)
 	if err := ValidateResponsesFunctionNames(rawBody); err != nil {
+		// 拦截优先于校验拒绝：见 abortIfPromptBlockPending。
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest))
 		return
 	}
@@ -3903,6 +3907,9 @@ func (h *Handler) Responses(c *gin.Context) {
 	_, turnHasBinding := h.store.SessionAffinityAccountID(affinityKey)
 	h.rememberSessionAutoLockKey(c, affinityKey)
 	if failure := h.checkSessionAutoLock(c, affinityKey); failure != nil {
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		api.SendErrorWithStatus(c, failure, http.StatusBadRequest)
 		return
 	}
@@ -3936,6 +3943,9 @@ func (h *Handler) Responses(c *gin.Context) {
 		return openAIResponsesBody
 	}
 	if err := validateResponsesImageGenerationSizes(codexBody); err != nil {
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest))
 		return
 	}
@@ -3971,6 +3981,9 @@ func (h *Handler) Responses(c *gin.Context) {
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
 	if compactionAffinityErr != nil {
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		sendCompactionProvenanceConflict(c)
 		return
 	}
@@ -5927,6 +5940,10 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 	rawBody = normalizeServiceTierField(rawBody)
 	if err := ValidateResponsesFunctionNames(rawBody); err != nil {
+		// 拦截优先于校验拒绝：见 abortIfPromptBlockPending。
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest))
 		return
 	}
@@ -5956,6 +5973,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// strip 策略：剥离图片工具能力声明后作为普通文本请求继续（issue #411）。
 	codexBody = applyImageGenerationStripPolicy(c, codexBody)
 	if err := validateResponsesImageGenerationSizes(codexBody); err != nil {
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest))
 		return
 	}
@@ -5985,6 +6005,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
 	if compactionAffinityErr != nil {
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		sendCompactionProvenanceConflict(c)
 		return
 	}
@@ -6028,6 +6051,10 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				return
 			}
 			if compactionAffinity.Known && !retryExclusions.CanContinueTransientCycle() {
+				// 这条分支终结请求，不会再往下走到重试选号：待执行的拦截在此兑现。
+				if h.abortIfPromptBlockPending(c) {
+					return
+				}
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					return
 				}
@@ -6035,6 +6062,10 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				return
 			}
 			if continuationUnavailable && !relayContinuationAttempted && !retryExclusions.CanContinueTransientCycle() {
+				// 同上：终结分支。
+				if h.abortIfPromptBlockPending(c) {
+					return
+				}
 				if msg := scopeBudgetExhaustedMessage(c); msg != "" {
 					if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 						return
@@ -6800,6 +6831,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 2. 翻译请求：OpenAI Chat → Codex Responses
 	codexBody, err := TranslateRequest(rawBody)
 	if err != nil {
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Request translation failed: "+err.Error(), api.ErrorTypeInvalidRequest))
 		return
 	}

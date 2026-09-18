@@ -177,6 +177,22 @@ func (h *Handler) enforcePendingPromptBlockWS(c *gin.Context, conn *websocket.Co
 	return blocked, delegated
 }
 
+// abortIfPromptBlockPending 用在「判」与「拦」之间的每一条早退分支上:请求还没选号
+// 就要结束时,先把待执行的拦截按原样写出去。拦截优先于校验/配额的拒绝——否则客户端
+// 只要在命中的请求里多带一个非法字段(例如 tools[0].name=""),就能让每一次命中都
+// 不写会话锁、不给 NewAPI 下发决策,只留一条审计。
+//
+// 账号传 nil 与「选不到账号」同义:这时还没选号,没有任何账号能豁免。代价是
+// 畸形请求在豁免账号上也会被拦——可接受:豁免的是内容策略,不是请求合法性。
+func (h *Handler) abortIfPromptBlockPending(c *gin.Context) bool {
+	return h.enforcePendingPromptBlock(c, nil)
+}
+
+// abortIfPromptBlockPendingWS 是 WS 版本,语义与 abortIfPromptBlockPending 一致。
+func (h *Handler) abortIfPromptBlockPendingWS(c *gin.Context, conn *websocket.Conn, policyEventID string) (blocked bool, delegatedToNewAPI bool) {
+	return h.enforcePendingPromptBlockWS(c, conn, nil, policyEventID)
+}
+
 // waivePendingPromptBlock 处理账号级豁免:放行、计数、审计,并清掉中间态,
 // 使同一请求后续再调用 enforce* 时不会重复审计。
 func (h *Handler) waivePendingPromptBlock(c *gin.Context, pending *pendingPromptBlock, account *auth.Account) bool {

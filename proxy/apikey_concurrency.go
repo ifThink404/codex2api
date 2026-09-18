@@ -102,6 +102,10 @@ func (h *Handler) acquireAPIKeyConcurrency(c *gin.Context) (func(), bool) {
 	if ok {
 		return release, true
 	}
+	// 同 enforceAPIKeyLimitsAndReply：待执行的 prompt 拦截优先于并发拒绝。
+	if h.abortIfPromptBlockPending(c) {
+		return nil, false
+	}
 	msg := fmt.Sprintf("API key concurrency limit exceeded: %d inflight requests (max %d)", current, row.Limits.MaxConcurrency)
 	api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeRateLimitReached, msg, api.ErrorTypeRateLimit), http.StatusTooManyRequests)
 	return nil, false

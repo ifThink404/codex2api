@@ -8,7 +8,28 @@ import (
 
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
+
+// blockViaProductionPromptPath 走五个 Codex 入口现在真正使用的那一对：选号前判定
+// （inspectPromptFilterOpenAIDeferred）+ 选号后执行（enforcePendingPromptBlock）。
+// 账号传 nil = 没有账号能豁免，与「选不到账号」「早退分支」同一条路径。
+// 直接调用 inspectPromptFilterOpenAI 的旧写法测不到生产路径：没有入口再调用它。
+func blockViaProductionPromptPath(h *Handler, c *gin.Context, body []byte) bool {
+	if h.inspectPromptFilterOpenAIDeferred(c, body, "/v1/responses", "gpt-5.5") {
+		// 立刻硬拒：会话已被锁定 / 必需的 NewAPI 身份缺失。
+		return true
+	}
+	return h.enforcePendingPromptBlock(c, nil)
+}
+
+// blockViaProductionPromptPathWS 是 WS 入口的同一对。
+func blockViaProductionPromptPathWS(h *Handler, c *gin.Context, conn *websocket.Conn, body []byte, eventID string) (blocked bool, delegated bool) {
+	if blocked, delegated := h.inspectPromptFilterOpenAIForWebSocketDeferred(c, conn, body, "/v1/responses", "gpt-5.5", eventID); blocked {
+		return true, delegated
+	}
+	return h.enforcePendingPromptBlockWS(c, conn, nil, eventID)
+}
 
 // 发往上游前扼杀:本地 block 必须立即锁定会话。
 //
@@ -53,7 +74,7 @@ func assertEvadesLocalRegex(t *testing.T, handler *Handler, body []byte, session
 	c.Request.Header.Set("Session-ID", sessionID)
 	c.Set(contextAPIKeyID, int64(902))
 	setIngressRequestBodyIfAbsent(c, body)
-	if handler.inspectPromptFilterOpenAI(c, body, "/v1/responses", "gpt-5.5") {
+	if blockViaProductionPromptPath(handler, c, body) {
 		t.Fatal("绕过变形已被本地正则拦下,该用例无法再证明会话锁的作用;请换一个仍能绕过的变形")
 	}
 }
@@ -68,7 +89,7 @@ func TestLocalBlockLocksConversationBeforeReachingUpstream(t *testing.T) {
 	blatantBody := promptRequestBody(t, blatantIntentBlockedByLocalRegex)
 	first := signedBoundNewAPIPolicyContext(t, "local-block-lock-first", identity, blatantBody, 101, "gateway-a", "gateway-a-secret", fingerprint)
 	setIngressRequestBodyIfAbsent(first, blatantBody)
-	if blocked := handler.inspectPromptFilterOpenAI(first, blatantBody, "/v1/responses", "gpt-5.5"); !blocked {
+	if blocked := blockViaProductionPromptPath(handler, first, blatantBody); !blocked {
 		t.Fatal("锚点样本未被本地规则拦截,测试前提不成立")
 	}
 
@@ -87,7 +108,7 @@ func TestLocalBlockLocksConversationBeforeReachingUpstream(t *testing.T) {
 	assertEvadesLocalRegex(t, handler, evasiveBody, "guard-signed-fresh")
 	second := signedBoundNewAPIPolicyContext(t, "local-block-lock-evasive", identity, evasiveBody, 101, "gateway-a", "gateway-a-secret", fingerprint)
 	setIngressRequestBodyIfAbsent(second, evasiveBody)
-	if blocked := handler.inspectPromptFilterOpenAI(second, evasiveBody, "/v1/responses", "gpt-5.5"); !blocked {
+	if blocked := blockViaProductionPromptPath(handler, second, evasiveBody); !blocked {
 		t.Fatal("绕过正则的变形在已锁定会话中被放行到上游")
 	}
 	metadata := policyDecisionMetadataFromHeaders(second.Writer.Header())
@@ -108,7 +129,7 @@ func TestLocalBlockDoesNotLockUnrelatedConversation(t *testing.T) {
 	blatantBody := promptRequestBody(t, blatantIntentBlockedByLocalRegex)
 	blocked := signedBoundNewAPIPolicyContext(t, "local-block-scope-first", identity, blatantBody, 101, "gateway-a", "gateway-a-secret", "0123456789abcdef0123456789abcdef")
 	setIngressRequestBodyIfAbsent(blocked, blatantBody)
-	if !handler.inspectPromptFilterOpenAI(blocked, blatantBody, "/v1/responses", "gpt-5.5") {
+	if !blockViaProductionPromptPath(handler, blocked, blatantBody) {
 		t.Fatal("锚点样本未被本地规则拦截,测试前提不成立")
 	}
 
@@ -116,7 +137,7 @@ func TestLocalBlockDoesNotLockUnrelatedConversation(t *testing.T) {
 	cleanBody := promptRequestBody(t, "帮我整理一下今天的会议纪要。")
 	other := signedBoundNewAPIPolicyContext(t, "local-block-scope-other", identity, cleanBody, 101, "gateway-a", "gateway-a-secret", "fedcba9876543210fedcba9876543210")
 	setIngressRequestBodyIfAbsent(other, cleanBody)
-	if handler.inspectPromptFilterOpenAI(other, cleanBody, "/v1/responses", "gpt-5.5") {
+	if blockViaProductionPromptPath(handler, other, cleanBody) {
 		t.Fatal("无关会话的正常请求被其他会话的锁拦截")
 	}
 }
@@ -135,7 +156,7 @@ func TestConversationLockIdentityFallsBackWithoutNewAPISignature(t *testing.T) {
 	first.Set(contextAPIKeyID, int64(101))
 	setIngressRequestBodyIfAbsent(first, blatantBody)
 
-	if blocked := handler.inspectPromptFilterOpenAI(first, blatantBody, "/v1/responses", "gpt-5.5"); !blocked {
+	if blocked := blockViaProductionPromptPath(handler, first, blatantBody); !blocked {
 		t.Fatal("锚点样本未被本地规则拦截,测试前提不成立")
 	}
 	lockIdentity, ok := handler.resolvePromptConversationLockIdentity(first, handler.promptFilterConfigForRequest(first), ingressRequestBody(first, nil))
@@ -154,7 +175,7 @@ func TestConversationLockIdentityFallsBackWithoutNewAPISignature(t *testing.T) {
 	second.Request.Header.Set("Session-ID", "codex-session-7f3a91")
 	second.Set(contextAPIKeyID, int64(101))
 	setIngressRequestBodyIfAbsent(second, evasiveBody)
-	if blocked := handler.inspectPromptFilterOpenAI(second, evasiveBody, "/v1/responses", "gpt-5.5"); !blocked {
+	if blocked := blockViaProductionPromptPath(handler, second, evasiveBody); !blocked {
 		t.Fatal("无 NewAPI 签名时,绕过正则的变形被放行到上游")
 	}
 
@@ -165,7 +186,7 @@ func TestConversationLockIdentityFallsBackWithoutNewAPISignature(t *testing.T) {
 	fresh.Request.Header.Set("Session-ID", "codex-session-other")
 	fresh.Set(contextAPIKeyID, int64(101))
 	setIngressRequestBodyIfAbsent(fresh, cleanBody)
-	if handler.inspectPromptFilterOpenAI(fresh, cleanBody, "/v1/responses", "gpt-5.5") {
+	if blockViaProductionPromptPath(handler, fresh, cleanBody) {
 		t.Fatal("不同会话标识的正常请求被误锁")
 	}
 }
@@ -181,7 +202,7 @@ func TestCodexLocalFallbackSessionHashMatchesAuditAndLockLookup(t *testing.T) {
 	c.Set(contextAPIKeyID, int64(999)) // 未绑定 NewAPI，走 codex-local 降级身份。
 	setIngressRequestBodyIfAbsent(c, body)
 
-	if blocked := handler.inspectPromptFilterOpenAI(c, body, "/v1/responses", "gpt-5.5"); !blocked {
+	if blocked := blockViaProductionPromptPath(handler, c, body); !blocked {
 		t.Fatal("本地规则未拦截测试输入")
 	}
 	identity, ok := promptConversationLockFallbackIdentity(c)
@@ -313,7 +334,7 @@ func TestWebSocketLocalBlockLocksConversationBeforeReachingUpstream(t *testing.T
 	blatantBody := promptRequestBody(t, blatantIntentBlockedByLocalRegex)
 	first := newWSContext("codex-ws-session-1", blatantBody)
 	// conn 为 nil:写回错误帧会返回 client-gone 并被忽略,判定与锁定逻辑照常执行。
-	if blocked, _ := handler.inspectPromptFilterOpenAIForWebSocket(first, nil, blatantBody, "/v1/responses", "gpt-5.5", "evt-ws-1"); !blocked {
+	if blocked, _ := blockViaProductionPromptPathWS(handler, first, nil, blatantBody, "evt-ws-1"); !blocked {
 		t.Fatal("WS 路径未拦截锚点样本,测试前提不成立")
 	}
 
@@ -328,14 +349,14 @@ func TestWebSocketLocalBlockLocksConversationBeforeReachingUpstream(t *testing.T
 	evasiveBody := promptRequestBody(t, evasiveVariantThatDefeatsLocalRegex)
 	assertEvadesLocalRegex(t, handler, evasiveBody, "guard-ws-fresh")
 	second := newWSContext("codex-ws-session-1", evasiveBody)
-	if blocked, _ := handler.inspectPromptFilterOpenAIForWebSocket(second, nil, evasiveBody, "/v1/responses", "gpt-5.5", "evt-ws-2"); !blocked {
+	if blocked, _ := blockViaProductionPromptPathWS(handler, second, nil, evasiveBody, "evt-ws-2"); !blocked {
 		t.Fatal("WS 路径:绕过正则的变形在已锁定会话中被放行到上游")
 	}
 
 	// 不同 WS 会话不受牵连。
 	cleanBody := promptRequestBody(t, "帮我整理一下今天的会议纪要。")
 	fresh := newWSContext("codex-ws-session-other", cleanBody)
-	if blocked, _ := handler.inspectPromptFilterOpenAIForWebSocket(fresh, nil, cleanBody, "/v1/responses", "gpt-5.5", "evt-ws-3"); blocked {
+	if blocked, _ := blockViaProductionPromptPathWS(handler, fresh, nil, cleanBody, "evt-ws-3"); blocked {
 		t.Fatal("WS 路径:无关会话的正常请求被误锁")
 	}
 }

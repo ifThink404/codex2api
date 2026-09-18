@@ -333,6 +333,12 @@ func (h *Handler) enforceAPIKeyLimitsAndReply(c *gin.Context, model string) bool
 	if status == 0 {
 		return false
 	}
+	// 待执行的 prompt 拦截优先于配额拒绝：否则客户端把自己的配额打爆，
+	// 就能让命中的请求不写会话锁、不给 NewAPI 下发决策（见 abortIfPromptBlockPending）。
+	// 走立刻拦截的入口不会有待执行状态，这里是空操作。
+	if h.abortIfPromptBlockPending(c) {
+		return true
+	}
 	SendAPIKeyLimitError(c, status, msg)
 	return true
 }

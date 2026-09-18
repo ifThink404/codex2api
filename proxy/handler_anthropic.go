@@ -508,6 +508,10 @@ func (h *Handler) Messages(c *gin.Context) {
 	originalModel := model
 	effectiveModel := effectiveRequestModel(routingBody, model)
 	if isMediaOnlyModel(effectiveModel) {
+		// 拦截优先于校验拒绝：见 abortIfPromptBlockPending。
+		if h.abortIfPromptBlockPending(c) {
+			return
+		}
 		sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("model %s is only supported on %s", effectiveModel, mediaOnlyModelEndpoints(effectiveModel)))
 		return
 	}
