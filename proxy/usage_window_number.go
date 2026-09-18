@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 )
 
@@ -64,11 +65,33 @@ func codexWindowNumberFromID(windowID string) string {
 	return strconv.FormatUint(number, 10)
 }
 
+// windowNumberAppliesToAccount：窗口号只对官方 Codex OAuth 账号有意义。它是
+// Codex 客户端的本地窗口序号，只有官方通道上的请求才保证由 Codex 客户端发出；
+// relay / Grok / Antigravity / Claude 账号服务的客户端可以是任何东西，它们即使
+// 带了 X-Codex-Window-Id，那串 <uuid>:<n> 也不具备同一套语义，记下来只会让用量页
+// 把互不相干的窗口号并排显示。判据与 turn-state 托管同源（turnStateVaultAppliesTo），
+// 但刻意不复用那个函数：托管还受 CodexTurnStateVaultEnabled 开关控制，
+// 而窗口号记录与那个开关无关。
+func windowNumberAppliesToAccount(account *auth.Account) bool {
+	return account != nil && !account.IsRelayStyle()
+}
+
 // populateUsageWindowNumber 在日志落库前补上窗口号。放在 logUsageForRequest 的
 // 统一填充链里，而不是逐个 UsageLogInput 字面量里手写：漏掉一条就等于该路径的
 // 窗口号永久缺失，而这条信息只有请求侧拿得到。
-func populateUsageWindowNumber(c *gin.Context, input *database.UsageLogInput) {
+//
+// 挂在 Handler 上是因为「是不是官方账号」只有号池答得出：UsageLogInput 只带
+// AccountID，日志侧要回查一次（与 logUsage 固化 Channel 时同源的查法）。
+func (h *Handler) populateUsageWindowNumber(c *gin.Context, input *database.UsageLogInput) {
 	if c == nil || input == nil || input.WindowNumber != "" {
+		return
+	}
+	// 账号无从判定时一律不记：宁可缺一个展示字段，也不把非 Codex 客户端的
+	// 窗口号混进来。
+	if h == nil || h.store == nil || input.AccountID <= 0 {
+		return
+	}
+	if !windowNumberAppliesToAccount(h.store.FindByID(input.AccountID)) {
 		return
 	}
 	var header http.Header
