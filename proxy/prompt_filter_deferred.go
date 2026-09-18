@@ -31,7 +31,6 @@ type pendingPromptBlock struct {
 	signedBody []byte
 	endpoint   string
 	model      string
-	transport  promptfilter.Transport
 	writeBlock func(*gin.Context, string)
 	executed   bool
 	blocked    bool
@@ -46,6 +45,16 @@ func PromptPolicyCounters() (exempted, blockedAfterSelection uint64) {
 func resetPromptPolicyCountersForTest() {
 	promptPolicyExempted.Store(0)
 	promptPolicyBlockedAfterSelection.Store(0)
+}
+
+// clearPendingPromptBlock 清掉上一轮遗留的中间态。一条 WebSocket 连接的每一轮都
+// 复用同一个 gin.Context:判过但没执行的那一轮如果不清,后面一条干净的请求会在
+// enforcePendingPromptBlockWS 里重放上一轮的拦截。
+func clearPendingPromptBlock(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(pendingPromptBlockContextKey, nil)
 }
 
 func pendingPromptBlockFromContext(c *gin.Context) *pendingPromptBlock {
@@ -75,9 +84,11 @@ func (h *Handler) inspectPromptFilterOpenAIDeferred(c *gin.Context, rawBody []by
 	}
 	pending, stop := h.evaluatePromptFilterHTTP(c, rawBody, endpoint, model, h.rejectRequiredNewAPIIdentity)
 	if stop {
+		clearPendingPromptBlock(c)
 		return true
 	}
 	if pending == nil {
+		clearPendingPromptBlock(c)
 		return false
 	}
 	c.Set(pendingPromptBlockContextKey, pending)
@@ -92,9 +103,11 @@ func (h *Handler) inspectPromptFilterAnthropicDeferred(c *gin.Context, rawBody [
 	}
 	pending, stop := h.evaluatePromptFilterHTTP(c, rawBody, endpoint, model, h.rejectRequiredAnthropicNewAPIIdentity)
 	if stop {
+		clearPendingPromptBlock(c)
 		return true
 	}
 	if pending == nil {
+		clearPendingPromptBlock(c)
 		return false
 	}
 	pending.writeBlock = writeAnthropicPromptBlock
@@ -110,9 +123,11 @@ func (h *Handler) inspectPromptFilterOpenAIForWebSocketDeferred(c *gin.Context, 
 	}
 	pending, blocked, delegated := h.evaluatePromptFilterWS(c, conn, rawBody, endpoint, model, policyEventID)
 	if blocked {
+		clearPendingPromptBlock(c)
 		return true, delegated
 	}
 	if pending == nil {
+		clearPendingPromptBlock(c)
 		return false, false
 	}
 	if c != nil {
@@ -170,7 +185,7 @@ func (h *Handler) waivePendingPromptBlock(c *gin.Context, pending *pendingPrompt
 	}
 	promptPolicyExempted.Add(1)
 	h.logPromptFilterExemption(c, pending, account)
-	c.Set(pendingPromptBlockContextKey, nil)
+	clearPendingPromptBlock(c)
 	return true
 }
 

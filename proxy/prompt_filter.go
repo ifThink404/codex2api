@@ -116,7 +116,6 @@ func (h *Handler) evaluatePromptFilterHTTP(
 		signedBody: signedBody,
 		endpoint:   endpoint,
 		model:      model,
-		transport:  promptfilter.TransportHTTP,
 	}, false
 }
 
@@ -251,12 +250,16 @@ func (h *Handler) logPromptFilterVerdictWithDecisionAndAccount(c *gin.Context, e
 	if h.store != nil {
 		cfg = h.promptFilterConfigForRequest(c)
 		logMatches = cfg.LogMatches
+		// 只有 local_filter 受 LogMatches 开关约束。account_exempt 是「本该拦住但按
+		// 账号策略放行」,无论开关如何都必须留痕,否则运维看不到任何一次豁免。
 		if source == "local_filter" && !logMatches {
 			return
 		}
 	}
 	auditContext := h.capturePromptFilterAuditContext(c)
-	if verdict.Action == promptfilter.ActionBlock && decision != nil && auditContext.NewAPIPolicyStatus == "verified" {
+	// 豁免行只是「判定为 block 但放行了」,并没有向客户端返回任何已签名的策略决策。
+	// 给它盖上 signed_response + decision_id 会凭空造出一条查不到的决策记录。
+	if verdict.Action == promptfilter.ActionBlock && decision != nil && source != promptFilterSourceAccountExempt && auditContext.NewAPIPolicyStatus == "verified" {
 		if cached, exists := c.Get(newAPIPolicyMetaContextKey); exists {
 			if policyContext, ok := cached.(verifiedNewAPIPolicyContext); ok {
 				metadata := buildNewAPIPolicyDecisionMetadataWithSecret(

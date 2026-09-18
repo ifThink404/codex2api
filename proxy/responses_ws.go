@@ -1747,7 +1747,6 @@ func (h *Handler) evaluatePromptFilterWS(c *gin.Context, conn *websocket.Conn, r
 		rawBody:    rawBody,
 		endpoint:   endpoint,
 		model:      model,
-		transport:  promptfilter.TransportWebSocket,
 	}, false, false
 }
 
