@@ -82,6 +82,15 @@ const coverageAntigravityGeminiSSE = `data: {"response":{"candidates":[{"content
 
 const coverageAntigravityModel = "gemini-3.6-flash-low"
 
+// 原生透传的非流式失败信封：上游 HTTP 200，但 Responses 对象自报 status=failed。
+// 整份信封就在手里，model 也是上游自己声明的，这条失败行同样必须记下来。
+// 刻意用不可重试的 context_length_exceeded：可重试的失败会被静默换号，这条 attempt
+// 根本不落日志，测不到观测点。
+const coverageGrokFailedResponsesJSON = `{"id":"resp_grok","object":"response","status":"failed","status_code":400,"model":"` +
+	coverageUpstreamNativeFailedModel + `","error":{"code":"context_length_exceeded","message":"input too large"}}`
+
+const coverageUpstreamNativeFailedModel = "grok-4.6"
+
 const coverageMessagesJSON = `{"id":"msg_cov","type":"message","role":"assistant","model":"` + coverageUpstreamClaudeModel +
 	`","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":8,"output_tokens":5}}`
 
@@ -103,9 +112,12 @@ type upstreamModelBranchCase struct {
 	want     string
 	// official 标记调度账号是官方 Codex OAuth 账号：只有它才记录窗口号。
 	official bool
-	// wantStatus 是这条分支期望的落库状态码与下游状态码；0 表示 200。
-	// 上游用 response.failed 信封宣告失败的分支同样必须记下上游自报模型。
+	// wantStatus 是这条分支期望的落库状态码；0 表示 200。上游用失败信封宣告失败的
+	// 分支同样必须记下上游自报模型。
 	wantStatus int
+	// wantDownstream 是下游看到的状态码；0 表示跟 wantStatus 一致。失败信封会让
+	// 这个账号被排除，重试耗尽后下游拿到的是 503 无可用账号，与落库码不同。
+	wantDownstream int
 }
 
 func upstreamModelCoverageCases() []upstreamModelBranchCase {
@@ -298,6 +310,16 @@ func upstreamModelCoverageCases() []upstreamModelBranchCase {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			// 原生透传的非流式失败信封：上游 HTTP 200，Responses 对象自报 status=failed。
+			// 整份信封就在手里，model 是上游自己声明的，这条失败行必须和成功行一样记下来。
+			name: "responses/grok-native/non-stream/failed-envelope", path: "/v1/responses",
+			body:        `{"model":"grok-4.5","input":"hi","stream":false}`,
+			contentType: "application/json", payload: coverageGrokFailedResponsesJSON,
+			account:    grokNativeAccount(GrokProtocolResponses, []string{"grok-4.5"}),
+			want:       coverageUpstreamNativeFailedModel,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			// 适配器合成的信封里 model 写的是网关这次请求用的模型，不是上游声明。
 			// 记下来就等于「从请求反推」，这一列明令禁止——必须留空。
 			name: "responses/antigravity-oauth/stream", path: "/v1/responses",
@@ -415,7 +437,10 @@ func runUpstreamModelBranch(t *testing.T, tc upstreamModelBranchCase) []*databas
 	request.Header.Set(codexWindowIDHeader, coverageWindowID)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
-	wantDownstream := tc.wantStatus
+	wantDownstream := tc.wantDownstream
+	if wantDownstream == 0 {
+		wantDownstream = tc.wantStatus
+	}
 	if wantDownstream == 0 {
 		wantDownstream = http.StatusOK
 	}

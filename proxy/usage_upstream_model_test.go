@@ -48,8 +48,10 @@ func TestClearSynthesizedUpstreamResponseModel(t *testing.T) {
 		{"官方 Codex 保留", 3, "observed-model"},
 		{"中转保留", 4, "observed-model"},
 		{"Claude 保留", 5, "observed-model"},
-		{"账号不在池中时保留", 999, "observed-model"},
-		{"没有账号归属时保留", 0, "observed-model"},
+		// 判不出账号一律抹掉：删号后那条值究竟是上游声明还是适配器合成的已经无从
+		// 分辨，留着它就可能让一条请求回显冒充「上游确认」。
+		{"账号不在池中时抹掉（fail closed）", 999, ""},
+		{"没有账号归属时抹掉（fail closed）", 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := &database.UsageLogInput{AccountID: tc.accountID, UpstreamResponseModel: "observed-model"}

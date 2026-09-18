@@ -1037,6 +1037,13 @@ func forwardGrokNativeResponseObserved(readCtx context.Context, c *gin.Context, 
 		if err != nil {
 			return nil, classifyStreamOutcome(nil, err, nil, false), false, 0
 		}
+		// 观测紧跟读取，和流式那边一样（下面每帧一次）。往后挪一行都不行：下面三处
+		// 提前 return（上游自报失败、续跑截止、下游写失败）手里都已经拿着完整信封，
+		// 信封里的 model 正是这一列要记的上游声明。上游 HTTP 200 却在体内声明
+		// status=failed 是最常见的一种，漏掉它这条失败行就永远空着。
+		if observe != nil {
+			observe(body)
+		}
 		if failure, failed := protocolNonStreamFailure(protocol, body); failed {
 			return grokNativeUsage(protocol, body), failure, false, 0
 		}
@@ -1054,9 +1061,6 @@ func forwardGrokNativeResponseObserved(readCtx context.Context, c *gin.Context, 
 		written, writeErr := c.Writer.Write(body)
 		if writeErr != nil {
 			return usage, classifyStreamOutcome(nil, nil, writeErr, true), written > 0, 0
-		}
-		if observe != nil {
-			observe(body)
 		}
 		return usage, streamOutcome{logStatusCode: http.StatusOK}, len(body) > 0, 0
 	}

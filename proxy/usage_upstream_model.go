@@ -34,14 +34,26 @@ func upstreamResponseModelIsGatewaySynthesized(account *auth.Account) bool {
 // 放在 logUsage 这个总出口，而不是逐个观测点加判断：观测点散在六处读循环里，
 // 漏掉一个就等于放行一条假声明，而这个判断只要账号、不要请求上下文。logUsage
 // 又是所有写入路径（含不走 logUsageForRequest 的 logLiveUsage）的必经之地。
+//
+// 判不出账号就抹掉，不是保留——这一列宁缺毋滥。账号刚被删除、或日志行根本没有
+// 账号归属时，我们无从知道那个值是上游声明还是适配器合成的；留着它意味着一条
+// 可能是请求回显的值会在用量页上冒充「上游确认」，那正是这一列最不能出的错。
+// 抹掉最多丢一格展示数据，而且只影响已经离开号池的账号。
 func (h *Handler) clearSynthesizedUpstreamResponseModel(input *database.UsageLogInput) {
+	// 号池没装上（测试/嵌入式调用）时整个判定不成立，保持原样：那不是「账号未知」，
+	// 而是这道闸门压根没接上，替调用方擅自清数据会让行为随接线方式变化。
 	if h == nil || h.store == nil || input == nil {
 		return
 	}
-	if input.UpstreamResponseModel == "" || input.AccountID <= 0 {
+	if input.UpstreamResponseModel == "" {
 		return
 	}
-	if upstreamResponseModelIsGatewaySynthesized(h.store.FindByID(input.AccountID)) {
+	if input.AccountID <= 0 {
+		input.UpstreamResponseModel = ""
+		return
+	}
+	account := h.store.FindByID(input.AccountID)
+	if account == nil || upstreamResponseModelIsGatewaySynthesized(account) {
 		input.UpstreamResponseModel = ""
 	}
 }
