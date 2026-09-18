@@ -10,6 +10,7 @@ import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
 import SubscriptionBadge from "../components/SubscriptionBadge";
 import {
   buildProxyBindingContext,
+  resolveAccountProxyBinding,
   type ProxyBindingContext,
 } from "../lib/accountProxyBinding";
 import Modal from "../components/Modal";
@@ -462,6 +463,10 @@ function persistAccountVisibleColumns(
 }
 
 const ACCOUNT_VIEW_MODE_KEY = "codex2api:accounts:view-mode";
+// 账号级策略的取值直接跟着 AccountRow 走，后端加值时这里自动跟上。
+type PromptFilterPolicy = NonNullable<AccountRow["prompt_filter_policy"]>;
+type EgressPolicy = NonNullable<AccountRow["egress_policy"]>;
+type SessionGuardsPolicy = NonNullable<AccountRow["session_guards_policy"]>;
 type AccountViewMode = "table" | "grid";
 type AccountCardVariant = "mobile" | "grid" | "personal";
 type EmailDomainStat = {
@@ -1408,6 +1413,11 @@ const AccountTableRow = memo(function AccountTableRow({
                                     actions.openQuickProxyEditor(account)
                                   }
                                 />
+                                <AccountPolicyBadges
+                                  account={account}
+                                  ctx={proxyCtx}
+                                  className="mt-1"
+                                />
                               </TableCell>
                             )}
                             {visibleColumns.priority && (
@@ -1876,6 +1886,12 @@ export default function Accounts() {
   );
   const [concurrencyInput, setConcurrencyInput] = useState("");
   const [skipWarmTier, setSkipWarmTier] = useState(false);
+  // 账号级策略：三列都以 inherit 为默认，只有显式覆盖才会脱离全局设置。
+  const [promptFilterPolicy, setPromptFilterPolicy] =
+    useState<PromptFilterPolicy>("inherit");
+  const [egressPolicy, setEgressPolicy] = useState<EgressPolicy>("inherit");
+  const [sessionGuardsPolicy, setSessionGuardsPolicy] =
+    useState<SessionGuardsPolicy>("inherit");
   const [editAutoPause5hThresholdInput, setEditAutoPause5hThresholdInput] =
     useState("");
   const [editAutoPause7dThresholdInput, setEditAutoPause7dThresholdInput] =
@@ -2201,12 +2217,17 @@ export default function Accounts() {
     label = t("accounts.proxyUrl"),
     placeholder = t("accounts.proxyUrlPlaceholder"),
     disabled = false,
+    accountTimezone,
+    onSyncTimezone,
   }: {
     value: string;
     onChange: (value: string) => void;
     label?: string;
     placeholder?: string;
     disabled?: boolean;
+    /** 传了才比对出口时区;添加账号时还没有账号时区可比。 */
+    accountTimezone?: string;
+    onSyncTimezone?: (timezone: string) => Promise<void>;
   }) => (
     <ProxyField
       value={value}
@@ -2216,6 +2237,8 @@ export default function Accounts() {
       labelClassName="text-sm"
       placeholder={placeholder}
       disabled={disabled}
+      accountTimezone={accountTimezone}
+      onSyncTimezone={onSyncTimezone}
     />
   );
 
@@ -5531,6 +5554,9 @@ export default function Accounts() {
         : String(account.base_concurrency_override),
     );
     setSkipWarmTier(account.skip_warm_tier ?? false);
+    setPromptFilterPolicy(account.prompt_filter_policy ?? "inherit");
+    setEgressPolicy(account.egress_policy ?? "inherit");
+    setSessionGuardsPolicy(account.session_guards_policy ?? "inherit");
     setEditAutoPause5hThresholdInput(
       formatQuotaAutoPausePercentInput(account.auto_pause_5h_threshold),
     );
@@ -5608,6 +5634,9 @@ export default function Accounts() {
     setConcurrencyMode("default");
     setConcurrencyInput("");
     setSkipWarmTier(false);
+    setPromptFilterPolicy("inherit");
+    setEgressPolicy("inherit");
+    setSessionGuardsPolicy("inherit");
     setEditAutoPause5hThresholdInput("");
     setEditAutoPause7dThresholdInput("");
     setEditAutoPause5hDisabled(false);
@@ -5754,6 +5783,9 @@ export default function Accounts() {
         base_concurrency_override:
           concurrencyMode === "custom" ? parsedBaseConcurrency : null,
         skip_warm_tier: skipWarmTier,
+        prompt_filter_policy: promptFilterPolicy,
+        egress_policy: egressPolicy,
+        session_guards_policy: sessionGuardsPolicy,
         allowed_api_key_ids: allowedAPIKeySelection,
         proxy_url: editProxyUrl.trim() || null,
         tags: editTags,
@@ -9644,6 +9676,97 @@ export default function Accounts() {
                           </div>
                         </div>
 
+                        {/* 账号级策略：prompt 检测 / 出口 / 会话防护 */}
+                        <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
+                          <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
+                            <ShieldCheck className="size-4 text-sky-500" />
+                            <span>{t("accounts.policySectionTitle")}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                            {t("accounts.policySectionHint")}
+                          </p>
+                          <div className="mt-3.5 grid gap-4 md:grid-cols-3">
+                            <div className="space-y-1.5">
+                              <span className="block text-xs font-semibold text-muted-foreground">
+                                {t("accounts.policyPromptFilterLabel")}
+                              </span>
+                              <Select
+                                value={promptFilterPolicy}
+                                onValueChange={(next) =>
+                                  setPromptFilterPolicy(
+                                    next === "exempt" ? "exempt" : "inherit",
+                                  )
+                                }
+                                options={[
+                                  {
+                                    value: "inherit",
+                                    label: t("accounts.policyPromptFilterInherit"),
+                                  },
+                                  {
+                                    value: "exempt",
+                                    label: t("accounts.policyPromptFilterExempt"),
+                                  },
+                                ]}
+                              />
+                              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                                {t("accounts.policyPromptFilterHint")}
+                              </p>
+                            </div>
+                            <div className="space-y-1.5">
+                              <span className="block text-xs font-semibold text-muted-foreground">
+                                {t("accounts.policyEgressLabel")}
+                              </span>
+                              <Select
+                                value={egressPolicy}
+                                onValueChange={(next) =>
+                                  setEgressPolicy(
+                                    next === "direct" ? "direct" : "inherit",
+                                  )
+                                }
+                                options={[
+                                  {
+                                    value: "inherit",
+                                    label: t("accounts.policyEgressInherit"),
+                                  },
+                                  {
+                                    value: "direct",
+                                    label: t("accounts.policyEgressDirect"),
+                                  },
+                                ]}
+                              />
+                              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                                {t("accounts.policyEgressHint")}
+                              </p>
+                            </div>
+                            <div className="space-y-1.5">
+                              <span className="block text-xs font-semibold text-muted-foreground">
+                                {t("accounts.policySessionGuardsLabel")}
+                              </span>
+                              <Select
+                                value={sessionGuardsPolicy}
+                                onValueChange={(next) =>
+                                  setSessionGuardsPolicy(
+                                    next === "off" ? "off" : "inherit",
+                                  )
+                                }
+                                options={[
+                                  {
+                                    value: "inherit",
+                                    label: t("accounts.policySessionGuardsInherit"),
+                                  },
+                                  {
+                                    value: "off",
+                                    label: t("accounts.policySessionGuardsOff"),
+                                  },
+                                ]}
+                              />
+                              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                                {t("accounts.policySessionGuardsHint")}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
                         {/* 请求次数限流 */}
                         <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors">
                           <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
@@ -9809,6 +9932,19 @@ export default function Accounts() {
                           {renderProxyInput({
                             value: editProxyUrl,
                             onChange: setEditProxyUrl,
+                            // 弹窗里的时区字段还没提交,同步只改草稿,随「保存」一起落库。
+                            accountTimezone: isCodexOfficialAccount(editingAccount)
+                              ? editTimezone
+                              : undefined,
+                            onSyncTimezone: isCodexOfficialAccount(editingAccount)
+                              ? async (timezone: string) => {
+                                  setEditTimezone(timezone);
+                                  setEditTimezoneCustom(
+                                    !findClaudeTimezoneOption(timezone),
+                                  );
+                                  showToast(t("accounts.proxyTimezoneSynced"));
+                                }
+                              : undefined,
                           })}
                         </div>
 
@@ -12535,6 +12671,74 @@ function UsingCreditsBadge({ account }: { account: AccountRow }) {
   );
 }
 
+// AccountPolicyBadges 把"这个号脱离了全局设置"的几件事摆在代理徽章旁边:
+// 三条账号级策略只在非 inherit 时出徽章(否则每行都挂三个"继承"噪声),
+// 外加一条时区不一致——账号指纹时区与绑定代理的出口 IP 时区对不上,
+// 上游看到的是"人在 A 区、IP 在 B 区"。时区只对 OAuth 号判定:
+// 指纹收敛只作用于官方出站路径,中转/API key 账号没有这个字段。
+function AccountPolicyBadges({
+  account,
+  ctx,
+  className,
+}: {
+  account: AccountRow;
+  ctx: ProxyBindingContext;
+  className?: string;
+}) {
+  const { t } = useTranslation();
+
+  const promptExempt = account.prompt_filter_policy === "exempt";
+  const egressDirect = account.egress_policy === "direct";
+  const guardsOff = account.session_guards_policy === "off";
+
+  const accountTimezone = (account.timezone ?? "").trim();
+  const proxyTimezone = isOAuthAccount(account)
+    ? (resolveAccountProxyBinding(account, ctx).proxy?.test_timezone ?? "").trim()
+    : "";
+  const timezoneMismatch = Boolean(
+    accountTimezone && proxyTimezone && proxyTimezone !== accountTimezone,
+  );
+
+  if (!promptExempt && !egressDirect && !guardsOff && !timezoneMismatch) {
+    return null;
+  }
+
+  const tone =
+    "shrink-0 border-amber-500/25 bg-amber-500/10 px-1.5 py-0 text-[10px] font-semibold text-amber-700 dark:text-amber-300";
+
+  return (
+    <div className={cn("flex flex-wrap items-center gap-1", className)}>
+      {promptExempt ? (
+        <Badge variant="outline" className={tone} title={t("accounts.policyPromptFilterHint")}>
+          {t("accounts.badgePromptExempt")}
+        </Badge>
+      ) : null}
+      {egressDirect ? (
+        <Badge variant="outline" className={tone} title={t("accounts.policyEgressHint")}>
+          {t("accounts.badgeEgressDirect")}
+        </Badge>
+      ) : null}
+      {guardsOff ? (
+        <Badge variant="outline" className={tone} title={t("accounts.policySessionGuardsHint")}>
+          {t("accounts.badgeGuardsOff")}
+        </Badge>
+      ) : null}
+      {timezoneMismatch ? (
+        <Badge
+          variant="outline"
+          className={tone}
+          title={t("accounts.proxyTimezoneMismatch", {
+            proxy: proxyTimezone,
+            account: accountTimezone,
+          })}
+        >
+          {t("accounts.badgeTimezoneMismatch")}
+        </Badge>
+      ) : null}
+    </div>
+  );
+}
+
 function SchedulerPriorityBadge({ account }: { account: AccountRow }) {
   const { t } = useTranslation();
   const priority = getSchedulerPriority(account);
@@ -13776,6 +13980,9 @@ function AccountMobileCard({
               )}
               {showColumn("proxy") && (
                 <AccountProxyBadge account={account} ctx={proxyCtx} onClick={onEditProxy} />
+              )}
+              {showColumn("proxy") && (
+                <AccountPolicyBadges account={account} ctx={proxyCtx} />
               )}
             </div>
           )}

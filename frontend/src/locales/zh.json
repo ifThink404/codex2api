@@ -1980,7 +1980,29 @@
     "proxyPoolEmpty": "代理池为空(可在「代理」页添加)",
     "proxyPoolMatched": "代理池：{{label}} · {{ip}} · {{location}} · {{latency}} ms。",
     "proxyPoolUnmatched": "当前地址不在代理池中（按 scheme/主机/端口比对）。",
-    "proxyPoolLinkedHint": "已关联代理池节点（按地址绑定）：在「代理」页修改该节点地址会同步到所有绑定账号，删除则自动解绑。"
+    "proxyPoolLinkedHint": "已关联代理池节点（按地址绑定）：在「代理」页修改该节点地址会同步到所有绑定账号，删除则自动解绑。",
+    "policySectionTitle": "账号级策略",
+    "policySectionHint": "三项默认继承全局设置，只有显式覆盖才对这个账号生效。",
+    "policyPromptFilterLabel": "prompt 检测",
+    "policyPromptFilterHint": "选「豁免」后，命中敏感词但被调度到该账号的请求直接放行并留审计，不再拦截。",
+    "policyPromptFilterInherit": "继承全局",
+    "policyPromptFilterExempt": "豁免（落到此账号的命中请求放行）",
+    "policyEgressLabel": "出口",
+    "policyEgressHint": "选「直连」后，该账号不进代理池，也不吃全局代理，直接从本机出站。",
+    "policyEgressInherit": "继承全局",
+    "policyEgressDirect": "直连（不进代理池）",
+    "policySessionGuardsLabel": "会话防护",
+    "policySessionGuardsHint": "选「关闭」后，该账号跳过会话防护（不借号、初始会话准入、turn-state 严格校验）。",
+    "policySessionGuardsInherit": "继承全局",
+    "policySessionGuardsOff": "关闭",
+    "badgePromptExempt": "豁免检测",
+    "badgeEgressDirect": "直连",
+    "badgeGuardsOff": "防护关",
+    "badgeTimezoneMismatch": "时区不一致",
+    "proxyTimezoneMismatch": "出口 IP 时区 {{proxy}}，账号时区 {{account}}。",
+    "proxyTimezoneSync": "同步为 {{tz}}",
+    "proxyTimezoneSynced": "时区已同步",
+    "proxyTimezoneSyncFailed": "同步时区失败：{{error}}"
   },
   "invite": {
     "entry": "Codex 邀请",
@@ -2360,7 +2382,10 @@
     "platform": "平台",
     "pid": "PID",
     "seconds": "{{count}} 秒",
-    "minutesValue": "{{count}} 分钟"
+    "minutesValue": "{{count}} 分钟",
+    "promptPolicy": "prompt 豁免",
+    "promptExempted": "已豁免",
+    "promptBlockedAfterSelection": "选号后拦截"
   },
   "opsErrors": {
     "title": "错误日志",

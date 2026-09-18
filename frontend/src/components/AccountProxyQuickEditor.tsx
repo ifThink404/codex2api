@@ -10,6 +10,7 @@ import type { ProxyBindingContext } from "../lib/accountProxyBinding";
 import AccountProxyBadge from "./AccountProxyBadge";
 import Modal from "./Modal";
 import { ProxyPoolSelect } from "./ProxyPoolSelect";
+import { ProxyTimezoneHint } from "./ProxyTimezoneHint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -32,6 +33,8 @@ export interface ProxyQuickEditorAccount {
   id: number;
   proxy_url?: string | null;
   group_ids?: number[] | null;
+  /** 账号指纹时区;与所选池条目的出口时区不一致时给一键同步。 */
+  timezone?: string;
 }
 
 interface AccountProxyQuickEditorProps {
@@ -72,6 +75,22 @@ export default function AccountProxyQuickEditor({
   const trimmed = value.trim();
   const boundURL = (account?.proxy_url ?? "").trim();
   const dirty = trimmed !== boundURL;
+  // 与 ProxyField 同一套口径:trim 后精确匹配池条目,不做任何归一化。
+  const poolEntry = trimmed ? proxies.find((p) => p.url.trim() === trimmed) : undefined;
+
+  const syncTimezone = async (timezone: string) => {
+    if (!account) return;
+    try {
+      await api.updateAccountScheduler(account.id, { timezone });
+      showToast(t("accounts.proxyTimezoneSynced"));
+      await onSaved();
+    } catch (error) {
+      showToast(
+        t("accounts.proxyTimezoneSyncFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    }
+  };
 
   const handleTest = async () => {
     if (!trimmed || testing) return;
@@ -215,6 +234,12 @@ export default function AccountProxyQuickEditor({
             value={value}
             disabled={busy}
             onSelect={setValue}
+          />
+          <ProxyTimezoneHint
+            proxyTimezone={poolEntry?.test_timezone}
+            accountTimezone={account?.timezone}
+            onSync={syncTimezone}
+            disabled={busy}
           />
         </div>
       </div>

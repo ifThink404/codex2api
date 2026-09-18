@@ -425,7 +425,29 @@
     "proxyPoolEmpty": "代理池為空(可在「代理」頁新增)",
     "proxyPoolMatched": "代理池：{{label}} · {{ip}} · {{location}} · {{latency}} ms。",
     "proxyPoolUnmatched": "目前位址不在代理池中（依 scheme/主機/連接埠比對）。",
-    "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
+    "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。",
+    "policySectionTitle": "帳號級策略",
+    "policySectionHint": "三項預設繼承全域設定，只有明確覆寫才對這個帳號生效。",
+    "policyPromptFilterLabel": "prompt 檢測",
+    "policyPromptFilterHint": "選「豁免」後，命中敏感詞但被排程到該帳號的請求直接放行並留稽核，不再攔截。",
+    "policyPromptFilterInherit": "繼承全域",
+    "policyPromptFilterExempt": "豁免（落到此帳號的命中請求放行）",
+    "policyEgressLabel": "出口",
+    "policyEgressHint": "選「直連」後，該帳號不進代理池，也不吃全域代理，直接從本機出站。",
+    "policyEgressInherit": "繼承全域",
+    "policyEgressDirect": "直連（不進代理池）",
+    "policySessionGuardsLabel": "工作階段防護",
+    "policySessionGuardsHint": "選「關閉」後，該帳號略過工作階段防護（不借號、初始工作階段准入、turn-state 嚴格校驗）。",
+    "policySessionGuardsInherit": "繼承全域",
+    "policySessionGuardsOff": "關閉",
+    "badgePromptExempt": "豁免檢測",
+    "badgeEgressDirect": "直連",
+    "badgeGuardsOff": "防護關",
+    "badgeTimezoneMismatch": "時區不一致",
+    "proxyTimezoneMismatch": "出口 IP 時區 {{proxy}}，帳號時區 {{account}}。",
+    "proxyTimezoneSync": "同步為 {{tz}}",
+    "proxyTimezoneSynced": "時區已同步",
+    "proxyTimezoneSyncFailed": "同步時區失敗：{{error}}"
   },
   "runtime": {
     "sessionGuards": "工作階段防護",
@@ -462,7 +484,10 @@
     "expired": "超齡拒絕",
     "future": "未來時間拒絕",
     "invalidId": "非 v7",
-    "noSamples": "暫無樣本"
+    "noSamples": "暫無樣本",
+    "promptPolicy": "prompt 豁免",
+    "promptExempted": "已豁免",
+    "promptBlockedAfterSelection": "選號後攔截"
   },
   "settings": {
     "codexOAuthKeepalive": "惰性模式下保持 Codex 授權",

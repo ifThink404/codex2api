@@ -343,6 +343,11 @@ export interface AccountRow {
   base_concurrency_override?: number | null
   base_concurrency_effective?: number
   skip_warm_tier?: boolean
+  /** 账号级策略（后端 auth/account_policies.go）；三列都以 inherit 为默认，
+   *  缺省与 'inherit' 同义，下拉据此区分"继承全局"与"本号覆盖"。 */
+  prompt_filter_policy?: 'inherit' | 'exempt'
+  egress_policy?: 'inherit' | 'direct'
+  session_guards_policy?: 'inherit' | 'off'
   dynamic_concurrency_limit?: number
   allowed_api_key_ids?: number[]
   tags?: string[]
@@ -1438,6 +1443,10 @@ export interface UpdateAccountSchedulerRequest {
   score_bias_override?: number | null
   base_concurrency_override?: number | null
   skip_warm_tier?: boolean
+  /** 账号级策略；只在字段出现时更新，非法值后端返回 400。 */
+  prompt_filter_policy?: 'inherit' | 'exempt'
+  egress_policy?: 'inherit' | 'direct'
+  session_guards_policy?: 'inherit' | 'off'
   allowed_api_key_ids?: number[] | null
   proxy_url?: string | null
   tags?: string[] | null
@@ -2016,6 +2025,8 @@ export interface RuntimeStatusResponse {
     }
     borrow: { borrowed: number; held: number }
     auto_lock: { enabled: boolean; threshold: number; active_locks: number; locked_total: number; unlocked_total: number; streak_entries: number }
+    /** 延迟 prompt 拦截：exempted=落到豁免账号后放行，blocked_after_selection=选号后仍拦下。 */
+    prompt_policy?: { exempted: number; blocked_after_selection: number }
     initial_session: {
       recent_hour: InitialSessionSummary
       since_start: InitialSessionSummary

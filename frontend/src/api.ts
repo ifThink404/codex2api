@@ -1657,6 +1657,8 @@ export interface ProxyRow {
   test_location: string
   test_latency_ms: number
   test_status: 'untested' | 'success' | 'error'
+  /** 最近一次测试解析到的出口 IP 时区（IANA 名）；未测到为空串。 */
+  test_timezone?: string
   risk_score?: ProxyRiskScoreSnapshot | null
   /** 绑定到该代理的账号数(服务端聚合,前端免拉全量账号)。 */
   bound_count: number

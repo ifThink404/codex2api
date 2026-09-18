@@ -38,6 +38,8 @@ export interface ProxyBindingProxy {
   test_ip?: string;
   test_location?: string;
   test_latency_ms?: number;
+  /** 出口 IP 时区（IANA 名）；用于提示账号时区与落地时区不一致。 */
+  test_timezone?: string;
 }
 
 export interface ProxyBindingGroup {

@@ -1980,7 +1980,29 @@
     "proxyPoolEmpty": "Proxy pool is empty (add proxies on the Proxies page)",
     "proxyPoolMatched": "Pool proxy: {{label}} · {{ip}} · {{location}} · {{latency}} ms.",
     "proxyPoolUnmatched": "This address is not in the proxy pool (compared by scheme/host/port).",
-    "proxyPoolLinkedHint": "Linked to a proxy-pool node by URL: editing the node URL on the Proxies page updates every bound account, and deleting it unbinds them."
+    "proxyPoolLinkedHint": "Linked to a proxy-pool node by URL: editing the node URL on the Proxies page updates every bound account, and deleting it unbinds them.",
+    "policySectionTitle": "Account policies",
+    "policySectionHint": "All three inherit the global settings by default; only an explicit override applies to this account.",
+    "policyPromptFilterLabel": "Prompt detection",
+    "policyPromptFilterHint": "With Exempt, a matched request that gets routed to this account is allowed through and audited instead of blocked.",
+    "policyPromptFilterInherit": "Inherit",
+    "policyPromptFilterExempt": "Exempt (matched requests routed here pass)",
+    "policyEgressLabel": "Egress",
+    "policyEgressHint": "With Direct, this account skips the proxy pool and the global proxy and goes out from this host.",
+    "policyEgressInherit": "Inherit",
+    "policyEgressDirect": "Direct (bypass proxy pool)",
+    "policySessionGuardsLabel": "Session guards",
+    "policySessionGuardsHint": "With Off, this account skips the session guards (no-borrow, initial-session admission, strict turn-state checks).",
+    "policySessionGuardsInherit": "Inherit",
+    "policySessionGuardsOff": "Off",
+    "badgePromptExempt": "Detection exempt",
+    "badgeEgressDirect": "Direct",
+    "badgeGuardsOff": "Guards off",
+    "badgeTimezoneMismatch": "Timezone mismatch",
+    "proxyTimezoneMismatch": "Egress IP timezone {{proxy}}, account timezone {{account}}.",
+    "proxyTimezoneSync": "Sync to {{tz}}",
+    "proxyTimezoneSynced": "Timezone synced",
+    "proxyTimezoneSyncFailed": "Failed to sync timezone: {{error}}"
   },
   "invite": {
     "entry": "Codex Invite",
@@ -2360,7 +2382,10 @@
     "platform": "Platform",
     "pid": "PID",
     "seconds": "{{count}}s",
-    "minutesValue": "{{count}}m"
+    "minutesValue": "{{count}}m",
+    "promptPolicy": "Prompt exemption",
+    "promptExempted": "Exempted",
+    "promptBlockedAfterSelection": "Blocked after selection"
   },
   "opsErrors": {
     "title": "Error Logs",

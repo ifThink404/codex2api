@@ -5,6 +5,7 @@ import { X, Zap } from "lucide-react";
 import { api } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyPoolSelect } from "./ProxyPoolSelect";
+import { ProxyTimezoneHint } from "./ProxyTimezoneHint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "../hooks/useToast";
@@ -66,6 +67,8 @@ export function ProxyField({
   placeholder = "socks5://user:pass@host:port",
   disabled = false,
   className,
+  accountTimezone,
+  onSyncTimezone,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -77,6 +80,10 @@ export function ProxyField({
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  /** 账号当前的指纹时区;传了才会在命中池条目时比对出口时区。 */
+  accountTimezone?: string;
+  /** 省略则只提示不给同步按钮(账号尚未落库时没有可 PATCH 的目标)。 */
+  onSyncTimezone?: (timezone: string) => Promise<void>;
 }) {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
@@ -172,6 +179,12 @@ export function ProxyField({
       ) : trimmed && proxies.length > 0 ? (
         <p className="text-[11px] leading-relaxed text-muted-foreground">{t("accounts.proxyPoolUnmatched")}</p>
       ) : null}
+      <ProxyTimezoneHint
+        proxyTimezone={linked?.test_timezone}
+        accountTimezone={accountTimezone}
+        onSync={onSyncTimezone}
+        disabled={disabled}
+      />
     </div>
   );
 }
