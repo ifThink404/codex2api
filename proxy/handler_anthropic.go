@@ -1070,14 +1070,23 @@ func (h *Handler) Messages(c *gin.Context) {
 		if isGrokNativeRouteResponse(resp) {
 			downstreamFlusher, _ := c.Writer.(http.Flusher)
 			streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
-			// Non-stream responses are committed by forwardGrokNativeResponseTo;
+			// Non-stream responses are committed by forwardGrokNativeResponseObserved;
 			// copy Claude's safe headers before that commit so net/http can send
 			// them. Stream headers are copied after the successful attempt below
 			// to avoid exposing a buffered/retried attempt.
 			if account.IsClaudeOAuth() && (!isStream || !continuousRetryBuffersAttempts(continuousRetryPolicy)) {
 				copyClaudeNativeResponseHeaders(c, resp.Header)
 			}
-			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseTo(readCtx, c, resp, GrokProtocolMessages, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher))
+			// Anthropic Messages 信封把模型放在 message.model：流式只在 message_start
+			// 里出现一次，非流式在整体响应体顶层；没有「终态覆盖」这回事，取到一次就够，
+			// 后续帧（content_block_* / message_delta / message_stop）连解析都省掉。
+			var upstreamResponseModel string
+			observeNativeMessagesPayload := func(payload []byte) {
+				if upstreamResponseModel == "" {
+					upstreamResponseModel = observeUpstreamResponseModel("", payload, "")
+				}
+			}
+			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolMessages, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), observeNativeMessagesPayload)
 			if account.IsClaudeOAuth() {
 				// Anthropic 的 input_tokens 不含缓存命中/写入，转换成计费层的总输入口径。
 				applyAnthropicUsageSemantics(usage)
@@ -1113,7 +1122,8 @@ func (h *Handler) Messages(c *gin.Context) {
 					AccountID: account.ID(), Endpoint: "/v1/messages", Model: model,
 					EffectiveModel: attemptEffectiveModel, StatusCode: outcome.logStatusCode,
 					DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-					InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
+					UpstreamResponseModel: upstreamResponseModel,
+					InboundEndpoint:       "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
 					Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 					IsRetryAttempt: true, PromptPolicyIncidentID: promptPolicyIncidentID,
 					UpstreamErrorKind: outcome.failureKind,
@@ -1170,7 +1180,8 @@ func (h *Handler) Messages(c *gin.Context) {
 				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model,
 				EffectiveModel: attemptEffectiveModel, StatusCode: outcome.logStatusCode,
 				DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
+				UpstreamResponseModel: upstreamResponseModel,
+				InboundEndpoint:       "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
 				Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 				PromptPolicyIncidentID: promptPolicyIncidentID,
 			}

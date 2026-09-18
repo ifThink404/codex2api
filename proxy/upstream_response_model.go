@@ -11,9 +11,16 @@ import (
 // 不参与调度、不回写请求，也绝不从请求体反推：请求模型已经单独记在
 // model / effective_model 两列里，这里再填一遍就失去了对照意义。
 //
-// 观测点只取 response.model 与顶层 model 两个位置，绝不下钻到正文、工具输出
-// 或协议翻译器合成的字段（那些值是网关自己造的，不是上游声明）。
+// 观测点只取三个协议各自的信封位置——Responses 的 response.model、Anthropic
+// Messages 的 message.model、Chat Completions 与非流式整体响应的顶层 model，
+// 绝不下钻到正文、工具输出或协议翻译器合成的字段（那些值是网关自己造的，
+// 不是上游声明）。
 const upstreamResponseModelMaxLen = 100
+
+// upstreamResponseModelPaths 是信封里可能出现「上游自报模型」的位置，按可信度排序：
+// 协议专属的嵌套位置优先于顶层 model。Anthropic 非流式响应体两处都有（顶层 model
+// 与 type:"message"），顶层兜底即可；message_start 帧则只有 message.model。
+var upstreamResponseModelPaths = []string{"response.model", "message.model", "model"}
 
 // isUpstreamResponseModelTerminalEvent 是会「覆盖」已观测值的终态事件。
 // 非终态事件按先到先得：response.created 早于一切，最能代表上游接单时的模型；
@@ -27,12 +34,17 @@ func isUpstreamResponseModelTerminalEvent(event string) bool {
 	return false
 }
 
-// isUpstreamResponseModelEnvelopeEvent 是唯一可能携带 response 信封的事件集合。
-// 其余事件（delta / output_item.done / codex.rate_limits ...）按协议就不带
-// response.model，解析它们只是白跑。
+// isUpstreamResponseModelEnvelopeEvent 是唯一可能携带模型信封的事件集合。
+// 其余事件（delta / output_item.done / content_block_* / codex.rate_limits ...）
+// 按协议就不带模型名，解析它们只是白跑。
+//
+// Responses 协议里带完整 response 对象的只有六个生命周期事件（含后台模式的
+// response.queued）；Anthropic Messages 协议里带 message 对象的只有 message_start
+// 一个流式事件，外加非流式整体响应体自带的 type:"message"。
 func isUpstreamResponseModelEnvelopeEvent(event string) bool {
 	switch event {
-	case "response.created", "response.in_progress":
+	case "response.created", "response.queued", "response.in_progress",
+		"message_start", "message":
 		return true
 	}
 	return isUpstreamResponseModelTerminalEvent(event)
@@ -62,13 +74,13 @@ func observeUpstreamResponseModel(current string, payload []byte, eventType stri
 		return current
 	}
 	model := ""
-	for _, path := range []string{"response.model", "model"} {
+	for _, path := range upstreamResponseModelPaths {
 		value := gjson.GetBytes(payload, path)
 		if value.Type != gjson.String {
 			continue
 		}
-		// 信封里的 response.model 被污染时继续看顶层 model：两个位置是同一个声明的
-		// 两种写法，前者不合规不等于后者也不可信，直接放弃会白丢一条可用观测。
+		// 嵌套位置被污染时继续看下一个候选：这几处是同一个声明的不同写法，
+		// 前者不合规不等于后者也不可信，直接放弃会白丢一条可用观测。
 		if candidate := strings.TrimSpace(value.String()); validUpstreamResponseModel(candidate) {
 			model = candidate
 			break

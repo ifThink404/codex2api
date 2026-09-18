@@ -101,3 +101,52 @@ func TestObserveUpstreamResponseModelKeepsCurrentOnEmptyPayload(t *testing.T) {
 		t.Fatalf("空载荷必须保持原值，got %q", got)
 	}
 }
+
+// Anthropic Messages 协议的信封位置与 Responses 不同：流式模型名只在 message_start
+// 的 message.model 里出现一次，非流式则在整体响应体顶层（该响应体自带 type:"message"，
+// 不放行这个事件名就会被闸门整条挡掉）。
+func TestObserveUpstreamResponseModelReadsAnthropicEnvelope(t *testing.T) {
+	start := []byte(`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-5","usage":{"input_tokens":8}}}`)
+	if got := observeUpstreamResponseModel("", start, "message_start"); got != "claude-sonnet-4-5" {
+		t.Fatalf("message_start 的 message.model 必须被观测，got %q", got)
+	}
+	// 原生透传的 observe 回调拿不到 SSE 的 event 行，只能退回载荷里的 type。
+	if got := observeUpstreamResponseModel("", start, ""); got != "claude-sonnet-4-5" {
+		t.Fatalf("无事件名时按载荷 type 判定，got %q", got)
+	}
+
+	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-1","content":[],"stop_reason":"end_turn"}`)
+	if got := observeUpstreamResponseModel("", body, ""); got != "claude-opus-4-1" {
+		t.Fatalf("非流式 Messages 响应体必须被观测，got %q", got)
+	}
+
+	// message_start 之后的帧都不带模型名；先到先得，后续帧不得改写已观测值。
+	for _, frame := range []struct{ event, payload string }{
+		{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`},
+		{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`},
+		{"message_stop", `{"type":"message_stop"}`},
+	} {
+		if got := observeUpstreamResponseModel("claude-sonnet-4-5", []byte(frame.payload), frame.event); got != "claude-sonnet-4-5" {
+			t.Fatalf("%s 不得改写已观测值，got %q", frame.event, got)
+		}
+	}
+
+	// message.model 同样要过白名单：上游塞进来的凭据不能当模型名落库。
+	forged := []byte(`{"type":"message_start","message":{"model":"sk-live-should-not-be-logged"}}`)
+	if got := observeUpstreamResponseModel("", forged, "message_start"); got != "" {
+		t.Fatalf("凭据形状的 message.model 必须被拒收，got %q", got)
+	}
+}
+
+// 后台模式（background）的 Responses 流以 response.queued 开场，它带完整 response
+// 对象；闸门漏掉它就等于这类请求永远记不到上游自报模型。
+func TestObserveUpstreamResponseModelReadsQueuedEnvelope(t *testing.T) {
+	queued := []byte(`{"type":"response.queued","response":{"id":"resp_bg","status":"queued","model":"gpt-5.4-codex"}}`)
+	if got := observeUpstreamResponseModel("", queued, "response.queued"); got != "gpt-5.4-codex" {
+		t.Fatalf("response.queued 必须被观测，got %q", got)
+	}
+	if got := observeUpstreamResponseModel("", queued, ""); got != "gpt-5.4-codex" {
+		t.Fatalf("无事件名时按载荷 type 判定 response.queued，got %q", got)
+	}
+}
