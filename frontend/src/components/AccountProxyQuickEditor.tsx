@@ -212,6 +212,7 @@ export default function AccountProxyQuickEditor({
           <ProxyPoolSelect
             className="w-full"
             proxies={proxies}
+            value={value}
             disabled={busy}
             onSelect={setValue}
           />

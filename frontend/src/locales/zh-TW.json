@@ -423,6 +423,8 @@
     "testProxySuccess": "代理可用",
     "testProxyFailed": "代理測試失敗",
     "proxyPoolEmpty": "代理池為空(可在「代理」頁新增)",
+    "proxyPoolMatched": "代理池：{{label}} · {{ip}} · {{location}} · {{latency}} ms。",
+    "proxyPoolUnmatched": "目前位址不在代理池中（依 scheme/主機/連接埠比對）。",
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "runtime": {

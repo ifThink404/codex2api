@@ -1978,6 +1978,8 @@
     "testProxySuccess": "Proxy OK",
     "testProxyFailed": "Proxy test failed",
     "proxyPoolEmpty": "Proxy pool is empty (add proxies on the Proxies page)",
+    "proxyPoolMatched": "Pool proxy: {{label}} · {{ip}} · {{location}} · {{latency}} ms.",
+    "proxyPoolUnmatched": "This address is not in the proxy pool (compared by scheme/host/port).",
     "proxyPoolLinkedHint": "Linked to a proxy-pool node by URL: editing the node URL on the Proxies page updates every bound account, and deleting it unbinds them."
   },
   "invite": {

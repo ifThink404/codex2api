@@ -159,7 +159,18 @@ export function ProxyField({
         </div>
       )}
       {linked ? (
-        <p className="text-[11px] leading-relaxed text-muted-foreground">{t("accounts.proxyPoolLinkedHint")}</p>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {t("accounts.proxyPoolMatched", {
+            label: linked.label?.trim() || linked.url,
+            ip: linked.test_ip?.trim() || "-",
+            location: linked.test_location?.trim() || "-",
+            latency: linked.test_latency_ms ?? 0,
+          })}
+          {" "}
+          {t("accounts.proxyPoolLinkedHint")}
+        </p>
+      ) : trimmed && proxies.length > 0 ? (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">{t("accounts.proxyPoolUnmatched")}</p>
       ) : null}
     </div>
   );
