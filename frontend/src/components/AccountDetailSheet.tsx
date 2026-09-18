@@ -500,7 +500,10 @@ export default function AccountDetailSheet({
                   <div className="text-[10px] text-muted-foreground/80">
                     {t("accounts.healthBarLabel")}
                   </div>
-                  <AccountHealthBar buckets={healthBuckets} />
+                  <AccountHealthBar
+                    buckets={healthBuckets}
+                    latestTurnState={account.latest_turn_state}
+                  />
                 </div>
 
                 {account.status === "error" && account.error_message ? (

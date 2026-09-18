@@ -15,6 +15,7 @@ import Modal from '../components/Modal'
 import ColumnSettingsMenu from '../components/ColumnSettingsMenu'
 import StateShell from '../components/StateShell'
 import UsageResponseModel from '../components/UsageResponseModel'
+import { UsageTurnState, usageTurnStateKind } from '../components/UsageTurnState'
 import { UsageWindowNumberBadge } from '../components/UsageWindowNumberBadge'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
@@ -141,6 +142,9 @@ type UsageTypeFilter = '' | 'stream' | 'sync' | 'compact' | 'history'
 type UsageStatusFilter = '' | '2xx' | 'error' | '4xx' | '5xx' | `${number}`
 type UsageRetryFilter = '' | 'false' | 'true'
 type UsageTransportFilter = '' | 'http' | 'ws'
+type UsageTurnStateFilter = '' | 'received' | 'missing' | 'not_recorded'
+type UsageTurnStateEchoFilter = '' | 'none' | 'same' | 'cross' | 'unknown' | 'substitute'
+type UsageTurnStateStrippedFilter = '' | 'true' | 'false'
 
 // 本页面局部的"自定义"区间标记。不污染全局 TimeRangeKey 类型 (Dashboard 等仍只识别预设档)。
 type UsageTimeRangeKey = UsagePresetRangeKey | 'custom'
@@ -1570,6 +1574,9 @@ export default function Usage() {
   const [filterErrorKind, setFilterErrorKind] = useState('')
   const [filterRetry, setFilterRetry] = useState<UsageRetryFilter>('')
   const [filterTransport, setFilterTransport] = useState<UsageTransportFilter>('')
+  const [filterTurnState, setFilterTurnState] = useState<UsageTurnStateFilter>('')
+  const [filterTurnStateEcho, setFilterTurnStateEcho] = useState<UsageTurnStateEchoFilter>('')
+  const [filterTurnStateStripped, setFilterTurnStateStripped] = useState<UsageTurnStateStrippedFilter>('')
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [apiKeys, setAPIKeys] = useState<APIKeyRow[]>([])
   const [modelOptions, setModelOptions] = useState<string[]>([])
@@ -1633,8 +1640,11 @@ export default function Usage() {
       channel: channel || undefined,
       retry: filterRetry || undefined,
       viaWebsocket: filterTransport === 'ws' ? 'true' : filterTransport === 'http' ? 'false' : undefined,
+      turnState: filterTurnState || undefined,
+      turnStateEcho: filterTurnStateEcho || undefined,
+      turnStateStripped: filterTurnStateStripped || undefined,
     }
-  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterType, channel, filterRetry, filterTransport])
+  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterType, channel, filterRetry, filterTransport, filterTurnState, filterTurnStateEcho, filterTurnStateStripped])
 
   const buildLogFilterParams = useCallback(() => {
     return {
@@ -1823,6 +1833,9 @@ export default function Usage() {
     filterErrorKind,
     filterRetry,
     filterTransport,
+    filterTurnState,
+    filterTurnStateEcho,
+    filterTurnStateStripped,
   ].filter(Boolean).length
   const hasActiveFilters = Boolean(
     searchInput
@@ -1836,7 +1849,10 @@ export default function Usage() {
     || filterUltra
     || filterErrorKind
     || filterRetry
-    || filterTransport,
+    || filterTransport
+    || filterTurnState
+    || filterTurnStateEcho
+    || filterTurnStateStripped,
   )
   const statusFilterOptions: Array<{ value: UsageStatusFilter; label: string; tone?: string }> = [
     { value: '', label: t('usage.statusAll') },
@@ -1877,8 +1893,18 @@ export default function Usage() {
     setFilterErrorKind('')
     setFilterRetry('')
     setFilterTransport('')
+    setFilterTurnState('')
+    setFilterTurnStateEcho('')
+    setFilterTurnStateStripped('')
     setPage(1)
   }
+
+  // turn-state 那一格点一下按这行的状态筛,再点同一个取消——和模型/账号格一个手感。
+  const toggleTurnStateFilter = useCallback((log: UsageLog) => {
+    const next = usageTurnStateKind(log)
+    setFilterTurnState((current) => (current === next ? '' : next))
+    setPage(1)
+  }, [])
 
   // 表格行的账号/模型可点击:点一下按它筛选,再点同一个取消。
   const toggleAccountFilter = useCallback((log: UsageLog) => {
@@ -2379,6 +2405,43 @@ export default function Usage() {
                       { label: 'WebSocket', value: 'ws' },
                     ]}
                   />
+                  <Select
+                    compact
+                    value={filterTurnState}
+                    onValueChange={(value) => { setFilterTurnState(value as UsageTurnStateFilter); setPage(1) }}
+                    placeholder={t('usage.turnState.allStates')}
+                    options={[
+                      { label: t('usage.turnState.allStates'), value: '' },
+                      { label: t('usage.turnState.received'), value: 'received' },
+                      { label: t('usage.turnState.missing'), value: 'missing' },
+                      { label: t('usage.turnState.notRecorded'), value: 'not_recorded' },
+                    ]}
+                  />
+                  <Select
+                    compact
+                    value={filterTurnStateEcho}
+                    onValueChange={(value) => { setFilterTurnStateEcho(value as UsageTurnStateEchoFilter); setPage(1) }}
+                    placeholder={t('usage.turnState.allEchoes')}
+                    options={[
+                      { label: t('usage.turnState.allEchoes'), value: '' },
+                      { label: t('usage.turnState.echo.none'), value: 'none' },
+                      { label: t('usage.turnState.echo.same'), value: 'same' },
+                      { label: t('usage.turnState.echo.cross'), value: 'cross' },
+                      { label: t('usage.turnState.echo.unknown'), value: 'unknown' },
+                      { label: t('usage.turnState.echo.substitute'), value: 'substitute' },
+                    ]}
+                  />
+                  <Select
+                    compact
+                    value={filterTurnStateStripped}
+                    onValueChange={(value) => { setFilterTurnStateStripped(value as UsageTurnStateStrippedFilter); setPage(1) }}
+                    placeholder={t('usage.turnState.allStripped')}
+                    options={[
+                      { label: t('usage.turnState.allStripped'), value: '' },
+                      { label: t('usage.turnState.stripped'), value: 'true' },
+                      { label: t('usage.turnState.notStripped'), value: 'false' },
+                    ]}
+                  />
                   <div className="flex min-w-0 gap-2">
                   {showFastFilter ? (
                     <button
@@ -2478,6 +2541,7 @@ export default function Usage() {
                             <ReasoningEffortBadge effort={log.reasoning_effort} />
                           ) : null}
                           <UsageWindowNumberBadge log={log} />
+                          <UsageTurnState log={log} onClick={() => toggleTurnStateFilter(log)} />
                           {visibleColumns.type && isFastTier(log.billing_service_tier || log.service_tier) ? (
                             <Badge
                               variant="outline"
@@ -2713,6 +2777,7 @@ export default function Usage() {
                               <ReasoningEffortBadge effort={log.reasoning_effort} />
                             ) : null}
                             <UsageWindowNumberBadge log={log} />
+                            <UsageTurnState log={log} onClick={() => toggleTurnStateFilter(log)} />
                             {isImageUsageLog(log) && (
                               <ImageUsageBadge log={log} />
                             )}

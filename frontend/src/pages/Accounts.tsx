@@ -1489,6 +1489,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                     </div>
                                     <AccountHealthBar
                                       buckets={healthBuckets}
+                                      latestTurnState={account.latest_turn_state}
                                     />
                                   </div>
                                 )}
@@ -13936,7 +13937,7 @@ function AccountMobileCard({
                     {formatHealthTier(account.health_tier, t)}
                   </span>
                 </div>
-                <AccountHealthBar buckets={healthBuckets} />
+                <AccountHealthBar buckets={healthBuckets} latestTurnState={account.latest_turn_state} />
               </div>
             </section>
           )}

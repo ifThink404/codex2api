@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { AccountHealthBucket } from '../types'
+import AccountLatestTurnState from './AccountLatestTurnState'
+import type { AccountHealthBucket, AccountLatestTurnStateInfo } from '../types'
 
 // 「健康状态」条：把账号最近的请求成败分桶渲染成一排色块 + 成功率。
 // 移植自 CLIProxyAPI 的 ProviderStatusBar，改为 Tailwind 实现。
@@ -103,12 +104,15 @@ interface Props {
   buckets: AccountHealthBucket[] | undefined
   blockCount?: number
   blockMinutes?: number
+  /** 最近一条带 turn-state 的请求;给了就在条下面补一行小字,没给则整行不渲染。 */
+  latestTurnState?: AccountLatestTurnStateInfo | null
 }
 
 export default function AccountHealthBar({
   buckets,
   blockCount = 20,
   blockMinutes = 10,
+  latestTurnState,
 }: Props) {
   const { t } = useTranslation()
   const [activeTooltip, setActiveTooltip] = useState<number | null>(null)
@@ -180,7 +184,7 @@ export default function AccountHealthBar({
     )
   }
 
-  return (
+  const bar = (
     <div className="flex max-w-full items-center gap-1.5">
       <div className="relative flex min-w-[120px] flex-1 gap-[2px]" ref={blocksRef}>
         {data.blockDetails.map((detail, idx) => {
@@ -210,6 +214,17 @@ export default function AccountHealthBar({
       >
         {hasData ? formatSuccessRate(data.successRate) : '--'}
       </span>
+    </div>
+  )
+
+  // 没有 turn-state 样本时保持原来的单层结构：三处调用点的父容器都按「健康条就是
+  // 这一个 flex 行」排版，平白多套一层 div 会把间距顶开。
+  if (!latestTurnState) return bar
+
+  return (
+    <div className="min-w-0 max-w-full">
+      {bar}
+      <AccountLatestTurnState state={latestTurnState} />
     </div>
   )
 }

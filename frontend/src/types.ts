@@ -456,6 +456,17 @@ export interface AccountRow {
   image_quota_total?: number
   today_used_count?: number
   image_quota_reset_at?: ISODateString
+  /** 该号最近一条记录到 turn-state 的请求;只在账号列表页视图里返回,lite 列表没有。 */
+  latest_turn_state?: AccountLatestTurnStateInfo | null
+}
+
+// AccountLatestTurnStateInfo 是账号健康条下那一行小字的数据源。长度是账号级
+// 「降级」标记,所以这里带的是字符数而不是一个布尔的「有/无」。
+export interface AccountLatestTurnStateInfo {
+  created_at: ISODateString
+  turn_state_length: number | null
+  turn_state_echo: string
+  turn_state_stripped: boolean
 }
 
 export type AccountsResponse = ApiListResponse<'accounts', AccountRow>
@@ -3506,6 +3517,14 @@ export interface UsageLog {
   upstream_response_model?: string
   // Codex 客户端窗口号(x-codex-window-id 的 <n> 段),非 Codex 请求为空
   window_number?: string
+  // 本次请求真正带上去的上游 turn-state token 长度:null = 没记录(历史行或不涉及
+  // turn-state 的渠道),0 = 查了但没有,>0 = 字符数。长度本身是账号级「降级」标记——
+  // 实测健康的官号是 292 字符,降级的九个号一律 312,所以要把数字原样显示出来。
+  turn_state_length?: number | null
+  // 客户端回带的 turn-state 归类:'' = 没记录,none/same/cross/unknown/substitute。
+  turn_state_echo?: '' | 'none' | 'same' | 'cross' | 'unknown' | 'substitute'
+  // 代理是否把客户端回带的 turn-state 剥掉后再发给上游。
+  turn_state_stripped?: boolean
   inbound_endpoint: string
   upstream_endpoint: string
   stream: boolean

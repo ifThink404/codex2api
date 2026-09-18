@@ -508,6 +508,14 @@ export type UsageLogQueryParams = {
   retry?: string
   viaWebsocket?: string
   includeCanceled?: string
+  /** received | missing | not_recorded —— 按「这次请求有没有真的带上 turn-state」筛。 */
+  turnState?: string
+  /** 精确字符数;长度是账号级降级标记(健康号 292、降级号 312),按它捞同批请求。 */
+  turnStateLength?: string
+  /** none | same | cross | unknown | substitute */
+  turnStateEcho?: string
+  /** true | false —— 代理有没有把客户端回带的 turn-state 剥掉。 */
+  turnStateStripped?: string
 }
 
 export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
@@ -532,6 +540,10 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.retry) search.set('retry', params.retry)
   if (params.viaWebsocket) search.set('via_websocket', params.viaWebsocket)
   if (params.includeCanceled) search.set('include_canceled', params.includeCanceled)
+  if (params.turnState) search.set('turn_state', params.turnState)
+  if (params.turnStateLength) search.set('turn_state_length', params.turnStateLength)
+  if (params.turnStateEcho) search.set('turn_state_echo', params.turnStateEcho)
+  if (params.turnStateStripped) search.set('turn_state_stripped', params.turnStateStripped)
   return search
 }
 
