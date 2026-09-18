@@ -151,8 +151,15 @@ func resolveCodexTurnStateSubstitute(affinityKey string, account *auth.Account, 
 
 // vaultCodexTurnStateEvent 改写 response.metadata / codex.response.metadata 事件里
 // headers 对象的 x-codex-turn-state（官方客户端从这里读 token），其余事件原样返回。
-func (h *Handler) vaultCodexTurnStateEvent(affinityKey string, account *auth.Account, eventType string, data []byte) []byte {
-	if !turnStateVaultAppliesTo(account) {
+//
+// usageSlot 是本次尝试的用量长度槽位（可为 nil）。metadata 事件是 WS 传输上唯一的
+// turn-state 载体，所以长度也从这里采一份；托管开关关掉时仍要采，因此闸门与
+// turnStateVaultAppliesTo 分开判。槽位由调用方在尝试开始时捕获：旧流的迟到事件写进
+// 它自己那一次的槽位，不会污染当前尝试。
+func (h *Handler) vaultCodexTurnStateEvent(usageSlot *usageTurnStateAttempt, affinityKey string, account *auth.Account, eventType string, data []byte) []byte {
+	vaultApplies := turnStateVaultAppliesTo(account)
+	observeUsage := usageSlot != nil && usageTurnStateAppliesToAccount(account)
+	if !vaultApplies && !observeUsage {
 		return data
 	}
 	switch strings.TrimSpace(eventType) {
@@ -175,7 +182,11 @@ func (h *Handler) vaultCodexTurnStateEvent(affinityKey string, account *auth.Acc
 		}
 		return true
 	})
-	if token == "" {
+	if observeUsage {
+		// 真实 token 的长度，铸替身之前；没有就是「检查过但上游这条事件里没给」。
+		usageSlot.mark(len(token))
+	}
+	if token == "" || !vaultApplies {
 		return data
 	}
 	substitute := issueCodexTurnStateSubstitute(affinityKey, account, token)

@@ -1780,6 +1780,9 @@ type accountResponse struct {
 	ImageQuotaTotal     *int   `json:"image_quota_total,omitempty"`
 	TodayUsedCount      *int   `json:"today_used_count,omitempty"`
 	ImageQuotaResetAt   string `json:"image_quota_reset_at,omitempty"`
+	// LatestTurnState 是该账号最近一条终端用户请求的 turn-state 读数（健康状态条
+	// 下面那一行）。没有可用记录时整个对象缺席；?view=lite 不带。
+	LatestTurnState *accountLatestTurnStateResponse `json:"latest_turn_state,omitempty"`
 }
 
 type modelCooldownResponse struct {
@@ -1935,6 +1938,10 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			view != "page",
 		))
 	}
+
+	// 最近 turn-state：只查当页账号（老的全量接口把整个号池传进来时批量查询自己
+	// 会按上界整体跳过）。失败不影响账号列表本身。
+	h.attachAccountLatestTurnStates(ctx, accounts)
 
 	if view != "page" {
 		billing5hWindows := make(map[int64]time.Time)
@@ -8308,6 +8315,9 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 	}
 	filter.UltraOnly, ok = parseUsageLogBoolFilter(c, "ultra")
 	if !ok {
+		return database.UsageLogFilter{}, false
+	}
+	if !parseUsageTurnStateFilters(c, &filter) {
 		return database.UsageLogFilter{}, false
 	}
 

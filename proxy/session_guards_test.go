@@ -59,13 +59,13 @@ func TestApplyCodexTurnStateEchoPolicyClassifiesByExactOrigin(t *testing.T) {
 
 	headers := http.Header{}
 	headers.Set(codexTurnStateHeader, "blob")
-	body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob"}}`))
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob"}}`))
 	if class != turnStateEchoSame || stripped || headers.Get(codexTurnStateHeader) != "blob" || gjson.GetBytes(body, "client_metadata.x-codex-turn-state").String() != "blob" {
 		t.Fatalf("same-account echo altered: class=%s stripped=%v header=%q body=%s", class, stripped, headers.Get(codexTurnStateHeader), body)
 	}
 
 	headers.Set(codexTurnStateHeader, "blob")
-	body, class, stripped = h.applyCodexTurnStateEchoPolicy(key, other, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob","thread_id":"t"}}`))
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(nil, key, other, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob","thread_id":"t"}}`))
 	if class != turnStateEchoCross || !stripped || headers.Get(codexTurnStateHeader) != "" {
 		t.Fatalf("cross-account header not stripped: class=%s stripped=%v header=%q", class, stripped, headers.Get(codexTurnStateHeader))
 	}
@@ -89,33 +89,33 @@ func TestApplyCodexTurnStateEchoPolicyFallsBackToBindingThenUnknown(t *testing.T
 
 	headers := http.Header{}
 	headers.Set(codexTurnStateHeader, "blob")
-	if _, class, _ := h.applyCodexTurnStateEchoPolicy(key, bound, headers, []byte(`{}`)); class != turnStateEchoSame {
+	if _, class, _ := h.applyCodexTurnStateEchoPolicy(nil, key, bound, headers, []byte(`{}`)); class != turnStateEchoSame {
 		t.Fatalf("binding-backed same classification = %s", class)
 	}
 	headers.Set(codexTurnStateHeader, "blob")
-	if _, class, stripped := h.applyCodexTurnStateEchoPolicy(key, other, headers, []byte(`{}`)); class != turnStateEchoCross || !stripped {
+	if _, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, key, other, headers, []byte(`{}`)); class != turnStateEchoCross || !stripped {
 		t.Fatalf("binding-backed cross classification = %s stripped=%v", class, stripped)
 	}
 
 	setStrictTurnState(t, false)
 	unknownKey := "guard-unknown::api-key:9"
 	headers.Set(codexTurnStateHeader, "blob")
-	body, class, stripped := h.applyCodexTurnStateEchoPolicy(unknownKey, other, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob"}}`))
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, unknownKey, other, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob"}}`))
 	if class != turnStateEchoUnknown || stripped || headers.Get(codexTurnStateHeader) != "blob" || !gjson.GetBytes(body, "client_metadata.x-codex-turn-state").Exists() {
 		t.Fatalf("legacy mode must pass unknown echoes through: class=%s stripped=%v", class, stripped)
 	}
 
 	setStrictTurnState(t, true)
 	headers.Set(codexTurnStateHeader, "blob")
-	body, class, stripped = h.applyCodexTurnStateEchoPolicy(unknownKey, other, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob"}}`))
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(nil, unknownKey, other, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob"}}`))
 	if class != turnStateEchoUnknown || !stripped || headers.Get(codexTurnStateHeader) != "" || gjson.GetBytes(body, "client_metadata.x-codex-turn-state").Exists() {
 		t.Fatalf("strict mode must strip unknown echoes: class=%s stripped=%v header=%q body=%s", class, stripped, headers.Get(codexTurnStateHeader), body)
 	}
 
-	if _, class, _ := h.applyCodexTurnStateEchoPolicy(unknownKey, other, http.Header{}, []byte(`{}`)); class != turnStateEchoNone {
+	if _, class, _ := h.applyCodexTurnStateEchoPolicy(nil, unknownKey, other, http.Header{}, []byte(`{}`)); class != turnStateEchoNone {
 		t.Fatalf("no token must classify as none: %s", class)
 	}
-	if _, class, _ := h.applyCodexTurnStateEchoPolicy("", other, headers, []byte(`{}`)); class != turnStateEchoNone {
+	if _, class, _ := h.applyCodexTurnStateEchoPolicy(nil, "", other, headers, []byte(`{}`)); class != turnStateEchoNone {
 		t.Fatalf("empty affinity key must not be tracked: %s", class)
 	}
 }
@@ -130,7 +130,7 @@ func TestApplyCodexTurnStateEchoPolicyIgnoresExpiredOrigin(t *testing.T) {
 	t.Cleanup(func() { codexTurnStateOrigins.Delete(key) })
 	headers := http.Header{}
 	headers.Set(codexTurnStateHeader, "blob")
-	if _, class, _ := h.applyCodexTurnStateEchoPolicy(key, other, headers, []byte(`{}`)); class != turnStateEchoUnknown {
+	if _, class, _ := h.applyCodexTurnStateEchoPolicy(nil, key, other, headers, []byte(`{}`)); class != turnStateEchoUnknown {
 		t.Fatalf("expired origin must fall through to unknown, got %s", class)
 	}
 }
@@ -177,7 +177,7 @@ func TestApplyCodexTurnStateEchoPolicyStripsUnresolvedSubstitute(t *testing.T) {
 	// 回归：本会话当前的替身仍然要换回真实值，剥离规则不能误伤活着的替身。
 	live := http.Header{}
 	live.Set(codexTurnStateHeader, sub)
-	body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, minter, live, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, key, minter, live, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
 	if class != turnStateEchoSame || stripped || live.Get(codexTurnStateHeader) != "real-blob" ||
 		gjson.GetBytes(body, codexTurnStateBodyPath).String() != "real-blob" {
 		t.Fatalf("a live substitute must still be restored: class=%s stripped=%v header=%q body=%s", class, stripped, live.Get(codexTurnStateHeader), body)
@@ -193,7 +193,7 @@ func TestApplyCodexTurnStateEchoPolicyStripsUnresolvedSubstitute(t *testing.T) {
 
 	headers := http.Header{}
 	headers.Set(codexTurnStateHeader, sub)
-	body, class, stripped = h.applyCodexTurnStateEchoPolicy(key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`","thread_id":"t"}}`))
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(nil, key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`","thread_id":"t"}}`))
 	if class != turnStateEchoUnknown || !stripped {
 		t.Fatalf("a dead substitute must be stripped with the vault off: class=%s stripped=%v", class, stripped)
 	}
@@ -209,7 +209,7 @@ func TestApplyCodexTurnStateEchoPolicyStripsUnresolvedSubstitute(t *testing.T) {
 
 	// 只走帧体的载体（下游 WS 的 client_metadata）同样要剥。
 	bodyOnly := http.Header{}
-	body, class, stripped = h.applyCodexTurnStateEchoPolicy(key, minter, bodyOnly, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(nil, key, minter, bodyOnly, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
 	if class != turnStateEchoUnknown || !stripped || gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
 		t.Fatalf("body-only substitute must be stripped: class=%s stripped=%v body=%s", class, stripped, body)
 	}
@@ -246,7 +246,7 @@ func TestApplyCodexTurnStateEchoPolicyStripsSubstituteForRelayAccount(t *testing
 		}
 		headers := http.Header{}
 		headers.Set(codexTurnStateHeader, sub)
-		body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, relay, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+		body, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, key, relay, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
 		if class != turnStateEchoUnknown || !stripped || headers.Get(codexTurnStateHeader) != "" || gjson.GetBytes(body, codexTurnStateBodyPath).Exists() {
 			t.Fatalf("%s: relay upstream must never receive a substitute: class=%s stripped=%v header=%q body=%s",
 				tc.name, class, stripped, headers.Get(codexTurnStateHeader), body)

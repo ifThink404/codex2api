@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -160,7 +161,10 @@ func (h *Handler) classifyCodexTurnStateEcho(affinityKey string, account *auth.A
 // 还有一条无条件规则：入站值带替身前缀又没换回真实 token 的，不看开关一律剥离。
 // 账号把 session_guards_policy 设成 off 时只剩这条兜底（dropUnresolvedSubstituteOnly）。
 // headers 原地修改（调用方传的是本次尝试的下游头副本），body 返回可能改写后的副本。
-func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *auth.Account, headers http.Header, body []byte) ([]byte, turnStateEchoClass, bool) {
+//
+// c 只用来把判定写进请求上下文供用量日志取用（noteUsageTurnStateEcho，首个判定优先），
+// 不参与任何分类或剥离决策；为 nil 时（单测/内部调用）行为完全不变。
+func (h *Handler) applyCodexTurnStateEchoPolicy(c *gin.Context, affinityKey string, account *auth.Account, headers http.Header, body []byte) ([]byte, turnStateEchoClass, bool) {
 	affinityKey = strings.TrimSpace(affinityKey)
 	token := ""
 	if headers != nil {
@@ -171,6 +175,9 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 		token = bodyToken
 	}
 	if token == "" || affinityKey == "" {
+		// 客户端没回带（或这条请求没有会话标识可归属）：这也是一条事实，
+		// 记 none 与「未记录」（'' ）区分开。
+		noteUsageTurnStateEcho(c, usageTurnStateEchoNone, false)
 		return body, turnStateEchoNone, false
 	}
 	// session_guards_policy=off：该账号的请求不分类、不剥离真实 token、不计分类计数，
@@ -237,6 +244,14 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 		accountID = account.ID()
 	}
 	recordTurnStateObservation(accountID, class, stripped)
+	// 用量日志把「本会话替身已换回真实值」单独归一类：那是网关自己发出去的东西被
+	// 原样带回来，与客户端拿着别的账号的真实 token（cross）完全不是一回事，合并成
+	// same 会让按账号读数的页面看不出托管是否在正常续链。
+	echo := string(class)
+	if restored != "" {
+		echo = usageTurnStateEchoSubstitute
+	}
+	noteUsageTurnStateEcho(c, echo, stripped)
 	if class != turnStateEchoSame {
 		log.Printf("[TURN-STATE] account=%d class=%s stripped=%t affinity=%s", accountID, class, stripped, hashRiskIdentity(affinityKey))
 	}

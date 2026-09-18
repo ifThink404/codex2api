@@ -57,7 +57,7 @@ func TestApplyCodexTurnStateEchoPolicyOffAccountKeepsRealTokenButDropsSubstitute
 
 	headers := http.Header{}
 	headers.Set(codexTurnStateHeader, "blob")
-	body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, off, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob","thread_id":"t"}}`))
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, key, off, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"blob","thread_id":"t"}}`))
 	if stripped || headers.Get(codexTurnStateHeader) != "blob" {
 		t.Fatalf("guards-off account must keep the inbound header: stripped=%v header=%q", stripped, headers.Get(codexTurnStateHeader))
 	}
@@ -76,7 +76,7 @@ func TestApplyCodexTurnStateEchoPolicyOffAccountKeepsRealTokenButDropsSubstitute
 
 	substitute := codexTurnStateSubstitutePrefix + "deadbeefdeadbeefdeadbeefdeadbeef"
 	headers.Set(codexTurnStateHeader, substitute)
-	body, _, stripped = h.applyCodexTurnStateEchoPolicy(key, off, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+substitute+`","thread_id":"t"}}`))
+	body, _, stripped = h.applyCodexTurnStateEchoPolicy(nil, key, off, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+substitute+`","thread_id":"t"}}`))
 	if !stripped || headers.Get(codexTurnStateHeader) != "" {
 		t.Fatalf("a gateway substitute must never leave the gateway: stripped=%v header=%q", stripped, headers.Get(codexTurnStateHeader))
 	}

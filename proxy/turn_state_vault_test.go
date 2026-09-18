@@ -60,7 +60,7 @@ func TestTurnStateVaultReusesSubstituteAcrossCarriersWithinTurn(t *testing.T) {
 	minter := &auth.Account{DBID: 101}
 	key := "vault-carriers::api-key:9"
 	fromHeader := issueCodexTurnStateSubstitute(key, minter, "real-blob")
-	out := (&Handler{}).vaultCodexTurnStateEvent(key, minter, "response.metadata",
+	out := (&Handler{}).vaultCodexTurnStateEvent(nil, key, minter, "response.metadata",
 		[]byte(`{"type":"response.metadata","headers":{"x-codex-turn-state":"real-blob"}}`))
 	fromEvent := gjson.GetBytes(out, "headers.x-codex-turn-state").String()
 	if fromHeader == "" || fromEvent != fromHeader {
@@ -101,7 +101,7 @@ func TestVaultCodexTurnStateEventRewritesMetadataHeaders(t *testing.T) {
 	key := "vault-ev::api-key:9"
 	for _, eventType := range []string{"response.metadata", "codex.response.metadata"} {
 		data := []byte(`{"type":"` + eventType + `","headers":{"X-Codex-Turn-State":"real-blob","openai-model":"gpt-5.5"},"metadata":{"k":"v"}}`)
-		out := h.vaultCodexTurnStateEvent(key, minter, eventType, data)
+		out := h.vaultCodexTurnStateEvent(nil, key, minter, eventType, data)
 		got := gjson.GetBytes(out, "headers.X-Codex-Turn-State").String()
 		if got == "real-blob" || !strings.HasPrefix(got, "c2a-ts-v1.") {
 			t.Fatalf("%s: token not substituted: %s", eventType, out)
@@ -114,11 +114,11 @@ func TestVaultCodexTurnStateEventRewritesMetadataHeaders(t *testing.T) {
 		}
 	}
 	untouched := []byte(`{"type":"response.output_text.delta","delta":"hi"}`)
-	if out := h.vaultCodexTurnStateEvent(key, minter, "response.output_text.delta", untouched); string(out) != string(untouched) {
+	if out := h.vaultCodexTurnStateEvent(nil, key, minter, "response.output_text.delta", untouched); string(out) != string(untouched) {
 		t.Fatal("non-metadata events must pass through unchanged")
 	}
 	noToken := []byte(`{"type":"response.metadata","headers":{"openai-model":"gpt-5.5"}}`)
-	if out := h.vaultCodexTurnStateEvent(key, minter, "response.metadata", noToken); string(out) != string(noToken) {
+	if out := h.vaultCodexTurnStateEvent(nil, key, minter, "response.metadata", noToken); string(out) != string(noToken) {
 		t.Fatal("metadata without a token must pass through unchanged")
 	}
 }
@@ -133,16 +133,16 @@ func TestApplyCodexTurnStateEchoPolicyRestoresSubstitute(t *testing.T) {
 	sub := issueCodexTurnStateSubstitute(key, minter, "real-blob")
 	headers := http.Header{}
 	headers.Set(codexTurnStateHeader, sub)
-	body, class, stripped := h.applyCodexTurnStateEchoPolicy(key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"`+sub+`"}}`))
 	if class != turnStateEchoSame || stripped || headers.Get(codexTurnStateHeader) != "real-blob" || gjson.GetBytes(body, "client_metadata.x-codex-turn-state").String() != "real-blob" {
 		t.Fatalf("substitute must be restored on both carriers: class=%s stripped=%v header=%q body=%s", class, stripped, headers.Get(codexTurnStateHeader), body)
 	}
 	headers.Set(codexTurnStateHeader, sub)
-	if _, class, stripped := h.applyCodexTurnStateEchoPolicy(key, other, headers, []byte(`{}`)); class != turnStateEchoCross || !stripped || headers.Get(codexTurnStateHeader) != "" {
+	if _, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, key, other, headers, []byte(`{}`)); class != turnStateEchoCross || !stripped || headers.Get(codexTurnStateHeader) != "" {
 		t.Fatalf("cross-account substitute must be stripped: %s %v", class, stripped)
 	}
 	headers.Set(codexTurnStateHeader, "foreign-real-token")
-	body, class, stripped = h.applyCodexTurnStateEchoPolicy(key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"foreign-real-token"}}`))
+	body, class, stripped = h.applyCodexTurnStateEchoPolicy(nil, key, minter, headers, []byte(`{"client_metadata":{"x-codex-turn-state":"foreign-real-token"}}`))
 	if class != turnStateEchoUnknown || !stripped || headers.Get(codexTurnStateHeader) != "" || gjson.GetBytes(body, "client_metadata.x-codex-turn-state").Exists() {
 		t.Fatalf("foreign token must always be stripped under the vault even with strict off: %s %v", class, stripped)
 	}
@@ -191,7 +191,7 @@ func TestTurnStateVaultSkipsRelayStyleAccounts(t *testing.T) {
 	}
 
 	event := []byte(`{"type":"response.metadata","headers":{"x-codex-turn-state":"real-blob"}}`)
-	if out := (&Handler{}).vaultCodexTurnStateEvent(key, relay, "response.metadata", event); string(out) != string(event) {
+	if out := (&Handler{}).vaultCodexTurnStateEvent(nil, key, relay, "response.metadata", event); string(out) != string(event) {
 		t.Fatalf("relay account event rewritten: %s", out)
 	}
 
@@ -199,7 +199,7 @@ func TestTurnStateVaultSkipsRelayStyleAccounts(t *testing.T) {
 	h := newSessionGuardTestHandler(t, relay)
 	headers := http.Header{}
 	headers.Set(codexTurnStateHeader, "real-blob")
-	body, class, stripped := h.applyCodexTurnStateEchoPolicy("vault-relay-unknown::api-key:9", relay, headers,
+	body, class, stripped := h.applyCodexTurnStateEchoPolicy(nil, "vault-relay-unknown::api-key:9", relay, headers,
 		[]byte(`{"client_metadata":{"x-codex-turn-state":"real-blob"}}`))
 	if class != turnStateEchoUnknown || stripped || headers.Get(codexTurnStateHeader) != "real-blob" ||
 		gjson.GetBytes(body, "client_metadata.x-codex-turn-state").String() != "real-blob" {
@@ -231,7 +231,7 @@ func TestTurnStateVaultFailsClosedWhenIssueFails(t *testing.T) {
 		t.Fatal("undelivered turn-state must not record provenance")
 	}
 
-	out := (&Handler{}).vaultCodexTurnStateEvent(key, minter, "response.metadata",
+	out := (&Handler{}).vaultCodexTurnStateEvent(nil, key, minter, "response.metadata",
 		[]byte(`{"type":"response.metadata","headers":{"x-codex-turn-state":"real-blob","openai-model":"gpt-5.5"}}`))
 	if gjson.GetBytes(out, "headers.x-codex-turn-state").Exists() {
 		t.Fatalf("failed mint must drop the event field, got %s", out)

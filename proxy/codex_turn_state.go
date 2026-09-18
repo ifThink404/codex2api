@@ -44,6 +44,10 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 	token := ""
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
+		// 用量日志记的是上游**真实** token 的字符数（托管改写成替身之前）。
+		// 这里已经把上游响应头完整看过一遍：没有就记 0（检查过但上游没给），
+		// 与「未记录」（这次尝试根本没拿到上游响应）区分开。
+		markUsageTurnStateChecked(c, len(token))
 	}
 	if token == "" {
 		c.Writer.Header().Del(codexTurnStateHeader)
@@ -83,6 +87,8 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 	stagedHeader := false
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
+		// 同上：记真实长度，替身改写之前。
+		markUsageTurnStateChecked(c, len(token))
 		if token != "" && turnStateVaultAppliesTo(account) {
 			// 失败关闭：铸不出替身就当作没有 token（删头 + 不记溯源）。
 			// 无会话标识不算故障，同上不记日志。

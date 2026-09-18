@@ -269,9 +269,12 @@ const (
 	minUsageLogFlushIntervalSeconds     = 1
 	maxUsageLogFlushIntervalSeconds     = 300
 
-	postgresMaxBindParams       = 65535
-	usageLogInsertColumnCount   = 65
-	maxUsageLogInsertRowsPerSQL = 1000
+	postgresMaxBindParams     = 65535
+	usageLogInsertColumnCount = 68
+	// 每条 INSERT 的行数上限必须让 行数 × usageLogInsertColumnCount 低于
+	// PostgreSQL 的 65535 个 bind 参数。68 列时 65535/68 = 963，取 900 留出
+	// 再加几列的余量（batchInsertLogs 运行期还会按当前列数再夹一次）。
+	maxUsageLogInsertRowsPerSQL = 900
 
 	// usageLogBufferHardLimit 内存缓冲的硬上限。PG 长时间不可用时（维护、主从切换、
 	// 磁盘写满）失败批次会一直被放回缓冲区，没有上限的话内存一路涨到 OOM——那会把
@@ -347,6 +350,9 @@ type usageLogEntry struct {
 	ReasoningEffort        string
 	UpstreamResponseModel  string
 	WindowNumber           string
+	TurnStateLength        *int
+	TurnStateEcho          string
+	TurnStateStripped      bool
 	InboundEndpoint        string
 	UpstreamEndpoint       string
 	Stream                 bool
@@ -1235,6 +1241,14 @@ func (db *DB) migrate(ctx context.Context) error {
 	-- window_number 是 Codex 客户端窗口号（x-codex-window-id 的 <n> 段，指纹收敛前的原值）。
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_response_model VARCHAR(100) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS window_number VARCHAR(32) DEFAULT '';
+	-- turn_state_* 记录本次胜出尝试的 X-Codex-Turn-State 情况（只有官方 Codex 路径会填）。
+	-- turn_state_length 刻意没有 DEFAULT：NULL = 未记录（历史行 / 拿到上游响应前就失败 /
+	-- 非官方路径），0 = 检查过上游响应但它没给。两者的运营含义完全不同，给默认值 0
+	-- 会把整张旧表显示成「上游从没给过 turn-state」。长度本身是账号级的降智桶标记
+	-- （线上实测健康号 292 字符、坏桶号 312 字符）。
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_length INT;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_echo VARCHAR(16) DEFAULT '';
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_stripped BOOLEAN DEFAULT FALSE;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS via_websocket BOOLEAN DEFAULT FALSE;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS effective_model VARCHAR(100) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS inbound_endpoint VARCHAR(100) DEFAULT '';
@@ -4309,6 +4323,9 @@ type UsageLog struct {
 	ReasoningEffort        string    `json:"reasoning_effort"`
 	UpstreamResponseModel  string    `json:"upstream_response_model"`
 	WindowNumber           string    `json:"window_number"`
+	TurnStateLength        *int      `json:"turn_state_length"`
+	TurnStateEcho          string    `json:"turn_state_echo"`
+	TurnStateStripped      bool      `json:"turn_state_stripped"`
 	InboundEndpoint        string    `json:"inbound_endpoint"`
 	UpstreamEndpoint       string    `json:"upstream_endpoint"`
 	Stream                 bool      `json:"stream"`
@@ -4371,6 +4388,7 @@ type UsageLog struct {
 // 单条脏数据就能永久堵死整个日志写入。因此写入前按列宽截断。
 const (
 	usageLogChannelMaxLen      = 16  // channel
+	usageLogTurnStateEchoMax   = 16  // turn_state_echo
 	usageLogImageSizeMaxLen    = 32  // image_size
 	usageLogWindowNumberMaxLen = 32  // window_number
 	usageLogShortTextMaxLen    = 64  // client_ip / api_key_masked / upstream_error_kind
@@ -4474,6 +4492,9 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		ReasoningEffort:        clampUsageLogText(log.ReasoningEffort, usageLogTextMaxLen),
 		UpstreamResponseModel:  clampUsageLogText(log.UpstreamResponseModel, usageLogTextMaxLen),
 		WindowNumber:           clampUsageLogText(log.WindowNumber, usageLogWindowNumberMaxLen),
+		TurnStateLength:        normalizeUsageLogTurnStateLength(log.TurnStateLength),
+		TurnStateEcho:          normalizeUsageLogTurnStateEcho(log.TurnStateEcho),
+		TurnStateStripped:      log.TurnStateStripped,
 		InboundEndpoint:        clampUsageLogText(log.InboundEndpoint, usageLogTextMaxLen),
 		UpstreamEndpoint:       clampUsageLogText(log.UpstreamEndpoint, usageLogTextMaxLen),
 		Stream:                 log.Stream,
@@ -4532,29 +4553,37 @@ type UsageLogInput struct {
 	// credential snapshot that issued it. Zero is legacy/unscoped traffic.
 	CredentialGeneration int64
 	// Channel 是处理该请求的上游渠道（codex/grok），写入时固化，空值表示未知。
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
-	PromptTokens           int
-	CompletionTokens       int
-	TotalTokens            int
-	StatusCode             int
-	DurationMs             int
-	InputTokens            int
-	OutputTokens           int
-	ReasoningTokens        int
-	FirstTokenMs           int
-	WsAcquireMs            int
-	ReasoningEffort        string
-	UpstreamResponseModel  string
-	WindowNumber           string
+	Channel               string
+	ClientIP              string
+	ClientUserAgent       string
+	UpstreamUserAgent     string
+	UserAgentOverridden   bool
+	InternalReason        string
+	ParentRequestID       string
+	Endpoint              string
+	Model                 string
+	EffectiveModel        string
+	PromptTokens          int
+	CompletionTokens      int
+	TotalTokens           int
+	StatusCode            int
+	DurationMs            int
+	InputTokens           int
+	OutputTokens          int
+	ReasoningTokens       int
+	FirstTokenMs          int
+	WsAcquireMs           int
+	ReasoningEffort       string
+	UpstreamResponseModel string
+	WindowNumber          string
+	// TurnStateLength 是上游本次尝试首个下发的真实 X-Codex-Turn-State 的字符数：
+	// nil = 未记录（拿到上游响应前就失败、非官方路径），0 = 检查过但上游没给。
+	// TurnStateEcho 是入站回带的分类（none/same/cross/unknown/substitute，'' = 未记录），
+	// TurnStateStripped 表示本次入站值被网关剥离过。三者由 populateUsageTurnState
+	// 在落库填充链里统一补上，不在各落库点手写。
+	TurnStateLength        *int
+	TurnStateEcho          string
+	TurnStateStripped      bool
 	InboundEndpoint        string
 	UpstreamEndpoint       string
 	Stream                 bool
@@ -4905,8 +4934,8 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 				  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 				  is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 				  client_user_agent, upstream_user_agent, user_agent_overridden, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, user_billing_mode, image_unit_price, billed_image_count,
-				  upstream_response_model, window_number)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65)`)
+				  upstream_response_model, window_number, turn_state_length, turn_state_echo, turn_state_stripped)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68)`)
 		if err != nil {
 			return fmt.Errorf("准备语句: %w", err)
 		}
@@ -4919,7 +4948,7 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 				e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 				e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount,
-				e.UpstreamResponseModel, e.WindowNumber); err != nil {
+				e.UpstreamResponseModel, e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped); err != nil {
 				return fmt.Errorf("执行插入: %w", err)
 			}
 		}
@@ -5010,7 +5039,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 			e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount,
-			e.UpstreamResponseModel, e.WindowNumber)
+			e.UpstreamResponseModel, e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped)
 		argIdx += usageLogInsertColumnCount
 	}
 
@@ -5020,7 +5049,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 		is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 		client_user_agent, upstream_user_agent, user_agent_overridden, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, user_billing_mode, image_unit_price, billed_image_count,
-		upstream_response_model, window_number)
+		upstream_response_model, window_number, turn_state_length, turn_state_echo, turn_state_stripped)
 		VALUES %s`, strings.Join(valueStrings, ","))
 
 	_, err := execer.ExecContext(ctx, query, valueArgs...)
@@ -5596,7 +5625,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 	            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''),
+	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 	            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 	           FROM usage_logs u
 	           LEFT JOIN accounts a ON u.account_id = a.id
@@ -5618,7 +5647,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 			&l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier,
 			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel,
-			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber,
+			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
@@ -6069,7 +6098,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 	            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''),
+	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 	            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 	           FROM usage_logs u
 	           LEFT JOIN accounts a ON u.account_id = a.id
@@ -6092,7 +6121,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 			&l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier,
 			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel,
-			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber,
+			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
@@ -6140,6 +6169,14 @@ type UsageLogFilter struct {
 	RetryOnly             *bool  // nil=全部, true=仅重试请求, false=仅首次请求
 	ViaWebsocketOnly      *bool  // nil=全部, true=仅 WebSocket, false=仅 HTTP
 	UltraOnly             *bool  // nil=全部, true=仅 Codex Ultra 档, false=仅非 Ultra
+	// TurnState 是 turn_state_length 的三态筛选：received(>0) / missing(=0) /
+	// not_recorded(NULL)，空=全部。TurnStateLength 精确匹配字符数（按账号对比
+	// 292/312 这类降智桶标记时用）。TurnStateEcho 匹配回带分类，TurnStateStripped
+	// 匹配本次是否被剥离。全部在数据库分页之前生效。
+	TurnState         string
+	TurnStateLength   *int
+	TurnStateEcho     string
+	TurnStateStripped *bool
 }
 
 // HasDimensionFilter 报告过滤条件里是否带有"维度"约束(账号/密钥/模型/端点/搜索词/形态开关等)。
@@ -6150,7 +6187,8 @@ func (f UsageLogFilter) HasDimensionFilter() bool {
 		f.Model != "" || f.Endpoint != "" || f.APIKeyID != nil || f.AccountID != nil ||
 		f.FastOnly != nil || f.StreamOnly != nil || f.CompactOnly != nil ||
 		f.CompactionHistoryOnly != nil || f.RetryOnly != nil || f.ViaWebsocketOnly != nil ||
-		f.UltraOnly != nil || f.Query != ""
+		f.UltraOnly != nil || f.Query != "" ||
+		f.TurnState != "" || f.TurnStateLength != nil || f.TurnStateEcho != "" || f.TurnStateStripped != nil
 }
 
 // DimensionKey 把维度条件压成稳定字符串,供缓存键区分不同筛选组合。无维度条件时返回空串。
@@ -6197,6 +6235,12 @@ func (f UsageLogFilter) DimensionKey() string {
 	writeBool("retry", f.RetryOnly)
 	writeBool("ws", f.ViaWebsocketOnly)
 	writeBool("ultra", f.UltraOnly)
+	writeStr("ts", f.TurnState)
+	if f.TurnStateLength != nil {
+		writeStr("tslen", strconv.Itoa(*f.TurnStateLength))
+	}
+	writeStr("tsecho", f.TurnStateEcho)
+	writeBool("tsstrip", f.TurnStateStripped)
 	writeStr("q", f.Query)
 	return b.String()
 }
@@ -6279,6 +6323,28 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 	if f.UltraOnly != nil {
 		p := addArg(*f.UltraOnly)
 		parts = append(parts, fmt.Sprintf(`COALESCE(u.ultra, false) = %s`, p))
+	}
+	// turn_state_length 的三态刻意不 COALESCE：NULL（未记录）必须与 0（检查过但
+	// 上游没给）分开，把 NULL 折成 0 就等于把所有历史行说成「上游从没给过」。
+	switch strings.ToLower(strings.TrimSpace(f.TurnState)) {
+	case "received":
+		parts = append(parts, `u.turn_state_length > 0`)
+	case "missing":
+		parts = append(parts, `u.turn_state_length = 0`)
+	case "not_recorded":
+		parts = append(parts, `u.turn_state_length IS NULL`)
+	}
+	if f.TurnStateLength != nil {
+		p := addArg(*f.TurnStateLength)
+		parts = append(parts, fmt.Sprintf(`u.turn_state_length = %s`, p))
+	}
+	if f.TurnStateEcho != "" {
+		p := addArg(f.TurnStateEcho)
+		parts = append(parts, fmt.Sprintf(`COALESCE(u.turn_state_echo, '') = %s`, p))
+	}
+	if f.TurnStateStripped != nil {
+		p := addArg(*f.TurnStateStripped)
+		parts = append(parts, fmt.Sprintf(`COALESCE(u.turn_state_stripped, false) = %s`, p))
 	}
 	if f.Query != "" {
 		p := addArg("%" + f.Query + "%")
@@ -6429,7 +6495,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 			            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 			            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-			            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''),
+			            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 			            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at,
 	            COUNT(*) OVER() AS total_count
 	           FROM usage_logs u
@@ -6451,7 +6517,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens,
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
 			&l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
-			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber,
+			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw, &result.Total); err != nil {
 			return nil, err
 		}
@@ -6485,7 +6551,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 			COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-			COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''),
+			COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 			COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 		FROM usage_logs u
 		LEFT JOIN accounts a ON u.account_id = a.id
@@ -6506,7 +6572,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens,
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
 			&l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
-			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber,
+			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}

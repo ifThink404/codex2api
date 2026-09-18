@@ -23,10 +23,10 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if regexp.MustCompile(`\n\s*guardCodexTurnStateEcho\(affinityKey, account, downstreamHeaders\)`).Match(handler) {
 		t.Fatal("handler.go still calls the legacy guard directly; use applyCodexTurnStateEchoPolicy")
 	}
-	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(handler, -1); len(got) != 1 {
+	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(c, affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(handler, -1); len(got) != 1 {
 		t.Fatalf("handler.go policy call sites = %d, want 1", len(got))
 	}
-	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(ws, -1); len(got) != 1 {
+	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(c, affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(ws, -1); len(got) != 1 {
 		t.Fatalf("responses_ws.go policy call sites = %d, want 1", len(got))
 	}
 	if got := regexp.MustCompile(`noteCodexTurnStateProvenance\(affinityKey, account\)`).FindAll(handler, -1); len(got) != 1 {
@@ -70,7 +70,9 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	}
 	// turn-state 托管只挂在官方 Codex 出站事件流上：HTTP 中继分支（relay 账号不铸造
 	// turn-state）不改写，所以每个文件恰好一处。
-	vaultEvent := regexp.MustCompile(`h\.vaultCodexTurnStateEvent\(affinityKey, account, eventType, `)
+	// turnStateUsageSlot 是本次尝试的用量长度槽位：两处都必须传当次尝试捕获的那一个，
+	// 传 nil 或复用旧槽位会让换号后的读数串到一起。
+	vaultEvent := regexp.MustCompile(`h\.vaultCodexTurnStateEvent\(turnStateUsageSlot, affinityKey, account, eventType, `)
 	for name, src := range map[string][]byte{"handler.go": handler, "responses_ws.go": ws} {
 		if got := vaultEvent.FindAll(src, -1); len(got) != 1 {
 			t.Fatalf("%s turn-state vault event sites = %d, want 1", name, len(got))

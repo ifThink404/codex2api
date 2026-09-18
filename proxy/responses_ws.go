@@ -345,6 +345,9 @@ func stripNewAPIPolicyWebSocketEventID(payload []byte) ([]byte, string) {
 
 func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.Conn, rawPayload []byte, policyEventID string, options *responsesWSForwardOptions) (returnErr error) {
 	defer releasePromptRequestFrameBody(c)
+	// 一条 WS 连接上一个 gin.Context 要服务同一连接的多个轮次，而 turn-state 的
+	// 入站回带分类是「这一轮客户端带了什么」。不清就会把第一轮的分类粘到后面所有轮。
+	beginUsageTurnStateTurn(c)
 	reservation, admitted := security.TryAcquireRequestMemory(int64(len(rawPayload)))
 	if !admitted {
 		apiErr := api.NewAPIError(api.ErrCodeServiceUnavailable, "Request memory capacity exhausted, please retry later", api.ErrorTypeServer)
@@ -656,6 +659,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		if c.Request.Context().Err() != nil {
 			return errResponsesWSClientGone
 		}
+		// 与 HTTP 侧同法：每次尝试换一个长度槽位，迟到事件写不进新尝试。
+		beginUsageTurnStateAttempt(c)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
@@ -816,7 +821,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		// service_tier 记账按 payload 规则改写后的值归因（覆写 service_tier 的规则才生效）。
 		serviceTier = EffectiveRequestedServiceTier(upstreamBody, effectiveModel, downstreamHeaders, attemptIdentity)
 		// 下游 WS 的 token 在帧体 client_metadata 里，之前从未被守卫过；这里与 HTTP 路径共用同一策略。
-		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(affinityKey, account, downstreamHeaders, upstreamBody)
+		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, upstreamBody)
 		// 在 useWebsocket 最终确定后再派生上游身份键：与 handler.go 的
 		// Responses/ChatCompletions 路径一致——无显式会话默认每请求隔离上游身份，
 		// WS 路径交给 ExecuteRequest 的 stateless 槽位池处理。
@@ -1253,6 +1258,10 @@ func (h *Handler) streamResponsesWSUpstream(
 		return true
 	}
 
+	// 本次尝试的 turn-state 长度槽位：在进入流之前取一次，由下面的事件闭包捕获。
+	// 这条流排水到一半就换号时，迟到的事件仍写这一份槽位，不会盖住新尝试的读数。
+	turnStateUsageSlot := currentUsageTurnStateAttempt(c)
+
 	readErr = readSSEStreamWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(sseEvent string, data []byte) bool {
 		if wsReplay == nil {
 			h.recordCompactionProvenanceFromPayload(context.Background(), account, data)
@@ -1272,7 +1281,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		// 一旦要透传给客户端就改写为可重试的 server_error。冷却/计费/日志用的
 		// terminalFailurePayload 取改写前的原始 data，不受影响。
 		clientData = sanitizeCapacityShedEventForClient(eventType, clientData)
-		clientData = h.vaultCodexTurnStateEvent(affinityKey, account, eventType, clientData)
+		clientData = h.vaultCodexTurnStateEvent(turnStateUsageSlot, affinityKey, account, eventType, clientData)
 		ttftGuard.MarkProgress(eventType)
 		isFirstToken := isLooseFirstTokenResult(parsed)
 		if !ttftRecorded && isFirstToken {

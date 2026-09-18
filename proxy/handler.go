@@ -1546,6 +1546,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateWsAcquireFromRequest(c, input)
 	populateUpstreamTrace(c, input)
 	h.populateUsageWindowNumber(c, input)
+	h.populateUsageTurnState(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
 	populateCapacityShedFromErrorMessage(input)
@@ -4074,6 +4075,9 @@ func (h *Handler) Responses(c *gin.Context) {
 	var selectionErr error
 	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
+		// 用量日志的 turn-state 长度按尝试隔离：换一个新槽位，旧流的迟到事件只会写进
+		// 它自己捕获的旧槽位，不会污染当前尝试。交给本次尝试的流闭包捕获。
+		turnStateUsageSlot := beginUsageTurnStateAttempt(c)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
@@ -5041,7 +5045,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		serviceTier = EffectiveRequestedServiceTier(upstreamBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
 		// 跨账号 turn-state 回带一律剥离（头 + 体）；来源未知的按 strict 开关处理，
 		// 并计数到会话防护统计。见 session_guards.go。
-		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(affinityKey, account, downstreamHeaders, upstreamBody)
+		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, upstreamBody)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
@@ -5455,7 +5459,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 进不了首包前静默换号/超窗压缩分支。必须写出时改写降载码。
 					shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
 						(!contentTokenSeen && !visibleBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy))
-					wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, h.vaultCodexTurnStateEvent(affinityKey, account, eventType, sanitizeCapacityShedEventForClient(eventType, data)), shouldDefer)
+					wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, h.vaultCodexTurnStateEvent(turnStateUsageSlot, affinityKey, account, eventType, sanitizeCapacityShedEventForClient(eventType, data)), shouldDefer)
 					if err != nil {
 						writeErr = err
 						clientGone = true
