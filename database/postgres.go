@@ -4586,6 +4586,10 @@ type UsageLogInput struct {
 	UpstreamErrorKind      string
 	ErrorMessage           string
 	PromptPolicyIncidentID string
+	// CapacityShed 标记这条终态来自上游容量降载（server_is_overloaded / slow_down
+	// 及其同义错误类型）。纯传输字段：没有对应的 usage_logs 列，也不写库，只供落库
+	// 前的会话自动锁定区分「上游按账号×模型分桶降载」与真正的 server_error。
+	CapacityShed bool
 }
 
 func (l *UsageLog) populateBillingBreakdown() {

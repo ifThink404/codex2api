@@ -53,12 +53,12 @@ func TestSessionAutoLockLocksAfterThresholdAndRejects(t *testing.T) {
 	h, official, _ := newAutoLockTestHandler(t)
 	key := "thread-1::api-key:9"
 	for i := 0; i < 2; i++ {
-		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_is_overloaded"})
+		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_error · An error occurred"})
 	}
 	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
 		t.Fatalf("two failures must not lock: %v", err)
 	}
-	h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_is_overloaded"})
+	h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_error · An error occurred"})
 	err := h.checkSessionAutoLock(autoLockTestContext(h, key), key)
 	if err == nil || string(err.Code) != "session_blacklisted" {
 		t.Fatalf("third failure must lock, got %v", err)
@@ -279,7 +279,7 @@ func TestSessionAutoLockCanonicalizesOverlongKeys(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		h.observeSessionAutoLock(autoLockTestContext(h, raw), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_is_overloaded"})
+		h.observeSessionAutoLock(autoLockTestContext(h, raw), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_error · An error occurred"})
 	}
 	if err := h.checkSessionAutoLock(autoLockTestContext(h, raw), raw); err == nil {
 		t.Fatal("an overlong key must still lock once the threshold is reached")
@@ -306,5 +306,88 @@ func TestSessionAutoLockCanonicalizesOverlongKeys(t *testing.T) {
 	}
 	if status := sessionAutoLockSnapshot(h); status.ActiveLocks != 0 {
 		t.Fatalf("status after unlock = %+v", status)
+	}
+}
+
+// TestSessionAutoLockIgnoresCapacityShed500s 固化口径修正：上游容量降载
+// （server_is_overloaded / slow_down）按账号×模型分桶，与会话无关，既不计连击
+// 也不清零，只有真正的 server_error 500 才推进连击。
+func TestSessionAutoLockIgnoresCapacityShed500s(t *testing.T) {
+	h, official, _ := newAutoLockTestHandler(t)
+	key := "thread-shed::api-key:9"
+	shed := func() *database.UsageLogInput {
+		return &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, CapacityShed: true,
+			ErrorMessage: "server_is_overloaded · service_unavailable_error · Our servers are currently overloaded"}
+	}
+	for i := 0; i < 3; i++ {
+		h.observeSessionAutoLock(autoLockTestContext(h, key), shed())
+	}
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
+		t.Fatalf("capacity shed 500s must never lock: %v", err)
+	}
+	if got := sessionAutoLockSnapshot(h).StreakEntries; got != 0 {
+		t.Fatalf("streak entries = %d, want 0 (capacity shed must not open a streak)", got)
+	}
+}
+
+// TestSessionAutoLockCapacityShedDoesNotResetStreak 降载既不加也不清零：夹在真
+// 500 之间的降载不能把已有连击抹掉，否则坏桶会把真故障的锁一直往后推。
+func TestSessionAutoLockCapacityShedDoesNotResetStreak(t *testing.T) {
+	h, official, _ := newAutoLockTestHandler(t)
+	key := "thread-shed-mix::api-key:9"
+	real := &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_error · An error occurred"}
+	h.observeSessionAutoLock(autoLockTestContext(h, key), real)
+	h.observeSessionAutoLock(autoLockTestContext(h, key), real)
+	h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, CapacityShed: true})
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
+		t.Fatalf("capacity shed must not reach the threshold on its own: %v", err)
+	}
+	h.observeSessionAutoLock(autoLockTestContext(h, key), real)
+	err := h.checkSessionAutoLock(autoLockTestContext(h, key), key)
+	if err == nil || string(err.Code) != "session_blacklisted" {
+		t.Fatalf("third real 500 must lock (shed must not reset the streak), got %v", err)
+	}
+}
+
+func TestIsCapacityShedErrorMessage(t *testing.T) {
+	cases := []struct {
+		message string
+		want    bool
+	}{
+		{"server_is_overloaded · service_unavailable_error · Our servers are currently overloaded", true},
+		{"slow_down · Please slow down", true},
+		{"service_unavailable_error · Service Unavailable", true},
+		{"SERVER_IS_OVERLOADED · upper case code", true},
+		{"  server_is_overloaded  ", true},
+		{"server_error · An error occurred while processing your request", false},
+		{"rate_limit_exceeded · too many requests", false},
+		{"upstream said server_is_overloaded", false},
+		{"HTTP 500", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isCapacityShedErrorMessage(tc.message); got != tc.want {
+			t.Errorf("isCapacityShedErrorMessage(%q) = %v, want %v", tc.message, got, tc.want)
+		}
+	}
+}
+
+// TestSessionAutoLockCapacityShedFallbackFromErrorMessage 覆盖落库填充链上的兜底：
+// 字面量没显式置 CapacityShed 时，logUsageForRequest 按 ErrorMessage 的首段补判，
+// 自动锁定照样不计这些 500。
+func TestSessionAutoLockCapacityShedFallbackFromErrorMessage(t *testing.T) {
+	h, official, _ := newAutoLockTestHandler(t)
+	key := "thread-shed-fallback::api-key:9"
+	for i := 0; i < 3; i++ {
+		h.logUsageForRequest(autoLockTestContext(h, key), &database.UsageLogInput{
+			AccountID: official.DBID, Endpoint: "/v1/responses", StatusCode: 500,
+			ErrorMessage: "server_is_overloaded · service_unavailable_error · Our servers are currently overloaded",
+		})
+	}
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
+		t.Fatalf("error-message classified capacity shed must never lock: %v", err)
+	}
+	if got := sessionAutoLockSnapshot(h).StreakEntries; got != 0 {
+		t.Fatalf("streak entries = %d, want 0", got)
 	}
 }

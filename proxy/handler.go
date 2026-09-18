@@ -1512,6 +1512,16 @@ func populateAPIKeyMetaFromContext(c *gin.Context, input *database.UsageLogInput
 	}
 }
 
+// populateCapacityShedFromErrorMessage 是容量降载标记的兜底：拿得到 stream outcome
+// 的落库点已经显式置了 CapacityShed，其余落库点（HTTP 错误体、读体失败等）只留下
+// 拼好的 ErrorMessage，这里按首段错误码补判，保证会话自动锁定看到的口径一致。
+func populateCapacityShedFromErrorMessage(input *database.UsageLogInput) {
+	if input == nil {
+		return
+	}
+	input.CapacityShed = input.CapacityShed || (input.StatusCode == 500 && isCapacityShedErrorMessage(input.ErrorMessage))
+}
+
 func populateInternalUsageMetaFromContext(c *gin.Context, input *database.UsageLogInput) {
 	if c == nil || input == nil {
 		return
@@ -1534,6 +1544,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	h.populateUsageWindowNumber(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
+	populateCapacityShedFromErrorMessage(input)
 	h.observeSessionAutoLock(c, input)
 	markCyberPolicyUsageKind(input)
 	input = database.SnapshotUsageLogBilling(input)
@@ -2450,6 +2461,16 @@ func capacityShedHandlingDisabled() bool {
 	}
 }
 
+// isCapacityShedErrorCode 是容量降载错误码的唯一判据，供 payload 与错误消息两种
+// 判定共用。sanitizeCapacityShedEventForClient 是改写而非判定，保留它自己的分支。
+func isCapacityShedErrorCode(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "server_is_overloaded", "slow_down":
+		return true
+	}
+	return false
+}
+
 // isCapacityShedPayload 判断 response.failed / error 帧是否为上游容量降载
 // （server_is_overloaded / slow_down）。复用 sanitizeCapacityShedEventForClient
 // 的三条 code path，供分类与失败上报两侧共用。
@@ -2458,12 +2479,26 @@ func isCapacityShedPayload(payload []byte) bool {
 		return false
 	}
 	for _, path := range []string{"error.code", "response.error.code", "response.status_details.error.code"} {
-		switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, path).String())) {
-		case "server_is_overloaded", "slow_down":
+		if isCapacityShedErrorCode(gjson.GetBytes(payload, path).String()) {
 			return true
 		}
 	}
 	return false
+}
+
+// isCapacityShedErrorMessage 从已经拼成落库形态的错误消息判断是否为容量降载：
+// usageLogErrorMessage / usageLogFailureMessage 产出的是 "code · type · message"，
+// 只有首段是错误码（没有 code 时首段是 error.type），所以除了 isCapacityShedErrorCode
+// 的两个码，还认同义的 service_unavailable_error。供没有 stream outcome 的落库点兜底。
+func isCapacityShedErrorMessage(message string) bool {
+	first := message
+	if idx := strings.Index(first, " · "); idx >= 0 {
+		first = first[:idx]
+	}
+	if isCapacityShedErrorCode(first) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(first), "service_unavailable_error")
 }
 
 // sanitizeCapacityShedEventForClient 把即将写给下游的 error / response.failed
@@ -4510,6 +4545,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					UpstreamResponseModel: upstreamResponseModel,
 					InboundEndpoint:       "/v1/responses", UpstreamEndpoint: upstreamEndpoint,
 					Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
+					CapacityShed: outcome.capacityShed,
 				}
 				if usage != nil {
 					logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
@@ -4795,6 +4831,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 					AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
+					CapacityShed: outcome.capacityShed,
 				}, promptPolicyIncidentID)
 				log.Printf("OpenAI Responses 上游流在首包前断开，重置连接并重试 (attempt %s, account %d): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
 				recyclePooledClient(account, proxyURL)
@@ -4923,6 +4960,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				BillingServiceTier:     usageTiers.BillingServiceTier,
 				PromptPolicyIncidentID: promptPolicyIncidentID,
 				AttemptIndex:           attempt + 1,
+				CapacityShed:           outcome.capacityShed,
 			}
 			if outcome.logStatusCode != http.StatusOK {
 				logInput.ErrorMessage = usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage)
@@ -5668,6 +5706,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
+				CapacityShed: outcome.capacityShed,
 			}, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %s, account %d, /v1/responses): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
@@ -5829,6 +5868,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			BillingServiceTier:     usageTiers.BillingServiceTier,
 			PromptPolicyIncidentID: promptPolicyIncidentID,
 			AttemptIndex:           attempt + 1,
+			CapacityShed:           outcome.capacityShed,
 		}
 		if logStatusCode != http.StatusOK {
 			logInput.ErrorMessage = usageLogFailureMessage(logStatusCode, outcome.failureMessage)
@@ -7302,6 +7342,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				UpstreamResponseModel: upstreamResponseModel,
 				InboundEndpoint:       "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint,
 				Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
+				CapacityShed: outcome.capacityShed,
 			}
 			if usage != nil {
 				logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
@@ -7678,6 +7719,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
+				CapacityShed: outcome.capacityShed,
 			}, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %s, account %d, /v1/chat/completions): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
@@ -7798,6 +7840,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			BillingServiceTier:     usageTiers.BillingServiceTier,
 			PromptPolicyIncidentID: promptPolicyIncidentID,
 			AttemptIndex:           attempt + 1,
+			CapacityShed:           outcome.capacityShed,
 		}
 		if logStatusCode != http.StatusOK {
 			logInput.ErrorMessage = usageLogFailureMessage(logStatusCode, outcome.failureMessage)

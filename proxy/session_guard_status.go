@@ -63,6 +63,11 @@ func SessionGuardStatusSnapshot(store *auth.Store) SessionGuardStatus {
 		TurnState:      SessionGuardTurnStateStatus{Totals: totals, Accounts: accounts, Vault: turnStateVaultCountersSnapshot()},
 		InitialSession: SessionGuardInitialStatus{RecentHour: recent, SinceStart: since},
 		PromptPolicy:   SessionGuardPromptPolicyStatus{Exempted: exempted, BlockedAfterSelection: blockedAfterSelection},
+		// 自动锁定的开关、阈值与计数全在进程内，不需要 *Handler：只有 DB 预热要
+		// Handler。这里一并填上，否则没有 Handler 的调用方（admin runtime-status 在
+		// 未接 auth cache proxy 时走的就是这条分支）会把 AutoLock 留成零值，运行状态
+		// 报 enabled=false，而 observeSessionAutoLock 读的是同一份设置、照样在落锁。
+		AutoLock: sessionAutoLockSnapshot(nil),
 	}
 	if store != nil {
 		status.Settings.NoBorrowEnabled = store.SessionNoBorrowEnabled()

@@ -1504,6 +1504,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
+			CapacityShed: outcome.capacityShed,
 		}, promptPolicyIncidentID)
 		resp.Body.Close()
 		if !isFirstTokenTimeoutOutcome(outcome) {
@@ -1599,6 +1600,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		BillingServiceTier:     usageTiers.BillingServiceTier,
 		PromptPolicyIncidentID: promptPolicyIncidentID,
 		AttemptIndex:           fallbackAttempt,
+		CapacityShed:           outcome.capacityShed,
 	}
 	if outcome.logStatusCode != http.StatusOK {
 		logInput.ErrorMessage = usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage)

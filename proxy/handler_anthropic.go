@@ -1142,6 +1142,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					IsRetryAttempt: true, PromptPolicyIncidentID: promptPolicyIncidentID,
 					UpstreamErrorKind: outcome.failureKind,
 					ErrorMessage:      usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
+					CapacityShed:      outcome.capacityShed,
 				}
 				if usage != nil {
 					retryLog.PromptTokens, retryLog.CompletionTokens, retryLog.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
@@ -1198,6 +1199,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				InboundEndpoint:       "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
 				Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 				PromptPolicyIncidentID: promptPolicyIncidentID,
+				CapacityShed:           outcome.capacityShed,
 			}
 			if usage != nil {
 				logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
@@ -1547,6 +1549,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
+				CapacityShed: outcome.capacityShed,
 			}, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重试 (attempt %s, account %d, /v1/messages): %s",
 				retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
@@ -1657,6 +1660,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			BillingServiceTier:     usageTiers.BillingServiceTier,
 			PromptPolicyIncidentID: promptPolicyIncidentID,
 			AttemptIndex:           attempt + 1,
+			CapacityShed:           outcome.capacityShed,
 		}
 		if logStatusCode != http.StatusOK {
 			logInput.ErrorMessage = usageLogFailureMessage(logStatusCode, outcome.failureMessage)

@@ -253,6 +253,14 @@ func (h *Handler) observeSessionAutoLock(c *gin.Context, input *database.UsageLo
 		sessionAutoLock.mu.Unlock()
 		return
 	}
+	// 容量降载（server_is_overloaded / slow_down 及同义错误类型）是上游按账号×模型
+	// 分桶的瞬时信号，与会话无关：既不 +1 也不清零，连击保持原样，等真正的
+	// server_error 决定是否落锁。线上第一次开这个开关 6 小时锁了 24 个会话，全部是
+	// 坏桶官方号的降载，锁会话只会把账号问题转嫁给用户。
+	if input.CapacityShed {
+		sessionAutoLock.mu.Unlock()
+		return
+	}
 	streak := sessionAutoLock.streaks[key]
 	if streak == nil {
 		if len(sessionAutoLock.streaks) >= sessionAutoLockStreakCap {
