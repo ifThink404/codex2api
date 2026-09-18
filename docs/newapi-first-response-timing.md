@@ -6,8 +6,15 @@ stored/API key remains `codex_preflight_sse_passthrough_enabled` for
 compatibility. It is off by default; an existing true value now enables reports,
 never early writes.
 
-Deploy both codex2api and the compatible NewAPI update, configure NewAPI's trusted
-codex2api policy destination, then enable this setting. The separate local
+Pre-content lifecycle and metadata SSE events are now always buffered until the
+first content event, whatever this switch says: `continuousRetryPreflightPassthrough`
+returns false unconditionally. Committing HTTP 200 early meant a `response.failed`
+inside that window could no longer be returned under its real error code, nor take
+silent account rotation or the over-window compaction retry. Those recover here.
+
+Only codex2api's side of this contract has shipped. Enabling the setting on its
+own is safe: it adds three response headers and changes nothing else, and a
+gateway that does not implement the contract ignores them. The separate local
 `first_token_mode` still controls codex2api usage-log timing. Reports always use
 the loose event classifier (`isLooseFirstTokenResult`), excluding lifecycle,
 error, terminal and heartbeat events. WS handshake/connection acquisition is not
@@ -46,14 +53,14 @@ Commit boundaries that publish the headers, all of them existing write sites:
   which also drops the staged values when the local replay commit fails;
 - non-streaming: immediately before the aggregated JSON body is written.
 
-NewAPI accepts reports only from an authenticated request to an enabled matching
-policy target/key, for the same request, user and channel. It validates version,
-unique integer headers, bounds and ordering, then strips these private headers.
-`other.frt` remains the actual NewAPI first-frame latency. The new
-`other.upstream_first_response` object contains `source`, `mode`, `ms` and
-`attempt_ms`; the list displays it as **Upstream first response**, with observed
-first-frame timing in its title and in request details. TPS, billing and existing
-aggregate metrics keep their original timing semantics. Old/missing/invalid
-reports use the original display. Historical logs are not rewritten. The
-NewAPI-side parsing and display work is tracked separately; unknown headers are
-harmless to gateways that do not implement it.
+The NewAPI-side parsing and display work is a separate follow-up and is not part
+of this change. The contract it is expected to implement: accept reports only
+from an authenticated request to an enabled matching policy target/key, for the
+same request, user and channel; validate version, unique integer headers, bounds
+and ordering, then strip these private headers. `other.frt` remains the actual
+NewAPI first-frame latency. A new `other.upstream_first_response` object carries
+`source`, `mode`, `ms` and `attempt_ms`; the list displays it as **Upstream first
+response**, with observed first-frame timing in its title and in request details.
+TPS, billing and existing aggregate metrics keep their original timing semantics.
+Old, missing or invalid reports use the original display, and historical logs are
+not rewritten. Until that lands, the headers are simply unread.
