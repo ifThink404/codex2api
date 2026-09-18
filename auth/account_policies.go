@@ -79,6 +79,8 @@ func (a *Account) SessionGuardsOff() bool {
 }
 
 // ApplyAccountPolicyPatch 热更新内存账号的策略字段（nil = 不改），与 ApplyAccountSchedulerOverridePatch 同一套锁纪律。
+// 不调用 recomputeSchedulerLocked / invalidateRoutingSchedulers：三个策略都不参与评分与并发计算，
+// 所有读取方（代理解析、会话防护闸门、prompt 放行）都直接读账号指针，下一次请求即生效。
 func (s *Store) ApplyAccountPolicyPatch(dbID int64, promptFilter, egress, sessionGuards *string) bool {
 	if s == nil {
 		return false

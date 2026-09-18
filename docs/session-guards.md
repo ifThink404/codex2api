@@ -35,8 +35,8 @@
 
 | 字段 | 取值 | 作用 |
 |---|---|---|
-| `prompt_filter_policy` | inherit / exempt | exempt：prompt 检测仍在选号前评估，但命中的请求落到该账号时放行；审计 source=`account_exempt` 并记录账号 ID。落到其他账号照拦（响应与原来完全一致）。每请求只判一次，failover 不重判。请求同时未通过参数校验时，待放行的拦截仍然生效（拦截优先于校验的提前返回），审计行同样是 source=`account_exempt` 并带 `account_id` |
+| `prompt_filter_policy` | inherit / exempt | exempt：prompt 检测仍在选号前评估，但命中的请求落到该账号时放行；审计 source=`account_exempt` 并记录账号 ID。落到其他账号照拦（响应与原来完全一致）。每请求只判一次，failover 不重判。请求同时未通过参数校验时，待放行的拦截仍然生效（拦截优先于校验的提前返回）；这种情况下选号尚未发生，审计只有评估阶段的 source=`local_filter` 行（account_id 为 0），不会有 `account_exempt` 行。 |
 | `egress_policy` | inherit / direct | direct 且未填固定代理：直连上游，不进代理池/全局代理/Resin；填了固定代理仍走固定代理 |
 | `session_guards_policy` | inherit / off | off：该账号不做 turn-state 分类剥离与托管、不计 500 连击、不做首次会话准入与不借用、不记窗口号；网关铸造的替身仍不会被转发到上游。把正在使用中的账号切到 off 会让客户端手上那一轮的替身作废（该轮丢失一次粘性），下一轮恢复正常 |
 
-代理探测现在会记录出口 IP 的时区（`test_timezone`）；账号绑定的代理时区与账号时区不一致时，编辑页与列表会提示并可一键同步，不会自动改。代理池匹配保持按原文精确比较（末尾斜杠在后端是另一个 key）；账号编辑页会回显命中的池条目（标签 · 出口 IP · 地点 · 延迟），不在池中时明确提示。
+代理探测现在会记录出口 IP 的时区（`test_timezone`，来自 ip-api 的 timezone 字段；IPv4 探测不通而走 IPv6 回退时暂不记录，只是不提示，不会提示错）；账号绑定的代理时区与账号时区不一致时，编辑页与列表会提示并可一键同步，不会自动改。代理池匹配保持按原文精确比较（末尾斜杠在后端是另一个 key）；账号编辑页会回显命中的池条目（标签 · 出口 IP · 地点 · 延迟），不在池中时明确提示。
