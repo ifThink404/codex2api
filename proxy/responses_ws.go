@@ -1696,6 +1696,20 @@ func (h *Handler) inspectPromptFilterOpenAIForWebSocket(c *gin.Context, conn *we
 	if h == nil || h.store == nil {
 		return false, false
 	}
+	pending, blocked, delegated := h.evaluatePromptFilterWS(c, conn, rawBody, endpoint, model, policyEventID)
+	if blocked {
+		return true, delegated
+	}
+	if pending == nil {
+		return false, false
+	}
+	return h.executePromptBlockWS(c, conn, pending, policyEventID)
+}
+
+// evaluatePromptFilterWS 是 WS 入口「判」的那一半:已锁定的会话立刻拒(与 HTTP 的
+// rejectLockedPromptConversation 对应),否则评估并返回待执行的 pendingPromptBlock。
+// blocked=true 表示已经写过 WS 错误帧、这一轮必须结束。
+func (h *Handler) evaluatePromptFilterWS(c *gin.Context, conn *websocket.Conn, rawBody []byte, endpoint string, model string, policyEventID string) (pending *pendingPromptBlock, blocked bool, delegatedToNewAPI bool) {
 	cfg := h.promptFilterConfigForRequest(c)
 	if item, locked := h.activePromptConversationLock(c, cfg, nil, endpoint, model); locked {
 		restriction := promptCyberRestrictionDecision(item, cfg)
@@ -1712,29 +1726,42 @@ func (h *Handler) inspectPromptFilterOpenAIForWebSocket(c *gin.Context, conn *we
 			writeNewAPIPolicyDecisionHeaders(c, metadata)
 			writePromptCyberRestrictionHeaders(c, restriction)
 			_ = writeResponsesWSError(conn, promptCyberRestrictionAPIError(restriction, newAPIPolicyDecisionDetails(metadata)))
-			return true, true
+			return nil, true, true
 		}
 		_ = writeResponsesWSError(conn, promptCyberRestrictionAPIError(restriction, nil))
-		return true, false
+		return nil, true, false
 	}
 	// Keep disabled filters off the WebSocket request-body hot path too.
 	if !promptfilter.RequiresRequestText(cfg) {
-		return false, false
+		return nil, false, false
 	}
 	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, nil, endpoint, model, promptfilter.TransportWebSocket)
 	verdict := evaluation.Verdict
 	h.logPromptGuardEvaluation(c, endpoint, model, "local_filter", "", evaluation)
 	if verdict.Action != promptfilter.ActionBlock {
-		return false, false
+		return nil, false, false
 	}
+	return &pendingPromptBlock{
+		evaluation: evaluation,
+		cfg:        cfg,
+		rawBody:    rawBody,
+		endpoint:   endpoint,
+		model:      model,
+		transport:  promptfilter.TransportWebSocket,
+	}, false, false
+}
+
+// executePromptBlockWS 是 WS 入口「拦」的那一半,始终返回 blocked=true。
+func (h *Handler) executePromptBlockWS(c *gin.Context, conn *websocket.Conn, pending *pendingPromptBlock, policyEventID string) (blocked bool, delegatedToNewAPI bool) {
+	cfg := pending.cfg
 	// 与 HTTP 入口一致:本地 block 立即锁定会话,使后续绕过本地正则的等价变形
 	// 也无法通过这条 WS 会话到达上游。这条 WS 路径持有独立的 block 逻辑,漏掉
 	// 这一步会让整个前置扼杀在 Codex 的 WebSocket 通道上失效。
-	h.lockPromptConversationOnLocalBlock(c, cfg, nil, endpoint, model, evaluation.Decision, verdict)
+	h.lockPromptConversationOnLocalBlock(c, cfg, nil, pending.endpoint, pending.model, pending.evaluation.Decision, pending.evaluation.Verdict)
 	errorCode := api.ErrorCode("prompt_blocked")
 	errorMessage := localPromptBlockMessage(cfg)
 	if policyContext, verified := h.verifyNewAPIPolicyContext(c, cfg.Advanced.NewAPI, nil); verified {
-		metadata := buildNewAPIPolicyDecisionMetadataWithSecret(policyContext.Identity, evaluation.Decision, verdict, cfg, rawBody, endpoint, model, policyEventID, policyContext.VerificationSecret)
+		metadata := buildNewAPIPolicyDecisionMetadataWithSecret(policyContext.Identity, pending.evaluation.Decision, pending.evaluation.Verdict, cfg, pending.rawBody, pending.endpoint, pending.model, policyEventID, policyContext.VerificationSecret)
 		writeNewAPIPolicyDecisionHeaders(c, metadata)
 		_ = writeResponsesWSError(conn, newAPILocalPromptPolicyDecisionAPIError(metadata, cfg))
 		return true, true

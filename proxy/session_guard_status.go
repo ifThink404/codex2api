@@ -26,13 +26,21 @@ type SessionGuardInitialStatus struct {
 	SinceStart SessionGuardInitialSummary `json:"since_start"`
 }
 
+// SessionGuardPromptPolicyStatus 统计账号级 prompt 策略的两种结局：豁免放行、
+// 选号后仍然拦截。进程内计数，重启清零。
+type SessionGuardPromptPolicyStatus struct {
+	Exempted              uint64 `json:"exempted"`
+	BlockedAfterSelection uint64 `json:"blocked_after_selection"`
+}
+
 type SessionGuardStatus struct {
-	StartedAt      string                      `json:"started_at"`
-	Settings       SessionGuardSettingsStatus  `json:"settings"`
-	TurnState      SessionGuardTurnStateStatus `json:"turn_state"`
-	Borrow         auth.SessionBorrowStats     `json:"borrow"`
-	InitialSession SessionGuardInitialStatus   `json:"initial_session"`
-	AutoLock       SessionGuardAutoLockStatus  `json:"auto_lock"`
+	StartedAt      string                         `json:"started_at"`
+	Settings       SessionGuardSettingsStatus     `json:"settings"`
+	TurnState      SessionGuardTurnStateStatus    `json:"turn_state"`
+	Borrow         auth.SessionBorrowStats        `json:"borrow"`
+	InitialSession SessionGuardInitialStatus      `json:"initial_session"`
+	AutoLock       SessionGuardAutoLockStatus     `json:"auto_lock"`
+	PromptPolicy   SessionGuardPromptPolicyStatus `json:"prompt_policy"`
 }
 
 // SessionGuardStatusSnapshot 供 /api/admin/runtime 使用：全部是进程内计数，重启清零。
@@ -43,6 +51,7 @@ func SessionGuardStatusSnapshot(store *auth.Store) SessionGuardStatus {
 		accounts = []SessionGuardTurnStateAccount{}
 	}
 	recent, since := sessionGuardInitialSnapshot(time.Now())
+	exempted, blockedAfterSelection := PromptPolicyCounters()
 	status := SessionGuardStatus{
 		StartedAt: sessionGuardStartedAt().Format(time.RFC3339),
 		Settings: SessionGuardSettingsStatus{
@@ -53,6 +62,7 @@ func SessionGuardStatusSnapshot(store *auth.Store) SessionGuardStatus {
 		},
 		TurnState:      SessionGuardTurnStateStatus{Totals: totals, Accounts: accounts, Vault: turnStateVaultCountersSnapshot()},
 		InitialSession: SessionGuardInitialStatus{RecentHour: recent, SinceStart: since},
+		PromptPolicy:   SessionGuardPromptPolicyStatus{Exempted: exempted, BlockedAfterSelection: blockedAfterSelection},
 	}
 	if store != nil {
 		status.Settings.NoBorrowEnabled = store.SessionNoBorrowEnabled()

@@ -1596,7 +1596,8 @@ func (db *DB) migrate(ctx context.Context) error {
 				review_endpoint  VARCHAR(512) DEFAULT '',
 				review_request_mode VARCHAR(32) DEFAULT '',
 				review_latency_ms BIGINT NULL,
-				full_text        TEXT DEFAULT ''
+				full_text        TEXT DEFAULT '',
+				account_id       BIGINT NULL
 			);
 			CREATE TABLE IF NOT EXISTS prompt_review_profiles (
 				id VARCHAR(64) PRIMARY KEY,
@@ -1630,6 +1631,7 @@ func (db *DB) migrate(ctx context.Context) error {
 			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS strike_eligible BOOLEAN DEFAULT FALSE;
 			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS request_protocol VARCHAR(64) DEFAULT '';
 			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS request_provider VARCHAR(64) DEFAULT '';
+			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS account_id BIGINT NULL;
 			ALTER TABLE prompt_filter_logs ALTER COLUMN endpoint TYPE VARCHAR(256);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_created_at ON prompt_filter_logs(created_at);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_action_created_at ON prompt_filter_logs(action, created_at);

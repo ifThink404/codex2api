@@ -65,18 +65,40 @@ func (h *Handler) inspectPromptFilterOpenAIWithBlockWriter(c *gin.Context, rawBo
 	if h == nil || h.store == nil {
 		return false
 	}
-	cfg := h.promptFilterConfigForRequest(c)
-	signedBody := ingressRequestBody(c, rawBody)
-	if h.rejectRequiredNewAPIIdentity(c, cfg.Advanced.NewAPI, signedBody) {
+	pending, stop := h.evaluatePromptFilterHTTP(c, rawBody, endpoint, model, h.rejectRequiredNewAPIIdentity)
+	if stop {
 		return true
 	}
+	if pending == nil {
+		return false
+	}
+	return h.executePromptBlockHTTP(c, pending, writeBlock)
+}
+
+// evaluatePromptFilterHTTP 是 HTTP 入口「判」的那一半:解析配置、两道立刻硬拒
+// (必需的 NewAPI 身份、已锁定的会话)、评估、审计与 warn 响应头。
+// stop=true 表示响应已写出、请求必须在此结束;pending 非 nil 表示命中 block 但
+// 尚未执行拦截副作用,由调用方决定立刻执行(旧路径)还是等选到账号(见
+// proxy/prompt_filter_deferred.go)。
+func (h *Handler) evaluatePromptFilterHTTP(
+	c *gin.Context,
+	rawBody []byte,
+	endpoint string,
+	model string,
+	rejectIdentity func(*gin.Context, promptfilter.NewAPIConfig, []byte) bool,
+) (*pendingPromptBlock, bool) {
+	cfg := h.promptFilterConfigForRequest(c)
+	signedBody := ingressRequestBody(c, rawBody)
+	if rejectIdentity(c, cfg.Advanced.NewAPI, signedBody) {
+		return nil, true
+	}
 	if h.rejectLockedPromptConversation(c, cfg, signedBody, rawBody, endpoint, model) {
-		return true
+		return nil, true
 	}
 	// Skip envelope construction and body traversal when neither the local
 	// filter nor a body-dependent extension is enabled (issue #417).
 	if !promptfilter.RequiresRequestText(cfg) {
-		return false
+		return nil, false
 	}
 	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, signedBody, endpoint, model, promptfilter.TransportHTTP)
 	verdict := evaluation.Verdict
@@ -85,12 +107,26 @@ func (h *Handler) inspectPromptFilterOpenAIWithBlockWriter(c *gin.Context, rawBo
 		c.Header("X-Prompt-Filter-Warning", promptFilterWarningMessage(evaluation))
 	}
 	if verdict.Action != promptfilter.ActionBlock {
-		return false
+		return nil, false
 	}
+	return &pendingPromptBlock{
+		evaluation: evaluation,
+		cfg:        cfg,
+		rawBody:    rawBody,
+		signedBody: signedBody,
+		endpoint:   endpoint,
+		model:      model,
+		transport:  promptfilter.TransportHTTP,
+	}, false
+}
+
+// executePromptBlockHTTP 是 HTTP 入口「拦」的那一半,始终返回 true。
+func (h *Handler) executePromptBlockHTTP(c *gin.Context, pending *pendingPromptBlock, writeBlock func(*gin.Context, string)) bool {
+	cfg := pending.cfg
 	// 在发往上游供应商之前锁定会话:本次已被拦下,后续绕过本地规则的等价变形
 	// 也不再有机会打到上游。
-	h.lockPromptConversationOnLocalBlock(c, cfg, signedBody, endpoint, model, evaluation.Decision, verdict)
-	if h.sendNewAPIPolicyDecision(c, cfg, evaluation.Decision, verdict, rawBody, endpoint, model, signedBody) {
+	h.lockPromptConversationOnLocalBlock(c, cfg, pending.signedBody, pending.endpoint, pending.model, pending.evaluation.Decision, pending.evaluation.Verdict)
+	if h.sendNewAPIPolicyDecision(c, cfg, pending.evaluation.Decision, pending.evaluation.Verdict, pending.rawBody, pending.endpoint, pending.model, pending.signedBody) {
 		return true
 	}
 	if writeBlock != nil {
@@ -144,33 +180,34 @@ func (h *Handler) inspectPromptFilterAnthropic(c *gin.Context, rawBody []byte, e
 	if h == nil || h.store == nil {
 		return false
 	}
-	cfg := h.promptFilterConfigForRequest(c)
-	signedBody := ingressRequestBody(c, rawBody)
-	if apiErr := h.requiredNewAPIIdentityError(c, cfg.Advanced.NewAPI, signedBody); apiErr != nil {
-		sendAnthropicError(c, http.StatusUnauthorized, "authentication_error", apiErr.Message)
+	pending, stop := h.evaluatePromptFilterHTTP(c, rawBody, endpoint, model, h.rejectRequiredAnthropicNewAPIIdentity)
+	if stop {
 		return true
 	}
-	if h.rejectLockedPromptConversation(c, cfg, signedBody, rawBody, endpoint, model) {
-		return true
-	}
-	if !promptfilter.RequiresRequestText(cfg) {
+	if pending == nil {
 		return false
 	}
-	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, signedBody, endpoint, model, promptfilter.TransportHTTP)
-	verdict := evaluation.Verdict
-	h.logPromptGuardEvaluation(c, endpoint, model, "local_filter", "", evaluation)
-	if verdict.Action == promptfilter.ActionWarn {
-		c.Header("X-Prompt-Filter-Warning", promptFilterWarningMessage(evaluation))
+	return h.executePromptBlockHTTP(c, pending, writeAnthropicPromptBlock)
+}
+
+// rejectRequiredAnthropicNewAPIIdentity 与 rejectRequiredNewAPIIdentity 判定相同,
+// 只是把缺失身份写成 Anthropic 的错误信封。
+func (h *Handler) rejectRequiredAnthropicNewAPIIdentity(c *gin.Context, cfg promptfilter.NewAPIConfig, signedBody []byte) bool {
+	apiErr := h.requiredNewAPIIdentityError(c, cfg, signedBody)
+	if apiErr == nil {
+		return false
 	}
-	if verdict.Action == promptfilter.ActionBlock {
-		h.lockPromptConversationOnLocalBlock(c, cfg, signedBody, endpoint, model, evaluation.Decision, verdict)
-		if h.sendNewAPIPolicyDecision(c, cfg, evaluation.Decision, verdict, rawBody, endpoint, model, signedBody) {
-			return true
-		}
-		sendAnthropicError(c, http.StatusBadRequest, "invalid_request_error", localPromptBlockMessage(cfg))
-		return true
+	sendAnthropicError(c, http.StatusUnauthorized, "authentication_error", apiErr.Message)
+	return true
+}
+
+// writeAnthropicPromptBlock 保留 /v1/messages 自己的错误信封。空消息回落到默认
+// 文案,与 localPromptBlockMessage 一致。
+func writeAnthropicPromptBlock(c *gin.Context, message string) {
+	if strings.TrimSpace(message) == "" {
+		message = defaultLocalPromptBlockMessage
 	}
-	return false
+	sendAnthropicError(c, http.StatusBadRequest, "invalid_request_error", message)
 }
 
 func promptFilterWarningMessage(evaluation promptGuardEvaluation) string {
@@ -194,6 +231,12 @@ func (h *Handler) logPromptGuardEvaluation(c *gin.Context, endpoint string, mode
 }
 
 func (h *Handler) logPromptFilterVerdictWithDecision(c *gin.Context, endpoint string, model string, source string, errorCode string, verdict promptfilter.Verdict, decision *promptfilter.Decision, envelope *promptfilter.RequestEnvelope) {
+	h.logPromptFilterVerdictWithDecisionAndAccount(c, endpoint, model, source, errorCode, verdict, decision, envelope, 0)
+}
+
+// logPromptFilterVerdictWithDecisionAndAccount 额外记录判定发生时已选中的账号。
+// accountID=0 表示尚未选号(选号前的所有审计都是这种),写入可空的 account_id 列。
+func (h *Handler) logPromptFilterVerdictWithDecisionAndAccount(c *gin.Context, endpoint string, model string, source string, errorCode string, verdict promptfilter.Verdict, decision *promptfilter.Decision, envelope *promptfilter.RequestEnvelope, accountID int64) {
 	if h == nil || h.db == nil || !verdict.Enabled {
 		return
 	}
@@ -236,6 +279,7 @@ func (h *Handler) logPromptFilterVerdictWithDecision(c *gin.Context, endpoint st
 	if input == nil {
 		return
 	}
+	input.AccountID = accountID
 	priority := database.PromptFilterLogPriorityLow
 	if verdict.Action == promptfilter.ActionWarn || verdict.Action == promptfilter.ActionBlock || source == "upstream_cyber_policy" {
 		priority = database.PromptFilterLogPriorityHigh

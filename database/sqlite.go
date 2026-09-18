@@ -515,7 +515,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			review_endpoint TEXT DEFAULT '',
 			review_request_mode TEXT DEFAULT '',
 			review_latency_ms INTEGER NULL,
-			full_text TEXT DEFAULT ''
+			full_text TEXT DEFAULT '',
+			account_id INTEGER NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS prompt_review_profiles (
 			id TEXT PRIMARY KEY,
@@ -761,6 +762,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"prompt_filter_logs", "strike_eligible", "INTEGER DEFAULT 0"},
 		{"prompt_filter_logs", "request_protocol", "TEXT DEFAULT ''"},
 		{"prompt_filter_logs", "request_provider", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "account_id", "INTEGER NULL"},
 		{"system_settings", "client_compat_mode", "TEXT DEFAULT 'preserve'"},
 		{"system_settings", "codex_min_cli_version", "TEXT DEFAULT '0.153.3'"},
 		{"system_settings", "codex_user_agent_config", "TEXT DEFAULT '{}'"},

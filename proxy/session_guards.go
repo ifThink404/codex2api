@@ -64,6 +64,7 @@ func resetSessionGuardStatsForTest() {
 	sessionGuardStats.accounts = fresh.accounts
 	sessionGuardStats.mu.Unlock()
 	resetInitialSessionStatsForTest()
+	resetPromptPolicyCountersForTest()
 }
 
 func (c *SessionGuardTurnStateCounters) add(class turnStateEchoClass, stripped bool) {

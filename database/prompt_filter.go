@@ -597,6 +597,7 @@ type PromptFilterLog struct {
 	MatchContext         string    `json:"match_context"`
 	FullText             string    `json:"full_text"`
 	APIKeyID             int64     `json:"api_key_id"`
+	AccountID            int64     `json:"account_id"`
 	APIKeyName           string    `json:"api_key_name"`
 	APIKeyMasked         string    `json:"api_key_masked"`
 	ClientIP             string    `json:"client_ip"`
@@ -641,6 +642,7 @@ type PromptFilterLogInput struct {
 	MatchContext         string
 	FullText             string
 	APIKeyID             int64
+	AccountID            int64
 	APIKeyName           string
 	APIKeyMasked         string
 	ClientIP             string
@@ -701,15 +703,16 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 				match_context, api_key_id, api_key_name, api_key_masked, client_ip, error_code, review_model, review_flagged, review_error,
 				reviewed, review_confidence, review_threshold, review_reason, review_endpoint, review_request_mode, review_latency_ms,
 				full_text, request_correlation_id,
-				newapi_policy_status, newapi_platform, newapi_user_id, newapi_request_id, newapi_decision_id, session_hash
+				newapi_policy_status, newapi_platform, newapi_user_id, newapi_request_id, newapi_decision_id, session_hash,
+				account_id
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
 			RETURNING id, created_at
 		`, input.Source, input.Endpoint, input.Protocol, input.Provider, input.Model, input.Action, input.Mode, input.Score, input.AuditScore, input.Threshold,
 			input.PolicyProfile, input.ReasonCode, input.PrimaryOrigin, input.StrikeEligible, input.MatchedPatterns, input.TextPreview, input.MatchContext,
 			input.APIKeyID, input.APIKeyName, input.APIKeyMasked, input.ClientIP, input.ErrorCode, input.ReviewModel, input.ReviewFlagged, input.ReviewError,
 			input.Reviewed, input.ReviewConfidence, input.ReviewThreshold, input.ReviewReason, input.ReviewEndpoint, input.ReviewRequestMode, input.ReviewLatencyMS, input.FullText,
-			input.RequestCorrelationID, input.NewAPIPolicyStatus, input.NewAPIPlatform, input.NewAPIUserID, input.NewAPIRequestID, input.NewAPIDecisionID, input.SessionHash).Scan(&id, &createdRaw); err != nil {
+			input.RequestCorrelationID, input.NewAPIPolicyStatus, input.NewAPIPlatform, input.NewAPIUserID, input.NewAPIRequestID, input.NewAPIDecisionID, input.SessionHash, input.AccountID).Scan(&id, &createdRaw); err != nil {
 			return err
 		}
 		createdAt, err := parseDBTimeValue(createdRaw)
@@ -721,7 +724,7 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 			Model: input.Model, Action: input.Action, Mode: input.Mode, Score: input.Score, AuditScore: input.AuditScore,
 			Threshold: input.Threshold, PolicyProfile: input.PolicyProfile, ReasonCode: input.ReasonCode, PrimaryOrigin: input.PrimaryOrigin,
 			StrikeEligible: input.StrikeEligible, MatchedPatterns: input.MatchedPatterns, TextPreview: input.TextPreview,
-			APIKeyID: input.APIKeyID, APIKeyName: input.APIKeyName, APIKeyMasked: input.APIKeyMasked, ReviewModel: input.ReviewModel,
+			APIKeyID: input.APIKeyID, AccountID: input.AccountID, APIKeyName: input.APIKeyName, APIKeyMasked: input.APIKeyMasked, ReviewModel: input.ReviewModel,
 			ReviewFlagged: input.ReviewFlagged, ReviewError: input.ReviewError, Reviewed: input.Reviewed,
 			ReviewConfidence: input.ReviewConfidence, ReviewThreshold: input.ReviewThreshold, ReviewReason: input.ReviewReason,
 			ReviewEndpoint: input.ReviewEndpoint, ReviewRequestMode: input.ReviewRequestMode, ReviewLatencyMS: input.ReviewLatencyMS,
@@ -786,7 +789,8 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		       review_confidence, review_threshold, COALESCE(review_reason, ''), COALESCE(review_endpoint, ''), COALESCE(review_request_mode, ''), review_latency_ms,
 		       COALESCE(full_text, ''),
 		       COALESCE(request_correlation_id, ''), COALESCE(newapi_policy_status, ''), COALESCE(newapi_platform, ''),
-		       COALESCE(newapi_user_id, ''), COALESCE(newapi_request_id, ''), COALESCE(newapi_decision_id, ''), COALESCE(session_hash, '')
+		       COALESCE(newapi_user_id, ''), COALESCE(newapi_request_id, ''), COALESCE(newapi_decision_id, ''), COALESCE(session_hash, ''),
+		       COALESCE(account_id, 0)
 		FROM prompt_filter_logs
 		`+where+`
 		ORDER BY id DESC
@@ -806,7 +810,8 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 			&item.MatchedPatterns, &item.TextPreview, &item.MatchContext, &item.APIKeyID, &item.APIKeyName,
 			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.Reviewed,
 			&item.ReviewConfidence, &item.ReviewThreshold, &item.ReviewReason, &item.ReviewEndpoint, &item.ReviewRequestMode, &item.ReviewLatencyMS, &item.FullText,
-			&item.RequestCorrelationID, &item.NewAPIPolicyStatus, &item.NewAPIPlatform, &item.NewAPIUserID, &item.NewAPIRequestID, &item.NewAPIDecisionID, &item.SessionHash); err != nil {
+			&item.RequestCorrelationID, &item.NewAPIPolicyStatus, &item.NewAPIPlatform, &item.NewAPIUserID, &item.NewAPIRequestID, &item.NewAPIDecisionID, &item.SessionHash,
+			&item.AccountID); err != nil {
 			return nil, 0, err
 		}
 		createdAt, err := parseDBTimeValue(createdAtRaw)
