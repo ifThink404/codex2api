@@ -38,8 +38,8 @@ func (e continuousRetryTestHTTPError) UpstreamErrorBody() []byte { return e.body
 
 func TestContinuousRetryPreflightPassthroughStopsBeforeAnyRetryPolicy(t *testing.T) {
 	settings := RuntimeSettings{CodexPreflightSSEPassthrough: true}
-	if !continuousRetryPreflightPassthrough(settings) {
-		t.Fatal("disabled continuous retry unexpectedly blocked preflight passthrough")
+	if continuousRetryPreflightPassthrough(settings) {
+		t.Fatal("timing reports must not enable early metadata passthrough")
 	}
 	settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{
 		Enabled:    true,

@@ -1197,9 +1197,9 @@ func (h *Handler) streamResponsesWSUpstream(
 	var upstreamResponseModel string
 	ttftRecorded := false
 	// contentTokenSeen 用严格判定（与宽松首字统计无关）。宽松口径下
-	// codex.rate_limits / metadata 会置位 ttftRecorded；本机 2004 还开了
-	// preflight passthrough，这两帧会先写出并置位 wroteAnyBody。若用它们做
-	// 「首包前」判断，previous_response_not_found 降级在真实上游上永远进不去（#541）。
+	// codex.rate_limits / metadata 会置位 ttftRecorded。若用它们做「首包前」判断，
+	// previous_response_not_found 降级在真实上游上永远进不去（#541）。
+	// （这两帧现在恒定缓冲到首个内容事件，不再提前写出并置位 wroteAnyBody。）
 	contentTokenSeen := false
 	preflightSettings := CurrentRuntimeSettings()
 	preflightSettings.ContinuousRetryPolicy = continuousRetryPolicy

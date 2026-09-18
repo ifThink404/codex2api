@@ -106,9 +106,10 @@ func isCodexPreflightSSEEvent(eventType string) bool {
 
 // shouldDeferPreContentSSEEvent 决定首个内容事件前的 SSE 事件是否延迟冲刷。
 // 生命周期事件（response.created / response.in_progress）始终缓冲；前置元数据
-// 事件默认一并缓冲，preflightPassthrough 开启时立即写出（旧版兼容，issue #425）——
-// 代价是提前提交 200，该窗口内的 response.failed 无法再按真实错误码返回，
-// 也无法走静默换号或超窗压缩重试。
+// 事件一并缓冲。preflightPassthrough 是旧版立即写出开关（issue #425），现由
+// continuousRetryPreflightPassthrough 恒定返回 false：提前提交 200 会让该窗口内
+// 的 response.failed 既无法按真实错误码返回，也无法走静默换号或超窗压缩重试。
+// 入参保留只为让这条约束在各调用点仍然显式可读。
 func shouldDeferPreContentSSEEvent(eventType string, contentTokenSeen, gotTerminal, preflightPassthrough bool) bool {
 	return !contentTokenSeen && !gotTerminal &&
 		(isPreContentLifecycleEvent(eventType) ||

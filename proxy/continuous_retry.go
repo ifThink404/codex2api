@@ -48,8 +48,9 @@ func continuousRetryBuffersAttempts(policy database.ContinuousRetryPolicy) bool 
 }
 
 func continuousRetryPreflightPassthrough(settings RuntimeSettings) bool {
-	policy := database.NormalizeContinuousRetryPolicy(settings.ContinuousRetryPolicy)
-	return settings.CodexPreflightSSEPassthrough && !policy.Enabled
+	// The persisted legacy switch now enables timing reports only. Metadata
+	// stays private until normal stream commit, including during retries.
+	return false
 }
 
 func continuousRetryHTTPSelected(policy database.ContinuousRetryPolicy, status int, body []byte) bool {

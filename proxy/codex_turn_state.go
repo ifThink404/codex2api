@@ -41,6 +41,7 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 	if c == nil {
 		return
 	}
+	relayUpstreamFirstResponseHeaders(c, headers)
 	token := ""
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
@@ -99,6 +100,7 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 		}
 	}
 	if c != nil && c.Writer != nil && !c.Writer.Written() {
+		relayUpstreamFirstResponseHeaders(c, headers)
 		stagedHeader = true
 		if token == "" {
 			c.Writer.Header().Del(codexTurnStateHeader)
@@ -114,6 +116,7 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 		// 暴露账号绑定的续链状态或出处数据。
 		if stagedHeader && c != nil && c.Writer != nil && !c.Writer.Written() {
 			c.Writer.Header().Del(codexTurnStateHeader)
+			clearUpstreamFirstResponseHeaders(c.Writer.Header())
 		}
 		return err
 	}

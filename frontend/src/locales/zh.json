@@ -3988,7 +3988,7 @@
         "b4": "SSE/WebSocket 输出扫描：检查模型流式输出；可限制为仅终局规则中断。",
         "b5": "NewAPI 审计接入：只按 Codex2API Key 一对一绑定校验签名身份与审核档案；未绑定 Key 不接受签名身份。",
         "b6": "规则情报定时任务：按间隔搜索公开情报并可选生成候选规则。",
-        "callout": "多副本部署时累计风险建议使用 Redis 缓存；解码轮数建议 1–2，过高会增加延迟。输出扫描为跨帧检测会保留有限窗口：与预检透传（codex_preflight_sse_passthrough）同时开启时，小体积 metadata 帧仍可能被短暂缓存，首帧速度不一定能恢复；且首个内容事件前一旦提交 HTTP 200，后续上游错误的状态码恢复语义会改变，两者同开需单独验证。"
+        "callout": "多副本部署时累计风险建议使用 Redis 缓存；解码轮数建议 1–2，过高会增加延迟。输出扫描为跨帧检测会保留有限窗口，可能影响实际首包时间；上游首响应计时上报只影响统计，不会提前提交响应。"
       },
       "review": {
         "title": "全量模型复核",
@@ -5056,12 +5056,12 @@
     "compactViaResponsesDesc": "官方上游已下线专用的 /responses/compact 端点（返回 404）。开启后，下游对 /v1/responses/compact 的请求在官方 Codex OAuth 账号上改写为带 compaction_trigger 的 /responses 请求，并把流式结果聚合为一次性 JSON 返回。",
     "compactViaResponsesEnabled": "启用 compact 改写为 /responses",
     "compactViaResponsesEnabledDesc": "默认关闭。仅影响官方 OAuth 账号的 compact 透传；中转（OpenAI Responses API）账号不受影响，仍请求中转自身的 /responses/compact 端点。",
-    "codexPreflightSSEPassthrough": "前置元数据事件立即透传（旧版兼容）",
-    "codexPreflightSSEPassthroughDesc": "把内容生成前的上游元数据事件（codex.rate_limits / codex.response.metadata / response.metadata）立即转发给下游，而不是缓冲到首个真实内容事件。适配把“首条 SSE 数据帧”当作首响应时间的多层网关。",
-    "codexPreflightSSEPassthroughEnabled": "启用立即透传",
-    "codexPreflightSSEPassthroughEnabledDesc": "警告：旧版兼容模式，默认关闭。开启后首个内容事件之前就会提交 HTTP 200，此窗口内的上游失败只能以 200 + SSE failed 帧下发——真实 HTTP 错误码、首包前静默换号重试、超窗自动压缩在该窗口内全部失效。热更新即时生效，无需重启。",
+    "codexPreflightSSEPassthrough": "向 NewAPI 上报宽松首响应（不再提前提交 200）",
+    "codexPreflightSSEPassthroughDesc": "开启后不再提前透传前置元数据或提前提交 200；胜出尝试在正常提交响应头时附带 X-Codex2API-First-Response-Ms 等计时头供 NewAPI 显示。首内容前的上游失败重新可以静默换号。",
+    "codexPreflightSSEPassthroughEnabled": "启用首响应计时上报",
+    "codexPreflightSSEPassthroughEnabledDesc": "仅上报计时，不提前下发元数据或提交 HTTP 200。固定使用宽松口径，包含网关准入与此前重试的耗时；本地使用日志的首字口径不受影响。需部署支持此协议的 NewAPI 并配置可信 codex2api 目标。响应头已被心跳提交时省略上报，NewAPI 回退到自己观测的首帧时间。中转账号与原生 WebSocket 客户端不适用。默认关闭，热更新即时生效。",
     "codexCompatToggles": "压缩与兼容开关",
-    "codexCompatTogglesDesc": "超窗自动压缩、compact 端点改写与前置元数据事件透传，均即时生效。",
+    "codexCompatTogglesDesc": "超窗自动压缩、compact 端点改写与上游首响应计时上报，均即时生效。",
     "modelCooldownTitle": "模型 429 冷却策略",
     "modelCooldownDesc": "分别控制 API 直连上游与 OAuth 账号池的模型级 429 冷却。明确的 5h/7d 用量窗口仍按真实重置时间处理。",
     "relayModelCooldownTitle": "API 计划 / 直连上游",

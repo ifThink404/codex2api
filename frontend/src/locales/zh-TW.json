@@ -492,6 +492,10 @@
     "promptBlockedAfterSelection": "選號後攔截"
   },
   "settings": {
+    "codexPreflightSSEPassthrough": "向 NewAPI 回報寬鬆首回應（不再提前提交 200）",
+    "codexPreflightSSEPassthroughDesc": "開啟後不再提前透傳前置中繼資料或提前提交 200；勝出嘗試在正常提交回應標頭時附帶 X-Codex2API-First-Response-Ms 等計時標頭供 NewAPI 顯示。首內容前的上游失敗重新可以靜默換號。",
+    "codexPreflightSSEPassthroughEnabled": "啟用首回應計時回報",
+    "codexPreflightSSEPassthroughEnabledDesc": "僅回報計時，不提前下發中繼資料或提交 HTTP 200。固定使用寬鬆口徑，包含閘道准入與此前重試的耗時；本機使用日誌的首字口徑不受影響。需部署支援此協定的 NewAPI 並設定可信 codex2api 目標。回應標頭已被心跳提交時略過回報，NewAPI 回退到自己觀測的首幀時間。中轉帳號與原生 WebSocket 用戶端不適用。預設關閉，熱更新即時生效。",
     "codexOAuthKeepalive": "惰性模式下保持 Codex 授權",
     "codexOAuthKeepaliveDesc": "開啟後，惰性模式仍會為即將到期的 Codex Token 續期，包括額度冷卻中的帳號；不會解除冷卻或發送生成請求。預設關閉。",
     "codexTelemetry": "用戶端遙測（實驗性）",

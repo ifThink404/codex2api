@@ -5250,6 +5250,13 @@ func (h *Handler) Responses(c *gin.Context) {
 			return
 		}
 
+		// 上游首响应计时（codex_preflight_sse_passthrough_enabled）：每个 attempt 从
+		// 干净的响应头开始，胜出的 attempt 在正常提交响应头时才把计时带给下游。
+		clearUpstreamFirstResponseHeaders(resp.Header)
+		upstreamTiming := upstreamFirstResponseTiming{
+			enabled:      CurrentRuntimeSettings().CodexPreflightSSEPassthrough,
+			requestStart: handlerStart, attemptStart: start,
+		}
 		if !isStream || !continuousRetryBuffersAttempts(continuousRetryPolicy) {
 			relayCodexTurnStateResponseHeader(c, affinityKey, account, resp.Header)
 		}
@@ -5349,6 +5356,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					clientGone = true
 				}
 				parsed := gjson.ParseBytes(data)
+				upstreamTiming.observe(resp.Header, parsed, time.Now())
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 
@@ -5452,13 +5460,19 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 事件一样延迟到首 token 一起冲刷：立即写出会提交 200 header 并置位
 					// wroteAnyBody，使首 token 前的 response.failed（如 context_length_exceeded）
 					// 既无法按真实错误码返回，也无法走超窗压缩重试。
-					// preflightPassthrough（issue #425）恢复旧版语义：元数据事件立即下发，
-					// 管理员显式接受上述代价；生命周期事件（created/in_progress）不受开关影响。
+					// preflightPassthrough（issue #425）曾用于恢复旧版的立即下发语义，现已
+					// 恒定为 false：同一个持久化开关改为在正常提交时上报首响应计时，
+					// 不再提前透传元数据，上述代价随之消失。
 					// 可重试的 error 帧（上游降载先导帧）不受 preflightPassthrough 影响，
 					// 始终缓冲：立即写出会置位 wroteAnyBody，随后的 response.failed 就
 					// 进不了首包前静默换号/超窗压缩分支。必须写出时改写降载码。
 					shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
 						(!contentTokenSeen && !visibleBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy))
+					if !shouldDefer && streamAttempt == nil && !c.Writer.Written() {
+						// 正常提交边界：首响应计时是在这一帧之前的事件上记录的，
+						// 只能在这里、真正写出第一个字节之前带给下游。
+						relayUpstreamFirstResponseHeaders(c, resp.Header)
+					}
 					wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, h.vaultCodexTurnStateEvent(turnStateUsageSlot, affinityKey, account, eventType, sanitizeCapacityShedEventForClient(eventType, data)), shouldDefer)
 					if err != nil {
 						writeErr = err
@@ -5599,6 +5613,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					h.recordCompactionProvenanceFromPayload(context.Background(), account, data)
 				}
 				parsed := gjson.ParseBytes(data)
+				upstreamTiming.observe(resp.Header, parsed, time.Now())
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 				if eventType == "error" {
@@ -5843,6 +5858,8 @@ func (h *Handler) Responses(c *gin.Context) {
 					"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
 				})
 			} else if responseJSON != nil {
+				// 非流式的正常提交边界：聚合完成后才知道首响应计时。
+				relayUpstreamFirstResponseHeaders(c, resp.Header)
 				c.Header("Content-Type", "application/json")
 				c.Status(http.StatusOK)
 				if err := writeAll(c.Writer, responseJSON); err == nil {
