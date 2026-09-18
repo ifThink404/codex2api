@@ -62,9 +62,10 @@ func turnStateVaultEnabled() bool { return CurrentRuntimeSettings().CodexTurnSta
 // turnStateVaultAppliesTo 托管只作用于官方 Codex 账号；relay/Grok/Antigravity/Claude
 // 账号的 token 原样透传（第一轮语义）。这些账号走 Responses 的 relay 分支，出站不经
 // applyCodexTurnStateEchoPolicy，替身没人换得回去——下一轮上游会收到网关自造的值，
-// 续链直接断掉。
+// 续链直接断掉。把 session_guards_policy 设成 off 的账号同理走透传，判据统一由
+// sessionGuardsActiveFor 给出。
 func turnStateVaultAppliesTo(account *auth.Account) bool {
-	return turnStateVaultEnabled() && account != nil && account.ID() > 0 && !account.IsRelayStyle()
+	return turnStateVaultEnabled() && sessionGuardsActiveFor(account)
 }
 
 // turnStateSubstituteGenerator 是替身生成的测试接缝（crypto/rand 失败无法在测试里触发）。

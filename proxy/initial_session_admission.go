@@ -213,11 +213,12 @@ type initialSessionMemo struct {
 	failure   *api.APIError
 }
 
-// enforceInitialSessionAdmission 选号之后调用：中转账号直接放行；同一 session ID
+// enforceInitialSessionAdmission 选号之后调用：中转账号与 session_guards_policy=off
+// 的账号直接放行（判据与其余会话防护共用 sessionGuardsActiveFor）；同一 session ID
 // 在同一 gin.Context 内只判定一次，failover 换号重试沿用首次结论（年龄不会因为
 // 换号而变）。HTTP 请求一个 context 只有一个 session ID，行为等价于按请求判定一次。
 func (h *Handler) enforceInitialSessionAdmission(c *gin.Context, account *auth.Account, headers http.Header, body []byte, identity requestSessionIdentity, hasBinding bool, received time.Time) *api.APIError {
-	if account == nil || account.IsRelayStyle() {
+	if !sessionGuardsActiveFor(account) {
 		return nil
 	}
 	sessionID := strings.TrimSpace(identity.explicitUpstreamID)

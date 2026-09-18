@@ -69,11 +69,14 @@ func codexWindowNumberFromID(windowID string) string {
 // Codex 客户端的本地窗口序号，只有官方通道上的请求才保证由 Codex 客户端发出；
 // relay / Grok / Antigravity / Claude 账号服务的客户端可以是任何东西，它们即使
 // 带了 X-Codex-Window-Id，那串 <uuid>:<n> 也不具备同一套语义，记下来只会让用量页
-// 把互不相干的窗口号并排显示。判据与 turn-state 托管同源（turnStateVaultAppliesTo），
-// 但刻意不复用那个函数：托管还受 CodexTurnStateVaultEnabled 开关控制，
+// 把互不相干的窗口号并排显示。把 session_guards_policy 设成 off 的账号同理：运营者
+// 已经宣布那号上的客户端不按 Codex 契约走，它的窗口号也就没有可比语义。
+//
+// 判据走 sessionGuardsActiveFor，与 turn-state 托管同源但不复用
+// turnStateVaultAppliesTo：托管还受 CodexTurnStateVaultEnabled 开关控制，
 // 而窗口号记录与那个开关无关。
 func windowNumberAppliesToAccount(account *auth.Account) bool {
-	return account != nil && !account.IsRelayStyle()
+	return sessionGuardsActiveFor(account)
 }
 
 // populateUsageWindowNumber 在日志落库前补上窗口号。放在 logUsageForRequest 的

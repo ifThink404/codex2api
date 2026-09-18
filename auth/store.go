@@ -7941,12 +7941,16 @@ func (s *Store) SessionNoBorrowHold() time.Duration {
 // sessionNoBorrowAppliesTo 判断不借用策略是否约束该绑定账号：开关是 Codex 专属的，
 // 只有 Codex 官方账号才被扣住等待；中转/Grok/Antigravity/Claude OAuth 等
 // relay-style 账号沿用旧的容量溢出借用逻辑。
+//
+// 账号把 session_guards_policy 设成 off 时同样回到旧语义：不借用是会话防护的一环，
+// 运营者关掉该账号的防护就该整套关掉。proxy 侧那几道闸走 sessionGuardsActiveFor，
+// auth 不能 import proxy，这里直接读账号策略，判据保持一致。
 func (s *Store) sessionNoBorrowAppliesTo(accountID int64) bool {
 	if s == nil || accountID == 0 {
 		return false
 	}
 	acc := s.FindByID(accountID)
-	return acc != nil && !acc.IsRelayStyle()
+	return acc != nil && !acc.IsRelayStyle() && !acc.SessionGuardsOff()
 }
 
 // SessionBorrowStats 进程内计数：Borrowed = 实际发生的容量溢出借用；Held = 因

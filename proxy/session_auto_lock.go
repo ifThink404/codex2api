@@ -240,8 +240,9 @@ func (h *Handler) observeSessionAutoLock(c *gin.Context, input *database.UsageLo
 	if h.store == nil {
 		return
 	}
-	account := h.store.FindByID(input.AccountID)
-	if account == nil || account.IsRelayStyle() {
+	// relay-style 账号与 session_guards_policy=off 的账号都不计连击，判据与其余
+	// 会话防护共用 sessionGuardsActiveFor。
+	if !sessionGuardsActiveFor(h.store.FindByID(input.AccountID)) {
 		return
 	}
 	threshold := database.NormalizeSessionAutoLockThreshold(settings.CodexSessionAutoLockThreshold)

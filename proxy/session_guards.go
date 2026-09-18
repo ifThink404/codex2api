@@ -157,6 +157,7 @@ func (h *Handler) classifyCodexTurnStateEcho(affinityKey string, account *auth.A
 // applyCodexTurnStateEchoPolicy 在选号之后、出站之前调用一次（HTTP 与下游 WS 两条
 // 尝试循环都调）。cross 一律剥离头 + 体；unknown 仅 strict 剥离；same/none 不动。
 // 还有一条无条件规则：入站值带替身前缀又没换回真实 token 的，不看开关一律剥离。
+// 账号把 session_guards_policy 设成 off 时只剩这条兜底（dropUnresolvedSubstituteOnly）。
 // headers 原地修改（调用方传的是本次尝试的下游头副本），body 返回可能改写后的副本。
 func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *auth.Account, headers http.Header, body []byte) ([]byte, turnStateEchoClass, bool) {
 	affinityKey = strings.TrimSpace(affinityKey)
@@ -170,6 +171,11 @@ func (h *Handler) applyCodexTurnStateEchoPolicy(affinityKey string, account *aut
 	}
 	if token == "" || affinityKey == "" {
 		return body, turnStateEchoNone, false
+	}
+	// session_guards_policy=off：该账号的请求不分类、不剥离真实 token、不计分类计数，
+	// 只保留「网关自造的替身不出网关」这条兜底。
+	if account != nil && account.SessionGuardsOff() {
+		return h.dropUnresolvedSubstituteOnly(affinityKey, account, headers, body)
 	}
 	class := turnStateEchoUnknown
 	restored := ""
