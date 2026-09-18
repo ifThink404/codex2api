@@ -389,7 +389,10 @@ type Account struct {
 	// IgnoreUsageLimitStatusOverride 为 nil 时跟随全局设置；effective 值由 Store 解析。
 	IgnoreUsageLimitStatusOverride *bool
 	ignoreUsageLimitStatus         bool
-	SkipWarmTier                   bool // 跳过 warm 层级降级
+	SkipWarmTier                   bool   // 跳过 warm 层级降级
+	PromptFilterPolicy             string // 账号级策略（auth/account_policies.go）；空/未知视为 inherit
+	EgressPolicy                   string // 同上
+	SessionGuardsPolicy            string // 同上
 	AllowedAPIKeyIDs               []int64
 	allowedAPIKeySet               map[int64]struct{}
 	Tags                           []string
@@ -5619,6 +5622,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	account.ModelCooldownBackoffOverride = row.GetCredentialOptionalBool("model_cooldown_backoff_override")
 	account.recomputeEffectiveIgnoreUsageLimitStatus(s.IgnoreUsageLimitStatus())
 	account.SkipWarmTier = row.SkipWarmTier
+	account.PromptFilterPolicy = NormalizeAccountPolicy(AccountPolicyPromptFilter, row.PromptFilterPolicy)
+	account.EgressPolicy = NormalizeAccountPolicy(AccountPolicyEgress, row.EgressPolicy)
+	account.SessionGuardsPolicy = NormalizeAccountPolicy(AccountPolicySessionGuards, row.SessionGuardsPolicy)
 	if row.Status == "error" {
 		account.Status = StatusError
 		account.ErrorMsg = row.ErrorMessage

@@ -544,7 +544,8 @@ func TestGrokSchedulerMetadataCredentialMergeAdvancesGenerationOnlyForIdentity(t
 		t.Helper()
 		if err := db.UpdateAccountSchedulerMetadata(ctx, id,
 			OptionalNullInt64{}, OptionalNullInt64{}, OptionalBool{}, OptionalInt64Slice{},
-			OptionalStringSlice{}, OptionalInt64Slice{}, OptionalString{}, credentials); err != nil {
+			OptionalStringSlice{}, OptionalInt64Slice{}, OptionalString{}, credentials,
+			AccountPolicyUpdate{}); err != nil {
 			t.Fatalf("UpdateAccountSchedulerMetadata: %v", err)
 		}
 	}

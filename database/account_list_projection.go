@@ -237,7 +237,9 @@ func (db *DB) ListActiveByIDs(ctx context.Context, ids []int64) ([]*AccountRow, 
 	query := `SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason,
 		cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false),
 		COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false),
-		COALESCE(skip_warm_tier, false), score_bias_override, base_concurrency_override,
+		COALESCE(skip_warm_tier, false), COALESCE(prompt_filter_policy, 'inherit'),
+		COALESCE(egress_policy, 'inherit'), COALESCE(session_guards_policy, 'inherit'),
+		score_bias_override, base_concurrency_override,
 		COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at,
 		COALESCE(credential_generation, 1), COALESCE(credential_family_id, '')
 		FROM accounts WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'
@@ -254,7 +256,8 @@ func (db *DB) ListActiveByIDs(ctx context.Context, ids []int64) ([]*AccountRow, 
 		if err := rows.Scan(
 			&row.ID, &row.Name, &row.Platform, &row.Type, &credentialsRaw, &row.ProxyURL, &row.Status,
 			&row.CooldownReason, &cooldownRaw, &row.ErrorMessage, &row.Enabled, &row.Locked,
-			&row.CreditEnabled, &row.CreditSkipUsageWindow, &row.SkipWarmTier, &row.ScoreBiasOverride,
+			&row.CreditEnabled, &row.CreditSkipUsageWindow, &row.SkipWarmTier,
+			&row.PromptFilterPolicy, &row.EgressPolicy, &row.SessionGuardsPolicy, &row.ScoreBiasOverride,
 			&row.BaseConcurrencyOverride, &tagsRaw, &row.Note, &createdRaw, &updatedRaw,
 			&row.CredentialGeneration, &row.CredentialFamilyID,
 		); err != nil {

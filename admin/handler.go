@@ -1650,8 +1650,13 @@ type accountResponse struct {
 	CreditSkipUsageWindow bool                         `json:"credit_skip_usage_window"`
 	// UsingCredits 是与 Status 并列的独立信号：用量窗口已打满但积分顶着，
 	// 状态仍是 active（可调度），前端据此在状态徽章旁并列一个「使用积分」徽章。
-	UsingCredits                  bool                        `json:"using_credits,omitempty"`
-	SkipWarmTier                  bool                        `json:"skip_warm_tier"`
+	UsingCredits bool `json:"using_credits,omitempty"`
+	SkipWarmTier bool `json:"skip_warm_tier"`
+	// 账号级策略（auth/account_policies.go）；三列都以 inherit 为默认，
+	// 不加 omitempty——前端下拉要能区分"继承"和"字段缺失"。
+	PromptFilterPolicy            string                      `json:"prompt_filter_policy"`
+	EgressPolicy                  string                      `json:"egress_policy"`
+	SessionGuardsPolicy           string                      `json:"session_guards_policy"`
 	AccountType                   string                      `json:"account_type,omitempty"`
 	AccessTokenType               string                      `json:"access_token_type,omitempty"`
 	OpenAIResponsesAPI            bool                        `json:"openai_responses_api,omitempty"`
@@ -2129,6 +2134,9 @@ type updateAccountSchedulerReq struct {
 	ScoreBiasOverride       json.RawMessage `json:"score_bias_override"`
 	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
 	SkipWarmTier            json.RawMessage `json:"skip_warm_tier"`
+	PromptFilterPolicy      json.RawMessage `json:"prompt_filter_policy"`
+	EgressPolicy            json.RawMessage `json:"egress_policy"`
+	SessionGuardsPolicy     json.RawMessage `json:"session_guards_policy"`
 	AllowedAPIKeyIDs        json.RawMessage `json:"allowed_api_key_ids"`
 	Tags                    json.RawMessage `json:"tags"`
 	GroupIDs                json.RawMessage `json:"group_ids"`
@@ -2153,6 +2161,9 @@ type accountSchedulerUpdate struct {
 	ScoreBiasOverride       database.OptionalNullInt64
 	BaseConcurrencyOverride database.OptionalNullInt64
 	SkipWarmTier            database.OptionalBool
+	PromptFilterPolicy      database.OptionalString
+	EgressPolicy            database.OptionalString
+	SessionGuardsPolicy     database.OptionalString
 	AllowedAPIKeyIDs        database.OptionalInt64Slice
 	Tags                    optionalStringSlice
 	GroupIDs                database.OptionalInt64Slice
@@ -2185,6 +2196,21 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		return accountSchedulerUpdate{}, err
 	}
 	skipWarmTier, err := parseOptionalBoolField(req.SkipWarmTier, "skip_warm_tier")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	// 三个账号级策略：非法枚举在这里 400，而不是静默归 inherit；合法值仍然过一遍
+	// NormalizeAccountPolicy，这样 null/大小写/空白都以 inherit 之类的规范值落库，
+	// database 包不需要 import auth。
+	promptFilterPolicy, err := parseAccountPolicyField(req.PromptFilterPolicy, auth.AccountPolicyPromptFilter)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	egressPolicy, err := parseAccountPolicyField(req.EgressPolicy, auth.AccountPolicyEgress)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	sessionGuardsPolicy, err := parseAccountPolicyField(req.SessionGuardsPolicy, auth.AccountPolicySessionGuards)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
@@ -2350,6 +2376,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ScoreBiasOverride:       scoreBiasOverride,
 		BaseConcurrencyOverride: baseConcurrencyOverride,
 		SkipWarmTier:            skipWarmTier,
+		PromptFilterPolicy:      promptFilterPolicy,
+		EgressPolicy:            egressPolicy,
+		SessionGuardsPolicy:     sessionGuardsPolicy,
 		AllowedAPIKeyIDs:        allowedAPIKeyIDs,
 		Tags:                    tags,
 		GroupIDs:                groupIDs,
@@ -2431,6 +2460,9 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 	return u.ScoreBiasOverride.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
+		u.PromptFilterPolicy.Set ||
+		u.EgressPolicy.Set ||
+		u.SessionGuardsPolicy.Set ||
 		u.AllowedAPIKeyIDs.Set ||
 		u.Tags.Set ||
 		u.GroupIDs.Set ||
@@ -2449,6 +2481,16 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.ClaudeVersionPolicy.Set ||
 		u.ClaudeClientVersion.Set ||
 		u.Timezone.Set
+}
+
+// accountPolicyUpdate 把三个策略字段打包成 database 层的更新结构，避免调用方
+// 按位置传三个同型参数时写错顺序。
+func (u accountSchedulerUpdate) accountPolicyUpdate() database.AccountPolicyUpdate {
+	return database.AccountPolicyUpdate{
+		PromptFilterPolicy:  u.PromptFilterPolicy,
+		EgressPolicy:        u.EgressPolicy,
+		SessionGuardsPolicy: u.SessionGuardsPolicy,
+	}
 }
 
 func optionalBoolFromPtr(value *bool) database.OptionalBool {
@@ -2663,7 +2705,7 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		}
 	}
 
-	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, update.ScoreBiasOverride, update.BaseConcurrencyOverride, update.SkipWarmTier, update.AllowedAPIKeyIDs, database.OptionalStringSlice{Set: update.Tags.Set, Values: update.Tags.Values}, update.GroupIDs, update.ProxyURL, update.CredentialUpdates); err != nil {
+	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, update.ScoreBiasOverride, update.BaseConcurrencyOverride, update.SkipWarmTier, update.AllowedAPIKeyIDs, database.OptionalStringSlice{Set: update.Tags.Set, Values: update.Tags.Values}, update.GroupIDs, update.ProxyURL, update.CredentialUpdates, update.accountPolicyUpdate()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
 			return
@@ -2688,6 +2730,14 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 			update.BaseConcurrencyOverride.Set,
 			nullableInt64Pointer(update.BaseConcurrencyOverride.Value),
 			optionalBoolPtr(update.SkipWarmTier),
+		)
+	}
+	if update.PromptFilterPolicy.Set || update.EgressPolicy.Set || update.SessionGuardsPolicy.Set {
+		h.store.ApplyAccountPolicyPatch(
+			id,
+			optionalStringPtr(update.PromptFilterPolicy),
+			optionalStringPtr(update.EgressPolicy),
+			optionalStringPtr(update.SessionGuardsPolicy),
 		)
 	}
 	if update.AllowedAPIKeyIDs.Set {
@@ -3130,6 +3180,31 @@ func parseOptionalStringField(raw json.RawMessage, field string, validator func(
 		}
 	}
 	return database.OptionalString{Set: true, Value: value}, nil
+}
+
+// parseAccountPolicyField 解析一个账号级策略字段：非法枚举报 400，合法值（含
+// null 走到的空串）统一收敛成规范枚举后落库，这样 database 层不必 import auth。
+func parseAccountPolicyField(raw json.RawMessage, field string) (database.OptionalString, error) {
+	parsed, err := parseOptionalStringField(raw, field, func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return nil // 空串 = 清除，等价于 inherit
+		}
+		return auth.ValidateAccountPolicy(field)(value)
+	})
+	if err != nil || !parsed.Set {
+		return parsed, err
+	}
+	parsed.Value = auth.NormalizeAccountPolicy(field, parsed.Value)
+	return parsed, nil
+}
+
+// optionalStringPtr 把未设置的可选字符串转成 nil，供只改「带上来的字段」的运行时热更新使用。
+func optionalStringPtr(value database.OptionalString) *string {
+	if !value.Set {
+		return nil
+	}
+	v := value.Value
+	return &v
 }
 
 func parseOptionalIntegerField(raw json.RawMessage, field string, minValue, maxValue int64) (database.OptionalNullInt64, error) {
@@ -6774,6 +6849,7 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 		ScoreBiasOverride:       schedulerUpdate.ScoreBiasOverride,
 		BaseConcurrencyOverride: schedulerUpdate.BaseConcurrencyOverride,
 		SkipWarmTier:            schedulerUpdate.SkipWarmTier,
+		Policies:                schedulerUpdate.accountPolicyUpdate(),
 		AllowedAPIKeyIDs:        schedulerUpdate.AllowedAPIKeyIDs,
 		Tags:                    database.OptionalStringSlice{Set: schedulerUpdate.Tags.Set, Values: schedulerUpdate.Tags.Values},
 		GroupIDs:                schedulerUpdate.GroupIDs,

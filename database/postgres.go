@@ -29,23 +29,27 @@ const grokStateBackfillInitTimeout = 5 * time.Minute
 
 // AccountRow 数据库中的账号行
 type AccountRow struct {
-	ID                      int64
-	CredentialGeneration    int64
-	CredentialFamilyID      string
-	Name                    string
-	Platform                string
-	Type                    string
-	Credentials             map[string]interface{}
-	ProxyURL                string
-	Status                  string
-	CooldownReason          string
-	CooldownUntil           sql.NullTime
-	ErrorMessage            string
-	Enabled                 bool
-	Locked                  bool
-	CreditEnabled           bool
-	CreditSkipUsageWindow   bool
-	SkipWarmTier            bool
+	ID                    int64
+	CredentialGeneration  int64
+	CredentialFamilyID    string
+	Name                  string
+	Platform              string
+	Type                  string
+	Credentials           map[string]interface{}
+	ProxyURL              string
+	Status                string
+	CooldownReason        string
+	CooldownUntil         sql.NullTime
+	ErrorMessage          string
+	Enabled               bool
+	Locked                bool
+	CreditEnabled         bool
+	CreditSkipUsageWindow bool
+	SkipWarmTier          bool
+	// 账号级策略列；空串视为 inherit。database 不 import auth，归一化在 auth/admin 两层做。
+	PromptFilterPolicy      string
+	EgressPolicy            string
+	SessionGuardsPolicy     string
 	ScoreBiasOverride       sql.NullInt64
 	BaseConcurrencyOverride sql.NullInt64
 	Tags                    []string
@@ -88,12 +92,26 @@ type OptionalNullInt64 struct {
 	Value sql.NullInt64
 }
 
+// AccountPolicyUpdate 账号级策略的可选更新。三个字段同型且相邻，用结构体传比
+// 三个位置参数安全：调用方写错顺序时编译不过，而不是把 egress 写进 prompt 列。
+// 取值不在这里校验——database 不 import auth，合法性由 admin 层 PATCH 解析负责。
+type AccountPolicyUpdate struct {
+	PromptFilterPolicy  OptionalString
+	EgressPolicy        OptionalString
+	SessionGuardsPolicy OptionalString
+}
+
+func (u AccountPolicyUpdate) HasChanges() bool {
+	return u.PromptFilterPolicy.Set || u.EgressPolicy.Set || u.SessionGuardsPolicy.Set
+}
+
 type BatchAccountMetadataUpdate struct {
 	Enabled                 OptionalBool
 	Locked                  OptionalBool
 	ScoreBiasOverride       OptionalNullInt64
 	BaseConcurrencyOverride OptionalNullInt64
 	SkipWarmTier            OptionalBool
+	Policies                AccountPolicyUpdate
 	AllowedAPIKeyIDs        OptionalInt64Slice
 	Tags                    OptionalStringSlice
 	GroupIDs                OptionalInt64Slice
@@ -107,6 +125,7 @@ func (u BatchAccountMetadataUpdate) HasChanges() bool {
 		u.ScoreBiasOverride.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
+		u.Policies.HasChanges() ||
 		u.AllowedAPIKeyIDs.Set ||
 		u.Tags.Set ||
 		u.GroupIDs.Set ||
@@ -1132,6 +1151,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credit_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credit_skip_usage_window BOOLEAN DEFAULT FALSE;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS skip_warm_tier BOOLEAN DEFAULT FALSE;
+	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS prompt_filter_policy VARCHAR(16) NOT NULL DEFAULT 'inherit';
+	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS egress_policy VARCHAR(16) NOT NULL DEFAULT 'inherit';
+	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS session_guards_policy VARCHAR(16) NOT NULL DEFAULT 'inherit';
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS note TEXT DEFAULT '';
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credential_generation BIGINT NOT NULL DEFAULT 1;
 
@@ -6832,7 +6854,7 @@ func (db *DB) ListActiveByChannel(ctx context.Context, channel string) ([]*Accou
 	where += accountChannelFilterSQL(channel, upstreamTypeExpr)
 
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at, COALESCE(credential_generation, 1), COALESCE(credential_family_id, '')
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), COALESCE(prompt_filter_policy, 'inherit'), COALESCE(egress_policy, 'inherit'), COALESCE(session_guards_policy, 'inherit'), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at, COALESCE(credential_generation, 1), COALESCE(credential_family_id, '')
 		FROM accounts
 		WHERE ` + where + `
 		ORDER BY id
@@ -6867,6 +6889,9 @@ func (db *DB) ListActiveByChannel(ctx context.Context, channel string) ([]*Accou
 			&a.CreditEnabled,
 			&a.CreditSkipUsageWindow,
 			&a.SkipWarmTier,
+			&a.PromptFilterPolicy,
+			&a.EgressPolicy,
+			&a.SessionGuardsPolicy,
 			&a.ScoreBiasOverride,
 			&a.BaseConcurrencyOverride,
 			&tagsRaw,
@@ -7064,7 +7089,7 @@ func (db *DB) getAccountByID(ctx context.Context, id int64, includeDeleted bool)
 		deletedFilter = ""
 	}
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at, COALESCE(credential_generation, 1), COALESCE(credential_family_id, '')
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), COALESCE(prompt_filter_policy, 'inherit'), COALESCE(egress_policy, 'inherit'), COALESCE(session_guards_policy, 'inherit'), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at, COALESCE(credential_generation, 1), COALESCE(credential_family_id, '')
 		FROM accounts
 		WHERE id = $1 ` + deletedFilter + `
 		LIMIT 1
@@ -7091,6 +7116,9 @@ func (db *DB) getAccountByID(ctx context.Context, id int64, includeDeleted bool)
 		&a.CreditEnabled,
 		&a.CreditSkipUsageWindow,
 		&a.SkipWarmTier,
+		&a.PromptFilterPolicy,
+		&a.EgressPolicy,
+		&a.SessionGuardsPolicy,
 		&a.ScoreBiasOverride,
 		&a.BaseConcurrencyOverride,
 		&tagsRaw,
@@ -7214,7 +7242,7 @@ func (db *DB) UpdateAccountSchedulerConfig(ctx context.Context, id int64, scoreB
 
 // UpdateAccountSchedulerMetadata applies scheduler overrides and UI metadata in
 // one transaction. Runtime store updates should happen only after this returns.
-func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scoreBiasOverride OptionalNullInt64, baseConcurrencyOverride OptionalNullInt64, skipWarmTier OptionalBool, allowedAPIKeyIDs OptionalInt64Slice, tags OptionalStringSlice, groupIDs OptionalInt64Slice, proxyURL OptionalString, credentialUpdates map[string]interface{}) error {
+func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scoreBiasOverride OptionalNullInt64, baseConcurrencyOverride OptionalNullInt64, skipWarmTier OptionalBool, allowedAPIKeyIDs OptionalInt64Slice, tags OptionalStringSlice, groupIDs OptionalInt64Slice, proxyURL OptionalString, credentialUpdates map[string]interface{}, policies AccountPolicyUpdate) error {
 	return db.withSQLiteWriteLock(ctx, func() error {
 		tx, err := db.conn.BeginTx(ctx, nil)
 		if err != nil {
@@ -7254,6 +7282,15 @@ func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scor
 		}
 		if skipWarmTier.Set {
 			add("skip_warm_tier", skipWarmTier.Value)
+		}
+		if policies.PromptFilterPolicy.Set {
+			add("prompt_filter_policy", policies.PromptFilterPolicy.Value)
+		}
+		if policies.EgressPolicy.Set {
+			add("egress_policy", policies.EgressPolicy.Value)
+		}
+		if policies.SessionGuardsPolicy.Set {
+			add("session_guards_policy", policies.SessionGuardsPolicy.Value)
 		}
 		if tags.Set {
 			if db.isSQLite() {
@@ -7454,6 +7491,15 @@ func (db *DB) batchUpdateAccountColumns(ctx context.Context, tx *sql.Tx, ids []i
 	}
 	if update.SkipWarmTier.Set {
 		add("skip_warm_tier", update.SkipWarmTier.Value, true)
+	}
+	if update.Policies.PromptFilterPolicy.Set {
+		add("prompt_filter_policy", update.Policies.PromptFilterPolicy.Value, true)
+	}
+	if update.Policies.EgressPolicy.Set {
+		add("egress_policy", update.Policies.EgressPolicy.Value, true)
+	}
+	if update.Policies.SessionGuardsPolicy.Set {
+		add("session_guards_policy", update.Policies.SessionGuardsPolicy.Value, true)
 	}
 	if update.Tags.Set {
 		if db.isSQLite() {
@@ -8032,7 +8078,7 @@ func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
 // ListDeleted 获取回收站中的账号（被软删除、尚未彻底清除的账号）。
 func (db *DB) ListDeleted(ctx context.Context) ([]*AccountRow, error) {
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at, deleted_at, COALESCE(credential_generation, 1), COALESCE(credential_family_id, '')
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), COALESCE(prompt_filter_policy, 'inherit'), COALESCE(egress_policy, 'inherit'), COALESCE(session_guards_policy, 'inherit'), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), COALESCE(note, ''), created_at, updated_at, deleted_at, COALESCE(credential_generation, 1), COALESCE(credential_family_id, '')
 		FROM accounts
 		WHERE status = 'deleted' OR COALESCE(error_message, '') = 'deleted'
 		ORDER BY deleted_at DESC, id DESC
@@ -8068,6 +8114,9 @@ func (db *DB) ListDeleted(ctx context.Context) ([]*AccountRow, error) {
 			&a.CreditEnabled,
 			&a.CreditSkipUsageWindow,
 			&a.SkipWarmTier,
+			&a.PromptFilterPolicy,
+			&a.EgressPolicy,
+			&a.SessionGuardsPolicy,
 			&a.ScoreBiasOverride,
 			&a.BaseConcurrencyOverride,
 			&tagsRaw,
