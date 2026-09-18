@@ -491,7 +491,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", "messages is required")
 		return
 	}
-	if h.inspectPromptFilterAnthropic(c, canonicalBody, "/v1/messages", model) {
+	if h.inspectPromptFilterAnthropicDeferred(c, canonicalBody, "/v1/messages", model) {
 		return
 	}
 
@@ -584,6 +584,10 @@ func (h *Handler) Messages(c *gin.Context) {
 			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter)
 		}
 		if account == nil {
+			// 同上：号池全空时仍要把待执行的拦截写给下游。
+			if h.enforcePendingPromptBlock(c, nil) {
+				return
+			}
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolAnthropic) {
 				return
 			}
@@ -616,6 +620,12 @@ func (h *Handler) Messages(c *gin.Context) {
 				return
 			}
 			sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", noAvailableAnthropicAccountMessage(effectiveModel))
+			return
+		}
+		// 选到账号才知道拦不拦；必须在任何上游连接之前执行，按请求只执行一次。
+		if h.enforcePendingPromptBlock(c, account) {
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			return
 		}
 		if attempt > 0 {

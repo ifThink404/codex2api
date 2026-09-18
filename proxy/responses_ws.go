@@ -417,7 +417,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			auditEndpoint = configured
 		}
 	}
-	if blocked, delegated := h.inspectPromptFilterOpenAIForWebSocket(c, conn, rawBody, auditEndpoint, model, policyEventID); blocked {
+	// 判在选号前、拦在选号后；这里返回 true 的只有已锁定会话等立刻硬拒。
+	if blocked, delegated := h.inspectPromptFilterOpenAIForWebSocketDeferred(c, conn, rawBody, auditEndpoint, model, policyEventID); blocked {
 		// A verified NewAPI connection owns warning/ban state. Keep the upstream
 		// WebSocket alive after returning the signed decision so NewAPI can show
 		// the first warning and accept another frame; it closes both peers only
@@ -650,6 +651,13 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if c.Request.Context().Err() != nil {
 				return errResponsesWSClientGone
 			}
+			// 同上：号池全空时仍要把待执行的拦截写成错误帧。
+			if blocked, delegated := h.enforcePendingPromptBlockWS(c, conn, nil, policyEventID); blocked {
+				if delegated {
+					return nil
+				}
+				return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+			}
 			if errors.Is(selectionErr, auth.ErrSchedulerQueueFull) {
 				apiErr = schedulerQueueFullAPIError()
 			} else if compactionAffinity.Known {
@@ -696,6 +704,16 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			deviceCfg = &DeviceProfileConfig{StabilizeDeviceProfile: false}
 		}
 		downstreamHeaders := c.Request.Header.Clone()
+		// 选到账号才知道拦不拦；在上游握手之前执行，按这一轮只执行一次。
+		if blocked, delegated := h.enforcePendingPromptBlockWS(c, conn, account, policyEventID); blocked {
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			// 与入口处的语义一致：委托给 NewAPI 的决定保持连接，其余按策略违例关闭。
+			if delegated {
+				return nil
+			}
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
+		}
 		if failure := h.enforceInitialSessionAdmission(c, account, c.Request.Header, rawBody, sessionIdentity, turnHasBinding, time.Now()); failure != nil {
 			h.store.Release(account)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())

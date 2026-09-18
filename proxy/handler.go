@@ -3882,7 +3882,9 @@ func (h *Handler) Responses(c *gin.Context) {
 		api.SendMissingFieldError(c, "model")
 		return
 	}
-	if h.inspectPromptFilterOpenAI(c, rawBody, "/v1/responses", model) {
+	// 判在选号前、拦在选号后：落到 prompt_filter_policy=exempt 的账号时放行。
+	// 返回 true 的只有两处立刻硬拒（必需的 NewAPI 身份缺失、会话已被锁定）。
+	if h.inspectPromptFilterOpenAIDeferred(c, rawBody, "/v1/responses", model) {
 		return
 	}
 
@@ -4032,6 +4034,11 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 		}
 		if account == nil {
+			// 选不到账号 = 没有任何账号能豁免：把待执行的拦截按原样写给下游，
+			// 否则本该被拦的请求会拿到一句误导性的「无可用账号」。
+			if h.enforcePendingPromptBlock(c, nil) {
+				return
+			}
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
 				return
 			}
@@ -4087,6 +4094,13 @@ func (h *Handler) Responses(c *gin.Context) {
 				return
 			}
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
+			return
+		}
+		// 选到账号才知道拦不拦；必须在任何上游连接（含中转分支）之前执行，
+		// 函数内部按请求记忆只执行一次，重试不会重复副作用。
+		if h.enforcePendingPromptBlock(c, account) {
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			return
 		}
 		if attempt > 0 {
@@ -5907,7 +5921,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		sendImageOnlyModelError(c, model)
 		return
 	}
-	if h.inspectPromptFilterOpenAI(c, rawBody, "/v1/responses/compact", model) {
+	if h.inspectPromptFilterOpenAIDeferred(c, rawBody, "/v1/responses/compact", model) {
 		return
 	}
 
@@ -6036,6 +6050,10 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			if account == nil {
+				// 同上：号池全空时仍要把待执行的拦截写给下游。
+				if h.enforcePendingPromptBlock(c, nil) {
+					return
+				}
 				if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
 					return
 				}
@@ -6057,6 +6075,13 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
 				return
 			}
+		}
+
+		// 选到账号才知道拦不拦；必须在任何上游连接之前执行，按请求只执行一次。
+		if h.enforcePendingPromptBlock(c, account) {
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			return
 		}
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
@@ -6758,7 +6783,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		})
 		return
 	}
-	if h.inspectPromptFilterOpenAI(c, rawBody, "/v1/chat/completions", model) {
+	if h.inspectPromptFilterOpenAIDeferred(c, rawBody, "/v1/chat/completions", model) {
 		return
 	}
 
@@ -6844,6 +6869,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 		}
 		if account == nil {
+			// 同上：号池全空时仍要把待执行的拦截写给下游。
+			if h.enforcePendingPromptBlock(c, nil) {
+				return
+			}
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolChat) {
 				return
 			}
@@ -6869,6 +6898,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				return
 			}
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
+			return
+		}
+		// 选到账号才知道拦不拦；必须在任何上游连接之前执行，按请求只执行一次。
+		if h.enforcePendingPromptBlock(c, account) {
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			return
 		}
 		if attempt > 0 {
