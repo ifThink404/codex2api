@@ -1462,6 +1462,9 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 			}
 		}
 	}
+	// 上游自报模型若是网关自己合成的（Antigravity OAuth 适配器），抹掉再落库：
+	// 这一列绝不能回显请求模型，见 usage_upstream_model.go。
+	h.clearSynthesizedUpstreamResponseModel(input)
 	// 过载熔断统计（仅 Codex 渠道，需在渠道固化之后）。
 	h.noteOverloadOutcome(input)
 	_ = h.db.InsertUsageLog(context.Background(), input)

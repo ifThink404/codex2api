@@ -76,6 +76,12 @@ const coverageCompactFailedSSE = "event: response.failed\n" +
 	`data: {"type":"response.failed","response":{"id":"resp_compact","status":"failed","status_code":400,"model":"` + coverageUpstreamResponsesModel +
 	`","error":{"code":"context_length_exceeded","message":"compact input too large"}}}` + "\n\n"
 
+// Antigravity OAuth 的 Gemini 原始回包：真正的上游自报模型在 modelVersion 里，
+// 但适配器会把整条流改写成 Responses 信封并丢掉它（见 antigravity_responses.go）。
+const coverageAntigravityGeminiSSE = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.6-flash-real","usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}` + "\n\n"
+
+const coverageAntigravityModel = "gemini-3.6-flash-low"
+
 const coverageMessagesJSON = `{"id":"msg_cov","type":"message","role":"assistant","model":"` + coverageUpstreamClaudeModel +
 	`","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":8,"output_tokens":5}}`
 
@@ -151,6 +157,22 @@ func upstreamModelCoverageCases() []upstreamModelBranchCase {
 	compactViaResponses := func(current RuntimeSettings) RuntimeSettings {
 		current.CompactViaResponses = true
 		return current
+	}
+	// Antigravity OAuth：把 OAuth 出口改指到桩上游，账号只给 AccessToken +
+	// ProjectID（不给 APIKey），auth kind 才会判定成 OAuth。
+	antigravityOAuthAccount := func() func(*testing.T, *auth.Store, string) {
+		return func(t *testing.T, store *auth.Store, upstreamURL string) {
+			t.Helper()
+			previous := antigravityOAuthEndpointBases
+			antigravityOAuthEndpointBases = []string{upstreamURL}
+			t.Cleanup(func() { antigravityOAuthEndpointBases = previous })
+			store.AddAccount(&auth.Account{
+				DBID: 1, UpstreamType: auth.UpstreamAntigravity,
+				AccessToken: "coverage-ag-token", RefreshToken: "coverage-ag-refresh",
+				AntigravityProjectID: "coverage-project",
+				Models:               []string{coverageAntigravityModel},
+			})
+		}
 	}
 	preflight := func(on bool) func(RuntimeSettings) RuntimeSettings {
 		return func(current RuntimeSettings) RuntimeSettings {
@@ -274,6 +296,22 @@ func upstreamModelCoverageCases() []upstreamModelBranchCase {
 			settings:   compactViaResponses,
 			want:       coverageUpstreamResponsesModel,
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// 适配器合成的信封里 model 写的是网关这次请求用的模型，不是上游声明。
+			// 记下来就等于「从请求反推」，这一列明令禁止——必须留空。
+			name: "responses/antigravity-oauth/stream", path: "/v1/responses",
+			body:        `{"model":"` + coverageAntigravityModel + `","input":"hi","stream":true}`,
+			contentType: "text/event-stream", payload: coverageAntigravityGeminiSSE,
+			account: antigravityOAuthAccount(),
+			want:    "",
+		},
+		{
+			name: "chat/antigravity-oauth/stream", path: "/v1/chat/completions",
+			body:        `{"model":"` + coverageAntigravityModel + `","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			contentType: "text/event-stream", payload: coverageAntigravityGeminiSSE,
+			account: antigravityOAuthAccount(),
+			want:    "",
 		},
 		{
 			name: "messages/claude-native/stream", path: "/v1/messages",
