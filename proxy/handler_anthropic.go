@@ -1009,6 +1009,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
 				ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
 				PromptPolicyIncidentID: promptPolicyIncidentID,
+				CapacityShed:           isCapacityShedPayload(errBody),
 			})
 
 			if shouldRetry {

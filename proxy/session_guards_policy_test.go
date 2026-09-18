@@ -101,7 +101,7 @@ func TestSessionAutoLockSkipsAccountsWithGuardsOff(t *testing.T) {
 	h.store.AddAccount(off)
 	key := "guards-off-lock::api-key:9"
 	for i := 0; i < 5; i++ {
-		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: off.DBID, ErrorMessage: "server_is_overloaded"})
+		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: off.DBID, ErrorMessage: "server_error · An error occurred"})
 	}
 	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
 		t.Fatalf("guards-off account must never lock the session: %v", err)
@@ -111,10 +111,22 @@ func TestSessionAutoLockSkipsAccountsWithGuardsOff(t *testing.T) {
 	}
 	// 同一把钥匙换成普通官方账号仍然照常计数并落锁——豁免只作用于那一个账号。
 	for i := 0; i < 3; i++ {
-		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_is_overloaded"})
+		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID, ErrorMessage: "server_error · An error occurred"})
 	}
 	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err == nil {
 		t.Fatal("an account with the default policy must still lock after the threshold")
+	}
+	// 同一个默认策略账号，换成容量降载的 500 就不该落锁：豁免看的是错误性质，
+	// 与账号策略无关。
+	shedKey := "guards-default-shed::api-key:9"
+	for i := 0; i < 5; i++ {
+		h.observeSessionAutoLock(autoLockTestContext(h, shedKey), &database.UsageLogInput{
+			StatusCode: 500, AccountID: official.DBID,
+			ErrorMessage: "server_is_overloaded · service_unavailable_error · Our servers are currently overloaded",
+		})
+	}
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, shedKey), shedKey); err != nil {
+		t.Fatalf("capacity shed 500s must not lock even on a default-policy account: %v", err)
 	}
 }
 

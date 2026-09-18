@@ -391,3 +391,45 @@ func TestSessionAutoLockCapacityShedFallbackFromErrorMessage(t *testing.T) {
 		t.Fatalf("streak entries = %d, want 0", got)
 	}
 }
+
+// TestSessionAutoLockCountsCapacityShedWhenHandlingDisabled 固化 kill switch：
+// CODEX_DISABLE_CAPACITY_SHED_HANDLING 整体退回旧行为时，降载按普通 500 计连击，
+// 与重试 / 亲和 / 冷却侧的回退一致。
+func TestSessionAutoLockCountsCapacityShedWhenHandlingDisabled(t *testing.T) {
+	h, official, _ := newAutoLockTestHandler(t)
+	t.Setenv("CODEX_DISABLE_CAPACITY_SHED_HANDLING", "1")
+	key := "thread-shed-killswitch::api-key:9"
+	for i := 0; i < 3; i++ {
+		h.observeSessionAutoLock(autoLockTestContext(h, key), &database.UsageLogInput{
+			StatusCode: 500, AccountID: official.DBID, CapacityShed: true,
+			ErrorMessage: "server_is_overloaded · service_unavailable_error · Our servers are currently overloaded",
+		})
+	}
+	err := h.checkSessionAutoLock(autoLockTestContext(h, key), key)
+	if err == nil || string(err.Code) != "session_blacklisted" {
+		t.Fatalf("with capacity shed handling disabled, shed 500s must count like any other 500, got %v", err)
+	}
+}
+
+// TestSessionAutoLockClassifiesCapacityShedWithoutPopulationChain 覆盖「分类下沉到
+// observer」：不经过 logUsageForRequest 直接调用 observeSessionAutoLock 时，
+// ErrorMessage 兜底照样生效，且会把判定写回 input.CapacityShed。
+func TestSessionAutoLockClassifiesCapacityShedWithoutPopulationChain(t *testing.T) {
+	h, official, _ := newAutoLockTestHandler(t)
+	key := "thread-shed-observer::api-key:9"
+	var last *database.UsageLogInput
+	for i := 0; i < 3; i++ {
+		last = &database.UsageLogInput{StatusCode: 500, AccountID: official.DBID,
+			ErrorMessage: "server_is_overloaded · service_unavailable_error · Our servers are currently overloaded"}
+		h.observeSessionAutoLock(autoLockTestContext(h, key), last)
+	}
+	if err := h.checkSessionAutoLock(autoLockTestContext(h, key), key); err != nil {
+		t.Fatalf("the observer must classify capacity shed on its own: %v", err)
+	}
+	if !last.CapacityShed {
+		t.Fatal("the observer must write its classification back to input.CapacityShed")
+	}
+	if got := sessionAutoLockSnapshot(h).StreakEntries; got != 0 {
+		t.Fatalf("streak entries = %d, want 0", got)
+	}
+}

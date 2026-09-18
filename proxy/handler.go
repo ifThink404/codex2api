@@ -1513,8 +1513,12 @@ func populateAPIKeyMetaFromContext(c *gin.Context, input *database.UsageLogInput
 }
 
 // populateCapacityShedFromErrorMessage 是容量降载标记的兜底：拿得到 stream outcome
-// 的落库点已经显式置了 CapacityShed，其余落库点（HTTP 错误体、读体失败等）只留下
-// 拼好的 ErrorMessage，这里按首段错误码补判，保证会话自动锁定看到的口径一致。
+// 或上游错误体的落库点已经显式置了 CapacityShed，其余落库点（读体失败、网关自产诊断
+// 等）只留下拼好的 ErrorMessage，这里按首段错误码补判，保证会话自动锁定看到的口径
+// 一致。只置真不清零，可重复调用；observeSessionAutoLock 会再调一次，让不经过落库
+// 填充链的调用方（测试）也走同一套分类。
+// 这里不看 CODEX_DISABLE_CAPACITY_SHED_HANDLING：该开关只在消费侧生效，
+// observeSessionAutoLock 自己判断要不要把降载按普通 500 计连击。
 func populateCapacityShedFromErrorMessage(input *database.UsageLogInput) {
 	if input == nil {
 		return
@@ -2486,7 +2490,12 @@ func isCapacityShedPayload(payload []byte) bool {
 	return false
 }
 
-// isCapacityShedErrorMessage 从已经拼成落库形态的错误消息判断是否为容量降载：
+// isCapacityShedErrorMessage 从已经拼成落库形态的错误消息判断是否为容量降载。
+//
+// 注意：同一个 ErrorMessage 字段上还有 isOverloadedUsageError
+// （proxy/overload_breaker.go）在做过载熔断判定，口径更宽（子串匹配、不限首段）。
+// 两者故意分开，改动其一时请同时确认另一处。
+//
 // usageLogErrorMessage / usageLogFailureMessage 产出的是 "code · type · message"，
 // 只有首段是错误码（没有 code 时首段是 error.type），所以除了 isCapacityShedErrorCode
 // 的两个码，还认同义的 service_unavailable_error。供没有 stream outcome 的落库点兜底。
@@ -4427,6 +4436,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
 					ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
 					PromptPolicyIncidentID: promptPolicyIncidentID,
+					CapacityShed:           isCapacityShedPayload(errBody),
 				})
 
 				if shouldRetry {
@@ -5211,6 +5221,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
 				ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
 				PromptPolicyIncidentID: promptPolicyIncidentID,
+				CapacityShed:           isCapacityShedPayload(errBody),
 			})
 
 			if shouldRetry {
@@ -6283,6 +6294,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
 					ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
 					PromptPolicyIncidentID: promptPolicyIncidentID,
+					CapacityShed:           isCapacityShedPayload(errBody),
 				})
 
 				if shouldRetry {
@@ -6532,6 +6544,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
 				ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
 				PromptPolicyIncidentID: promptPolicyIncidentID,
+				CapacityShed:           isCapacityShedPayload(errBody),
 			})
 
 			if shouldRetry {
@@ -6721,6 +6734,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				UpstreamErrorKind:      upstreamErrorKind(failStatus, errBody, decision),
 				ErrorMessage:           usageLogErrorMessage(failStatus, errBody),
 				PromptPolicyIncidentID: promptPolicyIncidentID,
+				CapacityShed:           failureOutcome.capacityShed,
 			})
 
 			if shouldRetry {
@@ -7237,6 +7251,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
 				ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
 				PromptPolicyIncidentID: promptPolicyIncidentID,
+				CapacityShed:           isCapacityShedPayload(errBody),
 			})
 
 			if shouldRetry {

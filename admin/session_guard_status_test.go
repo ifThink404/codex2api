@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/config"
@@ -41,12 +42,19 @@ func TestRuntimeStatusAutoLockReportsLiveEnabledFlag(t *testing.T) {
 		CodexSessionAutoLockThreshold: 5,
 	})
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
+	// 借用设置只存在于 admin 自己的 Store 里：两条分支都必须带上它，否则「补自动锁定」
+	// 会顺手把 Store 统计丢掉。
+	store.SetSessionNoBorrow(true, 25*time.Second)
 
 	assertLiveAutoLock := func(t *testing.T, h *Handler) {
 		t.Helper()
-		snapshot := h.buildRuntimeStatus(context.Background(), httptest.NewRequest("GET", "/api/admin/runtime-status", nil)).SessionGuards.AutoLock
+		guards := h.buildRuntimeStatus(context.Background(), httptest.NewRequest("GET", "/api/admin/runtime-status", nil)).SessionGuards
+		snapshot := guards.AutoLock
 		if !snapshot.Enabled || snapshot.Threshold != 5 {
 			t.Fatalf("snapshot auto_lock = %+v, want enabled with threshold 5", snapshot)
+		}
+		if !guards.Settings.NoBorrowEnabled || guards.Settings.NoBorrowHoldSeconds != 25 {
+			t.Fatalf("store-derived settings = %+v, want no-borrow on with a 25s hold", guards.Settings)
 		}
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
@@ -68,6 +76,7 @@ func TestRuntimeStatusAutoLockReportsLiveEnabledFlag(t *testing.T) {
 		}
 	}
 
+	// 两条分支现在走同一个快照函数，区别只是有没有 Handler 去触发锁表预热。
 	t.Run("without auth cache proxy", func(t *testing.T) {
 		assertLiveAutoLock(t, &Handler{store: store})
 	})

@@ -246,6 +246,14 @@ func (h *Handler) observeSessionAutoLock(c *gin.Context, input *database.UsageLo
 		return
 	}
 	threshold := database.NormalizeSessionAutoLockThreshold(settings.CodexSessionAutoLockThreshold)
+	// 容量降载的分类在这里收口：落库点能拿到 stream outcome 或上游错误体时已经显式置
+	// 了 CapacityShed，其余落库点只剩拼好的 ErrorMessage，这里按首段错误码补判一次。
+	// 落库填充链上已经调用过同一个函数，重复调用幂等；放在这里是为了让每一条进入
+	// 连击判断的路径（包括直接调用本函数的测试）都用同一套口径。
+	populateCapacityShedFromErrorMessage(input)
+	// CODEX_DISABLE_CAPACITY_SHED_HANDLING 整体退回旧行为时，降载按普通 500 计连击，
+	// 与重试 / 亲和 / 冷却侧的回退保持一致。
+	shedExempt := input.CapacityShed && !capacityShedHandlingDisabled()
 	now := time.Now()
 	sessionAutoLock.mu.Lock()
 	if input.StatusCode != 500 {
@@ -257,7 +265,7 @@ func (h *Handler) observeSessionAutoLock(c *gin.Context, input *database.UsageLo
 	// 分桶的瞬时信号，与会话无关：既不 +1 也不清零，连击保持原样，等真正的
 	// server_error 决定是否落锁。线上第一次开这个开关 6 小时锁了 24 个会话，全部是
 	// 坏桶官方号的降载，锁会话只会把账号问题转嫁给用户。
-	if input.CapacityShed {
+	if shedExempt {
 		sessionAutoLock.mu.Unlock()
 		return
 	}

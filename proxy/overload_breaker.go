@@ -92,6 +92,12 @@ func shouldTripOverload(total, overloaded, thresholdPercent int) bool {
 }
 
 // isOverloadedUsageError 报告该条用量日志是否为上游过载错误。
+//
+// 注意：同一个 ErrorMessage 字段上还有第二个分类器 isCapacityShedErrorMessage
+// （proxy/handler.go），供会话自动锁定使用。两者故意不同口径：这里要的是宽口径的
+// 熔断信号（任意 4xx/5xx 文本里出现过载码就算），那边要的是严口径的终态分类（只认
+// 首段错误码，另加同义的 service_unavailable_error）。改动其一时请同时确认另一处，
+// 本任务不合并它们。
 func isOverloadedUsageError(input *database.UsageLogInput) bool {
 	return input != nil && input.StatusCode >= 400 &&
 		strings.Contains(input.ErrorMessage, overloadErrorCode)

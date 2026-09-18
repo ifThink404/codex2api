@@ -78,10 +78,11 @@ func SessionGuardStatusSnapshot(store *auth.Store) SessionGuardStatus {
 }
 
 // SessionGuardStatusSnapshotForHandler 在 SessionGuardStatusSnapshot 之上补上自动锁定
-// 计数（需要 *Handler 才能读 DB 预热锁表），供拿到 Handler 的调用方使用。
-func SessionGuardStatusSnapshotForHandler(h *Handler) SessionGuardStatus {
-	var store *auth.Store
-	if h != nil {
+// 计数：只有 *Handler 才能触发锁表的 DB 预热（没有预热时 active_locks 在重启后要等
+// 首个请求才回来）。store 与 h 分开传：调用方（admin）即便还没接上 proxy Handler，
+// 也要保留自己 Store 的借用统计，两者都可以为 nil。
+func SessionGuardStatusSnapshotForHandler(store *auth.Store, h *Handler) SessionGuardStatus {
+	if store == nil && h != nil {
 		store = h.store
 	}
 	status := SessionGuardStatusSnapshot(store)
