@@ -446,6 +446,7 @@
     "badgeTimezoneMismatch": "時區不一致",
     "proxyTimezoneMismatch": "出口 IP 時區 {{proxy}}，帳號時區 {{account}}。",
     "proxyTimezoneSync": "同步為 {{tz}}",
+    "proxyTimezoneDrafted": "已填入時區，儲存後生效",
     "proxyTimezoneSynced": "時區已同步",
     "proxyTimezoneSyncFailed": "同步時區失敗：{{error}}"
   },

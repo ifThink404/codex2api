@@ -25,6 +25,7 @@ const ACCOUNT_I18N_KEYS = [
   'policySessionGuardsLabel', 'policySessionGuardsHint', 'policySessionGuardsInherit', 'policySessionGuardsOff',
   'badgePromptExempt', 'badgeEgressDirect', 'badgeGuardsOff', 'badgeTimezoneMismatch',
   'proxyTimezoneMismatch', 'proxyTimezoneSync', 'proxyTimezoneSynced', 'proxyTimezoneSyncFailed',
+  'proxyTimezoneDrafted',
 ]
 
 const RUNTIME_I18N_KEYS = ['promptPolicy', 'promptExempted', 'promptBlockedAfterSelection']
@@ -75,7 +76,7 @@ test('the scheduler dialog edits the three policies with the shared Select', () 
   // 整页的裸 checkbox 断言会被列表行的历史遗留选择框绊住，这里只守新加的策略卡片。
   const cardAt = accountsSource.indexOf('t("accounts.policySectionTitle")')
   assert.notEqual(cardAt, -1, 'Accounts.tsx lacks the account policy card')
-  const policyCard = accountsSource.slice(cardAt, accountsSource.indexOf('t("accounts.dispatchCountLimitTitle")', cardAt))
+  const policyCard = accountsSource.slice(cardAt, accountsSource.indexOf('t("accounts.autoPauseTitle")', cardAt))
   assert.ok(policyCard.length > 0, 'the policy card must sit before the dispatch-count card')
   assert.equal(/<input[\s>]/.test(policyCard), false, 'no raw <input> in the account policy card')
   assert.equal(/<button[\s>]/.test(policyCard), false, 'no raw <button> in the account policy card')
@@ -92,6 +93,11 @@ test('the account list badges non-inherit policies and a proxy/account timezone 
   }
   // 时区不一致只对 OAuth 行判定,且比的是绑定池条目的出口时区。
   assert.ok(accountsSource.includes('test_timezone'), 'the timezone mismatch badge must read the pool entry test_timezone')
+  // 出口被直连策略或 Resin 整层覆盖时,绑定的那条代理根本不是出口,不该再比时区。
+  assert.ok(
+    accountsSource.includes('account.egress_policy === "direct" || binding.kind === "resin"'),
+    'the timezone badge must stand down when the bound proxy is not the effective egress',
+  )
 })
 
 test('ProxyTimezoneHint renders with shared components and both proxy editors mount it', () => {
@@ -110,6 +116,22 @@ test('ProxyTimezoneHint renders with shared components and both proxy editors mo
     'the sync action must PATCH the account timezone',
   )
   assert.ok(quickEditorSource.includes('accounts.proxyTimezoneSynced'), 'a successful sync must toast')
+  // 按已绑定的池条目比,而不是输入框草稿:同步当场落库,草稿可能根本没保存。
+  assert.ok(quickEditorSource.includes('boundPoolEntry'), 'the quick editor must compare the bound pool entry')
+  assert.equal(
+    quickEditorSource.includes('proxyTimezone={poolEntry?.test_timezone}'),
+    false,
+    'the quick editor must not compare the unsaved draft URL',
+  )
+  // account 是快照,onSaved() 刷新列表不会更新它;同步成功后要自己把提示收掉。
+  assert.ok(quickEditorSource.includes('setSyncedTimezone(timezone)'), 'a successful sync must clear the hint')
+  // 弹窗里的同步只写草稿,文案不能和快捷弹窗那条当场 PATCH 的混用。
+  assert.ok(accountsSource.includes('t("accounts.proxyTimezoneDrafted")'), 'the in-dialog sync must toast the draft copy')
+  assert.equal(
+    accountsSource.includes('t("accounts.proxyTimezoneSynced")'),
+    false,
+    'the in-dialog sync must not claim the timezone is already saved',
+  )
   assert.equal(/<select[\s>]/.test(quickEditorSource), false, 'no hand-written <select> in AccountProxyQuickEditor.tsx')
 })
 

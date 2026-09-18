@@ -2001,6 +2001,7 @@
     "badgeTimezoneMismatch": "时区不一致",
     "proxyTimezoneMismatch": "出口 IP 时区 {{proxy}}，账号时区 {{account}}。",
     "proxyTimezoneSync": "同步为 {{tz}}",
+    "proxyTimezoneDrafted": "已填入时区，保存后生效",
     "proxyTimezoneSynced": "时区已同步",
     "proxyTimezoneSyncFailed": "同步时区失败：{{error}}"
   },

@@ -2001,6 +2001,7 @@
     "badgeTimezoneMismatch": "Timezone mismatch",
     "proxyTimezoneMismatch": "Egress IP timezone {{proxy}}, account timezone {{account}}.",
     "proxyTimezoneSync": "Sync to {{tz}}",
+    "proxyTimezoneDrafted": "Timezone filled in; applies on save",
     "proxyTimezoneSynced": "Timezone synced",
     "proxyTimezoneSyncFailed": "Failed to sync timezone: {{error}}"
   },

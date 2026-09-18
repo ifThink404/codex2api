@@ -64,24 +64,34 @@ export default function AccountProxyQuickEditor({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [syncedId, setSyncedId] = useState<number | null>(null);
+  // 同步成功后 onSaved() 只刷新列表，account 这个快照不会跟着变，
+  // 不自己记一笔就会出现"已经同步过了，提示还挂着"。
+  const [syncedTimezone, setSyncedTimezone] = useState<string | null>(null);
 
   const accountID = account?.id ?? null;
   if (accountID !== syncedId) {
     setSyncedId(accountID);
     setValue((account?.proxy_url ?? "").trim());
+    setSyncedTimezone(null);
   }
 
   const busy = saving || testing;
   const trimmed = value.trim();
   const boundURL = (account?.proxy_url ?? "").trim();
   const dirty = trimmed !== boundURL;
+  // 比对的是账号"已绑定"的那条池条目，不是输入框里的草稿：同步按钮当场就 PATCH，
+  // 按草稿比会让"选了 B、同步、不保存直接关"把账号时区钉到一条没绑上的条目上。
   // 与 ProxyField 同一套口径:trim 后精确匹配池条目,不做任何归一化。
-  const poolEntry = trimmed ? proxies.find((p) => p.url.trim() === trimmed) : undefined;
+  const boundPoolEntry = boundURL
+    ? proxies.find((p) => p.url.trim() === boundURL)
+    : undefined;
+  const effectiveTimezone = syncedTimezone ?? account?.timezone;
 
   const syncTimezone = async (timezone: string) => {
     if (!account) return;
     try {
       await api.updateAccountScheduler(account.id, { timezone });
+      setSyncedTimezone(timezone);
       showToast(t("accounts.proxyTimezoneSynced"));
       await onSaved();
     } catch (error) {
@@ -236,8 +246,8 @@ export default function AccountProxyQuickEditor({
             onSelect={setValue}
           />
           <ProxyTimezoneHint
-            proxyTimezone={poolEntry?.test_timezone}
-            accountTimezone={account?.timezone}
+            proxyTimezone={boundPoolEntry?.test_timezone}
+            accountTimezone={effectiveTimezone}
             onSync={syncTimezone}
             disabled={busy}
           />

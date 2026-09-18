@@ -9676,6 +9676,52 @@ export default function Accounts() {
                           </div>
                         </div>
 
+                        {/* 请求次数限流 */}
+                        <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors">
+                          <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
+                            <Timer className="size-4 text-purple-500" />
+                            <span>{t("accounts.dispatchCountLimitTitle")}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                            {t("accounts.dispatchCountLimitHint")}
+                          </p>
+                          <div className="mt-3">
+                            <Input
+                              inputMode="numeric"
+                              value={editDispatchCountLimitInput}
+                              placeholder={t(
+                                "accounts.dispatchCountLimitPlaceholder",
+                              )}
+                              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                                setEditDispatchCountLimitInput(event.target.value)
+                              }
+                            />
+                            <div
+                              className={`mt-1.5 text-xs ${editDispatchCountLimitInvalid ? "text-red-500" : "text-muted-foreground"}`}
+                            >
+                              {editDispatchCountLimitInvalid
+                                ? t("accounts.dispatchCountLimitRange")
+                                : editDispatchCountLimitPreview
+                                  ? t("accounts.dispatchCountLimitStatus", {
+                                      used:
+                                        editingAccount.dispatch_count_used ?? 0,
+                                      limit: editDispatchCountLimitPreview,
+                                    })
+                                  : t("accounts.dispatchCountLimitDisabled")}
+                            </div>
+                            {editDispatchCountResetTime ? (
+                              <div
+                                className="mt-1 text-xs text-muted-foreground"
+                                title={editDispatchCountResetTime.title}
+                              >
+                                {t("accounts.dispatchCountLimitResetAt", {
+                                  time: editDispatchCountResetTime.label,
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+
                         {/* 账号级策略：prompt 检测 / 出口 / 会话防护 */}
                         <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                           <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
@@ -9764,52 +9810,6 @@ export default function Accounts() {
                                 {t("accounts.policySessionGuardsHint")}
                               </p>
                             </div>
-                          </div>
-                        </div>
-
-                        {/* 请求次数限流 */}
-                        <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors">
-                          <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
-                            <Timer className="size-4 text-purple-500" />
-                            <span>{t("accounts.dispatchCountLimitTitle")}</span>
-                          </div>
-                          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                            {t("accounts.dispatchCountLimitHint")}
-                          </p>
-                          <div className="mt-3">
-                            <Input
-                              inputMode="numeric"
-                              value={editDispatchCountLimitInput}
-                              placeholder={t(
-                                "accounts.dispatchCountLimitPlaceholder",
-                              )}
-                              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                                setEditDispatchCountLimitInput(event.target.value)
-                              }
-                            />
-                            <div
-                              className={`mt-1.5 text-xs ${editDispatchCountLimitInvalid ? "text-red-500" : "text-muted-foreground"}`}
-                            >
-                              {editDispatchCountLimitInvalid
-                                ? t("accounts.dispatchCountLimitRange")
-                                : editDispatchCountLimitPreview
-                                  ? t("accounts.dispatchCountLimitStatus", {
-                                      used:
-                                        editingAccount.dispatch_count_used ?? 0,
-                                      limit: editDispatchCountLimitPreview,
-                                    })
-                                  : t("accounts.dispatchCountLimitDisabled")}
-                            </div>
-                            {editDispatchCountResetTime ? (
-                              <div
-                                className="mt-1 text-xs text-muted-foreground"
-                                title={editDispatchCountResetTime.title}
-                              >
-                                {t("accounts.dispatchCountLimitResetAt", {
-                                  time: editDispatchCountResetTime.label,
-                                })}
-                              </div>
-                            ) : null}
                           </div>
                         </div>
 
@@ -9942,7 +9942,9 @@ export default function Accounts() {
                                   setEditTimezoneCustom(
                                     !findClaudeTimezoneOption(timezone),
                                   );
-                                  showToast(t("accounts.proxyTimezoneSynced"));
+                                  // 这里只写进草稿，真正落库要等这张表单的「保存」，
+                                  // 文案必须和快捷弹窗那条当场 PATCH 的区分开。
+                                  showToast(t("accounts.proxyTimezoneDrafted"));
                                 }
                               : undefined,
                           })}
@@ -12691,10 +12693,16 @@ function AccountPolicyBadges({
   const egressDirect = account.egress_policy === "direct";
   const guardsOff = account.session_guards_policy === "off";
 
+  // 时区只在"绑定的那条代理确实是出口"时才值得比:账号选了直连、或 Resin 整层
+  // 覆盖了代理链时,出口根本不是这条池条目,比出来的不一致是噪声。
+  const binding = resolveAccountProxyBinding(account, ctx);
+  const egressOverridden =
+    account.egress_policy === "direct" || binding.kind === "resin";
   const accountTimezone = (account.timezone ?? "").trim();
-  const proxyTimezone = isOAuthAccount(account)
-    ? (resolveAccountProxyBinding(account, ctx).proxy?.test_timezone ?? "").trim()
-    : "";
+  const proxyTimezone =
+    isOAuthAccount(account) && !egressOverridden
+      ? (binding.proxy?.test_timezone ?? "").trim()
+      : "";
   const timezoneMismatch = Boolean(
     accountTimezone && proxyTimezone && proxyTimezone !== accountTimezone,
   );
