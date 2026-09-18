@@ -38,9 +38,10 @@ func isUpstreamResponseModelTerminalEvent(event string) bool {
 // 其余事件（delta / output_item.done / content_block_* / codex.rate_limits ...）
 // 按协议就不带模型名，解析它们只是白跑。
 //
-// Responses 协议里带完整 response 对象的只有六个生命周期事件（含后台模式的
-// response.queued）；Anthropic Messages 协议里带 message 对象的只有 message_start
-// 一个流式事件，外加非流式整体响应体自带的 type:"message"。
+// Responses 协议里带完整 response 对象的只有生命周期事件：created / queued
+// （后台模式的开场帧）/ in_progress 与下面那组终态；Anthropic Messages 协议里带
+// message 对象的只有 message_start 一个流式事件，外加非流式整体响应体自带的
+// type:"message"——不放行后者，整份响应体会在解析前就被闸门挡掉。
 func isUpstreamResponseModelEnvelopeEvent(event string) bool {
 	switch event {
 	case "response.created", "response.queued", "response.in_progress",

@@ -65,6 +65,17 @@ const coverageMessagesStreamSSE = "event: message_start\n" +
 	"event: message_stop\n" +
 	`data: {"type":"message_stop"}` + "\n\n"
 
+// compact 的 body-signal 形态（compact_via_responses_enabled）：上游改走
+// /responses + compaction_trigger，成功聚合回一次性 JSON，失败则以 response.failed
+// 信封宣告——那依然是一份上游信封，必须记下它自报的模型。
+const coverageCompactStreamSSE = "event: response.completed\n" +
+	`data: {"type":"response.completed","response":{"id":"resp_compact","status":"completed","model":"` + coverageUpstreamResponsesModel +
+	`","output":[],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}` + "\n\n"
+
+const coverageCompactFailedSSE = "event: response.failed\n" +
+	`data: {"type":"response.failed","response":{"id":"resp_compact","status":"failed","status_code":400,"model":"` + coverageUpstreamResponsesModel +
+	`","error":{"code":"context_length_exceeded","message":"compact input too large"}}}` + "\n\n"
+
 const coverageMessagesJSON = `{"id":"msg_cov","type":"message","role":"assistant","model":"` + coverageUpstreamClaudeModel +
 	`","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":8,"output_tokens":5}}`
 
@@ -86,6 +97,9 @@ type upstreamModelBranchCase struct {
 	want     string
 	// official 标记调度账号是官方 Codex OAuth 账号：只有它才记录窗口号。
 	official bool
+	// wantStatus 是这条分支期望的落库状态码与下游状态码；0 表示 200。
+	// 上游用 response.failed 信封宣告失败的分支同样必须记下上游自报模型。
+	wantStatus int
 }
 
 func upstreamModelCoverageCases() []upstreamModelBranchCase {
@@ -133,6 +147,10 @@ func upstreamModelCoverageCases() []upstreamModelBranchCase {
 				Status: auth.StatusReady,
 			})
 		}
+	}
+	compactViaResponses := func(current RuntimeSettings) RuntimeSettings {
+		current.CompactViaResponses = true
+		return current
 	}
 	preflight := func(on bool) func(RuntimeSettings) RuntimeSettings {
 		return func(current RuntimeSettings) RuntimeSettings {
@@ -234,6 +252,30 @@ func upstreamModelCoverageCases() []upstreamModelBranchCase {
 			want:    coverageUpstreamResponsesModel,
 		},
 		{
+			name: "compact/relay/non-stream", path: "/v1/responses/compact",
+			body:        `{"model":"gpt-5.5","input":"hi"}`,
+			contentType: "application/json", payload: coverageResponsesJSON,
+			account: relayAccount([]string{"gpt-5.5"}),
+			want:    coverageUpstreamResponsesModel,
+		},
+		{
+			name: "compact/codex/via-responses/completed", path: "/v1/responses/compact",
+			body:        `{"model":"gpt-5.5","input":"hi"}`,
+			contentType: "text/event-stream", payload: coverageCompactStreamSSE,
+			account: codexAccount([]string{"gpt-5.5"}), resin: true, official: true,
+			settings: compactViaResponses,
+			want:     coverageUpstreamResponsesModel,
+		},
+		{
+			name: "compact/codex/via-responses/failed-envelope", path: "/v1/responses/compact",
+			body:        `{"model":"gpt-5.5","input":"hi"}`,
+			contentType: "text/event-stream", payload: coverageCompactFailedSSE,
+			account: codexAccount([]string{"gpt-5.5"}), resin: true, official: true,
+			settings:   compactViaResponses,
+			want:       coverageUpstreamResponsesModel,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name: "messages/claude-native/stream", path: "/v1/messages",
 			body:        `{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
 			contentType: "text/event-stream", payload: coverageMessagesStreamSSE,
@@ -258,9 +300,13 @@ func TestUsageLogRecordsUpstreamModelOnEveryBranch(t *testing.T) {
 			if len(logs) == 0 {
 				t.Fatal("没有产生任何用量日志行，分支根本没跑到")
 			}
+			wantStatus := tc.wantStatus
+			if wantStatus == 0 {
+				wantStatus = http.StatusOK
+			}
 			for _, entry := range logs {
-				if entry.StatusCode != http.StatusOK {
-					t.Fatalf("分支返回了失败状态 %d（%s），桩上游本应成功", entry.StatusCode, entry.ErrorMessage)
+				if entry.StatusCode != wantStatus {
+					t.Fatalf("落库状态 = %d, want %d（%s）", entry.StatusCode, wantStatus, entry.ErrorMessage)
 				}
 				if entry.UpstreamResponseModel != tc.want {
 					t.Fatalf("UpstreamResponseModel = %q, want %q（endpoint=%s stream=%t）",
@@ -331,8 +377,12 @@ func runUpstreamModelBranch(t *testing.T, tc upstreamModelBranchCase) []*databas
 	request.Header.Set(codexWindowIDHeader, coverageWindowID)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("下游状态 = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	wantDownstream := tc.wantStatus
+	if wantDownstream == 0 {
+		wantDownstream = http.StatusOK
+	}
+	if recorder.Code != wantDownstream {
+		t.Fatalf("下游状态 = %d, want %d; body=%s", recorder.Code, wantDownstream, recorder.Body.String())
 	}
 
 	deadline := time.Now().Add(3 * time.Second)

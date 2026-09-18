@@ -6594,6 +6594,10 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				Transport: "http", StatusCode: failStatus, AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
+			// response.failed 也是一份上游信封：它照样带 response.model，
+			// 这条失败行必须和成功行一样记下上游自报模型，否则「上游是不是换了
+			// 模型才失败的」在用量页上无从对照。eventType 显式传终态名，让 helper
+			// 走覆盖分支而不是先到先得。
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),
 				Endpoint:               "/v1/responses/compact",
@@ -6602,6 +6606,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				StatusCode:             failStatus,
 				DurationMs:             durationMs,
 				ReasoningEffort:        reasoningEffort,
+				UpstreamResponseModel:  observeUpstreamResponseModel("", compactFailedPayload, eventType),
 				InboundEndpoint:        "/v1/responses/compact",
 				UpstreamEndpoint:       upstreamEndpointLabel,
 				ServiceTier:            usageTiers.ServiceTier,
