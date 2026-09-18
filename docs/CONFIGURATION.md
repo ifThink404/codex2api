@@ -87,6 +87,8 @@ Codex2API 采用三层配置架构：
 
 会话防护（turn-state 严格模式、不借用、首次会话准入、连续 500 自动锁定会话、turn-state 托管）是管理后台设置项而非环境变量，说明见 [session-guards.md](session-guards.md)。
 
+账号管理里每个账号可单独设置 prompt 过滤、出网与会话防护策略（默认继承全局），说明见 [session-guards.md](session-guards.md#账号级策略)。
+
 > `CODEX_UPSTREAM_TRANSPORT` 只控制 HTTP 入站请求转发到 Codex 上游时使用 `http` 还是 `ws`。客户端侧 WebSocket 入口独立可用：使用 `GET ws://<host>/v1/responses` 建连，首帧发送 `response.create` JSON，服务端会通过 Codex 上游 WS 返回 Responses 事件帧。
 
 ### 数据库配置

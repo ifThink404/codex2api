@@ -1755,6 +1755,8 @@ func normalizeResponsesWebSocketClientPayload(raw []byte) ([]byte, string, *api.
 	return normalized, model, nil
 }
 
+// inspectPromptFilterOpenAIForWebSocket is kept as the immediate-path reference for the Task 4
+// byte-for-byte equivalence tests; it has no production caller.
 func (h *Handler) inspectPromptFilterOpenAIForWebSocket(c *gin.Context, conn *websocket.Conn, rawBody []byte, endpoint string, model string, policyEventID string) (blocked bool, delegatedToNewAPI bool) {
 	if h == nil || h.store == nil {
 		return false, false
