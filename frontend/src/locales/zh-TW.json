@@ -492,6 +492,10 @@
     "promptBlockedAfterSelection": "選號後攔截"
   },
   "settings": {
+    "nav": {
+      "codexTransport": "連線與傳輸",
+      "codexTransportDesc": "WebSocket、續想、壓縮、首回應計時回報、過載熔斷與回應快取"
+    },
     "codexPreflightSSEPassthrough": "向 NewAPI 回報寬鬆首回應（不再提前提交 200）",
     "codexPreflightSSEPassthroughDesc": "開啟後不再提前透傳前置中繼資料或提前提交 200；勝出嘗試在正常提交回應標頭時附帶 X-Codex2API-First-Response-Ms 等計時標頭供 NewAPI 顯示。首內容前的上游失敗重新可以靜默換號。",
     "codexPreflightSSEPassthroughEnabled": "啟用首回應計時回報",

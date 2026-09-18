@@ -41,7 +41,6 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 	if c == nil {
 		return
 	}
-	relayUpstreamFirstResponseHeaders(c, headers)
 	token := ""
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
@@ -100,7 +99,6 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 		}
 	}
 	if c != nil && c.Writer != nil && !c.Writer.Written() {
-		relayUpstreamFirstResponseHeaders(c, headers)
 		stagedHeader = true
 		if token == "" {
 			c.Writer.Header().Del(codexTurnStateHeader)
@@ -114,6 +112,8 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 		// failure so local replay errors cannot expose turn state or provenance.
 		// Header 会先于回放/过滤提交暂存；失败时移除 token，避免本地回放错误
 		// 暴露账号绑定的续链状态或出处数据。
+		// 首响应计时头由官方路径在调用本函数之前暂存，同属「已暂存但未提交」，
+		// 一并撤掉。
 		if stagedHeader && c != nil && c.Writer != nil && !c.Writer.Written() {
 			c.Writer.Header().Del(codexTurnStateHeader)
 			clearUpstreamFirstResponseHeaders(c.Writer.Header())

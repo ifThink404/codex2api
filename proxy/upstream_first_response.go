@@ -15,15 +15,25 @@ const (
 	upstreamAttemptFirstResponseHeader = "X-Codex2API-Attempt-First-Response-Ms"
 )
 
-// Timing is attempt-local until normal response commit. The request duration
-// includes admission and earlier attempts; a fast replacement cannot hide retries.
+// upstreamFirstResponseTiming is the only source of a published timing report.
+// It stays attempt-local until the normal response commit: the request duration
+// includes admission and earlier attempts, so a fast replacement cannot hide
+// retries, while the attempt duration covers only the winning attempt.
+//
+// What this gateway measured is never read back out of an upstream response
+// header. A relay account's upstream is an arbitrary base URL — possibly another
+// codex2api with this switch on — and copying its X-Codex2API-* headers would
+// attribute that gateway's first-response time to this one. Keeping the record
+// in the attempt's own struct also survives the continue-thinking fold, which
+// replaces the *http.Response before the buffered commit reads it.
 type upstreamFirstResponseTiming struct {
 	enabled                    bool
 	recorded                   bool
 	requestStart, attemptStart time.Time
+	requestMS, attemptMS       int64
 }
 
-func (t *upstreamFirstResponseTiming) observe(headers http.Header, event gjson.Result, now time.Time) {
+func (t *upstreamFirstResponseTiming) observe(event gjson.Result, now time.Time) {
 	if !t.enabled || t.recorded || !isLooseFirstTokenResult(event) {
 		return
 	}
@@ -32,29 +42,33 @@ func (t *upstreamFirstResponseTiming) observe(headers http.Header, event gjson.R
 		return
 	}
 	t.recorded = true
-	requestMS := max(now.Sub(t.requestStart).Milliseconds(), 0)
-	attemptMS := max(now.Sub(t.attemptStart).Milliseconds(), 0)
-	headers.Set(upstreamTimingHeader, "v1-loose")
-	headers.Set(upstreamFirstResponseHeader, strconv.FormatInt(requestMS, 10))
-	headers.Set(upstreamAttemptFirstResponseHeader, strconv.FormatInt(min(attemptMS, requestMS), 10))
+	t.requestMS = max(now.Sub(t.requestStart).Milliseconds(), 0)
+	t.attemptMS = min(max(now.Sub(t.attemptStart).Milliseconds(), 0), t.requestMS)
 }
 
+// clearUpstreamFirstResponseHeaders drops the three private names from a header
+// map. On an upstream response it keeps an echoed value out of anything that may
+// forward upstream headers; on the downstream writer it drops the staged values
+// of an attempt that turned out not to win.
 func clearUpstreamFirstResponseHeaders(headers http.Header) {
 	for _, name := range []string{upstreamTimingHeader, upstreamFirstResponseHeader, upstreamAttemptFirstResponseHeader} {
 		headers.Del(name)
 	}
 }
 
-// Copy only at the existing commit boundary. Never flush or write a body here.
-func relayUpstreamFirstResponseHeaders(c *gin.Context, headers http.Header) {
+// relayUpstreamFirstResponseHeaders publishes this gateway's own measurement at
+// an existing commit boundary. It never flushes or writes a body. A nil timing —
+// which is what every non-official path has — clears stale values and publishes
+// nothing.
+func relayUpstreamFirstResponseHeaders(c *gin.Context, timing *upstreamFirstResponseTiming) {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return
 	}
 	clearUpstreamFirstResponseHeaders(c.Writer.Header())
-	if headers.Get(upstreamTimingHeader) != "v1-loose" {
+	if timing == nil || !timing.recorded {
 		return
 	}
-	for _, name := range []string{upstreamTimingHeader, upstreamFirstResponseHeader, upstreamAttemptFirstResponseHeader} {
-		c.Header(name, headers.Get(name))
-	}
+	c.Header(upstreamTimingHeader, "v1-loose")
+	c.Header(upstreamFirstResponseHeader, strconv.FormatInt(timing.requestMS, 10))
+	c.Header(upstreamAttemptFirstResponseHeader, strconv.FormatInt(timing.attemptMS, 10))
 }

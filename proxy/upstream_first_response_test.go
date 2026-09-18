@@ -28,9 +28,8 @@ func TestUpstreamFirstResponseTimingNormalCommitAndRetry(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
-	failedHeaders := make(http.Header)
 	failed := upstreamFirstResponseTiming{enabled: true, requestStart: start, attemptStart: start}
-	failed.observe(failedHeaders, gjson.Parse(`{"type":"codex.rate_limits"}`), start.Add(100*time.Millisecond))
+	failed.observe(gjson.Parse(`{"type":"codex.rate_limits"}`), start.Add(100*time.Millisecond))
 	if c.Writer.Written() {
 		t.Fatal("observing metadata must not commit HTTP 200")
 	}
@@ -38,18 +37,17 @@ func TestUpstreamFirstResponseTimingNormalCommitAndRetry(t *testing.T) {
 		t.Fatalf("observing metadata staged downstream headers: %v", recorder.Header())
 	}
 
-	winnerHeaders := make(http.Header)
 	winner := upstreamFirstResponseTiming{enabled: true, requestStart: start, attemptStart: start.Add(2 * time.Second)}
 	for _, event := range []string{"response.created", "response.in_progress", "response.failed", "response.completed", "error", "ping", "keepalive", "heartbeat"} {
-		winner.observe(winnerHeaders, gjson.Parse(`{"type":"`+event+`"}`), start.Add(2100*time.Millisecond))
+		winner.observe(gjson.Parse(`{"type":"`+event+`"}`), start.Add(2100*time.Millisecond))
 	}
-	if len(winnerHeaders) != 0 {
-		t.Fatalf("lifecycle/terminal/heartbeat events reported timing: %v", winnerHeaders)
+	if winner.recorded {
+		t.Fatal("a lifecycle, terminal or heartbeat event was recorded as the first response")
 	}
-	winner.observe(winnerHeaders, gjson.Parse(`{"type":"response.metadata"}`), start.Add(3*time.Second))
-	winner.observe(winnerHeaders, gjson.Parse(`{"type":"response.output_text.delta","delta":"hello"}`), start.Add(10*time.Second))
+	winner.observe(gjson.Parse(`{"type":"response.metadata"}`), start.Add(3*time.Second))
+	winner.observe(gjson.Parse(`{"type":"response.output_text.delta","delta":"hello"}`), start.Add(10*time.Second))
 
-	relayUpstreamFirstResponseHeaders(c, winnerHeaders)
+	relayUpstreamFirstResponseHeaders(c, &winner)
 	if c.Writer.Written() {
 		t.Fatal("staging timing must not flush or write a body")
 	}
@@ -65,7 +63,7 @@ func TestUpstreamFirstResponseTimingNormalCommitAndRetry(t *testing.T) {
 		t.Fatalf("body = %q, want hello", recorder.Body.String())
 	}
 	// 已提交的响应头不能再被后来的事件或被放弃的 attempt 改写。
-	relayUpstreamFirstResponseHeaders(c, failedHeaders)
+	relayUpstreamFirstResponseHeaders(c, &failed)
 	if got := result.Header.Get(upstreamFirstResponseHeader); got != "3000" {
 		t.Fatalf("committed request timing changed to %q", got)
 	}
@@ -73,19 +71,18 @@ func TestUpstreamFirstResponseTimingNormalCommitAndRetry(t *testing.T) {
 
 func TestUpstreamFirstResponseDisabledOrCommittedFallsBack(t *testing.T) {
 	start := time.Now()
-	headers := make(http.Header)
 	disabled := upstreamFirstResponseTiming{requestStart: start, attemptStart: start}
-	disabled.observe(headers, gjson.Parse(`{"type":"codex.rate_limits"}`), start.Add(time.Second))
-	if len(headers) != 0 {
-		t.Fatalf("disabled timing reported headers: %v", headers)
+	disabled.observe(gjson.Parse(`{"type":"codex.rate_limits"}`), start.Add(time.Second))
+	if disabled.recorded {
+		t.Fatal("the disabled switch still recorded a first response")
 	}
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Writer.WriteHeaderNow() // 已有心跳提前提交了响应头。
 	enabled := upstreamFirstResponseTiming{enabled: true, requestStart: start, attemptStart: start}
-	enabled.observe(headers, gjson.Parse(`{"type":"codex.rate_limits"}`), start.Add(time.Second))
-	relayUpstreamFirstResponseHeaders(c, headers)
+	enabled.observe(gjson.Parse(`{"type":"codex.rate_limits"}`), start.Add(time.Second))
+	relayUpstreamFirstResponseHeaders(c, &enabled)
 	if got := recorder.Result().Header.Get(upstreamTimingHeader); got != "" {
 		t.Fatalf("committed response still reported timing: %q", got)
 	}
@@ -93,7 +90,6 @@ func TestUpstreamFirstResponseDisabledOrCommittedFallsBack(t *testing.T) {
 
 func TestUpstreamFirstResponseTimingRecordsLooseFirstTokenOnce(t *testing.T) {
 	start := time.Now()
-	headers := make(http.Header)
 	timing := upstreamFirstResponseTiming{enabled: true, requestStart: start, attemptStart: start}
 	ignored := []string{
 		`{"type":"response.created"}`,
@@ -110,26 +106,20 @@ func TestUpstreamFirstResponseTimingRecordsLooseFirstTokenOnce(t *testing.T) {
 		`{"delta":"no type at all"}`,
 	}
 	for _, event := range ignored {
-		timing.observe(headers, gjson.Parse(event), start.Add(time.Second))
-		if len(headers) != 0 {
-			t.Fatalf("event %s reported timing: %v", event, headers)
+		timing.observe(gjson.Parse(event), start.Add(time.Second))
+		if timing.recorded {
+			t.Fatalf("event %s was recorded as the first response", event)
 		}
 	}
 
-	timing.observe(headers, gjson.Parse(`{"type":"response.output_text.delta","delta":"hi"}`), start.Add(2*time.Second))
-	if got := headers.Get(upstreamTimingHeader); got != "v1-loose" {
-		t.Fatalf("timing version = %q, want v1-loose", got)
-	}
-	if got := headers.Get(upstreamFirstResponseHeader); got != "2000" {
-		t.Fatalf("request timing = %q, want 2000", got)
-	}
-	if got := headers.Get(upstreamAttemptFirstResponseHeader); got != "2000" {
-		t.Fatalf("attempt timing = %q, want 2000", got)
+	timing.observe(gjson.Parse(`{"type":"response.output_text.delta","delta":"hi"}`), start.Add(2*time.Second))
+	if !timing.recorded || timing.requestMS != 2000 || timing.attemptMS != 2000 {
+		t.Fatalf("timing = %+v, want recorded at 2000/2000", timing)
 	}
 
-	timing.observe(headers, gjson.Parse(`{"type":"response.output_text.delta","delta":"later"}`), start.Add(9*time.Second))
-	if got := headers.Get(upstreamFirstResponseHeader); got != "2000" {
-		t.Fatalf("a later content event rewrote the recorded timing: %q", got)
+	timing.observe(gjson.Parse(`{"type":"response.output_text.delta","delta":"later"}`), start.Add(9*time.Second))
+	if timing.requestMS != 2000 {
+		t.Fatalf("a later content event rewrote the recorded timing: %d", timing.requestMS)
 	}
 }
 
@@ -137,24 +127,16 @@ func TestUpstreamFirstResponseAttemptNeverExceedsRequest(t *testing.T) {
 	now := time.Now()
 	// 换号后 attempt 时钟可能比请求级时钟更早；attempt 值必须被夹到请求值以内，
 	// 否则「快的替身」会看起来比整条请求还快。
-	clamped := make(http.Header)
-	timing := upstreamFirstResponseTiming{enabled: true, requestStart: now.Add(500 * time.Millisecond), attemptStart: now}
-	timing.observe(clamped, gjson.Parse(`{"type":"codex.rate_limits"}`), now.Add(time.Second))
-	if got := clamped.Get(upstreamFirstResponseHeader); got != "500" {
-		t.Fatalf("request timing = %q, want 500", got)
-	}
-	if got := clamped.Get(upstreamAttemptFirstResponseHeader); got != "500" {
-		t.Fatalf("attempt timing = %q, want 500 (clamped to the request value)", got)
+	clamped := upstreamFirstResponseTiming{enabled: true, requestStart: now.Add(500 * time.Millisecond), attemptStart: now}
+	clamped.observe(gjson.Parse(`{"type":"codex.rate_limits"}`), now.Add(time.Second))
+	if clamped.requestMS != 500 || clamped.attemptMS != 500 {
+		t.Fatalf("timing = %+v, want the attempt clamped to the request value 500", clamped)
 	}
 
-	negative := make(http.Header)
 	future := upstreamFirstResponseTiming{enabled: true, requestStart: now.Add(2 * time.Second), attemptStart: now.Add(2 * time.Second)}
-	future.observe(negative, gjson.Parse(`{"type":"codex.rate_limits"}`), now)
-	if got := negative.Get(upstreamFirstResponseHeader); got != "0" {
-		t.Fatalf("request timing = %q, want 0 for a non-positive elapsed duration", got)
-	}
-	if got := negative.Get(upstreamAttemptFirstResponseHeader); got != "0" {
-		t.Fatalf("attempt timing = %q, want 0 for a non-positive elapsed duration", got)
+	future.observe(gjson.Parse(`{"type":"codex.rate_limits"}`), now)
+	if future.requestMS != 0 || future.attemptMS != 0 {
+		t.Fatalf("timing = %+v, want 0/0 for a non-positive elapsed duration", future)
 	}
 }
 
@@ -175,19 +157,32 @@ func TestClearUpstreamFirstResponseHeadersRemovesEveryTimingHeader(t *testing.T)
 	}
 }
 
-func TestRelayUpstreamFirstResponseHeadersDropsStaleAttemptValues(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Header(upstreamTimingHeader, "v1-loose")
-	c.Header(upstreamFirstResponseHeader, "999")
-	c.Header(upstreamAttemptFirstResponseHeader, "999")
+// 只有本网关自己量出来的数字才能下发。中转分支根本没有计时结构，传 nil；
+// 上一 attempt 暂存在 writer 上的值也必须被抹掉。
+func TestRelayUpstreamFirstResponseHeadersNeedsThisGatewaysOwnMeasurement(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name   string
+		timing *upstreamFirstResponseTiming
+	}{
+		{name: "no timing at all"},
+		{name: "enabled but never recorded", timing: &upstreamFirstResponseTiming{enabled: true, requestStart: now, attemptStart: now}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Header(upstreamTimingHeader, "v1-loose")
+			c.Header(upstreamFirstResponseHeader, "999")
+			c.Header(upstreamAttemptFirstResponseHeader, "999")
 
-	// 上一 attempt 的计时不能粘到换号后的新响应上。
-	relayUpstreamFirstResponseHeaders(c, make(http.Header))
-	for _, name := range []string{upstreamTimingHeader, upstreamFirstResponseHeader, upstreamAttemptFirstResponseHeader} {
-		if got := c.Writer.Header().Get(name); got != "" {
-			t.Fatalf("stale %s survived a timing-free attempt: %q", name, got)
-		}
+			relayUpstreamFirstResponseHeaders(c, tc.timing)
+			for _, name := range []string{upstreamTimingHeader, upstreamFirstResponseHeader, upstreamAttemptFirstResponseHeader} {
+				if got := c.Writer.Header().Get(name); got != "" {
+					t.Fatalf("published %s = %q without a recorded measurement", name, got)
+				}
+			}
+		})
 	}
 }
 
@@ -197,6 +192,11 @@ func TestRelayUpstreamFirstResponseHeadersDropsStaleAttemptValues(t *testing.T) 
 
 const firstResponseTimingCodexModel = "gpt-5.5"
 const firstResponseTimingRelayModel = "gpt-4.1-direct"
+const firstResponseTimingText = "first-response-hello"
+
+// 桩上游自报的计时头：上游若自己就是一台开了本开关的 codex2api，这些值绝不能
+// 被当成本网关的测量下发。
+const firstResponseTimingForgedMS = "999999"
 
 // firstResponseCommitRecorder 记录响应「第一次提交」的时刻相对于桩上游放行
 // 首个内容事件的先后。提前提交 200 的回归会在放行之前就置位。
@@ -254,6 +254,8 @@ type firstResponseUpstreamStub struct {
 	calls      atomic.Int32
 	failFirst  bool
 	firstDelay time.Duration
+	// forgeTiming 让桩上游自报三个计时头，模拟「上游是另一台 codex2api」。
+	forgeTiming bool
 	// preflight 在前置元数据冲刷后关闭；release 关闭后才发首个内容事件。
 	preflight   chan struct{}
 	release     chan struct{}
@@ -273,6 +275,11 @@ func (s *firstResponseUpstreamStub) releaseGate() {
 func (s *firstResponseUpstreamStub) serve(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(io.Discard, r.Body)
 	w.Header().Set("Content-Type", "text/event-stream")
+	if s.forgeTiming {
+		w.Header().Set(upstreamTimingHeader, "v1-loose")
+		w.Header().Set(upstreamFirstResponseHeader, firstResponseTimingForgedMS)
+		w.Header().Set(upstreamAttemptFirstResponseHeader, firstResponseTimingForgedMS)
+	}
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
 	write := func(frame string) {
@@ -296,13 +303,22 @@ func (s *firstResponseUpstreamStub) serve(w http.ResponseWriter, r *http.Request
 		s.once.Do(func() { close(s.preflight) })
 		<-s.release
 	}
-	write(`{"type":"response.output_text.delta","delta":"first-response-hello"}`)
-	write(`{"type":"response.completed","response":{"id":"resp_timing","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	write(`{"type":"response.output_text.delta","delta":"` + firstResponseTimingText + `"}`)
+	write(`{"type":"response.completed","response":{"id":"resp_timing","status":"completed",` +
+		`"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + firstResponseTimingText + `"}]}],` +
+		`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+}
+
+type firstResponseTimingSetup struct {
+	enabled          bool
+	policy           database.ContinuousRetryPolicy
+	relay            bool
+	continueThinking bool
 }
 
 // newFirstResponseTimingHandler 装配「运行期开关 + 号池 + 桩上游出口」。relay 为
 // true 时使用中转账号（不参与本计时契约），否则走官方 Codex OAuth 出口。
-func newFirstResponseTimingHandler(t *testing.T, upstreamURL string, enabled bool, policy database.ContinuousRetryPolicy, relay bool) (*Handler, string) {
+func newFirstResponseTimingHandler(t *testing.T, upstreamURL string, setup firstResponseTimingSetup) (*Handler, string) {
 	t.Helper()
 	previousSettings := CurrentRuntimeSettings()
 	t.Cleanup(func() { ApplyRuntimeSettings(previousSettings) })
@@ -310,11 +326,12 @@ func newFirstResponseTimingHandler(t *testing.T, upstreamURL string, enabled boo
 	next.CodexForceWebsocket = false
 	next.CodexWSSilentRetry = false
 	next.CodexWSSilentRetries = 0
-	next.CodexPreflightSSEPassthrough = enabled
-	next.ContinuousRetryPolicy = policy
+	next.CodexPreflightSSEPassthrough = setup.enabled
+	next.ContinuousRetryPolicy = setup.policy
+	next.CodexContinueThinking = setup.continueThinking
 	ApplyRuntimeSettings(next)
 
-	if relay {
+	if setup.relay {
 		store := newOpenAIResponsesRelayStore(upstreamURL)
 		t.Cleanup(store.Stop)
 		return NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil), firstResponseTimingRelayModel
@@ -333,11 +350,10 @@ func newFirstResponseTimingHandler(t *testing.T, upstreamURL string, enabled boo
 	return NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil), firstResponseTimingCodexModel
 }
 
-func newFirstResponseTimingContext(model string, writer http.ResponseWriter) *gin.Context {
+func newFirstResponseTimingContext(model string, stream bool, writer http.ResponseWriter) *gin.Context {
 	ctx, _ := gin.CreateTestContext(writer)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(
-		`{"model":"`+model+`","input":"hello","stream":true}`,
-	))
+	body := `{"model":"` + model + `","input":"hello","stream":` + strconv.FormatBool(stream) + `}`
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(body))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	return ctx
 }
@@ -358,6 +374,9 @@ func parseFirstResponseTimingHeaders(t *testing.T, headers http.Header) (request
 	if attemptMS < 0 || requestMS < attemptMS {
 		t.Fatalf("timing ordering broken: request=%d attempt=%d", requestMS, attemptMS)
 	}
+	if requestMS > time.Minute.Milliseconds() {
+		t.Fatalf("request timing = %d ms, implausible for a local stub upstream", requestMS)
+	}
 	return requestMS, attemptMS
 }
 
@@ -375,42 +394,48 @@ func TestUpstreamFirstResponseHeadersAtNormalCommit(t *testing.T) {
 	buffered := database.ContinuousRetryPolicy{Enabled: true, CatchAll: true}
 	cases := []struct {
 		name        string
-		enabled     bool
-		policy      database.ContinuousRetryPolicy
-		relay       bool
+		setup       firstResponseTimingSetup
+		nonStream   bool
+		forgeTiming bool
 		wantHeaders bool
 	}{
-		{name: "enabled passthrough attempt", enabled: true, wantHeaders: true},
-		{name: "enabled buffered attempt", enabled: true, policy: buffered, wantHeaders: true},
-		{name: "disabled", enabled: false, wantHeaders: false},
-		{name: "relay account", enabled: true, relay: true, wantHeaders: false},
+		{name: "enabled passthrough attempt", setup: firstResponseTimingSetup{enabled: true}, wantHeaders: true},
+		{name: "enabled buffered attempt", setup: firstResponseTimingSetup{enabled: true, policy: buffered}, wantHeaders: true},
+		{name: "enabled non-stream", setup: firstResponseTimingSetup{enabled: true}, nonStream: true, wantHeaders: true},
+		{name: "disabled", setup: firstResponseTimingSetup{}, wantHeaders: false},
+		{name: "relay account", setup: firstResponseTimingSetup{enabled: true, relay: true}, wantHeaders: false},
+		// 中转上游可能就是另一台开了本开关的 codex2api：它自报的计时头绝不能被
+		// 当成本网关的测量转发下去。
+		{name: "relay account forwarding an upstream report", setup: firstResponseTimingSetup{enabled: true, relay: true}, forgeTiming: true, wantHeaders: false},
+		{name: "relay account with the switch off", setup: firstResponseTimingSetup{relay: true}, forgeTiming: true, wantHeaders: false},
+		// 官方路径同理：下发的必须是本网关量出来的值，而不是上游回声。
+		{name: "official upstream echoing a report", setup: firstResponseTimingSetup{enabled: true}, forgeTiming: true, wantHeaders: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := &firstResponseUpstreamStub{}
+			stub := &firstResponseUpstreamStub{forgeTiming: tc.forgeTiming}
 			server := httptest.NewServer(http.HandlerFunc(stub.serve))
 			t.Cleanup(server.Close)
 
-			handler, model := newFirstResponseTimingHandler(t, server.URL, tc.enabled, tc.policy, tc.relay)
+			handler, model := newFirstResponseTimingHandler(t, server.URL, tc.setup)
 			recorder := httptest.NewRecorder()
-			handler.Responses(newFirstResponseTimingContext(model, recorder))
+			handler.Responses(newFirstResponseTimingContext(model, !tc.nonStream, recorder))
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body=%q", recorder.Code, recorder.Body.String())
 			}
-			if !strings.Contains(recorder.Body.String(), "first-response-hello") {
-				t.Fatalf("content event missing from the stream: %q", recorder.Body.String())
+			if !strings.Contains(recorder.Body.String(), firstResponseTimingText) {
+				t.Fatalf("content missing from the response: %q", recorder.Body.String())
 			}
 			headers := recorder.Result().Header
 			if !tc.wantHeaders {
 				assertNoFirstResponseTimingHeaders(t, headers)
 				return
 			}
-			requestMS, attemptMS := parseFirstResponseTimingHeaders(t, headers)
-			if requestMS > time.Minute.Milliseconds() {
-				t.Fatalf("request timing = %d ms, implausible for a local stub upstream", requestMS)
+			requestMS, _ := parseFirstResponseTimingHeaders(t, headers)
+			if strconv.FormatInt(requestMS, 10) == firstResponseTimingForgedMS {
+				t.Fatalf("published the upstream's own report instead of this gateway's measurement")
 			}
-			_ = attemptMS
 		})
 	}
 }
@@ -434,9 +459,9 @@ func TestUpstreamFirstResponseDoesNotCommitBeforeFirstContent(t *testing.T) {
 			t.Cleanup(stub.releaseGate)
 
 			var firstDataSent atomic.Bool
-			handler, model := newFirstResponseTimingHandler(t, server.URL, true, tc.policy, false)
+			handler, model := newFirstResponseTimingHandler(t, server.URL, firstResponseTimingSetup{enabled: true, policy: tc.policy})
 			recorder := newFirstResponseCommitRecorder(&firstDataSent)
-			ctx := newFirstResponseTimingContext(model, recorder)
+			ctx := newFirstResponseTimingContext(model, true, recorder)
 
 			done := make(chan struct{})
 			go func() {
@@ -473,7 +498,7 @@ func TestUpstreamFirstResponseDoesNotCommitBeforeFirstContent(t *testing.T) {
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body=%q", recorder.Code, recorder.Body.String())
 			}
-			if !strings.Contains(recorder.Body.String(), "first-response-hello") {
+			if !strings.Contains(recorder.Body.String(), firstResponseTimingText) {
 				t.Fatalf("content event missing from the stream: %q", recorder.Body.String())
 			}
 			parseFirstResponseTimingHeaders(t, recorder.Result().Header)
@@ -489,12 +514,15 @@ func TestUpstreamFirstResponsePublishesOnlyTheWinningAttempt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(stub.serve))
 	t.Cleanup(server.Close)
 
-	handler, model := newFirstResponseTimingHandler(t, server.URL, true, database.ContinuousRetryPolicy{
-		Enabled:    true,
-		Categories: []string{database.ContinuousRetryCategoryResponseFailed},
-	}, false)
+	handler, model := newFirstResponseTimingHandler(t, server.URL, firstResponseTimingSetup{
+		enabled: true,
+		policy: database.ContinuousRetryPolicy{
+			Enabled:    true,
+			Categories: []string{database.ContinuousRetryCategoryResponseFailed},
+		},
+	})
 	recorder := httptest.NewRecorder()
-	handler.Responses(newFirstResponseTimingContext(model, recorder))
+	handler.Responses(newFirstResponseTimingContext(model, true, recorder))
 
 	if got := stub.calls.Load(); got != 2 {
 		t.Fatalf("upstream attempts = %d, want 2 (failed + recovered); body=%q", got, recorder.Body.String())
@@ -503,7 +531,7 @@ func TestUpstreamFirstResponsePublishesOnlyTheWinningAttempt(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%q", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, "first-response-hello") || strings.Contains(body, "temporary upstream failure") {
+	if !strings.Contains(body, firstResponseTimingText) || strings.Contains(body, "temporary upstream failure") {
 		t.Fatalf("the failed attempt leaked or the recovered stream is missing: %q", body)
 	}
 
@@ -514,6 +542,63 @@ func TestUpstreamFirstResponsePublishesOnlyTheWinningAttempt(t *testing.T) {
 	if attemptMS >= firstAttemptDelay.Milliseconds() {
 		t.Fatalf("attempt timing = %d ms, want only the winning attempt's own elapsed time", attemptMS)
 	}
+}
+
+// 续想折叠会把 resp 换成最终轮的响应。计时记在 attempt 自己的结构里，所以
+// 「缓冲提交 + 续想 + 真的开了续想轮」这一组合也必须照常上报。
+func TestUpstreamFirstResponseSurvivesContinueThinkingFold(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		write := func(frame string) {
+			_, _ = io.WriteString(w, "data: "+frame+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if calls.Add(1) == 1 {
+			// reasoning_tokens=516 命中 518n-2 截断指纹：折叠用同一账号开第二轮。
+			write(evCreated())
+			write(evReasoningAdded(1, 0))
+			write(evReasoningDone(2, 0, "enc-round-1"))
+			write(evMessageAdded(3, 1))
+			write(evMessageDelta(4, 1, "truncated junk"))
+			write(evMessageDone(5, 1, "truncated junk"))
+			write(evCompleted(6, 100, 600, 516))
+			return
+		}
+		write(evCreated())
+		write(evReasoningAdded(1, 0))
+		write(evReasoningDone(2, 0, "enc-round-2"))
+		write(evMessageAdded(3, 1))
+		write(evMessageDelta(4, 1, firstResponseTimingText))
+		write(evMessageDone(5, 1, firstResponseTimingText))
+		write(evCompleted(6, 120, 900, 400))
+	}))
+	t.Cleanup(server.Close)
+
+	handler, model := newFirstResponseTimingHandler(t, server.URL, firstResponseTimingSetup{
+		enabled:          true,
+		policy:           database.ContinuousRetryPolicy{Enabled: true, CatchAll: true},
+		continueThinking: true,
+	})
+	recorder := httptest.NewRecorder()
+	handler.Responses(newFirstResponseTimingContext(model, true, recorder))
+
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream rounds = %d, want 2 (truncated + continuation); body=%q", got, recorder.Body.String())
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), firstResponseTimingText) {
+		t.Fatalf("the folded answer is missing: %q", recorder.Body.String())
+	}
+	parseFirstResponseTimingHeaders(t, recorder.Result().Header)
 }
 
 func TestUpstreamFirstResponseOmittedWhenKeepaliveAlreadyCommitted(t *testing.T) {
@@ -527,11 +612,12 @@ func TestUpstreamFirstResponseOmittedWhenKeepaliveAlreadyCommitted(t *testing.T)
 	t.Cleanup(server.Close)
 	t.Cleanup(stub.releaseGate)
 
-	handler, model := newFirstResponseTimingHandler(t, server.URL, true, database.ContinuousRetryPolicy{
-		Enabled: true, CatchAll: true,
-	}, false)
+	handler, model := newFirstResponseTimingHandler(t, server.URL, firstResponseTimingSetup{
+		enabled: true,
+		policy:  database.ContinuousRetryPolicy{Enabled: true, CatchAll: true},
+	})
 	recorder := newFirstResponseCommitRecorder(nil)
-	ctx := newFirstResponseTimingContext(model, recorder)
+	ctx := newFirstResponseTimingContext(model, true, recorder)
 
 	done := make(chan struct{})
 	go func() {

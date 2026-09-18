@@ -4249,7 +4249,7 @@
       "codexQuota": "额度与探测",
       "codexQuotaDesc": "用量探针、连通性测试、重置券、5 小时窗口与全局自动暂停",
       "codexTransport": "连接与传输",
-      "codexTransportDesc": "WebSocket、续想、压缩、前置帧透传、过载熔断与响应缓存",
+      "codexTransportDesc": "WebSocket、续想、压缩、首响应计时上报、过载熔断与响应缓存",
       "codexClient": "客户端与指纹",
       "codexClientDesc": "Codex CLI 兼容、版本同步、指纹默认模式、User-Agent 模拟与 uTLS 连接回收",
       "codexImages": "生图设置",

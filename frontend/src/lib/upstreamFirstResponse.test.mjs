@@ -23,10 +23,13 @@ const FIRST_RESPONSE_I18N_KEYS = [
 
 // 旧语义的关键承诺：提前透传 / 提前提交 200 / 旧版兼容。
 const RETIRED_MARKERS = {
-  zh: ['立即透传', '提前提交 HTTP 200', '旧版兼容模式'],
-  en: ['immediate passthrough', 'Legacy Compat', 'legacy compatibility mode'],
-  'zh-TW': ['立即透傳', '提前提交 HTTP 200', '舊版相容模式'],
+  zh: ['立即透传', '前置帧透传', '提前提交 HTTP 200', '旧版兼容模式'],
+  en: ['immediate passthrough', 'preflight passthrough', 'Legacy Compat', 'legacy compatibility mode'],
+  'zh-TW': ['立即透傳', '前置幀透傳', '提前提交 HTTP 200', '舊版相容模式'],
 }
+
+// 设置分区的副标题是运维在展开开关之前唯一读到的一行，必须跟着改。
+const sectionCopy = (locale) => locale.settings?.nav?.codexTransportDesc
 
 test('the first-response timing switch keeps its persisted key and wiring', () => {
   assert.ok(
@@ -51,12 +54,17 @@ test('first-response timing copy exists in every locale', () => {
         `${name}.json settings.${key} missing`,
       )
     }
+    assert.equal(
+      typeof sectionCopy(locale),
+      'string',
+      `${name}.json settings.nav.codexTransportDesc missing`,
+    )
   }
 })
 
 test('the copy promises timing headers instead of an early HTTP 200', () => {
   for (const [name, locale] of Object.entries(locales)) {
-    const blob = FIRST_RESPONSE_I18N_KEYS.map((key) => locale.settings[key]).join('\n')
+    const blob = [...FIRST_RESPONSE_I18N_KEYS.map((key) => locale.settings[key]), sectionCopy(locale)].join('\n')
     assert.ok(
       blob.includes('X-Codex2API-First-Response-Ms'),
       `${name}.json must name the timing header operators will see`,

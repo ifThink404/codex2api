@@ -14,7 +14,8 @@ error, terminal and heartbeat events. WS handshake/connection acquisition is not
 a response event.
 
 For the native Codex `/v1/responses` path (HTTP upstream or WS-to-HTTP bridge), the
-winning attempt stages these headers until the normal response commit:
+winning attempt keeps its measurement private until the normal response commit, then
+publishes it as:
 
 | Header | Meaning |
 | --- | --- |
@@ -29,6 +30,13 @@ Each attempt has independent staging; failed buffered attempts never publish
 their timings. If an existing heartbeat already committed headers, reporting is
 omitted and NewAPI falls back to its observed first-frame metric. Non-Codex/API
 relay paths and native WS clients do not receive this HTTP timing contract.
+
+A report is always this gateway's own measurement, held in the attempt's timing record
+and never read back out of an upstream response header. A relay account's upstream is an
+arbitrary base URL, possibly another codex2api with this switch on, so the relay branch
+carries no timing record and also strips these three names from the upstream response as
+soon as it arrives. That also makes the report survive the continue-thinking fold, which
+replaces the upstream response before the buffered commit.
 
 Commit boundaries that publish the headers, all of them existing write sites:
 

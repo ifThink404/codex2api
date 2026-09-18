@@ -4252,7 +4252,7 @@
       "codexQuota": "Quota & Probes",
       "codexQuotaDesc": "Usage probes, connectivity test, reset credits, 5-hour window and global auto-pause",
       "codexTransport": "Transport",
-      "codexTransportDesc": "WebSocket, continue-thinking, compression, preflight passthrough, overload breaker and response cache",
+      "codexTransportDesc": "WebSocket, continue-thinking, compression, first-response timing reports, overload breaker and response cache",
       "codexClient": "Client & Fingerprint",
       "codexClientDesc": "Codex CLI compatibility, version sync, fingerprint default, User-Agent emulation and uTLS connection recycling",
       "codexImages": "Image generation",

@@ -4352,6 +4352,10 @@ func (h *Handler) Responses(c *gin.Context) {
 				ErrorToGinResponse(c, reqErr)
 				return
 			}
+			// 中转上游是任意 base URL，可能就是另一台开了本开关的 codex2api。
+			// 本分支不做首响应计时，也绝不能把上游自报的计时头带下去：先从响应头
+			// 里抹掉，任何转发上游头的代码都拿不到它。
+			clearUpstreamFirstResponseHeaders(resp.Header)
 			if !isStream {
 				stopTTFTGuard()
 			}
@@ -5356,7 +5360,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					clientGone = true
 				}
 				parsed := gjson.ParseBytes(data)
-				upstreamTiming.observe(resp.Header, parsed, time.Now())
+				upstreamTiming.observe(parsed, time.Now())
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 
@@ -5471,7 +5475,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					if !shouldDefer && streamAttempt == nil && !c.Writer.Written() {
 						// 正常提交边界：首响应计时是在这一帧之前的事件上记录的，
 						// 只能在这里、真正写出第一个字节之前带给下游。
-						relayUpstreamFirstResponseHeaders(c, resp.Header)
+						relayUpstreamFirstResponseHeaders(c, &upstreamTiming)
 					}
 					wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, h.vaultCodexTurnStateEvent(turnStateUsageSlot, affinityKey, account, eventType, sanitizeCapacityShedEventForClient(eventType, data)), shouldDefer)
 					if err != nil {
@@ -5613,7 +5617,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					h.recordCompactionProvenanceFromPayload(context.Background(), account, data)
 				}
 				parsed := gjson.ParseBytes(data)
-				upstreamTiming.observe(resp.Header, parsed, time.Now())
+				upstreamTiming.observe(parsed, time.Now())
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
 				if eventType == "error" {
@@ -5766,6 +5770,9 @@ func (h *Handler) Responses(c *gin.Context) {
 				h.store.Release(account)
 				return
 			}
+			// 缓冲尝试的正常提交边界：整段私有回放在下面写出，计时头必须先落位。
+			// commitResponsesStreamAttempt 的失败分支会连同 turn-state 一起撤掉。
+			relayUpstreamFirstResponseHeaders(c, &upstreamTiming)
 			if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, resp.Header); commitErr != nil {
 				if isContinuousRetryLocalFailure(commitErr) {
 					outcome = overlayContinuousRetryLocalFailure(outcome, commitErr)
@@ -5859,7 +5866,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				})
 			} else if responseJSON != nil {
 				// 非流式的正常提交边界：聚合完成后才知道首响应计时。
-				relayUpstreamFirstResponseHeaders(c, resp.Header)
+				relayUpstreamFirstResponseHeaders(c, &upstreamTiming)
 				c.Header("Content-Type", "application/json")
 				c.Status(http.StatusOK)
 				if err := writeAll(c.Writer, responseJSON); err == nil {
