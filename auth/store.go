@@ -4818,13 +4818,20 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 	// (Resin 模式下执行器只拿它做审计),只有 usable 判定放行。中继型账号不经 Resin,
 	// 仍按原规则(issue #679)。
 	resinCarriesEgress := false
+	egressDirect := false
 	if acc != nil {
 		acc.mu.RLock()
 		accountID = acc.DBID
 		accountProxy = strings.TrimSpace(acc.ProxyURL)
 		groupIDs = cloneInt64Slice(acc.GroupIDs)
-		resinCarriesEgress = ResinEgressEnabled() && !acc.isRelayStyleLocked()
+		egressDirect = acc.EgressPolicy == EgressPolicyDirect
+		resinCarriesEgress = ResinEgressEnabled() && !acc.isRelayStyleLocked() && acc.EgressPolicy != EgressPolicyDirect
 		acc.mu.RUnlock()
+	}
+
+	// 账号级出口直连：不进池、不用全局代理、不经 Resin。固定代理仍然优先（accountProxy 非空时不走这里）。
+	if egressDirect && accountProxy == "" {
+		return "", true
 	}
 
 	s.mu.RLock()

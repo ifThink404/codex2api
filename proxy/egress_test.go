@@ -90,6 +90,19 @@ func TestResolveCodexEgressPrecedence(t *testing.T) {
 			t.Fatalf("relay account kind = %q, want proxy", egress.Kind)
 		}
 	})
+
+	t.Run("direct-policy accounts bypass resin", func(t *testing.T) {
+		withResin(t, &ResinConfig{BaseURL: "http://127.0.0.1:2260/tok", PlatformName: "codex2api"})
+		direct := &auth.Account{DBID: 9}
+		direct.EgressPolicy = auth.EgressPolicyDirect
+		if !direct.EgressDirect() {
+			t.Fatal("fixture must be direct-policy")
+		}
+		egress := ResolveCodexEgress(direct, target, "http://pool:8080")
+		if egress.Kind != CodexEgressProxy {
+			t.Fatalf("direct-policy account kind = %q, want proxy (Resin must not carry it)", egress.Kind)
+		}
+	})
 }
 
 func TestResolveCodexWebsocketEgress(t *testing.T) {

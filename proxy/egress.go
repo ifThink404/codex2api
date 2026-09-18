@@ -79,10 +79,12 @@ func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) Codex
 }
 
 // resinCarriesEgress 判定该账号的出站是否由 Resin 承担:Resin 已启用、有账号身份
-// (Resin 按账号粘性,无身份无从粘)且不是中继型账号(Claude/Grok/Antigravity 不经 Resin)。
-// 与 auth.Store 的 fail-closed 放行、upstream_trace 的审计标签取同一口径。
+// (Resin 按账号粘性,无身份无从粘)、不是中继型账号(Claude/Grok/Antigravity 不经
+// Resin)且账号未打 egress_policy=direct(账号级直连要求绕过 Resin,同 auth.Store
+// 的 resolveProxyForAccountSnapshot 口径)。与 auth.Store 的 fail-closed 放行、
+// upstream_trace 的审计标签取同一口径。
 func resinCarriesEgress(account *auth.Account) bool {
-	return IsResinEnabled() && account != nil && !account.IsRelayStyle()
+	return IsResinEnabled() && account != nil && !account.IsRelayStyle() && !account.EgressDirect()
 }
 
 // ViaResin 报告本次出站是否经 Resin。
