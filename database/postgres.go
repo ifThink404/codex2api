@@ -1245,7 +1245,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	-- turn_state_length 刻意没有 DEFAULT：NULL = 未记录（历史行 / 拿到上游响应前就失败 /
 	-- 非官方路径），0 = 检查过上游响应但它没给。两者的运营含义完全不同，给默认值 0
 	-- 会把整张旧表显示成「上游从没给过 turn-state」。长度本身是账号级的降智桶标记
-	-- （线上实测健康号 292 字符、坏桶号 312 字符）。
+	-- （线上实测健康号 292 字节、坏桶号 312 字节；token 是 ASCII base64，字节数等于字符数）。
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_length INT;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_echo VARCHAR(16) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_stripped BOOLEAN DEFAULT FALSE;
@@ -4576,7 +4576,7 @@ type UsageLogInput struct {
 	ReasoningEffort       string
 	UpstreamResponseModel string
 	WindowNumber          string
-	// TurnStateLength 是上游本次尝试首个下发的真实 X-Codex-Turn-State 的字符数：
+	// TurnStateLength 是上游本次尝试首个下发的真实 X-Codex-Turn-State 的字节数：
 	// nil = 未记录（拿到上游响应前就失败、非官方路径），0 = 检查过但上游没给。
 	// TurnStateEcho 是入站回带的分类（none/same/cross/unknown/substitute，'' = 未记录），
 	// TurnStateStripped 表示本次入站值被网关剥离过。三者由 populateUsageTurnState
@@ -6170,7 +6170,7 @@ type UsageLogFilter struct {
 	ViaWebsocketOnly      *bool  // nil=全部, true=仅 WebSocket, false=仅 HTTP
 	UltraOnly             *bool  // nil=全部, true=仅 Codex Ultra 档, false=仅非 Ultra
 	// TurnState 是 turn_state_length 的三态筛选：received(>0) / missing(=0) /
-	// not_recorded(NULL)，空=全部。TurnStateLength 精确匹配字符数（按账号对比
+	// not_recorded(NULL)，空=全部。TurnStateLength 精确匹配字节数（按账号对比
 	// 292/312 这类降智桶标记时用）。TurnStateEcho 匹配回带分类，TurnStateStripped
 	// 匹配本次是否被剥离。全部在数据库分页之前生效。
 	TurnState         string

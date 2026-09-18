@@ -4,13 +4,14 @@ import "strings"
 
 // usage_logs 的 turn-state 三列：每条日志记录本次胜出尝试的 X-Codex-Turn-State 情况。
 //
-//	turn_state_length   INT NULL       上游首次返回的真实 token 的字符数。
+//	turn_state_length   INT NULL       上游首次返回的真实 token 的字节数
+//	                                   （token 是 ASCII base64，字节数等于字符数）。
 //	                                   0   = 已检查上游响应但它没给
 //	                                   NULL= 未记录（历史行 / 拿到上游响应前失败 / 非官方路径）
 //	turn_state_echo     VARCHAR(16)    入站回带分类，'' = 未记录
 //	turn_state_stripped BOOLEAN        本次入站值是否被网关剥离
 //
-// 长度是账号级的「降智桶」标记：线上实测同一时刻健康号 292 字符、其余号 312 字符，
+// 长度是账号级的「降智桶」标记：线上实测同一时刻健康号 292 字节、其余号 312 字节，
 // 与单次请求成败无关。按账号看这一列的分布就是「降智账号」的直接读数。
 
 // UsageLogTurnStateEchoClasses 是 turn_state_echo 的合法取值。分类由网关自己产生，
@@ -23,9 +24,15 @@ const usageLogTurnStateLengthMax = 2147483647
 
 // normalizeUsageLogTurnStateEcho 把未知分类归为「未记录」而不是截断存下：
 // 截断出来的半截词会变成一个永远筛不到东西的假选项。
+//
+// 白名单之外还要再量一次列宽。以后往 UsageLogTurnStateEchoClasses 里加一个超过
+// VARCHAR(16) 的分类，光靠白名单是拦不住的：那条值会一路写到 INSERT，整批回滚，
+// 失败的 batch 又被放回缓冲区头部反复重试，单条脏数据就能永久堵死日志写入。
+// 真有这种分类时这里会静默丢弃它，所以配套用例
+// TestUsageLogTurnStateEchoClassesFitTheColumn 断言五个已知分类都装得下。
 func normalizeUsageLogTurnStateEcho(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" {
+	if value == "" || len(value) > usageLogTurnStateEchoMax {
 		return ""
 	}
 	for _, allowed := range UsageLogTurnStateEchoClasses {

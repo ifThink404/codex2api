@@ -182,3 +182,60 @@ func TestAttachAccountLatestTurnStates(t *testing.T) {
 		t.Fatalf("账号没有记录时必须整个对象缺席，得到 %+v", accounts[1].LatestTurnState)
 	}
 }
+
+// 最近 turn-state 只挂在分页视图上：?view=lite 提前返回用的是另一套结构，
+// 老的全量视图一次带回整个号池，不该为一个展示字段跑几百路逐账号查找。
+func TestListAccountsAttachesLatestTurnStateOnlyForThePagedView(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler, codexIDs, _ := newPagedAccountsHandler(t)
+	length312 := 312
+	if err := handler.db.InsertUsageLog(context.Background(), &database.UsageLogInput{
+		AccountID: codexIDs[0], Endpoint: "/v1/responses", StatusCode: http.StatusOK,
+		TurnStateLength: &length312, TurnStateEcho: "cross", TurnStateStripped: true,
+	}); err != nil {
+		t.Fatalf("InsertUsageLog: %v", err)
+	}
+	handler.db.FlushUsageLogs()
+
+	decode := func(target string) []accountResponse {
+		t.Helper()
+		recorder := invokeListAccounts(t, handler, target)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s status = %d: %s", target, recorder.Code, recorder.Body.String())
+		}
+		var paged accountsPageResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &paged); err == nil && len(paged.Accounts) > 0 {
+			return paged.Accounts
+		}
+		var flat []accountResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &flat); err != nil {
+			t.Fatalf("%s decode: %v (%s)", target, err, recorder.Body.String())
+		}
+		return flat
+	}
+	find := func(accounts []accountResponse, id int64) *accountResponse {
+		for i := range accounts {
+			if accounts[i].ID == id {
+				return &accounts[i]
+			}
+		}
+		return nil
+	}
+
+	row := find(decode("/api/admin/accounts?view=page&channel=codex&page=1&page_size=10"), codexIDs[0])
+	if row == nil || row.LatestTurnState == nil {
+		t.Fatalf("分页视图必须带 latest_turn_state，得到 %+v", row)
+	}
+	if row.LatestTurnState.Length == nil || *row.LatestTurnState.Length != 312 ||
+		row.LatestTurnState.Echo != "cross" || !row.LatestTurnState.Stripped {
+		t.Fatalf("latest_turn_state = %+v, want 312/cross/stripped", row.LatestTurnState)
+	}
+
+	legacy := find(decode("/api/admin/accounts?channel=codex"), codexIDs[0])
+	if legacy == nil {
+		t.Fatal("老的全量视图没有返回这个账号，后面的断言会变成空跑")
+	}
+	if legacy.LatestTurnState != nil {
+		t.Fatalf("老的全量视图不该带 latest_turn_state，得到 %+v", legacy.LatestTurnState)
+	}
+}

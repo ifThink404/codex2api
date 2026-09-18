@@ -186,3 +186,20 @@ func TestUsageLogTurnStateFilterDimensionKey(t *testing.T) {
 		t.Fatal("empty filter must not report a dimension filter")
 	}
 }
+
+// normalizeUsageLogTurnStateEcho 会静默丢弃超过 VARCHAR(16) 的分类。这条断言保证
+// 已知的五个分类都装得下——否则某个合法分类会被当脏值丢掉，那一列永远是空的。
+func TestUsageLogTurnStateEchoClassesFitTheColumn(t *testing.T) {
+	for _, class := range UsageLogTurnStateEchoClasses {
+		if len(class) > usageLogTurnStateEchoMax {
+			t.Fatalf("turn_state_echo 分类 %q 有 %d 字节，超过列宽 %d", class, len(class), usageLogTurnStateEchoMax)
+		}
+		if got := normalizeUsageLogTurnStateEcho(class); got != class {
+			t.Fatalf("normalizeUsageLogTurnStateEcho(%q) = %q, want it kept", class, got)
+		}
+	}
+	// 白名单里没有、又超列宽的值一律丢弃，不截断。
+	if got := normalizeUsageLogTurnStateEcho("substitute-expired-and-then-some"); got != "" {
+		t.Fatalf("over-wide class = %q, want '' (dropped, never truncated)", got)
+	}
+}

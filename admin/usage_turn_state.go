@@ -13,7 +13,7 @@ import (
 )
 
 // 用量页与账号页的 turn-state 读数。长度是账号级的「降智桶」标记（线上实测同一时刻
-// 健康号 292 字符、其余号 312 字符），按账号看 turn_state_echo=cross 或
+// 健康号 292 字节、其余号 312 字节），按账号看 turn_state_echo=cross 或
 // turn_state_stripped=true 的分布就是「降智账号是否与外来 turn-state 相关」的直接答案。
 
 // parseUsageTurnStateFilters 解析 turn_state / turn_state_length / turn_state_echo /

@@ -44,7 +44,8 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 	token := ""
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
-		// 用量日志记的是上游**真实** token 的字符数（托管改写成替身之前）。
+		// 用量日志记的是上游**真实** token 的字节数（托管改写成替身之前；token 是
+		// ASCII base64，字节数等于字符数）。
 		// 这里已经把上游响应头完整看过一遍：没有就记 0（检查过但上游没给），
 		// 与「未记录」（这次尝试根本没拿到上游响应）区分开。
 		markUsageTurnStateChecked(c, len(token))

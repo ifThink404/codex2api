@@ -16,6 +16,7 @@ import (
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // 上游真实 turn-state 的长度是账号级的「降智桶」标记（线上实测：健康号 292 字符，
@@ -234,7 +235,10 @@ func TestUsageTurnStateColumnsEndToEnd(t *testing.T) {
 			wantLength: nil, wantEcho: "",
 		},
 		{
-			name: "attempt that failed before the upstream response keeps NULL", official: true,
+			// 上游错误行记 NULL：错误分支在 relayCodexTurnStateResponseHeader 之前就
+			// 返回了，响应头没被看过，所以不能说「上游没给」。这次确实拿到了完整的
+			// 上游响应，只是没有走到那个采集点。
+			name: "upstream error row keeps NULL because no carrier was examined", official: true,
 			upstreamCode: http.StatusBadRequest, token: "",
 			contentType: "application/json",
 			payload:     `{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"too large"}}`,
@@ -376,4 +380,109 @@ func TestUsageTurnStateWiringPresent(t *testing.T) {
 	if got := count("session_guards.go", `noteUsageTurnStateEcho\(c, `); got != 2 {
 		t.Fatalf("session_guards.go noteUsageTurnStateEcho sites = %d, want 2", got)
 	}
+}
+
+// WS 传输上 response.metadata 事件是 turn-state 的唯一载体，也是「记真实长度、不记
+// 替身长度」这条不变量最容易被改坏的地方：改坏了只表现为 WS 流量的列永久为空，
+// 不会报错。这里把该站点的四个分支各钉一遍。
+func TestVaultCodexTurnStateEventRecordsRealTokenLength(t *testing.T) {
+	const realToken = "real-blob-0123456789"
+	metadataEvent := func(eventType string) []byte {
+		return []byte(`{"type":"` + eventType + `","headers":{"x-codex-turn-state":"` + realToken + `","openai-model":"gpt-5.5"}}`)
+	}
+	official := func(id int64) *auth.Account { return &auth.Account{DBID: id, AccessToken: "tok"} }
+
+	t.Run("vault on rewrites the event and records the real length", func(t *testing.T) {
+		setVault(t, true)
+		account := official(601)
+		key := "usage-ts-vault-on::api-key:9"
+		slot := &usageTurnStateAttempt{}
+		out := (&Handler{}).vaultCodexTurnStateEvent(slot, key, account, "codex.response.metadata", metadataEvent("codex.response.metadata"))
+
+		rewritten := gjson.GetBytes(out, "headers.x-codex-turn-state").String()
+		if !IsCodexTurnStateSubstitute(rewritten) {
+			t.Fatalf("event field = %q, want a substitute", rewritten)
+		}
+		if len(rewritten) == len(realToken) {
+			t.Fatalf("替身长度与真实 token 相同（%d），这条用例就分不出记的是哪一个", len(rewritten))
+		}
+		checked, length := slot.snapshot()
+		if !checked || length != len(realToken) {
+			t.Fatalf("slot = (%v, %d), want (true, %d) — 必须是替身改写之前的真实长度", checked, length, len(realToken))
+		}
+	})
+
+	// 托管开关关掉是唯一行为变了的分支：仍要记长度，但事件一个字节都不能动。
+	t.Run("vault off still records but leaves the event untouched", func(t *testing.T) {
+		setVault(t, false)
+		account := official(602)
+		slot := &usageTurnStateAttempt{}
+		event := metadataEvent("response.metadata")
+		out := (&Handler{}).vaultCodexTurnStateEvent(slot, "usage-ts-vault-off::api-key:9", account, "response.metadata", event)
+		if string(out) != string(event) {
+			t.Fatalf("托管关掉时事件被改写了: %s", out)
+		}
+		checked, length := slot.snapshot()
+		if !checked || length != len(realToken) {
+			t.Fatalf("slot = (%v, %d), want (true, %d)", checked, length, len(realToken))
+		}
+	})
+
+	// metadata 事件里没有该头 = 检查过但上游没给，记 0（与 HTTP 两个下发点同语义）。
+	t.Run("metadata without the header records an explicit zero", func(t *testing.T) {
+		setVault(t, true)
+		slot := &usageTurnStateAttempt{}
+		event := []byte(`{"type":"response.metadata","headers":{"openai-model":"gpt-5.5"}}`)
+		out := (&Handler{}).vaultCodexTurnStateEvent(slot, "usage-ts-no-header::api-key:9", official(603), "response.metadata", event)
+		if string(out) != string(event) {
+			t.Fatalf("没有 token 的事件被改写了: %s", out)
+		}
+		checked, length := slot.snapshot()
+		if !checked || length != 0 {
+			t.Fatalf("slot = (%v, %d), want (true, 0)", checked, length)
+		}
+	})
+
+	// 非 metadata 事件不是载体，不算「检查过」。
+	t.Run("other events leave the slot untouched", func(t *testing.T) {
+		setVault(t, true)
+		slot := &usageTurnStateAttempt{}
+		(&Handler{}).vaultCodexTurnStateEvent(slot, "usage-ts-other::api-key:9", official(604), "response.output_text.delta",
+			[]byte(`{"type":"response.output_text.delta","delta":"hi"}`))
+		if checked, length := slot.snapshot(); checked || length != 0 {
+			t.Fatalf("slot = (%v, %d), want (false, 0)", checked, length)
+		}
+	})
+
+	// 非官方账号（relay / 策略 off）整条不记：它们服务的客户端可以是任何东西，
+	// 回带的 blob 不具备同一套语义。事件也不能被托管改写。
+	t.Run("non-official accounts record nothing", func(t *testing.T) {
+		setVault(t, true)
+		guardsOff := official(606)
+		guardsOff.SessionGuardsPolicy = auth.SessionGuardsPolicyOff
+		for name, account := range map[string]*auth.Account{
+			"relay":      newRelayStyleVaultAccount(t, 605),
+			"guards off": guardsOff,
+		} {
+			slot := &usageTurnStateAttempt{}
+			event := metadataEvent("response.metadata")
+			out := (&Handler{}).vaultCodexTurnStateEvent(slot, "usage-ts-"+name+"::api-key:9", account, "response.metadata", event)
+			if string(out) != string(event) {
+				t.Fatalf("%s: 事件被改写了: %s", name, out)
+			}
+			if checked, length := slot.snapshot(); checked || length != 0 {
+				t.Fatalf("%s: slot = (%v, %d), want (false, 0)", name, checked, length)
+			}
+		}
+	})
+
+	// nil 槽位（未开尝试的调用方）不能 panic，托管本身照常工作。
+	t.Run("nil slot is safe", func(t *testing.T) {
+		setVault(t, true)
+		key := "usage-ts-nil-slot::api-key:9"
+		out := (&Handler{}).vaultCodexTurnStateEvent(nil, key, official(607), "response.metadata", metadataEvent("response.metadata"))
+		if !IsCodexTurnStateSubstitute(gjson.GetBytes(out, "headers.x-codex-turn-state").String()) {
+			t.Fatalf("nil 槽位不该影响托管改写: %s", out)
+		}
+	})
 }

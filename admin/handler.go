@@ -1939,9 +1939,12 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 		))
 	}
 
-	// 最近 turn-state：只查当页账号（老的全量接口把整个号池传进来时批量查询自己
-	// 会按上界整体跳过）。失败不影响账号列表本身。
-	h.attachAccountLatestTurnStates(ctx, accounts)
+	// 最近 turn-state 只给分页视图取：那是账号页真正会渲染这一行的地方，且页大小
+	// 有上界。老的全量接口一次带回整个号池，为一个展示字段跑几百路 LATERAL 查找
+	// 不划算（超过上界批量查询本来也整体跳过，等于白跑一趟）。失败不影响列表本身。
+	if view == "page" {
+		h.attachAccountLatestTurnStates(ctx, accounts)
+	}
 
 	if view != "page" {
 		billing5hWindows := make(map[int64]time.Time)
