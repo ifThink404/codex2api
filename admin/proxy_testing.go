@@ -126,6 +126,7 @@ func probeProxyWithTimeout(
 	if lang == "" {
 		lang = "en"
 	}
+	preferIPv6Target := proxyProbeUsesIPv6Endpoint(proxyURL)
 
 	client := &http.Client{Transport: transport, Timeout: clientTimeout}
 	var gotTransportConnection atomic.Bool
@@ -136,16 +137,19 @@ func probeProxyWithTimeout(
 			GotTransportConnection:    gotTransportConnection.Load(),
 		}
 	}
-	primary := doProxyProbeRequest(
-		ctx,
-		client,
-		&gotTransportConnection,
-		proxyScheme,
-		connectionState,
-		proxyProbeIPv4URLFn(lang),
-		parseIPAPIProbeBody,
-	)
-	if primary.Success || ctx.Err() != nil || !shouldFallbackToIPv6Probe(primary) {
+	primary := proxyProbeResult{}
+	if !preferIPv6Target {
+		primary = doProxyProbeRequest(
+			ctx,
+			client,
+			&gotTransportConnection,
+			proxyScheme,
+			connectionState,
+			proxyProbeIPv4URLFn(lang),
+			parseIPAPIProbeBody,
+		)
+	}
+	if primary.Success || ctx.Err() != nil || (!preferIPv6Target && !shouldFallbackToIPv6Probe(primary)) {
 		return primary
 	}
 
@@ -168,7 +172,9 @@ func probeProxyWithTimeout(
 		}
 	}
 	if !ipv6Result.Success {
-		if primary.Error != "" {
+		if preferIPv6Target {
+			primary.Error = "IPv6 检测目标都不可达"
+		} else if primary.Error != "" {
 			primary.Error += "；IPv4/IPv6 检测目标都不可达"
 		}
 		return primary
@@ -181,6 +187,19 @@ func probeProxyWithTimeout(
 	ipv6Result.ISP = isp
 	ipv6Result.Location = joinProxyProbeLocation(country, region, city)
 	return ipv6Result
+}
+
+// proxyProbeUsesIPv6Endpoint detects an IPv6 proxy endpoint. Dante instances
+// bound to an IPv6-only external address cannot connect to ip-api.com's IPv4
+// service, so probing them must start with an IPv6 echo service instead of
+// manufacturing a failed IPv4 attempt and then hiding the useful result.
+func proxyProbeUsesIPv6Endpoint(proxyURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(proxyURL))
+	if err != nil {
+		return false
+	}
+	host := net.ParseIP(u.Hostname())
+	return host != nil && host.To4() == nil
 }
 
 func defaultProxyProbeIPv4URL(lang string) string {

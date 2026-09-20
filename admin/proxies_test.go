@@ -566,6 +566,24 @@ func TestShouldFallbackToIPv6Probe(t *testing.T) {
 	}
 }
 
+func TestProxyProbeUsesIPv6Endpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "ipv6 literal", url: "socks5://user:pass@[2620:b9:e000:101::19e]:26213", want: true},
+		{name: "ipv4 literal", url: "socks5://user:pass@69.5.53.31:26213", want: false},
+		{name: "hostname", url: "socks5://proxy.example.test:26213", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := proxyProbeUsesIPv6Endpoint(tc.url); got != tc.want {
+				t.Fatalf("proxyProbeUsesIPv6Endpoint(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseProxyProbeExitIP(t *testing.T) {
 	tests := []struct {
 		name string
