@@ -680,10 +680,10 @@ func TestPrepareWebsocketHeadersDropsTurnStateSubstitute(t *testing.T) {
 	}
 	before := proxy.SessionGuardStatusSnapshot(nil).TurnState.Vault.ForeignStripped
 
-	headers := exec.prepareWebsocketHeaders("token-123", account, "42", "session-123", "api-key-1", nil, http.Header{
+	headers := exec.prepareWebsocketHeaders(context.Background(), "token-123", account, "42", "session-123", "api-key-1", nil, http.Header{
 		"X-Codex-Turn-State":    []string{substitute},
 		"X-Codex-Turn-Metadata": []string{"meta"},
-	}, nil)
+	}, nil, "")
 	if got := headers.Get("X-Codex-Turn-State"); got != "" {
 		t.Fatalf("substitute reached the upstream handshake: %q", got)
 	}
@@ -695,9 +695,9 @@ func TestPrepareWebsocketHeadersDropsTurnStateSubstitute(t *testing.T) {
 	}
 
 	// 真实 token 不受影响：第一轮的透传语义不变。
-	real := exec.prepareWebsocketHeaders("token-123", account, "42", "session-123", "api-key-1", nil, http.Header{
+	real := exec.prepareWebsocketHeaders(context.Background(), "token-123", account, "42", "session-123", "api-key-1", nil, http.Header{
 		"X-Codex-Turn-State": []string{"t-state"},
-	}, nil)
+	}, nil, "")
 	if got := real.Get("X-Codex-Turn-State"); got != "t-state" {
 		t.Fatalf("a real turn-state must still reach the handshake, got %q", got)
 	}

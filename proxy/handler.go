@@ -5777,7 +5777,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			// 缓冲尝试的正常提交边界：整段私有回放在下面写出，计时头必须先落位。
 			// commitResponsesStreamAttempt 的失败分支会连同 turn-state 一起撤掉。
 			relayUpstreamFirstResponseHeaders(c, &upstreamTiming)
-			if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, resp.Header); commitErr != nil {
+			if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, attemptEffectiveModel, resp.Header); commitErr != nil {
 				if isContinuousRetryLocalFailure(commitErr) {
 					outcome = overlayContinuousRetryLocalFailure(outcome, commitErr)
 				} else {
@@ -6468,7 +6468,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		upstreamEndpointLabel := "/v1/responses/compact"
 		var resp *http.Response
 		var reqErr error
-		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+		codexBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, codexBody)
 		ApplyCodexTurnStateTemplate(c.Request.Context(), downstreamHeaders, account, attemptEffectiveModel)
 		if compactViaResponses {
 			upstreamEndpointLabel = "/v1/responses"
@@ -7136,7 +7136,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				upstreamBody = stripResponsesImageGenerationTool(codexBody)
 			}
 			upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
-			guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+			upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, upstreamBody)
 			ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, attemptEffectiveModel)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)

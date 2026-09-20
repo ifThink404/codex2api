@@ -23,8 +23,8 @@ func TestSessionGuardWiringPresent(t *testing.T) {
 	if regexp.MustCompile(`\n\s*guardCodexTurnStateEcho\(affinityKey, account, downstreamHeaders\)`).Match(handler) {
 		t.Fatal("handler.go still calls the legacy guard directly; use applyCodexTurnStateEchoPolicy")
 	}
-	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(c, affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(handler, -1); len(got) != 1 {
-		t.Fatalf("handler.go policy call sites = %d, want 1", len(got))
+	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(c, affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(handler, -1); len(got) != 2 {
+		t.Fatalf("handler.go policy call sites = %d, want 2 (Responses and compact)", len(got))
 	}
 	if got := regexp.MustCompile(`applyCodexTurnStateEchoPolicy\(c, affinityKey, account, downstreamHeaders, upstreamBody\)`).FindAll(ws, -1); len(got) != 1 {
 		t.Fatalf("responses_ws.go policy call sites = %d, want 1", len(got))

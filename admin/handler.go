@@ -9387,6 +9387,8 @@ type settingsResponse struct {
 	CodexMinCLIVersion                  string                           `json:"codex_min_cli_version"`
 	CodexUserAgentConfig                string                           `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled               bool                             `json:"codex_telemetry_enabled"`
+	CodexTurnStateTemplateCacheEnabled  bool                             `json:"codex_turn_state_template_cache_enabled"`
+	CodexTurnStateAccountMode           string                           `json:"codex_turn_state_account_mode"`
 	CodexTelemetryTimingDebug           bool                             `json:"codex_telemetry_timing_debug"`
 	CodexTurnStateStrict                bool                             `json:"codex_turn_state_strict"`
 	CodexSessionNoBorrowEnabled         bool                             `json:"codex_session_no_borrow_enabled"`

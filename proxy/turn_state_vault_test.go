@@ -185,7 +185,7 @@ func TestTurnStateVaultSkipsRelayStyleAccounts(t *testing.T) {
 	c, _ := newTurnStateTestContext(t)
 	upstream := http.Header{}
 	upstream.Set(codexTurnStateHeader, "real-blob")
-	relayCodexTurnStateResponseHeader(c, key, relay, upstream)
+	relayCodexTurnStateResponseHeader(c, key, relay, "", upstream)
 	if got := c.Writer.Header().Get(codexTurnStateHeader); got != "real-blob" {
 		t.Fatalf("relay account header = %q, want the real token passed through", got)
 	}
@@ -223,7 +223,7 @@ func TestTurnStateVaultFailsClosedWhenIssueFails(t *testing.T) {
 	c.Writer.Header().Set(codexTurnStateHeader, "stale-from-previous-attempt")
 	upstream := http.Header{}
 	upstream.Set(codexTurnStateHeader, "real-blob")
-	relayCodexTurnStateResponseHeader(c, key, minter, upstream)
+	relayCodexTurnStateResponseHeader(c, key, minter, "", upstream)
 	if got := c.Writer.Header().Get(codexTurnStateHeader); got != "" {
 		t.Fatalf("failed mint must drop the header, got %q", got)
 	}
@@ -248,7 +248,7 @@ func TestTurnStateVaultDropsHeaderWithoutSessionIdentity(t *testing.T) {
 	c, _ := newTurnStateTestContext(t)
 	upstream := http.Header{}
 	upstream.Set(codexTurnStateHeader, "real-blob")
-	relayCodexTurnStateResponseHeader(c, "", minter, upstream)
+	relayCodexTurnStateResponseHeader(c, "", minter, "", upstream)
 	if got := c.Writer.Header().Get(codexTurnStateHeader); got != "" {
 		t.Fatalf("sessionless official request must not receive the real token, got %q", got)
 	}
@@ -290,7 +290,7 @@ func TestRelayCodexTurnStateResponseHeaderEmitsSubstitute(t *testing.T) {
 	c, rec := newTurnStateTestContext(t)
 	upstream := http.Header{}
 	upstream.Set(codexTurnStateHeader, "real-blob")
-	relayCodexTurnStateResponseHeader(c, key, minter, upstream)
+	relayCodexTurnStateResponseHeader(c, key, minter, "", upstream)
 	got := c.Writer.Header().Get(codexTurnStateHeader)
 	_ = rec
 	if got == "" || got == "real-blob" || !strings.HasPrefix(got, "c2a-ts-v1.") {
