@@ -210,6 +210,14 @@ func diagnosticMetadata(raw gjson.Result) map[string]string {
 	result := make(map[string]string)
 	fields := []string{"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "window_id", "context_window_id", "turn_id", "parent_turn_id", "root_turn_id", "thread_source", "request_kind", "subagent_kind", "client_request_id", "x-client-request-id", "x_client_request_id", "x-codex-window-id", "x_codex_window_id", "x-codex-parent-thread-id", "x_codex_parent_thread_id", "x-codex-forked-from-thread-id", "x_codex_forked_from_thread_id", "x-openai-subagent", "x_openai_subagent", "account_uuid"}
 	fields = append(fields, diagnosticDeviceFields...)
+	// Project carriers are protocol metadata, not message/tool contents. Keep
+	// their original spelling so ingress and actual egress can be compared.
+	raw.ForEach(func(key, _ gjson.Result) bool {
+		if projectControlField(key.String()) != "" {
+			fields = append(fields, key.String())
+		}
+		return true
+	})
 	for _, field := range fields {
 		value := raw.Get(field)
 		if !value.Exists() {

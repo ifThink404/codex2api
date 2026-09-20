@@ -132,7 +132,7 @@ func CaptureOutboundIdentityHeaders(headers http.Header) *OutboundHeaderDiagnost
 		"Session-Id", "Session_id", "Thread-Id", "Conversation-Id", "Conversation_id",
 		"X-Client-Request-Id", "X-Request-Id", "X-Codex-Window-Id", "X-Codex-Parent-Thread-Id",
 		"X-Codex-Forked-From-Thread-Id", "X-OpenAI-Subagent", "X-OpenAI-Memgen-Request", "Chatgpt-Account-Id",
-		"X-Codex-Turn-State",
+		"X-Codex-Turn-State", "X-Codex-Project-Id", "X-Codex-Workspace-Id",
 	} {
 		values := headers.Values(name)
 		if len(values) == 0 {

@@ -36,6 +36,8 @@ JSON 响应及 SSE/WS 转换后的共享响应边界恢复已登记别名。恢�
 
 记录在 `upstream.outbound_identity.project_mapping`，由已有页面自动归入“本地改写诊断（不发送上游）”，与实际 HTTP 头/握手/正文快照分开。
 
+为避免长历史把诊断撑大，每条请求最多展开 8 组原值/别名，每组最多保留 2 个去重后的来源示例，每条路径最多 160 个字符。来源未完全展示时记录 `sources_truncated`；未展开的映射数量及其替换/还原合计保留在 `omitted_changes`、`omitted_replaced`、`omitted_restored`。这些限制只作用于日志副本，不限制实际映射或回传还原。入站、实际出站正文及握手快照同时捕获项目/工作区协议字段，便于与正文命中区分。
+
 ```json
 {
   "version": "project-account-v1",

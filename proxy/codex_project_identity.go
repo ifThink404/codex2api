@@ -26,17 +26,21 @@ var projectBusinessPaths = []string{"input", "instructions", "tools", "additiona
 
 type projectIdentityContextKey struct{}
 type projectIdentityChange struct {
-	Original string   `json:"original"`
-	Outbound string   `json:"outbound"`
-	Sources  []string `json:"sources,omitempty"`
-	Replaced int      `json:"replaced"`
-	Restored int      `json:"restored"`
+	Original         string   `json:"original"`
+	Outbound         string   `json:"outbound"`
+	Sources          []string `json:"sources,omitempty"`
+	SourcesTruncated bool     `json:"sources_truncated,omitempty"`
+	Replaced         int      `json:"replaced"`
+	Restored         int      `json:"restored"`
 }
 type projectIdentityDiagnostic struct {
-	Version   string                  `json:"version"`
-	AccountID int64                   `json:"account_id"`
-	ScopeHash string                  `json:"scope_hash"`
-	Changes   []projectIdentityChange `json:"changes"`
+	Version         string                  `json:"version"`
+	AccountID       int64                   `json:"account_id"`
+	ScopeHash       string                  `json:"scope_hash"`
+	Changes         []projectIdentityChange `json:"changes"`
+	OmittedChanges  int                     `json:"omitted_changes,omitempty"`
+	OmittedReplaced int                     `json:"omitted_replaced,omitempty"`
+	OmittedRestored int                     `json:"omitted_restored,omitempty"`
 }
 type projectIdentityState struct {
 	db        *database.DB
@@ -275,14 +279,55 @@ func replaceProjectUUIDs(text string, rewrite func(string) (string, error)) (str
 	return out.String(), nil
 }
 
-func (s *projectIdentityState) publish(ctx context.Context) {
+const (
+	projectDiagnosticMaxChanges     = 8
+	projectDiagnosticMaxSources     = 2
+	projectDiagnosticMaxSourceRunes = 160
+)
+
+// Bound only the local diagnostic snapshot. Every mapping, replacement and
+// restoration remains active even if its detail is omitted from the log.
+func (s *projectIdentityState) diagnostic() *projectIdentityDiagnostic {
 	d := &projectIdentityDiagnostic{Version: "project-account-v1", AccountID: s.binding.AccountID, ScopeHash: s.binding.Scope}
-	for _, change := range s.changes {
+	keys := make([]string, 0, len(s.changes))
+	for original := range s.changes {
+		keys = append(keys, original)
+	}
+	sort.Strings(keys)
+	for index, original := range keys {
+		change := s.changes[original]
+		if index >= projectDiagnosticMaxChanges {
+			d.OmittedChanges++
+			d.OmittedReplaced += change.Replaced
+			d.OmittedRestored += change.Restored
+			continue
+		}
 		copy := *change
-		copy.Sources = append([]string(nil), change.Sources...)
+		copy.Sources = nil
+		seen := make(map[string]bool)
+		for _, source := range change.Sources {
+			if seen[source] {
+				continue
+			}
+			seen[source] = true
+			if len(copy.Sources) >= projectDiagnosticMaxSources {
+				copy.SourcesTruncated = true
+				continue
+			}
+			runes := []rune(source)
+			if len(runes) > projectDiagnosticMaxSourceRunes {
+				source = string(runes[:projectDiagnosticMaxSourceRunes-1]) + "…"
+				copy.SourcesTruncated = true
+			}
+			copy.Sources = append(copy.Sources, source)
+		}
 		d.Changes = append(d.Changes, copy)
 	}
-	sort.Slice(d.Changes, func(i, j int) bool { return d.Changes[i].Original < d.Changes[j].Original })
+	return d
+}
+
+func (s *projectIdentityState) publish(ctx context.Context) {
+	d := s.diagnostic()
 	if len(d.Changes) > 0 {
 		observer := UpstreamTransportObserver(ctx)
 		if observer != nil && observer.attempt.accountID == s.binding.AccountID {

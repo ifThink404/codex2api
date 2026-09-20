@@ -57,6 +57,7 @@ func captureUsageDiagnosticHeaders(ctx *gin.Context) map[string]string {
 	names := []string{
 		"Session-Id", "Session_id", "Conversation-Id", "Thread-Id", "X-Client-Request-Id",
 		"X-Codex-Window-Id", "X-Codex-Parent-Thread-Id", "X-Codex-Forked-From-Thread-Id", "X-OpenAI-Subagent",
+		"X-Codex-Project-Id", "X-Codex-Workspace-Id",
 	}
 	names = append(names, diagnosticClientHeaders...)
 	for _, name := range names {
