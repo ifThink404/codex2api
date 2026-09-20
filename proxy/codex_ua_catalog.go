@@ -506,11 +506,12 @@ func CodexUserAgentCatalog() CodexUserAgentCatalogView {
 }
 
 type CodexUserAgentPersona struct {
-	Label      string `json:"label,omitempty"`
-	AccountID  int64  `json:"account_id,omitempty"`
-	UserAgent  string `json:"user_agent"`
-	Originator string `json:"originator"`
-	Version    string `json:"version"`
+	Label       string                     `json:"label,omitempty"`
+	AccountID   int64                      `json:"account_id,omitempty"`
+	UserAgent   string                     `json:"user_agent"`
+	Originator  string                     `json:"originator"`
+	Version     string                     `json:"version"`
+	Observation *CodexUserAgentObservation `json:"observation,omitempty"`
 }
 
 type CodexUserAgentPreview struct {
@@ -542,7 +543,6 @@ func PreviewCodexUserAgentConfig(raw, versionFloor string, sampleAccountIDs []in
 			preview.Samples = append(preview.Samples, persona)
 			if kind == selected {
 				preview.Persona = &persona
-				preview.Warnings = codexUserAgentComboWarnings(profile, kind)
 			}
 		}
 		return preview, nil
@@ -575,47 +575,7 @@ func PreviewCodexUserAgentConfig(raw, versionFloor string, sampleAccountIDs []in
 	kind := effectiveCodexClientKind(cfg)
 	preview.Kind = string(kind)
 	preview.Persona = &CodexUserAgentPersona{UserAgent: ua, Originator: CodexOriginatorForGeneratedUserAgent(ua), Version: version}
-	preview.Warnings = codexUserAgentComboWarnings(cfg, kind)
 	return preview, nil
-}
-
-// codexUserAgentComboWarnings 提示目录里从未出现过的搭配(不阻止保存)。
-func codexUserAgentComboWarnings(cfg CodexUserAgentConfig, kind CodexClientKind) []string {
-	spec, ok := codexUAKindSpecFor(kind)
-	if !ok || cfg.RawUserAgent != "" {
-		return nil
-	}
-	var warnings []string
-	if term := strings.TrimSpace(cfg.Terminal); term != "" && !codexUAHasOption(spec.Terminals, term) {
-		warnings = append(warnings, "terminal")
-	}
-	if name := strings.TrimSpace(cfg.AppName); name != "" && !codexUAHasOption(spec.AppNames, name) {
-		warnings = append(warnings, "app_name")
-	}
-	if cfg.OSName != "" || cfg.OSVersion != "" || cfg.Arch != "" {
-		platform := codexUAPlatform{
-			OSName:    firstNonEmptyString(cfg.OSName, spec.DefaultPlatform.OSName),
-			OSVersion: firstNonEmptyString(cfg.OSVersion, spec.DefaultPlatform.OSVersion),
-			Arch:      firstNonEmptyString(cfg.Arch, spec.DefaultPlatform.Arch),
-		}
-		if !codexUAHasPlatform(spec.Platforms, platform) {
-			warnings = append(warnings, "platform")
-		}
-	}
-	if !spec.AppFollowsCLI && cfg.AppVersion != "" {
-		cli := firstNonEmptyString(cfg.ClientVersion, spec.VersionPairs[0].CLIVersion)
-		known := false
-		for _, p := range spec.VersionPairs {
-			if p.CLIVersion == cli && p.AppVersion == cfg.AppVersion {
-				known = true
-				break
-			}
-		}
-		if !known {
-			warnings = append(warnings, "version_pair")
-		}
-	}
-	return warnings
 }
 
 func codexUAHasOption(items []codexUAWeighted, value string) bool {

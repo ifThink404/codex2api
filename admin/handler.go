@@ -45,7 +45,9 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	usageLogExportBusy atomic.Bool
+	usageLogExportBusy    atomic.Bool
+	codexUAObservationsMu sync.Mutex
+	codexUAObservations   *codexUAObservationCache
 
 	store             *auth.Store
 	modelRefreshFuncs map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
@@ -12937,6 +12939,7 @@ func (h *Handler) PreviewCodexUserAgent(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.codexUserAgentObservations(c.Request.Context()).Apply(&preview)
 	c.JSON(http.StatusOK, preview)
 }
 

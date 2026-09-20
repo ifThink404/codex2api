@@ -4233,6 +4233,20 @@ export interface CodexUserAgentPersona {
   user_agent: string
   originator: string
   version: string
+  observation?: CodexUserAgentObservation
+}
+
+export interface CodexUserAgentObservation {
+  status: 'matched' | 'unseen' | 'empty' | 'unavailable' | 'unparseable'
+  source: string
+  log_limit: number
+  checked_at: string
+  sample_count: number
+  match_count: number
+  last_seen_at?: string
+  version_pair_count: number
+  version_pair_last_seen_at?: string
+  warnings?: string[]
 }
 
 export interface CodexUserAgentPreview {

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { api, resetAdminAuthState, setAdminKey } from '../api'
 import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
 import PageHeader from '../components/PageHeader'
+import CodexUAObservation from '../components/CodexUAObservation'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
@@ -4304,14 +4305,17 @@ export default function Settings() {
                       ) : !codexUAPreview ? (
                         <div className="text-[11px] leading-5 text-muted-foreground">{t('settings.codexUAPreviewLoading')}</div>
                       ) : codexUAPreview.persona ? (
-                        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 font-mono text-[11px] leading-5 text-muted-foreground">
-                          <dt className="text-foreground/70">User-Agent</dt>
-                          <dd className="break-all">{codexUAPreview.persona.user_agent}</dd>
-                          <dt className="text-foreground/70">Originator</dt>
-                          <dd className="break-all">{codexUAPreview.persona.originator}</dd>
-                          <dt className="text-foreground/70">Version</dt>
-                          <dd className="break-all">{codexUAPreview.persona.version}</dd>
-                        </dl>
+                        <>
+                          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 font-mono text-[11px] leading-5 text-muted-foreground">
+                            <dt className="text-foreground/70">User-Agent</dt>
+                            <dd className="break-all">{codexUAPreview.persona.user_agent}</dd>
+                            <dt className="text-foreground/70">Originator</dt>
+                            <dd className="break-all">{codexUAPreview.persona.originator}</dd>
+                            <dt className="text-foreground/70">Version</dt>
+                            <dd className="break-all">{codexUAPreview.persona.version}</dd>
+                          </dl>
+                          <CodexUAObservation observation={codexUAPreview.persona.observation} />
+                        </>
                       ) : (
                         <ul className="space-y-0.5 font-mono text-[11px] leading-5 text-muted-foreground">
                           {(codexUAPreview.samples ?? []).map((sample) => (
@@ -4319,15 +4323,14 @@ export default function Settings() {
                               <span className="text-foreground/70">{sample.label}{sample.account_id ? ` · ${sample.account_id}` : ''}</span>
                               {' '}{sample.user_agent}
                               <span className="text-foreground/50">{' · '}{sample.originator}</span>
+                              <CodexUAObservation observation={sample.observation} />
                             </li>
                           ))}
                         </ul>
                       )}
-                      {codexUAPreview?.warnings?.length ? (
-                        <div className="mt-1.5 text-[11px] leading-5 text-amber-600 dark:text-amber-400">
-                          {t('settings.codexUAWarnUnseen', { fields: codexUAPreview.warnings.map((field) => t(`settings.codexUAWarn_${field}`)).join(' / ') })}
-                        </div>
-                      ) : null}
+                      {codexUAPreview && !codexUAPreviewError ? <p className="mt-2 text-[11px] leading-5 text-muted-foreground">{t('settings.codexUAObservationScope', {
+                        limit: codexUAPreview.persona?.observation?.log_limit ?? codexUAPreview.samples?.[0]?.observation?.log_limit ?? 100000,
+                      })}</p> : null}
                     </div>
                   </div>
                 </div>

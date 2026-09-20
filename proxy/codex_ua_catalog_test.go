@@ -262,8 +262,8 @@ func TestPreviewCodexUserAgentConfig(t *testing.T) {
 	if preview.Persona.Originator != "Codex Desktop" || preview.Persona.Version != "0.153.4" {
 		t.Fatalf("persona = %+v", preview.Persona)
 	}
-	if len(preview.Warnings) != 1 || preview.Warnings[0] != "terminal" {
-		t.Fatalf("warnings = %v, want [terminal] for a terminal never seen with the desktop app", preview.Warnings)
+	if len(preview.Warnings) != 0 {
+		t.Fatalf("preview without local log observations must not invent warnings: %v", preview.Warnings)
 	}
 
 	pool, err := PreviewCodexUserAgentConfig(`{"mode":"pool"}`, "", []int64{11, 22, 33})
