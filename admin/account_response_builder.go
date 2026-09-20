@@ -293,6 +293,9 @@ func (h *Handler) buildAccountResponse(
 		UsageLimitEffective:          ignoreUsageLimitStatusEffective,
 	}
 	// 凭据里只要存在 usage 窗口键(哪怕是空数组)就代表 OAuth usage 采样跑过。
+	resp.ProbeMode = auth.NormalizeProbeMode(row.GetCredential(auth.ProbeModeCredentialKey))
+	resp.APIAutoRecoveryEnabled = row.GetCredentialBool(auth.APIAutoRecoveryCredentialKey)
+	resp.ProbeIntervalMinutes = auth.ProbeIntervalMinutesFromRow(row)
 	resp.ClaudeUsageWindowsProbed = strings.TrimSpace(row.GetCredential(auth.ClaudeUsageWindowsCredentialKey)) != ""
 	if isAntigravityAccount {
 		resp.Models = antigravityPublishedModelsOrDefault(row.GetCredentialStringSlice("models"))
@@ -308,6 +311,8 @@ func (h *Handler) buildAccountResponse(
 
 	now := time.Now()
 	if runtimeAccount != nil {
+		resp.ProbeMode, resp.ProbeIntervalMinutes = runtimeAccount.GetProbePolicy()
+		resp.APIAutoRecoveryEnabled = runtimeAccount.GetAPIAutoRecoveryEnabled()
 		if includeDetails {
 			resp.ModelCooldownModeOverride, resp.ModelCooldownSecondsOverride, resp.ModelCooldownBackoffOverride = runtimeAccount.GetModelCooldownPolicyOverride()
 			effectiveCooldownPolicy := h.store.ResolveModelCooldownPolicy(runtimeAccount)

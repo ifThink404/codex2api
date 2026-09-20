@@ -1,6 +1,9 @@
 import type { BatchUpdateAccountsRequest, CodexFingerprintMode } from "../types";
+import type { AccountProbePolicy } from "./accountProbePolicy";
 
 export interface BuildBatchMetadataUpdateOptions {
+  updateProbePolicy?: boolean;
+  probePolicy?: AccountProbePolicy;
   ids: number[];
   updateTags: boolean;
   tags: string[];
@@ -19,6 +22,8 @@ export interface BuildBatchMetadataUpdateOptions {
 }
 
 export function buildBatchMetadataUpdate({
+  updateProbePolicy,
+  probePolicy,
   ids,
   updateTags,
   tags,
@@ -36,6 +41,11 @@ export function buildBatchMetadataUpdate({
   timezone,
 }: BuildBatchMetadataUpdateOptions): BatchUpdateAccountsRequest {
   const payload: BatchUpdateAccountsRequest = { ids: [...ids] };
+  if (updateProbePolicy && probePolicy) {
+    payload.probe_mode = probePolicy.probe_mode;
+    payload.probe_interval_minutes = probePolicy.probe_interval_minutes;
+    payload.api_auto_recovery_enabled = probePolicy.api_auto_recovery_enabled;
+  }
   if (updateTags) payload.tags = [...tags];
   if (updateGroups) payload.group_ids = [...groupIds];
   if (updateScoreBias) payload.score_bias_override = scoreBias;

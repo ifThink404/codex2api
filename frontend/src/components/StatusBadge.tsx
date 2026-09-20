@@ -8,10 +8,19 @@ interface StatusBadgeProps {
   errorMessage?: string | null
 }
 
-const statusConfig: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; dotColor: string }> = {
+const statusConfig: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; dotColor: string; hintKey?: string }> = {
   active: { variant: 'default', dotColor: 'bg-emerald-500' },
   ready: { variant: 'default', dotColor: 'bg-emerald-500' },
   cooldown: { variant: 'secondary', dotColor: 'bg-amber-500' },
+  api_upstream_unavailable: { variant: 'secondary', dotColor: 'bg-amber-500' },
+  payment_required: { variant: 'secondary', dotColor: 'bg-amber-500', hintKey: 'status.paymentRequiredHint' },
+  payment_required_unknown: { variant: 'secondary', dotColor: 'bg-amber-500', hintKey: 'status.paymentRequiredHint' },
+  credential_refresh: { variant: 'secondary', dotColor: 'bg-blue-500', hintKey: 'status.runtimeRestrictionHint' },
+  version_required: { variant: 'secondary', dotColor: 'bg-amber-500', hintKey: 'status.runtimeRestrictionHint' },
+  usage_limit: { variant: 'secondary', dotColor: 'bg-yellow-500', hintKey: 'status.runtimeRestrictionHint' },
+  forbidden: { variant: 'secondary', dotColor: 'bg-amber-500', hintKey: 'status.runtimeRestrictionHint' },
+  quality_degraded: { variant: 'secondary', dotColor: 'bg-amber-500', hintKey: 'status.runtimeRestrictionHint' },
+  grok_empty_stream: { variant: 'secondary', dotColor: 'bg-amber-500', hintKey: 'status.runtimeRestrictionHint' },
   rate_limited: { variant: 'secondary', dotColor: 'bg-yellow-500' },
   responses_rate_limited: { variant: 'secondary', dotColor: 'bg-yellow-500' },
   rate_limited_5h: { variant: 'secondary', dotColor: 'bg-yellow-500' },
@@ -32,7 +41,11 @@ export default function StatusBadge({ status, detail, errorMessage }: StatusBadg
   const key = status ?? 'unknown'
   const config = statusConfig[key] ?? { variant: 'outline' as const, dotColor: 'bg-gray-400' }
   const trimmedError = errorMessage?.trim() ?? ''
-  const showErrorTooltip = key === 'unauthorized' || key === 'error'
+  const recoveringAPI = key === 'api_upstream_unavailable'
+  const unsampled = key === 'unsampled'
+  const hintKey = statusConfig[key]?.hintKey
+  const reasonHint = hintKey ? t(hintKey, { reason: t(`status.${key}`) }) : ''
+  const showErrorTooltip = key === 'unauthorized' || key === 'error' || recoveringAPI || unsampled || Boolean(reasonHint)
 
   const badge = (
     <Badge
@@ -54,7 +67,12 @@ export default function StatusBadge({ status, detail, errorMessage }: StatusBadg
     return badge
   }
 
-  const message = trimmedError || t('usage.statusErrorEmpty')
+  const hint = recoveringAPI
+    ? t('status.apiUpstreamUnavailableHint')
+    : unsampled
+      ? t('status.unsampledHint')
+      : reasonHint
+  const message = [hint, trimmedError].filter(Boolean).join('\n\n') || t('usage.statusErrorEmpty')
 
   return (
     <TooltipProvider>
@@ -74,7 +92,7 @@ export default function StatusBadge({ status, detail, errorMessage }: StatusBadg
           className="max-w-[360px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl"
         >
           <div className="space-y-1.5">
-            <div className="font-semibold text-slate-300">{t('usage.statusErrorDetails')}</div>
+            <div className="font-semibold text-slate-300">{unsampled || recoveringAPI || reasonHint ? t(`status.${key}`) : t('usage.statusErrorDetails')}</div>
             <div className="whitespace-pre-wrap break-words leading-relaxed text-slate-50">{message}</div>
           </div>
         </TooltipContent>

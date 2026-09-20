@@ -62,8 +62,27 @@ func inspectResponsesProbeBody(body []byte) (responsesTerminalOutcome, []byte, e
 // 只有真实 Responses 结果能确认账号是否已经恢复。
 // 鉴权裁决：wham 401 不单方面封号，由 /responses 回退探针定夺（issue #328）。
 func (h *Handler) ProbeUsageSnapshot(ctx context.Context, account *auth.Account) error {
-	if account == nil {
+	if account == nil || (!auth.IsManualProbe(ctx) && !account.AutomaticProbesEnabled()) {
 		return nil
+	}
+	if !auth.IsManualProbe(ctx) && !auth.HasAutomaticProbeReservation(ctx, account) {
+		inherited := time.Duration(0)
+		if h != nil && h.store != nil {
+			inherited = h.store.GetUsageProbeMaxAge()
+		}
+		if !account.TryBeginAutomaticProbe(inherited) {
+			return nil
+		}
+		defer account.FinishUsageProbe()
+		if h != nil && h.store != nil {
+			defer h.store.WakeBoundaryProbe(time.Time{})
+		}
+	}
+	if account.IsAPIKeyAccount() {
+		return h.probeNativeAPIAccount(ctx, account)
+	}
+	if mode, _ := account.GetProbePolicy(); mode == auth.ProbeModeOn && (account.IsGrokAPI() || account.IsAntigravityAPI()) {
+		return h.probeNativeAPIAccount(ctx, account)
 	}
 	// Claude Code OAuth credentials are Anthropic-only. Never send them to the
 	// ChatGPT WHAM or Responses probe: those endpoints use a different token

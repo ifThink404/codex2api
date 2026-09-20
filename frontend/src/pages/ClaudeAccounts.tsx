@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AccountProbePolicyFields from "../components/AccountProbePolicyFields";
+import { accountProbePolicyFromAccount, isAPIKeyProbeAccount } from "../lib/accountProbePolicy";
 import type { ChangeEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -831,7 +833,7 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
   // paid Messages fallback again on the next page visit.
   const legacyUsageRefreshKey = useMemo(
     () => accounts
-      .filter((acc) => acc.claude_api && acc.claude_auth_kind !== "api_key" && Boolean(acc.claude_usage_probe_at) && !acc.claude_usage_windows_probed && !acc.claude_usage_probe_error)
+      .filter((acc) => acc.probe_mode !== "off" && acc.claude_api && acc.claude_auth_kind !== "api_key" && Boolean(acc.claude_usage_probe_at) && !acc.claude_usage_windows_probed && !acc.claude_usage_probe_error)
       .map((acc) => acc.id)
       .join(","),
     [accounts],
@@ -2935,6 +2937,7 @@ function EditAccountModal({
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
   const [proxyUrl, setProxyUrl] = useState(account.proxy_url ?? "");
+  const [probePolicy, setProbePolicy] = useState(() => accountProbePolicyFromAccount(account));
   const [tags, setTags] = useState<string[]>(account.tags ?? []);
   const [priority, setPriority] = useState(
     account.scheduler_priority != null ? String(account.scheduler_priority) : "",
@@ -3010,6 +3013,7 @@ function EditAccountModal({
     setBusy(true);
     try {
       await api.updateAccountScheduler(account.id, {
+        ...probePolicy,
         proxy_url: proxyUrl.trim() || null,
         tags,
         scheduler_priority: parseNum(priority),
@@ -3038,7 +3042,7 @@ function EditAccountModal({
     } finally {
       setBusy(false);
     }
-  }, [account.id, isAPIKeyAccount, customHeadersText, customHeadersLoaded, proxyUrl, proxies, confirm, tags, priority, scoreBias, concurrency, pause5h, pause7d, fpMode, clientPlatform, versionPolicy, clientVersion, timezone, onSaved, showToast, t]);
+  }, [account.id, probePolicy, isAPIKeyAccount, customHeadersText, customHeadersLoaded, proxyUrl, proxies, confirm, tags, priority, scoreBias, concurrency, pause5h, pause7d, fpMode, clientPlatform, versionPolicy, clientVersion, timezone, onSaved, showToast, t]);
 
   const field = (label: string, node: ReactNode, hint?: string) => (
     <div className="space-y-1">
@@ -3208,6 +3212,13 @@ function EditAccountModal({
             )}
           </div>
         </div>
+
+        <AccountProbePolicyFields
+          value={probePolicy}
+          apiAccount={isAPIKeyProbeAccount(account)}
+          onChange={setProbePolicy}
+          disabled={busy}
+        />
 
         {account.claude_auth_kind !== "api_key" ? <>
         {/* 自动暂停 */}

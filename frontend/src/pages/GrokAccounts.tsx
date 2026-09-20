@@ -1,4 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AccountProbePolicyFields from "../components/AccountProbePolicyFields";
+import { accountProbePolicyFromAccount, accountProbePolicyChanged, isAPIKeyProbeAccount } from "../lib/accountProbePolicy";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { ChangeEvent, ReactNode } from "react";
@@ -1194,6 +1196,7 @@ function GrokAccounts({
   // 编辑已存在的 Grok 账号：声明模型白名单 / base_url / 代理 / 映射。
   // 后端 UpdateGrokAccount 会整体重写这几项，所以表单需回填当前值再整体提交，避免清空。
   const [editAccount, setEditAccount] = useState<AccountRow | null>(null);
+  const [probePolicy, setProbePolicy] = useState(accountProbePolicyFromAccount);
   const [editForm, setEditForm] = useState<{
     models: string[];
     base_url: string;
@@ -1207,6 +1210,7 @@ function GrokAccounts({
 
   const populateEdit = (account: AccountRow) => {
     setEditAccount(account);
+    setProbePolicy(accountProbePolicyFromAccount(account));
     setEditForm({
       models: account.models ?? [],
       base_url: account.base_url ?? "",
@@ -1290,6 +1294,14 @@ function GrokAccounts({
         model_mapping: modelMapping.value,
         proxy_url: editForm.proxy_url.trim(),
       });
+      if (accountProbePolicyChanged(probePolicy, editAccount)) {
+        try {
+          await api.updateAccountScheduler(editAccount.id, probePolicy);
+        } catch (error) {
+          showToast(t("accounts.probeSaveFailedAfterAccountSave", { error: getErrorMessage(error) }), "error");
+          return;
+        }
+      }
       showToast(t("grok.editSaved"));
       setEditAccount(null);
       await reload();
@@ -3869,6 +3881,14 @@ function GrokAccounts({
                 {t("grok.modelMappingHint")}
               </p>
             </div>
+
+            <AccountProbePolicyFields
+              key={editAccount.id}
+              apiAccount={isAPIKeyProbeAccount(editAccount)}
+              value={probePolicy}
+              onChange={setProbePolicy}
+              disabled={editSubmitting}
+            />
 
             {/* OAuth 账号端点固定为官方 cli-chat-proxy，不显示 Base URL；
                 仅 API Key 账号允许自定义上游（默认 api.x.ai）。 */}

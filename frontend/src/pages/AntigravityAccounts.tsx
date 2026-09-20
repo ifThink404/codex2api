@@ -1,4 +1,6 @@
 import { ANTIGRAVITY_DEFAULT_MODELS } from "../lib/antigravityModels";
+import AccountProbePolicyFields from "../components/AccountProbePolicyFields";
+import { accountProbePolicyFromAccount, accountProbePolicyChanged, isAPIKeyProbeAccount, type AccountProbePolicy } from "../lib/accountProbePolicy";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -116,6 +118,7 @@ function editDraftFromAccount(account: AccountRow): EditDraft {
   const authKind: AntigravityAuthKind =
     account.antigravity_auth_kind === "api_key" ? "api_key" : "oauth";
   return {
+    probePolicy: accountProbePolicyFromAccount(account),
     name: account.name ?? "",
     authKind,
     authJson: "",
@@ -162,6 +165,7 @@ interface ImportDraft {
 }
 
 interface EditDraft {
+  probePolicy: AccountProbePolicy;
   name: string;
   authKind: AntigravityAuthKind;
   authJson: string;
@@ -1034,6 +1038,7 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
 
   const [editingAccount, setEditingAccount] = useState<AccountRow | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({
+    probePolicy: accountProbePolicyFromAccount(),
     name: "",
     authKind: "oauth",
     authJson: "",
@@ -1626,6 +1631,14 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
     setEditing(true);
     try {
       const result = await api.updateAntigravityAccount(editingAccount.id, payload);
+      if (accountProbePolicyChanged(editDraft.probePolicy, editingAccount)) {
+        try {
+          await api.updateAccountScheduler(editingAccount.id, editDraft.probePolicy);
+        } catch (error) {
+          showToast(t("accounts.probeSaveFailedAfterAccountSave", { error: getErrorMessage(error) }), "error");
+          return;
+        }
+      }
       showToast(
         result.warning || t("antigravity.editSuccess"),
         result.warning ? "warning" : "success",
@@ -2943,6 +2956,13 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
             }
             groups={antigravityGroups}
             onCreateGroup={createAntigravityGroup}
+          />
+          <AccountProbePolicyFields
+            key={editingAccount?.id}
+            apiAccount={editingAccount ? isAPIKeyProbeAccount(editingAccount) : false}
+            value={editDraft.probePolicy}
+            onChange={(probePolicy) => setEditDraft((current) => ({ ...current, probePolicy }))}
+            disabled={editing}
           />
           </div>
         )}

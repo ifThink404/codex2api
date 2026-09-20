@@ -81,21 +81,12 @@ func (h *Handler) StartGrokStatusProbe(ctx context.Context) {
 	h.startDBBackgroundTaskWithParent(ctx, func(ctx context.Context) {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
-		var lastRun time.Time
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 			}
-			if !h.store.GrokProbeEnabled() {
-				continue
-			}
-			interval := time.Duration(h.store.GrokProbeIntervalMinutes()) * time.Minute
-			if !lastRun.IsZero() && time.Since(lastRun) < interval {
-				continue
-			}
-			lastRun = time.Now()
 			h.runGrokStatusProbe(ctx)
 		}
 	})
@@ -262,6 +253,18 @@ func grokNextMaintenanceDue(account *auth.Account, state *database.GrokAccountSt
 	if !catalogFound {
 		return time.Time{}, errGrokMaintenanceProjectionIncomplete
 	}
+	// Capability sampling is optional. Missing observations cannot turn fresh
+	// control-plane/catalog state into an unavailable or incomplete account.
+	if !account.AutomaticProbesEnabled() {
+		return next, nil
+	}
+	if mode, _ := account.GetProbePolicy(); mode == auth.ProbeModeOn {
+		probeDue := now.Add(account.ProbeInterval(30 * time.Minute))
+		if probeDue.Before(next) {
+			next = probeDue
+		}
+		return next, nil
+	}
 	targets, _ := grokCapabilityProbeTargets(account, state, generation)
 	capabilities := make(map[string]database.GrokModelCapability, len(state.Capabilities))
 	for _, capability := range state.Capabilities {
@@ -408,14 +411,29 @@ func (h *Handler) refreshStaleGrokControlPlane(ctx context.Context, accounts []*
 
 // runGrokStatusProbe performs only the optional generation connectivity check.
 func (h *Handler) runGrokStatusProbe(ctx context.Context) {
-	accounts := h.store.EnabledGrokAccounts()
+	accounts := make([]*auth.Account, 0)
+	for _, account := range h.store.EnabledGrokAccounts() {
+		mode, _ := account.GetProbePolicy()
+		if account.AutomaticProbesEnabled() && (mode == auth.ProbeModeOn || h.store.GrokProbeEnabled()) {
+			accounts = append(accounts, account)
+		}
+	}
 	if len(accounts) == 0 {
 		return
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, grokProbeRunGuard)
 	defer cancel()
 	start := time.Now()
-	counts := h.runBatchTest(probeCtx, accounts, 0, h.runSingleBatchTest, nil)
+	counts := h.runBatchTest(probeCtx, accounts, 0, func(ctx context.Context, account *auth.Account) (string, string) {
+		if !account.TryBeginAutomaticProbe(time.Duration(h.store.GrokProbeIntervalMinutes()) * time.Minute) {
+			return "skipped", "probe policy or interval"
+		}
+		defer account.FinishUsageProbe()
+		if err := h.probeNativeAPIAccount(ctx, account); err != nil {
+			return "failed", err.Error()
+		}
+		return "success", "native probe succeeded"
+	}, nil)
 	log.Printf("[grok-probe] 定期生成探测完成: total=%d success=%d rate_limited=%d banned=%d failed=%d 耗时=%s",
 		counts.Total, counts.Success, counts.RateLimited, counts.Banned, counts.Failed, time.Since(start).Round(time.Millisecond))
 }

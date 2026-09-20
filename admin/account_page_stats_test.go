@@ -282,6 +282,10 @@ func TestWhamDailyBackfillFailureCooldownSkipsRetry(t *testing.T) {
 	handler.whamDailyBackfillFailedAt[id] = time.Now().Add(-whamDailyUsageBackfillFailureCooldown - time.Minute)
 	delete(handler.whamDailyBackfillLast, id)
 	handler.whamDailyBackfillMu.Unlock()
+	// This test advances only the backfill clock. Reset the independent
+	// account-level attempt throttle as well, without sleeping for its window.
+	store.ApplyAccountProbePolicyPatch(id, map[string]interface{}{auth.ProbeModeCredentialKey: auth.ProbeModeOff})
+	store.ApplyAccountProbePolicyPatch(id, map[string]interface{}{auth.ProbeModeCredentialKey: auth.ProbeModeAuto})
 	invokeAccountPageStats(t, handler, []int64{id})
 	deadline = time.Now().Add(2 * time.Second)
 	for {

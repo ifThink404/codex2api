@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/sheet";
 import { formatBeijingTime, formatRelativeTime } from "../utils/time";
 import { formatLongUsageWindowLabel, getAccountStatusBadgeStatus } from "../lib/usageFormat";
+import { officialAccountLatestTurnState } from "../lib/accountTurnState";
 
 function isFutureTime(value?: string): boolean {
   if (!value) return false;
@@ -502,7 +503,7 @@ export default function AccountDetailSheet({
                   </div>
                   <AccountHealthBar
                     buckets={healthBuckets}
-                    latestTurnState={account.latest_turn_state}
+                    latestTurnState={officialAccountLatestTurnState(account)}
                   />
                 </div>
 

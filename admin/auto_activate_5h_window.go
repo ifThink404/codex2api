@@ -157,7 +157,7 @@ func (h *Handler) runAutoActivate5hScan(ctx context.Context, now time.Time) auto
 }
 
 func (h *Handler) autoActivate5hForAccount(ctx context.Context, account *auth.Account, now time.Time) (candidate, activated bool, err error) {
-	if account == nil {
+	if account == nil || !account.AutomaticProbesEnabled() {
 		return false, false, nil
 	}
 	enabled, settingsErr := h.loadAutoActivate5hEnabled(ctx)
@@ -172,7 +172,7 @@ func (h *Handler) autoActivate5hForAccount(ctx context.Context, account *auth.Ac
 	if !ok || resetAt.IsZero() {
 		return true, false, nil
 	}
-	if !account.TryBeginUsageProbe() {
+	if !account.TryBeginAutomaticProbe(h.store.GetUsageProbeMaxAge()) {
 		return true, false, nil
 	}
 	defer account.FinishUsageProbe()

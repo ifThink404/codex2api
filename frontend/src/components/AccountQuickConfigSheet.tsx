@@ -44,6 +44,8 @@ import {
 import ChipInput from "./ChipInput";
 import AccountGroupMultiSelect from "./AccountGroupMultiSelect";
 import StateShell from "./StateShell";
+import AccountProbePolicyFields from "./AccountProbePolicyFields";
+import { isAPIKeyProbeAccount } from "../lib/accountProbePolicy";
 
 function formatSignedNumber(value: number): string {
   if (value > 0) return `+${value}`;
@@ -287,6 +289,13 @@ export default function AccountQuickConfigSheet({
                 调度与并发加权
               </span>
             </div>
+
+            <AccountProbePolicyFields
+              value={form.probePolicy}
+              apiAccount={isAPIKeyProbeAccount(account)}
+              onChange={(probePolicy) => patchForm({ probePolicy })}
+              disabled={saving}
+            />
 
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs font-semibold">

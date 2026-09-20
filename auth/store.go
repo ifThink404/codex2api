@@ -309,6 +309,10 @@ type Account struct {
 	subscriptionSyncInFlight bool
 
 	usageProbeInFlight          bool
+	ProbeMode                   string
+	APIAutoRecoveryEnabled      bool
+	ProbeIntervalMinutes        int
+	lastAutomaticProbeAt        time.Time
 	recoveryProbeInFlight       bool
 	lastAuthVerifyAt            time.Time // WS 上游异常关闭后触发的鉴权验证探针节流时间戳
 	AutoPause5hThreshold        float64   // 0..1, 0 = disabled
@@ -3222,6 +3226,16 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	now := time.Now()
+	if !a.automaticProbeDueLocked(now, maxAge) {
+		return false
+	}
+	if a.Status == StatusError {
+		return false
+	}
+	maxAge = a.probeIntervalLocked(maxAge)
+	if NormalizeProbeMode(a.ProbeMode) == ProbeModeOn {
+		return a.hasDispatchCredentialLocked() || (a.isAntigravityAPILocked() && a.APIKey != "")
+	}
 
 	if a.usageProbeInFlight || a.AccessToken == "" || a.Status == StatusError || a.isClaudeAPIKeyLocked() {
 		return false
@@ -3231,6 +3245,9 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	}
 	if a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
 		return false // token 失效，wham 也会 401，探针无意义
+	}
+	if a.ProbeIntervalMinutes > 0 {
+		return true
 	}
 	// Claude uses the native Messages endpoint rather than WHAM and may legally
 	// omit both unified quota windows. In that case the shared 7d validity bits
@@ -3313,6 +3330,28 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 func (a *Account) nextProbeBoundary(now time.Time) (time.Time, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if !a.automaticProbesEnabledLocked() || a.Status == StatusError ||
+		(!a.hasDispatchCredentialLocked() && !(a.isAntigravityAPILocked() && a.APIKey != "")) {
+		return time.Time{}, false
+	}
+	if NormalizeProbeMode(a.ProbeMode) != ProbeModeOn {
+		if a.isRelayStyleLocked() && !a.isClaudeOAuthLocked() {
+			return time.Time{}, false
+		}
+		if a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
+			return time.Time{}, false
+		}
+	}
+	if NormalizeProbeMode(a.ProbeMode) == ProbeModeOn || a.ProbeIntervalMinutes > 0 {
+		due := a.lastAutomaticProbeAt.Add(a.probeIntervalLocked(defaultUsageProbeMaxAge))
+		if !due.After(now) && (a.usageProbeInFlight || a.recoveryProbeInFlight) {
+			due = now.Add(a.probeIntervalLocked(defaultUsageProbeMaxAge))
+		}
+		if !due.After(now) {
+			due = now.Add(probeBoundaryLag)
+		}
+		return due, true
+	}
 	if a.AccessToken == "" || a.Status == StatusError {
 		return time.Time{}, false
 	}
@@ -3379,6 +3418,10 @@ func (a *Account) FinishUsageProbe() {
 func (a *Account) NeedsRecoveryProbe(minInterval time.Duration) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if !a.automaticProbeDueLocked(time.Now(), minInterval) {
+		return false
+	}
+	minInterval = a.probeIntervalLocked(minInterval)
 
 	if a.recoveryProbeInFlight || a.healthTierLocked() != HealthTierBanned {
 		return false
@@ -3406,14 +3449,19 @@ func (a *Account) NeedsRecoveryProbe(minInterval time.Duration) bool {
 }
 
 // TryBeginRecoveryProbe 尝试开始一次恢复探测
-func (a *Account) TryBeginRecoveryProbe() bool {
+func (a *Account) TryBeginRecoveryProbe(intervals ...time.Duration) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.recoveryProbeInFlight {
+	interval := defaultRecoveryProbeInterval
+	if len(intervals) > 0 {
+		interval = intervals[0]
+	}
+	if !a.automaticProbeDueLocked(time.Now(), interval) {
 		return false
 	}
 	a.recoveryProbeInFlight = true
 	a.LastRecoveryProbeAt = time.Now()
+	a.lastAutomaticProbeAt = a.LastRecoveryProbeAt
 	return true
 }
 
@@ -3850,31 +3898,47 @@ func (s *Store) ForgetCachedAccountCooldown(accountID int64) {
 	s.deleteCachedAccountCooldown(accountID)
 }
 
-func (s *Store) applyCachedAccountCooldown(acc *Account, record runtimeCooldownRecord) {
+// applyCachedAccountCooldown returns whether this record blocks selection.
+// Ignored API recovery records on opted-out accounts must not block indirectly
+// through accountHasCachedCooldown after being rejected here.
+func (s *Store) applyCachedAccountCooldown(acc *Account, record runtimeCooldownRecord) bool {
 	if s == nil || acc == nil || !record.ResetAt.After(time.Now()) {
-		return
+		return false
 	}
 	reason := normalizeCooldownReason(record.Reason)
 	baseLimit := atomic.LoadInt64(&s.maxConcurrency)
 	acc.mu.Lock()
+	if reason == APIUpstreamUnavailableCooldownReason && !acc.apiAutoRecoveryEnabledLocked() {
+		// A stale remote API recovery cannot put an opted-out account into a
+		// new cooldown. Only a locally pending recovery needs the legacy gate.
+		changed := acc.enforceAPIAutoRecoveryOptOutLocked(time.Now())
+		if changed {
+			acc.recomputeSchedulerLocked(baseLimit)
+		}
+		acc.mu.Unlock()
+		if changed {
+			s.fastSchedulerUpdate(acc)
+		}
+		return changed
+	}
 	current := runtimeCooldownRecord{Reason: acc.CooldownReason, ResetAt: acc.CooldownUtil}
 	if acc.isTransientRateLimitCooldownLocked() {
 		current.Kind = cache.CooldownKindTransient
 	}
 	if record.Kind == cache.CooldownKindTransient && (acc.Status == StatusError || accountDispatchBlocked(acc) || acc.healthTierLocked() == HealthTierBanned) {
 		acc.mu.Unlock()
-		return
+		return true
 	}
 	if acc.Status == StatusCooldown && current.ResetAt.After(time.Now()) &&
 		(current.Strength() > record.Strength() || current.Strength() == record.Strength() && current.ResetAt.After(record.ResetAt)) {
 		acc.mu.Unlock()
-		return
+		return true
 	}
 	acc.Status = StatusCooldown
 	acc.CooldownUtil = record.ResetAt
 	acc.CooldownReason = reason
 	acc.transientRateLimitUntil = time.Time{}
-	if record.Kind == cache.CooldownKindTransient && reason == ResponsesRateLimitedCooldownReason {
+	if record.Kind == cache.CooldownKindTransient && isTransientUpstreamCooldownReason(reason) {
 		acc.transientRateLimitUntil = record.ResetAt
 		acc.transientRateLimitBackoff = max(acc.transientRateLimitBackoff, record.BackoffLevel)
 		acc.armTransientRateLimitRecoveryLocked(s)
@@ -3887,6 +3951,15 @@ func (s *Store) applyCachedAccountCooldown(acc *Account, record runtimeCooldownR
 		now = record.UpdatedAt
 	}
 	switch reason {
+	case APIUpstreamUnavailableCooldownReason:
+		// Imported backoff must age from the shared failure, not a zero or
+		// older local timestamp. Delayed records cannot rewind newer failures.
+		if acc.LastRateLimitedAt.Before(now) {
+			acc.LastRateLimitedAt = now
+		}
+		if acc.LastFailureAt.Before(now) {
+			acc.LastFailureAt = now
+		}
 	case "unauthorized":
 		acc.LastUnauthorizedAt = now
 		acc.LastFailureAt = now
@@ -3909,6 +3982,7 @@ func (s *Store) applyCachedAccountCooldown(acc *Account, record runtimeCooldownR
 	acc.recomputeSchedulerLocked(baseLimit)
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	return true
 }
 
 func (s *Store) accountHasCachedCooldown(acc *Account) bool {
@@ -3919,7 +3993,9 @@ func (s *Store) accountHasCachedCooldown(acc *Account) bool {
 	if !ok {
 		return false
 	}
-	s.applyCachedAccountCooldown(acc, record)
+	if !s.applyCachedAccountCooldown(acc, record) {
+		return false
+	}
 	if acc.IsAntigravityAPI() {
 		acc.mu.RLock()
 		recoverable := acc.antigravityUnauthorizedRecoveryLocked(time.Now())
@@ -5532,6 +5608,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 
 	account := &Account{
 		DBID:                         row.ID,
+		ProbeMode:                    NormalizeProbeMode(row.GetCredential(ProbeModeCredentialKey)),
+		APIAutoRecoveryEnabled:       row.GetCredentialBool(APIAutoRecoveryCredentialKey),
+		ProbeIntervalMinutes:         ProbeIntervalMinutesFromRow(row),
 		CredentialGeneration:         row.CredentialGeneration,
 		CredentialFamilyID:           row.CredentialFamilyID,
 		RefreshToken:                 rt,
@@ -10008,6 +10087,12 @@ func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string
 	if acc == nil {
 		return
 	}
+	// API credentials frequently front a separate upstream pool. Its 401/403
+	// is not evidence that this gateway's OAuth identity needs reauthorization.
+	if !exactDuration && acc.APIAutoRecoveryEnabledForAccount() && (reason == "unauthorized" || reason == "forbidden") {
+		s.MarkAPIUpstreamUnavailable(acc, 0, errorMsg)
+		return
+	}
 
 	errorMsg = normalizeAccountErrorMessage(errorMsg, "")
 	now := time.Now()
@@ -10632,6 +10717,18 @@ func (s *Store) ReportRequestSuccess(acc *Account, latency time.Duration) {
 	acc.recordLatencyLocked(latency)
 	acc.recordResultLocked(true)
 	now := time.Now()
+	acc.enforceAPIAutoRecoveryOptOutLocked(now)
+	// Only an expired temporary API rejection can be cleared by ordinary
+	// traffic. An older in-flight success must not cancel a newer active
+	// cooldown, an explicit pause, or an authoritative quota/auth gate.
+	if acc.apiAutoRecoveryEnabledLocked() && acc.isTransientRateLimitCooldownLocked() &&
+		acc.CooldownReason == APIUpstreamUnavailableCooldownReason && !acc.CooldownUtil.After(now) && !accountDispatchBlocked(acc) {
+		acc.Status = StatusReady
+		acc.CooldownUtil = time.Time{}
+		acc.CooldownReason = ""
+		acc.ErrorMsg = ""
+		acc.transientRateLimitUntil = time.Time{}
+	}
 	acc.LastSuccessAt = now
 	acc.observeTransientRateLimitSuccessLocked(now)
 	acc.SuccessStreak = clampInt(acc.SuccessStreak+1, 0, 20)
@@ -10682,7 +10779,9 @@ func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Dur
 		// failure metrics before applying that cooldown; updating the timestamp
 		// here would make the current failure look like a prior failure and
 		// incorrectly select the 24-hour backoff.
-		acc.HealthTier = HealthTierBanned
+		if !acc.apiAutoRecoveryEnabledLocked() {
+			acc.HealthTier = HealthTierBanned
+		}
 	case "timeout":
 		acc.LastTimeoutAt = now
 		if acc.HealthTier == HealthTierHealthy {
@@ -11028,7 +11127,7 @@ func (s *Store) TriggerUsageProbeForAccountAsync(account *Account) {
 	s.usageProbeMu.RLock()
 	probeFn := s.usageProbe
 	s.usageProbeMu.RUnlock()
-	if probeFn == nil || !account.TryBeginUsageProbe() {
+	if probeFn == nil || !account.TryBeginAutomaticProbe(s.GetUsageProbeMaxAge()) {
 		return
 	}
 
@@ -11036,7 +11135,7 @@ func (s *Store) TriggerUsageProbeForAccountAsync(account *Account) {
 		defer account.FinishUsageProbe()
 		ctx, cancel := context.WithTimeout(parent, 25*time.Second)
 		defer cancel()
-		if err := probeFn(ctx, account); err != nil {
+		if err := probeFn(WithAutomaticProbeReservation(ctx, account), account); err != nil {
 			log.Printf("[账号 %d] Responses 限流后立即刷新 WHAM 用量失败: %v", account.DBID, err)
 		}
 	}) {
@@ -11077,14 +11176,14 @@ func (s *Store) VerifyAccountAuthAsync(account *Account) {
 	account.lastAuthVerifyAt = now
 	account.mu.Unlock()
 
-	if !account.TryBeginUsageProbe() {
+	if !account.TryBeginAutomaticProbe(s.GetUsageProbeMaxAge()) {
 		return
 	}
 	if !s.startDBBackgroundTask(func(parent context.Context) {
 		defer account.FinishUsageProbe()
 		ctx, cancel := context.WithTimeout(parent, 25*time.Second)
 		defer cancel()
-		if err := probeFn(ctx, account); err != nil {
+		if err := probeFn(WithAutomaticProbeReservation(ctx, account), account); err != nil {
 			log.Printf("[账号 %d] WS 上游异常关闭后鉴权验证探针失败: %v", account.DBID, err)
 		}
 	}) {
@@ -11412,6 +11511,7 @@ func (s *Store) parallelProbeUsage(ctx context.Context) {
 // parallelProbeUsageWith 以指定 maxAge 阈值执行一次批量用量探针。
 // maxAge<=0 时视为"立即探针"——只要账号能跑就刷一次。
 func (s *Store) parallelProbeUsageWith(ctx context.Context, maxAge time.Duration) {
+	defer s.WakeBoundaryProbe(time.Time{})
 	s.usageProbeMu.RLock()
 	probeFn := s.usageProbe
 	s.usageProbeMu.RUnlock()
@@ -11425,11 +11525,14 @@ func (s *Store) parallelProbeUsageWith(ctx context.Context, maxAge time.Duration
 	var wg sync.WaitGroup
 
 	for _, acc := range accounts {
-		if !acc.NeedsUsageProbe(maxAge) {
-			continue
-		}
-		if !acc.TryBeginUsageProbe() {
-			continue
+		if maxAge <= 0 {
+			if !acc.TryBeginUsageProbe() {
+				continue
+			}
+		} else {
+			if !acc.NeedsUsageProbe(maxAge) || !acc.TryBeginAutomaticProbe(maxAge) {
+				continue
+			}
 		}
 
 		wg.Add(1)
@@ -11441,6 +11544,10 @@ func (s *Store) parallelProbeUsageWith(ctx context.Context, maxAge time.Duration
 
 			probeCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 			defer cancel()
+			probeCtx = WithAutomaticProbeReservation(probeCtx, account)
+			if maxAge <= 0 {
+				probeCtx = WithManualProbe(probeCtx)
+			}
 			if err := probeFn(probeCtx, account); err != nil {
 				log.Printf("[账号 %d] 用量探针失败: %v", account.DBID, err)
 			}
@@ -11482,7 +11589,7 @@ func (s *Store) parallelRecoveryProbe(ctx context.Context) {
 		if !acc.NeedsRecoveryProbe(s.GetRecoveryProbeInterval()) {
 			continue
 		}
-		if !acc.TryBeginRecoveryProbe() {
+		if !acc.TryBeginRecoveryProbe(s.GetRecoveryProbeInterval()) {
 			continue
 		}
 
@@ -11502,7 +11609,7 @@ func (s *Store) parallelRecoveryProbe(ctx context.Context) {
 				}
 			}
 
-			if err := probeFn(probeCtx, account); err != nil {
+			if err := probeFn(WithAutomaticProbeReservation(probeCtx, account), account); err != nil {
 				log.Printf("[账号 %d] 恢复探测失败: %v", account.DBID, err)
 			} else {
 				// 用量已耗尽的账号不重置状态

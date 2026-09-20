@@ -117,10 +117,16 @@ func whamDailyUsageDueTargets(all []*auth.Account, lastAttempt map[int64]time.Ti
 	targets := make([]*auth.Account, 0, len(all))
 	current := make(map[int64]struct{}, len(all))
 	for _, account := range all {
+		if account == nil || !account.AutomaticProbesEnabled() {
+			continue
+		}
 		current[account.DBID] = struct{}{}
 		// 减去半个 tick 的裕量：不然 1h 间隔恰好落在 1h tick 边界上，
 		// 计时误差会让账号每次都差一点点到期、实际两小时才刷一次。
 		due := whamDailyUsageProbeIntervalFor(account) - whamDailyUsageProbeTick/2
+		if _, minutes := account.GetProbePolicy(); minutes > 0 {
+			due = account.ProbeInterval(due)
+		}
 		if last, ok := lastAttempt[account.DBID]; ok && now.Sub(last) < due {
 			continue
 		}
@@ -169,6 +175,10 @@ func (h *Handler) runWhamDailyUsageProbe(ctx context.Context, lastAttempt map[in
 			}
 			defer func() { <-sem }()
 
+			if !acc.TryBeginAutomaticProbe(whamDailyUsageProbeIntervalFor(acc)) {
+				return
+			}
+			defer acc.FinishUsageProbe()
 			reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			outcome, err := h.syncWhamDailyUsage(reqCtx, acc)
@@ -245,7 +255,7 @@ func (h *Handler) enqueueWhamDailyUsageBackfill(ids []int64) {
 }
 
 func whamDailyUsageBackfillEligible(account *auth.Account) bool {
-	if account == nil || account.DBID <= 0 {
+	if account == nil || account.DBID <= 0 || !account.AutomaticProbesEnabled() {
 		return false
 	}
 	if !whamDailyUsageChannelSupported(account) {
@@ -356,6 +366,10 @@ func (h *Handler) runWhamDailyUsageBackfill(accounts []*auth.Account) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			if !acc.TryBeginAutomaticProbe(whamDailyUsageBackfillCooldown) {
+				return
+			}
+			defer acc.FinishUsageProbe()
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			outcome, err := h.syncWhamDailyUsage(ctx, acc)

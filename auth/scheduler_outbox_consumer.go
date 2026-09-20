@@ -462,6 +462,14 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	}
 
 	dst.mu.Lock()
+	// Short API failures are runtime-only. A settings event carries the older
+	// database status and must not erase a pending local recovery before opt-out
+	// can turn it into the legacy gate. Cache-only records are not local evidence.
+	pendingAPIRecovery := dst.CooldownReason == APIUpstreamUnavailableCooldownReason && dst.isTransientRateLimitCooldownLocked()
+	pendingUntil, pendingError := dst.CooldownUtil, dst.ErrorMsg
+	probePolicyChanged := NormalizeProbeMode(dst.ProbeMode) != NormalizeProbeMode(src.ProbeMode) || dst.ProbeIntervalMinutes != src.ProbeIntervalMinutes
+	dst.setProbePolicyLocked(src.ProbeMode, src.ProbeIntervalMinutes)
+	dst.APIAutoRecoveryEnabled = src.APIAutoRecoveryEnabled
 	identityChanged := dst.CredentialGeneration != src.CredentialGeneration
 	// Routing sub-pools only need invalidation when membership-relevant fields
 	// move; status/cooldown/usage churn stays live through the shared Account
@@ -564,7 +572,16 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.ModelCooldownSecondsOverride = cloneIntPtr(src.ModelCooldownSecondsOverride)
 	dst.ModelCooldownBackoffOverride = cloneBoolPtr(src.ModelCooldownBackoffOverride)
 	dst.SubscriptionExpiresAt = src.SubscriptionExpiresAt
+	if pendingAPIRecovery && !identityChanged && dst.Status == StatusReady && dst.CooldownReason == "" {
+		dst.Status, dst.CooldownReason, dst.CooldownUtil, dst.ErrorMsg = StatusCooldown, APIUpstreamUnavailableCooldownReason, pendingUntil, pendingError
+	}
 	if identityChanged {
+		if dst.transientRateLimitTimer != nil {
+			dst.transientRateLimitTimer.Stop()
+			dst.transientRateLimitTimer = nil
+		}
+		dst.transientRateLimitUntil = time.Time{}
+		dst.transientRateLimitBackoff = 0
 		dst.HealthTier = src.HealthTier
 		dst.SuccessStreak = 0
 		dst.FailureStreak = 0
@@ -574,6 +591,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.recomputeEffectiveIgnoreUsageLimitStatus(s.IgnoreUsageLimitStatus())
 	dst.recomputeEffectiveGroupBaseConcurrency(s)
 	dst.recomputeEffectiveAutoPause(s)
+	dst.enforceAPIAutoRecoveryOptOutLocked(time.Now())
 	dst.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	dst.mu.Unlock()
 
@@ -592,6 +610,9 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	}
 	s.fastSchedulerUpdate(dst)
 	s.notifySchedulerAvailability()
+	if probePolicyChanged {
+		s.WakeBoundaryProbe(time.Time{})
+	}
 }
 
 func (s *Store) reloadAPIKeyRoutingByID(ctx context.Context, apiKeyID int64) error {

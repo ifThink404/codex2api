@@ -266,7 +266,12 @@ export interface SubscriptionRefreshResponse {
   subscription_expires_at?: ISODateString
 }
 
+export type AccountProbeMode = 'auto' | 'off' | 'on'
+
 export interface AccountRow {
+  api_auto_recovery_enabled?: boolean
+  probe_mode?: AccountProbeMode
+  probe_interval_minutes?: number
   codex_last_refresh_at?: string
   codex_refresh_error?: string
   upstream_request_id_header?: string | null
@@ -1456,6 +1461,9 @@ export interface GrokBatchImportResponse {
 }
 
 export interface UpdateAccountSchedulerRequest {
+  api_auto_recovery_enabled?: boolean
+  probe_mode?: AccountProbeMode
+  probe_interval_minutes?: number
   upstream_request_id_header?: string | null
   score_bias_override?: number | null
   base_concurrency_override?: number | null

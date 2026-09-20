@@ -71,6 +71,7 @@ export function needsUsageReload(account: {
 }
 
 type AccountStatusSource = {
+  cooldown_reason?: string | null
   status?: string | null
   openai_responses_api?: boolean
   grok_api?: boolean
@@ -112,6 +113,9 @@ export function isUnsampledQuotaAccount(account: AccountStatusSource): boolean {
 
 export function getAccountStatusBadgeStatus(account: AccountStatusSource): string {
   const status = account.status || 'unknown'
+  if (status === 'cooldown' && account.cooldown_reason === 'api_upstream_unavailable') {
+    return 'api_upstream_unavailable'
+  }
   if (status === 'overload_paused') return 'active'
   const key = status.toLowerCase()
   if ((key === 'active' || key === 'ready') && isUnsampledQuotaAccount(account)) {
@@ -240,4 +244,3 @@ export function isWorkspaceCreditHardStop(account: {
   const kind = (account.credits_rate_limit_reached_type ?? '').trim().toLowerCase()
   return WORKSPACE_CREDIT_HARD_STOPS.has(kind)
 }
-

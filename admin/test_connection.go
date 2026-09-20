@@ -240,7 +240,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		errBody, _ := io.ReadAll(resp.Body)
 		recorder.observe(errBody)
 		errMsg := fmt.Sprintf("上游返回 %d: %s", resp.StatusCode, truncate(string(errBody), 500))
-		if !isTransient {
+		if !isTransient && !proxy.ApplyExplicitProbeError(h.store, account, resp.StatusCode, errBody, resp, testModel) {
 			switch resp.StatusCode {
 			case http.StatusUnauthorized:
 				h.store.MarkCooldownWithError(account, 24*time.Hour, "unauthorized", errMsg)
@@ -252,7 +252,9 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 					h.store.MarkError(account, errMsg)
 				}
 			case http.StatusForbidden:
-				if proxy.IsAgentRuntimeDeletedError(errBody) {
+				if account.APIAutoRecoveryEnabledForAccount() {
+					h.store.MarkAPIUpstreamUnavailable(account, time.Duration(retryAfterSeconds(resp.Header, time.Now()))*time.Second, errMsg)
+				} else if proxy.IsAgentRuntimeDeletedError(errBody) {
 					h.store.MarkCooldownWithErrorExactDuration(account, 24*time.Hour, "unauthorized", errMsg)
 				} else if proxy.IsDeactivatedWorkspaceError(errBody) {
 					h.store.MarkDeactivatedWorkspace(account, errMsg)
@@ -532,7 +534,7 @@ func (h *Handler) handleClaudeConnectionTest(
 				message = fmt.Sprintf("上游模型 %s 需要 usage credits，当前账号套餐不可用", testModel)
 			}
 		}
-		if !isTransient && !creditsRequired {
+		if !isTransient && !creditsRequired && !proxy.ApplyExplicitProbeError(h.store, account, resp.StatusCode, body, resp, testModel) {
 			switch resp.StatusCode {
 			case http.StatusUnauthorized:
 				h.store.MarkCooldownWithError(account, 24*time.Hour, "unauthorized", message)
@@ -543,7 +545,9 @@ func (h *Handler) handleClaudeConnectionTest(
 					h.store.MarkError(account, message)
 				}
 			case http.StatusForbidden:
-				if proxy.IsDeactivatedWorkspaceError(body) {
+				if account.APIAutoRecoveryEnabledForAccount() {
+					h.store.MarkAPIUpstreamUnavailable(account, time.Duration(retryAfterSeconds(resp.Header, time.Now()))*time.Second, message)
+				} else if proxy.IsDeactivatedWorkspaceError(body) {
 					h.store.MarkDeactivatedWorkspace(account, message)
 				}
 			}
@@ -1680,12 +1684,18 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		if readErr != nil {
 			return h.handleBatchTestReadError(testCtx, acc, readErr)
 		}
+		if proxy.ApplyExplicitProbeError(h.store, acc, resp.StatusCode, body, resp, testModel) {
+			return "failed", fmt.Sprintf("上游返回 %d: %s", resp.StatusCode, truncate(string(body), 300))
+		}
 		if acc.IsClaudeOAuth() {
 			proxy.SyncClaudeUsageState(h.store, acc, resp)
 		} else if !acc.IsRelayStyle() {
 			proxy.SyncCodexUsageState(h.store, acc, resp)
 		}
 		h.store.MarkCooldownWithError(acc, 24*time.Hour, "unauthorized", fmt.Sprintf("上游返回 %d: %s", resp.StatusCode, truncate(string(body), 300)))
+		if acc.APIAutoRecoveryEnabledForAccount() {
+			return "failed", "上游返回 401: 账号暂时不可用"
+		}
 		return "banned", "上游返回 401: 账号授权失败"
 	case http.StatusTooManyRequests:
 		body, readErr := readBatchTestErrorBody(testCtx, resp.Body)
@@ -1716,6 +1726,19 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 			return h.handleBatchTestReadError(testCtx, acc, readErr)
 		}
 		msg := fmt.Sprintf("上游返回 %d: %s", resp.StatusCode, truncate(string(body), 300))
+		if proxy.ApplyExplicitProbeError(h.store, acc, resp.StatusCode, body, resp, testModel) {
+			if acc.IsBanned() {
+				return "banned", msg
+			}
+			if acc.IsAntigravityAPI() && resp.StatusCode == http.StatusServiceUnavailable {
+				return "rate_limited", msg
+			}
+			return "failed", msg
+		}
+		if resp.StatusCode == http.StatusForbidden && acc.APIAutoRecoveryEnabledForAccount() {
+			h.store.MarkAPIUpstreamUnavailable(acc, time.Duration(retryAfterSeconds(resp.Header, time.Now()))*time.Second, msg)
+			return "failed", msg
+		}
 		if resp.StatusCode == http.StatusForbidden && proxy.IsAgentRuntimeDeletedError(body) {
 			h.store.MarkCooldownWithErrorExactDuration(acc, 24*time.Hour, "unauthorized", msg)
 			return "banned", msg

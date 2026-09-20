@@ -8524,6 +8524,21 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 }
 
 func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, body []byte, resp *http.Response, model string) codex429Decision {
+	// The upstream of an API-key account may itself be an OAuth pool. A
+	// With explicit operator opt-in, retry a generic auth rejection after a
+	// bounded backoff. Explicit quota and permanent-denial signals retain their
+	// provider-specific classification below, even on a misleading 401/403.
+	if account.APIAutoRecoveryEnabledForAccount() &&
+		(statusCode == http.StatusUnauthorized || (statusCode == http.StatusForbidden && !account.IsGrokAPI())) &&
+		!IsUsageLimitReachedError(body) && !IsDeactivatedWorkspaceError(body) && !IsAgentRuntimeDeletedError(body) &&
+		!(account.IsGrokAPI() && IsGrokFreeQuotaExhaustedError(body)) {
+		var retryAfter time.Duration
+		if resp != nil {
+			retryAfter = parseRetryAfterHeader(resp.Header.Get("Retry-After"))
+		}
+		cooldown := h.store.MarkAPIUpstreamUnavailable(account, retryAfter, upstreamAccountErrorMessage(statusCode, body))
+		return codex429Decision{Scope: rateLimitScopeAccount, Reason: auth.APIUpstreamUnavailableCooldownReason, Cooldown: cooldown, ResetAt: time.Now().Add(cooldown)}
+	}
 	// Grok 上游的错误语义与 Codex 不同（免费额度耗尽/超支限制/Retry-After），单独映射。
 	if account.IsGrokAPI() {
 		return h.applyGrokCooldownForModel(account, statusCode, body, resp, model)

@@ -157,7 +157,8 @@ func TestProbeUsageSnapshotClaudeDoesNotClearRejectedStatusOnHTTP200(t *testing.
 
 func TestProbeUsageSnapshotClaudePersistsSamplingMetadata(t *testing.T) {
 	db := newTestAdminDB(t)
-	ctx := context.Background()
+	// Exercise two explicit samples; automatic callbacks now share throttling.
+	ctx := auth.WithManualProbe(context.Background())
 	id, err := db.InsertAccountWithUpstream(ctx, "claude-sampling", "anthropic", "oauth", map[string]interface{}{
 		"upstream_type": "claude",
 		"access_token":  "claude-token",

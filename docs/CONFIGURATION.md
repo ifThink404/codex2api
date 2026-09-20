@@ -97,6 +97,8 @@ Codex2API 采用三层配置架构：
 
 账号管理里每个账号可单独设置 prompt 过滤、出网与会话防护策略（默认继承全局），说明见 [session-guards.md](session-guards.md#账号级策略)。
 
+账号级后台探测开关、探测间隔以及独立的 API 错误自动恢复开关见 [account-probes.md](account-probes.md)。默认 API Key 账号不自动探测，自动恢复须单独开启；OAuth 默认沿用既有探测策略，也可关闭或设置间隔。
+
 用量日志的 turn-state 三列（`turn_state_length` / `turn_state_echo` / `turn_state_stripped`）与配套的 `turn_state`、`turn_state_length`、`turn_state_echo`、`turn_state_stripped` 四个查询参数说明见 [session-guards.md](session-guards.md#用量日志-turn-state-列)。
 
 「向 NewAPI 上报宽松首响应（不再提前提交 200）」同样是管理后台设置项（存储键仍是 `codex_preflight_sse_passthrough_enabled`）。语义已改：不再提前透传前置元数据或提前提交 200，改为在正常提交响应头时附带 `X-Codex2API-First-Response-Ms` 等计时头，说明见 [newapi-first-response-timing.md](newapi-first-response-timing.md)。

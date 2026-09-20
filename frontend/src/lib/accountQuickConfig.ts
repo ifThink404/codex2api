@@ -2,6 +2,7 @@ import type {
   CodexFingerprintMode,
   UpdateAccountSchedulerRequest,
 } from "../types";
+import { accountProbePolicyFromAccount, type AccountProbePolicy } from "./accountProbePolicy.ts";
 
 export type QuickConfigLoadStatus = "loading" | "ready" | "error";
 
@@ -14,7 +15,7 @@ export type QuickConfigSaveError =
 
 export type QuickConfigReadySaveError = Exclude<QuickConfigSaveError, "not_ready">;
 
-export interface QuickConfigAccountSource {
+export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
   upstream_request_id_header?: string | null;
   id: number;
   detail_loaded?: boolean;
@@ -30,6 +31,7 @@ export interface QuickConfigAccountSource {
 }
 
 export interface QuickConfigFormState {
+  probePolicy: AccountProbePolicy;
   upstreamRequestIdHeader: string;
   accountId: number;
   fingerprintMode: CodexFingerprintMode;
@@ -107,6 +109,7 @@ export function formStateFromAccount(
   account: QuickConfigAccountSource,
 ): QuickConfigFormState {
   return {
+    probePolicy: accountProbePolicyFromAccount(account),
     accountId: account.id,
     upstreamRequestIdHeader: account.upstream_request_id_header ?? "",
     fingerprintMode: normalizeCodexFingerprintMode(account.codex_fingerprint_mode),
@@ -194,6 +197,7 @@ export function buildQuickConfigSavePayload(
   return {
     ok: true,
     payload: {
+      ...form.probePolicy,
       score_bias_override: form.scoreMode === "custom" ? parsedScoreBias : null,
       base_concurrency_override:
         form.concurrencyMode === "custom" ? parsedBaseConcurrency : null,

@@ -52,11 +52,35 @@ func nextTransientRateLimitCooldown(level int, retryAfter time.Duration) time.Du
 // turn every throttled account into one probe plus one write per window.
 // The scheduler and the cross-instance cooldown cache are still updated.
 func (s *Store) MarkTransientRateLimited(acc *Account, retryAfter time.Duration) time.Duration {
+	return s.markTransientUpstreamCooldown(acc, retryAfter, ResponsesRateLimitedCooldownReason, "")
+}
+
+// APIUpstreamUnavailableCooldownReason separates a relay/provider rejection
+// from an OAuth credential ban or an authoritative billing/quota gate.
+const APIUpstreamUnavailableCooldownReason = "api_upstream_unavailable"
+
+// MarkAPIUpstreamUnavailable permits a real business request after a bounded
+// backoff, without requiring a paid/background probe. Manual pauses, terminal
+// errors and stronger quota cooldowns retain precedence.
+func (s *Store) MarkAPIUpstreamUnavailable(acc *Account, retryAfter time.Duration, errorMsg string) time.Duration {
+	if acc == nil || !acc.APIAutoRecoveryEnabledForAccount() {
+		return 0
+	}
+	return s.markTransientUpstreamCooldown(acc, retryAfter, APIUpstreamUnavailableCooldownReason, normalizeAccountErrorMessage(errorMsg, ""))
+}
+
+func (s *Store) markTransientUpstreamCooldown(acc *Account, retryAfter time.Duration, reason, errorMsg string) time.Duration {
 	if s == nil || acc == nil {
 		return nextTransientRateLimitCooldown(0, retryAfter)
 	}
 	now := time.Now()
 	acc.mu.Lock()
+	// The policy may have changed after the caller selected API recovery.
+	// Check under the same lock that publishes the temporary window.
+	if reason == APIUpstreamUnavailableCooldownReason && !acc.apiAutoRecoveryEnabledLocked() {
+		acc.mu.Unlock()
+		return 0
+	}
 	until := acc.CooldownUtil
 	sameWindow := acc.Status == StatusCooldown && until.After(now)
 	if sameWindow {
@@ -92,12 +116,15 @@ func (s *Store) MarkTransientRateLimited(acc *Account, retryAfter time.Duration)
 	// Publish all local fields in one critical section; concurrent failures
 	// cannot observe the new backoff without the window that caused it.
 	acc.LastRateLimitedAt = now
-	acc.setCooldownUntilLocked(until, ResponsesRateLimitedCooldownReason)
+	acc.setCooldownUntilLocked(until, reason)
+	if errorMsg != "" {
+		acc.ErrorMsg = errorMsg
+	}
 	acc.transientRateLimitUntil = until
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.armTransientRateLimitRecoveryLocked(s)
 	record := runtimeCooldownRecord{
-		Kind: cache.CooldownKindTransient, Reason: ResponsesRateLimitedCooldownReason,
+		Kind: cache.CooldownKindTransient, Reason: reason,
 		ResetAt: until, UpdatedAt: now, BackoffLevel: acc.transientRateLimitBackoff,
 	}
 	acc.mu.Unlock()
@@ -111,8 +138,41 @@ func (s *Store) MarkTransientRateLimited(acc *Account, retryAfter time.Duration)
 }
 
 func (a *Account) isTransientRateLimitCooldownLocked() bool {
-	return a.Status == StatusCooldown && a.CooldownReason == ResponsesRateLimitedCooldownReason &&
+	return a.Status == StatusCooldown && isTransientUpstreamCooldownReason(a.CooldownReason) &&
 		!a.transientRateLimitUntil.IsZero() && a.CooldownUtil.Equal(a.transientRateLimitUntil)
+}
+
+func isTransientUpstreamCooldownReason(reason string) bool {
+	return reason == ResponsesRateLimitedCooldownReason || reason == APIUpstreamUnavailableCooldownReason
+}
+
+// enforceAPIAutoRecoveryOptOutLocked converts a locally pending API recovery
+// into the legacy unauthorized gate (6h, or 24h after a recent auth failure).
+// Pending includes an expired window whose business recovery has not succeeded.
+// Turning recovery off must not silently complete that recovery. In contrast,
+// an opted-out account ignores API recovery records found only in shared cache:
+// an arbitrary stale record must not manufacture a new local authentication ban.
+//
+// Call after assigning APIAutoRecoveryEnabled, with a.mu held. On true, the
+// caller must recompute scheduler state under the lock and publish its index
+// update after unlocking. This helper does no cache, database or network I/O.
+// It preserves error details, manual pause flags, and all non-API-recovery gates.
+func (a *Account) enforceAPIAutoRecoveryOptOutLocked(now time.Time) bool {
+	if a == nil || a.apiAutoRecoveryEnabledLocked() ||
+		a.CooldownReason != APIUpstreamUnavailableCooldownReason || !a.isTransientRateLimitCooldownLocked() {
+		return false
+	}
+	duration := 6 * time.Hour
+	if !a.LastUnauthorizedAt.IsZero() && now.Sub(a.LastUnauthorizedAt) < 24*time.Hour {
+		duration = 24 * time.Hour
+	}
+	a.LastUnauthorizedAt = now
+	if a.LastFailureAt.Before(now) {
+		a.LastFailureAt = now
+	}
+	a.SuccessStreak = 0
+	a.setCooldownUntilLocked(now.Add(duration), "unauthorized")
+	return true
 }
 
 // Short freezes restore the local index directly, without a WHAM probe or a
@@ -144,6 +204,7 @@ func (a *Account) armTransientRateLimitRecoveryLocked(s *Store) {
 			return
 		}
 		a.transientRateLimitTimer = nil
+		a.enforceAPIAutoRecoveryOptOutLocked(time.Now())
 		a.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 		a.mu.Unlock()
 		s.fastSchedulerUpdate(a)

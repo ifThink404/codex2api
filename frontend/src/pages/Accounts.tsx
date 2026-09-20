@@ -82,6 +82,8 @@ import { SUBSCRIPTION_FILTER_OPTIONS } from "../types";
 import { getErrorMessage } from "../utils/error";
 import { formatRelativeTime, formatBeijingTime } from "../utils/time";
 import { buildBatchMetadataUpdate } from "../lib/accountBatchUpdate";
+import AccountProbePolicyFields from "../components/AccountProbePolicyFields";
+import { accountProbePolicyFromAccount, isAPIKeyProbeAccount } from "../lib/accountProbePolicy";
 import {
   collectAccountOperationResult,
   snapshotAccountOperationResults,
@@ -89,6 +91,7 @@ import {
   type AccountOperationResultsState,
 } from "../lib/accountOperationResults";
 import { operationProgressMessage } from "../lib/operationProgressMessage";
+import { officialAccountLatestTurnState } from "../lib/accountTurnState";
 import {
   readOperationResultsVisibility,
   writeOperationResultsVisibility,
@@ -1493,7 +1496,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                     </div>
                                     <AccountHealthBar
                                       buckets={healthBuckets}
-                                      latestTurnState={account.latest_turn_state}
+                                      latestTurnState={officialAccountLatestTurnState(account)}
                                     />
                                   </div>
                                 )}
@@ -1882,6 +1885,7 @@ export default function Accounts() {
   const [detailAccountData, setDetailAccountData] = useState<AccountRow | null>(null);
   const detailNavigationTargetRef = useRef<"first" | "last" | null>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRow | null>(null);
+  const [probePolicy, setProbePolicy] = useState(accountProbePolicyFromAccount);
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editTab, setEditTab] = useState<"scheduler" | "account">("scheduler");
   const [scoreMode, setScoreMode] = useState<"default" | "custom">("default");
@@ -2162,6 +2166,8 @@ export default function Accounts() {
   const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [showBatchMetaEditor, setShowBatchMetaEditor] = useState(false);
   const [batchMetaMode, setBatchMetaMode] = useState<"all" | "groups">("all");
+  const [batchUpdateProbePolicy, setBatchUpdateProbePolicy] = useState(false);
+  const [batchProbePolicy, setBatchProbePolicy] = useState(accountProbePolicyFromAccount);
   const [batchUpdateTags, setBatchUpdateTags] = useState(false);
   const [batchTags, setBatchTags] = useState<string[]>([]);
   const [batchUpdateGroups, setBatchUpdateGroups] = useState(false);
@@ -5108,6 +5114,8 @@ export default function Accounts() {
   };
 
   const openBatchMetaEditor = () => {
+    setBatchUpdateProbePolicy(false);
+    setBatchProbePolicy(accountProbePolicyFromAccount());
     setBatchMetaMode("all");
     setBatchUpdateTags(false);
     setBatchTags([]);
@@ -5128,6 +5136,8 @@ export default function Accounts() {
   };
 
   const openBatchGroupEditor = () => {
+    setBatchUpdateProbePolicy(false);
+    setBatchProbePolicy(accountProbePolicyFromAccount());
     setBatchMetaMode("groups");
     setBatchUpdateTags(false);
     setBatchTags([]);
@@ -5372,6 +5382,7 @@ export default function Accounts() {
     batchUpdateSchedulerPriority &&
     isSchedulerPriorityInputInvalid(batchSchedulerPriorityInput);
   const batchMetaHasUpdates =
+    batchUpdateProbePolicy ||
     batchUpdateTags ||
     batchUpdateGroups ||
     batchUpdateScoreBias ||
@@ -5395,6 +5406,8 @@ export default function Accounts() {
     try {
       const result = await api.batchUpdateAccounts(
         buildBatchMetadataUpdate({
+          updateProbePolicy: batchUpdateProbePolicy,
+          probePolicy: batchProbePolicy,
           ids,
           updateTags: batchUpdateTags,
           tags: batchTags,
@@ -5605,6 +5618,7 @@ export default function Accounts() {
 
   const populateSchedulerEditor = (account: AccountRow) => {
     setEditingAccount(account);
+    setProbePolicy(accountProbePolicyFromAccount(account));
     setEditTab("scheduler");
     setScoreMode(
       account.score_bias_override === null ||
@@ -5860,6 +5874,7 @@ export default function Accounts() {
     setEditSubmitting(true);
     try {
       const payload = {
+        ...probePolicy,
         score_bias_override: scoreMode === "custom" ? parsedScoreBias : null,
         base_concurrency_override:
           concurrencyMode === "custom" ? parsedBaseConcurrency : null,
@@ -9569,6 +9584,13 @@ export default function Accounts() {
                   <div className="space-y-6">
                     {/* 分组 1: 调度与并发加权 */}
                     <div className="space-y-3">
+                      <AccountProbePolicyFields
+                        key={editingAccount.id}
+                        value={probePolicy}
+                        onChange={setProbePolicy}
+                        apiAccount={isAPIKeyProbeAccount(editingAccount)}
+                        disabled={editSubmitting}
+                      />
                       <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground/80">
                         <Gauge className="size-3.5 text-primary" />
                         <span>{t("accounts.categoryDispatch")}</span>
@@ -10586,6 +10608,25 @@ export default function Accounts() {
               ) : null}
               {batchMetaMode === "all" ? (
                 <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-3 rounded-xl border border-border p-4 md:col-span-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-foreground">
+                        {t("accounts.probeBatchApply")}
+                      </span>
+                      <Switch
+                        checked={batchUpdateProbePolicy}
+                        onCheckedChange={setBatchUpdateProbePolicy}
+                        disabled={batchMetaSubmitting}
+                        aria-label={t("accounts.probeBatchApply")}
+                      />
+                    </div>
+                    <AccountProbePolicyFields
+                      value={batchProbePolicy}
+                      onChange={setBatchProbePolicy}
+                      apiAccount
+                      disabled={!batchUpdateProbePolicy || batchMetaSubmitting}
+                    />
+                  </div>
                   <div className="rounded-xl border border-border p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -14081,7 +14122,7 @@ function AccountMobileCard({
                     {formatHealthTier(account.health_tier, t)}
                   </span>
                 </div>
-                <AccountHealthBar buckets={healthBuckets} latestTurnState={account.latest_turn_state} />
+                <AccountHealthBar buckets={healthBuckets} latestTurnState={officialAccountLatestTurnState(account)} />
               </div>
             </section>
           )}
@@ -15015,6 +15056,7 @@ function getAccountStatusCountdownUntil(
     (rateLimited ||
       status === "error" ||
       status === "cooldown" ||
+      status === "api_upstream_unavailable" ||
       status === "overload_paused")
   ) {
     return account.cooldown_until;

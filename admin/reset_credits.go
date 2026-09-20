@@ -422,11 +422,19 @@ func (h *Handler) applyOptimisticResetDecrement(account *auth.Account) int {
 // probe 不可用时返回 nil，调用方需按「无需等待」处理。
 func (h *Handler) refreshUsageAfterReset(account *auth.Account) <-chan struct{} {
 	probe := h.usageProbeFunc()
-	if probe == nil {
+	if probe == nil || account == nil || !account.AutomaticProbesEnabled() {
 		return nil
 	}
 	h.resetCreditPostMu.Lock()
 	if h.resetCreditPostClosed {
+		h.resetCreditPostMu.Unlock()
+		return nil
+	}
+	inherited := time.Duration(0)
+	if h.store != nil {
+		inherited = h.store.GetUsageProbeMaxAge()
+	}
+	if !account.TryBeginAutomaticProbe(inherited) {
 		h.resetCreditPostMu.Unlock()
 		return nil
 	}
@@ -440,9 +448,10 @@ func (h *Handler) refreshUsageAfterReset(account *auth.Account) <-chan struct{} 
 	go func() {
 		defer h.resetCreditPostWG.Done()
 		defer close(done)
+		defer account.FinishUsageProbe()
 		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 		defer cancel()
-		if err := probe(ctx, account); err != nil {
+		if err := probe(auth.WithAutomaticProbeReservation(ctx, account), account); err != nil {
 			log.Printf("[账号 %d] 重置后后台刷新用量失败: %v", account.DBID, err)
 		}
 	}()

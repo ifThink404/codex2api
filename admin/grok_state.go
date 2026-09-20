@@ -938,6 +938,12 @@ func (h *Handler) runGrokCapabilityProbe(ctx context.Context, id int64, force bo
 		return nil, err
 	}
 	generation := row.CredentialGeneration
+	if !force {
+		if !account.TryBeginAutomaticProbe(time.Duration(h.store.GrokProbeIntervalMinutes()) * time.Minute) {
+			return &grokCapabilityProbeResponse{State: state}, nil
+		}
+		defer account.FinishUsageProbe()
+	}
 	targets, _ := grokCapabilityProbeTargets(account, state, generation)
 	existing := map[string]database.GrokModelCapability{}
 	for _, capability := range state.Capabilities {

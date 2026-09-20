@@ -1,4 +1,19 @@
 {
+  "status": {
+    "api_upstream_unavailable": "API 上游暫時不可用",
+    "payment_required": "上游拒絕/帳單限制",
+    "payment_required_unknown": "上游帳單回應待確認",
+    "credential_refresh": "憑證重新整理冷卻",
+    "version_required": "上游要求升級版本",
+    "usage_limit": "用量限制",
+    "forbidden": "上游拒絕存取",
+    "quality_degraded": "回應品質保護",
+    "grok_empty_stream": "上游空回應冷卻",
+    "paymentRequiredHint": "上游拒絕請求或回傳帳單限制。歷史通用 403 也可能歸為此狀態，不能僅憑此標籤斷定餘額不足；請結合上游錯誤詳情核實。目前執行階段限制仍有效，歷史成功率不代表目前可用。",
+    "runtimeRestrictionHint": "目前執行階段原因：{{reason}}。請結合上游錯誤詳情與冷卻時間判斷；歷史成功率不代表目前可用，此狀態也不能單獨證明 OAuth 帳號遭到封鎖。",
+    "unsampledHint": "尚無探測或用量取樣結果，不代表帳號不可用。正常業務請求仍會提供健康證據，並可復原暫時性上游冷卻。",
+    "apiUpstreamUnavailableHint": "API 上游暫時回傳 401/403，正在進行 15 秒至 5 分鐘的退避冷卻；到期後正常業務請求可再次嘗試並驗證復原。這不是 OAuth 帳號封鎖。"
+  },
   "qualityTest": {
     "studioTab": "檢測工作台",
     "recordsTab": "檢測記錄",
@@ -328,6 +343,21 @@
     }
   },
   "accounts": {
+    "probePolicyTitle": "背景探測與復原",
+    "probeMode": "背景探測模式",
+    "probeModeAuto": "自動",
+    "probeModeOff": "關閉",
+    "probeModeOn": "開啟",
+    "probeAutoHint": "自動：API Key 帳號預設不進行背景連通性探測；OAuth 帳號保留正常的背景用量與復原排程。",
+    "probeOffHint": "關閉背景用量、連通性及復原探測；不影響權杖續期或明確的手動測試。",
+    "probeOnHint": "依設定間隔啟用該帳號所屬渠道的原生背景探測。",
+    "probeInterval": "探測間隔（分鐘）",
+    "probeIntervalHint": "0 表示繼承預設間隔；自訂為 1–1440 分鐘的整數。關閉探測時保留間隔設定。",
+    "probeHealthHint": "正常業務請求仍會更新健康狀態，並可復原暫時性上游冷卻；僅缺少探測不代表帳號不可用。",
+    "probeBatchApply": "批次套用背景探測與復原設定",
+    "probeSaveFailedAfterAccountSave": "帳號其他設定已儲存，但背景探測與復原設定儲存失敗：{{error}}。草稿已保留，請重試。",
+    "apiAutoRecovery": "API錯誤自動復原",
+    "apiAutoRecoveryHint": "僅適用於 API Key 帳號，預設關閉。開啟後，API 上游暫時性 401/403 會進入 15 秒至 5 分鐘的有界退避，到期後由真實業務流量驗證復原，不依賴背景探測。關閉時保留原有保護行為，不改變 OAuth 封鎖規則。",
     "refreshAllUsage": "一鍵重新整理用量",
     "refreshAllUsageHint": "查詢執行池中所有支援 WHAM 的 Codex 帳號，更新 5 小時和週用量進度條。",
     "batchUsageRefreshing": "正在重新整理用量",

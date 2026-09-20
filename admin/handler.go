@@ -335,16 +335,20 @@ func (h *Handler) probeImportedAccountUsage(ctx context.Context, accountID int64
 		return
 	}
 	// Agent Identity 无 AccessToken 但可凭签名做 /responses 探针，不能被此门拦下。
-	if account.GetAccessToken() == "" && !account.IsCodexAgentIdentity() {
+	if account.GetAccessToken() == "" && !account.IsCodexAgentIdentity() && !account.IsAPIKeyAccount() {
 		return
 	}
 	probeFn := h.usageProbeFunc()
 	if probeFn == nil {
 		return
 	}
+	if !account.TryBeginAutomaticProbe(h.store.GetUsageProbeMaxAge()) {
+		return
+	}
+	defer account.FinishUsageProbe()
 	probeCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	if err := probeFn(probeCtx, account); err != nil {
+	if err := probeFn(auth.WithAutomaticProbeReservation(probeCtx, account), account); err != nil {
 		log.Printf("导入账号 %d 用量采样失败 (%s): %v", accountID, source, err)
 		return
 	}
@@ -1626,6 +1630,9 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
+	APIAutoRecoveryEnabled  bool   `json:"api_auto_recovery_enabled"`
+	ProbeMode               string `json:"probe_mode"`
+	ProbeIntervalMinutes    int    `json:"probe_interval_minutes"`
 	CodexLastRefreshAt      string `json:"codex_last_refresh_at,omitempty"`
 	CodexRefreshError       string `json:"codex_refresh_error,omitempty"`
 	UpstreamRequestIDHeader string `json:"upstream_request_id_header"`
@@ -2068,19 +2075,22 @@ func (h *Handler) GetAccount(c *gin.Context) {
 // accountLiteResponse 是 ?view=lite 的账号条目:身份 + 绑定字段,无调度/用量指标。
 // 字段名与完整版 accountResponse 对齐,前端可直接当 AccountRow 子集消费。
 type accountLiteResponse struct {
-	ID                 int64  `json:"id"`
-	Name               string `json:"name"`
-	Email              string `json:"email"`
-	PlanType           string `json:"plan_type"`
-	Status             string `json:"status"`
-	Enabled            bool   `json:"enabled"`
-	ProxyURL           string `json:"proxy_url"`
-	ATOnly             bool   `json:"at_only"`
-	OpenAIResponsesAPI bool   `json:"openai_responses_api"`
-	GrokAPI            bool   `json:"grok_api"`
-	ClaudeAPI          bool   `json:"claude_api"`
-	AgentIdentity      bool   `json:"agent_identity"`
-	GrokAuthKind       string `json:"grok_auth_kind,omitempty"`
+	ProbeMode              string `json:"probe_mode"`
+	ProbeIntervalMinutes   int    `json:"probe_interval_minutes"`
+	APIAutoRecoveryEnabled bool   `json:"api_auto_recovery_enabled"`
+	ID                     int64  `json:"id"`
+	Name                   string `json:"name"`
+	Email                  string `json:"email"`
+	PlanType               string `json:"plan_type"`
+	Status                 string `json:"status"`
+	Enabled                bool   `json:"enabled"`
+	ProxyURL               string `json:"proxy_url"`
+	ATOnly                 bool   `json:"at_only"`
+	OpenAIResponsesAPI     bool   `json:"openai_responses_api"`
+	GrokAPI                bool   `json:"grok_api"`
+	ClaudeAPI              bool   `json:"claude_api"`
+	AgentIdentity          bool   `json:"agent_identity"`
+	GrokAuthKind           string `json:"grok_auth_kind,omitempty"`
 }
 
 func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
@@ -2124,25 +2134,31 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 			status = rt
 		}
 		accounts = append(accounts, accountLiteResponse{
-			ID:                 row.ID,
-			Name:               row.Name,
-			Email:              email,
-			PlanType:           planType,
-			Status:             status,
-			Enabled:            row.Enabled,
-			ProxyURL:           row.ProxyURL,
-			ATOnly:             !isOpenAIResponsesAccount && !isGrokAccount && !isClaudeAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
-			OpenAIResponsesAPI: isOpenAIResponsesAccount,
-			GrokAPI:            isGrokAccount,
-			ClaudeAPI:          isClaudeAccount,
-			AgentIdentity:      isAgentIdentityCredentialRow(row),
-			GrokAuthKind:       grokAuthKind,
+			ProbeMode:              auth.NormalizeProbeMode(row.GetCredential(auth.ProbeModeCredentialKey)),
+			ProbeIntervalMinutes:   auth.ProbeIntervalMinutesFromRow(row),
+			APIAutoRecoveryEnabled: row.GetCredentialBool(auth.APIAutoRecoveryCredentialKey),
+			ID:                     row.ID,
+			Name:                   row.Name,
+			Email:                  email,
+			PlanType:               planType,
+			Status:                 status,
+			Enabled:                row.Enabled,
+			ProxyURL:               row.ProxyURL,
+			ATOnly:                 !isOpenAIResponsesAccount && !isGrokAccount && !isClaudeAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
+			OpenAIResponsesAPI:     isOpenAIResponsesAccount,
+			GrokAPI:                isGrokAccount,
+			ClaudeAPI:              isClaudeAccount,
+			AgentIdentity:          isAgentIdentityCredentialRow(row),
+			GrokAuthKind:           grokAuthKind,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": accounts})
 }
 
 type updateAccountSchedulerReq struct {
+	APIAutoRecoveryEnabled  json.RawMessage `json:"api_auto_recovery_enabled"`
+	ProbeMode               json.RawMessage `json:"probe_mode"`
+	ProbeIntervalMinutes    json.RawMessage `json:"probe_interval_minutes"`
 	UpstreamRequestIDHeader json.RawMessage `json:"upstream_request_id_header"`
 	ScoreBiasOverride       json.RawMessage `json:"score_bias_override"`
 	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
@@ -2409,6 +2425,16 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 			credentialUpdates["scheduler_priority"] = int64(0)
 		}
 	}
+	if err := parseProbePolicyCredentials(req.ProbeMode, req.ProbeIntervalMinutes, credentialUpdates); err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if len(req.APIAutoRecoveryEnabled) > 0 {
+		var enabled bool
+		if string(req.APIAutoRecoveryEnabled) == "null" || json.Unmarshal(req.APIAutoRecoveryEnabled, &enabled) != nil {
+			return accountSchedulerUpdate{}, errors.New("api_auto_recovery_enabled must be a boolean")
+		}
+		credentialUpdates[auth.APIAutoRecoveryCredentialKey] = enabled
+	}
 	if len(credentialUpdates) == 0 {
 		credentialUpdates = nil
 	}
@@ -2514,7 +2540,7 @@ func refineCodexTurnStateSetAt(row *database.AccountRow, update accountScheduler
 }
 
 func (u accountSchedulerUpdate) hasChanges() bool {
-	return u.ScoreBiasOverride.Set ||
+	return len(u.CredentialUpdates) > 0 || u.ScoreBiasOverride.Set ||
 		u.CodexTurnState.Set ||
 		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
@@ -2793,6 +2819,7 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	if h.store == nil {
 		return
 	}
+	h.store.ApplyAccountProbePolicyPatch(id, update.CredentialUpdates)
 	if update.ScoreBiasOverride.Set || update.BaseConcurrencyOverride.Set || update.SkipWarmTier.Set {
 		h.store.ApplyAccountSchedulerOverridePatch(
 			id,
@@ -7068,9 +7095,10 @@ func (h *Handler) refreshAccountByIDWithProbe(ctx context.Context, id int64, pro
 		if probe == nil || h.store == nil {
 			return nil
 		}
-		if acc := h.store.FindByID(id); acc != nil {
+		if acc := h.store.FindByID(id); acc != nil && acc.TryBeginAutomaticProbe(h.store.GetUsageProbeMaxAge()) {
+			defer acc.FinishUsageProbe()
 			probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
-			if err := probe(probeCtx, acc); err != nil {
+			if err := probe(auth.WithAutomaticProbeReservation(probeCtx, acc), acc); err != nil {
 				log.Printf("[账号 %d] 刷新后用量/订阅到期探针失败（忽略）: %v", id, err)
 			}
 			probeCancel()
