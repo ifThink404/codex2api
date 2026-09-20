@@ -412,7 +412,7 @@ func (h *Handler) applyLiveUpstreamHeaders(req *http.Request, account *auth.Acco
 	applyCodexAllowedForwardHeaders(req, downstream)
 	ApplyCodexFingerprintHeaders(req.Header, account, downstream)
 	applyAccountCustomHeaders(req, account)
-	ApplyCodexAccountClientIdentity(req.Header, account, apiKey, h.deviceCfg, true)
+	ApplyCodexAccountClientIdentity(req.Header, account, apiKey, h.deviceCfg, true, downstream)
 	StripCodexProjectMetadataHeaders(req.Header)
 	req.Header.Set("OpenAI-Alpha", "quicksilver=v2")
 	req.Header.Del("OpenAI-Beta")

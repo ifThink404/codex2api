@@ -55,8 +55,9 @@ type CodexUserAgentConfig struct {
 	AppName    string `json:"app_name,omitempty"`
 	AppVersion string `json:"app_version,omitempty"`
 	// Mode 为 "pool" 时忽略单画像字段,按 PoolMix 配比为每个账号确定性抽取目录画像。
-	Mode    string         `json:"mode,omitempty"`
-	PoolMix map[string]int `json:"pool_mix,omitempty"`
+	Mode     string                           `json:"mode,omitempty"`
+	PoolMix  map[string]int                   `json:"pool_mix,omitempty"`
+	Profiles map[string]CodexUserAgentProfile `json:"profiles,omitempty"`
 }
 
 var codexOfficialClientUserAgentPrefixes = []string{
@@ -201,6 +202,11 @@ func normalizeCodexUserAgentConfig(cfg CodexUserAgentConfig) CodexUserAgentConfi
 		}
 		poolMix[k] = v
 	}
+	profiles := make(map[string]CodexUserAgentProfile, len(cfg.Profiles))
+	for kind, profile := range cfg.Profiles {
+		kind = strings.ToLower(strings.TrimSpace(kind))
+		profiles[kind] = codexUserAgentProfile(normalizeCodexUserAgentConfig(profile.config(kind)))
+	}
 	return CodexUserAgentConfig{
 		RawUserAgent:  strings.TrimSpace(cfg.RawUserAgent),
 		ClientName:    normalizeCodexUserAgentClientName(cfg.ClientName),
@@ -214,6 +220,7 @@ func normalizeCodexUserAgentConfig(cfg CodexUserAgentConfig) CodexUserAgentConfi
 		AppVersion:    strings.TrimSpace(cfg.AppVersion),
 		Mode:          mode,
 		PoolMix:       poolMix,
+		Profiles:      profiles,
 	}
 }
 
@@ -235,8 +242,16 @@ func validateCodexUserAgentConfig(cfg CodexUserAgentConfig) error {
 	if _, ok := normalizeCodexClientKind(cfg.ClientKind); !ok {
 		return errors.New("codex User-Agent client_kind must be one of codex-tui, codex-desktop, codex-vscode, codex-exec, custom")
 	}
-	if cfg.Mode != "" && cfg.Mode != CodexUserAgentModePool {
-		return errors.New("codex User-Agent mode must be single or pool")
+	if cfg.Mode != "" && cfg.Mode != CodexUserAgentModePool && cfg.Mode != CodexUserAgentModeMulti {
+		return errors.New("codex User-Agent mode must be single, pool or multi")
+	}
+	for kind, profile := range cfg.Profiles {
+		if normalized, ok := normalizeCodexClientKind(kind); !ok || normalized == "" {
+			return fmt.Errorf("codex User-Agent profiles has unknown client kind %q", kind)
+		}
+		if err := validateCodexUserAgentConfig(profile.config(kind)); err != nil {
+			return fmt.Errorf("codex User-Agent profile %s: %w", kind, err)
+		}
 	}
 	for kind, weight := range cfg.PoolMix {
 		if k, ok := normalizeCodexClientKind(kind); !ok || k == "" || k == CodexClientKindCustom {
@@ -351,7 +366,7 @@ func isEmptyCodexUserAgentConfig(cfg CodexUserAgentConfig) bool {
 		cfg.AppName == "" &&
 		cfg.AppVersion == "" &&
 		cfg.Mode == "" &&
-		len(cfg.PoolMix) == 0
+		len(cfg.PoolMix) == 0 && len(cfg.Profiles) == 0
 }
 
 func codexUserAgentConfigFromJSON(raw string) CodexUserAgentConfig {
@@ -385,6 +400,13 @@ func codexUserAgentFromConfig(raw string, accountID int64, versionFloor string) 
 	if cfg.Mode == CodexUserAgentModePool {
 		return codexPoolPersona(cfg, accountID, versionFloor)
 	}
+	if cfg.Mode == CodexUserAgentModeMulti {
+		cfg = cfg.profile(CodexClientKindCustom)
+	}
+	return codexUserAgentFromProfile(cfg, versionFloor)
+}
+
+func codexUserAgentFromProfile(cfg CodexUserAgentConfig, versionFloor string) (userAgent, version string, ok bool) {
 	if cfg.RawUserAgent != "" {
 		// raw UA 只贡献指纹形状；版本段可解析时抬升到当前生效的最新版
 		// （含远端同步值）再叠加最低版本门槛重建，避免照抄示例值后被钉死在旧版。

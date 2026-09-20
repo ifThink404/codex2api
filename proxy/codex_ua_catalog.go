@@ -531,6 +531,22 @@ func PreviewCodexUserAgentConfig(raw, versionFloor string, sampleAccountIDs []in
 	}
 	cfg := codexUserAgentConfigFromJSON(normalized)
 	preview := CodexUserAgentPreview{Mode: CodexUserAgentModeSingle, Normalized: normalized}
+	if cfg.Mode == CodexUserAgentModeMulti {
+		preview.Mode = CodexUserAgentModeMulti
+		selected := effectiveCodexClientKind(cfg)
+		preview.Kind = string(selected)
+		for _, kind := range append(append([]CodexClientKind(nil), codexUAKindOrder...), CodexClientKindCustom) {
+			profile := cfg.profile(kind)
+			ua, version, _ := codexUserAgentFromProfile(profile, versionFloor)
+			persona := CodexUserAgentPersona{Label: string(kind), UserAgent: ua, Version: version, Originator: codexUserAgentClientName(ua)}
+			preview.Samples = append(preview.Samples, persona)
+			if kind == selected {
+				preview.Persona = &persona
+				preview.Warnings = codexUserAgentComboWarnings(profile, kind)
+			}
+		}
+		return preview, nil
+	}
 	if cfg.Mode == CodexUserAgentModePool {
 		preview.Mode = CodexUserAgentModePool
 		if len(sampleAccountIDs) == 0 {

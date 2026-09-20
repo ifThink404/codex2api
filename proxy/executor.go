@@ -1397,7 +1397,7 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 	if len(fingerprints) > 0 {
 		fingerprints[0].ApplySessionHeaders(req.Header)
 	}
-	ApplyCodexAccountClientIdentity(req.Header, account, apiKey, deviceCfg, true)
+	ApplyCodexAccountClientIdentity(req.Header, account, apiKey, deviceCfg, true, downstreamHeaders)
 	ApplyCodexAccountAttestation(req.Header, account)
 	_, req.Header = PrepareCodexTurnStateOutbound(req.Context(), account, nil, req.Header)
 	StripCodexProjectMetadataHeaders(req.Header)
@@ -1473,7 +1473,7 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 	_, req.Header = PrepareCodexTurnStateOutbound(req.Context(), account, nil, req.Header)
 	StripCodexProjectMetadataHeaders(req.Header)
 	ApplyCodexAccountAttestation(req.Header, account)
-	ApplyCodexAccountClientIdentity(req.Header, account, "", nil, true)
+	ApplyCodexAccountClientIdentity(req.Header, account, "", nil, true, headers)
 	RecordUpstreamUserAgent(req.Context(), req.Header.Get("User-Agent"))
 }
 

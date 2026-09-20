@@ -2,7 +2,7 @@
 
 ## 请求头覆盖范围
 
-普通 HTTP、compact、WebSocket、standalone 搜索和 Live 共享客户端身份解析决策：UA 由既有兼容模式、配置或下游客户端决定，生成身份的 Originator 与客户端前缀一致，透传身份保留适用的下游 Originator。
+普通 HTTP、compact、WebSocket、standalone 搜索和 Live 共享客户端身份解析决策：UA 由账号及已保存配置决定，Originator 与最终客户端前缀一致。多身份模式仅用入站 UA 前缀选择已保存配置，不复制入站版本或平台。编辑、保存与设备 ID 规则见 [多身份说明](codex-multi-identity.md)。
 
 原生 Codex 模型清单、额度查询、额度明细、重置券列表和重置券消耗使用同一套配置生成 UA、Version、Originator，不再单独使用内置平台信息。辅助请求只应用这三个账号自定义头，不把 Authorization、Cookie、会话头或普通请求的其他元数据复制到维护端点。原有账号空间选择、认证、请求体和 Accept 语义不变。
 

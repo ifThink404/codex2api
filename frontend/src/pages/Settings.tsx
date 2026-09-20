@@ -20,6 +20,11 @@ import {
 } from '../lib/claudeAccountOptions'
 import { buildWritableSettingsPayload } from '../lib/settingsPayload'
 import {
+  CODEX_UA_KINDS, parseCodexUserAgentConfig, serializeCodexUserAgentConfig,
+  selectedCodexUAKind, switchCodexIdentityDraft, updateCodexIdentityDraft, reconcileCodexIdentitySave,
+  type CodexUAKind, type CodexUserAgentConfig,
+} from '../lib/codexIdentityDraft'
+import {
   buildContinuousRetryCatchAllPatch,
   buildContinuousRetryEnabledPatch,
   createContinuousRetrySaveQueue,
@@ -120,34 +125,8 @@ type ReasoningEffortModelEntry = {
   effort: string
 }
 type AutoSaveStatus = 'idle' | 'saving' | 'saved' | 'error'
-type CodexUserAgentConfig = {
-  raw_user_agent?: string
-  client_name?: string
-  client_version?: string
-  os_name?: string
-  os_version?: string
-  arch?: string
-  terminal?: string
-  client_kind?: string
-  app_name?: string
-  app_version?: string
-  mode?: string
-  pool_mix?: Record<string, number>
-}
-type CodexUAKind = 'codex-tui' | 'codex-desktop' | 'codex-vscode' | 'codex-exec' | 'custom'
-const CODEX_UA_KINDS: CodexUAKind[] = ['codex-tui', 'codex-desktop', 'codex-vscode', 'codex-exec', 'custom']
 const CODEX_UA_POOL_KINDS: CodexUAKind[] = ['codex-desktop', 'codex-vscode', 'codex-tui', 'codex-exec']
 const CODEX_UA_FALLBACK_POOL_MIX: Record<string, number> = { 'codex-desktop': 50, 'codex-vscode': 30, 'codex-tui': 20 }
-const CODEX_UA_STRING_KEYS = ['raw_user_agent', 'client_name', 'client_version', 'os_name', 'os_version', 'arch', 'terminal', 'client_kind', 'app_name', 'app_version', 'mode'] as const
-// 与后端 inferCodexClientKind 同规则:未指定形态的旧配置按客户端名推断。
-const inferCodexUAKind = (clientName?: string): CodexUAKind => {
-  const name = (clientName ?? '').trim().toLowerCase()
-  if (!name || name === 'codex-tui') return 'codex-tui'
-  if (name === 'codex desktop') return 'codex-desktop'
-  if (name === 'codex_vscode') return 'codex-vscode'
-  if (name === 'codex_exec') return 'codex-exec'
-  return 'custom'
-}
 
 const EMPTY_REASONING_EFFORT_MODEL_ENTRIES: ReasoningEffortModelEntry[] = []
 const REASONING_EFFORT_OPTIONS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'].map((effort) => ({
@@ -179,6 +158,7 @@ const DEFAULT_CODEX_UA_CONFIG: Required<CodexUserAgentConfig> = {
   app_version: '',
   mode: '',
   pool_mix: {},
+  profiles: {},
 }
 
 type SettingsTabKey = 'codex' | 'claude' | 'antigravity' | 'grok' | 'appearance' | 'general'
@@ -376,49 +356,6 @@ const reasoningEffortAlias = (entry: ReasoningEffortModelEntry) => {
   const model = entry.model.trim()
   const effort = normalizeReasoningEffortValue(entry.effort)
   return model ? `${model}(${effort})` : ''
-}
-
-const parseCodexUserAgentConfig = (value?: string): CodexUserAgentConfig => {
-  try {
-    const parsed = JSON.parse(value || '{}')
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    const poolMix: Record<string, number> = {}
-    if (parsed.pool_mix && typeof parsed.pool_mix === 'object' && !Array.isArray(parsed.pool_mix)) {
-      for (const [kind, weight] of Object.entries(parsed.pool_mix as Record<string, unknown>)) {
-        if (typeof weight === 'number' && Number.isFinite(weight)) poolMix[kind] = weight
-      }
-    }
-    return {
-      raw_user_agent: typeof parsed.raw_user_agent === 'string' ? parsed.raw_user_agent : '',
-      client_name: typeof parsed.client_name === 'string' ? parsed.client_name : '',
-      client_version: typeof parsed.client_version === 'string' ? parsed.client_version : '',
-      os_name: typeof parsed.os_name === 'string' ? parsed.os_name : '',
-      os_version: typeof parsed.os_version === 'string' ? parsed.os_version : '',
-      arch: typeof parsed.arch === 'string' ? parsed.arch : '',
-      terminal: typeof parsed.terminal === 'string' ? parsed.terminal : '',
-      client_kind: typeof parsed.client_kind === 'string' ? parsed.client_kind : '',
-      app_name: typeof parsed.app_name === 'string' ? parsed.app_name : '',
-      app_version: typeof parsed.app_version === 'string' ? parsed.app_version : '',
-      mode: typeof parsed.mode === 'string' ? parsed.mode : '',
-      pool_mix: poolMix,
-    }
-  } catch {
-    return {}
-  }
-}
-
-const serializeCodexUserAgentConfig = (config: CodexUserAgentConfig) => {
-  const normalized: CodexUserAgentConfig = {}
-  for (const key of CODEX_UA_STRING_KEYS) {
-    const value = (config[key] ?? '').trim()
-    if (value) normalized[key] = key === 'client_version' ? normalizeVersionText(value) : value
-  }
-  const poolMix: Record<string, number> = {}
-  for (const [kind, weight] of Object.entries(config.pool_mix ?? {})) {
-    if (Number.isFinite(weight) && weight >= 0) poolMix[kind] = Math.floor(weight)
-  }
-  if (Object.keys(poolMix).length > 0) normalized.pool_mix = poolMix
-  return JSON.stringify(normalized)
 }
 
 const normalizeVersionText = (version?: string) => (version ?? '').trim().replace(/^v/i, '')
@@ -2707,7 +2644,10 @@ export default function Settings() {
       // 自定义 Prompt 规则由规则页单独保存，避免普通设置提交覆盖并发发布结果。
       delete payload.prompt_filter_custom_patterns
       const updated = await api.updateSettings(payload)
-      setPersistedSettings(commitSettingsForm(updated))
+      const savedSettings = normalizeLazySettingsForm(updated)
+      const identityDraft = reconcileCodexIdentitySave(settingsFormRef.current.codex_user_agent_config, normalized.codex_user_agent_config, savedSettings.codex_user_agent_config)
+      setPersistedSettings(savedSettings)
+      commitSettingsForm({ ...savedSettings, codex_user_agent_config: identityDraft })
       const branding = {
         site_name: updated.site_name,
         site_logo: updated.site_logo,
@@ -2957,18 +2897,27 @@ export default function Settings() {
       const current = parseCodexUserAgentConfig(form.codex_user_agent_config)
       return {
         ...form,
-        codex_user_agent_config: serializeCodexUserAgentConfig({ ...current, ...patch }),
+        codex_user_agent_config: serializeCodexUserAgentConfig(updateCodexIdentityDraft(current, patch)),
       }
     })
   }, [])
-  const saveCodexUserAgentConfig = useCallback(() => {
-    void autoSaveSettingsPatch({ codex_user_agent_config: settingsForm.codex_user_agent_config })
-  }, [autoSaveSettingsPatch, settingsForm.codex_user_agent_config])
-  // 下拉/分段控件没有 blur,改完直接落库;从 ref 取最新表单避免闭包里的旧值。
-  const patchAndSaveCodexUserAgentConfig = useCallback((patch: Partial<CodexUserAgentConfig>) => {
-    const current = parseCodexUserAgentConfig(settingsFormRef.current.codex_user_agent_config)
-    void autoSaveSettingsPatch({ codex_user_agent_config: serializeCodexUserAgentConfig({ ...current, ...patch }) })
-  }, [autoSaveSettingsPatch])
+  const [savingCodexIdentity, setSavingCodexIdentity] = useState(false)
+  const saveCodexIdentityDraft = useCallback(async () => {
+    const submitted = settingsFormRef.current.codex_user_agent_config
+    setSavingCodexIdentity(true)
+    try {
+      const updated = await api.updateSettings({ codex_user_agent_config: submitted })
+      const saved = updated.codex_user_agent_config
+      markPersisted({ codex_user_agent_config: saved })
+      const current = settingsFormRef.current
+      commitSettingsForm({ ...current, codex_user_agent_config: reconcileCodexIdentitySave(current.codex_user_agent_config, submitted, saved) })
+      showToast(t('settings.saveSuccess'))
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setSavingCodexIdentity(false)
+    }
+  }, [commitSettingsForm, markPersisted, showToast, t])
   // 形态目录与出站身份预览都由后端算,前端不复制 UA 拼装/版本配对规则。
   const [codexUACatalog, setCodexUACatalog] = useState<CodexUserAgentCatalog | null>(null)
   const [codexUAPreview, setCodexUAPreview] = useState<CodexUserAgentPreview | null>(null)
@@ -3003,10 +2952,8 @@ export default function Settings() {
       window.clearTimeout(timer)
     }
   }, [settingsForm.codex_user_agent_config, settingsForm.client_compat_mode, settingsForm.codex_min_cli_version])
-  const codexUAMode: 'single' | 'pool' = codexUserAgentConfig.mode === 'pool' ? 'pool' : 'single'
-  const codexUAKind: CodexUAKind = CODEX_UA_KINDS.includes(codexUserAgentConfig.client_kind as CodexUAKind)
-    ? (codexUserAgentConfig.client_kind as CodexUAKind)
-    : inferCodexUAKind(codexUserAgentConfig.client_name)
+  const codexUAMode = codexUserAgentConfig.mode === 'multi' ? 'multi' : codexUserAgentConfig.mode === 'pool' ? 'pool' : 'single'
+  const codexUAKind = selectedCodexUAKind(codexUserAgentConfig)
   const codexUAKindSpec = codexUACatalog?.kinds.find((kind) => kind.kind === codexUAKind) ?? null
   const codexUAAppFollowsCLI = codexUAKindSpec ? codexUAKindSpec.app_follows_cli : codexUAKind === 'codex-tui' || codexUAKind === 'codex-exec'
   const codexUADefaultPoolMix = codexUACatalog?.default_pool_mix ?? CODEX_UA_FALLBACK_POOL_MIX
@@ -3023,20 +2970,14 @@ export default function Settings() {
   const codexUAModeOptions = useMemo(() => [
     { label: t('settings.codexUAModeSingle'), value: 'single' as const },
     { label: t('settings.codexUAModePool'), value: 'pool' as const },
+    { label: t('settings.codexUAModeMulti'), value: 'multi' as const },
   ], [t])
   const selectCodexUAKind = useCallback((kind: CodexUAKind) => {
-    patchAndSaveCodexUserAgentConfig({
-      client_kind: kind,
-      client_name: '',
-      client_version: '',
-      app_name: '',
-      app_version: '',
-      os_name: '',
-      os_version: '',
-      arch: '',
-      terminal: '',
-    })
-  }, [patchAndSaveCodexUserAgentConfig])
+    setSettingsForm((form) => ({
+      ...form,
+      codex_user_agent_config: serializeCodexUserAgentConfig(switchCodexIdentityDraft(parseCodexUserAgentConfig(form.codex_user_agent_config), kind)),
+    }))
+  }, [])
   const codexUAPlatformKey = (osName: string, osVersion: string, arch: string) => `${osName}|${osVersion}|${arch}`
   const codexUAPlatformOptions = useMemo(() => {
     const options = (codexUAKindSpec?.platforms ?? []).map((platform) => ({
@@ -3057,8 +2998,8 @@ export default function Settings() {
   const applyCodexUAPlatformPreset = useCallback((value: string) => {
     if (value === 'custom') return
     const [os_name, os_version, arch] = value.split('|')
-    patchAndSaveCodexUserAgentConfig({ os_name, os_version, arch })
-  }, [patchAndSaveCodexUserAgentConfig])
+    updateCodexUserAgentConfig({ os_name, os_version, arch })
+  }, [updateCodexUserAgentConfig])
   const codexUATerminalOptions = useMemo(() => [
     ...(codexUAKindSpec?.terminals ?? []).map((terminal) => ({ label: terminal.value, value: terminal.value })),
     { label: t('settings.codexUACustomOption'), value: 'custom' },
@@ -3114,7 +3055,7 @@ export default function Settings() {
       className={className}
       variant={dirtyCount > 0 ? 'default' : 'outline'}
       onClick={() => void handleSaveSettings()}
-      disabled={savingSettings || autoSaveStatus === 'saving'}
+      disabled={savingSettings || savingCodexIdentity || autoSaveStatus === 'saving'}
     >
       <Save className="size-4" />
       {saveButtonLabel}
@@ -4225,11 +4166,18 @@ export default function Settings() {
                     </SettingField>
                     <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUAMode')} description={t('settings.codexUAModeDesc')}>
                       <SegmentedPillGroup
-                        className="max-w-sm"
+                        className="max-w-xl"
                         value={codexUAMode}
-                        onChange={(value) => patchAndSaveCodexUserAgentConfig({ mode: value === 'pool' ? 'pool' : '' })}
+                        onChange={(value) => updateCodexUserAgentConfig({ mode: value === 'single' ? '' : value })}
                         options={codexUAModeOptions}
                       />
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <Button variant="outline" onClick={() => void saveCodexIdentityDraft()} disabled={savingSettings || savingCodexIdentity || autoSaveStatus === 'saving'}>
+                          <Save className="size-4" />{t('settings.codexUASave')}
+                        </Button>
+                        <span className="text-xs text-muted-foreground">{t('settings.codexUADraftHint')}</span>
+                      </div>
+                      {codexUAMode === 'multi' ? <p className="mt-2 text-xs text-muted-foreground">{t('settings.codexUAMultiHint')}</p> : null}
                     </SettingField>
                     {codexUAMode === 'pool' ? (
                       CODEX_UA_POOL_KINDS.map((kind) => (
@@ -4242,7 +4190,6 @@ export default function Settings() {
                             value={codexUAPoolMixValue(kind)}
                             placeholder={String(codexUADefaultPoolMix[kind] ?? 0)}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUAPoolMix(kind, e.target.value)}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                       ))
@@ -4262,7 +4209,6 @@ export default function Settings() {
                             value={codexUserAgentConfig.raw_user_agent ?? ''}
                             placeholder="codex-tui/0.153.3 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.153.3)"
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ raw_user_agent: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                         <SettingField label={t('settings.codexUAClientName')} description={t('settings.codexUAClientNameDesc')}>
@@ -4271,7 +4217,6 @@ export default function Settings() {
                             placeholder={codexUAKindSpec?.client_name ?? DEFAULT_CODEX_UA_CONFIG.client_name}
                             disabled={codexUAKind !== 'custom'}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ client_name: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                         <SettingField label={t('settings.codexUAClientVersion')} description={t('settings.codexUAClientVersionDesc')}>
@@ -4279,7 +4224,6 @@ export default function Settings() {
                             value={codexUserAgentConfig.client_version ?? ''}
                             placeholder={codexUAClientVersionPlaceholder}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ client_version: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                         <SettingField label={t('settings.codexUAPlatformPreset')} description={t('settings.codexUAPlatformPresetDesc')}>
@@ -4294,7 +4238,6 @@ export default function Settings() {
                             value={codexUserAgentConfig.os_name ?? ''}
                             placeholder={codexUAKindSpec?.default_platform.os_name ?? DEFAULT_CODEX_UA_CONFIG.os_name}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ os_name: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                         <SettingField label={t('settings.codexUAOSVersion')} description={t('settings.codexUAOSVersionDesc')}>
@@ -4302,7 +4245,6 @@ export default function Settings() {
                             value={codexUserAgentConfig.os_version ?? ''}
                             placeholder={codexUAKindSpec?.default_platform.os_version ?? DEFAULT_CODEX_UA_CONFIG.os_version}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ os_version: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                         <SettingField label={t('settings.codexUAArch')} description={t('settings.codexUAArchDesc')}>
@@ -4310,13 +4252,12 @@ export default function Settings() {
                             value={codexUserAgentConfig.arch ?? ''}
                             placeholder={codexUAKindSpec?.default_platform.arch ?? DEFAULT_CODEX_UA_CONFIG.arch}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ arch: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                         <SettingField label={t('settings.codexUATerminalPreset')} description={t('settings.codexUATerminalPresetDesc')}>
                           <Select
                             value={codexUATerminalPresetValue}
-                            onValueChange={(value) => { if (value !== 'custom') patchAndSaveCodexUserAgentConfig({ terminal: value }) }}
+                            onValueChange={(value) => { if (value !== 'custom') updateCodexUserAgentConfig({ terminal: value }) }}
                             options={codexUATerminalOptions}
                           />
                         </SettingField>
@@ -4325,7 +4266,6 @@ export default function Settings() {
                             value={codexUserAgentConfig.terminal ?? ''}
                             placeholder={codexUAKindSpec?.default_terminal ?? DEFAULT_CODEX_UA_CONFIG.terminal}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ terminal: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                         <SettingField label={t('settings.codexUAAppName')} description={t('settings.codexUAAppNameDesc')}>
@@ -4333,7 +4273,7 @@ export default function Settings() {
                             {codexUAShowAppNamePreset ? (
                               <Select
                                 value={codexUAAppNamePresetValue}
-                                onValueChange={(value) => { if (value !== 'custom') patchAndSaveCodexUserAgentConfig({ app_name: value }) }}
+                                onValueChange={(value) => { if (value !== 'custom') updateCodexUserAgentConfig({ app_name: value }) }}
                                 options={codexUAAppNameOptions}
                               />
                             ) : null}
@@ -4342,7 +4282,6 @@ export default function Settings() {
                               placeholder={codexUAAppFollowsCLI ? t('settings.codexUAFollowsClient') : codexUAEffectiveAppName}
                               disabled={codexUAAppFollowsCLI || (codexUAKind === 'codex-desktop')}
                               onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ app_name: e.target.value })}
-                              onBlur={saveCodexUserAgentConfig}
                             />
                           </div>
                         </SettingField>
@@ -4352,7 +4291,6 @@ export default function Settings() {
                             placeholder={codexUAAppFollowsCLI ? t('settings.codexUAFollowsClient') : t('settings.codexUAAutoPaired')}
                             disabled={codexUAAppFollowsCLI}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ app_version: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
                       </>

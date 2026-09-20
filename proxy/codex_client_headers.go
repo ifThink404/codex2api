@@ -9,8 +9,16 @@ import (
 
 func ResolveCodexOutboundClientIdentity(account *auth.Account, apiKey string, deviceCfg *DeviceProfileConfig, downstreamHeaders http.Header) (userAgent, version, originator string) {
 	// Outbound identity is account/configuration owned. A recognized client UA
-	// is still user input and must not seed or upgrade the account profile.
+	// only selects a saved profile in multi mode; it cannot seed or upgrade it.
 	userAgent, version, _ = resolveCodexOutboundClientHeaders(account, apiKey, nil, nil)
+	settings := CurrentRuntimeSettings()
+	if cfg := codexUserAgentConfigFromJSON(settings.CodexUserAgentConfig); cfg.Mode == CodexUserAgentModeMulti {
+		floor := ""
+		if settings.ClientCompatMode == ClientCompatModeAuto {
+			floor = settings.CodexMinCLIVersion
+		}
+		userAgent, version, _ = codexUserAgentFromProfile(cfg.profile(codexIncomingClientKind(downstreamHeaders)), floor)
+	}
 	if deviceCfg != nil && strings.TrimSpace(deviceCfg.UserAgent) != "" {
 		userAgent = strings.TrimSpace(deviceCfg.UserAgent)
 		version = codexOwnedUserAgentVersion(userAgent, version)
@@ -56,11 +64,15 @@ func replaceCodexOwnedUserAgentVersion(userAgent, version string) string {
 	return userAgent
 }
 
-func ApplyCodexAccountClientIdentity(headers http.Header, account *auth.Account, apiKey string, config *DeviceProfileConfig, userAgentEnabled bool) {
+func ApplyCodexAccountClientIdentity(headers http.Header, account *auth.Account, apiKey string, config *DeviceProfileConfig, userAgentEnabled bool, incoming ...http.Header) {
 	if headers == nil {
 		return
 	}
-	ua, version, originator := ResolveCodexOutboundClientIdentity(account, apiKey, config, nil)
+	var source http.Header
+	if len(incoming) > 0 {
+		source = incoming[0]
+	}
+	ua, version, originator := ResolveCodexOutboundClientIdentity(account, apiKey, config, source)
 	appVersionPresent := false
 	for name := range headers {
 		if strings.EqualFold(name, "X-Codex-App-Version") {

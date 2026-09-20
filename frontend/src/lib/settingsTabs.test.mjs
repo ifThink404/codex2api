@@ -128,7 +128,8 @@ test('multi-section tabs render a section index that mirrors the rendered sectio
 test('manual-save fields are tracked against the persisted snapshot', () => {
   assert.match(settings, /const \[persistedSettings, setPersistedSettings\] = useState<SystemSettings \| null>/)
   assert.match(settings, /setPersistedSettings\(commitSettingsForm\(settings\)\)/, 'load must seed the snapshot')
-  assert.match(settings, /setPersistedSettings\(commitSettingsForm\(updated\)\)/, 'manual save must refresh the snapshot')
+  assert.match(settings, /setPersistedSettings\(savedSettings\)/, 'manual save must refresh the server snapshot')
+  assert.match(settings, /commitSettingsForm\(\{ \.\.\.savedSettings, codex_user_agent_config: identityDraft \}\)/, 'manual save must preserve newer identity edits')
   assert.match(settings, /markPersisted\(getSettingsPatchValues\(optimistic, patchKeys\)\)/, 'auto-save must merge only its own keys')
   assert.match(settings, /\{dirtyCount > 0 \? \(/, 'bottom save bar only renders with unsaved changes')
   assert.match(settings, /<SaveStatusPill autoSaveStatus=\{autoSaveStatus\} dirtyCount=\{dirtyCount\} \/>/)
