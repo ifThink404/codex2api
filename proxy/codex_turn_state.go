@@ -38,20 +38,17 @@ var (
 // attempt 的值——否则换号重试后旧账号的 blob 会粘到新账号的响应上,正是本
 // 文件要防止的跨账号矛盾。(流式响应一旦提交,对 writer 头的改动是无害空操作。)
 func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, account *auth.Account, modelOrHeaders interface{}, optionalHeaders ...http.Header) {
-	model := ""
 	var headers http.Header
 	switch value := modelOrHeaders.(type) {
 	case string:
-		model = value
 		if len(optionalHeaders) > 0 {
 			headers = optionalHeaders[0]
 		}
 	case http.Header:
 		headers = value
 	}
-	// Capture whenever upstream minted a template for this account+model,
-	// independent of whether we relay the header to the client.
-	CaptureCodexTurnStateTemplate(turnStateCtxFromGin(c), account, model, headers)
+	// The transport captures the raw template once, before header relaying or
+	// vault substitution. This helper only records usage and delivers the header.
 	if c == nil {
 		return
 	}
@@ -94,19 +91,16 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 // the response, no documented Responses event is equivalent to this header, so
 // the token is intentionally omitted instead of leaking stale account state.
 func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuousRetryStreamAttempt, affinityKey string, account *auth.Account, modelOrHeaders interface{}, optionalHeaders ...http.Header) error {
-	model := ""
 	var headers http.Header
 	switch value := modelOrHeaders.(type) {
 	case string:
-		model = value
 		if len(optionalHeaders) > 0 {
 			headers = optionalHeaders[0]
 		}
 	case http.Header:
 		headers = value
 	}
-	// Capture upstream mint even if local commit later fails to relay the header.
-	CaptureCodexTurnStateTemplate(turnStateCtxFromGin(c), account, model, headers)
+	// The transport already captured the raw template, even if commit fails.
 	if attempt == nil {
 		return h.commitStreamAttempt(c, attempt)
 	}
@@ -151,6 +145,20 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 		noteCodexTurnStateProvenance(affinityKey, account)
 	}
 	return nil
+}
+
+// NoteCodexTurnStateProvenance records which account minted turn-state for
+// affinityKey. Exported so WS-path tests can seed provenance.
+func NoteCodexTurnStateProvenance(affinityKey string, account *auth.Account) {
+	noteCodexTurnStateProvenance(affinityKey, account)
+}
+
+// ClearCodexTurnStateProvenance removes a provenance entry (tests / cleanup).
+func ClearCodexTurnStateProvenance(affinityKey string) {
+	if strings.TrimSpace(affinityKey) == "" {
+		return
+	}
+	codexTurnStateOrigins.Delete(affinityKey)
 }
 
 func noteCodexTurnStateProvenance(affinityKey string, account *auth.Account) {

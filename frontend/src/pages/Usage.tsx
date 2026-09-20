@@ -1639,6 +1639,7 @@ export default function Usage() {
   const [filterAccountLabel, setFilterAccountLabel] = useState('')
   const [filterFast, setFilterFast] = useState('')
   const [filterUltra, setFilterUltra] = useState('')
+  const [filterModelMismatch, setFilterModelMismatch] = useState(false)
   const [filterType, setFilterType] = useState<UsageTypeFilter>('')
   const [filterErrorKind, setFilterErrorKind] = useState('')
   const [filterRetry, setFilterRetry] = useState<UsageRetryFilter>('')
@@ -1703,6 +1704,7 @@ export default function Usage() {
       accountId: filterAccountId || undefined,
       fast: filterFast || undefined,
       ultra: filterUltra || undefined,
+      upstreamModelMismatch: filterModelMismatch ? 'true' : undefined,
       stream: filterType === 'stream' ? 'true' : filterType === 'sync' ? 'false' : undefined,
       compact: filterType === 'compact' ? 'true' : undefined,
       hasCompactionHistory: filterType === 'history' ? 'true' : undefined,
@@ -1713,7 +1715,7 @@ export default function Usage() {
       turnStateEcho: filterTurnStateEcho || undefined,
       turnStateStripped: filterTurnStateStripped || undefined,
     }
-  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterType, channel, filterRetry, filterTransport, filterTurnState, filterTurnStateEcho, filterTurnStateStripped])
+  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterModelMismatch, filterType, channel, filterRetry, filterTransport, filterTurnState, filterTurnStateEcho, filterTurnStateStripped])
 
   const buildLogFilterParams = useCallback(() => {
     return {
@@ -1899,6 +1901,7 @@ export default function Usage() {
     filterType,
     filterFast,
     filterUltra,
+    filterModelMismatch ? 'true' : '',
     filterErrorKind,
     filterRetry,
     filterTransport,
@@ -1916,6 +1919,7 @@ export default function Usage() {
     || filterType
     || filterFast
     || filterUltra
+    || filterModelMismatch
     || filterErrorKind
     || filterRetry
     || filterTransport
@@ -1959,6 +1963,7 @@ export default function Usage() {
     setFilterType('')
     setFilterFast('')
     setFilterUltra('')
+    setFilterModelMismatch(false)
     setFilterErrorKind('')
     setFilterRetry('')
     setFilterTransport('')
@@ -2540,6 +2545,20 @@ export default function Usage() {
                   >
                     <Sparkles className="size-3.5" />
                     Ultra
+                  </button>
+                  <button
+                    type="button"
+                    title={t('usage.filterModelMismatchHint')}
+                    onClick={() => { setFilterModelMismatch(!filterModelMismatch); setPage(1) }}
+                    className={cn(
+                      'inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
+                      filterModelMismatch
+                        ? 'border-orange-500/40 bg-orange-500/12 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300'
+                        : 'border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                    )}
+                  >
+                    <AlertTriangle className="size-3.5" />
+                    {t('usage.filterModelMismatch')}
                   </button>
                   </div>
                 </div>

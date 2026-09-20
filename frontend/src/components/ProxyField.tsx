@@ -64,6 +64,7 @@ export function ProxyField({
   proxies,
   label,
   labelClassName,
+  linkedHint,
   placeholder = "socks5://user:pass@host:port",
   disabled = false,
   className,
@@ -77,6 +78,8 @@ export function ProxyField({
   label?: string;
   /** 标题样式覆盖,便于与所在弹窗相邻字段的标题风格对齐。 */
   labelClassName?: string;
+  /** Override the association hint for fields that copy a URL without binding. */
+  linkedHint?: string;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
@@ -174,7 +177,7 @@ export function ProxyField({
             latency: linked.test_latency_ms ?? 0,
           })}
           {" "}
-          {t("accounts.proxyPoolLinkedHint")}
+          {linkedHint ?? t("accounts.proxyPoolLinkedHint")}
         </p>
       ) : trimmed && proxies.length > 0 ? (
         <p className="text-[11px] leading-relaxed text-muted-foreground">{t("accounts.proxyPoolUnmatched")}</p>

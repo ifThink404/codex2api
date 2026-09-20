@@ -153,9 +153,8 @@ func TestUsageLogCompactionStatesRoundTripAndFilter(t *testing.T) {
 }
 
 func TestUsageLogInsertColumnCountIncludesCompactionHistory(t *testing.T) {
-	// 50 legacy + 2 cache-write + 4 trace + 3 image-token + 3 user image-billing + 1 ultra
-	// + 2 上游自报模型/窗口号 + 3 turn-state（长度/回带分类/是否剥离） fields.
-	const want = 68
+	// 68 fork columns plus the upstream model-mismatch audit field.
+	const want = 69
 	if usageLogInsertColumnCount != want {
 		t.Fatalf("usageLogInsertColumnCount = %d, want %d", usageLogInsertColumnCount, want)
 	}

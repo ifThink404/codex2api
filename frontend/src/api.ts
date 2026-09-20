@@ -1,3 +1,4 @@
+import { turnStateHistoryQuery, type TurnStateHistoryFilter, type TurnStateHistoryPage } from './lib/turnStateHistory.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
   AccountEventTrendPoint,
@@ -498,6 +499,7 @@ export type UsageLogQueryParams = {
   accountId?: string
   fast?: string
   ultra?: string
+  upstreamModelMismatch?: string
   stream?: string
   compact?: string
   hasCompactionHistory?: string
@@ -530,6 +532,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.accountId) search.set('account_id', params.accountId)
   if (params.fast) search.set('fast', params.fast)
   if (params.ultra) search.set('ultra', params.ultra)
+  if (params.upstreamModelMismatch) search.set('upstream_model_mismatch', params.upstreamModelMismatch)
   if (params.stream) search.set('stream', params.stream)
   if (params.compact) search.set('compact', params.compact)
   if (params.hasCompactionHistory) search.set('has_compaction_history', params.hasCompactionHistory)
@@ -1492,6 +1495,8 @@ export const api = {
     request<{ message: string }>(`/quality-test-prompts/${id}`, { method: 'DELETE' }),
   createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string; prompt_id?: number; preset_key?: string; preset_name?: string }) =>
     request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
+  getTurnStateHistory: (page: number, filter: TurnStateHistoryFilter = {}, signal?: AbortSignal) =>
+    request<TurnStateHistoryPage>(`/codex-turn-state/renewals?${turnStateHistoryQuery(page, filter)}`, { signal }),
   getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
     request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
   getQualityTest: (id: number, signal?: AbortSignal) =>

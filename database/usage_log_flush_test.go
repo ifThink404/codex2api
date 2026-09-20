@@ -186,7 +186,7 @@ func TestUsageLogTextClampedToColumnWidth(t *testing.T) {
 		{"model", got.Model, usageLogTextMaxLen},
 		{"effective_model", got.EffectiveModel, usageLogTextMaxLen},
 		{"reasoning_effort", got.ReasoningEffort, usageLogTextMaxLen},
-		{"upstream_response_model", got.UpstreamResponseModel, usageLogTextMaxLen},
+		{"upstream_response_model", got.UpstreamResponseModel, upstreamResponseModelMaxLen},
 		{"window_number", got.WindowNumber, usageLogWindowNumberMaxLen},
 		{"service_tier", got.ServiceTier, usageLogTextMaxLen},
 		{"requested_service_tier", got.RequestedServiceTier, usageLogTextMaxLen},

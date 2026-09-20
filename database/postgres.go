@@ -269,12 +269,9 @@ const (
 	minUsageLogFlushIntervalSeconds     = 1
 	maxUsageLogFlushIntervalSeconds     = 300
 
-	postgresMaxBindParams     = 65535
-	usageLogInsertColumnCount = 68
-	// 每条 INSERT 的行数上限必须让 行数 × usageLogInsertColumnCount 低于
-	// PostgreSQL 的 65535 个 bind 参数。68 列时 65535/68 = 963，取 900 留出
-	// 再加几列的余量（batchInsertLogs 运行期还会按当前列数再夹一次）。
-	maxUsageLogInsertRowsPerSQL = 900
+	postgresMaxBindParams       = 65535
+	usageLogInsertColumnCount   = 69
+	maxUsageLogInsertRowsPerSQL = 900 // 69 * 900 = 62100, below the PostgreSQL parameter limit.
 
 	// usageLogBufferHardLimit 内存缓冲的硬上限。PG 长时间不可用时（维护、主从切换、
 	// 磁盘写满）失败批次会一直被放回缓冲区，没有上限的话内存一路涨到 OOM——那会把
@@ -320,23 +317,27 @@ func NormalizeUsageLogFlushIntervalSeconds(n int) int {
 // usageLogEntry 日志缓冲条目
 type usageLogEntry struct {
 	UserBilling
-	RequestID              string
-	UpstreamRequestID      string
-	UpstreamProxyID        int64
-	UpstreamProxyName      string
-	StoreUsageLog          bool
-	AccountID              int64
-	CredentialGeneration   int64
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
+	RequestID            string
+	UpstreamRequestID    string
+	UpstreamProxyID      int64
+	UpstreamProxyName    string
+	StoreUsageLog        bool
+	AccountID            int64
+	CredentialGeneration int64
+	Channel              string
+	ClientIP             string
+	ClientUserAgent      string
+	UpstreamUserAgent    string
+	UserAgentOverridden  bool
+	InternalReason       string
+	ParentRequestID      string
+	Endpoint             string
+	Model                string
+	EffectiveModel       string
+	// UpstreamResponseModel 是上游响应自报的模型名（观测值，未自报为空串）。
+	UpstreamResponseModel string
+	// UpstreamModelMismatch 三态：nil=上游未自报；true/false=自报与实发是否一致。
+	UpstreamModelMismatch  *bool
 	PromptTokens           int
 	CompletionTokens       int
 	TotalTokens            int
@@ -348,7 +349,6 @@ type usageLogEntry struct {
 	FirstTokenMs           int
 	WsAcquireMs            int
 	ReasoningEffort        string
-	UpstreamResponseModel  string
 	WindowNumber           string
 	TurnStateLength        *int
 	TurnStateEcho          string
@@ -478,6 +478,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	if !fromSchemaTemplate {
 		if err := db.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("数据库迁移失败: %w", err)
+		}
+		if err := db.ensureCodexTurnStateTemplateSchema(ctx); err != nil {
+			return nil, fmt.Errorf("初始化 Turn-State 模板表失败: %w", err)
 		}
 		if err := db.ensureQualityTestSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化检测记录表失败: %w", err)
@@ -1215,7 +1218,7 @@ func (db *DB) migrate(ctx context.Context) error {
 		account_id     INT DEFAULT 0,
 		endpoint       VARCHAR(100) DEFAULT '',
 		model          VARCHAR(100) DEFAULT '',
-		upstream_response_model VARCHAR(100) DEFAULT '',
+		upstream_response_model VARCHAR(200) DEFAULT '',
 		window_number  VARCHAR(32) DEFAULT '',
 		prompt_tokens  INT DEFAULT 0,
 		completion_tokens INT DEFAULT 0,
@@ -1239,7 +1242,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS reasoning_effort VARCHAR(100) DEFAULT '';
 	-- 上游响应信封里自报的模型（与请求模型可能不同，用于核对上游是否偷换模型）；
 	-- window_number 是 Codex 客户端窗口号（x-codex-window-id 的 <n> 段，指纹收敛前的原值）。
-	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_response_model VARCHAR(100) DEFAULT '';
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_response_model VARCHAR(200) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS window_number VARCHAR(32) DEFAULT '';
 	-- turn_state_* 记录本次胜出尝试的 X-Codex-Turn-State 情况（只有官方 Codex 路径会填）。
 	-- turn_state_length 刻意没有 DEFAULT：NULL = 未记录（历史行 / 拿到上游响应前就失败 /
@@ -1251,6 +1254,11 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_stripped BOOLEAN DEFAULT FALSE;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS via_websocket BOOLEAN DEFAULT FALSE;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS effective_model VARCHAR(100) DEFAULT '';
+	-- 上游响应模型审计：upstream_response_model=上游自报模型名（NULL=未自报），
+	-- upstream_model_mismatch=与实发模型比对结果（NULL=未自报无法比对）。
+	-- Widen the fork's existing VARCHAR(100) column when upgrading.
+	ALTER TABLE usage_logs ALTER COLUMN upstream_response_model TYPE VARCHAR(200);
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_model_mismatch BOOLEAN;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS inbound_endpoint VARCHAR(100) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_endpoint VARCHAR(100) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS stream BOOLEAN DEFAULT false;
@@ -4313,23 +4321,29 @@ func (db *DB) RebindAccountProxyURLs(ctx context.Context, oldURL, newURL string)
 // UsageLog 请求日志行
 type UsageLog struct {
 	UserBilling
-	RequestID              string    `json:"request_id"`
-	UpstreamRequestID      string    `json:"upstream_request_id"`
-	UpstreamProxyID        int64     `json:"upstream_proxy_id"`
-	UpstreamProxyName      string    `json:"upstream_proxy_name"`
-	ID                     int64     `json:"id"`
-	AccountID              int64     `json:"account_id"`
-	CredentialGeneration   int64     `json:"credential_generation,omitempty"`
-	Channel                string    `json:"channel,omitempty"`
-	ClientIP               string    `json:"client_ip"`
-	ClientUserAgent        string    `json:"client_user_agent"`
-	UpstreamUserAgent      string    `json:"upstream_user_agent"`
-	UserAgentOverridden    bool      `json:"user_agent_overridden"`
-	InternalReason         string    `json:"internal_reason"`
-	ParentRequestID        string    `json:"parent_request_id"`
-	Endpoint               string    `json:"endpoint"`
-	Model                  string    `json:"model"`
-	EffectiveModel         string    `json:"effective_model"`
+	RequestID            string `json:"request_id"`
+	UpstreamRequestID    string `json:"upstream_request_id"`
+	UpstreamProxyID      int64  `json:"upstream_proxy_id"`
+	UpstreamProxyName    string `json:"upstream_proxy_name"`
+	ID                   int64  `json:"id"`
+	AccountID            int64  `json:"account_id"`
+	CredentialGeneration int64  `json:"credential_generation,omitempty"`
+	Channel              string `json:"channel,omitempty"`
+	ClientIP             string `json:"client_ip"`
+	ClientUserAgent      string `json:"client_user_agent"`
+	UpstreamUserAgent    string `json:"upstream_user_agent"`
+	UserAgentOverridden  bool   `json:"user_agent_overridden"`
+	InternalReason       string `json:"internal_reason"`
+	ParentRequestID      string `json:"parent_request_id"`
+	Endpoint             string `json:"endpoint"`
+	Model                string `json:"model"`
+	EffectiveModel       string `json:"effective_model"`
+	// UpstreamResponseModel 是上游响应自报的模型名（取自 response.model 等字段，
+	// 未经协议转换或改写）。空串=上游未自报或历史行。
+	UpstreamResponseModel string `json:"upstream_response_model"`
+	// UpstreamModelMismatch 三态：nil=上游未自报（或历史行），无法比对；
+	// true/false=已比对，上游自报与实发模型是否一致。
+	UpstreamModelMismatch  *bool     `json:"upstream_model_mismatch,omitempty"`
 	PromptTokens           int       `json:"prompt_tokens"`
 	CompletionTokens       int       `json:"completion_tokens"`
 	TotalTokens            int       `json:"total_tokens"`
@@ -4341,7 +4355,6 @@ type UsageLog struct {
 	FirstTokenMs           int       `json:"first_token_ms"`
 	WsAcquireMs            int       `json:"ws_acquire_ms"`
 	ReasoningEffort        string    `json:"reasoning_effort"`
-	UpstreamResponseModel  string    `json:"upstream_response_model"`
 	WindowNumber           string    `json:"window_number"`
 	TurnStateLength        *int      `json:"turn_state_length"`
 	TurnStateEcho          string    `json:"turn_state_echo"`
@@ -4407,14 +4420,15 @@ type UsageLog struct {
 // 整条批量 INSERT 回滚，失败的 batch 又会被原样放回缓冲区头部，下一轮继续失败——
 // 单条脏数据就能永久堵死整个日志写入。因此写入前按列宽截断。
 const (
-	usageLogChannelMaxLen      = 16  // channel
-	usageLogTurnStateEchoMax   = 16  // turn_state_echo
-	usageLogImageSizeMaxLen    = 32  // image_size
-	usageLogWindowNumberMaxLen = 32  // window_number
-	usageLogShortTextMaxLen    = 64  // client_ip / api_key_masked / upstream_error_kind
-	usageLogTextMaxLen         = 100 // endpoint / model / upstream_response_model / *_service_tier / reasoning_effort ...
-	usageLogRequestIDMaxLen    = 128 // parent_request_id
-	usageLogAPIKeyNameMaxLen   = 255 // api_key_name
+	usageLogChannelMaxLen       = 16  // channel
+	usageLogTurnStateEchoMax    = 16  // turn_state_echo
+	usageLogImageSizeMaxLen     = 32  // image_size
+	usageLogWindowNumberMaxLen  = 32  // window_number
+	usageLogShortTextMaxLen     = 64  // client_ip / api_key_masked / upstream_error_kind
+	usageLogTextMaxLen          = 100 // endpoint / model / *_service_tier / reasoning_effort ...
+	usageLogRequestIDMaxLen     = 128 // parent_request_id
+	usageLogAPIKeyNameMaxLen    = 255 // api_key_name
+	upstreamResponseModelMaxLen = 200
 )
 
 // clampUsageLogText 按字符数截断：PostgreSQL varchar(n) 限制的是字符而非字节，
@@ -4499,6 +4513,8 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		Endpoint:               clampUsageLogText(log.Endpoint, usageLogTextMaxLen),
 		Model:                  clampUsageLogText(log.Model, usageLogTextMaxLen),
 		EffectiveModel:         clampUsageLogText(log.EffectiveModel, usageLogTextMaxLen),
+		UpstreamResponseModel:  clampUsageLogText(log.UpstreamResponseModel, upstreamResponseModelMaxLen),
+		UpstreamModelMismatch:  log.UpstreamModelMismatch,
 		PromptTokens:           log.PromptTokens,
 		CompletionTokens:       log.CompletionTokens,
 		TotalTokens:            log.TotalTokens,
@@ -4510,7 +4526,6 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		FirstTokenMs:           log.FirstTokenMs,
 		WsAcquireMs:            log.WsAcquireMs,
 		ReasoningEffort:        clampUsageLogText(log.ReasoningEffort, usageLogTextMaxLen),
-		UpstreamResponseModel:  clampUsageLogText(log.UpstreamResponseModel, usageLogTextMaxLen),
 		WindowNumber:           clampUsageLogText(log.WindowNumber, usageLogWindowNumberMaxLen),
 		TurnStateLength:        normalizeUsageLogTurnStateLength(log.TurnStateLength),
 		TurnStateEcho:          normalizeUsageLogTurnStateEcho(log.TurnStateEcho),
@@ -4608,6 +4623,7 @@ type UsageLogInput struct {
 	TurnStateLength        *int
 	TurnStateEcho          string
 	TurnStateStripped      bool
+	UpstreamModelMismatch  *bool
 	InboundEndpoint        string
 	UpstreamEndpoint       string
 	Stream                 bool
@@ -4952,27 +4968,27 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 	logsToStore := storedUsageLogs(batch)
 	if len(logsToStore) > 0 {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
+			`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, upstream_response_model, upstream_model_mismatch, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 				  input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, ultra, cached_tokens, image_input_tokens, image_output_tokens, cached_image_input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 				  requested_service_tier, actual_service_tier, billing_service_tier,
 				  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 				  is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 				  client_user_agent, upstream_user_agent, user_agent_overridden, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, user_billing_mode, image_unit_price, billed_image_count,
-				  upstream_response_model, window_number, turn_state_length, turn_state_echo, turn_state_stripped)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68)`)
+				  window_number, turn_state_length, turn_state_echo, turn_state_stripped)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69)`)
 		if err != nil {
 			return fmt.Errorf("准备语句: %w", err)
 		}
 		defer stmt.Close()
 
 		for _, e := range logsToStore {
-			if _, err := stmt.ExecContext(ctx, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
+			if _, err := stmt.ExecContext(ctx, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, nullableUpstreamResponseModel(e.UpstreamResponseModel), nullableUpstreamModelMismatch(e.UpstreamModelMismatch), e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 				e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.Ultra, e.CachedTokens, e.ImageInputTokens, e.ImageOutputTokens, e.CachedImageInputTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 				e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 				e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 				e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount,
-				e.UpstreamResponseModel, e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped); err != nil {
+				e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped); err != nil {
 				return fmt.Errorf("执行插入: %w", err)
 			}
 		}
@@ -5057,23 +5073,23 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 			placeholders[i] = fmt.Sprintf("$%d", argIdx+i)
 		}
 		valueStrings = append(valueStrings, "("+strings.Join(placeholders, ", ")+")")
-		valueArgs = append(valueArgs, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
+		valueArgs = append(valueArgs, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, nullableUpstreamResponseModel(e.UpstreamResponseModel), nullableUpstreamModelMismatch(e.UpstreamModelMismatch), e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 			e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.Ultra, e.CachedTokens, e.ImageInputTokens, e.ImageOutputTokens, e.CachedImageInputTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 			e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 			e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount,
-			e.UpstreamResponseModel, e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped)
+			e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped)
 		argIdx += usageLogInsertColumnCount
 	}
 
-	query := fmt.Sprintf(`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
+	query := fmt.Sprintf(`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, upstream_response_model, upstream_model_mismatch, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 		input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, ultra, cached_tokens, image_input_tokens, image_output_tokens, cached_image_input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 		requested_service_tier, actual_service_tier, billing_service_tier,
 		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 		is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 		client_user_agent, upstream_user_agent, user_agent_overridden, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, user_billing_mode, image_unit_price, billed_image_count,
-		upstream_response_model, window_number, turn_state_length, turn_state_echo, turn_state_stripped)
+		window_number, turn_state_length, turn_state_echo, turn_state_stripped)
 		VALUES %s`, strings.Join(valueStrings, ","))
 
 	_, err := execer.ExecContext(ctx, query, valueArgs...)
@@ -5086,6 +5102,23 @@ func nullablePromptPolicyIncidentID(value string) any {
 		return nil
 	}
 	return value
+}
+
+// nullableUpstreamResponseModel 空串写 NULL（=上游未自报），非空写原值。
+func nullableUpstreamResponseModel(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+// nullableUpstreamModelMismatch nil 直接透传（上游未自报/历史行）；
+// *bool 写 SQL 布尔。
+func nullableUpstreamModelMismatch(value *bool) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func (db *DB) applyAPIKeyQuotaUsage(ctx context.Context, batch []usageLogEntry) error {
@@ -5638,7 +5671,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 	if limit <= 0 || limit > 5000 {
 		limit = 50
 	}
-	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
+	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), COALESCE(u.upstream_response_model, ''), u.upstream_model_mismatch, u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
 	            COALESCE(u.input_tokens, 0), COALESCE(u.output_tokens, 0), COALESCE(u.reasoning_tokens, 0),
 	            COALESCE(u.first_token_ms, 0), COALESCE(u.ws_acquire_ms, 0), COALESCE(u.reasoning_effort, ''), COALESCE(u.inbound_endpoint, ''),
 	            COALESCE(u.upstream_endpoint, ''), COALESCE(u.stream, false), COALESCE(u.compact, false), COALESCE(u.has_compaction_history, false), COALESCE(u.ultra, false), COALESCE(u.via_websocket, false), COALESCE(u.cached_tokens, 0), COALESCE(u.image_input_tokens, 0), COALESCE(u.image_output_tokens, 0), COALESCE(u.cached_image_input_tokens, 0), COALESCE(u.cache_write_5m_tokens, 0), COALESCE(u.cache_write_1h_tokens, 0), COALESCE(u.service_tier, ''),
@@ -5649,7 +5682,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 	            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
+	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 	            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 	           FROM usage_logs u
 	           LEFT JOIN accounts a ON u.account_id = a.id
@@ -5666,16 +5699,23 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 		l := &UsageLog{}
 		var credentialRaw interface{}
 		var createdAtRaw interface{}
-		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
+		var nullUpstreamResponseModel sql.NullString
+		var nullUpstreamModelMismatch sql.NullBool
+		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens, &l.ServiceTier,
 			&l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier,
 			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel,
-			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
+			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
+		if nullUpstreamModelMismatch.Valid {
+			mismatch := nullUpstreamModelMismatch.Bool
+			l.UpstreamModelMismatch = &mismatch
+		}
 		l.CreatedAt, err = parseDBTimeValue(createdAtRaw)
 		if err != nil {
 			return nil, err
@@ -6111,7 +6151,7 @@ func (db *DB) GetAccountUsageStats(ctx context.Context, accountID int64, days in
 // ListUsageLogsByTimeRange 按时间范围查询请求日志
 func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time) ([]*UsageLog, error) {
 	startArg, endArg := db.timeRangeArgs(start, end)
-	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
+	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), COALESCE(u.upstream_response_model, ''), u.upstream_model_mismatch, u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
 	            COALESCE(u.input_tokens, 0), COALESCE(u.output_tokens, 0), COALESCE(u.reasoning_tokens, 0),
 	            COALESCE(u.first_token_ms, 0), COALESCE(u.ws_acquire_ms, 0), COALESCE(u.reasoning_effort, ''), COALESCE(u.inbound_endpoint, ''),
 	            COALESCE(u.upstream_endpoint, ''), COALESCE(u.stream, false), COALESCE(u.compact, false), COALESCE(u.has_compaction_history, false), COALESCE(u.ultra, false), COALESCE(u.via_websocket, false), COALESCE(u.cached_tokens, 0), COALESCE(u.image_input_tokens, 0), COALESCE(u.image_output_tokens, 0), COALESCE(u.cached_image_input_tokens, 0), COALESCE(u.cache_write_5m_tokens, 0), COALESCE(u.cache_write_1h_tokens, 0), COALESCE(u.service_tier, ''),
@@ -6122,7 +6162,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 	            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
+	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 	            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 	           FROM usage_logs u
 	           LEFT JOIN accounts a ON u.account_id = a.id
@@ -6140,16 +6180,23 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 		l := &UsageLog{}
 		var credentialRaw interface{}
 		var createdAtRaw interface{}
-		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
+		var nullUpstreamResponseModel sql.NullString
+		var nullUpstreamModelMismatch sql.NullBool
+		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens, &l.ServiceTier,
 			&l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier,
 			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel,
-			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
+			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
+		if nullUpstreamModelMismatch.Valid {
+			mismatch := nullUpstreamModelMismatch.Bool
+			l.UpstreamModelMismatch = &mismatch
+		}
 		l.CreatedAt, err = parseDBTimeValue(createdAtRaw)
 		if err != nil {
 			return nil, err
@@ -6201,6 +6248,9 @@ type UsageLogFilter struct {
 	TurnStateLength   *int
 	TurnStateEcho     string
 	TurnStateStripped *bool
+	// UpstreamModelMismatchOnly 上游响应模型审计筛选：nil=全部, true=仅不一致,
+	// false=仅一致。NULL（上游未自报）两种取值下都不命中。
+	UpstreamModelMismatchOnly *bool
 }
 
 // HasDimensionFilter 报告过滤条件里是否带有"维度"约束(账号/密钥/模型/端点/搜索词/形态开关等)。
@@ -6211,7 +6261,7 @@ func (f UsageLogFilter) HasDimensionFilter() bool {
 		f.Model != "" || f.Endpoint != "" || f.APIKeyID != nil || f.AccountID != nil ||
 		f.FastOnly != nil || f.StreamOnly != nil || f.CompactOnly != nil ||
 		f.CompactionHistoryOnly != nil || f.RetryOnly != nil || f.ViaWebsocketOnly != nil ||
-		f.UltraOnly != nil || f.Query != "" ||
+		f.UltraOnly != nil || f.UpstreamModelMismatchOnly != nil || f.Query != "" ||
 		f.TurnState != "" || f.TurnStateLength != nil || f.TurnStateEcho != "" || f.TurnStateStripped != nil
 }
 
@@ -6265,6 +6315,7 @@ func (f UsageLogFilter) DimensionKey() string {
 	}
 	writeStr("tsecho", f.TurnStateEcho)
 	writeBool("tsstrip", f.TurnStateStripped)
+	writeBool("mismatch", f.UpstreamModelMismatchOnly)
 	writeStr("q", f.Query)
 	return b.String()
 }
@@ -6370,6 +6421,11 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 		p := addArg(*f.TurnStateStripped)
 		parts = append(parts, fmt.Sprintf(`COALESCE(u.turn_state_stripped, false) = %s`, p))
 	}
+	if f.UpstreamModelMismatchOnly != nil {
+		p := addArg(*f.UpstreamModelMismatchOnly)
+		// 严格三态：NULL（上游未自报）在 true/false 两种取值下都不命中。
+		parts = append(parts, fmt.Sprintf(`u.upstream_model_mismatch = %s`, p))
+	}
 	if f.Query != "" {
 		p := addArg("%" + f.Query + "%")
 		parts = append(parts, fmt.Sprintf(`(
@@ -6379,6 +6435,7 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 			OR LOWER(COALESCE(u.upstream_error_kind, '')) LIKE LOWER(%[1]s)
 			OR LOWER(COALESCE(u.model, '')) LIKE LOWER(%[1]s)
 			OR LOWER(COALESCE(u.effective_model, '')) LIKE LOWER(%[1]s)
+			OR LOWER(COALESCE(u.upstream_response_model, '')) LIKE LOWER(%[1]s)
 			OR LOWER(COALESCE(u.inbound_endpoint, '')) LIKE LOWER(%[1]s)
 				OR LOWER(COALESCE(u.upstream_endpoint, '')) LIKE LOWER(%[1]s)
 				OR LOWER(COALESCE(u.api_key_name, '')) LIKE LOWER(%[1]s)
@@ -6508,7 +6565,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 	where += fmt.Sprintf(` ORDER BY u.created_at DESC LIMIT $%d OFFSET $%d`, paramIdx, paramIdx+1)
 	args = append(args, f.PageSize, offset)
 
-	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
+	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), COALESCE(u.upstream_response_model, ''), u.upstream_model_mismatch, u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
 	            COALESCE(u.input_tokens, 0), COALESCE(u.output_tokens, 0), COALESCE(u.reasoning_tokens, 0),
 	            COALESCE(u.first_token_ms, 0), COALESCE(u.ws_acquire_ms, 0), COALESCE(u.reasoning_effort, ''), COALESCE(u.inbound_endpoint, ''),
 	            COALESCE(u.upstream_endpoint, ''), COALESCE(u.stream, false), COALESCE(u.compact, false), COALESCE(u.has_compaction_history, false), COALESCE(u.ultra, false), COALESCE(u.via_websocket, false), COALESCE(u.cached_tokens, 0), COALESCE(u.image_input_tokens, 0), COALESCE(u.image_output_tokens, 0), COALESCE(u.cached_image_input_tokens, 0), COALESCE(u.cache_write_5m_tokens, 0), COALESCE(u.cache_write_1h_tokens, 0), COALESCE(u.service_tier, ''),
@@ -6519,7 +6576,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 			            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 			            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-			            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
+			            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 			            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at,
 	            COUNT(*) OVER() AS total_count
 	           FROM usage_logs u
@@ -6537,15 +6594,22 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 		l := &UsageLog{}
 		var credentialRaw interface{}
 		var createdAtRaw interface{}
-		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
+		var nullUpstreamResponseModel sql.NullString
+		var nullUpstreamModelMismatch sql.NullBool
+		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens,
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
 			&l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
-			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
+			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw, &result.Total); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
+		if nullUpstreamModelMismatch.Valid {
+			mismatch := nullUpstreamModelMismatch.Bool
+			l.UpstreamModelMismatch = &mismatch
+		}
 		l.CreatedAt, err = parseDBTimeValue(createdAtRaw)
 		if err != nil {
 			return nil, err
@@ -6564,7 +6628,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 	where, args := db.buildUsageLogWhere(f)
 	where += ` ORDER BY u.created_at DESC`
 
-	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
+	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), COALESCE(u.upstream_response_model, ''), u.upstream_model_mismatch, u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
 			COALESCE(u.input_tokens, 0), COALESCE(u.output_tokens, 0), COALESCE(u.reasoning_tokens, 0),
 			COALESCE(u.first_token_ms, 0), COALESCE(u.ws_acquire_ms, 0), COALESCE(u.reasoning_effort, ''), COALESCE(u.inbound_endpoint, ''),
 			COALESCE(u.upstream_endpoint, ''), COALESCE(u.stream, false), COALESCE(u.compact, false), COALESCE(u.has_compaction_history, false), COALESCE(u.ultra, false), COALESCE(u.via_websocket, false), COALESCE(u.cached_tokens, 0), COALESCE(u.image_input_tokens, 0), COALESCE(u.image_output_tokens, 0), COALESCE(u.cached_image_input_tokens, 0), COALESCE(u.cache_write_5m_tokens, 0), COALESCE(u.cache_write_1h_tokens, 0), COALESCE(u.service_tier, ''),
@@ -6575,7 +6639,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0),
 			COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
-			COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.upstream_response_model, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
+			COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.window_number, ''), u.turn_state_length, COALESCE(u.turn_state_echo, ''), COALESCE(u.turn_state_stripped, false),
 			COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 		FROM usage_logs u
 		LEFT JOIN accounts a ON u.account_id = a.id
@@ -6592,15 +6656,22 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 		l := &UsageLog{}
 		var credentialRaw interface{}
 		var createdAtRaw interface{}
-		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
+		var nullUpstreamResponseModel sql.NullString
+		var nullUpstreamModelMismatch sql.NullBool
+		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens,
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
 			&l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
-			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.UpstreamResponseModel, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
+			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
+		if nullUpstreamModelMismatch.Valid {
+			mismatch := nullUpstreamModelMismatch.Bool
+			l.UpstreamModelMismatch = &mismatch
+		}
 		l.CreatedAt, err = parseDBTimeValue(createdAtRaw)
 		if err != nil {
 			return nil, err

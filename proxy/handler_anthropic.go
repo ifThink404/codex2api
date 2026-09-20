@@ -812,7 +812,6 @@ func (h *Handler) Messages(c *gin.Context) {
 			serviceTier = EffectiveRequestedServiceTier(codexBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
 			upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
 			codexBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, codexBody)
-			ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, attemptEffectiveModel)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})
@@ -1102,10 +1101,10 @@ func (h *Handler) Messages(c *gin.Context) {
 			// Anthropic Messages 信封把模型放在 message.model：流式只在 message_start
 			// 里出现一次，非流式在整体响应体顶层；没有「终态覆盖」这回事，取到一次就够，
 			// 后续帧（content_block_* / message_delta / message_stop）连解析都省掉。
-			var upstreamResponseModel string
+			responseModelObserver := &upstreamResponseModelObserver{}
 			observeNativeMessagesPayload := func(payload []byte) {
-				if upstreamResponseModel == "" {
-					upstreamResponseModel = observeUpstreamResponseModel("", payload, "")
+				if responseModelObserver.Model() == "" {
+					observeUpstreamResponseModelPayload(responseModelObserver, payload, "")
 				}
 			}
 			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolMessages, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), observeNativeMessagesPayload)
@@ -1144,7 +1143,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					AccountID: account.ID(), Endpoint: "/v1/messages", Model: model,
 					EffectiveModel: attemptEffectiveModel, StatusCode: outcome.logStatusCode,
 					DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-					UpstreamResponseModel: upstreamResponseModel,
+					UpstreamResponseModel: responseModelObserver.Model(),
 					InboundEndpoint:       "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
 					Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 					IsRetryAttempt: true, PromptPolicyIncidentID: promptPolicyIncidentID,
@@ -1203,7 +1202,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model,
 				EffectiveModel: attemptEffectiveModel, StatusCode: outcome.logStatusCode,
 				DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-				UpstreamResponseModel: upstreamResponseModel,
+				UpstreamResponseModel: responseModelObserver.Model(),
 				InboundEndpoint:       "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
 				Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 				PromptPolicyIncidentID: promptPolicyIncidentID,
@@ -1248,7 +1247,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		var usage *UsageInfo
 		var actualServiceTier string
 		// 上游自报模型：/v1/messages 翻译路径的上游是 Responses 信封，记录它自己声明的模型。
-		var upstreamResponseModel string
+		responseModelObserver := &upstreamResponseModelObserver{}
 		ttftRecorded := false
 		gotTerminal := false
 		deltaCharCount := 0
@@ -1294,7 +1293,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
-				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
+				observeUpstreamResponseModelPayload(responseModelObserver, data, eventType)
 
 				// TTFT 跟踪
 				ttftGuard.MarkProgress(eventType)
@@ -1454,7 +1453,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			readErr = readSSEStreamWithContinuousRetryKeepalive(readCtx, resp.Body, func(sseEvent string, data []byte) bool {
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
-				upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
+				observeUpstreamResponseModelPayload(responseModelObserver, data, eventType)
 				if eventType == "error" {
 					terminalFailurePayload = terminalUpstreamErrorPayload(data)
 					gotTerminal = true
@@ -1553,7 +1552,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model, EffectiveModel: attemptEffectiveModel,
-				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: upstreamResponseModel,
+				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: responseModelObserver.Model(),
 				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -1657,7 +1656,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			DurationMs:             totalDuration,
 			FirstTokenMs:           firstTokenMs,
 			ReasoningEffort:        reasoningEffort,
-			UpstreamResponseModel:  upstreamResponseModel,
+			UpstreamResponseModel:  responseModelObserver.Model(),
 			InboundEndpoint:        "/v1/messages",
 			UpstreamEndpoint:       upstreamEndpoint,
 			Stream:                 isStream,

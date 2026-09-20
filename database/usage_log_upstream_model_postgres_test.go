@@ -129,7 +129,7 @@ func postgresUsageLogNewColumnsBackfill(ctx context.Context, t *testing.T, db *D
 	}
 }
 
-// postgresUsageLogNewColumnWidths 锁住两列的宽度：VARCHAR(100) / VARCHAR(32) 在
+// postgresUsageLogNewColumnWidths 锁住两列的宽度：VARCHAR(200) / VARCHAR(32) 在
 // PostgreSQL 上按字符计。写入侧的截断上限就是照这两个列宽定的，超一个字符整条
 // 批量 INSERT 会回滚，失败批次又被原样放回缓冲头部，一条脏数据堵死整条日志写入。
 func postgresUsageLogNewColumnWidths(ctx context.Context, t *testing.T, db *DB) {
@@ -151,8 +151,8 @@ func postgresUsageLogNewColumnWidths(ctx context.Context, t *testing.T, db *DB) 
 		Scan(&model, &windowNumber); err != nil {
 		t.Fatalf("an over-long value must be clamped, not rejected: %v", err)
 	}
-	if got := len([]rune(model)); got != usageLogTextMaxLen {
-		t.Fatalf("upstream_response_model kept %d runes, want %d", got, usageLogTextMaxLen)
+	if got := len([]rune(model)); got != upstreamResponseModelMaxLen {
+		t.Fatalf("upstream_response_model kept %d runes, want %d", got, upstreamResponseModelMaxLen)
 	}
 	if got := len([]rune(windowNumber)); got != usageLogWindowNumberMaxLen {
 		t.Fatalf("window_number kept %d runes, want %d", got, usageLogWindowNumberMaxLen)
@@ -161,8 +161,8 @@ func postgresUsageLogNewColumnWidths(ctx context.Context, t *testing.T, db *DB) 
 	// 绕开写入侧截断直接写宽值：列宽约束必须真的落在 PostgreSQL 上。
 	if _, err := db.conn.ExecContext(ctx,
 		`INSERT INTO usage_logs (endpoint, model, upstream_response_model) VALUES ('/v1/responses', 'gpt-5.4', $1)`,
-		strings.Repeat("x", usageLogTextMaxLen+1)); err == nil {
-		t.Fatalf("upstream_response_model must be VARCHAR(%d)", usageLogTextMaxLen)
+		strings.Repeat("x", upstreamResponseModelMaxLen+1)); err == nil {
+		t.Fatalf("upstream_response_model must be VARCHAR(%d)", upstreamResponseModelMaxLen)
 	}
 	if _, err := db.conn.ExecContext(ctx,
 		`INSERT INTO usage_logs (endpoint, model, window_number) VALUES ('/v1/responses', 'gpt-5.4', $1)`,

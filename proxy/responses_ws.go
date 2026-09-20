@@ -830,7 +830,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		// WS 路径交给 ExecuteRequest 的 stateless 槽位池处理。
 		upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
 		upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
-		ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, effectiveModel)
 		upstreamSessionID := resolveUpstreamSessionID(apiKeyID, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, useWebsocket)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
@@ -1199,7 +1198,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	var usage *UsageInfo
 	var actualServiceTier string
 	// 上游自报模型：仅记录上游响应信封里自己声明的模型，与请求模型不一致时在用量页标出。
-	var upstreamResponseModel string
+	responseModelObserver := &upstreamResponseModelObserver{}
 	ttftRecorded := false
 	// contentTokenSeen 用严格判定（与宽松首字统计无关）。宽松口径下
 	// codex.rate_limits / metadata 会置位 ttftRecorded。若用它们做「首包前」判断，
@@ -1219,6 +1218,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	var terminalFailureClientPayload []byte
 	var preContentErrorCandidate []byte
 	var completedResponsePayload []byte
+
 	outputCollector := newResponseOutputCollector()
 	emptyIncomplete := &emptyIncompleteTracker{}
 	terminalFailureEventType := ""
@@ -1274,7 +1274,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		outputCollector.Add(data)
 		parsed := gjson.ParseBytes(data)
 		eventType := normalizedUpstreamSSEEventType(sseEvent, data)
-		upstreamResponseModel = observeUpstreamResponseModel(upstreamResponseModel, data, eventType)
+		observeUpstreamResponseModelPayload(responseModelObserver, data, eventType)
 		eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
 		clientData := data
 		if options != nil && options.transformClientEvent != nil {
@@ -1305,6 +1305,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if image, ok := extractImageFromOutputItemDone(data, model); ok {
 			imageLogInfo = mergeImageUsageLogInfo(imageLogInfo, imageUsageLogInfoFromImage(image))
 		}
+
 		if isResponsesSuccessTerminalEvent(eventType) {
 			usage = extractUsageFromResult(parsed.Get("response.usage"))
 			if tier := parsed.Get("response.service_tier").String(); tier != "" {
@@ -1515,7 +1516,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		clearNewAPIUpstreamCyberPolicyDecision(c)
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
-			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: upstreamResponseModel,
+			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: responseModelObserver.Model(),
 			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -1604,7 +1605,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		DurationMs:             totalDuration,
 		FirstTokenMs:           firstTokenMs,
 		ReasoningEffort:        reasoningEffort,
-		UpstreamResponseModel:  upstreamResponseModel,
+		UpstreamResponseModel:  responseModelObserver.Model(),
 		InboundEndpoint:        "/v1/responses",
 		UpstreamEndpoint:       "/v1/responses",
 		Stream:                 true,
@@ -1632,6 +1633,8 @@ func (h *Handler) streamResponsesWSUpstream(
 		logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 	}
 	applyImageUsageLogInfo(logInput, imageLogInfo)
+	// WS 轮终态记账：attempt 实发模型优先（effectiveModel），兜底客户端请求模型。
+	applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(effectiveModel, model), account.ID())
 	h.logUsageForRequest(c, logInput)
 
 	resp.Body.Close()

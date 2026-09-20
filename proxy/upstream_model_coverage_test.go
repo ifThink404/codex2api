@@ -372,6 +372,15 @@ func TestUsageLogRecordsUpstreamModelOnEveryBranch(t *testing.T) {
 					t.Fatalf("UpstreamResponseModel = %q, want %q（endpoint=%s stream=%t）",
 						entry.UpstreamResponseModel, tc.want, entry.Endpoint, entry.Stream)
 				}
+				// Every declared fixture differs from its sent model. Synthesized
+				// OAuth envelopes must leave both audit fields absent.
+				if tc.want == "" {
+					if entry.UpstreamModelMismatch != nil {
+						t.Fatalf("no declaration must have nil mismatch, got %v", *entry.UpstreamModelMismatch)
+					}
+				} else if entry.UpstreamModelMismatch == nil || !*entry.UpstreamModelMismatch {
+					t.Fatalf("different upstream declaration must record mismatch (endpoint=%s stream=%t)", entry.Endpoint, entry.Stream)
+				}
 				wantWindow := ""
 				if tc.official {
 					wantWindow = coverageWindowNumber
