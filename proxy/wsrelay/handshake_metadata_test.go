@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func TestCodexHandshakeSnapshotKeepsIdentityAndBoundsMetadata(test *testing.T) {
@@ -40,4 +41,23 @@ func TestCodexHandshakeSnapshotKeepsIdentityAndBoundsMetadata(test *testing.T) {
 	headers.Set("X-Codex-Window-Id", "child:3")
 	headers.Set("X-Codex-Turn-State", "next-token")
 	require.Equal(test, profile, websocketConnectionProfile(headers))
+}
+
+func TestProjectIdentityHandshakeProfile(t *testing.T) {
+	headers := http.Header{"X-Codex-Turn-Metadata": []string{`{"project_id":"mapped-project","workspace_id":"mapped-workspace"}`}}
+	prepareCodexHandshakeSnapshot(headers)
+	require.Equal(t, "mapped-project", gjson.Get(headers.Get("X-Codex-Turn-Metadata"), "project_id").String())
+	profile := websocketConnectionProfile(headers)
+	for _, field := range []string{"project_id", "workspace_id"} {
+		other := headers.Clone()
+		raw, _ := sjson.Set(other.Get("X-Codex-Turn-Metadata"), field, "another")
+		other.Set("X-Codex-Turn-Metadata", raw)
+		require.NotEqual(t, profile, websocketConnectionProfile(other))
+	}
+	// Stateless pooled connections carry request-specific projects on frames.
+	headers.Set("X-Codex-Project-Id", "mapped-project")
+	headers.Set("X-Codex-Workspace-Id", "mapped-workspace")
+	stripCodexFrameScopedHandshakeHeaders(headers)
+	require.Empty(t, headers.Get("X-Codex-Project-Id"))
+	require.Empty(t, headers.Get("X-Codex-Workspace-Id"))
 }

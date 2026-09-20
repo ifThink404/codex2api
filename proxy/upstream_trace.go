@@ -138,6 +138,11 @@ func beginUpstreamTrace(ctx context.Context, account *auth.Account, proxyURL str
 	a.mu.Lock()
 	a.current = attempt
 	a.mu.Unlock()
+	if projects := projectIdentityFrom(ctx); projects != nil {
+		projects.mu.Lock()
+		projects.publish(ctx)
+		projects.mu.Unlock()
+	}
 	header := account.GetUpstreamRequestIDHeader()
 	observer := &TransportObserver{audit: a, attempt: attempt}
 	return func(resp *http.Response) {

@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"net/http"
 	"strings"
 
@@ -16,8 +15,7 @@ func stripCodexProjectIdentifiers(raw string) (string, bool) {
 	}
 	changed := false
 	metadata.ForEach(func(key, value gjson.Result) bool {
-		switch key.String() {
-		case "project_id", "projectId", "workspace_id":
+		if projectControlField(key.String()) != "" {
 			if updated, err := sjson.Delete(raw, key.String()); err == nil && updated != raw {
 				raw = updated
 				changed = true
@@ -29,9 +27,6 @@ func stripCodexProjectIdentifiers(raw string) (string, bool) {
 }
 
 func StripCodexProjectMetadata(body []byte) []byte {
-	if !bytes.Contains(body, []byte("project_id")) && !bytes.Contains(body, []byte("projectId")) && !bytes.Contains(body, []byte("workspace_id")) && !bytes.Contains(body, []byte(`\u`)) {
-		return body
-	}
 	metadata := gjson.GetBytes(body, "client_metadata")
 	if !metadata.IsObject() {
 		return body
@@ -70,7 +65,7 @@ func StripCodexProjectMetadata(body []byte) []byte {
 func StripCodexProjectMetadataHeaders(headers http.Header) {
 	for name, values := range headers {
 		switch {
-		case strings.EqualFold(name, "X-Codex-Project-Id"), strings.EqualFold(name, "X-Codex-Workspace-Id"):
+		case projectControlField(name) != "":
 			delete(headers, name)
 		case strings.EqualFold(name, codexTurnMetadataHeader):
 			copied := false

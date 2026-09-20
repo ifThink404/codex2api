@@ -54,7 +54,7 @@ test('turn-state historical and cleared values do not fabricate mapping or trans
 test('outbound snapshots exclude gateway mapping and consistency diagnostics without mutating exports', () => {
   const mapping = Object.freeze({ changes: [{ original: 'original-turn', outbound: 'mapped-turn' }] })
   const source = Object.freeze({
-    format_version: 2, session_consistency: 'matched', truncated: true, account_mapping: mapping,
+    format_version: 2, session_consistency: 'matched', truncated: true, account_mapping: mapping, project_mapping: mapping,
     http: { headers: { 'Session-Id': 'session' } },
     ws_handshake: { headers: { 'X-Codex-Turn-Metadata': '{"turn_id":"mapped-turn"}' } },
     body: { client_metadata: { turn_id: 'mapped-turn' } },
@@ -66,6 +66,7 @@ test('outbound snapshots exclude gateway mapping and consistency diagnostics wit
   assert.equal(snapshot.body.client_metadata.turn_id, 'mapped-turn')
   assert.equal(snapshot.ws_handshake.headers['X-Codex-Turn-Metadata'], '{"turn_id":"mapped-turn"}')
   assert.equal(local.account_mapping, mapping)
+  assert.equal(local.project_mapping, mapping)
   assert.equal(local.format_version, 2)
   assert.equal(local.session_consistency, 'matched')
   assert.equal(local.truncated, true)

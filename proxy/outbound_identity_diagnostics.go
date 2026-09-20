@@ -32,6 +32,7 @@ type outboundIdentityDiagnostic struct {
 	WSHandshake        *OutboundHeaderDiagnostic       `json:"ws_handshake,omitempty"`
 	Body               *outboundBodyDiagnostic         `json:"body,omitempty"`
 	AccountMapping     *codexAccountIdentityDiagnostic `json:"account_mapping,omitempty"`
+	ProjectMapping     *projectIdentityDiagnostic      `json:"project_mapping,omitempty"`
 }
 
 func (diagnostic outboundBodyDiagnostic) MarshalJSON() ([]byte, error) {

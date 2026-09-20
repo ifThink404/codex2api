@@ -185,6 +185,7 @@ type turnStateStream struct {
 	state    *turnStateSession
 	pending  []byte
 	terminal error
+	projects *projectStreamBuffer
 }
 
 func (r *turnStateStream) Close() error { return r.body.Close() }
@@ -238,6 +239,15 @@ func (r *turnStateStream) Read(p []byte) (int, error) {
 				return 0, err
 			}
 		}
+		if r.terminal == io.EOF && r.projects != nil {
+			last, err := r.projects.finish()
+			if err != nil {
+				r.pending = nil
+				r.terminal = err
+				return 0, err
+			}
+			r.pending = append(r.pending, last...)
+		}
 	}
 	if len(r.pending) > 0 {
 		n := copy(p, r.pending)
@@ -271,9 +281,20 @@ func (r *turnStateStream) maskFrame(frame []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if state := projectIdentityFrom(r.ctx); state != nil && state.active {
+		if r.projects == nil {
+			r.projects = &projectStreamBuffer{ctx: r.ctx, account: r.account, channels: make(map[string]*projectDeltaChannel)}
+		}
+		return r.projects.push(frame, encoded)
+	}
 	if bytes.Equal(encoded, data) {
 		return frame, nil
 	}
+	return rewriteSSEFrame(frame, encoded), nil
+}
+
+func rewriteSSEFrame(frame, encoded []byte) []byte {
+	lines := bytes.SplitAfter(frame, []byte("\n"))
 	var output []byte
 	replaced := false
 	for _, line := range lines {
@@ -293,5 +314,5 @@ func (r *turnStateStream) maskFrame(frame []byte) ([]byte, error) {
 			output = append(output, line...)
 		}
 	}
-	return output, nil
+	return output
 }

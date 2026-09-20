@@ -555,6 +555,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
+	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	requestBody, headers = PrepareCodexOutboundMetadata(account, requestBody, headers)
 	headers = CodexRequestMetadataHeaders(headers, requestBody)
 	// lite 信号收敛：签名在 payload 规则改写后采集（规则可注入/删除 WS 标记，改写
@@ -704,7 +708,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 	endpoint := CodexBaseURL + "/responses"
 	requestBody, headers = PrepareCodexTurnStateOutbound(ctx, account, requestBody, headers)
-	requestBody, headers = FinalizeCodexOutboundMetadata(requestBody, headers)
+	requestBody, headers = FinalizeCodexOutboundMetadata(requestBody, headers, ctx)
 
 	// 出站字节在选客户端之前定稿：send() 会因 Agent Identity 401 重注册而重放，
 	// 两次重放必须发同一份字节。routing hint 等需要读字段的改写点继续用明文
@@ -729,7 +733,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		// ==================== 请求头（伪装 Codex CLI） ====================
 		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers, fingerprint)
 		ApplyCodexAnalyticsHeader(req.Header, requestBody)
-		_, req.Header = FinalizeCodexOutboundMetadata(requestBody, req.Header)
+		_, req.Header = FinalizeCodexOutboundMetadata(requestBody, req.Header, ctx)
 		ApplyCodexAccountAttestation(req.Header, account)
 		// Content-Encoding 在通用头装配之后设置：真实客户端也是在编码完成时才补这个头
 		// （codex-rs/http-client/src/request.rs prepare_encoded_json），且账号自定义头
@@ -791,6 +795,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
 	defer func() { finishTurnStateResponse(ctx, account, &upstreamResponse, &upstreamErr) }()
+	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	requestBody, headers = PrepareCodexTurnStateOutbound(ctx, account, requestBody, headers)
 	if ctx == nil {
 		ctx = context.Background()
@@ -847,7 +855,7 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	send := func(body []byte) (*http.Response, error) {
 		body = StripCodexProjectMetadata(body)
 		body, headers = PrepareCodexTurnStateOutbound(ctx, account, body, headers)
-		body, _ = FinalizeCodexOutboundMetadata(body, headers)
+		body, _ = FinalizeCodexOutboundMetadata(body, headers, ctx)
 		if err := ValidateSessionOutboundRequest(ctx, account, body); err != nil {
 			return nil, err
 		}
@@ -856,7 +864,7 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 			return nil, ErrInternalError("创建请求失败", err)
 		}
 		applyOpenAIResponsesRequestHeaders(req, account, apiKey, headers)
-		req.Header = finalizeRelayOutboundHeaders(body, req.Header)
+		req.Header = finalizeRelayOutboundHeaders(body, req.Header, ctx)
 		if err := ValidateCodexOutboundMetadata(body, req.Header); err != nil {
 			return nil, err
 		}
@@ -974,6 +982,10 @@ func isCodexAccessRestrictedResponse(resp *http.Response) bool {
 // 上游自己的 compact 端点，从而让没有官方 Codex OAuth 账号、仅接入中转的用户也能
 // 触发上下文自动压缩（参见 issue #174）。compact 始终为非流式。
 func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
+	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1012,6 +1024,7 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses/compact")
 	requestBody = StripCodexProjectMetadata(requestBody)
 	requestBody, headers = PrepareCodexTurnStateOutbound(ctx, account, requestBody, headers)
+	requestBody, headers = FinalizeCodexOutboundMetadata(requestBody, headers, ctx)
 	metadataBody := requestBody
 	requestBody = prepareCodexCompactFields(requestBody)
 	if err := ValidateSessionOutboundRequest(ctx, account, requestBody); err != nil {
@@ -1022,7 +1035,7 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 		return nil, ErrInternalError("创建请求失败", err)
 	}
 	applyOpenAIResponsesRequestHeaders(req, account, apiKey, headers)
-	req.Header = finalizeRelayOutboundHeaders(metadataBody, req.Header)
+	req.Header = finalizeRelayOutboundHeaders(metadataBody, req.Header, ctx)
 	if err := ValidateCodexOutboundMetadata(requestBody, req.Header); err != nil {
 		return nil, err
 	}
@@ -1089,6 +1102,10 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	// 顶层 type 是 WS 事件信封字段，compact HTTP 端点同样不接受，兜底删除(issue #548)。
 	requestBody, _ = sjson.DeleteBytes(requestBody, "type")
 	requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, false, responsesLite)
+	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	// 指纹收敛：与 ExecuteRequest 同样在请求体定稿后、构造出站请求前改写
 	// client_metadata。漏掉这一步会让 compact 路径只收敛请求头、请求体仍带客户端
 	// 真实标识，上游看到「头说设备 A、体说设备 B」这种真实客户端不会有的矛盾。
@@ -1122,7 +1139,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	// compact 端点
 	endpoint := CodexBaseURL + "/responses/compact"
 	requestBody, headers = PrepareCodexTurnStateOutbound(ctx, account, requestBody, headers)
-	requestBody, headers = FinalizeCodexOutboundMetadata(requestBody, headers)
+	requestBody, headers = FinalizeCodexOutboundMetadata(requestBody, headers, ctx)
 	// Compact does not accept client_metadata; retain the sanitized mapped
 	// snapshot in headers only, never regenerate it after this boundary.
 	metadataBody := requestBody
@@ -1144,7 +1161,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 
 	applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers, fingerprint)
 	ApplyCodexAnalyticsHeader(req.Header, requestBody)
-	_, req.Header = FinalizeCodexOutboundMetadata(metadataBody, req.Header)
+	_, req.Header = FinalizeCodexOutboundMetadata(metadataBody, req.Header, ctx)
 	ApplyCodexAccountAttestation(req.Header, account)
 	// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。
 	ApplyCodexRoutingHint(req.Header, account, requestBody)

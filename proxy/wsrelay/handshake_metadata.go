@@ -27,7 +27,7 @@ func prepareCodexHandshakeSnapshot(headers http.Header) {
 		return
 	}
 	bounded := "{}"
-	for _, field := range []string{"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "installation_id", "thread_source", "subagent_kind", "analytics_enabled"} {
+	for _, field := range []string{"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "installation_id", "thread_source", "subagent_kind", "analytics_enabled", "project_id", "workspace_id"} {
 		value := gjson.Get(raw, field)
 		if value.Exists() && !value.IsObject() && !value.IsArray() && len(value.Raw) <= 512 {
 			bounded, _ = sjson.SetRaw(bounded, field, value.Raw)
@@ -47,7 +47,7 @@ func stripCodexHandshakeSnapshotFromProfile(headers http.Header) {
 	if enabled := metadata.Get("analytics_enabled"); enabled.Type == gjson.True || enabled.Type == gjson.False {
 		headers.Set("Codex-Profile-Analytics-Enabled", enabled.Raw)
 	}
-	for _, field := range []string{"session_id", "thread_id", "installation_id", "thread_source", "subagent_kind", "parent_thread_id", "forked_from_thread_id"} {
+	for _, field := range []string{"session_id", "thread_id", "installation_id", "thread_source", "subagent_kind", "parent_thread_id", "forked_from_thread_id", "project_id", "workspace_id"} {
 		if value := metadata.Get(field); value.Type == gjson.String && value.String() != "" {
 			headers.Set("Codex-Profile-"+field, value.String())
 		}

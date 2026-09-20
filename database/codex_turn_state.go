@@ -114,6 +114,7 @@ func (db *DB) ensureCodexTurnStateTable(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS codex_response_ids (alias TEXT PRIMARY KEY, source_key TEXT NOT NULL UNIQUE, binding TEXT NOT NULL, ciphertext TEXT NOT NULL, expires_at BIGINT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_codex_response_ids_expiry ON codex_response_ids(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS codex_protocol_ids (public_key TEXT PRIMARY KEY, upstream_key TEXT NOT NULL UNIQUE, ciphertext TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS codex_project_registry (source_key TEXT PRIMARY KEY)`,
 	} {
 		if _, err := db.conn.ExecContext(ctx, statement); err != nil {
 			return err
@@ -124,7 +125,7 @@ func (db *DB) ensureCodexTurnStateTable(ctx context.Context) error {
 		err := tx.QueryRowContext(ctx, `SELECT secret FROM codex_turn_state_secret WHERE id=1`).Scan(&secret)
 		if errors.Is(err, sql.ErrNoRows) {
 			var count int
-			if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM codex_turn_states) + (SELECT COUNT(*) FROM codex_response_ids) + (SELECT COUNT(*) FROM codex_protocol_ids)`).Scan(&count); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM codex_turn_states) + (SELECT COUNT(*) FROM codex_response_ids) + (SELECT COUNT(*) FROM codex_protocol_ids) + (SELECT COUNT(*) FROM codex_project_registry)`).Scan(&count); err != nil {
 				return err
 			}
 			if count != 0 {

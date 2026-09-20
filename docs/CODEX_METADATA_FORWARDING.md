@@ -11,13 +11,15 @@
 
 独立 `X-Codex-Installation-Id` 仍不凭空生成。HTTP 转发 `X-Codex-Window-Id`；仅设备模式不改写窗口身份。`Session-Id` 与 `prompt_cache_key` 的既有缓存隔离策略不变；账号自定义请求头仍具有覆盖优先级，但不能绕过出站项目标识清理。
 
-## 出站项目标识清理
+## 出站项目标识映射
 
-所有指纹模式（包括 `off`）均移除客户端元数据中的 `project_id`、`projectId`、`workspace_id`。处理范围为 `client_metadata` 平铺键、内嵌 `x-codex-turn-metadata`（兼容 `x_codex_turn_metadata`，支持 JSON 字符串和对象），以及 `X-Codex-Turn-Metadata` 兼容头。不转发独立的 `X-Codex-Project-Id`、`X-Codex-Workspace-Id`，账号自定义头同样不能重新注入这些出站标识。
+所有指纹模式（包括 `off`）的项目标识均由[账号级双向映射](codex-project-identity.md)处理。有效 UUID 格式的 `project_id`、`projectId`、`workspace_id`、`workspaceId` 改为保留账号别名，覆盖 `client_metadata` 平铺键、内嵌 `x-codex-turn-metadata`（兼容 `x_codex_turn_metadata`，支持 JSON 字符串和对象）及可转发的 `X-Codex-Turn-Metadata` 头。客户端声明过的独立 `X-Codex-Project-Id`、`X-Codex-Workspace-Id` 使用同一可信别名；账号自定义头不能覆盖或重新注入原值。
 
-清理覆盖原生 HTTP、WS 当前请求帧、compact 与 Responses 中转账号出站。它不是选号条件，不修改入站原始数据、本地项目管理 ID、根会话、线程、窗口序号或缓存键；也不递归删除提示词、工具参数中的同名业务字段。`workspaces` 和正文工作目录沿用既有行为，API 作用域头 `OpenAI-Project` 不属于这三个客户端项目标识，不在此规则中删除。
+映射覆盖原生 HTTP、WS 当前请求帧、compact 与 Responses 中转账号出站。compact 不支持正文 `client_metadata`，映射后的元数据仅投影到允许的头。WS 保留项目握手身份时将其纳入连接复用校验，无状态连接池仍使用逐帧元数据。内部选号、找根、绑定继续使用原始入站身份；本地项目管理 ID、根会话、线程和窗口序号不受影响。`workspaces` 和正文工作目录沿用既有行为，API 作用域头 `OpenAI-Project` 不是本地项目 UUID。
 
-仅解析元数据局部，未命中时返回原请求字节，不做整包 JSON 重建，不访问数据库或网络。WS 每一帧独立清理，不能把上一帧元数据用作当前帧的项目身份来源。
+旧删除函数保留为防御边界：先清理未受信任值，最终仅由本次持久化映射填回别名。无效项目值、未知控制嵌套容器、非协议顶层扩展继续移除。WS 每帧独立取快照，不把旧握手中当前帧缺失的项目字段补回。
+
+正文、历史、工具内容中的已登记 UUID 与协议元数据复用同一映射：a → b → a；原值/别名对照仅写入本地改写诊断。未知普通 UUID 和不透明签名/密文不纳入该改写。
 
 ## 每次请求的原始快照
 

@@ -333,7 +333,15 @@ func PrepareCodexOutboundMetadata(account *auth.Account, body []byte, headers ht
 
 // FinalizeCodexOutboundMetadata projects already-mapped values only. It must
 // never hash values again: retries and WS frames reuse the same mapping.
-func FinalizeCodexOutboundMetadata(body []byte, headers http.Header) ([]byte, http.Header) {
+func FinalizeCodexOutboundMetadata(body []byte, headers http.Header, contexts ...context.Context) ([]byte, http.Header) {
+	body, headers = finalizeCodexOutboundMetadata(body, headers)
+	if len(contexts) > 0 {
+		body, headers = finalizeProjectControlMetadata(contexts[0], body, headers)
+	}
+	return body, headers
+}
+
+func finalizeCodexOutboundMetadata(body []byte, headers http.Header) ([]byte, http.Header) {
 	headers = headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
@@ -397,9 +405,9 @@ func FinalizeCodexOutboundMetadata(body []byte, headers http.Header) ([]byte, ht
 	return body, headers
 }
 
-func finalizeRelayOutboundHeaders(body []byte, headers http.Header) http.Header {
+func finalizeRelayOutboundHeaders(body []byte, headers http.Header, contexts ...context.Context) http.Header {
 	original := headers.Clone()
-	_, headers = FinalizeCodexOutboundMetadata(body, headers)
+	_, headers = FinalizeCodexOutboundMetadata(body, headers, contexts...)
 	// Preserve provider capability choices: align carriers that are sent,
 	// without turning the relay's header passthrough feature on implicitly.
 	for _, name := range codexOutboundMetadataFields {
@@ -496,7 +504,7 @@ func ValidateCodexOutboundMetadata(body []byte, headers http.Header) error {
 			return codexAccountIdentityError("出站身份头与正文不一致，已停止发送：" + field)
 		}
 	}
-	return nil
+	return validateProjectControlMetadata(body, headers)
 }
 
 // Relay providers share the metadata policy, but must not use the native

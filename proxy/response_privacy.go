@@ -45,6 +45,16 @@ func maskResponsePayload(ctx context.Context, account *auth.Account, data []byte
 	if !gjson.ValidBytes(data) || !parsed.IsObject() {
 		return nil, errors.New("invalid upstream response envelope")
 	}
+	// Streaming deltas require cross-event buffering. Their caller restores
+	// them without changing event order; complete JSON envelopes are restored here.
+	if jsonResponse || !projectTextDelta(parsed.Get("type").String()) {
+		var err error
+		data, err = restoreProjectResponse(ctx, account, data)
+		if err != nil {
+			return nil, err
+		}
+		parsed = gjson.ParseBytes(data)
+	}
 	interesting := jsonResponse
 	if !interesting && parsed.IsObject() {
 		parsed.ForEach(func(key, value gjson.Result) bool {
