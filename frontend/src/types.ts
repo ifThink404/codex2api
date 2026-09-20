@@ -335,6 +335,12 @@ export interface AccountRow {
   claude_usage_windows_probed?: boolean
   timezone?: string
   custom_headers?: Record<string, string> | null
+  /** Forced X-Codex-Turn-State injected on every outbound Codex request; empty = off. */
+  codex_turn_state?: string
+  /** Comma-separated model scope for the injection; empty = all models. */
+  codex_turn_state_models?: string
+  /** RFC3339 timestamp of the last time the injected value changed; absent = unknown. */
+  codex_turn_state_set_at?: string
   health_tier?: string
   scheduler_score?: number
   dispatch_score?: number
@@ -1476,6 +1482,8 @@ export interface UpdateAccountSchedulerRequest {
   claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
   claude_client_version?: string | null
   timezone?: string | null
+  codex_turn_state?: string | null
+  codex_turn_state_models?: string | null
 }
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {
@@ -2109,6 +2117,8 @@ export interface SystemSettings {
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
+  codex_turn_state_template_cache_enabled: boolean
+  codex_turn_state_account_mode: 'personal' | 'team' | 'auto' 
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean
@@ -3489,6 +3499,10 @@ export interface UsageLog {
   upstream_request_id?: string
   upstream_proxy_id?: number
   upstream_proxy_name?: string
+  /** X-Codex-Turn-State value the gateway injected on this attempt ("" = none). */
+  injected_turn_state?: string
+  /** X-Codex-Turn-State value observed from the upstream response ("" = none). */
+  upstream_turn_state?: string
   id: number
   account_id: number
   // 上游渠道(codex/grok),写入时固化;历史行回填,可能为空
@@ -3497,6 +3511,8 @@ export interface UsageLog {
   client_user_agent: string
   upstream_user_agent: string
   user_agent_overridden: boolean
+  turn_state_overridden?: boolean
+  turn_state_rewrite_note?: string
   internal_reason: string
   parent_request_id: string
   endpoint: string

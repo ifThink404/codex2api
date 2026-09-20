@@ -324,6 +324,8 @@ type usageLogEntry struct {
 	UpstreamRequestID      string
 	UpstreamProxyID        int64
 	UpstreamProxyName      string
+	InjectedTurnState      string
+	UpstreamTurnState      string
 	StoreUsageLog          bool
 	AccountID              int64
 	CredentialGeneration   int64
@@ -332,6 +334,8 @@ type usageLogEntry struct {
 	ClientUserAgent        string
 	UpstreamUserAgent      string
 	UserAgentOverridden    bool
+	TurnStateOverridden    bool
+	TurnStateRewriteNote   string
 	InternalReason         string
 	ParentRequestID        string
 	Endpoint               string
@@ -1274,12 +1278,16 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS client_user_agent TEXT DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_user_agent TEXT DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS user_agent_overridden BOOLEAN DEFAULT FALSE;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_overridden BOOLEAN DEFAULT FALSE;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS turn_state_rewrite_note TEXT DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS internal_reason VARCHAR(64) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS parent_request_id VARCHAR(128) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS request_id VARCHAR(128) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_request_id VARCHAR(128) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_proxy_id BIGINT DEFAULT 0;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_proxy_name VARCHAR(255) DEFAULT '';
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS injected_turn_state TEXT DEFAULT '';
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_turn_state TEXT DEFAULT '';
 
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS user_billing_mode VARCHAR(32) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS image_unit_price DOUBLE PRECISION DEFAULT 0;
@@ -1488,6 +1496,8 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ALTER COLUMN codex_min_cli_version SET DEFAULT '0.153.3';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_user_agent_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_telemetry_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_turn_state_template_cache_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_turn_state_account_mode VARCHAR(20) DEFAULT 'auto';
 	ALTER TABLE system_settings ALTER COLUMN codex_telemetry_enabled SET DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_telemetry_timing_debug BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ALTER COLUMN codex_telemetry_timing_debug SET DEFAULT FALSE;
@@ -2775,6 +2785,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(claude_config, '{}'),
 		       COALESCE(codex_images_main_model, ''),
 		       COALESCE(codex_telemetry_enabled, false),
+		       COALESCE(codex_turn_state_template_cache_enabled, false),
+		       COALESCE(NULLIF(TRIM(codex_turn_state_account_mode), ''), 'auto'),
 		       COALESCE(codex_oauth_keepalive_enabled, false),
 		       COALESCE(codex_telemetry_timing_debug, false),
 		       COALESCE(codex_turn_state_strict, false),
@@ -2867,6 +2879,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.ClaudeConfig,
 		&s.CodexImagesMainModel,
 		&s.CodexTelemetryEnabled,
+		&s.CodexTurnStateTemplateCacheEnabled,
+		&s.CodexTurnStateAccountMode,
 		&s.CodexOAuthKeepaliveEnabled,
 		&s.CodexTelemetryTimingDebug,
 		&s.CodexTurnStateStrict,
@@ -3128,6 +3142,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					auto_activate_5h_window_enabled,
 					codex_images_main_model,
 					codex_telemetry_enabled,
+					codex_turn_state_template_cache_enabled,
+					codex_turn_state_account_mode,
 					codex_oauth_keepalive_enabled,
 					codex_telemetry_timing_debug,
 					codex_turn_state_strict,
@@ -3259,6 +3275,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					scheduler_engine = EXCLUDED.scheduler_engine,
 					auto_activate_5h_window_enabled = EXCLUDED.auto_activate_5h_window_enabled,
 					codex_telemetry_enabled = EXCLUDED.codex_telemetry_enabled,
+					codex_turn_state_template_cache_enabled = EXCLUDED.codex_turn_state_template_cache_enabled,
+					codex_turn_state_account_mode = EXCLUDED.codex_turn_state_account_mode,
 					codex_oauth_keepalive_enabled = EXCLUDED.codex_oauth_keepalive_enabled,
 					codex_telemetry_timing_debug = EXCLUDED.codex_telemetry_timing_debug,
 					codex_turn_state_strict = EXCLUDED.codex_turn_state_strict,
@@ -3320,6 +3338,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.AutoActivate5hWindowEnabled,
 		strings.TrimSpace(s.CodexImagesMainModel),
 		s.CodexTelemetryEnabled,
+		s.CodexTurnStateTemplateCacheEnabled,
+		s.CodexTurnStateAccountMode,
 		s.CodexOAuthKeepaliveEnabled,
 		s.CodexTelemetryTimingDebug,
 		s.CodexTurnStateStrict,
@@ -4297,6 +4317,8 @@ type UsageLog struct {
 	UpstreamRequestID      string    `json:"upstream_request_id"`
 	UpstreamProxyID        int64     `json:"upstream_proxy_id"`
 	UpstreamProxyName      string    `json:"upstream_proxy_name"`
+	InjectedTurnState      string    `json:"injected_turn_state,omitempty"`
+	UpstreamTurnState      string    `json:"upstream_turn_state,omitempty"`
 	ID                     int64     `json:"id"`
 	AccountID              int64     `json:"account_id"`
 	CredentialGeneration   int64     `json:"credential_generation,omitempty"`
@@ -4305,6 +4327,8 @@ type UsageLog struct {
 	ClientUserAgent        string    `json:"client_user_agent"`
 	UpstreamUserAgent      string    `json:"upstream_user_agent"`
 	UserAgentOverridden    bool      `json:"user_agent_overridden"`
+	TurnStateOverridden    bool      `json:"turn_state_overridden"`
+	TurnStateRewriteNote   string    `json:"turn_state_rewrite_note"`
 	InternalReason         string    `json:"internal_reason"`
 	ParentRequestID        string    `json:"parent_request_id"`
 	Endpoint               string    `json:"endpoint"`
@@ -4466,6 +4490,8 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		UpstreamRequestID:      clampUsageLogText(log.UpstreamRequestID, usageLogRequestIDMaxLen),
 		UpstreamProxyID:        log.UpstreamProxyID,
 		UpstreamProxyName:      clampUsageLogText(log.UpstreamProxyName, usageLogAPIKeyNameMaxLen),
+		InjectedTurnState:      clampUsageLogText(log.InjectedTurnState, usageLogTurnStateMaxLen),
+		UpstreamTurnState:      clampUsageLogText(log.UpstreamTurnState, usageLogTurnStateMaxLen),
 		StoreUsageLog:          storeUsageLog,
 		AccountID:              log.AccountID,
 		CredentialGeneration:   log.CredentialGeneration,
@@ -4474,6 +4500,8 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		ClientUserAgent:        log.ClientUserAgent,
 		UpstreamUserAgent:      log.UpstreamUserAgent,
 		UserAgentOverridden:    log.UserAgentOverridden,
+		TurnStateOverridden:    log.TurnStateOverridden,
+		TurnStateRewriteNote:   clampUsageLogText(log.TurnStateRewriteNote, usageLogShortTextMaxLen),
 		InternalReason:         clampUsageLogText(log.InternalReason, usageLogShortTextMaxLen),
 		ParentRequestID:        clampUsageLogText(log.ParentRequestID, usageLogRequestIDMaxLen),
 		Endpoint:               clampUsageLogText(log.Endpoint, usageLogTextMaxLen),
@@ -4548,6 +4576,10 @@ type UsageLogInput struct {
 	UpstreamRequestID string
 	UpstreamProxyID   int64
 	UpstreamProxyName string
+	// InjectedTurnState / UpstreamTurnState 是本次尝试实际注入到出站请求上的、以及
+	// 上游响应回带的 X-Codex-Turn-State（观测用，空串表示没有）。
+	InjectedTurnState string
+	UpstreamTurnState string
 	AccountID         int64
 	// CredentialGeneration attributes internally-generated Grok traffic to the
 	// credential snapshot that issued it. Zero is legacy/unscoped traffic.

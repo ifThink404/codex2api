@@ -365,6 +365,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	resetPromptRequestSecurityFrame(c)
 	resetPromptPolicyRequestCorrelationID(c)
 	resetUpstreamRequestTrace(c)
+	// Turn-state audit is request-scoped via HTTP middleware; multi-turn WS reuses
+	// the same gin.Context/request, so install a fresh slot per response.create.
+	attachFreshTurnStateTemplateAudit(c)
 	quotaParentRequest := c.Request
 	if err := h.refreshAPIKeyModelRequestQuotaTurn(c); err != nil {
 		return writeResponsesWSError(conn, apiKeyModelRequestError(err).apiErr)
@@ -546,7 +549,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}
 
 	accountFilter := accountFilterForModel(effectiveModel)
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -826,6 +829,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		// Responses/ChatCompletions 路径一致——无显式会话默认每请求隔离上游身份，
 		// WS 路径交给 ExecuteRequest 的 stateless 槽位池处理。
 		upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
+		upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
+		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+		ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, effectiveModel)
 		upstreamSessionID := resolveUpstreamSessionID(apiKeyID, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, useWebsocket)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)

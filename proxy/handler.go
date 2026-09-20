@@ -127,11 +127,11 @@ func dispatchPolicyForModel(model string) auth.DispatchPolicy {
 	return auth.DispatchPolicyStandard
 }
 
-func (h *Handler) withModelCooldownFilter(model string, filter auth.AccountFilter) auth.AccountFilter {
+func (h *Handler) withModelCooldownFilter(ctx context.Context, model string, filter auth.AccountFilter) auth.AccountFilter {
 	if h == nil || h.store == nil {
 		return filter
 	}
-	return h.store.WithModelCooldownFilter(model, filter)
+	return h.store.WithModelCooldownFilterContext(ctx, model, filter)
 }
 
 func (h *Handler) shouldUseWebsocketForHTTP() bool {
@@ -1543,6 +1543,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateInternalUsageMetaFromContext(c, input)
 	populateClientIPFromRequest(c, input)
 	populateUserAgentMetaFromRequest(c, input)
+	populateTurnStateTemplateMetaFromRequest(c, input)
 	populateWsAcquireFromRequest(c, input)
 	populateUpstreamTrace(c, input)
 	h.populateUsageWindowNumber(c, input)
@@ -3194,6 +3195,7 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 	allowAnonymous := h.cfg != nil && h.cfg.AllowAnonymousV1
 	return func(c *gin.Context) {
 		attachUserAgentAudit(c)
+		attachTurnStateTemplateAudit(c)
 		attachWsAcquireAudit(c)
 		attachUpstreamTrace(c, h.store)
 		// 如果没有配置任何密钥
@@ -4014,7 +4016,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	} else {
 		accountFilter = accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
 	}
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
 	}
@@ -4224,6 +4226,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 			upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 			readCtx := upstreamResponseReadContext(c.Request.Context(), upstreamCtx, continuousRetryPolicy)
+			upstreamCtx = WithCodexClientModel(upstreamCtx, model)
 			lastUpstreamCancel = upstreamCancel
 			ttftGuard := (*firstTokenTimeoutGuard)(nil)
 			if isStream {
@@ -4496,7 +4499,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			// account-bound turn-state token from an attempt that is not yet known
 			// to be successful.
 			if (!isStream || !continuousRetryBuffersAttempts(continuousRetryPolicy)) && !continuousRetryDeadlineActive(c.Request.Context()) {
-				relayCodexTurnStateResponseHeader(c, affinityKey, account, resp.Header)
+				relayCodexTurnStateResponseHeader(c, affinityKey, account, attemptEffectiveModel, resp.Header)
 			}
 			if isGrokNativeRouteResponse(resp) {
 				downstreamFlusher, _ := c.Writer.(http.Flusher)
@@ -4534,7 +4537,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						return
 					}
 					copyGrokNativeResponseHeaders(c, resp.Header)
-					if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, resp.Header); commitErr != nil {
+					if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, attemptEffectiveModel, resp.Header); commitErr != nil {
 						if isContinuousRetryLocalFailure(commitErr) {
 							outcome = overlayContinuousRetryLocalFailure(outcome, commitErr)
 						} else {
@@ -4880,7 +4883,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					return
 				}
 				copyGrokNativeResponseHeaders(c, resp.Header)
-				if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, resp.Header); commitErr != nil {
+				if commitErr := h.commitResponsesStreamAttempt(c, streamAttempt, affinityKey, account, attemptEffectiveModel, resp.Header); commitErr != nil {
 					if isContinuousRetryLocalFailure(commitErr) {
 						outcome = overlayContinuousRetryLocalFailure(outcome, commitErr)
 					} else {
@@ -5033,6 +5036,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 		readCtx := upstreamResponseReadContext(c.Request.Context(), upstreamCtx, continuousRetryPolicy)
 		upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
+		upstreamCtx = WithCodexClientModel(upstreamCtx, model)
 		// 身份按 attempt 附加实际选中账号维度：account_* 门随重试换号重新匹配（issue #410）。
 		attemptIdentity := ruleIdentity.WithSelectedAccount(account, h.store)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
@@ -5262,7 +5266,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			requestStart: handlerStart, attemptStart: start,
 		}
 		if !isStream || !continuousRetryBuffersAttempts(continuousRetryPolicy) {
-			relayCodexTurnStateResponseHeader(c, affinityKey, account, resp.Header)
+			relayCodexTurnStateResponseHeader(c, affinityKey, account, attemptEffectiveModel, resp.Header)
 		}
 		SyncCodexUsageState(h.store, account, resp)
 		// 成功！透传响应并跟踪 TTFT / usage
@@ -6073,7 +6077,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// compact 同时允许官方 Codex OAuth 账号与中转（OpenAI Responses API）账号：
 	// 中转账号会命中上游自身的 /responses/compact，使仅接入中转的用户也能压缩（issue #174）。
 	accountFilter := accountFilterForCompactResponsesModelWithOriginal(routingModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
@@ -6464,6 +6468,8 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		upstreamEndpointLabel := "/v1/responses/compact"
 		var resp *http.Response
 		var reqErr error
+		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+		ApplyCodexTurnStateTemplate(c.Request.Context(), downstreamHeaders, account, attemptEffectiveModel)
 		if compactViaResponses {
 			upstreamEndpointLabel = "/v1/responses"
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
@@ -6936,7 +6942,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// /v1/chat/completions 同时允许官方 Codex OAuth 账号与中转（OpenAI Responses API）账号：
 	// 翻译后的请求体本身就是 Responses 形态，中转账号直接以 HTTP 转发（issue #181）。
 	accountFilter := accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
@@ -7098,6 +7104,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 		readCtx := upstreamResponseReadContext(c.Request.Context(), upstreamCtx, continuousRetryPolicy)
 		upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
+		upstreamCtx = WithCodexClientModel(upstreamCtx, model)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
 		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
@@ -7128,6 +7135,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if useWebsocket {
 				upstreamBody = stripResponsesImageGenerationTool(codexBody)
 			}
+			upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
+			guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+			ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, attemptEffectiveModel)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})
