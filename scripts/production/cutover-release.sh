@@ -11,6 +11,10 @@ Required release.json fields:
 The script keeps the previous container serving while nginx reloads, verifies
 the routed backend repeatedly, checks a trusted CA bundle in both containers,
 and only then pauses the previous container and updates release-state.json.
+
+The stable host ingress is always 127.0.0.1:18186 on the admin-forward
+container. The candidate's release.json port is only a temporary direct probe;
+it must never be used as the host process' long-lived endpoint.
 EOF
 }
 
@@ -27,6 +31,11 @@ router_dir=${CODEX2API_ROUTER_DIR:-$app_dir/runtime-router/router}
 router_container=${CODEX2API_ROUTER_CONTAINER:-codex2api-router}
 admin_forward_container=${CODEX2API_ADMIN_FORWARD_CONTAINER:-codex2api-admin-forward}
 admin_forward_url=${CODEX2API_ADMIN_FORWARD_URL:-http://127.0.0.1:18095}
+# Host processes depend on this endpoint. Keep it invariant across releases;
+# only the router's upstream container is changed during cutover.
+stable_host_bind=127.0.0.1
+stable_host_port=18186
+stable_host_url=http://${stable_host_bind}:${stable_host_port}
 verify_count=${CODEX2API_VERIFY_COUNT:-6}
 route_switched=false
 
@@ -73,6 +82,9 @@ for command in curl docker jq realpath; do
   command -v "$command" >/dev/null || die "missing command: $command"
 done
 docker inspect "$new_container" "$previous_container" "$router_container" "$admin_forward_container" >/dev/null
+stable_bindings=$(docker port "$admin_forward_container" 8080/tcp 2>/dev/null || true)
+printf '%s\n' "$stable_bindings" | grep -Fqx "${stable_host_bind}:${stable_host_port}" ||
+  die "stable host ingress is missing: ${stable_host_bind}:${stable_host_port} (add it to $admin_forward_container before release)"
 bash "$(dirname "${BASH_SOURCE[0]}")/verify-postgres.sh" "$previous_container" "$new_container"
 
 admin_secret=$(docker inspect "$new_container" --format '{{json .Config.Env}}' |
@@ -126,6 +138,7 @@ curl --max-time 10 -fsS "http://127.0.0.1:$new_port/health" >/dev/null
 direct_version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
   "http://127.0.0.1:$new_port/api/admin/system/update" | jq -er '.current_version')
 [[ "$direct_version" == "$expected_version" ]] || die "direct version $direct_version != $expected_version"
+curl --max-time 10 -fsS "${stable_host_url}/health" >/dev/null
 
 route_switched=true
 ln -sfn "$new_config" "$router_dir/nginx.conf"
@@ -141,7 +154,9 @@ while (( consecutive < verify_count && attempts < max_attempts )); do
   attempts=$((attempts + 1))
   routed_version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
     "$admin_forward_url/api/admin/system/update" | jq -r '.current_version' || true)
-  if [[ "$routed_version" == "$expected_version" ]]; then
+  stable_version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
+    "${stable_host_url}/api/admin/system/update" | jq -r '.current_version' || true)
+  if [[ "$routed_version" == "$expected_version" && "$stable_version" == "$expected_version" ]]; then
     consecutive=$((consecutive + 1))
   else
     consecutive=0
@@ -159,6 +174,9 @@ for ((i=0; i<verify_count; i++)); do
   routed_version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
     "$admin_forward_url/api/admin/system/update" | jq -er '.current_version')
   [[ "$routed_version" == "$expected_version" ]] || die "route regressed after pausing previous container"
+  stable_version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
+    "${stable_host_url}/api/admin/system/update" | jq -er '.current_version')
+  [[ "$stable_version" == "$expected_version" ]] || die "stable host ingress regressed after pausing previous container"
 done
 
 new_image_id=$(docker inspect "$new_container" --format '{{.Image}}')

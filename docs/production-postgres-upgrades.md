@@ -23,7 +23,12 @@ interactive root `deploy.sh` to replace this installation.
 6. Create candidate `release.json` and a router configuration targeting the
    candidate by name. Preview cleanup before invoking the production entrypoint:
    `release-production.sh --release-dir DIR --router-config FILE`.
-7. Verify routed health/version, PostgreSQL sessions and new usage writes.
+7. Keep the host-process ingress fixed at `127.0.0.1:18186`. It is published
+   by the protected `codex2api-admin-forward` container and follows the router
+   cutover; the candidate `release.json.port` is only a temporary direct probe
+   port and may change between releases. The cutover and rollback scripts fail
+   closed if this stable binding is missing.
+8. Verify routed health/version, PostgreSQL sessions and new usage writes.
 
 Both cutover and rollback reject SQLite, missing database fields, mismatched
 database identities and unavailable PostgreSQL. Cleanup only selects versioned

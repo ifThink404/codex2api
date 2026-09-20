@@ -11,6 +11,10 @@ router_dir=${CODEX2API_ROUTER_DIR:-$app_dir/runtime-router/router}
 router_container=${CODEX2API_ROUTER_CONTAINER:-codex2api-router}
 admin_forward_container=${CODEX2API_ADMIN_FORWARD_CONTAINER:-codex2api-admin-forward}
 admin_forward_url=${CODEX2API_ADMIN_FORWARD_URL:-http://127.0.0.1:18095}
+# Keep the host-process endpoint invariant when rolling back as well.
+stable_host_bind=127.0.0.1
+stable_host_port=18186
+stable_host_url=http://${stable_host_bind}:${stable_host_port}
 verify_count=${CODEX2API_VERIFY_COUNT:-6}
 state_file=$app_dir/release-state.json
 [[ -f "$state_file" ]] || die "missing $state_file"
@@ -30,6 +34,9 @@ expected_version=${rollback_version#v}
 [[ -d "$current_release" && -d "$rollback_release" ]] || die "release directory missing"
 [[ -f "$router_dir/$current_config" && -f "$router_dir/$rollback_config" ]] || die "router config missing"
 docker inspect "$current_container" "$rollback_container" >/dev/null
+stable_bindings=$(docker port "$admin_forward_container" 8080/tcp 2>/dev/null || true)
+printf '%s\n' "$stable_bindings" | grep -Fqx "${stable_host_bind}:${stable_host_port}" ||
+  die "stable host ingress is missing: ${stable_host_bind}:${stable_host_port} (add it to $admin_forward_container before rollback)"
 bash "$(dirname "${BASH_SOURCE[0]}")/verify-postgres.sh" "$current_container" "$rollback_container"
 admin_secret=$(docker inspect "$rollback_container" --format '{{json .Config.Env}}' |
   jq -er 'map(select(startswith("ADMIN_SECRET=")))[0] | split("=")[1:] | join("=")')
@@ -60,7 +67,9 @@ while (( consecutive < verify_count && attempts < verify_count * 8 )); do
   attempts=$((attempts + 1))
   version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
     "$admin_forward_url/api/admin/system/update" | jq -r '.current_version' || true)
-  if [[ "$version" == "$expected_version" ]]; then consecutive=$((consecutive + 1)); else consecutive=0; fi
+  stable_version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
+    "${stable_host_url}/api/admin/system/update" | jq -r '.current_version' || true)
+  if [[ "$version" == "$expected_version" && "$stable_version" == "$expected_version" ]]; then consecutive=$((consecutive + 1)); else consecutive=0; fi
   sleep 0.25
 done
 (( consecutive >= verify_count )) || die "production route did not stabilize on $expected_version"
@@ -70,6 +79,9 @@ for ((i=0; i<verify_count; i++)); do
   version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
     "$admin_forward_url/api/admin/system/update" | jq -er '.current_version')
   [[ "$version" == "$expected_version" ]] || die "route regressed after pausing former current container"
+  stable_version=$(curl --max-time 15 -fsS -H "X-Admin-Key: $admin_secret" \
+    "${stable_host_url}/api/admin/system/update" | jq -er '.current_version')
+  [[ "$stable_version" == "$expected_version" ]] || die "stable host ingress regressed after pausing former current container"
 done
 
 state_tmp=$(mktemp "$app_dir/.release-state.XXXXXX")
