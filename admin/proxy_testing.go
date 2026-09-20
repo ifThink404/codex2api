@@ -173,7 +173,16 @@ func probeProxyWithTimeout(
 	}
 	if !ipv6Result.Success {
 		if preferIPv6Target {
-			primary.Error = "IPv6 检测目标都不可达"
+			// Keep the concrete transport/authentication error for an IPv6
+			// endpoint. Replacing it with a generic fallback message hides the
+			// difference between an unreachable host, a blocked target, and a
+			// missing SOCKS credential.
+			primary = ipv6Result
+			if primary.Error == "" {
+				primary.Error = "IPv6 检测目标都不可达"
+			} else {
+				primary.Error = "IPv6 检测失败: " + primary.Error
+			}
 		} else if primary.Error != "" {
 			primary.Error += "；IPv4/IPv6 检测目标都不可达"
 		}
