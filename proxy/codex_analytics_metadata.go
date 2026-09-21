@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -30,13 +29,13 @@ func ApplyCodexAnalyticsMetadata(body []byte, headers http.Header) ([]byte, http
 		{"context_window_id", "x-codex-context-window-id", "X-Codex-Context-Window-Id"},
 		{"parent_thread_id", "x-codex-parent-thread-id", codexParentThreadIDHeader},
 		{"forked_from_thread_id", "x-codex-forked-from-thread-id", "X-Codex-Forked-From-Thread-Id"},
-		{"subagent_kind", "x-openai-subagent", "X-OpenAI-Subagent"},
+		{"subagent_kind", "subagent_kind", ""},
 		{"turn_id", "turn_id", ""}, {"root_turn_id", "root_turn_id", ""},
 		{"parent_turn_id", "parent_turn_id", ""}, {"thread_source", "thread_source", ""},
 		{"request_kind", "request_kind", ""}, {"window_number", "window_number", ""},
 		{"turn_started_at_unix_ms", "turn_started_at_unix_ms", ""},
 	} {
-		if gjson.Get(raw, projection.field).Exists() {
+		if gjson.Get(raw, projection.field).Exists() || codexTurnMetadataOmitsField(metadata, projection.field) {
 			continue
 		}
 		value := gjson.GetBytes(body, "client_metadata."+projection.field)
@@ -51,9 +50,7 @@ func ApplyCodexAnalyticsMetadata(body []byte, headers http.Header) ([]byte, http
 			raw, _ = sjson.Set(raw, projection.field, resolved.Get(codexLegacySessionIDHeader))
 		}
 	}
-	if !gjson.Get(raw, "request_kind").Exists() && strings.EqualFold(resolved.Get("X-OpenAI-Memgen-Request"), "true") {
-		raw, _ = sjson.Set(raw, "request_kind", "memory")
-	}
+	raw = omitCodexTurnMetadataIdentity(gjson.Parse(raw)).Raw
 	enabled := codexTelemetryEnabled() && metadata.Get("analytics_enabled").Type != gjson.False
 	raw, err := sjson.Set(raw, "analytics_enabled", enabled)
 	if err != nil {

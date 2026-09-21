@@ -154,6 +154,14 @@ func PrepareCodexFunctionalFields(ctx context.Context, account *auth.Account, bo
 	if err != nil {
 		return nil, err
 	}
+	body, err = prepareParentResponseIdentity(ctx, account, body)
+	if err != nil {
+		return nil, err
+	}
+	body, err = prepareCodexAuxiliaryMetadata(ctx, account, body, headers, caller)
+	if err != nil {
+		return nil, err
+	}
 	// These restored fields belong to the public Responses API. The native
 	// ChatGPT backend has a different contract (including no safety_identifier).
 	if account != nil && !account.IsRelayStyle() {

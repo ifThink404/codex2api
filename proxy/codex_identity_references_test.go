@@ -10,6 +10,7 @@ import (
 	"github.com/codex2api/database"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type codexIdentityWithoutPublishedEpochs struct{ CodexIdentityStore }
@@ -30,6 +31,7 @@ func TestCodexIdentityForkReferenceUsesMappedParentAndStaysFixed(test *testing.T
 	mapFork := func(account *auth.Account, thread, credential string) (*CodexFingerprint, []byte, error) {
 		request, _ := outboundEpochTestRequest(test, handler, 0)
 		body := []byte(fmt.Sprintf(`{"model":"gpt-5.6-sol","input":"plaintext fork","client_metadata":{"session_id":"%s","thread_id":"%s","x-codex-forked-from-thread-id":"%s","x-codex-turn-metadata":{"session_id":"%s","thread_id":"%s","forked_from_thread_id":"%s","thread_source":"user","request_kind":"turn"}}}`, thread, thread, continuityTestThread, thread, thread, continuityTestThread))
+		body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata.guardian_classifier_source_thread_id", continuityTestThread)
 		headers := http.Header{}
 		headers.Set("X-Codex-Forked-From-Thread-Id", continuityTestThread)
 		fingerprint := NewCodexTransportFingerprint(account, headers, body, "cache")
@@ -71,6 +73,7 @@ func TestCodexIdentityForkReferenceUsesMappedParentAndStaysFixed(test *testing.T
 		require.NotEqual(test, scenario.thread, gjson.GetBytes(mapped, "client_metadata.thread_id").String())
 		require.Equal(test, scenario.parent, gjson.GetBytes(mapped, "client_metadata.x-codex-forked-from-thread-id").String())
 		require.Equal(test, scenario.parent, gjson.GetBytes(mapped, "client_metadata.x-codex-turn-metadata.forked_from_thread_id").String())
+		require.Equal(test, scenario.parent, gjson.GetBytes(mapped, "client_metadata.x-codex-turn-metadata.guardian_classifier_source_thread_id").String())
 		outboundHeaders := http.Header{}
 		fork.ApplySessionHeaders(outboundHeaders)
 		require.Equal(test, scenario.parent, outboundHeaders.Get("X-Codex-Forked-From-Thread-Id"))

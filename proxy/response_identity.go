@@ -24,6 +24,7 @@ type responseIdentitySession struct {
 	mu                          sync.Mutex
 	incoming                    *database.CodexResponseIDRecord
 	comparison                  *database.CodexResponseIDRecord
+	parent                      *database.CodexResponseIDRecord
 	issued                      map[string]database.CodexResponseIDRecord
 	events                      []responseIdentityEvent
 }
@@ -175,6 +176,9 @@ func prepareResponseIdentityOutbound(ctx context.Context, account *auth.Account,
 	defer func() {
 		if err == nil {
 			out, err = prepareComparisonResponseIdentity(ctx, account, out)
+			if err == nil {
+				out, err = prepareParentResponseIdentity(ctx, account, out)
+			}
 		}
 	}()
 	s := responseIdentityFrom(ctx)
@@ -199,17 +203,36 @@ func prepareResponseIdentityOutbound(ctx context.Context, account *auth.Account,
 // A cache comparison is a reference, not a continuation/routing hint. Authenticate
 // it against the selected account without replacing the previous-response record.
 func prepareComparisonResponseIdentity(ctx context.Context, account *auth.Account, body []byte) ([]byte, error) {
+	return prepareBoundResponseReference(ctx, account, body, "prompt_cache_options.comparison_response_id", false)
+}
+
+func prepareParentResponseIdentity(ctx context.Context, account *auth.Account, body []byte) ([]byte, error) {
+	return prepareBoundResponseReference(ctx, account, body, "client_metadata.parent_response_id", true)
+}
+
+// Parent and comparison references never choose an account or replace the
+// continuation binding. Resolve only after the selected account is known.
+func prepareBoundResponseReference(ctx context.Context, account *auth.Account, body []byte, path string, parent bool) ([]byte, error) {
 	s := responseIdentityFrom(ctx)
-	v := gjson.GetBytes(body, "prompt_cache_options.comparison_response_id")
-	if s == nil || !v.Exists() || v.Type == gjson.Null {
+	v := gjson.GetBytes(body, path)
+	if !v.Exists() || v.Type == gjson.Null || s == nil && (!parent || account != nil && account.IsRelayStyle()) {
 		return body, nil
 	}
 	id := v.String()
+	label := "cache_comparison"
+	if parent {
+		label = "parent_response"
+	}
 	reject := func() ([]byte, error) {
-		s.log(responseIdentityEvent{Action: "rejected_cache_comparison_binding", Received: id})
+		if s != nil {
+			s.log(responseIdentityEvent{Action: "rejected_" + label + "_binding", Received: id})
+		}
+		if parent {
+			return nil, &Error{Code: "parent_response_not_found", Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest, Message: "父响应引用与当前账号或会话不匹配，请恢复主会话后重试。"}
+		}
 		return nil, &Error{Code: "comparison_response_not_found", Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest, Message: "缓存比较引用不可用，请移除 comparison_response_id 后重试。"}
 	}
-	if v.Type != gjson.String || id == "" || len(id) > 256 || strings.TrimSpace(id) != id || account == nil || account.IsRelayStyle() || s.handler.db == nil {
+	if s == nil || v.Type != gjson.String || id == "" || len(id) > 256 || strings.TrimSpace(id) != id || account == nil || account.IsRelayStyle() || s.handler.db == nil {
 		return reject()
 	}
 	generation := uint64(0)
@@ -217,7 +240,11 @@ func prepareComparisonResponseIdentity(ctx context.Context, account *auth.Accoun
 		generation = epoch.record.FailoverCount
 	}
 	var record database.CodexResponseIDRecord
-	if r := s.comparison; r != nil && (id == r.Alias || id == r.Real) {
+	previous := s.comparison
+	if parent {
+		previous = s.parent
+	}
+	if r := previous; r != nil && (id == r.Alias || id == r.Real) {
 		record = *r
 	} else if r := s.incoming; r != nil && (id == r.Alias || id == r.Real) {
 		record = *r
@@ -251,9 +278,13 @@ func prepareComparisonResponseIdentity(ctx context.Context, account *auth.Accoun
 	if record.Scope != s.scope || record.RootKey != s.rootKey || record.AccountID != account.ID() || record.AccountHash != turnStateAccountHash(account) || record.Generation != generation {
 		return reject()
 	}
-	s.comparison = &record
-	s.log(responseIdentityEvent{Action: "restored_cache_comparison", Alias: record.Alias, Original: record.Real, AccountID: record.AccountID, Generation: record.Generation})
-	return sjson.SetBytes(body, "prompt_cache_options.comparison_response_id", record.Real)
+	if parent {
+		s.parent = &record
+	} else {
+		s.comparison = &record
+	}
+	s.log(responseIdentityEvent{Action: "restored_" + label, Alias: record.Alias, Original: record.Real, AccountID: record.AccountID, Generation: record.Generation})
+	return sjson.SetBytes(body, path, record.Real)
 }
 
 func trustedResponseIdentity(ctx context.Context, record database.SessionContinuityRecord, value string) bool {
@@ -293,11 +324,13 @@ func (s *responseIdentitySession) publicErrorReference(ctx context.Context, acco
 		}
 		return s.issue(ctx, account, real)
 	}
-	if record := s.comparison; record != nil && matches(*record) {
-		if record.Alias != "" {
-			return record.Alias, nil
+	for _, record := range []*database.CodexResponseIDRecord{s.comparison, s.parent} {
+		if record != nil && matches(*record) {
+			if record.Alias != "" {
+				return record.Alias, nil
+			}
+			return s.issue(ctx, account, real)
 		}
-		return s.issue(ctx, account, real)
 	}
 	return "[response]", nil
 }

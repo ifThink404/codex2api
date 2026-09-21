@@ -101,7 +101,7 @@ type codexAccountIdentity struct {
 }
 
 var codexAccountIdentityFields = []string{
-	"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "context_window_id",
+	"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "context_window_id", "guardian_classifier_source_thread_id",
 	"x-codex-parent-thread-id", "x_codex_parent_thread_id", "x-codex-forked-from-thread-id", "x_codex_forked_from_thread_id",
 	"x-codex-context-window-id", "x_codex_context_window_id",
 }

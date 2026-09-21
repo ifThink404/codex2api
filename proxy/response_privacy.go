@@ -61,7 +61,7 @@ func maskResponsePayload(ctx context.Context, account *auth.Account, data []byte
 			field := privacyField(key.String())
 			// An object outside a business payload can contain protocol metadata.
 			interesting = privateResponseField(key.String()) || isTurnStateField(key.String()) ||
-				isTurnStateContainer(key.String()) || field == "responseid" || field == "previousresponseid" || field == "comparisonresponseid" ||
+				isTurnStateContainer(key.String()) || field == "responseid" || field == "previousresponseid" || field == "comparisonresponseid" || field == "parentresponseid" ||
 				field == "error" || field == "response" ||
 				((!responseBusinessField(key.String()) || field == "output") && (value.IsObject() || value.IsArray()))
 			if field == "message" || field == "detail" {

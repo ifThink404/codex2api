@@ -48,7 +48,7 @@ func codexAccountIdentityReferences(headers http.Header, body []byte) map[string
 	}
 	metadata := gjson.GetBytes(body, "client_metadata")
 	for _, source := range []gjson.Result{metadata, diagnosticMetadataObject(metadata.Get("x-codex-turn-metadata")), gjson.Parse(headers.Get(codexTurnMetadataHeader))} {
-		for _, field := range []string{"parent_thread_id", "forked_from_thread_id", "x-codex-parent-thread-id", "x_codex_parent_thread_id", "x-codex-forked-from-thread-id", "x_codex_forked_from_thread_id"} {
+		for _, field := range []string{"guardian_classifier_source_thread_id", "parent_thread_id", "forked_from_thread_id", "x-codex-parent-thread-id", "x_codex_parent_thread_id", "x-codex-forked-from-thread-id", "x_codex_forked_from_thread_id"} {
 			add(source.Get(field).String())
 		}
 	}

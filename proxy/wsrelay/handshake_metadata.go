@@ -9,6 +9,8 @@ import (
 )
 
 func prepareCodexHandshakeSnapshot(headers http.Header) {
+	headers.Del("Traceparent")
+	headers.Del("Tracestate")
 	proxy.ClearCodexTurnStateHeaders(headers)
 	// A pooled handshake is immutable. Per-turn/window/request identities must
 	// live on the current frame, otherwise the next request has two identities.

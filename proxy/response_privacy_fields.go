@@ -21,7 +21,7 @@ func privateResponseField(key string) bool {
 	switch privacyField(key) {
 	case "session", "thread", "conversation", "account", "device", "installation", "project":
 		return true
-	case "sessionid", "threadid", "conversationid", "parentthreadid", "forkedfromthreadid",
+	case "guardianclassifiersourcethreadid", "traceparent", "tracestate", "wsrequestheadertraceparent", "wsrequestheadertracestate", "sessionid", "threadid", "conversationid", "parentthreadid", "forkedfromthreadid",
 		"contextwindowid", "turnid", "rootturnid", "agentname", "accountid", "chatgptaccountid", "organizationid",
 		"organization", "projectid", "installationid", "deviceid", "windowid",
 		"windownumber", "clientrequestid", "requestid", "traceid", "userid", "email", "accountemail",
@@ -122,6 +122,20 @@ func (w responsePrivacyWalker) rewrite(raw json.RawMessage, responseObject, cont
 		if errorObject {
 			return w.errorText(value)
 		}
+		if control {
+			if db, binding := protocolIdentityBinding(w.ctx, w.account); db != nil {
+				pair, found, err := db.ReadCodexProtocolPair(w.ctx, binding, "metadata", value, false)
+				if err != nil {
+					return nil, errTurnStateMapping
+				}
+				if found {
+					return json.Marshal(pair.Public)
+				}
+			}
+			if strings.HasPrefix(value, "meta_") {
+				return nil, nil
+			}
+		}
 		return raw, nil
 	}
 	if trimmed[0] == '[' {
@@ -186,8 +200,8 @@ func (w responsePrivacyWalker) rewrite(raw json.RawMessage, responseObject, cont
 			}
 		case field == "headers":
 			out, err = w.headers(value, errorObject, depth+1)
-		case field == "id" && responseObject || field == "responseid" || field == "previousresponseid" || field == "comparisonresponseid":
-			out, err = w.reference(value, field != "comparisonresponseid" && (responseObject || depth == 0) && !errorObject)
+		case field == "id" && responseObject || field == "responseid" || field == "previousresponseid" || field == "comparisonresponseid" || field == "parentresponseid":
+			out, err = w.reference(value, field != "comparisonresponseid" && field != "parentresponseid" && (responseObject || depth == 0) && !errorObject)
 		case !control && field == "output":
 			// Output item IDs/arguments/content are business data, but an item's
 			// metadata is still a protocol carrier and must not escape filtering.

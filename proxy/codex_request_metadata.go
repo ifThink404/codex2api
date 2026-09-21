@@ -83,9 +83,10 @@ func NormalizeCodexRequestMetadata(body []byte) []byte {
 		{"installation_id", "installation_id"}, {"installation_id", "x-codex-installation-id"},
 		{"context_window_id", "context_window_id"}, {"context_window_id", "x-codex-context-window-id"},
 		{"turn_id", "turn_id"}, {"root_turn_id", "root_turn_id"}, {"parent_turn_id", "parent_turn_id"},
+		{"guardian_classifier_source_thread_id", "guardian_classifier_source_thread_id"},
 		{"parent_thread_id", "parent_thread_id"}, {"parent_thread_id", "x-codex-parent-thread-id"},
 		{"forked_from_thread_id", "forked_from_thread_id"}, {"forked_from_thread_id", "x-codex-forked-from-thread-id"},
-		{"subagent_kind", "subagent_kind"}, {"subagent_kind", "x-openai-subagent"},
+		{"subagent_kind", "subagent_kind"},
 		{"thread_source", "thread_source"}, {"request_kind", "request_kind"},
 	} {
 		value, flat := canonical.Get(projection[0]), metadata.Get(projection[1])
@@ -106,16 +107,11 @@ func NormalizeCodexRequestMetadata(body []byte) []byte {
 			body = updated
 		}
 	}
-	if kind := canonical.Get("request_kind"); kind.Exists() && metadata.Get("x-openai-memgen-request").Exists() {
-		var updated []byte
-		var err error
-		if strings.EqualFold(kind.String(), "memory") {
-			updated, err = sjson.SetBytes(body, "client_metadata.x-openai-memgen-request", "true")
+	if kind := canonical.Get("subagent_kind"); kind.Exists() && metadata.Get("x-openai-subagent").Exists() {
+		if value := codexSubagentHeaderValue(strings.TrimSpace(kind.String())); value != "" {
+			body, _ = sjson.SetBytes(body, "client_metadata.x-openai-subagent", value)
 		} else {
-			updated, err = sjson.DeleteBytes(body, "client_metadata.x-openai-memgen-request")
-		}
-		if err == nil {
-			body = updated
+			body, _ = sjson.DeleteBytes(body, "client_metadata.x-openai-subagent")
 		}
 	}
 	return body
@@ -153,7 +149,6 @@ func CodexRequestMetadataHeaders(headers http.Header, body []byte) http.Header {
 		{codexThreadIDHeader, "thread_id", "thread_id"},
 		{codexWindowIDHeader, "x-codex-window-id", "window_id"},
 		{codexParentThreadIDHeader, "x-codex-parent-thread-id", "parent_thread_id"},
-		{"X-OpenAI-Subagent", "x-openai-subagent", "subagent_kind"},
 		{"X-Codex-Turn-State", "x-codex-turn-state", ""},
 		{codexClientRequestIDHeader, "x-client-request-id", "thread_id"},
 	} {
@@ -177,13 +172,12 @@ func CodexRequestMetadataHeaders(headers http.Header, body []byte) http.Header {
 			resolved.Set(projection.header, strings.TrimSpace(value.String()))
 		}
 	}
-	if frameSnapshot || metadata.Get("x-openai-memgen-request").Exists() {
-		resolved.Del("X-OpenAI-Memgen-Request")
-		if requestKind := canonical.Get("request_kind").String(); strings.EqualFold(requestKind, "memory") {
-			resolved.Set("X-OpenAI-Memgen-Request", "true")
-		} else if requestKind == "" && metadata.Get("x-openai-memgen-request").String() != "" {
-			resolved.Set("X-OpenAI-Memgen-Request", metadata.Get("x-openai-memgen-request").String())
-		}
+	subagent, memgen := codexPassiveMarkers(headers, metadata, canonical, frameSnapshot)
+	setCodexPassiveHeaders(resolved, subagent, memgen)
+	mode := codexGuardianMode(headers, canonical)
+	resolved.Del("X-Codex-Guardian")
+	if mode != "" {
+		resolved.Set("X-Codex-Guardian", mode)
 	}
 	if installation := canonical.Get("installation_id").String(); installation != "" && resolved.Get(codexInstallationIDHeader) != "" {
 		resolved.Set(codexInstallationIDHeader, installation)

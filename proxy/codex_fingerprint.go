@@ -242,7 +242,7 @@ func (ids *codexFingerprintIDs) convergeLineageValue(field, original string) str
 	if target := ids.lineageValues[field]; target != "" {
 		return target
 	}
-	if field == "parent_thread_id" || field == "forked_from_thread_id" {
+	if field == "parent_thread_id" || field == "forked_from_thread_id" || field == "guardian_classifier_source_thread_id" {
 		return ids.convergeThreadID(original)
 	}
 	return convergeCodexLineageValue(ids.accountID, field, original)
@@ -504,6 +504,7 @@ func rewriteCodexTurnMetadataJSON(raw string, ids *codexFingerprintIDs) (string,
 // turn_id 的判断同理——逐轮变化、不标识设备或会话，重算反而会与同轮的
 // turn_id / turn_started_at_unix_ms 失去一致性，那种不一致本身就是特征。
 var codexLineageMetadataPaths = []string{
+	"guardian_classifier_source_thread_id",
 	"context_window_id",
 	"parent_thread_id",
 	"forked_from_thread_id",

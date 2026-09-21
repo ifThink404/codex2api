@@ -120,6 +120,12 @@ func TestWebsocketReusedConnectionUsesOnlyCurrentFrameMetadata(test *testing.T) 
 					expected := proxy.NewCodexTransportFingerprint(account, stale, body, sessionID).ApplyBody(body)
 					expectedMetadata, _ := sjson.Set(gjson.GetBytes(expected, codexTurnMetadataClientPath).String(), "analytics_enabled", false)
 					expectedMetadata, _ = sjson.Set(expectedMetadata, "installation_id", "account-device")
+					memoryExtraction := pooled && turn == 0
+					if memoryExtraction {
+						for _, field := range []string{"installation_id", "session_id", "thread_id", "agent_name", "window_id", "window_number", "context_window_id"} {
+							expectedMetadata, _ = sjson.Delete(expectedMetadata, field)
+						}
+					}
 					expected, _ = sjson.SetBytes(expected, codexTurnMetadataClientPath, expectedMetadata)
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -154,7 +160,7 @@ func TestWebsocketReusedConnectionUsesOnlyCurrentFrameMetadata(test *testing.T) 
 					if !pooled && turn > 0 && gjson.GetBytes(sent.body, "previous_response_id").String() != "resp_"+strconv.Itoa(turn-1) {
 						test.Fatal("existing response continuation was rewritten or removed")
 					}
-					if sent.headers.Get("Session-Id") != "root" || gjson.Get(metadata, "session_id").String() != "root" || sent.headers.Get("Thread-Id") != thread {
+					if sent.headers.Get("Session-Id") != "root" || gjson.GetBytes(sent.body, "client_metadata.session_id").String() != "root" || !memoryExtraction && gjson.Get(metadata, "session_id").String() != "root" || sent.headers.Get("Thread-Id") != thread {
 						test.Fatal("reused WS frame session differs from handshake")
 					}
 					if turn > 0 && (sent.headers.Get("X-OpenAI-Memgen-Request") != "" || sent.headers.Get("X-OpenAI-Subagent") != "" || sent.headers.Get("X-Codex-Parent-Thread-Id") != "") {
@@ -168,7 +174,7 @@ func TestWebsocketReusedConnectionUsesOnlyCurrentFrameMetadata(test *testing.T) 
 					if metadata != gjson.GetBytes(expected, codexTurnMetadataClientPath).String() {
 						test.Fatalf("current canonical metadata changed or rehashed: %s, want %s", metadata, expected)
 					}
-					if window := gjson.GetBytes(sent.body, "client_metadata.x-codex-window-id").String(); window != gjson.Get(metadata, "window_id").String() {
+					if window := gjson.GetBytes(sent.body, "client_metadata.x-codex-window-id").String(); window != fmt.Sprintf("%s:%d", thread, turn) || !memoryExtraction && window != gjson.Get(metadata, "window_id").String() {
 						test.Fatalf("window projection differs: %s", sent.body)
 					}
 					if parent := gjson.GetBytes(sent.body, "client_metadata.x-codex-parent-thread-id").String(); parent != gjson.Get(metadata, "parent_thread_id").String() {

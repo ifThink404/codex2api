@@ -49,7 +49,7 @@ func TestCodexAnalyticsMetadataPolicyAndIdentity(test *testing.T) {
 				test.Run(carrier, func(test *testing.T) {
 					headers := http.Header{}
 					body := []byte(`{"model":"test","input":[{"type":"compaction","id":"opaque","encrypted_content":"unchanged"}]}`)
-					metadata := `{"session_id":"session","thread_id":"child","window_id":"child:71","window_number":71,"parent_thread_id":"parent","forked_from_thread_id":"fork","request_kind":"memory","unknown":{"kept":true},"analytics_enabled":true}`
+					metadata := `{"session_id":"session","thread_id":"child","window_id":"child:71","window_number":71,"parent_thread_id":"parent","forked_from_thread_id":"fork","request_kind":"turn","unknown":{"kept":true},"analytics_enabled":true}`
 					if scenario.optOut {
 						metadata, _ = sjson.Set(metadata, "analytics_enabled", false)
 					}

@@ -343,7 +343,7 @@ func TestApplyCodexFrameMetadataPreservesNewerFrameValues(t *testing.T) {
 	}
 }
 
-func TestApplyCodexFrameMetadataBuildsMemoryKindWithoutUnofficialForkHeader(t *testing.T) {
+func TestApplyCodexFrameMetadataPreservesMemgenWithoutInventingRequestKind(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("X-Codex-Forked-From-Thread-Id", "fork-thread")
 	headers.Set("X-OpenAI-Memgen-Request", "true")
@@ -356,8 +356,8 @@ func TestApplyCodexFrameMetadataBuildsMemoryKindWithoutUnofficialForkHeader(t *t
 	if value := gjson.Get(canonical, "forked_from_thread_id").String(); value != "" {
 		t.Fatalf("canonical fork = %q, want empty for unofficial header; metadata=%s", value, canonical)
 	}
-	if value := gjson.Get(canonical, "request_kind").String(); value != "memory" {
-		t.Fatalf("canonical request kind = %q, want memory; metadata=%s", value, canonical)
+	if value := gjson.Get(canonical, "request_kind").String(); value != "" {
+		t.Fatalf("canonical request kind = %q, want absent; metadata=%s", value, canonical)
 	}
 }
 

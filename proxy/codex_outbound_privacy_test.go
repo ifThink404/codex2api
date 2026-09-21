@@ -14,11 +14,15 @@ import (
 )
 
 func TestOutboundPrivacyMetadataHasOneAuthoritativeSnapshot(t *testing.T) {
-	account := &auth.Account{DBID: 42, CodexInstallationID: "account-installation"}
+	account := &auth.Account{DBID: 42, CodexInstallationID: "account-installation", AccessToken: "test-account-secret"}
 	body := []byte(`{"model":"gpt-6-astra","input":[{"role":"user","content":"keep session_id and C:/user/path"}],"tools":[{"type":"function","name":"test","parameters":{"type":"object","properties":{"account_id":{"type":"string"}}}}],"extra_body":{"x-codex-turn-state":"private-extra-state"},"mystery":{"session_id":"private-mystery"},"session_id":"private-top","client_metadata":{"session_id":"stale-flat","x-client-request-id":"independent-request","x_codex_turn_metadata":{"session_id":"stale-alias"},"X-Codex-Turn-Metadata":{"thread_id":"stale-case"},"nested":{"session_id":"private-nested"},"x-codex-turn-metadata":{"session_id":"root","thread_id":"thread","installation_id":"user-installation","parent_turn_id":"parent","nested":{"session_id":"private-inner"},"encoded":"{\"account_id\":\"private-encoded\"}","array":[{"request_id":"private-array"}],"project_id":"private-project","workspaces":{"C:/Users/private/repo":{"cwd":"private-cwd","associated_remote_urls":["private-remote"],"latest_git_commit_hash":"private-commit"}}}}}`)
 	headers := http.Header{"Session-Id": {"stale-header"}, "Thread-Id": {"stale-thread"}, "X-Client-Request-Id": {"stale-request"}, "X-Oai-Attestation": {"private-attestation"}}
 	originalBody, originalHeaders := bytes.Clone(body), headers.Clone()
 	clean, resolved := PrepareCodexOutboundMetadata(account, body, headers)
+	var err error
+	clean, err = PrepareCodexFunctionalFields(context.Background(), account, clean, resolved, "caller")
+	require.NoError(t, err)
+	clean, resolved = FinalizeCodexOutboundMetadata(clean, resolved)
 	meta := diagnosticMetadataObject(gjson.GetBytes(clean, "client_metadata.x-codex-turn-metadata"))
 	require.Equal(t, "root", resolved.Get("Session-Id"))
 	require.Equal(t, "root", gjson.GetBytes(clean, "client_metadata.session_id").String())
@@ -100,8 +104,8 @@ func TestOutboundPrivacyKeepsCompatibleMemoryAndSubagentMarkers(t *testing.T) {
 		clean, headers := PrepareCodexOutboundMetadata(&auth.Account{DBID: 42}, body, nil)
 		clean, headers = FinalizeCodexOutboundMetadata(clean, headers)
 		require.NoError(t, ValidateCodexOutboundMetadata(clean, headers))
-		require.Equal(t, "thread_spawn", gjson.GetBytes(clean, "client_metadata.x-openai-subagent").String())
-		require.Equal(t, kind == "memory", gjson.GetBytes(clean, "client_metadata.x-openai-memgen-request").Exists())
+		require.Equal(t, "collab_spawn", gjson.GetBytes(clean, "client_metadata.x-openai-subagent").String())
+		require.Equal(t, "true", gjson.GetBytes(clean, "client_metadata.x-openai-memgen-request").String())
 	}
 }
 

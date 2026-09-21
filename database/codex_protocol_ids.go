@@ -56,7 +56,11 @@ func (db *DB) ReadCodexProtocolPair(ctx context.Context, binding CodexTurnStateB
 }
 
 func (db *DB) PutCodexProtocolPair(ctx context.Context, binding CodexTurnStateBinding, kind string, pair CodexProtocolPair) error {
-	if db.turnStateCipher == nil || binding.Scope == "" || binding.RootKey == "" || binding.AccountID <= 0 || (kind != "turn" && kind != "conversation" && kind != "project") || pair.Public == "" || pair.Upstream == "" || len(pair.Public) > 256 || len(pair.Upstream) > 256 || pair.Public == pair.Upstream {
+	limit := 256
+	if kind == "metadata" {
+		limit = 4096
+	}
+	if db.turnStateCipher == nil || binding.Scope == "" || binding.RootKey == "" || binding.AccountID <= 0 || (kind != "turn" && kind != "conversation" && kind != "project" && kind != "metadata") || pair.Public == "" || pair.Upstream == "" || len(pair.Public) > limit || len(pair.Upstream) > limit || pair.Public == pair.Upstream {
 		return errors.New("invalid protocol identity mapping")
 	}
 	if existing, found, err := db.ReadCodexProtocolPair(ctx, binding, kind, pair.Public, true); err != nil {

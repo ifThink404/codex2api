@@ -367,6 +367,7 @@ const (
 )
 
 var codexAllowedForwardHeaders = []string{
+	"X-Codex-Guardian", "Traceparent", "Tracestate",
 	"X-Codex-Turn-State",
 	"X-Codex-Turn-Metadata",
 	"X-Codex-Window-Id",
@@ -635,10 +636,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody = normalizeCodexStructuredOutputForTransport(requestBody, false, responsesLite)
 	requestBody = normalizeCompactionTriggerFinal(requestBody, false)
 
-	cacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
-	if sessionID != "" {
-		cacheKey = sessionID
-	}
+	cacheKey := ResolveCodexPromptCacheSeed(requestBody, headers, sessionID)
 	cacheKey = ScopeCodexPromptCacheKey(ctx, cacheKey)
 	requestBody, headers = ApplyCodexAnalyticsMetadata(requestBody, headers)
 	fingerprint := NewCodexTransportFingerprint(account, headers, requestBody, cacheKey, ctx)
@@ -803,10 +801,12 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	identityInput := requestBody
 	requestBody, headers, upstreamErr = prepareRelayOutboundPrivacy(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
+	ctx = withCodexAuxiliaryIdentities(ctx, identityInput, requestBody)
 	requestBody, upstreamErr = PrepareCodexFunctionalFields(ctx, account, requestBody, headers, "")
 	if upstreamErr != nil {
 		return nil, upstreamErr
@@ -989,10 +989,12 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	identityInput := requestBody
 	requestBody, headers, upstreamErr = prepareRelayOutboundPrivacy(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
+	ctx = withCodexAuxiliaryIdentities(ctx, identityInput, requestBody)
 	requestBody, upstreamErr = PrepareCodexFunctionalFields(ctx, account, requestBody, headers, "")
 	if upstreamErr != nil {
 		return nil, upstreamErr
@@ -1111,10 +1113,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	// 真实标识，上游看到「头说设备 A、体说设备 B」这种真实客户端不会有的矛盾。
 	// 必须用 prepareCodexResponsesLiteTransport 之后的 headers（它可能返回克隆），
 	// 与下方 applyCodexRequestHeaders 取同一份下游头，两处推导结果才一致。
-	cacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
-	if sessionID != "" {
-		cacheKey = sessionID
-	}
+	cacheKey := ResolveCodexPromptCacheSeed(requestBody, headers, sessionID)
 	cacheKey = ScopeCodexPromptCacheKey(ctx, cacheKey)
 	requestBody, headers = PrepareCodexOutboundMetadata(account, requestBody, headers)
 	requestBody, headers = ApplyCodexAnalyticsMetadata(requestBody, headers)
@@ -1325,6 +1324,9 @@ func applyAccountCustomHeaders(req *http.Request, account *auth.Account) {
 	}
 	for name, value := range account.GetCustomHeaders() {
 		name = strings.TrimSpace(name)
+		if strings.EqualFold(name, "X-Codex-Guardian") || strings.EqualFold(name, "Traceparent") || strings.EqualFold(name, "Tracestate") {
+			continue
+		}
 		if name == "" {
 			continue
 		}

@@ -136,7 +136,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	}
 
 	// 准备请求体
-	wsBody := e.prepareWebsocketBody(requestBody, sessionID)
+	wsBody := e.prepareWebsocketBody(requestBody, sessionID, ginHeaders)
 	if cacheKey := gjson.GetBytes(wsBody, "prompt_cache_key").String(); cacheKey != "" {
 		wsBody, _ = sjson.SetBytes(wsBody, "prompt_cache_key", proxy.ScopeCodexPromptCacheKey(ctx, cacheKey))
 	}
@@ -391,7 +391,7 @@ func shouldRetryWebsocketSendError(err error) bool {
 }
 
 // prepareWebsocketBody 准备 WebSocket 请求体
-func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
+func (e *Executor) prepareWebsocketBody(body []byte, sessionID string, requestHeaders ...http.Header) []byte {
 	if len(body) == 0 {
 		return nil
 	}
@@ -413,11 +413,12 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 	// stateless sessionID 只是连接池隔离用的一次性随机 ID，注入它会让上游
 	// prompt cache 每次请求都 miss；此时保留请求体中已有的确定性 cache key
 	//（由 proxy.ExecuteRequest 注入或客户端自带）。
-	existingCacheKey := strings.TrimSpace(gjson.GetBytes(wsBody, "prompt_cache_key").String())
-	if sessionID != "" && !proxy.IsStatelessWebsocketSessionID(sessionID) {
-		wsBody, _ = sjson.SetBytes(wsBody, "prompt_cache_key", sessionID)
-	} else if existingCacheKey != "" {
-		wsBody, _ = sjson.SetBytes(wsBody, "prompt_cache_key", existingCacheKey)
+	var headers http.Header
+	if len(requestHeaders) > 0 {
+		headers = requestHeaders[0]
+	}
+	if key := proxy.ResolveCodexPromptCacheSeed(body, headers, sessionID); key != "" {
+		wsBody, _ = sjson.SetBytes(wsBody, "prompt_cache_key", key)
 	}
 
 	// 4. 设置请求类型和 stream
@@ -459,7 +460,7 @@ func applyCodexFrameMetadata(body []byte, headers http.Header) []byte {
 		{"Thread-Id", "client_metadata.thread_id", "thread_id"},
 		{"X-Client-Request-Id", "client_metadata.x-client-request-id", ""},
 		{"X-Codex-Parent-Thread-Id", "client_metadata.x-codex-parent-thread-id", "parent_thread_id"},
-		{"X-OpenAI-Subagent", "client_metadata.x-openai-subagent", "subagent_kind"},
+		{"X-OpenAI-Subagent", "client_metadata.x-openai-subagent", ""},
 		{"X-OpenAI-Memgen-Request", "client_metadata.x-openai-memgen-request", ""},
 	}
 	for _, projection := range projections {
@@ -473,16 +474,7 @@ func applyCodexFrameMetadata(body []byte, headers http.Header) []byte {
 		if value == "" {
 			value = strings.TrimSpace(headers.Get(projection.header))
 		}
-		if projection.header == "X-OpenAI-Memgen-Request" {
-			switch requestKind := codexTurnMetadataStringField(body, "request_kind"); {
-			case strings.EqualFold(requestKind, "memory"):
-				value = "true"
-			case requestKind != "":
-				// Canonical metadata is authoritative over an incompatible
-				// connection-level compatibility header.
-				value = ""
-			}
-		}
+
 		if value == "" {
 			continue
 		}
@@ -503,9 +495,7 @@ func applyCodexFrameMetadata(body []byte, headers http.Header) []byte {
 	if subagentKind := firstCodexFrameValue(body, "client_metadata.subagent_kind"); subagentKind != "" {
 		body = mergeCodexTurnMetadataStringField(body, "subagent_kind", subagentKind)
 	}
-	if strings.EqualFold(strings.TrimSpace(headers.Get("X-OpenAI-Memgen-Request")), "true") {
-		body = mergeCodexTurnMetadataStringField(body, "request_kind", "memory")
-	}
+
 	return proxy.NormalizeCodexRequestMetadata(body)
 }
 
@@ -618,7 +608,7 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 	headers.Set("Originator", originator)
 	// Client attestation is never forwarded. Account credentials are applied
 	// separately after the compatibility headers.
-	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-Client-Request-Id", "X-Codex-Parent-Thread-Id", "X-OpenAI-Subagent", "X-OpenAI-Memgen-Request", "X-Responsesapi-Include-Timing-Metrics"} {
+	for _, name := range []string{"X-Codex-Guardian", "X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-Client-Request-Id", "X-Codex-Parent-Thread-Id", "X-OpenAI-Subagent", "X-OpenAI-Memgen-Request", "X-Responsesapi-Include-Timing-Metrics"} {
 		if value := strings.TrimSpace(ginHeaders.Get(name)); value != "" {
 			headers.Set(name, value)
 		}
@@ -644,6 +634,9 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 	}
 	for name, value := range account.GetCustomHeaders() {
 		name = strings.TrimSpace(name)
+		if strings.EqualFold(name, "X-Codex-Guardian") || strings.EqualFold(name, "Traceparent") || strings.EqualFold(name, "Tracestate") {
+			continue
+		}
 		if name == "" {
 			continue
 		}

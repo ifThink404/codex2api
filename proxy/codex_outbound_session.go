@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
@@ -99,6 +100,39 @@ func ScopeCodexPromptCacheKey(ctx context.Context, cacheKey string) string {
 		return DeriveStableSessionUUIDv7("codex-cache-user-v2:" + owner + ":" + cacheKey)
 	}
 	return cacheKey
+}
+
+// ResolveCodexPromptCacheSeed preserves explicit client cache namespaces (for
+// example guardian:root and guardian-v2:root). The usual session-ID default
+// keeps its existing seed so ordinary main/subagent cache sharing is unchanged.
+// This is a seed only: caller/user and account scoping still run afterwards.
+func ResolveCodexPromptCacheSeed(body []byte, headers http.Header, upstreamSessionID string) string {
+	explicit := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	if IsStatelessWebsocketSessionID(upstreamSessionID) {
+		upstreamSessionID = ""
+	}
+	if explicit == "" {
+		return upstreamSessionID
+	}
+	if upstreamSessionID == "" {
+		return explicit
+	}
+	metadata := codexTurnMetadata(body, headers)
+	root := metadata.Get("session_id").String()
+	if root == "" {
+		root = gjson.GetBytes(body, "client_metadata.session_id").String()
+	}
+	if root == "" {
+		root = headers.Get(codexSessionIDHeader)
+	}
+	if root == "" {
+		root = headers.Get(codexLegacySessionIDHeader)
+	}
+	if explicit == root || explicit == upstreamSessionID {
+		return upstreamSessionID
+	}
+	seed, _ := json.Marshal([]string{"codex-explicit-cache-v1", upstreamSessionID, explicit})
+	return DeriveStableSessionUUIDv7(string(seed))
 }
 
 func codexTransportIdentityValues(headers http.Header, body []byte) []string {

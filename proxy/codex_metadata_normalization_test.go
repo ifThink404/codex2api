@@ -67,9 +67,10 @@ func TestCodexMetadataNormalizationRespectsMissingAndClearedFields(test *testing
 	body := []byte(`{"client_metadata":{"x-codex-turn-metadata":{"thread_id":"current","parent_thread_id":null,"subagent_kind":"","request_kind":"turn"},"thread_id":"old","parent_thread_id":"old-parent","x-codex-parent-thread-id":"old-parent","subagent_kind":"old-agent","x-openai-subagent":"old-agent","x-openai-memgen-request":"true","session_id":"legacy-session","custom":"untouched"}}`)
 	outbound := NormalizeCodexRequestMetadata(body)
 	require.Equal(test, "current", gjson.GetBytes(outbound, "client_metadata.thread_id").String())
-	for _, flat := range []string{"parent_thread_id", "x-codex-parent-thread-id", "subagent_kind", "x-openai-subagent", "x-openai-memgen-request"} {
+	for _, flat := range []string{"parent_thread_id", "x-codex-parent-thread-id", "subagent_kind", "x-openai-subagent"} {
 		require.False(test, gjson.GetBytes(outbound, "client_metadata."+flat).Exists(), flat)
 	}
+	require.Equal(test, "true", gjson.GetBytes(outbound, "client_metadata.x-openai-memgen-request").String())
 	require.Equal(test, "legacy-session", gjson.GetBytes(outbound, "client_metadata.session_id").String())
 	require.Equal(test, "untouched", gjson.GetBytes(outbound, "client_metadata.custom").String())
 	require.False(test, gjson.GetBytes(outbound, "client_metadata.x-codex-window-id").Exists())

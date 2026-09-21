@@ -24,9 +24,9 @@ var codexOutboundMetadataFields = map[string]string{
 	"parent_thread_id": "X-Codex-Parent-Thread-Id", "forked_from_thread_id": "X-Codex-Forked-From-Thread-Id",
 	"context_window_id": "X-Codex-Context-Window-Id", "window_id": "X-Codex-Window-Id",
 	"installation_id": "X-Codex-Installation-Id", "client_request_id": "X-Client-Request-Id",
-	"turn_id": "", "root_turn_id": "", "parent_turn_id": "",
+	"turn_id": "", "root_turn_id": "", "parent_turn_id": "", "guardian_classifier_source_thread_id": "",
 	"window_number": "", "turn_started_at_unix_ms": "", "analytics_enabled": "",
-	"thread_source": "", "request_kind": "", "subagent_kind": "X-OpenAI-Subagent",
+	"thread_source": "", "request_kind": "", "subagent_kind": "",
 	"approval_policy": "", "sandbox": "", "x-codex-turn-state": "X-Codex-Turn-State",
 	"agent_name": "", "forked_from_ordinal_exclusive": "", "turn_trigger": "", "sandbox_mode": "",
 	"auto_review_enabled": "", "node_repl_auto_review_required": "", "node_repl_disabled": "",
@@ -38,7 +38,6 @@ var codexOutboundFlatFields = map[string]string{
 	"parent_thread_id": "x-codex-parent-thread-id", "forked_from_thread_id": "x-codex-forked-from-thread-id",
 	"context_window_id": "x-codex-context-window-id", "window_id": "x-codex-window-id",
 	"installation_id": "x-codex-installation-id", "client_request_id": "x-client-request-id",
-	"subagent_kind":      "x-openai-subagent",
 	"x-codex-turn-state": "x-codex-turn-state",
 }
 
@@ -66,7 +65,7 @@ func outboundMetadataField(key string) string {
 	case "x_client_request_id":
 		return "client_request_id"
 	case "x_openai_subagent":
-		return "subagent_kind"
+		return "subagent_header"
 	case "x_openai_memgen_request":
 		return "memgen_request"
 	}
@@ -106,7 +105,7 @@ func validateCodexMetadataDuplicates(raw []byte, control bool, depth int) error 
 		field := outboundMetadataField(name)
 		container := field == "client_metadata" || field == "x-codex-turn-metadata"
 		_, identity := codexOutboundMetadataFields[field]
-		if container || control && identity {
+		if container || control && (identity || field == "subagent_header" || field == "memgen_request") {
 			if previous, exists := seen[name]; exists && (container || previous.Raw != child.Raw && previous.String() != child.String()) {
 				failure = codexAccountIdentityError("身份元数据包含冲突的重复字段，请检查客户端请求。")
 				return false
@@ -191,6 +190,7 @@ func PrepareCodexOutboundMetadata(account *auth.Account, body []byte, headers ht
 	originalFlat := outboundMetadataObject(top["client_metadata"])
 	flat := outboundMetadataAliases(originalFlat)
 	embedded, hasSnapshot := flat["x-codex-turn-metadata"]
+	subagent, memgen := codexPassiveMarkers(headers, gjson.ParseBytes(top["client_metadata"]), diagnosticMetadataObject(gjson.ParseBytes(embedded)), hasSnapshot)
 	canonical := outboundMetadataAliases(outboundMetadataObject(embedded))
 	fromHeader := outboundMetadataAliases(outboundMetadataObject(json.RawMessage(headers.Get(codexTurnMetadataHeader))))
 	values := make(map[string]json.RawMessage)
@@ -217,9 +217,6 @@ func PrepareCodexOutboundMetadata(account *auth.Account, body []byte, headers ht
 		if validOutboundMetadataScalar(field, value) {
 			values[field] = value
 		}
-	}
-	if values["request_kind"] == nil && strings.EqualFold(gjson.ParseBytes(flat["memgen_request"]).String(), "true") {
-		values["request_kind"] = json.RawMessage(`"memory"`)
 	}
 	// Hardware/device identity comes from the selected account, never the caller.
 	if account != nil && account.ID() > 0 && (values["installation_id"] != nil) {
@@ -264,8 +261,46 @@ func PrepareCodexOutboundMetadata(account *auth.Account, body []byte, headers ht
 		}
 	}
 	cleanFlat := make(map[string]json.RawMessage)
-	if flat["memgen_request"] != nil && gjson.ParseBytes(values["request_kind"]).String() == "memory" {
-		cleanFlat["x-openai-memgen-request"] = json.RawMessage(`"true"`)
+	for key, raw := range originalFlat {
+		if codexExtraMetadataField(key, gjson.ParseBytes(raw)) {
+			cleanFlat[key] = raw
+		}
+	}
+	for _, field := range codexFlatControlFields {
+		if raw := flat[outboundMetadataField(field)]; raw != nil {
+			cleanFlat[field] = raw
+		}
+	}
+	markerMetadata := diagnosticMetadataObject(gjson.ParseBytes(embedded))
+	if !hasSnapshot {
+		markerMetadata = gjson.Parse(headers.Get(codexTurnMetadataHeader))
+	}
+	mode := codexGuardianMode(headers, markerMetadata)
+	headers.Del("X-Codex-Guardian")
+	if mode != "" {
+		headers.Set("X-Codex-Guardian", mode)
+	}
+	// Official non-basic sessions include ordinary user turns. Preserve an
+	// explicit credit request; only the reviewer route suppresses this flag.
+	if mode == "reviewer" {
+		delete(cleanFlat, "guardian_credits_requested")
+	} else if v := gjson.ParseBytes(cleanFlat["guardian_credits_requested"]); v.String() != "true" {
+		delete(cleanFlat, "guardian_credits_requested")
+	} else {
+		cleanFlat["guardian_credits_requested"] = json.RawMessage(`"true"`)
+	}
+	if gjson.GetBytes(body, "type").String() == "response.create" {
+		for _, name := range []string{"traceparent", "tracestate"} {
+			key := "ws_request_header_" + name
+			if cleanFlat[key] == nil && headers.Get(name) != "" {
+				cleanFlat[key], _ = json.Marshal(headers.Get(name))
+			}
+		}
+	}
+	for field, value := range map[string]string{"x-openai-subagent": subagent, "x-openai-memgen-request": memgen} {
+		if value != "" {
+			cleanFlat[field], _ = json.Marshal(value)
+		}
 	}
 	// This is a capability flag consumed by HTTP/WS fallback, not identity.
 	if lite := flat["ws_request_header_x_openai_internal_codex_responses_lite"]; strings.EqualFold(gjson.ParseBytes(lite).String(), "true") {
@@ -287,10 +322,22 @@ func PrepareCodexOutboundMetadata(account *auth.Account, body []byte, headers ht
 		}
 	}
 	// Preserve the client's canonical object/string shape without duplicate carriers.
-	if len(values) > 0 {
+	extra := outboundMetadataObject(embedded)
+	if !hasSnapshot {
+		extra = outboundMetadataObject(json.RawMessage(headers.Get(codexTurnMetadataHeader)))
+	}
+	if len(values) > 0 || len(extra) > 0 {
 		wireValues := make(map[string]json.RawMessage, len(values))
 		for field, value := range values {
+			if codexTurnMetadataOmitsField(markerMetadata, field) {
+				continue
+			}
 			wireValues[field] = value
+		}
+		for key, raw := range extra {
+			if codexExtraMetadataField(key, gjson.ParseBytes(raw)) {
+				wireValues[key] = raw
+			}
 		}
 		// The official flat/header client-request carrier need not introduce a
 		// new field in a client's otherwise unchanged turn-metadata schema.
@@ -301,6 +348,7 @@ func PrepareCodexOutboundMetadata(account *auth.Account, body []byte, headers ht
 			delete(wireValues, "x-codex-turn-state")
 		}
 		raw, _ := json.Marshal(wireValues)
+		raw = []byte(omitCodexTurnMetadataIdentity(gjson.ParseBytes(raw)).Raw)
 		if gjson.ParseBytes(embedded).IsObject() {
 			cleanFlat["x-codex-turn-metadata"] = raw
 		} else {
@@ -322,6 +370,7 @@ func PrepareCodexOutboundMetadata(account *auth.Account, body []byte, headers ht
 			headers.Set(name, gjson.ParseBytes(value).String())
 		}
 	}
+	setCodexPassiveHeaders(headers, subagent, memgen)
 	headers.Del(codexLegacySessionIDHeader)
 	deleteHeaderCaseInsensitive(headers, "X-Oai-Attestation")
 	out, err := json.Marshal(top)
@@ -348,6 +397,11 @@ func finalizeCodexOutboundMetadata(body []byte, headers http.Header) ([]byte, ht
 	}
 	metadata := gjson.GetBytes(body, "client_metadata")
 	canonical := diagnosticMetadataObject(metadata.Get("x-codex-turn-metadata"))
+	mode := codexGuardianMode(headers, canonical)
+	deleteHeaderCaseInsensitive(headers, "X-Codex-Guardian")
+	if mode != "" {
+		headers.Set("X-Codex-Guardian", mode)
+	}
 	if !canonical.IsObject() {
 		return encodeCodexClientMetadata(body), headers
 	}
@@ -365,9 +419,16 @@ func finalizeCodexOutboundMetadata(body []byte, headers http.Header) ([]byte, ht
 			canonical = gjson.Parse(raw)
 		}
 	}
+	canonical = omitCodexTurnMetadataIdentity(canonical)
 	body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata", canonical.Raw)
 	for field, name := range codexOutboundMetadataFields {
 		value := canonical.Get(field)
+		if codexTurnMetadataOmitsField(canonical, field) {
+			value = metadata.Get(field)
+			if alias := codexOutboundFlatFields[field]; !value.Exists() && alias != "" {
+				value = metadata.Get(alias)
+			}
+		}
 		if field == "client_request_id" {
 			if flat := metadata.Get("x-client-request-id"); flat.Exists() {
 				value = flat
@@ -397,6 +458,8 @@ func finalizeCodexOutboundMetadata(body []byte, headers http.Header) ([]byte, ht
 		}
 	}
 	body = NormalizeCodexRequestMetadata(body)
+	subagent, memgen := codexPassiveMarkers(headers, gjson.GetBytes(body, "client_metadata"), canonical, true)
+	setCodexPassiveHeaders(headers, subagent, memgen)
 	body = encodeCodexClientMetadata(body)
 	ApplyCodexAnalyticsHeader(headers, body)
 	headers.Del(codexLegacySessionIDHeader)
@@ -412,6 +475,11 @@ func finalizeRelayOutboundHeaders(body []byte, headers http.Header, contexts ...
 	// without turning the relay's header passthrough feature on implicitly.
 	for _, name := range codexOutboundMetadataFields {
 		if name != "" && original.Get(name) == "" {
+			headers.Del(name)
+		}
+	}
+	for _, name := range []string{"X-OpenAI-Subagent", "X-OpenAI-Memgen-Request"} {
+		if original.Get(name) == "" {
 			headers.Del(name)
 		}
 	}
@@ -504,6 +572,17 @@ func ValidateCodexOutboundMetadata(body []byte, headers http.Header) error {
 			return codexAccountIdentityError("出站身份头与正文不一致，已停止发送：" + field)
 		}
 	}
+	for field, header := range map[string]string{"x-openai-subagent": "X-OpenAI-Subagent", "x-openai-memgen-request": "X-OpenAI-Memgen-Request"} {
+		if value := flat.Get(field); value.Exists() && headers.Get(header) != "" && value.String() != headers.Get(header) {
+			return codexAccountIdentityError("出站标记头与正文不一致，已停止发送：" + field)
+		}
+	}
+	if kind := bodyMetadata.Get("subagent_kind"); kind.Exists() {
+		expected := codexSubagentHeaderValue(kind.String())
+		if value := flat.Get("x-openai-subagent"); value.Exists() && value.String() != expected || headers.Get("X-OpenAI-Subagent") != "" && headers.Get("X-OpenAI-Subagent") != expected {
+			return codexAccountIdentityError("出站子代理标记与类型不一致，已停止发送。")
+		}
+	}
 	return validateProjectControlMetadata(body, headers)
 }
 
@@ -543,8 +622,14 @@ func prepareRelayOutboundPrivacy(ctx context.Context, account *auth.Account, bod
 	if canonical.IsObject() {
 		originalRequest := gjson.GetBytes(body, "client_metadata.x-client-request-id").String()
 		raw := canonical.Raw
-		for _, field := range []string{"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "context_window_id", "client_request_id", "turn_id", "root_turn_id", "parent_turn_id", "window_id"} {
+		for _, field := range []string{"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "context_window_id", "guardian_classifier_source_thread_id", "client_request_id", "turn_id", "root_turn_id", "parent_turn_id", "window_id"} {
 			v := canonical.Get(field)
+			if !v.Exists() && codexTurnMetadataOmitsField(canonical, field) {
+				v = gjson.GetBytes(body, "client_metadata."+field)
+				if alias := codexOutboundFlatFields[field]; !v.Exists() && alias != "" {
+					v = gjson.GetBytes(body, "client_metadata."+alias)
+				}
+			}
 			if v.Type != gjson.String {
 				continue
 			}
@@ -558,7 +643,15 @@ func prepareRelayOutboundPrivacy(ctx context.Context, account *auth.Account, bod
 					original, suffix = original[:i], original[i:]
 				}
 			}
-			raw, _ = sjson.Set(raw, field, derive(domain, original)+suffix)
+			mapped := derive(domain, original) + suffix
+			if !codexTurnMetadataOmitsField(canonical, field) {
+				raw, _ = sjson.Set(raw, field, mapped)
+			}
+			for _, flat := range []string{field, codexOutboundFlatFields[field]} {
+				if flat != "" && gjson.GetBytes(body, "client_metadata."+flat).Exists() {
+					body, _ = sjson.SetBytes(body, "client_metadata."+flat, mapped)
+				}
+			}
 		}
 		if gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").IsObject() {
 			body, _ = sjson.SetRawBytes(body, "client_metadata.x-codex-turn-metadata", []byte(raw))
