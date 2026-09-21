@@ -286,6 +286,7 @@ func (h *Handler) buildAccountResponse(
 		Models:                         row.GetCredentialStringSlice("models"),
 		ModelMapping:                   modelMapping,
 		CodexClientMetadataMode:        codexClientMetadataMode,
+		CodexBPSEnabled:                row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
 		CodexFingerprintMode:           codexFingerprintMode,
 		CodexInstallationID:            codexInstallationID,
 		SessionCapacityEnabled:         sessionCapacityEnabled,

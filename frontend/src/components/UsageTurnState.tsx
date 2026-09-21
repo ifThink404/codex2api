@@ -6,7 +6,7 @@ export function UsageTurnState({ log, onClick }: { log: UsageLog; onClick: () =>
   const { t } = useTranslation()
   const length = log.turn_state_length
   const label = length == null ? t('usage.turnState.notRecorded')
-    : length === 0 ? t('usage.turnState.missing') : t('usage.turnState.characters', { count: length })
+    : length === 0 ? `${t('usage.turnState.missing')} · ${t('usage.turnState.characters', { count: 0 })}` : t('usage.turnState.characters', { count: length })
   return (
     <Tooltip>
       <TooltipTrigger asChild>

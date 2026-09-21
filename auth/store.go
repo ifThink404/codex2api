@@ -172,6 +172,7 @@ type Account struct {
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode string
+	CodexBPS             bool
 	CodexInstallationID  string
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go：Claude Code 出站身份头
 	// 收敛模式（preserve/force；空=跟随全局默认）。
@@ -5327,6 +5328,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ModelMapping:                  modelMapping,
 		CodexClientMetadataMode:       codexClientMetadataMode,
 		CodexFingerprintMode:          codexFingerprintMode,
+		CodexBPS:                      row.GetCredentialBool(CodexBPSEnabledCredentialKey),
 		CodexInstallationID:           installationID,
 		ClaudeFingerprintMode:         claudeFingerprintMode,
 		ClaudeClientPlatformOverride:  claudeClientPlatformOverride,

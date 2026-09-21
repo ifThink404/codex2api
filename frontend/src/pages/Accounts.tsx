@@ -17,6 +17,7 @@ import ModelLogo from "../components/ModelLogo";
 import OperationResultsModal from "../components/OperationResultsModal";
 import { cn } from "@/lib/utils";
 import TestConnectionModal from "../components/TestConnectionModal";
+import CodexTestModeDialog from "../components/CodexTestModeDialog";
 import {
   DEFAULT_TEST_MODEL,
   exactModelMappingAliases,
@@ -1981,6 +1982,7 @@ export default function Accounts() {
   } | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchRefreshing, setBatchRefreshing] = useState(false);
+  const [batchTestPending, setBatchTestPending] = useState<{ ids?: number[] } | null>(null);
   const [batchTesting, setBatchTesting] = useState(false);
   const [operationProgress, setOperationProgress] =
     useState<OperationProgressState | null>(null);
@@ -2046,6 +2048,7 @@ export default function Accounts() {
   >([]);
   const [editProxyUrl, setEditProxyUrl] = useState("");
   const [editCustomHeadersText, setEditCustomHeadersText] = useState("");
+  const [editCodexBPSEnabled, setEditCodexBPSEnabled] = useState(false);
   const [editCodexFingerprintMode, setEditCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
   const [editSessionCapacityEnabled, setEditSessionCapacityEnabled] = useState(false);
@@ -2315,6 +2318,8 @@ export default function Accounts() {
     batchUpdateCodexFingerprintMode,
     setBatchUpdateCodexFingerprintMode,
   ] = useState(false);
+  const [batchUpdateCodexBPSEnabled, setBatchUpdateCodexBPSEnabled] = useState(false);
+  const [batchCodexBPSEnabled, setBatchCodexBPSEnabled] = useState(false);
   const [batchCodexFingerprintMode, setBatchCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
   const [batchUpdateSessionCapacity, setBatchUpdateSessionCapacity] =
@@ -5173,6 +5178,8 @@ export default function Accounts() {
     setBatchSkipWarmTier(false);
     setBatchUpdateSchedulerPriority(false);
     setBatchSchedulerPriorityInput("");
+    setBatchUpdateCodexBPSEnabled(false);
+    setBatchCodexBPSEnabled(false);
     setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
     setBatchUpdateSessionCapacity(false);
@@ -5197,6 +5204,8 @@ export default function Accounts() {
     setBatchSkipWarmTier(false);
     setBatchUpdateSchedulerPriority(false);
     setBatchSchedulerPriorityInput("");
+    setBatchUpdateCodexBPSEnabled(false);
+    setBatchCodexBPSEnabled(false);
     setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
     setBatchUpdateSessionCapacity(false);
@@ -5577,6 +5586,7 @@ export default function Accounts() {
     batchUpdateBaseConcurrency ||
     batchUpdateSkipWarmTier ||
     batchUpdateSchedulerPriority ||
+    batchUpdateCodexBPSEnabled ||
     batchUpdateCodexFingerprintMode ||
     batchUpdateSessionCapacity;
   const batchMetaInvalid =
@@ -5613,6 +5623,8 @@ export default function Accounts() {
           schedulerPriority: schedulerPriorityInputToValue(
             batchSchedulerPriorityInput,
           ),
+          updateCodexBPSEnabled: batchUpdateCodexBPSEnabled,
+          codexBPSEnabled: batchCodexBPSEnabled,
           updateCodexFingerprintMode: batchUpdateCodexFingerprintMode,
           codexFingerprintMode: batchCodexFingerprintMode,
           updateSessionCapacity: batchUpdateSessionCapacity,
@@ -5690,14 +5702,15 @@ export default function Accounts() {
     }
   };
 
-  const handleBatchTest = async (ids?: number[]) => {
+  const handleBatchTest = async (ids?: number[], testMode?: string) => {
+    if (!testMode) { setBatchTestPending({ ids }); return; }
     if (ids && ids.length === 0) return;
     if (!ids && data.total === 0) return;
     setBatchTesting(true);
     try {
       const result = await runStreamingAccountOperation(
         "/accounts/batch-test?stream=true",
-        ids ? { ids } : { selector: currentAccountSelector },
+        { ...(ids ? { ids } : { selector: currentAccountSelector }), test_mode: testMode },
         t("accounts.batchTestProgressTitle"),
       );
       showToast(
@@ -5867,6 +5880,7 @@ export default function Accounts() {
     setEditProxyUrl(account.proxy_url ?? "");
     setEditCustomHeadersText(formatCustomHeadersText(account.custom_headers));
     setEditCodexFingerprintMode(account.codex_fingerprint_mode ?? "off");
+    setEditCodexBPSEnabled(account.codex_bps_enabled ?? false);
     setEditSessionCapacityEnabled(account.session_capacity_enabled ?? false);
     setEditSessionCapacityMax(String(account.session_capacity_max ?? 5));
     setEditSessionCapacityReserved(String(account.session_capacity_reserved ?? 0));
@@ -5928,6 +5942,7 @@ export default function Accounts() {
     setEditProxyUrl("");
     setEditCustomHeadersText("");
     setEditCodexFingerprintMode("off");
+    setEditCodexBPSEnabled(false);
     setEditSessionCapacityEnabled(false);
     setEditSessionCapacityMax("5");
     setEditSessionCapacityIdleMinutes("60");
@@ -6099,6 +6114,7 @@ export default function Accounts() {
         ...(isCodexOfficialAccount(editingAccount)
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
+              codex_bps_enabled: editCodexBPSEnabled,
             }
           : {}),
         ...(supportsAccountSessionCapacity(editingAccount)
@@ -9181,6 +9197,7 @@ export default function Accounts() {
             </div>
           </Modal>
 
+          {batchTestPending && <CodexTestModeDialog onClose={() => setBatchTestPending(null)} onStart={(mode) => { const ids = batchTestPending.ids; setBatchTestPending(null); void handleBatchTest(ids, mode); }} />}
           {testingAccount && (
             <TestConnectionModal
               account={testingAccount}
@@ -10138,6 +10155,17 @@ export default function Accounts() {
                           })}
                         </div>
 
+                        {isCodexOfficialAccount(editingAccount) && !editingAccount.agent_identity ? (
+                          <div className="rounded-xl border border-border/70 bg-card p-4.5 md:col-span-2">
+                            <div className="flex items-center justify-between gap-4">
+                              <div>
+                                <div className="text-sm font-semibold">BPS 兼容模式</div>
+                                <p className="mt-1 text-xs text-muted-foreground">保存后对新绑定窗口生效，已有窗口保持原请求路径。普通请求、后台请求和压缩统一走 BPS；codex-auto-review 使用原模型名发送。</p>
+                              </div>
+                              <Switch checked={editCodexBPSEnabled} onCheckedChange={setEditCodexBPSEnabled} aria-label="BPS 兼容模式" />
+                            </div>
+                          </div>
+                        ) : null}
                         {/* 设备指纹收敛 */}
                         {isCodexOfficialAccount(editingAccount) ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
@@ -10940,6 +10968,11 @@ export default function Accounts() {
                   </div>
 
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
+                    <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 兼容模式</span><Switch checked={batchUpdateCodexBPSEnabled} onCheckedChange={setBatchUpdateCodexBPSEnabled} aria-label="修改 BPS 兼容模式" /></div>
+                    <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>开启 BPS 兼容模式</span><Switch checked={batchCodexBPSEnabled} onCheckedChange={setBatchCodexBPSEnabled} disabled={!batchUpdateCodexBPSEnabled} aria-label="开启 BPS 兼容模式" /></label>
+                    <p className="mt-2 text-xs text-muted-foreground">保存后对新绑定窗口生效。开启仅支持普通 Codex OAuth / AT 账号。</p>
+                  </div>
+                  <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-sm font-semibold text-foreground">
@@ -11723,6 +11756,7 @@ function RecycleBinView({
   const [error, setError] = useState("");
   const [actingId, setActingId] = useState<number | null>(null);
   const [batchActing, setBatchActing] = useState(false);
+  const [batchTestPending, setBatchTestPending] = useState<{ ids?: number[] } | null>(null);
   const [batchTesting, setBatchTesting] = useState(false);
   const [emptying, setEmptying] = useState(false);
   const [search, setSearch] = useState("");
@@ -11988,13 +12022,14 @@ function RecycleBinView({
     });
   };
 
-  const handleBatchTestRun = async (ids?: number[]) => {
+  const handleBatchTestRun = async (ids?: number[], testMode?: string) => {
+    if (!testMode) { setBatchTestPending({ ids }); return; }
     if (ids && ids.length === 0) return;
     setBatchTesting(true);
     try {
       const result = await runStreamingOperation(
         "/accounts/recycle-bin/batch-test?stream=true",
-        { ...(ids ? { ids } : {}), restore_on_success: autoRestore },
+        { ...(ids ? { ids } : {}), restore_on_success: autoRestore, test_mode: testMode },
         t("accounts.recycleBinBatchTestProgressTitle"),
       );
       showToast(
@@ -12524,6 +12559,7 @@ function RecycleBinView({
         </CardContent>
       </Card>
 
+      {batchTestPending && <CodexTestModeDialog onClose={() => setBatchTestPending(null)} onStart={(mode) => { const ids = batchTestPending.ids; setBatchTestPending(null); void handleBatchTestRun(ids, mode); }} />}
       {testingRow ? (
         <TestConnectionModal
           account={recycleBinRowToAccountRow(testingRow)}

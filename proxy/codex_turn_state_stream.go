@@ -10,16 +10,23 @@ import (
 	"strings"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"github.com/tidwall/gjson"
 )
 
 var errTurnStateMapping = errors.New("turn-state mapping unavailable")
 
 func finishTurnStateResponse(ctx context.Context, account *auth.Account, response **http.Response, requestErr *error) {
-	if *response == nil || preserveCodexAccountTestResponse(ctx, account) {
+	if *response == nil {
 		return
 	}
-	if err := maskTurnStateResponse(ctx, account, *response); err != nil {
+	raw := preserveCodexAccountTestResponse(ctx, account)
+	var err error
+	ctx, err = prepareBPSSyntheticResponse(ctx, account, *response)
+	if err == nil {
+		err = maskTurnStateResponseMode(ctx, account, *response, raw)
+	}
+	if err != nil {
 		if (*response).Body != nil {
 			_ = (*response).Body.Close()
 		}
@@ -29,31 +36,48 @@ func finishTurnStateResponse(ctx context.Context, account *auth.Account, respons
 }
 
 // This is applied to the shared HTTP response abstraction, including WS upstream
-// frames converted to SSE. It never invents a metadata event or token.
+// frames converted to SSE. Only the explicit BPS fallback may prepend a
+// synthetic metadata event; native upstream observations remain unchanged.
 func maskTurnStateResponse(ctx context.Context, account *auth.Account, response *http.Response) error {
+	return maskTurnStateResponseMode(ctx, account, response, false)
+}
+
+func maskTurnStateResponseMode(ctx context.Context, account *auth.Account, response *http.Response, raw bool) error {
 	s := turnStateSessionFrom(ctx)
 	if response == nil {
 		return nil
 	}
-	if err := restoreCodexURLHeaders(ctx, account, response.Header); err != nil {
-		return err
+	if !raw {
+		if err := restoreCodexURLHeaders(ctx, account, response.Header); err != nil {
+			return err
+		}
+		observeUsageTurnState(ctx, "")
+		var err error
+		response.Header, err = rewriteTurnStateHeaders(response.Header, "response_header", func(value, carrier string) (string, error) {
+			return maskResponseTurnState(ctx, account, value, carrier)
+		})
+		if err != nil {
+			return err
+		}
 	}
-	observeUsageTurnState(ctx, "")
-	var err error
-	response.Header, err = rewriteTurnStateHeaders(response.Header, "response_header", func(value, carrier string) (string, error) {
-		return maskResponseTurnState(ctx, account, value, carrier)
-	})
-	if err != nil {
-		return err
+	for name, values := range response.Header {
+		for i, value := range values {
+			values[i] = upstreamprivacy.Text(value)
+		}
+		maskedName := upstreamprivacy.Text(name)
+		if maskedName != name {
+			delete(response.Header, name)
+		}
+		response.Header[maskedName] = values
 	}
 	if response.Body != nil && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		response.Body = &turnStateStream{body: response.Body, reader: bufio.NewReaderSize(response.Body, 32*1024), ctx: ctx, account: account, state: s}
+		response.Body = &turnStateStream{body: response.Body, reader: bufio.NewReaderSize(response.Body, 32*1024), ctx: ctx, account: account, state: s, raw: raw, pending: syntheticTurnStateFrame(ctx)}
 		response.ContentLength = -1
 		response.Header.Del("Content-Length")
 	} else if response.Body != nil {
 		// Lazy reads keep response/header timing and the handler's cancellation
 		// watchdog intact, even when an upstream omits Content-Type.
-		response.Body = &responsePrivacyBody{body: response.Body, ctx: ctx, account: account, statusCode: response.StatusCode}
+		response.Body = &responsePrivacyBody{body: response.Body, ctx: ctx, account: account, statusCode: response.StatusCode, raw: raw}
 		response.ContentLength = -1
 		response.Header.Del("Content-Length")
 	}
@@ -61,6 +85,7 @@ func maskTurnStateResponse(ctx context.Context, account *auth.Account, response 
 }
 
 type responsePrivacyBody struct {
+	raw        bool
 	statusCode int
 	body       io.ReadCloser
 	ctx        context.Context
@@ -105,7 +130,7 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 		}
 		if first[0] == ':' || first[0] == 'd' || first[0] == 'e' || first[0] == 'i' {
 			// A mislabeled SSE stream is still processed incrementally.
-			r.reader = &turnStateStream{body: r.body, reader: buffer, ctx: r.ctx, account: r.account, state: turnStateSessionFrom(r.ctx)}
+			r.reader = &turnStateStream{body: r.body, reader: buffer, ctx: r.ctx, account: r.account, state: turnStateSessionFrom(r.ctx), raw: r.raw, pending: syntheticTurnStateFrame(r.ctx)}
 		} else {
 			var original []byte
 			if r.statusCode >= 400 && r.statusCode <= 599 {
@@ -117,7 +142,9 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 			}
 			if err == nil {
 				if !gjson.ValidBytes(original) {
-					if r.statusCode >= 400 && r.statusCode <= 599 {
+					if r.raw {
+						original = upstreamprivacy.Bytes(original)
+					} else if r.statusCode >= 400 && r.statusCode <= 599 {
 						// Keep the real HTTP failure category, but discard HTML/plain
 						// provider diagnostics. Do not misclassify this as a read error.
 						original = nil
@@ -125,7 +152,10 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 						err = errors.New("invalid upstream response envelope")
 					}
 				} else {
-					original, err = maskResponsePayload(r.ctx, r.account, original, true)
+					if !r.raw {
+						original, err = maskResponsePayload(r.ctx, r.account, original, true)
+					}
+					original = upstreamprivacy.Bytes(original)
 				}
 			}
 			if err != nil {
@@ -181,6 +211,7 @@ func stageTurnStateMetadataHeader(ctx context.Context, headers http.Header, even
 // dictionaries; leave unrelated events and generated content unchanged.
 // The limit also bounds malformed streams without an event separator.
 type turnStateStream struct {
+	raw      bool
 	body     io.ReadCloser
 	reader   *bufio.Reader
 	ctx      context.Context
@@ -280,20 +311,24 @@ func (r *turnStateStream) maskFrame(frame []byte) ([]byte, error) {
 			data = append(data, part...)
 		}
 	}
-	encoded, err := maskResponsePayload(r.ctx, r.account, data, false)
+	encoded := data
+	var err error
+	if !r.raw {
+		encoded, err = maskResponsePayload(r.ctx, r.account, data, false)
+	} else if alias, _ := r.ctx.Value(syntheticTurnStateKey{}).(string); alias != "" && gjson.ValidBytes(data) {
+		encoded, _, err = rewriteTurnStateFields(data, "response_metadata", true, 0, func(value, carrier string) (string, error) {
+			return maskResponseTurnState(r.ctx, r.account, value, carrier)
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
-	if state := projectIdentityFrom(r.ctx); state != nil && state.active {
-		if r.projects == nil {
-			r.projects = &projectStreamBuffer{ctx: r.ctx, account: r.account, channels: make(map[string]*projectDeltaChannel)}
-		}
-		return r.projects.push(frame, encoded)
+	encoded = upstreamprivacy.Bytes(encoded)
+	frame = upstreamprivacy.Bytes(frame)
+	if r.projects == nil {
+		r.projects = &projectStreamBuffer{ctx: r.ctx, account: r.account, channels: make(map[string]*projectDeltaChannel), domainGuard: true}
 	}
-	if bytes.Equal(encoded, data) {
-		return frame, nil
-	}
-	return rewriteSSEFrame(frame, encoded), nil
+	return r.projects.push(frame, encoded)
 }
 
 func rewriteSSEFrame(frame, encoded []byte) []byte {

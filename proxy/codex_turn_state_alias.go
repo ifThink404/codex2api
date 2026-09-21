@@ -17,6 +17,7 @@ import (
 
 type turnStateSessionKey struct{}
 type turnStateSession struct {
+	turnKnown      bool
 	handler        *Handler
 	scope, rootKey string
 	mu             sync.Mutex
@@ -110,10 +111,12 @@ func (h *Handler) bindTurnStateSession(c *gin.Context, body []byte, identity req
 	// Related/bypass affinity markers are process-private random strings. Never
 	// persist those markers: use the original root key across restarts/instances.
 	root := sessionAffinityKey(identity.affinityID, requestAPIKeyID(c))
+	protocolRoot := protocolSessionAffinityKey(c, identity)
 	if root == "" {
 		root = "unbound:" + NewUpstreamSessionUUID()
+		protocolRoot = root
 	}
-	s := &turnStateSession{handler: h, rootKey: hashRiskIdentity(root), scope: codexIdentityDigest("turn-state-scope-v1", responseCacheOwnerForRequest(c, requestAPIKeyID(c)), root, projected.Get(codexThreadIDHeader), turn), incoming: make(map[string]database.CodexTurnStateRecord), issued: make(map[string]database.CodexTurnStateRecord)}
+	s := &turnStateSession{turnKnown: turn != "", handler: h, rootKey: hashRiskIdentity(protocolRoot), scope: codexIdentityDigest("turn-state-scope-v1", responseCacheOwnerForRequest(c, requestAPIKeyID(c)), protocolRoot, projected.Get(codexThreadIDHeader), turn), incoming: make(map[string]database.CodexTurnStateRecord), issued: make(map[string]database.CodexTurnStateRecord)}
 	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), turnStateSessionKey{}, s))
 	type lookupResult struct {
 		record database.CodexTurnStateRecord
@@ -130,7 +133,7 @@ func (h *Handler) bindTurnStateSession(c *gin.Context, body []byte, identity req
 			continue
 		}
 		if previous, ok := checked[value]; ok {
-			s.log(previous.action, input.carrier, value, previous.record.Real, previous.record.AccountID, previous.record.Generation, nil)
+			s.log(previous.action, input.carrier, value, loggedTurnStateReal(previous.record), previous.record.AccountID, previous.record.Generation, nil)
 			continue
 		}
 		lookup, cancel := context.WithTimeout(c.Request.Context(), time.Second)
@@ -145,7 +148,7 @@ func (h *Handler) bindTurnStateSession(c *gin.Context, body []byte, identity req
 		case found:
 			// An alias is never an account selection instruction. Check the current
 			// persistent owner first, including A -> B -> A generation changes.
-			entry, known, readErr := h.readSessionContinuity(c.Request.Context(), s.rootKey)
+			entry, known, readErr := h.readSessionContinuity(c.Request.Context(), hashRiskIdentity(root))
 			owner, gen := int64(0), uint64(0)
 			if known {
 				owner, gen = entry.Record.AccountID, entry.Record.FailoverCount
@@ -159,6 +162,9 @@ func (h *Handler) bindTurnStateSession(c *gin.Context, body []byte, identity req
 			if readErr == nil && account != nil && record.RootKey == s.rootKey && record.AccountID == owner && record.Generation == gen && record.AccountHash == turnStateAccountHash(account) {
 				s.incoming[value] = record
 				action = "restored"
+				if record.Kind == database.CodexTurnStateSyntheticBPS {
+					action = "accepted_local_synthetic"
+				}
 			} else {
 				action = "cleared_owner_changed_or_missing"
 			}
@@ -168,7 +174,7 @@ func (h *Handler) bindTurnStateSession(c *gin.Context, body []byte, identity req
 			record = database.CodexTurnStateRecord{}
 		}
 		checked[value] = lookupResult{record, action}
-		s.log(action, input.carrier, value, record.Real, record.AccountID, record.Generation, nil)
+		s.log(action, input.carrier, value, loggedTurnStateReal(record), record.AccountID, record.Generation, nil)
 	}
 }
 
@@ -188,7 +194,11 @@ func normalizeTurnStateIngress(c *gin.Context, body []byte) []byte {
 		if s == nil {
 			return ""
 		}
-		return s.incoming[strings.TrimSpace(value)].Real
+		record := s.incoming[strings.TrimSpace(value)]
+		if record.Kind != "" {
+			return ""
+		}
+		return record.Real
 	})
 	// HTTP clients echo turn state in a request header. After restoring its
 	// scoped alias, project it into this request's metadata before identity
@@ -218,10 +228,13 @@ func PrepareCodexTurnStateOutbound(ctx context.Context, account *auth.Account, b
 			generation = epoch.record.FailoverCount
 		}
 		for _, record := range s.incoming {
+			if record.Kind != "" {
+				continue
+			}
 			if value != record.Real && value != record.Alias {
 				continue
 			}
-			if account != nil && !account.IsRelayStyle() && record.AccountID == account.ID() && record.Generation == generation && record.AccountHash == turnStateAccountHash(account) {
+			if account != nil && (!account.IsRelayStyle() || account.IsOpenAIResponsesAPI()) && record.AccountID == account.ID() && record.Generation == generation && record.AccountHash == turnStateAccountHash(account) {
 				return record.Real
 			}
 			s.log("cleared_account_or_generation_changed", strings.Replace(carrier, "request_", "outbound_", 1), record.Alias, record.Real, record.AccountID, record.Generation, nil)
@@ -242,7 +255,7 @@ func trustedMappedTurnState(ctx context.Context, record database.SessionContinui
 		return false
 	}
 	for _, mapped := range s.incoming {
-		if mapped.Real == value && mapped.AccountID == record.AccountID && mapped.Generation == record.FailoverCount && mapped.AccountHash == turnStateAccountHash(account) {
+		if mapped.Kind == "" && mapped.Real == value && mapped.AccountID == record.AccountID && mapped.Generation == record.FailoverCount && mapped.AccountHash == turnStateAccountHash(account) {
 			return true
 		}
 	}
@@ -250,7 +263,13 @@ func trustedMappedTurnState(ctx context.Context, record database.SessionContinui
 }
 
 func (s *turnStateSession) issue(ctx context.Context, account *auth.Account, real, carrier string) (string, error) {
-	observeUsageTurnState(ctx, real)
+	return s.issueKind(ctx, account, real, carrier, "")
+}
+
+func (s *turnStateSession) issueKind(ctx context.Context, account *auth.Account, real, carrier, kind string) (string, error) {
+	if kind == "" {
+		observeUsageTurnState(ctx, real)
+	}
 	if real == "" {
 		return "", nil
 	}
@@ -261,8 +280,8 @@ func (s *turnStateSession) issue(ctx context.Context, account *auth.Account, rea
 	if epoch := outboundEpochFromContext(ctx); epoch != nil {
 		generation = epoch.record.FailoverCount
 	}
-	binding := database.CodexTurnStateBinding{Scope: s.scope, RootKey: s.rootKey, AccountID: account.ID(), AccountHash: turnStateAccountHash(account), Generation: generation}
-	key := codexIdentityDigest(binding.Scope, binding.AccountHash, strconv.FormatUint(generation, 10), real)
+	binding := database.CodexTurnStateBinding{Kind: kind, Scope: s.scope, RootKey: s.rootKey, AccountID: account.ID(), AccountHash: turnStateAccountHash(account), Generation: generation}
+	key := codexIdentityDigest(kind, binding.Scope, binding.AccountHash, strconv.FormatUint(generation, 10), real)
 	s.mu.Lock()
 	record, found := s.issued[key]
 	s.mu.Unlock()
@@ -288,8 +307,21 @@ func (s *turnStateSession) issue(ctx context.Context, account *auth.Account, rea
 			s.issued[key] = record
 		}
 		s.mu.Unlock()
-		recordSessionTurnState(ctx, account, real)
+		if kind == "" {
+			recordSessionTurnState(ctx, account, real)
+		}
 	}
-	s.log("issued", carrier, record.Alias, real, account.ID(), generation, &record.ExpiresAt)
+	if kind != "" {
+		s.log("issued_synthetic", carrier, record.Alias, "", account.ID(), generation, &record.ExpiresAt)
+	} else {
+		s.log("issued", carrier, record.Alias, real, account.ID(), generation, &record.ExpiresAt)
+	}
 	return record.Alias, nil
+}
+
+func loggedTurnStateReal(record database.CodexTurnStateRecord) string {
+	if record.Kind != "" {
+		return ""
+	}
+	return record.Real
 }

@@ -25,15 +25,16 @@ type outboundBodyDiagnostic struct {
 }
 
 type outboundIdentityDiagnostic struct {
-	FormatVersion      int                             `json:"format_version,omitempty"`
-	SessionConsistency string                          `json:"session_consistency,omitempty"`
-	Truncated          bool                            `json:"truncated,omitempty"`
-	HTTP               *OutboundHeaderDiagnostic       `json:"http,omitempty"`
-	WSHandshake        *OutboundHeaderDiagnostic       `json:"ws_handshake,omitempty"`
-	Body               *outboundBodyDiagnostic         `json:"body,omitempty"`
-	AccountMapping     *codexAccountIdentityDiagnostic `json:"account_mapping,omitempty"`
-	ProjectMapping     *projectIdentityDiagnostic      `json:"project_mapping,omitempty"`
-	URLMapping         *codexURLDiagnostic             `json:"url_mapping,omitempty"`
+	FormatVersion       int                             `json:"format_version,omitempty"`
+	SessionConsistency  string                          `json:"session_consistency,omitempty"`
+	SessionHeaderPolicy string                          `json:"session_header_policy,omitempty"`
+	Truncated           bool                            `json:"truncated,omitempty"`
+	HTTP                *OutboundHeaderDiagnostic       `json:"http,omitempty"`
+	WSHandshake         *OutboundHeaderDiagnostic       `json:"ws_handshake,omitempty"`
+	Body                *outboundBodyDiagnostic         `json:"body,omitempty"`
+	AccountMapping      *codexAccountIdentityDiagnostic `json:"account_mapping,omitempty"`
+	ProjectMapping      *projectIdentityDiagnostic      `json:"project_mapping,omitempty"`
+	URLMapping          *codexURLDiagnostic             `json:"url_mapping,omitempty"`
 }
 
 func (diagnostic outboundBodyDiagnostic) MarshalJSON() ([]byte, error) {
@@ -134,6 +135,8 @@ func CaptureOutboundIdentityHeaders(headers http.Header) *OutboundHeaderDiagnost
 		"X-Client-Request-Id", "X-Request-Id", "X-Codex-Window-Id", "X-Codex-Parent-Thread-Id",
 		"X-Codex-Forked-From-Thread-Id", "X-OpenAI-Subagent", "X-OpenAI-Memgen-Request", "Chatgpt-Account-Id",
 		"X-Codex-Turn-State", "X-Codex-Project-Id", "X-Codex-Workspace-Id",
+		"X-Basispoints-Auth-Mode", "X-Openai-Account-Id", "X-Openai-Internal-Basispoints-Client-Device-Id",
+		"X-Openai-Internal-Basispoints-Client-Product", "X-Openai-Internal-Basispoints-Client-Platform", "X-Openai-Internal-Basispoints-Tools-Version-Id",
 	} {
 		values := headers.Values(name)
 		if len(values) == 0 {
@@ -204,6 +207,19 @@ func captureOutboundIdentityBody(body []byte) *outboundBodyDiagnostic {
 		}
 		diagnostic.wire["client_metadata"] = wireMetadata
 	}
+	if metadata := root.Get("metadata"); metadata.Get("bps_tools_version_id").String() == bpsToolsVersion {
+		values := make(map[string]string)
+		for _, key := range []string{"task_id", "turn_id", "bps_tools_version_id", "agent_iteration"} {
+			if value := metadata.Get(key); value.Type == gjson.String {
+				if key == "task_id" || key == "turn_id" {
+					values[key] = diagnosticIdentifier(value.String())
+				} else {
+					values[key] = diagnosticLabel(value.String())
+				}
+			}
+		}
+		diagnostic.wire["metadata"] = values
+	}
 	for _, field := range []string{"prompt_cache_key", "previous_response_id"} {
 		if value := root.Get(field); value.Exists() {
 			if diagnostic.Links == nil {
@@ -249,10 +265,24 @@ func outboundSessionConsistency(identity *outboundIdentityDiagnostic) string {
 			values = append(values, value)
 		}
 	}
-	if len(values) == 0 {
+	hasSessionHeader := len(values) > 0
+	if identity.SessionHeaderPolicy == "bps" {
+		cache := identity.Body.Links["prompt_cache_key"]
+		if cache == "" {
+			return "not_applicable"
+		}
+		if len(values) != 1 {
+			return "missing_header"
+		}
+		if cache != outboundComparableIdentity(values[0]) {
+			return "mismatched"
+		}
+		return "matched"
+	}
+	if !hasSessionHeader && identity.SessionHeaderPolicy != "optional" {
 		return "missing_header"
 	}
-	if identity.Body.ClientMetadata["session_id"] == "" && identity.Body.TurnMetadata["session_id"] == "" {
+	if hasSessionHeader && identity.Body.ClientMetadata["session_id"] == "" && identity.Body.TurnMetadata["session_id"] == "" {
 		return "missing_body"
 	}
 	for _, metadata := range []map[string]string{headers.TurnMetadata, identity.Body.ClientMetadata, identity.Body.TurnMetadata} {
@@ -260,10 +290,16 @@ func outboundSessionConsistency(identity *outboundIdentityDiagnostic) string {
 			values = append(values, value)
 		}
 	}
+	if len(values) == 0 {
+		return "not_applicable"
+	}
 	for _, value := range values[1:] {
 		if outboundComparableIdentity(value) != outboundComparableIdentity(values[0]) {
 			return "mismatched"
 		}
+	}
+	if !hasSessionHeader {
+		return "body_only"
 	}
 	return "matched"
 }

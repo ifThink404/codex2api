@@ -15,6 +15,7 @@ type batchTestOutput struct {
 	text      []byte
 	truncated bool
 	model     string
+	mode      string
 }
 
 func batchTestOutputFromContext(ctx context.Context) *batchTestOutput {

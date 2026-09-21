@@ -130,7 +130,7 @@ export function diagnosticOutboundIdentity(value: unknown): Record<string, unkno
   const identity = diagnosticRecord(value)
   const result: Record<string, unknown> = {}
   if (identity.truncated === true) result.capture_truncated = true
-  if (typeof identity.session_consistency === 'string' && ['matched', 'mismatched', 'missing_header', 'missing_body'].includes(identity.session_consistency)) {
+  if (typeof identity.session_consistency === 'string' && ['matched', 'mismatched', 'missing_header', 'missing_body', 'body_only', 'not_applicable'].includes(identity.session_consistency)) {
     result.session_consistency = identity.session_consistency
   }
   for (const source of ['http', 'ws_handshake', 'body']) {

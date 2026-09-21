@@ -644,6 +644,9 @@ func (handler *Handler) publishRequestWindowGrant(request *gin.Context, grant *s
 }
 
 func (handler *Handler) waitForBackgroundWindowGrant(ctx context.Context, request *gin.Context) *api.APIError {
+	if apiRelaySessionExempt(request) {
+		return nil
+	}
 	if apiErr := handler.requestWindowGrantError(request); apiErr != nil {
 		return apiErr
 	}

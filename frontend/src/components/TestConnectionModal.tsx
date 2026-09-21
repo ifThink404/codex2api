@@ -38,6 +38,7 @@ import { orderAntigravityTestModels } from "../lib/antigravityModels";
 import { cn } from "@/lib/utils";
 import { useToast } from "../hooks/useToast";
 import Modal from "./Modal";
+import { codexTestModeOptions } from "./CodexTestModeDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -95,8 +96,8 @@ export default function TestConnectionModal({
   const { showToast } = useToast();
   const [output, setOutput] = useState<string[]>([]);
   const [status, setStatus] = useState<
-    "connecting" | "streaming" | "success" | "error"
-  >("connecting");
+    "idle" | "connecting" | "streaming" | "success" | "error"
+  >("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [model, setModel] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
@@ -106,7 +107,8 @@ export default function TestConnectionModal({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [headersOpen, setHeadersOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
-  const [attempt, setAttempt] = useState(0);
+  const [testMode, setTestMode] = useState("auto");
+  const [runConfig, setRunConfig] = useState<{model: string; mode: string; attempt: number} | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const outputEndRef = useRef<HTMLDivElement>(null);
   const settledRef = useRef(false);
@@ -275,14 +277,15 @@ export default function TestConnectionModal({
   }, [account.claude_api, account.model_mapping, account.models, isAntigravityAccount, isClaudeAccount, isOpenAIResponsesAccount]);
 
   useEffect(() => {
-    if (!modelOptionsReady || !selectedModel) return;
+    if (!modelOptionsReady || !runConfig) return;
+    const requestModel = runConfig.model;
 
     // 重置状态（StrictMode 二次 mount 时清理上一次的残留）
     setOutput([]);
     setStatus("connecting");
     setErrorMsg("");
     setDiagnostics(null);
-    setModel(selectedModel);
+    setModel(requestModel);
     settledRef.current = false;
 
     const controller = new AbortController();
@@ -292,7 +295,7 @@ export default function TestConnectionModal({
       if (controller.signal.aborted) return;
 
       try {
-        const params = new URLSearchParams({ model: selectedModel });
+        const params = new URLSearchParams({ model: requestModel, test_mode: runConfig.mode });
         if (restoreOnSuccess) {
           params.set("restore_on_success", "true");
         }
@@ -419,12 +422,10 @@ export default function TestConnectionModal({
     };
   }, [
     account.id,
-    attempt,
+    runConfig,
     markSettled,
     modelOptionsReady,
     restoreOnSuccess,
-    selectedModel,
-    t,
   ]);
 
   useEffect(() => {
@@ -432,12 +433,14 @@ export default function TestConnectionModal({
   }, [output]);
 
   const statusText = {
+    idle: "选择路径和模型后开始测试",
     connecting: t("accounts.connecting"),
     streaming: t("accounts.receivingResponse"),
     success: t("accounts.testSuccess"),
     error: t("accounts.testFailed"),
   }[status];
   const StatusIcon = {
+    idle: Activity,
     connecting: Loader2,
     streaming: Loader2,
     success: CheckCircle,
@@ -446,6 +449,7 @@ export default function TestConnectionModal({
   const statusIconSpin = status === "connecting" || status === "streaming";
 
   const statusColor = {
+    idle: "text-muted-foreground",
     connecting: "text-muted-foreground",
     streaming: "text-blue-500",
     success: "text-emerald-500",
@@ -533,6 +537,12 @@ export default function TestConnectionModal({
   })();
   const identityRows: Array<{ label: string; value?: string; hint?: string }> = [
     { label: t("accounts.testDiagResponseModel"), value: diagnostics?.response_model },
+    { label: "上游模式", value: diagnostics?.bps_compat?.mode === "bps" ? "BPS" : undefined },
+    { label: "实际发送模型", value: diagnostics?.bps_compat?.sent_model },
+    { label: "客户端 Turn-State", value: diagnostics?.bps_compat?.client_turn_state ? `${diagnostics.bps_compat.client_turn_state.length} 字符（模拟）` : undefined },
+    { label: "上游地址", value: diagnostics?.upstream_endpoint },
+    { label: "BPS 移除字段", value: diagnostics?.bps_compat?.removed_fields?.join(", ") },
+    { label: "BPS 格式转换", value: diagnostics?.bps_compat?.adapted_fields?.join("; ") },
     { label: t("accounts.testDiagTransport"), value: diagnostics?.transport },
     { label: t("accounts.testDiagPlan"), value: diagnostics?.plan_type },
     { label: t("accounts.testDiagSafetyBuffering"), value: safetyBuffering, hint: t("accounts.testDiagSafetyBufferingHint") },
@@ -597,16 +607,17 @@ export default function TestConnectionModal({
           <Button
             type="button"
             disabled={running || !modelOptionsReady || !selectedModel}
-            onClick={() => setAttempt((value) => value + 1)}
+            onClick={() => setRunConfig({model: selectedModel, mode: testMode, attempt: (runConfig?.attempt ?? 0) + 1})}
           >
             <RefreshCw className={cn("size-3.5", running && "animate-spin")} />
-            {t("accounts.testDiagRetry")}
+            {status === "idle" ? "开始测试" : t("accounts.testDiagRetry")}
           </Button>
         </div>
       }
       contentClassName="sm:max-w-[760px]"
     >
       <div className="space-y-4">
+        <div className="space-y-2"><label className="text-sm font-semibold">本次测试路径</label><Select value={testMode} onValueChange={setTestMode} options={codexTestModeOptions} disabled={running} /><p className="text-xs text-muted-foreground">仅用于本次测试，不修改账号配置或已有会话。</p></div>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <span
             className={`flex items-center gap-1.5 text-sm font-semibold ${statusColor}`}

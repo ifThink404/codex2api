@@ -14,6 +14,8 @@ export interface BuildBatchMetadataUpdateOptions {
   skipWarmTier?: boolean;
   updateSchedulerPriority: boolean;
   schedulerPriority: number | null;
+  updateCodexBPSEnabled?: boolean;
+  codexBPSEnabled?: boolean;
   updateCodexFingerprintMode?: boolean;
   codexFingerprintMode?: CodexFingerprintMode;
   updateSessionCapacity?: boolean;
@@ -37,6 +39,8 @@ export function buildBatchMetadataUpdate({
   skipWarmTier,
   updateSchedulerPriority,
   schedulerPriority,
+  updateCodexBPSEnabled,
+  codexBPSEnabled,
   updateCodexFingerprintMode,
   codexFingerprintMode,
   updateSessionCapacity,
@@ -53,6 +57,7 @@ export function buildBatchMetadataUpdate({
     payload.base_concurrency_override = baseConcurrency;
   if (updateSkipWarmTier) payload.skip_warm_tier = skipWarmTier ?? false;
   if (updateSchedulerPriority) payload.scheduler_priority = schedulerPriority;
+  if (updateCodexBPSEnabled) payload.codex_bps_enabled = codexBPSEnabled ?? false;
   if (updateCodexFingerprintMode)
     payload.codex_fingerprint_mode = codexFingerprintMode ?? "off";
   if (updateSessionCapacity) {

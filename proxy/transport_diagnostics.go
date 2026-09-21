@@ -17,7 +17,10 @@ import (
 )
 
 type UpstreamTransportDiagnostic struct {
+	ClientTurnState        *usageTurnStateValue               `json:"client_turn_state,omitempty"`
+	BPS                    *CodexBPSDiagnostic                `json:"bps_compat,omitempty"`
 	RequestTurnState       *usageTurnStateValue               `json:"request_turn_state,omitempty"`
+	ResponseTurnState      *usageTurnStateValue               `json:"response_turn_state,omitempty"`
 	AccessPrograms         *accessProgramsValueDiagnostic     `json:"access_programs,omitempty"`
 	ResponseModel          string                             `json:"response_model,omitempty"`
 	ResponseModelConflict  bool                               `json:"response_model_conflict,omitempty"`

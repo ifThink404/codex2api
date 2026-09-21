@@ -2878,6 +2878,7 @@ export default function Usage() {
                               <span className="font-sans font-semibold text-foreground/80">{t('usage.tableEndpoint')}: </span>
                               {log.inbound_endpoint || log.endpoint || '-'}
                               <UsageTurnStartBadge log={log} />
+                            {log.upstream_endpoint?.startsWith("https://bps.openai.com/basispoints/api/") && <span className="ml-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary" title={log.upstream_endpoint}>BPS</span>}
                             </div>
                           )}
                           {visibleColumns.userAgent && (

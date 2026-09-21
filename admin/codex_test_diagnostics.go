@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/tidwall/gjson"
 )
@@ -50,19 +51,21 @@ type codexTestUsage struct {
 }
 
 type codexTestDiagnostics struct {
-	HTTPStatus      int    `json:"http_status,omitempty"`
-	DurationMS      *int64 `json:"duration_ms,omitempty"`
-	HeadersMS       *int64 `json:"headers_ms,omitempty"`
-	FirstFrameMS    *int64 `json:"first_frame_ms,omitempty"`
-	FirstContentMS  *int64 `json:"first_content_ms,omitempty"`
-	Model           string `json:"model"`
-	ResponseModel   string `json:"response_model,omitempty"`
-	Transport       string `json:"transport,omitempty"`
-	RequestID       string `json:"request_id,omitempty"`
-	ResponseID      string `json:"response_id,omitempty"`
-	CFRay           string `json:"cf_ray,omitempty"`
-	PlanType        string `json:"plan_type,omitempty"`
-	TurnStateLength *int   `json:"turn_state_length,omitempty"`
+	BPS              *proxy.CodexBPSDiagnostic `json:"bps_compat,omitempty"`
+	UpstreamEndpoint string                    `json:"upstream_endpoint,omitempty"`
+	HTTPStatus       int                       `json:"http_status,omitempty"`
+	DurationMS       *int64                    `json:"duration_ms,omitempty"`
+	HeadersMS        *int64                    `json:"headers_ms,omitempty"`
+	FirstFrameMS     *int64                    `json:"first_frame_ms,omitempty"`
+	FirstContentMS   *int64                    `json:"first_content_ms,omitempty"`
+	Model            string                    `json:"model"`
+	ResponseModel    string                    `json:"response_model,omitempty"`
+	Transport        string                    `json:"transport,omitempty"`
+	RequestID        string                    `json:"request_id,omitempty"`
+	ResponseID       string                    `json:"response_id,omitempty"`
+	CFRay            string                    `json:"cf_ray,omitempty"`
+	PlanType         string                    `json:"plan_type,omitempty"`
+	TurnStateLength  *int                      `json:"turn_state_length,omitempty"`
 	// 安全缓冲:上游可能为额外审查而扣住输出;enabled 只说明该模型开着这项能力,
 	// faster_model 是官方 CLI "Retry with a faster model" 的切换目标,buffered
 	// 才表示本轮真的被缓冲过(事件级 safety_buffering=true)。
@@ -185,6 +188,10 @@ func newCodexTestRecorder(resp *http.Response, model string, account *auth.Accou
 	if resp == nil {
 		return r
 	}
+	r.details.BPS = proxy.CodexBPSResponseDiagnostic(resp)
+	if resp.Request != nil && resp.Request.URL != nil {
+		r.details.UpstreamEndpoint = resp.Request.URL.Scheme + "://" + resp.Request.URL.Host + resp.Request.URL.Path
+	}
 	r.details.HTTPStatus = resp.StatusCode
 	ms := max(int64(0), time.Since(start).Milliseconds())
 	r.details.Transport = codexTestTransport(resp.Header)
@@ -197,6 +204,10 @@ func newCodexTestRecorder(resp *http.Response, model string, account *auth.Accou
 		r.details.SecondaryWindow = parseCodexTestWindowHeaders(resp.Header, "x-codex-secondary-")
 		r.observeSafetyBufferingHeaders(resp.Header)
 		r.appendHeaders(resp.Header)
+	}
+	if d := r.details.BPS; d != nil && d.ClientTurnState != nil && d.UpstreamTurnState != nil {
+		length := d.UpstreamTurnState.Length
+		r.details.TurnStateLength = &length
 	}
 	if resp.Body != nil {
 		resp.Body = struct {
@@ -513,6 +524,12 @@ func updateCodexTestCount(target **int64, value gjson.Result) {
 }
 
 func (r *codexTestRecorder) finish() *codexTestDiagnostics {
+	defer func() {
+		if d := r.details.BPS; d != nil && d.ClientTurnState != nil && d.UpstreamTurnState != nil {
+			length := d.UpstreamTurnState.Length
+			r.details.TurnStateLength = &length
+		}
+	}()
 	ms := max(int64(0), time.Since(r.start).Milliseconds())
 	r.details.DurationMS = &ms
 	body := sanitizeCodexTestText(r.capture.String(), r.secrets)

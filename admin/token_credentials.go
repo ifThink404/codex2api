@@ -12,6 +12,7 @@ import (
 )
 
 type tokenCredentialSeed struct {
+	codexBPSEnabled     bool
 	codexInstallationID string
 	refreshToken        string
 	sessionToken        string
@@ -216,6 +217,9 @@ func tokenCredentialMap(seed tokenCredentialSeed) map[string]interface{} {
 	if seed.codex5HUsageUpdatedAt != "" {
 		credentials["codex_5h_usage_updated_at"] = seed.codex5HUsageUpdatedAt
 	}
+	if seed.codexBPSEnabled {
+		credentials[auth.CodexBPSEnabledCredentialKey] = true
+	}
 	if seed.codexUsageUpdatedAt != "" {
 		credentials["codex_usage_updated_at"] = seed.codexUsageUpdatedAt
 	}
@@ -262,6 +266,7 @@ func accountFromCredentialSeed(id int64, proxyURL string, seed tokenCredentialSe
 	seed = normalizeTokenCredentialSeed(seed)
 	account := &auth.Account{
 		DBID:                  id,
+		CodexBPS:              seed.codexBPSEnabled,
 		RefreshToken:          seed.refreshToken,
 		SessionToken:          seed.sessionToken,
 		AccessToken:           seed.accessToken,

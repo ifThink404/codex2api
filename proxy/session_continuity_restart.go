@@ -33,6 +33,9 @@ func (handler *Handler) commitContinuityRestart(request *gin.Context, account *a
 		return sessionContinuityError("ownership_unavailable")
 	}
 	next := state.Record
+	if next.AccountID == 0 {
+		next.UpstreamMode = codexAccountUpstreamMode(account)
+	}
 	next.AccountID, next.ThreadID, next.Number, next.NumberKnown = account.ID(), state.ThreadID, state.Number, true
 	next.LastSeen, next.LastFailoverReason = state.StartedAt, "continuity_"+state.RestartReason
 	ctx, cancel := context.WithTimeout(request.Request.Context(), time.Second)

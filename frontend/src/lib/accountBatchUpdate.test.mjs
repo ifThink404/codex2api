@@ -133,3 +133,11 @@ test("buildBatchMetadataUpdate applies session capacity only when selected", () 
     session_capacity_idle_ttl_seconds: 7200,
   });
 });
+
+
+test("BPS batch setting changes only when explicitly selected, including false", () => {
+  const options = { ids: [1], updateTags: false, tags: [], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
+  assert.deepEqual(buildBatchMetadataUpdate({...options, codexBPSEnabled: true}), {ids:[1]});
+  assert.deepEqual(buildBatchMetadataUpdate({...options, updateCodexBPSEnabled:true, codexBPSEnabled:true}), {ids:[1],codex_bps_enabled:true});
+  assert.deepEqual(buildBatchMetadataUpdate({...options, updateCodexBPSEnabled:true, codexBPSEnabled:false}), {ids:[1],codex_bps_enabled:false});
+});

@@ -369,6 +369,14 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 	}()
 	eligible := func(account *auth.Account) bool {
+		mode := entry.Record.UpstreamMode
+		if mode == "" {
+			mode = "native"
+		}
+		if codexAccountUpstreamMode(account) != mode {
+			trace.RejectAccount(account.ID(), "upstream_mode_mismatch")
+			return false
+		}
 		if !account.HasExactGroupIDs(ownerGroups) {
 			trace.RejectAccount(account.ID(), "account_groups_mismatch")
 			return false

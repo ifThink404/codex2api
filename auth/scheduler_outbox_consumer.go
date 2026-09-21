@@ -520,6 +520,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.CodexClientMetadataMode = src.CodexClientMetadataMode
 	dst.CodexPassthroughMode = src.CodexPassthroughMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
+	dst.CodexBPS = src.CodexBPS
 	dst.CodexInstallationID = src.CodexInstallationID
 	dst.ClaudeFingerprintMode = src.ClaudeFingerprintMode
 	dst.ClaudeClientPlatformOverride = src.ClaudeClientPlatformOverride

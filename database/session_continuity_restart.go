@@ -44,6 +44,9 @@ func (db *DB) RestartSessionContinuity(ctx context.Context, key string, expected
 		if record.ThreadID != "" && !strings.EqualFold(record.ThreadID, next.ThreadID) {
 			return ErrSessionOwnerConflict
 		}
+		if record.AccountID == 0 {
+			record.UpstreamMode = next.UpstreamMode
+		}
 		record.AccountID, record.PreviousAccountID = next.AccountID, expected.AccountID
 		record.ThreadID, record.Number, record.NumberKnown = next.ThreadID, next.Number, true
 		record.LastSeen, record.LastFailoverAt, record.LastFailoverReason = next.LastSeen, next.LastSeen, next.LastFailoverReason

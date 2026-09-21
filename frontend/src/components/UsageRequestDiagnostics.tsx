@@ -172,8 +172,14 @@ export default function UsageRequestDiagnostics({ log, onClose }: { log: UsageLo
     </div> : !data ? <p className="text-sm text-muted-foreground">{t('usage.diagnostics.unavailable')}</p> : <div className="space-y-4">
       {data.classification_changed === true && <p role="alert" className="rounded-md bg-amber-500/10 p-3 text-sm text-amber-600">{t('usage.diagnostics.changed')}</p>}
       {data.truncated === true && <p className="text-xs text-amber-600">{t('usage.diagnostics.truncated')}</p>}
+      {diagnosticRecord(upstream.bps_compat).mode === 'bps' && <section className="rounded-lg border p-3">
+        <h3 className="mb-3 text-sm font-semibold">BPS 兼容模式</h3>
+        <DiagnosticFields value={{ ...diagnosticRecord(upstream.bps_compat), upstream_endpoint: upstream.upstream_endpoint, transport: upstream.transport, response_model: upstream.response_model }} />
+        <p className="mt-2 text-xs text-muted-foreground">格式转换记录仅保存在本地。Turn-State 按上游实际返回记录；未返回时不生成替代值。</p>
+      </section>}
       <AccessProgramsDiagnostics value={data.access_programs} />
       {(detail?.request_type === 'compaction' || Boolean(diagnosticRecord(data.responses_input).compaction_metadata || diagnosticRecord(upstream.responses_input).compaction_metadata)) && <CompactionDiagnostics inbound={data.responses_input} outbound={upstream.responses_input} />}
+      {upstream.client_turn_state != null && <section className="rounded-lg border p-3"><h3 className="mb-2 text-sm font-semibold">客户端 Turn-State（模拟）</h3><DiagnosticFields value={{ upstream: upstream.response_turn_state, client: upstream.client_turn_state }} /><p className="mt-2 text-xs text-muted-foreground">本地生成，仅回传客户端，不发送上游。</p></section>}
       <TurnStateDiagnostics value={data.turn_state} outbound={outboundIdentity} />
       {Array.isArray(data.response_identity) && data.response_identity.length > 0 && <section className="rounded-lg border p-3">
         <h3 className="mb-3 text-sm font-semibold">Response ID</h3>

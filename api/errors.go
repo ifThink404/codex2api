@@ -4,6 +4,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -228,4 +229,12 @@ func LegacyErrorToAPIError(message string, errType string, code string) *APIErro
 // MarshalJSON implements custom JSON marshaling to ensure consistent format
 func (e ErrorResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]interface{}{"error": e.Error})
+}
+
+// Public JSON never includes the private routing hostname, even in nested
+// details/param fields. The in-memory error remains intact for local diagnostics.
+func (e APIError) MarshalJSON() ([]byte, error) {
+	type wire APIError
+	data, err := json.Marshal(wire(e))
+	return upstreamprivacy.Bytes(data), err
 }

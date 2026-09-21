@@ -33,7 +33,7 @@ func TestAPIRelayAccountCapacityKeepsRelatedAndNonAccountingScopes(test *testing
 	require.False(test, handler.store.AdmitAccountSession(relay, capacityAwareSessionAffinityKey(apiRelaySessionIdentity(root), 8), now), "another API key must not borrow the same root's slot")
 	root.relatedToRoot = true
 	root.protectedRelatedLease = true
-	require.Equal(test, auth.RelatedSessionAffinityKey(sessionAffinityKey("api-relay:root-a", 7)), keyFor(root), "API child requests must not acquire native protected concurrency privileges")
+	require.Equal(test, auth.RelatedSessionAffinityKey(sessionAffinityKey("root-a", 7)), keyFor(root), "API child requests must share the original root without native protected concurrency privileges")
 	require.True(test, handler.store.AdmitAccountSession(relay, keyFor(root), now))
 	require.False(test, handler.store.AdmitAccountSession(relay, keyFor(requestSessionIdentity{affinityID: "root-b", stableIdentity: true}), now))
 	require.True(test, handler.store.AdmitAccountSession(relay, keyFor(requestSessionIdentity{affinityID: "background", stableIdentity: true, bypassWindowAccounting: true}), now))
@@ -120,7 +120,7 @@ func TestAPIRelaySessionPolicyUsesAuthorizedRouteNotClientLabel(test *testing.T)
 			exempt := scenario == "api_only" || scenario == "mixed_unbound" || scenario == "mixed_api_owner" || scenario == "api_group"
 			require.Equal(test, exempt, apiRelaySessionExempt(request))
 			if exempt {
-				require.NotEqual(test, key, capacityAwareSessionAffinityKey(resolved, 7))
+				require.Equal(test, key, capacityAwareSessionAffinityKey(resolved, 7))
 				require.False(test, resolved.requiresRootAccount)
 				filter := applyAffinityGroupRouting(request, resolved, nil)
 				require.True(test, filter(relay))
@@ -135,17 +135,22 @@ func TestAPIRelaySessionPolicyUsesAuthorizedRouteNotClientLabel(test *testing.T)
 	}
 }
 
-func TestAPIRelaySessionExemptsRootWaitAndExpiredWindowWithoutPassivePrivileges(test *testing.T) {
+func TestAPIRelaySessionKeepsRootAndExemptsExpiredUserWindowWithoutPassivePrivileges(test *testing.T) {
 	handler := newWindowAuthorizationHandler(test)
 	relay := apiRelayPolicyTestAccount()
 	handler.store.AddAccount(relay)
+	handler.store.BindSessionAffinity(continuityTestThread, relay, "")
 	request, body := continuityTestRequest(47, "turn")
+	usageRequestDiagnosticState(request).StartedAt = time.Now()
 	identity := requestSessionIdentity{affinityID: continuityTestThread, stableIdentity: true, relatedToRoot: true, requiresRootAccount: true, protectedRelatedLease: true}
 	identity = handler.configureAPIRelaySessionPolicy(request, body, identity)
 	require.True(test, apiRelaySessionExempt(request))
 	require.False(test, passiveInternalRequestAuthorized(request))
 	request.Set(windowGrantContextKey, &signedWindowGrant{Grant: database.UserWindowGrant{ID: "expired", Root: "old", Expanded: true, ExpiresAt: time.Now().Add(-time.Hour)}})
 	require.Nil(test, handler.waitForBackgroundRootAccount(request, identity))
+	require.True(test, identity.relatedToRoot)
+	require.True(test, identity.requiresRootAccount)
+	require.Equal(test, relay.ID(), usageRequestDiagnosticState(request).RootAccountID)
 	require.Nil(test, handler.requestWindowGrantError(request))
 	status, blocked := handler.checkPromptSessionCreationLimitForSelectedAccountAdmission(request, body, relay, capacityAwareSessionAffinityKey(identity, 0), 0)
 	require.False(test, blocked, "%+v", status)
@@ -239,7 +244,7 @@ func TestAPIRelayRetainsExistingSoftAffinityWithoutPersistentContinuity(test *te
 	_, found, err := handler.db.ReadSessionContinuity(test.Context(), hashRiskIdentity(key))
 	require.NoError(test, err)
 	require.False(test, found)
-	handler.store.UnbindSessionAffinity(continuityTestThread, relay.ID())
+	// The original root remains the shared relay binding, even in a mixed pool.
 	handler.store.AddAccount(&auth.Account{DBID: 1695, AccessToken: "codex", Models: []string{"gpt-5.6-sol"}, Status: auth.StatusReady})
 	request, body = continuityTestRequest(0, "turn")
 	resolved := handler.configureAPIRelaySessionPolicy(request, body, requestSessionIdentity{affinityID: continuityTestThread, stableIdentity: true})

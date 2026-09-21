@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"net/http"
 	"regexp"
 	"strings"
@@ -147,6 +148,7 @@ func publicUpstreamMessage(code string) string {
 // Run only on the client copy, after retry, billing and safety classification.
 // This function is shared by HTTP JSON, SSE, and WebSocket event writers.
 func publicResponseErrorPayload(c *gin.Context, data []byte) []byte {
+	data = upstreamprivacy.Bytes(data)
 	parsed := gjson.ParseBytes(data)
 	if !parsed.IsObject() {
 		return data

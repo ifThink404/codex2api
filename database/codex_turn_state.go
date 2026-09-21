@@ -41,7 +41,10 @@ type TurnStateDiagnostic struct {
 
 // The mapping stores the upstream token encrypted. Explicit admin diagnostics
 // separately retain the values needed to compare ingress, upstream and aliases.
+const CodexTurnStateSyntheticBPS = "synthetic_bps"
+
 type CodexTurnStateBinding struct {
+	Kind        string `json:"kind,omitempty"`
 	Scope       string `json:"scope"`
 	RootKey     string `json:"root_key"`
 	AccountID   int64  `json:"account_id"`

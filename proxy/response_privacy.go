@@ -13,6 +13,16 @@ import (
 var responseIDInError = regexp.MustCompile(`\bresp_[A-Za-z0-9_-]+`)
 
 func maskResponseTurnState(ctx context.Context, account *auth.Account, value, carrier string) (string, error) {
+	if alias, _ := ctx.Value(syntheticTurnStateKey{}).(string); alias != "" {
+		if value != alias {
+			observeUsageTurnState(ctx, value)
+			if d, _ := ctx.Value(codexBPSDiagnosticKey{}).(*CodexBPSDiagnostic); d != nil {
+				measured := measureUsageTurnState(value)
+				d.UpstreamTurnState = &measured
+			}
+		}
+		return alias, nil
+	}
 	state := turnStateSessionFrom(ctx)
 	if state == nil {
 		return "", nil

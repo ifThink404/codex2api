@@ -22,7 +22,7 @@ func privateResponseField(key string) bool {
 	case "session", "thread", "conversation", "account", "device", "installation", "project":
 		return true
 	case "guardianclassifiersourcethreadid", "traceparent", "tracestate", "wsrequestheadertraceparent", "wsrequestheadertracestate", "sessionid", "threadid", "conversationid", "parentthreadid", "forkedfromthreadid",
-		"contextwindowid", "turnid", "rootturnid", "agentname", "accountid", "chatgptaccountid", "organizationid",
+		"taskid", "contextwindowid", "turnid", "rootturnid", "agentname", "accountid", "chatgptaccountid", "organizationid",
 		"organization", "projectid", "installationid", "deviceid", "windowid",
 		"windownumber", "clientrequestid", "requestid", "traceid", "userid", "email", "accountemail",
 		"authorization", "proxyauthorization", "cookie", "setcookie", "accesstoken", "refreshtoken",

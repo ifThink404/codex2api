@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"io"
 	"log"
 	"net/http"
@@ -79,6 +80,7 @@ func (h *Handler) applyResponsesUsageLimitFailure(account *auth.Account, resp *h
 // TestConnection 测试账号连接（SSE 流式返回）
 // GET /api/admin/accounts/:id/test
 func (h *Handler) TestConnection(c *gin.Context) {
+	c.Writer = testResponseWriter{c.Writer}
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -99,6 +101,15 @@ func (h *Handler) TestConnection(c *gin.Context) {
 		account = transient
 		isTransient = true
 	}
+	testContext, modeErr := proxy.WithCodexTestMode(c.Request.Context(), c.Query("test_mode"))
+	if modeErr == nil {
+		modeErr = proxy.ValidateCodexTestMode(testContext, account)
+	}
+	if modeErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": modeErr.Error()})
+		return
+	}
+	c.Request = c.Request.WithContext(testContext)
 	// 连接测试虽是 SSE GET，却会写入未授权、错误、限流或恢复状态。等流结束后
 	// 再失效列表/分析快照，避免账号页继续把已判定的 401 账号显示为“未采样”。
 	if !isTransient {
@@ -753,6 +764,7 @@ func applyUsageLimitedTestState(store *auth.Store, account *auth.Account, state 
 // sendTestEvent 发送 SSE 事件
 func sendTestEvent(c *gin.Context, event testEvent) {
 	data, err := json.Marshal(event)
+	data = upstreamprivacy.Bytes(data)
 	if err != nil {
 		log.Printf("序列化测试事件失败: %v", err)
 		return
@@ -1160,6 +1172,7 @@ func (h *Handler) executeAntigravityConnectionTest(ctx context.Context, account 
 }
 
 type batchTestRequest struct {
+	TestMode string                    `json:"test_mode"`
 	IDs      *[]int64                  `json:"ids"`
 	Selector *accountOperationSelector `json:"selector,omitempty"`
 	// RestoreOnSuccess 仅回收站批量测试使用：测试通过的账号自动恢复到账号池。
@@ -1198,6 +1211,7 @@ type batchOperationEvent struct {
 	Output          string `json:"output,omitempty"`
 	OutputTruncated bool   `json:"output_truncated,omitempty"`
 	TestModel       string `json:"test_model,omitempty"`
+	TestMode        string `json:"test_mode,omitempty"`
 }
 
 func runtimeAccountOperationIdentity(account *auth.Account) (string, string) {
@@ -1278,6 +1292,7 @@ func resolveBatchTestAccounts(store *auth.Store, ids *[]int64) ([]*auth.Account,
 // BatchTest 批量测试账号连接；未传 ids 时测试所有账号，传 ids 时仅测试指定账号。
 // POST /api/admin/accounts/batch-test
 func (h *Handler) BatchTest(c *gin.Context) {
+	c.Writer = testResponseWriter{c.Writer}
 	var req batchTestRequest
 	if c.Request.Body != nil && c.Request.ContentLength != 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -1285,6 +1300,12 @@ func (h *Handler) BatchTest(c *gin.Context) {
 			return
 		}
 	}
+	testContext, modeErr := proxy.WithCodexTestMode(c.Request.Context(), req.TestMode)
+	if modeErr != nil {
+		writeError(c, http.StatusBadRequest, modeErr.Error())
+		return
+	}
+	c.Request = c.Request.WithContext(testContext)
 	if req.IDs != nil && req.Selector != nil {
 		writeError(c, http.StatusBadRequest, "ids 与 selector 不能同时提供")
 		return
@@ -1312,6 +1333,7 @@ func (h *Handler) BatchTest(c *gin.Context) {
 // 账号以临时对象构建，不参与调度，测试结果不回写任何账号状态。
 // POST /api/admin/accounts/recycle-bin/batch-test
 func (h *Handler) RecycleBinBatchTest(c *gin.Context) {
+	c.Writer = testResponseWriter{c.Writer}
 	var req batchTestRequest
 	if c.Request.Body != nil && c.Request.ContentLength != 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -1319,6 +1341,13 @@ func (h *Handler) RecycleBinBatchTest(c *gin.Context) {
 			return
 		}
 	}
+	testContext, modeErr := proxy.WithCodexTestMode(c.Request.Context(), req.TestMode)
+	if modeErr != nil {
+		writeError(c, http.StatusBadRequest, modeErr.Error())
+		return
+	}
+	c.Request = c.Request.WithContext(testContext)
+
 	if req.IDs != nil && len(*req.IDs) == 0 {
 		writeError(c, http.StatusBadRequest, "请提供要测试的账号 ID 列表")
 		return
@@ -1563,11 +1592,15 @@ func (h *Handler) emitBatchTestProgress(
 		event.Output = string(output.text)
 		event.OutputTruncated = output.truncated
 		event.TestModel = output.model
+		event.TestMode = output.mode
 	}
 	onProgress(event)
 }
 
 func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (string, string) {
+	if err := proxy.ValidateCodexTestMode(ctx, acc); err != nil {
+		return "failed", err.Error()
+	}
 	testCtx, cancel := context.WithTimeout(ctx, batchTestAccountTimeout)
 	defer cancel()
 	if acc == nil {
@@ -1601,6 +1634,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	}
 	if output := batchTestOutputFromContext(testCtx); output != nil {
 		output.model = testModel
+		output.mode = proxy.CodexTestModeLabel(testCtx, acc)
 	}
 	securityCfg := h.store.ClaudeSecurityConfig()
 	payload, payloadErr := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, securityCfg)
@@ -1731,6 +1765,9 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 // 全程不调用任何会回写账号/调度状态的方法（MarkError/MarkCooldown/
 // RecordManualTestSuccess 等），测试结果仅用于展示。
 func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account) (string, string) {
+	if err := proxy.ValidateCodexTestMode(ctx, acc); err != nil {
+		return "failed", err.Error()
+	}
 	testCtx, cancel := context.WithTimeout(ctx, batchTestAccountTimeout)
 	defer cancel()
 	if acc == nil {
@@ -1750,6 +1787,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	}
 	if output := batchTestOutputFromContext(testCtx); output != nil {
 		output.model = testModel
+		output.mode = proxy.CodexTestModeLabel(testCtx, acc)
 	}
 	claudeSecurityCfg := h.store.ClaudeSecurityConfig()
 	payload, payloadErr := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, claudeSecurityCfg)
@@ -1911,6 +1949,9 @@ func (h *Handler) batchTestSkipDeactivatedWorkspace(acc *auth.Account) (string, 
 }
 
 func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account) (string, string, bool) {
+	if proxy.CodexTestModeLabel(ctx, acc) == "bps" {
+		return "", "", false
+	}
 	if h == nil || h.store == nil || acc == nil || acc.IsRelayStyle() || acc.GetAccessToken() == "" {
 		return "", "", false
 	}

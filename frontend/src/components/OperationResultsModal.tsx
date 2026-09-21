@@ -297,6 +297,7 @@ export default function OperationResultsModal({
                         </TableCell>
                         <TableCell className="min-w-72 max-w-[32rem] whitespace-normal break-words text-xs">
                           <div>{result.message || "—"}</div>
+                          {result.testMode && <div className="mt-1 text-xs text-muted-foreground">测试路径：{result.testMode === "bps" ? "BPS" : result.testMode === "codex" ? "Codex" : "按账号配置"}</div>}
                           {state.action === "batch_test" && result.output ? (
                             <details className="mt-1.5 rounded-md border border-border bg-muted/20 p-2">
                               <summary className="cursor-pointer font-medium text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">

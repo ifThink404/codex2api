@@ -11,6 +11,7 @@ export interface AccountOperationEvent {
   output?: string;
   output_truncated?: boolean;
   test_model?: string;
+  test_mode?: string;
 }
 
 export interface AccountOperationResult {
@@ -23,6 +24,7 @@ export interface AccountOperationResult {
   output?: string;
   outputTruncated?: boolean;
   testModel?: string;
+  testMode?: string;
 }
 
 export interface AccountOperationSummary {
@@ -97,6 +99,7 @@ export function collectAccountOperationResult(
     ...(event.output ? { output: event.output } : {}),
     ...(event.output_truncated ? { outputTruncated: true } : {}),
     ...(event.test_model ? { testModel: event.test_model } : {}),
+    ...(event.test_mode ? { testMode: event.test_mode } : {}),
   });
 }
 

@@ -86,6 +86,8 @@ OpenAI Responses 账号的映射密钥在有存储时持久化；无存储的独
 
 ## 验证
 
+API 中转的账号级身份改写同样写入本地 `outbound_identity.account_mapping`，合并相同原值/出站值的字段路径，最多保存 32 组；`prepared_headers` 表示改写准备阶段的头，是否实际发送以 `http.headers` 为准。该诊断不进入上游请求。API 专用身份头为可选载体：只在正文携带会话时记为 `body_only`，两处都没有会话时记为 `not_applicable`；正文平铺与嵌套不一致仍记为 `mismatched`，不把正常省略可选头报告成 `missing_header`。
+
 `codex_outbound_privacy_test.go` 验证别名规范化、未知嵌套移除、幂等性、父轮次引用、独立请求 ID、账号凭据来源、重复键拒绝和发送前冲突检查。
 
 `wsrelay/outbound_privacy_test.go` 在本地模拟上游处抓真实 HTTP/WS/compact 请求，检查不同载体一致性、账号来源的 Attestation、连接复用、动态轮次变化，以及业务输入保留。现有的 Lite、压缩、续写、切号、找根、保留 input、响应隐私测试继续运行。

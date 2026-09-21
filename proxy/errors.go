@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"net/http"
 	"strings"
 
@@ -119,9 +120,9 @@ func (e *Error) ToGinH() gin.H {
 		return gin.H{"error": publicUpstreamAPIError(nil, e.UpstreamErrorBody(), e.HTTPStatus, e.Code)}
 	}
 	errInfo := gin.H{
-		"message": e.Message,
-		"type":    e.Type,
-		"code":    e.Code,
+		"message": upstreamprivacy.Text(e.Message),
+		"type":    upstreamprivacy.Text(e.Type),
+		"code":    upstreamprivacy.Text(e.Code),
 	}
 	return gin.H{"error": errInfo}
 }

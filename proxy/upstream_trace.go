@@ -14,6 +14,7 @@ import (
 
 type upstreamTraceContextKey struct{}
 type upstreamTraceAttempt struct {
+	turnState  *usageTurnStateObservation
 	idempotent bool
 	accountID  int64
 	requestID  string
@@ -53,6 +54,7 @@ func (s upstreamTraceSnapshot) apply(input *database.UsageLogInput) {
 		input.UpstreamRequestID = s.UpstreamRequestID
 		input.UpstreamProxyID = s.Proxy.ID
 		input.UpstreamProxyName = s.Proxy.Name
+		applyBPSUsageTransport(input, s.Transport)
 		input.UpstreamDiagnostics = transportDiagnosticJSON(s.Transport)
 		if s.Transport != nil {
 			input.UpstreamResponseModel = s.Transport.ResponseModel
@@ -132,8 +134,22 @@ func beginUpstreamTrace(ctx context.Context, account *auth.Account, proxyURL str
 		AccountID: account.ID(), Transport: transport, EgressKind: egress, ProxyID: label.ID, ProxyName: label.Name,
 		ProxyEndpoint: safeProxyEndpoint(proxyURL), PublicEgressIPStatus: "not_observed", SendPhase: "before_payload",
 	}}
+	attempt.transport.BPS, _ = ctx.Value(codexBPSDiagnosticKey{}).(*CodexBPSDiagnostic)
+	attempt.turnState, _ = ctx.Value(usageTurnStateKey{}).(*usageTurnStateObservation)
 	if mapping, ok := ctx.Value(codexAccountIdentityDiagnosticKey{}).(*codexAccountIdentityDiagnostic); ok {
 		attempt.transport.OutboundIdentity = &outboundIdentityDiagnostic{FormatVersion: 2, AccountMapping: mapping}
+	}
+	if account.IsOpenAIResponsesAPI() {
+		if attempt.transport.OutboundIdentity == nil {
+			attempt.transport.OutboundIdentity = &outboundIdentityDiagnostic{FormatVersion: 2}
+		}
+		attempt.transport.OutboundIdentity.SessionHeaderPolicy = "optional"
+	}
+	if attempt.transport.BPS != nil {
+		if attempt.transport.OutboundIdentity == nil {
+			attempt.transport.OutboundIdentity = &outboundIdentityDiagnostic{FormatVersion: 2}
+		}
+		attempt.transport.OutboundIdentity.SessionHeaderPolicy = "bps"
 	}
 	a.mu.Lock()
 	a.current = attempt
@@ -183,6 +199,14 @@ func doTracedUpstreamRequest(client *http.Client, req *http.Request, account *au
 		observer.attempt.idempotent = req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions
 	})
 	observer.Endpoint(req.URL.String())
+	observer.update(func(d *UpstreamTransportDiagnostic) {
+		if d.BPS != nil {
+			d.UpstreamEndpoint = CodexBPSBaseURL + "/responses"
+			if d.BPS.Compact {
+				d.UpstreamEndpoint += "/compact"
+			}
+		}
+	})
 	resp, err := client.Do(traceHTTPTransport(req, observer))
 	record(resp)
 	if observer != nil && resp != nil && resp.Body != nil {
@@ -214,6 +238,7 @@ func populateUpstreamTrace(c *gin.Context, input *database.UsageLogInput) {
 		input.UpstreamRequestID = current.requestID
 		input.UpstreamProxyID = current.proxy.ID
 		input.UpstreamProxyName = current.proxy.Name
+		applyBPSUsageTransport(input, &current.transport)
 		input.UpstreamDiagnostics = transportDiagnosticJSON(&current.transport)
 		input.UpstreamResponseModel = current.transport.ResponseModel
 	}

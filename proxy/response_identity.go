@@ -46,7 +46,7 @@ func (h *Handler) bindResponseIdentity(c *gin.Context, identity requestSessionId
 	}
 	owner := responseCacheOwnerForRequest(c, requestAPIKeyID(c))
 	root := sessionAffinityKey(identity.affinityID, requestAPIKeyID(c))
-	rootKey := hashRiskIdentity(root)
+	rootKey := hashRiskIdentity(protocolSessionAffinityKey(c, identity))
 	if root == "" {
 		rootKey = hashRiskIdentity("response-owner:" + owner)
 	}
@@ -57,6 +57,17 @@ func (h *Handler) bindResponseIdentity(c *gin.Context, identity requestSessionId
 		return
 	}
 	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), responseIdentityKey{}, s))
+}
+
+// API routing now shares the original root binding. Keep its previously issued
+// protocol aliases in the same namespace, so an upgrade does not invalidate
+// history metadata or Turn-State aliases. This key is never used for selection.
+func protocolSessionAffinityKey(c *gin.Context, identity requestSessionIdentity) string {
+	root := identity.affinityID
+	if apiRelaySessionExempt(c) && root != "" {
+		root = "api-relay:" + root
+	}
+	return sessionAffinityKey(root, requestAPIKeyID(c))
 }
 
 func (s *responseIdentitySession) log(event responseIdentityEvent) {

@@ -48,7 +48,6 @@ func (handler *Handler) configureSessionModelAffinity(requestContext *gin.Contex
 		requestContext.Set(preservedInputSnapshotKey, bodies[0])
 	}
 	if apiRelaySessionExempt(requestContext) {
-		handler.seedAPIRelayAffinity(requestContext, identity, key)
 		requestContext.Set(sessionContinuityContextKey, nil)
 		handler.attachSessionOutboundEpoch(requestContext, "", database.SessionContinuityRecord{})
 		return nil

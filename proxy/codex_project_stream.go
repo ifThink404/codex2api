@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,11 +34,12 @@ type projectDeltaChannel struct {
 	deltas     []projectDelta
 }
 type projectStreamBuffer struct {
-	ctx      context.Context
-	account  *auth.Account
-	queue    []*projectPendingFrame
-	channels map[string]*projectDeltaChannel
-	bytes    int
+	domainGuard bool
+	ctx         context.Context
+	account     *auth.Account
+	queue       []*projectPendingFrame
+	channels    map[string]*projectDeltaChannel
+	bytes       int
 }
 
 func projectChannelKey(event gjson.Result) string {
@@ -97,6 +99,11 @@ func (s *projectStreamBuffer) flushChannel(c *projectDeltaChannel, final bool) e
 		return nil
 	}
 	structured := strings.Contains(c.kind, "arguments") || strings.Contains(c.kind, "input")
+	state := projectIdentityFrom(s.ctx)
+	projectActive := state != nil && state.active
+	if s.domainGuard && !projectActive {
+		structured = false
+	}
 	if structured && !final {
 		return nil
 	}
@@ -112,7 +119,7 @@ func (s *projectStreamBuffer) flushChannel(c *projectDeltaChannel, final bool) e
 			start = 0
 		}
 		for i := start; i < len(combined); i++ {
-			if projectUUIDPrefix(combined[i:]) {
+			if (projectActive && projectUUIDPrefix(combined[i:])) || (s.domainGuard && upstreamprivacy.Prefix(combined[i:])) {
 				cut = i
 				break
 			}
@@ -132,6 +139,9 @@ func (s *projectStreamBuffer) flushChannel(c *projectDeltaChannel, final bool) e
 		if err != nil {
 			return err
 		}
+	}
+	if s.domainGuard {
+		rewritten = upstreamprivacy.Text(rewritten)
 	}
 	updated := rewritten + combined[cut:]
 	// Text UUID substitutions are equal length. Structured JSON may change
@@ -179,7 +189,7 @@ func (s *projectStreamBuffer) push(frame, data []byte) ([]byte, error) {
 	}
 	event := gjson.ParseBytes(data)
 	kind := event.Get("type").String()
-	if projectTextDelta(kind) && event.Get("delta").Type == gjson.String {
+	if (projectTextDelta(kind) || s.domainGuard && strings.HasSuffix(kind, ".delta")) && event.Get("delta").Type == gjson.String {
 		key := projectChannelKey(event)
 		c := s.channels[key]
 		if c == nil {

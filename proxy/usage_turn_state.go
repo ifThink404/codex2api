@@ -23,8 +23,9 @@ type usageTurnStateObservation struct {
 }
 
 type usageTurnStateValue struct {
-	Length       int  `json:"length"`
-	DecodedBytes *int `json:"decoded_bytes,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Length       int    `json:"length"`
+	DecodedBytes *int   `json:"decoded_bytes,omitempty"`
 }
 
 func measureUsageTurnState(real string) usageTurnStateValue {
@@ -100,6 +101,11 @@ func observeUsageTurnState(ctx context.Context, real string) {
 	}
 	value := measureUsageTurnState(real)
 	observation.length, observation.decodedBytes = &value.Length, value.DecodedBytes
+	if observer := UpstreamTransportObserver(ctx); observer != nil && observer.attempt.turnState == observation {
+		observer.update(func(diagnostic *UpstreamTransportDiagnostic) {
+			diagnostic.ResponseTurnState = &value
+		})
+	}
 }
 
 func populateUsageTurnState(c *gin.Context, input *database.UsageLogInput) {

@@ -20,7 +20,7 @@ func requiresBackgroundRootAccount(source string) bool {
 }
 
 func (handler *Handler) waitForBackgroundRootAccount(requestContext *gin.Context, identity requestSessionIdentity) *api.APIError {
-	if apiRelaySessionExempt(requestContext) {
+	if apiRelaySessionExempt(requestContext) && !identity.requiresRootAccount {
 		usageRequestDiagnosticState(requestContext).RootAccountWait = "api_relay_exempt"
 		return nil
 	}

@@ -570,13 +570,17 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
 	responsesLite := gateResponsesLiteForAccount(codexResponsesLiteRequested(requestBody, headers), requestBody, account)
+	useBPS, modeErr := codexRequestUsesBPS(ctx, account)
+	if modeErr != nil {
+		return nil, modeErr
+	}
 	wantWebsocket := CurrentRuntimeSettings().CodexForceWebsocket
 	if len(useWebsocket) > 0 {
 		wantWebsocket = useWebsocket[0]
 	}
 	// Agent Identity 账号强制走 HTTP：其鉴权是每请求动态签名的 AgentAssertion 头，
 	// 长连接 WS 的一次握手鉴权模型不适配，v1 统一走 HTTP。
-	if account.IsCodexAgentIdentity() {
+	if account.IsCodexAgentIdentity() || useBPS {
 		wantWebsocket = false
 	}
 	poolRouteKey := ""
@@ -633,12 +637,14 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		// 静默落回 HTTP 会让“以为开了 WS 实际走 HTTP”难以排查，这里显式告警。
 		log.Printf("[WS] 警告: 期望走 WebSocket 上游，但 WebsocketExecuteFunc 未注册，已回退到 HTTP (account %d)", account.ID())
 	}
-	requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, false, responsesLite)
-	if responsesLite {
-		requestBody = normalizeCodexResponsesLiteBody(requestBody, true)
+	if !useBPS {
+		requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, false, responsesLite)
+		if responsesLite {
+			requestBody = normalizeCodexResponsesLiteBody(requestBody, true)
+		}
+		requestBody = normalizeCodexStructuredOutputForTransport(requestBody, false, responsesLite)
+		requestBody = normalizeCompactionTriggerFinal(requestBody, false)
 	}
-	requestBody = normalizeCodexStructuredOutputForTransport(requestBody, false, responsesLite)
-	requestBody = normalizeCompactionTriggerFinal(requestBody, false)
 
 	cacheKey := ResolveCodexPromptCacheSeed(requestBody, headers, sessionID)
 	cacheKey = ScopeCodexPromptCacheKey(ctx, cacheKey)
@@ -653,6 +659,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody, upstreamErr = PrepareCodexFunctionalFields(ctx, account, requestBody, headers, apiKey)
 	if upstreamErr != nil {
 		return nil, upstreamErr
+	}
+	if useBPS {
+		return executeCodexBPS(ctx, account, requestBody, cacheKey, proxyOverride, apiKey, deviceCfg, headers, fingerprint, false)
 	}
 	requestBody, upstreamErr = prepareCodexHTTPControls(requestBody)
 	if upstreamErr != nil {
@@ -814,7 +823,7 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 		ctx = context.Background()
 	}
 	identityInput := requestBody
-	requestBody, headers, upstreamErr = prepareRelayOutboundPrivacy(ctx, account, requestBody, headers)
+	ctx, requestBody, headers, upstreamErr = prepareRelayOutboundWithDiagnostic(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
@@ -1010,7 +1019,7 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 		ctx = context.Background()
 	}
 	identityInput := requestBody
-	requestBody, headers, upstreamErr = prepareRelayOutboundPrivacy(ctx, account, requestBody, headers)
+	ctx, requestBody, headers, upstreamErr = prepareRelayOutboundWithDiagnostic(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
@@ -1163,6 +1172,13 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
 	}
 
+	useBPS, modeErr := codexRequestUsesBPS(ctx, account)
+	if modeErr != nil {
+		return nil, modeErr
+	}
+	if useBPS {
+		return executeCodexBPS(ctx, account, requestBody, cacheKey, proxyOverride, apiKey, deviceCfg, headers, fingerprint, true)
+	}
 	// compact 端点
 	endpoint := CodexBaseURL + "/responses/compact"
 	requestBody, headers = PrepareCodexTurnStateOutbound(ctx, account, requestBody, headers)
@@ -1497,6 +1513,11 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 		}
 	}
 	if headers != nil {
+		// A validated continuation token is functional protocol state, independent
+		// of the optional Codex identity-header passthrough setting.
+		if value := headers.Get(codexTurnStateHeader); value != "" {
+			req.Header.Set(codexTurnStateHeader, value)
+		}
 		for _, key := range []string{"OpenAI-Organization", "OpenAI-Project", "Idempotency-Key", codexResponsesLiteHeader} {
 			if value := firstNonEmptyHeader(headers, key, ""); value != "" {
 				req.Header.Set(key, value)

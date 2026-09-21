@@ -11,6 +11,7 @@ import (
 var ErrSessionOwnerConflict = errors.New("session account ownership changed")
 
 type SessionContinuityRecord struct {
+	UpstreamMode         string                                 `json:"upstream_mode,omitempty"`
 	AccountID            int64                                  `json:"account_id"`
 	ThreadID             string                                 `json:"thread_id"`
 	Number               uint64                                 `json:"number"`
