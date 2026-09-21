@@ -16,7 +16,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func assertCodexIndependentTestIdentity(test *testing.T, body []byte) string {
+func assertCodexIndependentTestIdentity(test *testing.T, body []byte, outbound ...bool) string {
 	test.Helper()
 	metadata := gjson.GetBytes(body, "client_metadata")
 	turnMetadata := gjson.Parse(metadata.Get("x-codex-turn-metadata").String())
@@ -47,7 +47,11 @@ func assertCodexIndependentTestIdentity(test *testing.T, body []byte) string {
 			test.Errorf("unexpected inherited or invented field %q", field)
 		}
 	}
-	require.Equal(test, "thread_spawn", metadata.Get("x-openai-subagent").String())
+	flatSubagent := "thread_spawn" // The local test payload precedes transport normalization.
+	if len(outbound) > 0 && outbound[0] {
+		flatSubagent = "collab_spawn"
+	}
+	require.Equal(test, flatSubagent, metadata.Get("x-openai-subagent").String())
 	require.False(test, metadata.Get("x-openai-memgen-request").Exists())
 	require.Equal(test, "medium", gjson.GetBytes(body, "reasoning.effort").String())
 	require.True(test, gjson.GetBytes(body, "instructions").Exists())
@@ -63,7 +67,7 @@ func assertCodexIndependentTestIdentity(test *testing.T, body []byte) string {
 	for name, expected := range map[string]string{
 		"Session-Id": sessionID, "Thread-Id": threadID,
 		"X-Codex-Window-Id": threadID + ":0", "X-Client-Request-Id": threadID,
-		"X-Codex-Parent-Thread-Id": sessionID, "X-OpenAI-Subagent": "thread_spawn",
+		"X-Codex-Parent-Thread-Id": sessionID, "X-OpenAI-Subagent": "collab_spawn",
 	} {
 		if actual := headers.Get(name); actual != expected {
 			test.Errorf("projected %s = %q, want %q", name, actual, expected)
@@ -139,11 +143,11 @@ func TestCodexIndependentSingleAndBatchTestsKeepSelectedAccount(test *testing.T)
 		if selected != account {
 			test.Errorf("test switched the administrator-selected account")
 		}
-		generatedSession := assertCodexIndependentTestIdentity(test, body)
+		generatedSession := assertCodexIndependentTestIdentity(test, body, true)
 		if sessionID != generatedSession || poolRouteKey != "" {
 			test.Errorf("test used another or shared transport session: %q / %q", sessionID, poolRouteKey)
 		}
-		require.Equal(test, "thread_spawn", headers.Get("X-OpenAI-Subagent"))
+		require.Equal(test, "collab_spawn", headers.Get("X-OpenAI-Subagent"))
 		require.Equal(test, sessionID, headers.Get("X-Codex-Parent-Thread-Id"))
 		require.Empty(test, headers.Get("X-OpenAI-Memgen-Request"))
 		sessions <- generatedSession

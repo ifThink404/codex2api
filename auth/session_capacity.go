@@ -474,7 +474,7 @@ func (s *Store) purgeExpiredAccountSessionsLocked(accountID int64, idleTTL time.
 }
 
 // AdmitAccountSession atomically reuses or creates an idle-expiring session
-// slot for an account. Disabled and relay accounts are intentionally no-ops.
+// slot for an account. Disabled and unsupported providers are intentionally no-ops.
 func (s *Store) AdmitAccountSession(account *Account, sessionKey string, now time.Time, traces ...*SelectionTrace) bool {
 	if s == nil || account == nil {
 		return false

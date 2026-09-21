@@ -140,6 +140,10 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	if cacheKey := gjson.GetBytes(wsBody, "prompt_cache_key").String(); cacheKey != "" {
 		wsBody, _ = sjson.SetBytes(wsBody, "prompt_cache_key", proxy.ScopeCodexPromptCacheKey(ctx, cacheKey))
 	}
+	ctx, wsBody, ginHeaders, resultErr = proxy.PrepareCodexURLPrivacy(ctx, account, wsBody, ginHeaders)
+	if resultErr != nil {
+		return nil, resultErr
+	}
 	ctx, wsBody, resultErr = proxy.PrepareCodexProjectOutbound(ctx, account, wsBody, ginHeaders)
 	if resultErr != nil {
 		return nil, resultErr
@@ -193,6 +197,10 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	wsBody = applyCodexFrameMetadata(wsBody, headers)
 	wsBody, headers = proxy.PrepareCodexTurnStateOutbound(ctx, account, wsBody, headers)
 	wsBody, headers = proxy.FinalizeCodexOutboundMetadata(wsBody, headers, ctx)
+	headers, resultErr = proxy.FinalizeCodexURLHeaders(ctx, headers)
+	if resultErr != nil {
+		return nil, resultErr
+	}
 	if fingerprint.PreservesSessionIdentity() {
 		prepareCodexHandshakeSnapshot(headers)
 	} else if !proxy.IsStatelessWebsocketSessionID(sessionID) || !statelessOneShotEnabled() {

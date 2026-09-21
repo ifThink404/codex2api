@@ -12,11 +12,16 @@ type AccountSessionCapacity struct {
 }
 
 func (account *Account) SessionCapacityLimits() AccountSessionCapacity {
-	if account == nil || account.IsRelayStyle() {
+	if account == nil {
 		return AccountSessionCapacity{}
 	}
 	account.mu.RLock()
 	defer account.mu.RUnlock()
+	// Responses API relays can use the same local account-window limits as
+	// native Codex accounts. Other providers retain their own capacity policy.
+	if account.isRelayStyleLocked() && !account.isOpenAIResponsesAPILocked() {
+		return AccountSessionCapacity{}
+	}
 	total := normalizeSessionCapacityMax(account.SessionCapacityMax)
 	return AccountSessionCapacity{
 		Enabled: account.SessionCapacityEnabled, Total: total,

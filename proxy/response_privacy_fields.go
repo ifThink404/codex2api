@@ -181,6 +181,11 @@ func (w responsePrivacyWalker) rewrite(raw json.RawMessage, responseObject, cont
 		var out json.RawMessage
 		var err error
 		switch {
+		case field == "metadata" || field == "clientmetadata" || field == "xcodexturnmetadata":
+			out, err = restoreCodexURLMetadata(w.ctx, w.account, value)
+			if err == nil {
+				out, err = w.rewrite(out, false, true, errorObject, depth+1)
+			}
 		case !control && !errorObject && key == "moderation":
 			out, err = w.toolError(value)
 		case !control && !errorObject && ResponseToolErrorField(kind, key):

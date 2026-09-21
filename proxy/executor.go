@@ -556,6 +556,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if upstreamErr != nil {
 		return nil, upstreamErr
 	}
+	ctx, requestBody, headers, upstreamErr = PrepareCodexURLPrivacy(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
@@ -732,6 +736,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers, fingerprint)
 		ApplyCodexAnalyticsHeader(req.Header, requestBody)
 		_, req.Header = FinalizeCodexOutboundMetadata(requestBody, req.Header, ctx)
+		req.Header, err = FinalizeCodexURLHeaders(ctx, req.Header)
+		if err != nil {
+			return nil, err
+		}
 		ApplyCodexAccountAttestation(req.Header, account)
 		// Content-Encoding 在通用头装配之后设置：真实客户端也是在编码完成时才补这个头
 		// （codex-rs/http-client/src/request.rs prepare_encoded_json），且账号自定义头
@@ -793,6 +801,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
 	defer func() { finishTurnStateResponse(ctx, account, &upstreamResponse, &upstreamErr) }()
+	ctx, requestBody, headers, upstreamErr = PrepareCodexURLPrivacy(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
@@ -865,6 +877,10 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 		}
 		applyOpenAIResponsesRequestHeaders(req, account, apiKey, headers)
 		req.Header = finalizeRelayOutboundHeaders(body, req.Header, ctx)
+		req.Header, err = FinalizeCodexURLHeaders(ctx, req.Header)
+		if err != nil {
+			return nil, err
+		}
 		if err := ValidateCodexOutboundMetadata(body, req.Header); err != nil {
 			return nil, err
 		}
@@ -982,6 +998,10 @@ func isCodexAccessRestrictedResponse(resp *http.Response) bool {
 // 上游自己的 compact 端点，从而让没有官方 Codex OAuth 账号、仅接入中转的用户也能
 // 触发上下文自动压缩（参见 issue #174）。compact 始终为非流式。
 func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
+	ctx, requestBody, headers, upstreamErr = PrepareCodexURLPrivacy(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
@@ -1038,6 +1058,10 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 	}
 	applyOpenAIResponsesRequestHeaders(req, account, apiKey, headers)
 	req.Header = finalizeRelayOutboundHeaders(metadataBody, req.Header, ctx)
+	req.Header, err = FinalizeCodexURLHeaders(ctx, req.Header)
+	if err != nil {
+		return nil, err
+	}
 	if err := ValidateCodexOutboundMetadata(requestBody, req.Header); err != nil {
 		return nil, err
 	}
@@ -1104,6 +1128,10 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	// 顶层 type 是 WS 事件信封字段，compact HTTP 端点同样不接受，兜底删除(issue #548)。
 	requestBody, _ = sjson.DeleteBytes(requestBody, "type")
 	requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, false, responsesLite)
+	ctx, requestBody, headers, upstreamErr = PrepareCodexURLPrivacy(ctx, account, requestBody, headers)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
 	ctx, requestBody, upstreamErr = PrepareCodexProjectOutbound(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr
@@ -1161,6 +1189,10 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers, fingerprint)
 	ApplyCodexAnalyticsHeader(req.Header, requestBody)
 	_, req.Header = FinalizeCodexOutboundMetadata(metadataBody, req.Header, ctx)
+	req.Header, err = FinalizeCodexURLHeaders(ctx, req.Header)
+	if err != nil {
+		return nil, err
+	}
 	ApplyCodexAccountAttestation(req.Header, account)
 	// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。
 	ApplyCodexRoutingHint(req.Header, account, requestBody)
@@ -1523,8 +1555,11 @@ type requestSessionIdentity struct {
 	relatedRequestID       string
 	forkSourceAffinityID   string
 	bypassWindowAccounting bool
-	protectedRelatedLease  bool
-	requiresRootAccount    bool
+	// API relay user-window exemptions must not bypass an account's configured
+	// capacity. This unscoped local key retains the original related/bypass rules.
+	apiRelayCapacityKey   string
+	protectedRelatedLease bool
+	requiresRootAccount   bool
 	// unlinkedFallbackOnly marks a request with no verified root. Its normal
 	// affinity key must not be persisted or used for session-window accounting;
 	// the optional recent-account bridge is strictly request-local.

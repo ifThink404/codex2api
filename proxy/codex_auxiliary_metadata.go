@@ -118,6 +118,9 @@ func mapCodexExtraValue(ctx context.Context, account *auth.Account, key, origina
 	if original == "" {
 		return original, nil
 	}
+	if codexURLProtected(ctx, account, original) {
+		return original, nil
+	}
 	db, binding := protocolIdentityBinding(ctx, account)
 	// Project values may already have been rewritten by the earlier project
 	// pass. Its mapping is authoritative, including copies in extra metadata.

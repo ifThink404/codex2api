@@ -473,7 +473,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	sessionCapacityApplied := false
 	if sessionCapacityChanged {
 		// Apply this while dst still has its old provider/configuration. In
-		// particular, disabling capacity while changing to a relay account must
+		// particular, disabling capacity while changing to an unsupported provider must
 		// hydrate the old persisted windows before clearing their reverse keys.
 		sessionCapacityApplied = s.ApplyAccountSessionCapacity(dst.DBID, sessionCapacityEnabled, sessionCapacityMax, sessionCapacityIdleTTLSeconds, sessionCapacityReserved)
 	}

@@ -33,6 +33,7 @@ type outboundIdentityDiagnostic struct {
 	Body               *outboundBodyDiagnostic         `json:"body,omitempty"`
 	AccountMapping     *codexAccountIdentityDiagnostic `json:"account_mapping,omitempty"`
 	ProjectMapping     *projectIdentityDiagnostic      `json:"project_mapping,omitempty"`
+	URLMapping         *codexURLDiagnostic             `json:"url_mapping,omitempty"`
 }
 
 func (diagnostic outboundBodyDiagnostic) MarshalJSON() ([]byte, error) {

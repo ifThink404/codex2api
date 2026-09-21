@@ -269,6 +269,9 @@ func sessionAffinityKey(sessionID string, apiKeyID int64) string {
 }
 
 func capacityAwareSessionAffinityKey(identity requestSessionIdentity, apiKeyID int64) string {
+	if identity.apiRelayCapacityKey != "" {
+		return sessionAffinityKey(identity.apiRelayCapacityKey, apiKeyID)
+	}
 	key := sessionAffinityKey(identity.affinityID, apiKeyID)
 	if key != "" && identity.bypassWindowAccounting {
 		return auth.SessionAccountingBypassAffinityKey(key)

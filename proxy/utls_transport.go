@@ -90,6 +90,7 @@ type utlsRoundTripper struct {
 	connections map[string]*utlsConn  // HTTP/2 连接池，按 host 索引
 	pending     map[string]*sync.Cond // 防止重复连接创建
 	dialer      xproxy.Dialer         // 底层拨号器（支持代理）
+	plainHTTP   http.RoundTripper     // HTTP URLs do not use TLS or the HTTPS pool.
 }
 
 // utlsSessionCache 在所有 uTLS 连接间共享 TLS 会话缓存，让重连走 TLS resumption。
@@ -115,6 +116,7 @@ func NewUTLSTransport(proxyURL string) http.RoundTripper {
 		connections: make(map[string]*utlsConn),
 		pending:     make(map[string]*sync.Cond),
 		dialer:      dialer,
+		plainHTTP:   newCodexStandardTransport(proxyURL),
 	}
 }
 
@@ -373,6 +375,14 @@ func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientCon
 
 // RoundTrip 实现 http.RoundTripper 接口
 func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	switch req.URL.Scheme {
+	case "http":
+		return t.plainHTTP.RoundTrip(req)
+	case "https":
+		// Retain the Chrome TLS handshake for HTTPS upstreams.
+	default:
+		return nil, fmt.Errorf("unsupported protocol scheme %q", req.URL.Scheme)
+	}
 	host := req.URL.Host
 	addr := host
 	if !strings.Contains(addr, ":") {
@@ -418,6 +428,9 @@ func (t *utlsRoundTripper) CloseIdleConnections() {
 }
 
 func (t *utlsRoundTripper) closeIdleConnections(grace time.Duration) {
+	if closer, ok := t.plainHTTP.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 	now := time.Now()
 
 	// 先在锁内摘除，再在锁外关闭：Close 会触发 h2 内部锁与回调，持锁关闭
@@ -447,6 +460,9 @@ func (t *utlsRoundTripper) closeIdleConnections(grace time.Duration) {
 // 连接池淘汰存在竞争——刚被取走的 client 会直接报错。漏网的掉队请求新建的
 // 连接由 IdleConnTimeout 兜底回收，不会无限积累。
 func (t *utlsRoundTripper) CloseAllConnections() {
+	if closer, ok := t.plainHTTP.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 	t.mu.Lock()
 	entries := make([]*utlsConn, 0, len(t.connections))
 	for host, entry := range t.connections {

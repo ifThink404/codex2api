@@ -370,7 +370,8 @@ func TestSaveImageJobAssetsPersistsFilesAndMetadata(t *testing.T) {
 	if _, err := os.Stat(asset.StoragePath); err != nil {
 		t.Fatalf("saved file missing: %v", err)
 	}
-	if !strings.HasPrefix(asset.StoragePath, dir+string(os.PathSeparator)) {
+	relativePath, err := filepath.Rel(dir, asset.StoragePath)
+	if err != nil || filepath.IsAbs(relativePath) || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
 		t.Fatalf("storage path = %q, want under %q", asset.StoragePath, dir)
 	}
 }

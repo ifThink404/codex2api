@@ -188,7 +188,7 @@ type Account struct {
 	// 快照,>0 时作为无账号级/分组覆盖时的基础并发回退)。
 	claudeSessionWindow int64
 	// SessionCapacity* limits how many distinct downstream conversations may
-	// remain bound to this official Codex account. It is disabled by default.
+	// remain bound to this Codex or Responses API account. It is disabled by default.
 	SessionCapacityEnabled        bool
 	SessionCapacityMax            int64
 	SessionCapacityReserved       int64

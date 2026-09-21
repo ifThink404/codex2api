@@ -45,6 +45,15 @@ func maskResponsePayload(ctx context.Context, account *auth.Account, data []byte
 	if !gjson.ValidBytes(data) || !parsed.IsObject() {
 		return nil, errors.New("invalid upstream response envelope")
 	}
+	switch parsed.Get("type").String() {
+	case "response.metadata", "codex.response.metadata", "responsesapi.response.metadata":
+		var err error
+		data, err = restoreCodexURLMetadata(ctx, account, data)
+		if err != nil {
+			return nil, err
+		}
+		parsed = gjson.ParseBytes(data)
+	}
 	// Streaming deltas require cross-event buffering. Their caller restores
 	// them without changing event order; complete JSON envelopes are restored here.
 	if jsonResponse || !projectTextDelta(parsed.Get("type").String()) {

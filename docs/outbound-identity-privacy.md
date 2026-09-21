@@ -72,6 +72,18 @@ OpenAI Responses 账号的映射密钥在有存储时持久化；无存储的独
 
 请求业务内容中的路径、源代码、用户文本继续送往模型。这是正常推理输入，不代表客户端元数据可以任意透传。
 
+## 入口 URL 副本
+
+在 `client_metadata`、`metadata`（包括其 JSON 字符串嵌套）及请求头中，显式的 `base_url`、`openai_base_url`、`gateway_url` 及其大小写、下划线、连字符、`X-` 头部变体用于登记入口地址。普通 `note` 或业务消息中的网址不会自行登记。
+
+已登记地址在协议元数据及非凭据自定义头中的副本统一替换为官方基础地址：原生账号使用 `https://chatgpt.com/backend-api/codex`，API 中转使用 `https://api.openai.com/v1`。派生 `/responses`、`/responses/compact` 保持接口后缀，缺失字段不新增；实际网络目的地、Host、认证/签名/Attestation、消息及工具内容保持原处理方式。改写后的 URL 不再经过通用 `meta_` 二次映射。
+
+反向记录保存在本次请求的上下文中，内部分支/重试复用快照；不按官方 URL 建立全局反向表，不新增持久化地址表。响应仅恢复元数据和对应头部中的已登记值，正常输出文本/工具内容不恢复。多个不同原值对应同一官方值时不猜测回填；原有持久化 `meta_` 映射仍兼容。重启后的新请求从其显式字段重新登记，不从消息历史猜测入口地址。
+
+本地 `outbound_identity.url_mapping` 记录有界的映射、来源及改写/恢复处理次数，最多 8 个映射、每项 3 个来源；原 URL 的用户信息、查询参数和片段不进入该诊断。它不进入上游 payload。审计中的实际连接 URL 继续如实记录。
+
+`codex_url_privacy_test.go` 覆盖请求隔离、旧映射兼容、重复键、边界及 SSE 恢复；`wsrelay/url_privacy_test.go` 在模拟上游实际捕获 HTTP/WS/compact/API 中转请求及回传，覆盖主请求和被动来源。正文 `input` 保持不变，无须放宽完整输入校验。
+
 ## 验证
 
 `codex_outbound_privacy_test.go` 验证别名规范化、未知嵌套移除、幂等性、父轮次引用、独立请求 ID、账号凭据来源、重复键拒绝和发送前冲突检查。

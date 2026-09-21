@@ -44,7 +44,8 @@ func TestResponseIDMappingPersistenceIsolationAndExpiry(t *testing.T) {
 	read, found, err := db.ReadCodexResponseID(t.Context(), r.Alias)
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, r, read)
+	// Reissuing renews the TTL; a second boundary may separate r and again.
+	require.Equal(t, again, read)
 	_, found, err = db.ReadCodexResponseID(t.Context(), "resp_"+strings.Repeat("f", 64))
 	require.NoError(t, err)
 	require.False(t, found)

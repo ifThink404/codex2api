@@ -363,7 +363,7 @@ func TestApplyPersistentAccountSnapshotReconcilesSessionCapacity(t *testing.T) {
 		}
 	})
 
-	t.Run("disable hydrates and clears persisted windows before provider change", func(t *testing.T) {
+	t.Run("disable hydrates and clears persisted windows before unsupported provider change", func(t *testing.T) {
 		runtimeCache := cache.NewMemory(1)
 		t.Cleanup(func() { _ = runtimeCache.Close() })
 		settings := &database.SystemSettings{MaxConcurrency: 4, TestConcurrency: 1}
@@ -386,9 +386,9 @@ func TestApplyPersistentAccountSnapshotReconcilesSessionCapacity(t *testing.T) {
 		}
 		secondStore.AddAccount(dst)
 		src := &Account{
-			DBID: 92, UpstreamType: UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "sk-relay",
+			DBID: 92, UpstreamType: UpstreamGrok, BaseURL: "https://grok.example", APIKey: "sk-relay",
 			// A stale persisted true value must not retain windows after this
-			// account changes to a relay provider, where capacity is inapplicable.
+			// account changes to another provider, where this capacity is inapplicable.
 			SessionCapacityEnabled: true, SessionCapacityMax: 2, SessionCapacityIdleTTLSeconds: 600,
 		}
 		secondStore.applyPersistentAccountSnapshot(dst, src, true)

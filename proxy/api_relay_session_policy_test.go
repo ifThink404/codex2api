@@ -19,6 +19,66 @@ func apiRelayPolicyTestAccount() *auth.Account {
 	return &auth.Account{DBID: 1258, UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: "https://example.invalid", APIKey: "relay-test-key", PlanType: "api", Status: auth.StatusReady, Models: []string{"gpt-5.6-sol"}, GroupIDs: []int64{2}}
 }
 
+func TestAPIRelayAccountCapacityKeepsRelatedAndNonAccountingScopes(test *testing.T) {
+	handler := newWindowAuthorizationHandler(test)
+	relay := apiRelayPolicyTestAccount()
+	relay.SessionCapacityEnabled, relay.SessionCapacityMax = true, 1
+	handler.store.AddAccount(relay)
+	now := time.Now()
+	keyFor := func(identity requestSessionIdentity) string {
+		return capacityAwareSessionAffinityKey(apiRelaySessionIdentity(identity), 7)
+	}
+	root := requestSessionIdentity{affinityID: "root-a", stableIdentity: true}
+	require.True(test, handler.store.AdmitAccountSession(relay, keyFor(root), now))
+	require.False(test, handler.store.AdmitAccountSession(relay, capacityAwareSessionAffinityKey(apiRelaySessionIdentity(root), 8), now), "another API key must not borrow the same root's slot")
+	root.relatedToRoot = true
+	root.protectedRelatedLease = true
+	require.Equal(test, auth.RelatedSessionAffinityKey(sessionAffinityKey("api-relay:root-a", 7)), keyFor(root), "API child requests must not acquire native protected concurrency privileges")
+	require.True(test, handler.store.AdmitAccountSession(relay, keyFor(root), now))
+	require.False(test, handler.store.AdmitAccountSession(relay, keyFor(requestSessionIdentity{affinityID: "root-b", stableIdentity: true}), now))
+	require.True(test, handler.store.AdmitAccountSession(relay, keyFor(requestSessionIdentity{affinityID: "background", stableIdentity: true, bypassWindowAccounting: true}), now))
+	total, _ := handler.store.AccountSessionSlotCounts(relay.ID(), now)
+	require.EqualValues(test, 1, total)
+}
+
+func TestAPIRelayHTTPEnforcesConfiguredAccountCapacity(test *testing.T) {
+	var seenPath, seenAuth string
+	var seenBody []byte
+	upstream := newOpenAIResponsesSSEUpstream(&seenPath, &seenAuth, &seenBody)
+	defer upstream.Close()
+	handler := newWindowAuthorizationHandler(test)
+	config := handler.store.GetPromptFilterConfig()
+	config.Enabled, config.Advanced.NewAPI.Enabled = false, false
+	handler.store.SetPromptFilterConfig(config)
+	relay := apiRelayPolicyTestAccount()
+	relay.BaseURL = upstream.URL
+	relay.SessionCapacityEnabled, relay.SessionCapacityMax = true, 1
+	handler.store.AddAccount(relay)
+	for _, step := range []struct {
+		root    string
+		allowed bool
+	}{{"api-window-a", true}, {"api-window-a", true}, {"api-window-b", false}} {
+		body := []byte(`{"model":"gpt-5.6-sol","input":"hello","stream":true}`)
+		recorder := httptest.NewRecorder()
+		request, _ := gin.CreateTestContext(recorder)
+		request.Set(contextAPIKeyID, int64(7))
+		request.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		request.Request.Header.Set("Session-Id", step.root)
+		seenBody = nil
+		handler.Responses(request)
+		if step.allowed {
+			require.Equal(test, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.NotEmpty(test, seenBody)
+		} else {
+			require.NotEqual(test, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Empty(test, seenBody, "overflow request must not reach the upstream")
+		}
+		require.True(test, apiRelaySessionExempt(request), "account capacity must not remove the API user-window exemption")
+	}
+	total, _ := handler.store.AccountSessionSlotCounts(relay.ID(), time.Now())
+	require.EqualValues(test, 1, total)
+}
+
 func TestAPIRelaySessionPolicyUsesAuthorizedRouteNotClientLabel(test *testing.T) {
 	for _, scenario := range []string{"api_only", "mixed_unbound", "mixed_fresh", "mixed_api_owner", "mixed_codex_owner", "api_group", "api_not_allowed"} {
 		test.Run(scenario, func(test *testing.T) {

@@ -128,7 +128,7 @@ func testCodexAccountIdentitySingleAndBatchTests(test *testing.T, mode string, u
 		} else {
 			require.Equal(test, thread+":0", sent.headers.Get("X-Codex-Window-Id"))
 		}
-		require.Equal(test, "thread_spawn", sent.headers.Get("X-OpenAI-Subagent"))
+		require.Equal(test, "collab_spawn", sent.headers.Get("X-OpenAI-Subagent"))
 		require.Equal(test, "medium", gjson.GetBytes(sent.body, "reasoning.effort").String())
 		require.Empty(test, gjson.GetBytes(sent.body, "instructions").String())
 		require.False(test, gjson.GetBytes(sent.body, "previous_response_id").Exists())

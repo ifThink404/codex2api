@@ -63,8 +63,12 @@ func apiRelaySessionAccountFilter(inner auth.AccountFilter) auth.AccountFilter {
 
 func apiRelaySessionIdentity(identity requestSessionIdentity) requestSessionIdentity {
 	identity.affinityID = "api-relay:" + firstNonEmptyString(identity.affinityID, identity.upstreamSeed)
+	// Preserve root-window accounting, but not the native Codex-only extra
+	// concurrency lease granted to protected internal requests.
+	identity.protectedRelatedLease = false
+	identity.apiRelayCapacityKey = capacityAwareSessionAffinityKey(identity, 0)
 	identity.relatedToRoot, identity.ownsRootBinding, identity.requiresRootAccount = false, false, false
-	identity.protectedRelatedLease, identity.unlinkedFallbackOnly = false, false
+	identity.unlinkedFallbackOnly = false
 	identity.forkSourceAffinityID = ""
 	identity.bypassWindowAccounting = true
 	return identity

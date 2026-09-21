@@ -35,6 +35,9 @@ func maskTurnStateResponse(ctx context.Context, account *auth.Account, response 
 	if response == nil {
 		return nil
 	}
+	if err := restoreCodexURLHeaders(ctx, account, response.Header); err != nil {
+		return err
+	}
 	observeUsageTurnState(ctx, "")
 	var err error
 	response.Header, err = rewriteTurnStateHeaders(response.Header, "response_header", func(value, carrier string) (string, error) {

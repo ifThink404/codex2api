@@ -141,6 +141,8 @@ func (h *Handler) buildAccountResponse(
 	sessionCapacityReservedCurrent := int64(0)
 	if !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount {
 		codexFingerprintMode = auth.NormalizeCodexFingerprintMode(row.GetCredential(auth.CodexFingerprintModeCredentialKey))
+	}
+	if !isGrokAccount && !isAntigravityAccount && !isClaudeAccount {
 		sessionCapacityEnabled = row.GetCredentialBool(auth.SessionCapacityEnabledCredentialKey)
 		if configured, ok := row.GetCredentialInt64(auth.SessionCapacityMaxCredentialKey); ok {
 			sessionCapacityMax = configured

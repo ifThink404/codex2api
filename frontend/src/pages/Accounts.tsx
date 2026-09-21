@@ -813,6 +813,10 @@ function isCodexOfficialAccount(account: AccountRow): boolean {
   return !account.openai_responses_api && !account.grok_api;
 }
 
+function supportsAccountSessionCapacity(account: AccountRow): boolean {
+  return !account.grok_api && !account.antigravity_api && !account.claude_api;
+}
+
 function codexFingerprintModeOptions(
   t: ReturnType<typeof useTranslation>["t"],
 ): { value: CodexFingerprintMode; label: string }[] {
@@ -6095,6 +6099,10 @@ export default function Accounts() {
         ...(isCodexOfficialAccount(editingAccount)
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
+            }
+          : {}),
+        ...(supportsAccountSessionCapacity(editingAccount)
+          ? {
               session_capacity_enabled: editSessionCapacityEnabled,
               session_capacity_reserved: parsedSessionCapacityReserved,
               session_capacity_max: Number.isFinite(parsedSessionCapacityMax) ? parsedSessionCapacityMax : 5,
@@ -10160,7 +10168,7 @@ export default function Accounts() {
                         ) : null}
 
                         {/* 账号活跃会话容量 */}
-                        {isCodexOfficialAccount(editingAccount) ? (
+                        {supportsAccountSessionCapacity(editingAccount) ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                             <div className="flex items-start justify-between gap-4">
                               <div>
