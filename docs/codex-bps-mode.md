@@ -18,12 +18,15 @@
 | `input`、历史工具调用和结果、加密历史 | 经过既有隐私处理后保留；不删除工具业务内容 |
 | 顶层 `instructions` | 放入 developer 输入消息 |
 | 顶层 `tools` | 放入 additional_tools 输入项；已有 additional_tools 保留 |
+| 通用助手身份 | input 最前面追加固定 developer 兼容消息，抑制 Office 身份与内置工具使用；调用方提示词、工具、历史仍保留 |
 | `reasoning.effort` | 生成请求使用顶层 `reasoning_effort` |
 | `client_metadata` / 顶层 `metadata` | 转为 BPS task_id、turn_id、工具版本与 agent_iteration；原身份元数据不透传 |
 | 生成 | model、input、metadata、model_selection=explicit、stream=true、store=false、reasoning_effort、prompt_cache_key |
 | 压缩 | 只发送 model、input、metadata；不发送 prompt_cache_key 等生成参数 |
 
-BPS 是经过实测的兼容投影，服务端不接受的顶层控制字段（包括 service_tier、text、tool_choice、parallel_tool_calls、include 等）不发送。按用户选择，不增加 JSON Schema 校验、额外工具拦截或并行控制执行层；这些控制不保证等价支持。原始提示和工具定义仍保留。其他未进入上述投影的顶层字段同样记录为移除字段，方便排查。
+BPS 是经过实测的兼容投影，服务端不接受的顶层控制字段（包括 service_tier、text、tool_choice、parallel_tool_calls、include 等）不发送。按用户选择，不增加 JSON Schema 校验或并行控制执行层；这些控制不保证等价支持。原始提示和工具定义仍保留。其他未进入上述投影的顶层字段同样记录为移除字段，方便排查。若上游意外要求调用客户端未声明、名称带提供方标记的内部工具，返回处理失败，不伪造工具别名或丢弃调用后继续宣称成功。
+
+固定兼容消息来自已验证的调用格式，只改变回答行为；不会让服务端停止加载内置提示词或减少其输入用量。不得因此改写用量、缓存命中或对外宣称模型上下文已清空。
 
 ## 日志
 
@@ -37,8 +40,14 @@ BPS 正常响应头未携带 Turn-State 时，向客户端补充本地模拟令�
 
 账号批量编辑增加“修改 BPS 兼容模式”与“开启”两个独立控件；未选修改时不提交此字段。默认关闭，保存后生效。
 
-## 公开响应中的地址隐藏
+## 公开响应与测连预览的来源清理
 
-统一清理私有 BPS 域名（含大小写、URL 编码与 JSON Unicode 转义形式），使用等长 `hidden.invalid` 替代。真实连接目标、管理员本地诊断保留；客户端响应和测连输出不携带真实域名。覆盖 HTTP 头、JSON 正文/字段名/嵌套字符串、公开错误、SSE/WS 文本和工具参数增量。增量按输出项分别缓存潜在域名前缀，跨事件拼接处理，保留事件顺序；非目标文本及工具业务内容保持原样。
+公开地址统一投影为 `https://chatgpt.com/backend-api/codex/responses`，压缩路径为其 `/compact`。真实连接目标和本地路由诊断保留；支持大小写、URL 编码、JSON Unicode／斜杠转义以及旧占位域名。覆盖响应头、JSON、公开错误和 SSE 文本／工具参数增量；跨事件重组后替换，支持地址长度变化，并保留事件顺序。
+
+BPS 响应中的 instructions、tools、metadata 投影为该请求调用方提供的内容；工具集合包括顶层 tools、input.additional_tools 和 tool_search_output 中的声明。服务端内置提示词、工具定义和 BPS 元数据不进入普通回传或测连预览。作用范围由实际出站请求上下文确定，不根据账号开关的后续变化猜测。原生 Codex 和普通 API 中转维持原处理。
+
+测连复制／下载使用中性的 `compatibility` 字段及显示地址，不再导出 `bps_compat.mode=bps`；单独和批量测连都经过该边界。清理在正文预览截断之前完成。界面将此标为“响应预览”，避免将清理后的内容称为未处理原文。真实用量、响应 ID、原生 Turn-State 与模拟令牌的分别观测仍保留。本地使用日志中的路由审计、账号模式配置保留，便于运维。
+
+提供方生成的文本还会替换已知的 Basis Points 等来源字样；调用方的工具参数、JSON Schema、签名和加密历史不做这类品牌词替换。它不是任意编码或图片内容的语义识别，也不能保证模型永远不以其他措辞描述上游环境。
 
 这是对明确域名及其已覆盖编码形式的过滤，不是对模型语义、任意编码或图片内容的推断过滤。

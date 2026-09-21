@@ -20,7 +20,7 @@ import (
 // Exercise native and API relay execution with the actual diagnostic recorder;
 // recorder-only tests miss response filtering performed by either executor.
 func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
-	for _, transport := range []string{"http", "websocket", "api_relay"} {
+	for _, transport := range []string{"http", "websocket", "api_relay", "bps"} {
 		for _, status := range []string{"completed", "failed"} {
 			t.Run(transport+"_"+status, func(t *testing.T) {
 				t.Setenv("CODEX_REQUEST_COMPRESSION", "off")
@@ -43,6 +43,11 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 					"session_id": "original-session", "metadata": map[string]any{"nested": map[string]any{"account_id": "original-account"}},
 					"credential_echo": secret,
 					"usage":           map[string]int{"input_tokens": 23, "output_tokens": 144},
+				}
+				if transport == "bps" {
+					response["instructions"] = strings.Repeat("Basis Points private runtime name. ", 5000)
+					response["tools"] = []any{map[string]any{"type": "function", "name": "request_user_input_basispoints"}}
+					response["metadata"] = map[string]any{"bps_tools_version_id": "private-tools", "nested": map[string]any{"account_id": "original-account"}}
 				}
 				if status == "failed" {
 					response["error"] = map[string]string{"type": "server_error", "code": "server_error", "message": "diagnostic failure"}
@@ -88,6 +93,10 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 				t.Cleanup(store.Stop)
 				account := &auth.Account{DBID: 42, AccessToken: secret, AccountID: "selected-account", Status: auth.StatusReady}
 				wantTransport := transport
+				if transport == "bps" {
+					account.CodexBPS = true
+					wantTransport = "http"
+				}
 				if transport == "api_relay" {
 					account = &auth.Account{DBID: 42, UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: server.URL, APIKey: secret, Status: auth.StatusReady, Models: []string{"gpt-5.5"}}
 					wantTransport = "http"
@@ -115,8 +124,22 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 				require.Equal(t, len(state), *d.TurnStateLength)
 				require.NotContains(t, headers, "authorization")
 				require.NotContains(t, headers, "set-cookie")
-				for _, value := range []string{state, "original-account", "resp_original_diagnostic"} {
+				for _, value := range []string{state, "resp_original_diagnostic"} {
 					require.Contains(t, d.ResponseBody, value)
+				}
+				if transport == "bps" {
+					require.NotContains(t, d.ResponseBody, "original-account")
+					require.NotContains(t, d.ResponseBody, "private runtime name")
+					require.False(t, d.BodyTruncated, "private provider prompt must be removed before capture")
+					require.Equal(t, proxy.CodexBaseURL+"/responses", d.UpstreamEndpoint)
+					encoded, err := json.Marshal(d)
+					require.NoError(t, err)
+					for _, marker := range []string{"bps_compat", "basispoints", "Basis Points", "\"mode\":\"bps\""} {
+						require.NotContains(t, string(encoded), marker)
+					}
+					require.NotNil(t, d.Compatibility)
+				} else {
+					require.Contains(t, d.ResponseBody, "original-account")
 				}
 				// The existing diagnostic text redactor masks session values;
 				// preserve that behavior rather than the user filter deleting fields.

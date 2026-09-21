@@ -51,7 +51,8 @@ type codexTestUsage struct {
 }
 
 type codexTestDiagnostics struct {
-	BPS              *proxy.CodexBPSDiagnostic `json:"bps_compat,omitempty"`
+	BPS              *proxy.CodexBPSDiagnostic `json:"-"`
+	Compatibility    *proxy.CodexBPSDiagnostic `json:"compatibility,omitempty"`
 	UpstreamEndpoint string                    `json:"upstream_endpoint,omitempty"`
 	HTTPStatus       int                       `json:"http_status,omitempty"`
 	DurationMS       *int64                    `json:"duration_ms,omitempty"`
@@ -189,8 +190,15 @@ func newCodexTestRecorder(resp *http.Response, model string, account *auth.Accou
 		return r
 	}
 	r.details.BPS = proxy.CodexBPSResponseDiagnostic(resp)
+	r.details.Compatibility = publicTestCompatibility(r.details.BPS)
 	if resp.Request != nil && resp.Request.URL != nil {
 		r.details.UpstreamEndpoint = resp.Request.URL.Scheme + "://" + resp.Request.URL.Host + resp.Request.URL.Path
+	}
+	if r.details.BPS != nil {
+		r.details.UpstreamEndpoint = proxy.CodexBaseURL + "/responses"
+		if r.details.BPS.Compact {
+			r.details.UpstreamEndpoint += "/compact"
+		}
 	}
 	r.details.HTTPStatus = resp.StatusCode
 	ms := max(int64(0), time.Since(start).Milliseconds())
@@ -525,6 +533,7 @@ func updateCodexTestCount(target **int64, value gjson.Result) {
 
 func (r *codexTestRecorder) finish() *codexTestDiagnostics {
 	defer func() {
+		r.details.Compatibility = publicTestCompatibility(r.details.BPS)
 		if d := r.details.BPS; d != nil && d.ClientTurnState != nil && d.UpstreamTurnState != nil {
 			length := d.UpstreamTurnState.Length
 			r.details.TurnStateLength = &length
@@ -543,4 +552,18 @@ func (r *codexTestRecorder) finish() *codexTestDiagnostics {
 	}
 	r.details.ResponseBody = body
 	return r.details
+}
+
+func publicTestCompatibility(d *proxy.CodexBPSDiagnostic) *proxy.CodexBPSDiagnostic {
+	if d == nil {
+		return nil
+	}
+	public := *d
+	public.Mode = "responses"
+	public.AdaptedFields = make([]string, len(d.AdaptedFields))
+	for i, field := range d.AdaptedFields {
+		public.AdaptedFields[i] = strings.ReplaceAll(field, "BPS", "upstream")
+	}
+	public.RemovedFields = append([]string(nil), d.RemovedFields...)
+	return &public
 }

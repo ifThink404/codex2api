@@ -17,6 +17,7 @@ const CodexBPSBaseURL = "https://bps.openai.com/basispoints/api"
 const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
+	projection        *bpsResponseProjection
 	UpstreamTurnState *usageTurnStateValue `json:"upstream_turn_state,omitempty"`
 	ClientTurnState   *usageTurnStateValue `json:"client_turn_state,omitempty"`
 	Mode              string               `json:"mode"`
@@ -83,6 +84,8 @@ func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *C
 		return nil, nil, &Error{Code: "invalid_request_error", Type: ErrorTypeInvalidRequest, HTTPStatus: 400, Message: "BPS 请求的 input 必须是文本或数组"}
 	}
 	var prefix []json.RawMessage
+	runtimeMessage, _ := json.Marshal(map[string]any{"type": "message", "role": "developer", "content": []map[string]string{{"type": "input_text", "text": bpsCallerRuntimeInstructions}}})
+	prefix = append(prefix, runtimeMessage)
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
 		item, _ := json.Marshal(map[string]any{"type": "additional_tools", "role": "developer", "tools": source["tools"]})
 		prefix = append(prefix, item)
@@ -179,6 +182,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		return nil, ErrInternalError("构建 BPS 请求失败", err)
 	}
 	ctx = context.WithValue(ctx, codexBPSDiagnosticKey{}, diagnostic)
+	diagnostic.projection = newBPSResponseProjection(body)
 	endpoint := CodexBPSBaseURL + "/responses"
 	if compact {
 		endpoint += "/compact"
@@ -210,7 +214,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		if shouldRecyclePooledClient(err) {
 			recyclePooledClient(account, proxyURL)
 		}
-		return nil, ErrUpstream(0, "请求 BPS 上游失败", err)
+		return nil, ErrUpstream(0, "请求上游失败", err)
 	}
 	return resp, nil
 }

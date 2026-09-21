@@ -537,12 +537,12 @@ export default function TestConnectionModal({
   })();
   const identityRows: Array<{ label: string; value?: string; hint?: string }> = [
     { label: t("accounts.testDiagResponseModel"), value: diagnostics?.response_model },
-    { label: "上游模式", value: diagnostics?.bps_compat?.mode === "bps" ? "BPS" : undefined },
-    { label: "实际发送模型", value: diagnostics?.bps_compat?.sent_model },
-    { label: "客户端 Turn-State", value: diagnostics?.bps_compat?.client_turn_state ? `${diagnostics.bps_compat.client_turn_state.length} 字符（模拟）` : undefined },
-    { label: "上游地址", value: diagnostics?.upstream_endpoint },
-    { label: "BPS 移除字段", value: diagnostics?.bps_compat?.removed_fields?.join(", ") },
-    { label: "BPS 格式转换", value: diagnostics?.bps_compat?.adapted_fields?.join("; ") },
+    { label: "接口模式", value: diagnostics?.compatibility ? "Responses 兼容" : undefined },
+    { label: "实际发送模型", value: diagnostics?.compatibility?.sent_model },
+    { label: "客户端 Turn-State", value: diagnostics?.compatibility?.client_turn_state ? `${diagnostics.compatibility.client_turn_state.length} 字符（模拟）` : undefined },
+    { label: diagnostics?.compatibility ? "显示地址" : "上游地址", value: diagnostics?.upstream_endpoint },
+    { label: "移除字段", value: diagnostics?.compatibility?.removed_fields?.join(", ") },
+    { label: "格式转换", value: diagnostics?.compatibility?.adapted_fields?.join("; ") },
     { label: t("accounts.testDiagTransport"), value: diagnostics?.transport },
     { label: t("accounts.testDiagPlan"), value: diagnostics?.plan_type },
     { label: t("accounts.testDiagSafetyBuffering"), value: safetyBuffering, hint: t("accounts.testDiagSafetyBufferingHint") },
@@ -867,7 +867,7 @@ export default function TestConnectionModal({
                       aria-expanded={rawOpen}
                       onClick={() => setRawOpen((open) => !open)}
                     >
-                      <span>{t("accounts.testDiagRawBody")}</span>
+                      <span>{diagnostics.compatibility ? "响应预览" : t("accounts.testDiagRawBody")}</span>
                       {diagnostics.body_truncated && (
                         <span className="text-[10px] font-normal text-muted-foreground">
                           · {t("accounts.testDiagBodyTruncated")}
@@ -883,7 +883,7 @@ export default function TestConnectionModal({
                     {rawOpen && (
                       <div className="border-t border-border/70 px-3 py-2.5">
                         <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">
-                          {t("accounts.testDiagRawHint")}
+                          {diagnostics.compatibility ? "服务端内置配置和来源信息已清理；Token 用量保留上游实际返回值。" : t("accounts.testDiagRawHint")}
                         </p>
                         <pre
                           className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed"

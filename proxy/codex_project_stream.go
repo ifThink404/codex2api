@@ -35,6 +35,7 @@ type projectDeltaChannel struct {
 }
 type projectStreamBuffer struct {
 	domainGuard bool
+	sourceGuard bool
 	ctx         context.Context
 	account     *auth.Account
 	queue       []*projectPendingFrame
@@ -99,6 +100,7 @@ func (s *projectStreamBuffer) flushChannel(c *projectDeltaChannel, final bool) e
 		return nil
 	}
 	structured := strings.Contains(c.kind, "arguments") || strings.Contains(c.kind, "input")
+	sourceText := s.sourceGuard && !structured
 	state := projectIdentityFrom(s.ctx)
 	projectActive := state != nil && state.active
 	if s.domainGuard && !projectActive {
@@ -114,16 +116,21 @@ func (s *projectStreamBuffer) flushChannel(c *projectDeltaChannel, final bool) e
 	combined := builder.String()
 	cut := len(combined)
 	if !final {
-		start := len(combined) - 216
+		start := len(combined) - 400
 		if start < 0 {
 			start = 0
 		}
 		for i := start; i < len(combined); i++ {
-			if (projectActive && projectUUIDPrefix(combined[i:])) || (s.domainGuard && upstreamprivacy.Prefix(combined[i:])) {
+			if (projectActive && projectUUIDPrefix(combined[i:])) || (s.domainGuard && upstreamprivacy.Prefix(combined[i:])) || (sourceText && upstreamprivacy.SourcePrefix(combined[i:])) {
 				cut = i
 				break
 			}
 		}
+	}
+	// URL replacements may shorten or expand text. Do not move an unfinished
+	// protected suffix into a ready frame while repartitioning the prefix.
+	if !final && (s.domainGuard || s.sourceGuard) && cut < len(combined) {
+		return nil
 	}
 	part := combined[:cut]
 	var rewritten string
@@ -143,6 +150,9 @@ func (s *projectStreamBuffer) flushChannel(c *projectDeltaChannel, final bool) e
 	if s.domainGuard {
 		rewritten = upstreamprivacy.Text(rewritten)
 	}
+	if sourceText {
+		rewritten = upstreamprivacy.SourceText(rewritten)
+	}
 	updated := rewritten + combined[cut:]
 	// Text UUID substitutions are equal length. Structured JSON may change
 	// escaping; repartition only when the whole argument stream is complete.
@@ -151,7 +161,7 @@ func (s *projectStreamBuffer) flushChannel(c *projectDeltaChannel, final bool) e
 		d := &c.deltas[i]
 		sourceEnd := sourceOffset + len(d.text)
 		end := consumed + len(d.text)
-		if end > len(updated) || final && i == len(c.deltas)-1 {
+		if end > len(updated) || (final || cut == len(combined)) && i == len(c.deltas)-1 {
 			end = len(updated)
 		}
 		for end > consumed && end < len(updated) && !utf8.RuneStart(updated[end]) {

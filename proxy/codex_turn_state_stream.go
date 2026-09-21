@@ -12,6 +12,7 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/internal/upstreamprivacy"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 var errTurnStateMapping = errors.New("turn-state mapping unavailable")
@@ -21,6 +22,9 @@ func finishTurnStateResponse(ctx context.Context, account *auth.Account, respons
 		return
 	}
 	raw := preserveCodexAccountTestResponse(ctx, account)
+	if d := CodexBPSResponseDiagnostic(*response); d != nil {
+		ctx = context.WithValue(ctx, codexBPSDiagnosticKey{}, d)
+	}
 	var err error
 	ctx, err = prepareBPSSyntheticResponse(ctx, account, *response)
 	if err == nil {
@@ -61,6 +65,10 @@ func maskTurnStateResponseMode(ctx context.Context, account *auth.Account, respo
 		}
 	}
 	for name, values := range response.Header {
+		if bpsDiagnosticFromContext(ctx) != nil && bpsSourceField(name) {
+			delete(response.Header, name)
+			continue
+		}
 		for i, value := range values {
 			values[i] = upstreamprivacy.Text(value)
 		}
@@ -144,6 +152,9 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 				if !gjson.ValidBytes(original) {
 					if r.raw {
 						original = upstreamprivacy.Bytes(original)
+						if bpsDiagnosticFromContext(r.ctx) != nil {
+							original = []byte(upstreamprivacy.SourceText(string(original)))
+						}
 					} else if r.statusCode >= 400 && r.statusCode <= 599 {
 						// Keep the real HTTP failure category, but discard HTML/plain
 						// provider diagnostics. Do not misclassify this as a read error.
@@ -152,7 +163,8 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 						err = errors.New("invalid upstream response envelope")
 					}
 				} else {
-					if !r.raw {
+					original, err = projectBPSResponse(r.ctx, original)
+					if err == nil && !r.raw {
 						original, err = maskResponsePayload(r.ctx, r.account, original, true)
 					}
 					original = upstreamprivacy.Bytes(original)
@@ -311,22 +323,34 @@ func (r *turnStateStream) maskFrame(frame []byte) ([]byte, error) {
 			data = append(data, part...)
 		}
 	}
-	encoded := data
-	var err error
+	encoded, err := projectBPSResponse(r.ctx, data)
+	if err != nil {
+		return nil, err
+	}
 	if !r.raw {
-		encoded, err = maskResponsePayload(r.ctx, r.account, data, false)
+		encoded, err = maskResponsePayload(r.ctx, r.account, encoded, false)
 	} else if alias, _ := r.ctx.Value(syntheticTurnStateKey{}).(string); alias != "" && gjson.ValidBytes(data) {
-		encoded, _, err = rewriteTurnStateFields(data, "response_metadata", true, 0, func(value, carrier string) (string, error) {
+		encoded, _, err = rewriteTurnStateFields(encoded, "response_metadata", true, 0, func(value, carrier string) (string, error) {
 			return maskResponseTurnState(r.ctx, r.account, value, carrier)
 		})
 	}
 	if err != nil {
 		return nil, err
 	}
+	// Redact delta contents only after joining their channel. A complete path
+	// in one fragment may still belong to a hostname buffered in an earlier one.
+	delta := gjson.GetBytes(encoded, "delta")
+	kind := gjson.GetBytes(encoded, "type").String()
 	encoded = upstreamprivacy.Bytes(encoded)
+	if strings.HasSuffix(kind, ".delta") && delta.Type == gjson.String {
+		encoded, err = sjson.SetBytes(encoded, "delta", delta.String())
+		if err != nil {
+			return nil, err
+		}
+	}
 	frame = upstreamprivacy.Bytes(frame)
 	if r.projects == nil {
-		r.projects = &projectStreamBuffer{ctx: r.ctx, account: r.account, channels: make(map[string]*projectDeltaChannel), domainGuard: true}
+		r.projects = &projectStreamBuffer{ctx: r.ctx, account: r.account, channels: make(map[string]*projectDeltaChannel), domainGuard: true, sourceGuard: bpsDiagnosticFromContext(r.ctx) != nil}
 	}
 	return r.projects.push(frame, encoded)
 }

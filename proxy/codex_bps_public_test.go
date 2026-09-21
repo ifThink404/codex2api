@@ -17,6 +17,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -121,7 +122,7 @@ func TestBPSSynthetic292LifecycleAndNoOutboundRestoration(t *testing.T) {
 
 func TestBPSPublicStreamRedactsAcrossEverySplit(t *testing.T) {
 	for _, kind := range []string{"response.output_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta"} {
-		for _, value := range []string{"bps.openai.com", `b\u0070s.openai.com`, "bps%2eopenai.com"} {
+		for _, value := range []string{"bps.openai.com", `b\u0070s.openai.com`, "bps%2eopenai.com", "https://bps.openai.com/basispoints/api/responses", "https://hidden.invalid/basispoints/api/responses/compact"} {
 			for split := 1; split < len(value); split++ {
 				var frames bytes.Buffer
 				for _, part := range []string{value[:split], value[split:]} {
@@ -139,7 +140,7 @@ func TestBPSPublicStreamRedactsAcrossEverySplit(t *testing.T) {
 					}
 				}
 				require.NotEqual(t, value, combined, "split %d type %s", split, kind)
-				require.Len(t, combined, len(value))
+				require.Equal(t, upstreamprivacy.Text(value), combined)
 				require.NotContains(t, strings.ToLower(string(all)), "bps.openai.com")
 			}
 		}

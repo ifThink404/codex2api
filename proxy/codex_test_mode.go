@@ -17,7 +17,7 @@ func WithCodexTestMode(ctx context.Context, mode string) (context.Context, error
 		mode = "auto"
 	}
 	if mode != "auto" && mode != "codex" && mode != "bps" {
-		return ctx, fmt.Errorf("测试路径必须为 auto、codex 或 bps")
+		return ctx, fmt.Errorf("测试路径无效，请重新选择")
 	}
 	return context.WithValue(ctx, codexTestModeKey{}, mode), nil
 }
@@ -35,7 +35,7 @@ func ValidateCodexTestMode(ctx context.Context, account *auth.Account) error {
 		native = (kind == "" || kind == "codex") && !(mode == "bps" && strings.EqualFold(authMode, auth.CodexAuthModeAgentIdentity))
 	}
 	if !native || account.IsRelayStyle() || mode == "bps" && account.IsCodexAgentIdentity() {
-		return fmt.Errorf("该账号不支持所选的 %s 测试路径，请使用按账号配置", mode)
+		return fmt.Errorf("该账号不支持所选测试路径，请使用按账号配置")
 	}
 	return nil
 }

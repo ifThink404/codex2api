@@ -66,11 +66,12 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 			require.NotContains(t, string(sentBody), raw)
 		}
 		require.Contains(t, string(sentBody), "9007199254740993")
-		require.Equal(t, "Keep the original instructions.", gjson.GetBytes(sentBody, "input.1.content.0.text").String())
-		require.Equal(t, "note", gjson.GetBytes(sentBody, "input.2.tools.0.name").String())
-		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.3.call_id").String())
+		require.Equal(t, bpsCallerRuntimeInstructions, gjson.GetBytes(sentBody, "input.0.content.0.text").String())
+		require.Equal(t, "Keep the original instructions.", gjson.GetBytes(sentBody, "input.2.content.0.text").String())
+		require.Equal(t, "note", gjson.GetBytes(sentBody, "input.3.tools.0.name").String())
 		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.4.call_id").String())
-		require.Equal(t, "opaque-history", gjson.GetBytes(sentBody, "input.5.encrypted_content").String())
+		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.5.call_id").String())
+		require.Equal(t, "opaque-history", gjson.GetBytes(sentBody, "input.6.encrypted_content").String())
 		if session == "" {
 			session = sentHeaders.Get("Session-Id")
 			task = gjson.GetBytes(sentBody, "metadata.task_id").String()

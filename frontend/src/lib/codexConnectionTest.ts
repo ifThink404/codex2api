@@ -16,7 +16,7 @@ export interface CodexTestUsage {
 }
 
 export interface CodexTestDiagnostics {
-  bps_compat?: { client_turn_state?: { length: number; source?: string }; upstream_turn_state?: { length: number }; mode: string; requested_model: string; sent_model: string; compact?: boolean; adapted_fields?: string[]; removed_fields?: string[] };
+  compatibility?: { client_turn_state?: { length: number; source?: string }; upstream_turn_state?: { length: number }; mode: string; requested_model: string; sent_model: string; compact?: boolean; adapted_fields?: string[]; removed_fields?: string[] };
   upstream_endpoint?: string;
   http_status?: number;
   duration_ms?: number;

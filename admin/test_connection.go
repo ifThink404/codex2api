@@ -1593,6 +1593,9 @@ func (h *Handler) emitBatchTestProgress(
 		event.OutputTruncated = output.truncated
 		event.TestModel = output.model
 		event.TestMode = output.mode
+		if event.TestMode == "bps" {
+			event.TestMode = "responses"
+		}
 	}
 	onProgress(event)
 }
