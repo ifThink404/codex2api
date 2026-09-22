@@ -206,8 +206,8 @@ func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body 
 }
 
 // The BPS tool-result schema rejects input_file even with an uploaded file_id.
-// Function results accept image_url but reject image file_id as well. Inline
-// image results have already been projected and stay in their original slots.
+// Function results accept image_url but reject image file_id as well. Remote
+// image URLs stay in their original slots; data URLs have been uploaded.
 // Run after the upload passes; move only uploaded file/image references.
 // Retain the real tool call/output and each content position, and provide only
 // its file references in a labelled attachment message after the contiguous

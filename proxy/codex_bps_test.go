@@ -26,6 +26,9 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 	var sentHeaders http.Header
 	var endpoint string
 	installClaudeBoundaryTransport(t, a, func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/attachments") {
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"openai_file_id":"file-bps-test"}`)), Request: r}, nil
+		}
 		sentBody, err = io.ReadAll(r.Body)
 		require.NoError(t, err)
 		sentHeaders, endpoint = r.Header.Clone(), r.URL.String()
@@ -74,9 +77,11 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.Equal(t, "note", gjson.GetBytes(sentBody, "input.3.tools.0.name").String())
 		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.4.call_id").String())
 		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.5.call_id").String())
-		require.Equal(t, "data:image/png;base64,"+imageData, gjson.GetBytes(sentBody, "input.5.output.1.image_url").String())
-		require.Equal(t, "original", gjson.GetBytes(sentBody, "input.5.output.1.detail").String())
-		require.Equal(t, "opaque-history", gjson.GetBytes(sentBody, "input.6.encrypted_content").String())
+		require.Equal(t, "input_text", gjson.GetBytes(sentBody, "input.5.output.1.type").String())
+		require.Equal(t, "file-bps-test", gjson.GetBytes(sentBody, "input.6.content.1.file_id").String())
+		require.Equal(t, "original", gjson.GetBytes(sentBody, "input.6.content.1.detail").String())
+		require.Equal(t, "opaque-history", gjson.GetBytes(sentBody, "input.7.encrypted_content").String())
+		require.NotContains(t, string(sentBody), imageData)
 		if session == "" {
 			session = sentHeaders.Get("Session-Id")
 			task = gjson.GetBytes(sentBody, "metadata.task_id").String()

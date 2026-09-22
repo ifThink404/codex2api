@@ -71,9 +71,11 @@ func TestBPSUserImageAttachmentsExecutor(t *testing.T) {
 			require.Equal(t, "original", user.Get("content.1.detail").String())
 			require.Equal(t, "low", user.Get("content.3.detail").String())
 			require.Equal(t, "call_original", gjson.GetBytes(body, "input.2.call_id").String())
-			require.Equal(t, "data:image/png;base64,"+imageData, gjson.GetBytes(body, "input.2.output.0.image_url").String())
-			require.Equal(t, "unchanged-business-data", gjson.GetBytes(body, "input.3.content").String())
-			require.Len(t, gjson.GetBytes(body, "input").Array(), 4)
+			require.Equal(t, "input_text", gjson.GetBytes(body, "input.2.output.0.type").String())
+			require.Equal(t, fileID, gjson.GetBytes(body, "input.3.content.1.file_id").String())
+			require.Equal(t, "unchanged-business-data", gjson.GetBytes(body, "input.4.content").String())
+			require.NotContains(t, string(body), imageData)
+			require.Len(t, gjson.GetBytes(body, "input").Array(), 5)
 			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_test","output":[]}`)), Request: r}, nil
 		})
 		body := []byte(`{"model":"gpt-6-astra","input":[{"role":"user","id":"user-original","large_integer":9007199254740993,"content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":"data:application/octet-stream;base64,` + imageData + `","detail":"original"},{"type":"input_text","text":"between"},{"type":"input_image","image_url":"data:image/png;base64,` + imageData + `","detail":"low"}]},{"type":"function_call_output","call_id":"call_original","output":[{"type":"input_image","image_url":"data:image/png;base64,` + imageData + `"}]},{"role":"assistant","content":"unchanged-business-data"}]}`)
@@ -92,10 +94,10 @@ func TestBPSUserImageAttachmentsExecutor(t *testing.T) {
 			require.NotNil(t, d)
 			if round == 0 {
 				require.Equal(t, 1, d.Images.Uploaded)
-				require.Equal(t, 1, d.Images.UploadReused)
+				require.Equal(t, 2, d.Images.UploadReused)
 			} else {
 				require.Zero(t, d.Images.Uploaded)
-				require.Equal(t, 2, d.Images.UploadReused)
+				require.Equal(t, 3, d.Images.UploadReused)
 			}
 			logged, e := json.Marshal(d)
 			require.NoError(t, e)
@@ -166,7 +168,7 @@ func TestBPSAttachmentInvalidInputAndUploadErrors(t *testing.T) {
 		require.ErrorAs(t, err, &e)
 		require.Equal(t, 400, e.HTTPStatus)
 	}
-	data := []byte(`{"input":[{"role":"user","content":[{"type":"input_image","file_id":"caller-file"},{"type":"input_image","image_url":"https://private.invalid/image"}]},{"type":"function_call_output","output":[{"type":"input_image","image_url":"data:image/png;base64,invalid"}]}]}`)
+	data := []byte(`{"input":[{"role":"user","content":[{"type":"input_image","file_id":"caller-file"},{"type":"input_image","image_url":"https://private.invalid/image"}]},{"type":"function_call_output","output":"{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,invalid\"}"}]}`)
 	out, _, err := prepareBPSUserImageAttachments(t.Context(), a, data, nil, func(context.Context, []byte, string) (string, error) {
 		t.Fatal("unrelated reference uploaded")
 		return "", nil

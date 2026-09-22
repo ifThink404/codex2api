@@ -22,7 +22,7 @@ type codexBPSImageDiagnostic struct {
 	Uploaded               int                   `json:"uploaded,omitempty"`
 	UploadReused           int                   `json:"upload_reused,omitempty"`
 	ToolOutputConversions  int                   `json:"tool_output_conversions,omitempty"`
-	InlineImages           int                   `json:"inline_images,omitempty"`
+	InlineImages           int                   `json:"inline_images"`
 	ToolAttachmentMessages int                   `json:"tool_attachment_messages,omitempty"`
 	DetailsOmitted         int                   `json:"details_omitted,omitempty"`
 	Details                []codexBPSImageDetail `json:"details"`
@@ -161,11 +161,10 @@ func normalizeBPSImageDataURL(value string, detail *codexBPSImageDetail) string 
 	return "data:" + mime + ";base64," + encoded
 }
 
-// BPS accepts structured image content in function results but rejects it in
-// custom results. Adapt only the result carrier; keep the real custom call,
-// declaration (including grammar), call_id and output content unchanged. This
-// must run before attachment upload so inline images never become uploaded files.
-// Existing file references still need the attachment-message bridge.
+// Validate custom image results before sending. Data URLs are uploaded later
+// and use the attachment-message bridge, preserving the custom result type.
+// Only remote image URLs still need the function-result compatibility carrier;
+// never fetch an arbitrary remote URL on the gateway's behalf.
 func projectBPSCustomImageOutputs(items []json.RawMessage, d *CodexBPSDiagnostic) ([]json.RawMessage, error) {
 	for i, raw := range items {
 		item := gjson.ParseBytes(raw)
@@ -180,9 +179,9 @@ func projectBPSCustomImageOutputs(items []json.RawMessage, d *CodexBPSDiagnostic
 			if part.Get("file_id").String() != "" {
 				continue
 			}
-			imageCount++
 			value := part.Get("image_url").String()
 			if len(value) < 5 || !strings.EqualFold(value[:5], "data:") {
+				imageCount++
 				continue
 			}
 			// Preserve the former validation without allocating an entire decoded
@@ -201,11 +200,14 @@ func projectBPSCustomImageOutputs(items []json.RawMessage, d *CodexBPSDiagnostic
 			}
 			inlineCount++
 		}
-		if imageCount == 0 {
+		if imageCount+inlineCount == 0 {
 			continue
 		}
 		if strings.TrimSpace(item.Get("call_id").String()) == "" {
 			return nil, bpsImageInputError("图片工具结果缺少 call_id，无法关联原工具调用。")
+		}
+		if imageCount == 0 {
+			continue
 		}
 		updated, err := sjson.SetBytes(raw, "type", "function_call_output")
 		if err != nil {
@@ -214,18 +216,17 @@ func projectBPSCustomImageOutputs(items []json.RawMessage, d *CodexBPSDiagnostic
 		items[i] = updated
 		if d != nil && d.Images != nil {
 			d.Images.ToolOutputConversions++
-			d.Images.InlineImages += inlineCount
 			prefix := fmt.Sprintf("input[%d].output[", i)
 			for j := range d.Images.Details {
 				v := &d.Images.Details[j]
-				if strings.HasPrefix(v.Path, prefix) && v.Reference != "file_id" {
+				if strings.HasPrefix(v.Path, prefix) && v.Reference == "url" {
 					v.OutboundItemType = "function_call_output"
 					v.OutboundReference = v.Reference
 					v.Action = "tool_output_projected"
 				}
 			}
-			if !slices.Contains(d.AdaptedFields, "custom image results → function_call_output (images preserved)") {
-				d.AdaptedFields = append(d.AdaptedFields, "custom image results → function_call_output (images preserved)")
+			if !slices.Contains(d.AdaptedFields, "custom remote image results → function_call_output (URLs preserved)") {
+				d.AdaptedFields = append(d.AdaptedFields, "custom remote image results → function_call_output (URLs preserved)")
 			}
 		}
 	}

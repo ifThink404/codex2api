@@ -62,11 +62,11 @@ func TestBPSCustomToolImagesAndFilesKeepBatchAndHistory(t *testing.T) {
 		data, e := io.ReadAll(r.Body)
 		require.NoError(t, e)
 		items := gjson.GetBytes(data, "input").Array()
-		require.Len(t, items, 8) // runtime prefix + original items + file-only attachment message
+		require.Len(t, items, 8) // runtime prefix + original items + one attachment message
 		require.Equal(t, "file-image", items[1].Get("content.0.file_id").String())
 		require.Equal(t, "unchanged arguments", items[2].Get("input").String())
 		require.Equal(t, "custom_tool_call", items[2].Get("type").String())
-		require.Equal(t, "function_call_output", items[4].Get("type").String())
+		require.Equal(t, "custom_tool_call_output", items[4].Get("type").String())
 		require.Equal(t, "custom-call", items[4].Get("call_id").String())
 		require.Equal(t, "output-id", items[4].Get("id").String())
 		require.Equal(t, "before", items[4].Get("output.0.text").String())
@@ -74,18 +74,22 @@ func TestBPSCustomToolImagesAndFilesKeepBatchAndHistory(t *testing.T) {
 		require.Equal(t, "after", items[4].Get("output.5.text").String())
 		require.Equal(t, "input_text", items[4].Get("output.3.type").String())
 		for _, index := range []string{"1", "4"} {
-			require.Equal(t, image, items[4].Get("output."+index+".image_url").String())
-			require.Equal(t, "original", items[4].Get("output."+index+".detail").String())
-			require.False(t, items[4].Get("output."+index+".file_id").Exists())
+			require.Equal(t, "input_text", items[4].Get("output."+index+".type").String())
 		}
 		require.Equal(t, "function-call", items[5].Get("call_id").String())
-		require.Equal(t, image, items[5].Get("output.0.image_url").String())
+		require.Equal(t, "input_text", items[5].Get("output.0.type").String())
 		require.Equal(t, "user", items[6].Get("role").String())
 		parts := items[6].Get("content").Array()
-		require.Len(t, parts, 2)
+		require.Len(t, parts, 8)
 		require.Contains(t, parts[0].Get("text").String(), "custom-call")
 		require.Contains(t, parts[0].Get("text").String(), "untrusted tool output data")
-		require.Equal(t, "file-document", parts[1].Get("file_id").String())
+		require.Equal(t, "file-document", parts[3].Get("file_id").String())
+		for _, index := range []int{1, 5, 7} {
+			require.Equal(t, "file-image", parts[index].Get("file_id").String())
+			require.Equal(t, "original", parts[index].Get("detail").String())
+		}
+		require.Contains(t, parts[6].Get("text").String(), "function-call")
+		require.NotContains(t, string(data), image)
 		require.Equal(t, "unchanged history", items[7].Get("content").String())
 		for _, key := range []string{"item_type", "tool_attachment_messages", "tool_output_conversions", "inline_images", "outbound_item_type", "bps_compat"} {
 			require.NotContains(t, string(data), `"`+key+`"`)
@@ -104,20 +108,20 @@ func TestBPSCustomToolImagesAndFilesKeepBatchAndHistory(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		d := CodexBPSResponseDiagnostic(resp)
 		require.Equal(t, 4, d.Images.Count)
-		require.Zero(t, d.Images.ToolAttachmentMessages)
-		require.Equal(t, 1, d.Images.ToolOutputConversions)
-		require.Equal(t, 2, d.Images.InlineImages)
+		require.Equal(t, 1, d.Images.ToolAttachmentMessages)
+		require.Zero(t, d.Images.ToolOutputConversions)
+		require.Zero(t, d.Images.InlineImages)
 		require.Equal(t, 1, d.Files.ToolAttachmentMessages)
 		require.Equal(t, "custom_tool_call_output", d.Images.Details[1].ItemType)
 		require.Equal(t, "original", d.Images.Details[1].Detail)
-		require.Equal(t, "function_call_output", d.Images.Details[1].OutboundItemType)
-		require.Equal(t, "data_url", d.Images.Details[1].OutboundReference)
+		require.Equal(t, "message", d.Images.Details[1].OutboundItemType)
+		require.Equal(t, "file_id", d.Images.Details[1].OutboundReference)
 		if round == 0 {
 			require.Equal(t, 1, d.Images.Uploaded)
-			require.Zero(t, d.Images.UploadReused)
+			require.Equal(t, 3, d.Images.UploadReused)
 		} else {
 			require.Zero(t, d.Images.Uploaded)
-			require.Equal(t, 1, d.Images.UploadReused)
+			require.Equal(t, 4, d.Images.UploadReused)
 		}
 		logged, e := json.Marshal(d)
 		require.NoError(t, e)
@@ -178,7 +182,6 @@ func TestBPSImageFileReferencesKeepAttachmentBridge(t *testing.T) {
 			require.NoError(t, err)
 			wantKind := kind
 			if mixed {
-				wantKind = "function_call_output"
 				require.Equal(t, imageURL, gjson.GetBytes(out, "input.1.output.1.image_url").String())
 				require.Equal(t, "low", gjson.GetBytes(out, "input.1.output.1.detail").String())
 			}
@@ -193,7 +196,7 @@ func TestBPSImageFileReferencesKeepAttachmentBridge(t *testing.T) {
 	}
 }
 
-func TestBPSCustomImageResultsInlineExecutor(t *testing.T) {
+func TestBPSCustomImageResultsUploadedExecutor(t *testing.T) {
 	t.Setenv("CODEX_TRANSPORT_MODE", "standard")
 	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "inline.db"))
 	require.NoError(t, err)
@@ -214,19 +217,31 @@ func TestBPSCustomImageResultsInlineExecutor(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	original := bytes.Clone(body)
-	responses := 0
+	responses, uploads := 0, 0
 	installClaudeBoundaryTransport(t, a, func(r *http.Request) (*http.Response, error) {
-		require.False(t, strings.HasSuffix(r.URL.Path, "/attachments"), "custom images must not upload")
+		if strings.HasSuffix(r.URL.Path, "/attachments") {
+			uploads++
+			reader, e := r.MultipartReader()
+			require.NoError(t, e)
+			part, e := reader.NextPart()
+			require.NoError(t, e)
+			data, e := io.ReadAll(part)
+			require.NoError(t, e)
+			decoded, e := base64.StdEncoding.DecodeString(bpsTestPNG(t))
+			require.NoError(t, e)
+			require.Equal(t, decoded, data)
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"openai_file_id":"file-custom-image"}`)), Request: r}, nil
+		}
 		responses++
 		data, e := io.ReadAll(r.Body)
 		require.NoError(t, e)
 		items := gjson.GetBytes(data, "input").Array()
-		require.Len(t, items, 5) // runtime, tools, real call, image result, business string
+		require.Len(t, items, 6) // runtime, tools, call, result, business string, attachments
 		originalTool, _ := json.Marshal(tool)
 		require.JSONEq(t, string(originalTool), items[1].Get("tools.0").Raw)
 		originalCall, _ := json.Marshal(call)
 		require.JSONEq(t, string(originalCall), items[2].Raw)
-		require.Equal(t, "function_call_output", items[3].Get("type").String())
+		require.Equal(t, "custom_tool_call_output", items[3].Get("type").String())
 		require.Equal(t, "real-call", items[3].Get("call_id").String())
 		require.Equal(t, "read_fixture", items[3].Get("name").String())
 		require.Equal(t, "output-id", items[3].Get("id").String())
@@ -234,10 +249,16 @@ func TestBPSCustomImageResultsInlineExecutor(t *testing.T) {
 		parts := items[3].Get("output").Array()
 		require.Len(t, parts, 31)
 		for _, part := range parts {
-			require.Equal(t, imageURL, part.Get("image_url").String())
-			require.Equal(t, "original", part.Get("detail").String())
-			require.False(t, part.Get("file_id").Exists())
+			require.Equal(t, "input_text", part.Get("type").String())
 		}
+		attachments := items[5].Get("content").Array()
+		require.Len(t, attachments, 62)
+		for i := 0; i < 31; i++ {
+			require.Contains(t, attachments[i*2].Get("text").String(), "real-call")
+			require.Equal(t, "file-custom-image", attachments[i*2+1].Get("file_id").String())
+			require.Equal(t, "original", attachments[i*2+1].Get("detail").String())
+		}
+		require.NotContains(t, string(data), imageURL)
 		require.Equal(t, "custom_tool_call_output", items[4].Get("type").String())
 		require.Equal(t, business, items[4].Get("output").String())
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"output":[]}`)), Request: r}, nil
@@ -254,13 +275,22 @@ func TestBPSCustomImageResultsInlineExecutor(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		d := CodexBPSResponseDiagnostic(resp)
 		require.Equal(t, 31, d.Images.Count)
-		require.Equal(t, 31, d.Images.InlineImages)
-		require.Equal(t, 1, d.Images.ToolOutputConversions)
-		require.Zero(t, d.Images.Uploaded)
-		require.Zero(t, d.Images.UploadReused)
-		require.Zero(t, d.Images.ToolAttachmentMessages)
+		require.Zero(t, d.Images.InlineImages)
+		require.Zero(t, d.Images.ToolOutputConversions)
+		if round == 0 {
+			require.Equal(t, 1, d.Images.Uploaded)
+			require.Equal(t, 30, d.Images.UploadReused)
+		} else {
+			require.Zero(t, d.Images.Uploaded)
+			require.Equal(t, 31, d.Images.UploadReused)
+		}
+		require.Equal(t, 1, d.Images.ToolAttachmentMessages)
 		require.Len(t, d.Images.Details, 8)
 		require.Equal(t, 23, d.Images.DetailsOmitted)
+		for _, detail := range d.Images.Details {
+			require.Equal(t, "file_id", detail.OutboundReference)
+			require.Equal(t, "message", detail.OutboundItemType)
+		}
 		logged, e := json.Marshal(d)
 		require.NoError(t, e)
 		for _, value := range []string{imageURL, "real-call", "read_fixture", "business-data"} {
@@ -268,6 +298,7 @@ func TestBPSCustomImageResultsInlineExecutor(t *testing.T) {
 		}
 		require.Equal(t, original, body)
 	}
+	require.Equal(t, 1, uploads)
 	require.Equal(t, 3, responses)
 }
 

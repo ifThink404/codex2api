@@ -34,7 +34,6 @@ type bpsHistoryImage struct {
 	field          string
 	tool, keep     bool
 	referenceBytes int
-	inline         bool
 }
 
 // Trimming is a deterministic projection of the supplied history. It never
@@ -99,7 +98,7 @@ func trimBPSImageHistory(items []json.RawMessage, body []byte, headers http.Head
 			url, file := part.Get("image_url"), part.Get("file_id")
 			// Unknown image shapes and ungrouped legacy history remain unchanged.
 			known := url.Type == gjson.String && url.String() != "" || file.Type == gjson.String && file.String() != ""
-			entry := bpsHistoryImage{item: i, part: j, field: field, tool: tool, keep: !known || itemTurn == "" || (!tool && itemTurn == turn), referenceBytes: len(url.String()) + len(file.String()), inline: strings.HasPrefix(url.String(), "data:")}
+			entry := bpsHistoryImage{item: i, part: j, field: field, tool: tool, keep: !known || itemTurn == "" || (!tool && itemTurn == turn), referenceBytes: len(url.String()) + len(file.String())}
 			if tool {
 				toolIndices = append(toolIndices, len(images))
 				lastToolImageItem = i
@@ -175,16 +174,7 @@ func trimBPSImageHistory(items []json.RawMessage, body []byte, headers http.Head
 			return nil, err
 		}
 	}
-	// The existing image count describes the source. Recompute inline output
-	// count after trimming; diagnostic details may be capped before this pass.
-	if diagnostic.Images != nil {
-		diagnostic.Images.InlineImages = 0
-		for _, entry := range images {
-			if entry.keep && entry.inline && entry.tool && gjson.GetBytes(out[entry.item], "type").String() == "function_call_output" {
-				diagnostic.Images.InlineImages++
-			}
-		}
-	}
+	// Final image-reference counts are recorded after the attachment upload pass.
 	for _, raw := range out {
 		d.InputBytesAfter += len(raw)
 	}

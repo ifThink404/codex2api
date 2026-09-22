@@ -84,7 +84,7 @@ func TestBPSImageHistoryProjectionAndRetry(t *testing.T) {
 	require.Equal(t, 4, d.ImageHistory.After)
 	require.Equal(t, 3, d.ImageHistory.Omitted)
 	require.Equal(t, 4, bpsCountHistoryImages(out))
-	require.Equal(t, 3, d.Images.InlineImages)
+	require.Zero(t, d.Images.InlineImages) // populated only after the upload pass
 	require.Equal(t, "9007199254740993", gjson.GetBytes(out, "input.1.large_integer").Raw)
 	require.Equal(t, "msg_old", gjson.GetBytes(out, "input.1.id").String())
 	require.Equal(t, bpsOmittedImageNote, gjson.GetBytes(out, "input.1.content.1.text").String())
@@ -92,7 +92,7 @@ func TestBPSImageHistoryProjectionAndRetry(t *testing.T) {
 	require.Contains(t, gjson.GetBytes(out, "input.1.content.0.text").String(), `C:\private\old.png`)
 	for _, item := range gjson.GetBytes(out, "input").Array() {
 		if strings.HasPrefix(item.Get("id").String(), "result_") {
-			require.Equal(t, "function_call_output", item.Get("type").String())
+			require.Equal(t, "custom_tool_call_output", item.Get("type").String())
 			require.Equal(t, "Tool text stays.", item.Get("output.0.text").String())
 			require.NotEmpty(t, item.Get("call_id").String())
 		}
@@ -243,4 +243,58 @@ func TestBPSImageHistoryExecutorSkipsOldUpload(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, calls)
 	require.Equal(t, 1, CodexBPSResponseDiagnostic(resp).ImageHistory.Omitted)
+}
+
+func TestBPSImageHistoryUploadsOnlyKeptReferences(t *testing.T) {
+	t.Setenv("CODEX_TRANSPORT_MODE", "standard")
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "kept-images.db"))
+	require.NoError(t, err)
+	defer db.Close()
+	a := &auth.Account{DBID: 881126, AccountID: "kept-images-account", AccessToken: "test-only", CodexBPS: true, CodexBPSImageTrim: true}
+	body := bpsHistoryTestBody(t)
+	original := bytes.Clone(body)
+	uploads, responses := 0, 0
+	installClaudeBoundaryTransport(t, a, func(req *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(req.URL.Path, "/attachments") {
+			uploads++
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"openai_file_id":"file-kept-image"}`)), Request: req}, nil
+		}
+		responses++
+		wire, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+		require.Equal(t, 4, bpsCountHistoryImages(wire)) // current user + three recent tool images
+		require.NotContains(t, string(wire), "data:image")
+		require.Equal(t, 3, strings.Count(string(wire), bpsOmittedImageNote))
+		for _, item := range gjson.GetBytes(wire, "input").Array() {
+			for _, part := range item.Get("content").Array() {
+				if part.Get("type").String() == "input_image" {
+					require.Equal(t, "file-kept-image", part.Get("file_id").String())
+				}
+			}
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"output":[]}`)), Request: req}, nil
+	})
+	for round := 0; round < 2; round++ {
+		ctx := WithCodexAccountTestIdentityStore(t.Context(), db, a)
+		resp, err := ExecuteRequest(ctx, a, body, testRootSessionA, "", "", nil, nil, false)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		d := CodexBPSResponseDiagnostic(resp)
+		require.Equal(t, 7, d.Images.Count)
+		require.Equal(t, 3, d.ImageHistory.Omitted)
+		require.Equal(t, 4, d.ImageHistory.After)
+		require.Equal(t, 4, d.Images.Uploaded+d.Images.UploadReused)
+		require.Zero(t, d.Images.InlineImages)
+		require.Equal(t, 3, d.Images.ToolAttachmentMessages)
+		for _, detail := range d.Images.Details {
+			if detail.Action == "history_omitted" {
+				require.Equal(t, "text_placeholder", detail.OutboundReference)
+			} else {
+				require.Equal(t, "file_id", detail.OutboundReference)
+			}
+		}
+		require.Equal(t, original, body)
+	}
+	require.Equal(t, 1, uploads)
+	require.Equal(t, 2, responses)
 }

@@ -101,8 +101,8 @@ func bpsImageUploadKey(account *auth.Account, data []byte) string {
 	return codexIdentityDigest("bps-image-upload-v1", fmt.Sprintf("%d:%s", account.ID(), account.EffectiveAccountID()), hex.EncodeToString(digest[:]))
 }
 
-// BPS user-message images need uploaded references. Custom image results are
-// already projected to function results, whose data URLs remain inline.
+// Upload data-URL images from user messages and both tool-result carriers.
+// Tool references are moved to labelled attachment messages in the next pass.
 // Keep the same message, content order, detail and all other fields. Never
 // manufacture assistant tool calls or fetch arbitrary remote image URLs.
 func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, body []byte, d *CodexBPSDiagnostic, upload func(context.Context, []byte, string) (string, error)) ([]byte, map[string]string, error) {
@@ -117,6 +117,8 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			if item.Get("role").String() == "user" {
 				field, adapted = "content", "user input image → uploaded attachment"
 			}
+		case "function_call_output", "custom_tool_call_output":
+			field, adapted = "output", "tool input image → uploaded attachment"
 		}
 		if field == "" {
 			continue
@@ -128,6 +130,9 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			url := part.Get("image_url").String()
 			if len(url) < 5 || !strings.EqualFold(url[:5], "data:") {
 				continue
+			}
+			if field == "output" && strings.TrimSpace(item.Get("call_id").String()) == "" {
+				return nil, nil, bpsImageInputError("图片工具结果缺少 call_id，无法关联原工具调用。")
 			}
 			path := fmt.Sprintf("input.%d.%s.%d", i, field, j)
 			detail := codexBPSImageDetail{}
@@ -176,6 +181,20 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			}
 			if d != nil && !slices.Contains(d.AdaptedFields, adapted) {
 				d.AdaptedFields = append(d.AdaptedFields, adapted)
+			}
+		}
+	}
+	// Describe the final representation, not the pre-upload or pre-trim input.
+	if d != nil && d.Images != nil {
+		d.Images.InlineImages = 0
+		for _, item := range gjson.GetBytes(body, "input").Array() {
+			for _, field := range []string{"content", "output"} {
+				for _, part := range item.Get(field).Array() {
+					url := part.Get("image_url").String()
+					if part.Get("type").String() == "input_image" && len(url) >= 5 && strings.EqualFold(url[:5], "data:") {
+						d.Images.InlineImages++
+					}
+				}
 			}
 		}
 	}
