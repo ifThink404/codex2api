@@ -4145,6 +4145,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		return
 	}
 	isStream := gjson.GetBytes(rawBody, "stream").Bool()
+	c.Set(codexCapacityResponsesStreamKey, isStream)
 	continuousRetryPolicy := continuousRetryPolicyForCall(nil)
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	apiKeyID := requestAPIKeyID(c)
@@ -9346,7 +9347,7 @@ func (h *Handler) sendUpstreamError(c *gin.Context, statusCode int, body []byte)
 	if writeUpstreamPromptSafetyError(c, body) {
 		return
 	}
-	if writeCodexCapacityError(c, body, continuousRetryProtocolOpenAI) {
+	if writeCodexCapacityError(c, body, continuousRetryProtocolOpenAI, statusCode) {
 		return
 	}
 	if isExplicitUpstreamCyberPolicy(body) {

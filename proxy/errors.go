@@ -325,10 +325,10 @@ func ErrorToGinResponse(c *gin.Context, err error) {
 	if sendCodexIdentityRequestError(c, err, continuousRetryProtocolOpenAI) {
 		return
 	}
-	if capacityError := codexCapacityRequestError(err); capacityError != nil {
-		c.Writer.Header().Del("Retry-After")
-		c.JSON(http.StatusBadRequest, gin.H{"error": capacityError})
-		return
+	if status, body, ok := continuousRetryHTTPErrorDetails(err); ok {
+		if writeCodexCapacityError(c, body, continuousRetryProtocolOpenAI, status) {
+			return
+		}
 	}
 	if sendAPIKeyModelRequestQuotaError(c, err) {
 		return

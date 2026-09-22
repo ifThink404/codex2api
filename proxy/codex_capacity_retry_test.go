@@ -15,6 +15,7 @@ import (
 
 const codexCapacityTestMessage = "Selected model is at capacity. Please try a different model."
 const codexCapacityTestBody = `{"error":{"code":"server_is_overloaded","message":"Selected model is at capacity. Please try a different model.","type":"service_unavailable_error"}}`
+const codexTransientOverloadTestBody = `{"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","type":"service_unavailable_error"}}`
 
 func setCodexCapacityRetryForTest(test *testing.T, enabled bool) {
 	test.Helper()

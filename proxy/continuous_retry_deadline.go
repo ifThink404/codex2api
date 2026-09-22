@@ -400,7 +400,7 @@ func writeContinuousRetryTimeoutResponse(c *gin.Context, protocol continuousRetr
 }
 
 func writeContinuousRetryLastFailure(c *gin.Context, protocol continuousRetryHTTPProtocol, failure continuousRetryFailure) {
-	if writeCodexCapacityError(c, failure.body, protocol) {
+	if writeCodexCapacityError(c, failure.body, protocol, failure.status) {
 		return
 	}
 	status := failure.status

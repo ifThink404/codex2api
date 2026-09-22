@@ -300,7 +300,7 @@
     "codexTelemetry": "用戶端遙測（實驗性）",
     "codexTelemetryDesc": "使用所選用戶端身分傳送模擬的 Codex 分析事件與 OTLP 指標。事件為合成，並非來自真實工具呼叫。預設關閉，關閉時出站 turn metadata 寫入 analytics_enabled: false；可用 CODEX_TELEMETRY_ENABLED=false 在部署層強制關閉。",
     "codexCapacityRetryEnabled": "容量不足自動重試",
-    "codexCapacityRetryEnabledDesc": "預設關閉，容量不足或過載時直接結束。開啟後僅依對應通道的有限重試次數在閘道內補試，不受持續重試放大；耗盡後保留容量錯誤碼，回傳統一容量提示。HTTP 使用 400 避免一般 5xx/429 重試，內部日誌保留上游狀態。獨立於過載熔斷開關。",
+    "codexCapacityRetryEnabledDesc": "控制閘道內部重試，預設關閉；開啟後使用對應通道的有限重試次數，不受持續重試放大。暫時性伺服器過載會向用戶端提供重試提示，預設等待 30 秒；明確要求更換模型的容量錯誤仍結束本輪。內部日誌保留上游狀態與原始錯誤，獨立於過載熔斷開關。",
     "pricing": {
       "contextThreshold": "長上下文閾值",
       "revertThreshold": "還原為 {{value}} tokens",

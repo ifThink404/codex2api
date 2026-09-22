@@ -49,7 +49,9 @@ func publicErrorMessage(code string) (string, bool) {
 		return "The upstream service rejected the prompt.", true
 	case "rate_limit_exceeded", "rate_limit_reached", "rate_limit_error", "usage_limit_reached", "insufficient_quota", "account_pool_usage_limit_reached":
 		return "The upstream service is temporarily rate limited. Please retry later.", true
-	case "server_is_overloaded", "slow_down":
+	case "slow_down":
+		return codexCapacityRetryMessage(codexOverloadRetryDefault), true
+	case "server_is_overloaded":
 		return "Selected model is at capacity. Please try a different model.", true
 	case codexEmptyIncompleteErrorCode:
 		return codexEmptyIncompleteErrorMessage, true
@@ -84,7 +86,7 @@ func publicUpstreamAPIError(c *gin.Context, body []byte, status int, fallbackCod
 			}
 			switch value.Get("type").String() {
 			case "invalid_request_error", "authentication_error", "permission_error", "not_found_error", "rate_limit_error", "server_error", "service_unavailable_error":
-				if result.Code != "server_is_overloaded" && result.Code != "slow_down" {
+				if result.Code != "server_is_overloaded" && result.Code != "slow_down" && !codexCapacityRetryableClientError(result) {
 					result.Type = api.ErrorType(value.Get("type").String())
 				}
 			}
@@ -107,6 +109,20 @@ func publicUpstreamAPIError(c *gin.Context, body []byte, status int, fallbackCod
 	parsed := gjson.ParseBytes(body)
 	if promptSafetyDiagnostic(c) != nil && (parsed.Get("error.code").String() == "invalid_prompt" || parsed.Get("response.error.code").String() == "invalid_prompt") {
 		return upstreamPromptSafetyAPIError(c, body)
+	}
+	if capacityError := codexCapacityErrorForClient(body); capacityError != nil {
+		return capacityError
+	}
+	// The public copy may pass this boundary more than once (buffer/flush/WS).
+	// Preserve only the canonical overload message and its numeric delay.
+	for _, path := range []string{"error", "response.error", "response.status_details.error", "detail", ""} {
+		obj := parsed
+		if path != "" {
+			obj = parsed.Get(path)
+		}
+		if obj.Get("code").String() == "rate_limit_exceeded" && strings.HasPrefix(obj.Get("message").String(), "The upstream service is temporarily overloaded.") {
+			return api.NewAPIError("rate_limit_exceeded", codexCapacityRetryMessage(codexCapacityRetryDelay(obj.Get("message").String())), "rate_limit_error")
+		}
 	}
 	codes := []string{}
 	for _, path := range []string{"error", "response.error", "response.status_details.error", "detail", ""} {
@@ -190,6 +206,20 @@ func publicResponseErrorPayload(c *gin.Context, data []byte) []byte {
 			flat := len(errorValue) == 0
 			if len(errorValue) == 0 {
 				errorValue = raw
+			}
+			if c != nil && (c.GetBool(codexCapacityResponsesStreamKey) || isResponsesWebSocketUpgradeRequest(c.Request)) {
+				wrapped, _ := json.Marshal(map[string]json.RawMessage{"error": errorValue})
+				if capacityError := codexCapacityErrorForClient(wrapped); codexCapacityRetryableClientError(capacityError) {
+					result := codexCapacityFailedEvent(capacityError)
+					for _, key := range []string{"stream_id", "sequence_number"} {
+						v := gjson.ParseBytes(object[key])
+						if key == "stream_id" && v.Type == gjson.String && len(v.String()) <= 256 || key == "sequence_number" && v.Type == gjson.Number && v.Int() >= 0 {
+							result[key] = object[key]
+						}
+					}
+					out, _ := json.Marshal(result)
+					return out
+				}
 			}
 			result := map[string]json.RawMessage{"type": json.RawMessage(`"error"`), "error": publicProtocolError(c, errorValue)}
 			if flat {

@@ -247,7 +247,7 @@ func TestStreamCapacityShedWireBehavior(t *testing.T) {
 		}
 	})
 
-	t.Run("首包前降载且重试耗尽 → 400 JSON 保留原始容量错误", func(t *testing.T) {
+	t.Run("首包前降载且重试耗尽 → 500 JSON 携带可重试容量提示", func(t *testing.T) {
 		router := gin.New()
 		router.GET("/stream", func(c *gin.Context) {
 			capacityShedEpilogue(t, c, append(append([][]byte{}, preamble...), shedError, shedFailed), 3, 3)
@@ -262,18 +262,18 @@ func TestStreamCapacityShedWireBehavior(t *testing.T) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("status = %d, want 400 (body=%q)", resp.StatusCode, body)
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500 (body=%q)", resp.StatusCode, body)
 		}
-		if gjson.GetBytes(body, "error.code").String() != "server_is_overloaded" {
-			t.Errorf("capacity code was lost: %s", body)
+		if gjson.GetBytes(body, "error.code").String() != "rate_limit_exceeded" || resp.Header.Get("Retry-After") != "30" {
+			t.Errorf("retry advice was lost: %s", body)
 		}
 		if !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
 			t.Errorf("Content-Type = %q, want application/json", resp.Header.Get("Content-Type"))
 		}
 	})
 
-	t.Run("流中途降载 → 保留原始降载码", func(t *testing.T) {
+	t.Run("流中途降载 → 返回可重试降载码", func(t *testing.T) {
 		events := append(append([][]byte{}, preamble...),
 			[]byte(`{"type":"response.output_text.delta","delta":"partial"}`),
 			shedError, shedFailed)
@@ -304,10 +304,10 @@ func TestStreamCapacityShedWireBehavior(t *testing.T) {
 		if strings.Contains(body, `"code":"server_error"`) {
 			t.Errorf("容量错误不应改写为 server_error, got %q", body)
 		}
-		if !strings.Contains(body, "server_is_overloaded") {
-			t.Errorf("应保留 server_is_overloaded, got %q", body)
+		if !strings.Contains(body, "rate_limit_exceeded") {
+			t.Errorf("应发送 rate_limit_exceeded, got %q", body)
 		}
-		if strings.Contains(body, "Our servers are currently overloaded") || !strings.Contains(body, publicUpstreamMessage("server_is_overloaded")) {
+		if strings.Contains(body, "Our servers are currently overloaded") || !strings.Contains(body, publicUpstreamMessage("slow_down")) {
 			t.Errorf("容量错误应使用公开文案, got %q", body)
 		}
 	})

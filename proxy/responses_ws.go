@@ -889,7 +889,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				apiErr = api.NewAPIError(api.ErrCodeUpstreamError, reqErr.Error(), api.ErrorTypeUpstream)
 				if capacityError := codexCapacityRequestError(reqErr); capacityError != nil {
 					_ = writeAuditedResponsesWSError(c, conn, capacityError)
-					return newResponsesWSCloseError(websocket.ClosePolicyViolation, capacityError.Message, reqErr)
+					return newResponsesWSCloseError(responsesWSTerminalCloseCode(capacityError, websocket.CloseTryAgainLater), capacityError.Message, reqErr)
 				}
 				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
 				_ = writeAuditedResponsesWSError(c, conn, clientErr)
@@ -1054,7 +1054,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 			_ = writeAuditedResponsesWSError(c, conn, clientErr)
 			if codexCapacityErrorForClient(errBody) != nil {
-				return newResponsesWSCloseError(websocket.ClosePolicyViolation, clientErr.Message, apiErr)
+				return newResponsesWSCloseError(responsesWSTerminalCloseCode(clientErr, websocket.CloseTryAgainLater), clientErr.Message, apiErr)
 			}
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
 		}
@@ -1728,7 +1728,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			return errResponsesWSClientGone
 		}
 		_ = writeAuditedResponsesWSError(c, conn, capacityError)
-		return newResponsesWSCloseError(websocket.ClosePolicyViolation, capacityError.Message, capacityError)
+		return newResponsesWSCloseError(responsesWSTerminalCloseCode(capacityError, websocket.CloseTryAgainLater), capacityError.Message, capacityError)
 	}
 	if abortedForErrorClose && !downstreamWrote {
 		// 首 token 前上游失败且未向客户端写过任何帧:发结构化 error 帧后按错误类别
@@ -1919,6 +1919,17 @@ func writeAuditedResponsesWSError(c *gin.Context, conn *websocket.Conn, apiErr *
 		}
 		api.ObserveError(c, api.HTTPStatusCode(apiErr.Code), apiErr)
 	}
+	if codexCapacityRetryableClientError(apiErr) {
+		payload := codexCapacityFailedEvent(apiErr)
+		if c != nil && c.GetString("responses_client_stream_id") != "" {
+			payload["stream_id"] = c.GetString("responses_client_stream_id")
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		return writeResponsesWSMessage(conn, encoded)
+	}
 	if apiErr != nil && c != nil && c.GetString("responses_client_stream_id") != "" {
 		payload, err := json.Marshal(gin.H{"type": "error", "stream_id": c.GetString("responses_client_stream_id"), "status": api.HTTPStatusCode(apiErr.Code), "error": apiErr})
 		if err != nil {
@@ -1932,6 +1943,13 @@ func writeAuditedResponsesWSError(c *gin.Context, conn *websocket.Conn, apiErr *
 func writeResponsesWSError(conn *websocket.Conn, apiErr *api.APIError) error {
 	if apiErr == nil {
 		apiErr = api.NewAPIError(api.ErrCodeServerError, "Internal server error", api.ErrorTypeServer)
+	}
+	if codexCapacityRetryableClientError(apiErr) {
+		payload, err := json.Marshal(codexCapacityFailedEvent(apiErr))
+		if err != nil {
+			return err
+		}
+		return writeResponsesWSMessage(conn, payload)
 	}
 	payload, err := json.Marshal(struct {
 		Type  string        `json:"type"`
@@ -1947,17 +1965,17 @@ func writeResponsesWSError(conn *websocket.Conn, apiErr *api.APIError) error {
 }
 
 func responsesWSClientUpstreamAPIError(apiErr *api.APIError, hideUpstreamErrors bool) *api.APIError {
+	if codexCapacityRetryableClientError(apiErr) {
+		return api.NewAPIError("rate_limit_exceeded", codexCapacityRetryMessage(codexCapacityRetryDelay(apiErr.Message)), "rate_limit_error")
+	}
 	if apiErr != nil && apiErr.Code == "invalid_prompt" {
 		if details, ok := apiErr.Details.(gin.H); ok && details["reason_code"] == upstreamPromptSafetyReason {
 			return apiErr
 		}
 	}
 	if apiErr != nil && isCodexCapacityCodeOrMessage(string(apiErr.Code), apiErr.Message) {
-		code := "server_is_overloaded"
-		if apiErr.Code == "slow_down" {
-			code = "slow_down"
-		}
-		return api.NewAPIError(api.ErrorCode(code), publicUpstreamMessage(code), "service_unavailable_error")
+		body, _ := json.Marshal(gin.H{"error": apiErr})
+		return codexCapacityErrorForClient(body)
 	}
 	if !hideUpstreamErrors {
 		if apiErr == nil {
@@ -1976,7 +1994,7 @@ func responsesWSTerminalCloseCode(apiErr *api.APIError, fallback int) int {
 	if apiErr != nil && apiErr.Code == api.ErrCodeSessionModelUnavailable {
 		return websocket.ClosePolicyViolation
 	}
-	if apiErr != nil && isCodexCapacityCodeOrMessage(string(apiErr.Code), apiErr.Message) {
+	if apiErr != nil && !codexCapacityRetryableClientError(apiErr) && isCodexCapacityCodeOrMessage(string(apiErr.Code), apiErr.Message) {
 		return websocket.ClosePolicyViolation
 	}
 	return fallback
