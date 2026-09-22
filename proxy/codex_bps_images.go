@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
+	"github.com/codex2api/security"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -19,6 +21,8 @@ type codexBPSImageDiagnostic struct {
 	MIMENormalized         int                   `json:"mime_normalized"`
 	Uploaded               int                   `json:"uploaded,omitempty"`
 	UploadReused           int                   `json:"upload_reused,omitempty"`
+	ToolOutputConversions  int                   `json:"tool_output_conversions,omitempty"`
+	InlineImages           int                   `json:"inline_images,omitempty"`
 	ToolAttachmentMessages int                   `json:"tool_attachment_messages,omitempty"`
 	DetailsOmitted         int                   `json:"details_omitted,omitempty"`
 	Details                []codexBPSImageDetail `json:"details"`
@@ -28,6 +32,7 @@ type codexBPSImageDetail struct {
 	Path              string `json:"path"`
 	Carrier           string `json:"carrier"`
 	ItemType          string `json:"item_type,omitempty"`
+	OutboundItemType  string `json:"outbound_item_type,omitempty"`
 	Detail            string `json:"detail,omitempty"`
 	Role              string `json:"role,omitempty"`
 	Reference         string `json:"reference"`
@@ -154,4 +159,75 @@ func normalizeBPSImageDataURL(value string, detail *codexBPSImageDetail) string 
 		return value
 	}
 	return "data:" + mime + ";base64," + encoded
+}
+
+// BPS accepts structured image content in function results but rejects it in
+// custom results. Adapt only the result carrier; keep the real custom call,
+// declaration (including grammar), call_id and output content unchanged. This
+// must run before attachment upload so inline images never become uploaded files.
+// Existing file references still need the attachment-message bridge.
+func projectBPSCustomImageOutputs(items []json.RawMessage, d *CodexBPSDiagnostic) ([]json.RawMessage, error) {
+	for i, raw := range items {
+		item := gjson.ParseBytes(raw)
+		if item.Get("type").String() != "custom_tool_call_output" || !item.Get("output").IsArray() {
+			continue
+		}
+		imageCount, inlineCount := 0, 0
+		for _, part := range item.Get("output").Array() {
+			if part.Get("type").String() != "input_image" {
+				continue
+			}
+			if part.Get("file_id").String() != "" {
+				continue
+			}
+			imageCount++
+			value := part.Get("image_url").String()
+			if len(value) < 5 || !strings.EqualFold(value[:5], "data:") {
+				continue
+			}
+			// Preserve the former validation without allocating an entire decoded
+			// image. MIME normalization has already retained the original suffix.
+			detail := codexBPSImageDetail{}
+			normalized := normalizeBPSImageDataURL(value, &detail)
+			if detail.DetectedMIME == "" {
+				return nil, bpsImageInputError("图片数据无效或格式不受支持，请使用 PNG、JPEG、GIF 或 WebP 图片。")
+			}
+			_, encoded, _ := strings.Cut(normalized, ",")
+			if len(encoded) > security.MaxRequestBodySize {
+				return nil, bpsImageInputError("图片数据超过请求大小限制。")
+			}
+			if _, err := io.Copy(io.Discard, base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))); err != nil {
+				return nil, bpsImageInputError("图片 Base64 数据不完整或无效，请重新附加图片。")
+			}
+			inlineCount++
+		}
+		if imageCount == 0 {
+			continue
+		}
+		if strings.TrimSpace(item.Get("call_id").String()) == "" {
+			return nil, bpsImageInputError("图片工具结果缺少 call_id，无法关联原工具调用。")
+		}
+		updated, err := sjson.SetBytes(raw, "type", "function_call_output")
+		if err != nil {
+			return nil, err
+		}
+		items[i] = updated
+		if d != nil && d.Images != nil {
+			d.Images.ToolOutputConversions++
+			d.Images.InlineImages += inlineCount
+			prefix := fmt.Sprintf("input[%d].output[", i)
+			for j := range d.Images.Details {
+				v := &d.Images.Details[j]
+				if strings.HasPrefix(v.Path, prefix) && v.Reference != "file_id" {
+					v.OutboundItemType = "function_call_output"
+					v.OutboundReference = v.Reference
+					v.Action = "tool_output_projected"
+				}
+			}
+			if !slices.Contains(d.AdaptedFields, "custom image results → function_call_output (images preserved)") {
+				d.AdaptedFields = append(d.AdaptedFields, "custom image results → function_call_output (images preserved)")
+			}
+		}
+	}
+	return items, nil
 }

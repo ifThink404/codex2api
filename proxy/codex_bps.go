@@ -107,6 +107,11 @@ func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *C
 	if d.Images != nil && d.Images.MIMENormalized > 0 {
 		d.AdaptedFields = append(d.AdaptedFields, "input image MIME normalized")
 	}
+	var imageErr error
+	items, imageErr = projectBPSCustomImageOutputs(items, d)
+	if imageErr != nil {
+		return nil, nil, imageErr
+	}
 	if items == nil {
 		items = []json.RawMessage{}
 	}
@@ -189,6 +194,9 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	cacheKey = codexIdentityDigest("bps-prompt-cache-v1", account.EffectiveAccountID(), cacheKey)
 	projected, diagnostic, err := prepareCodexBPSBody(body, cacheKey, compact)
 	if err != nil {
+		if _, ok := err.(*Error); ok {
+			return nil, err
+		}
 		return nil, ErrInternalError("构建 BPS 请求失败", err)
 	}
 	ctx = context.WithValue(ctx, codexBPSDiagnosticKey{}, diagnostic)

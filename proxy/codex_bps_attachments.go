@@ -101,8 +101,8 @@ func bpsImageUploadKey(account *auth.Account, data []byte) string {
 	return codexIdentityDigest("bps-image-upload-v1", fmt.Sprintf("%d:%s", account.ID(), account.EffectiveAccountID()), hex.EncodeToString(digest[:]))
 }
 
-// BPS user attachments and custom tool images need uploaded references.
-// Ordinary function tool images support inline data URLs and stay in place.
+// BPS user-message images need uploaded references. Custom image results are
+// already projected to function results, whose data URLs remain inline.
 // Keep the same message, content order, detail and all other fields. Never
 // manufacture assistant tool calls or fetch arbitrary remote image URLs.
 func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, body []byte, d *CodexBPSDiagnostic, upload func(context.Context, []byte, string) (string, error)) ([]byte, map[string]string, error) {
@@ -117,8 +117,6 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			if item.Get("role").String() == "user" {
 				field, adapted = "content", "user input image → uploaded attachment"
 			}
-		case "custom_tool_call_output":
-			field, adapted = "output", "custom tool image → uploaded attachment"
 		}
 		if field == "" {
 			continue
