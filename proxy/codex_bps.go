@@ -73,6 +73,10 @@ func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *C
 	}
 	model := gjson.GetBytes(body, "model").String()
 	d := &CodexBPSDiagnostic{Mode: "bps", RequestedModel: model, SentModel: model, Compact: compact}
+	if strings.EqualFold(strings.TrimSpace(model), "codex-auto-review") {
+		d.SentModel = "gpt-5.6-luna"
+		d.AdaptedFields = append(d.AdaptedFields, "model: codex-auto-review → gpt-5.6-luna")
+	}
 	var items []json.RawMessage
 	input := gjson.GetBytes(body, "input")
 	if input.Type == gjson.String {

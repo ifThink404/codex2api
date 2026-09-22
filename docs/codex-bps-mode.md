@@ -14,7 +14,7 @@
 
 | 内容 | BPS 行为 |
 | --- | --- |
-| `codex-auto-review` | 使用原模型名发送，不再映射为 `gpt-5.6-luna`；其他模型同样维持原选择 |
+| `codex-auto-review` | BPS 路径映射为 `gpt-5.6-luna`；日志保留 requested_model=codex-auto-review、sent_model=gpt-5.6-luna 并记录映射动作。其他模型及原生 Codex 路径维持原选择 |
 | `input`、历史工具调用和结果、加密历史 | 经过既有隐私处理后保留；不删除工具业务内容 |
 | 顶层 `instructions` | 放入 developer 输入消息 |
 | 顶层 `tools` | 放入 additional_tools 输入项；已有 additional_tools 保留 |

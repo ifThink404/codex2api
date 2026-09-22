@@ -29,7 +29,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		sentBody, err = io.ReadAll(r.Body)
 		require.NoError(t, err)
 		sentHeaders, endpoint = r.Header.Clone(), r.URL.String()
-		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"response-test","model":"codex-auto-review","output":[]}`)), Request: r}, nil
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"response-test","model":"gpt-5.6-luna","output":[]}`)), Request: r}, nil
 	})
 	var session, task, turn string
 	for _, compact := range []bool{false, true} {
@@ -57,7 +57,8 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, resp.Body.Close())
 		require.True(t, strings.HasPrefix(endpoint, CodexBPSBaseURL+"/responses"))
-		require.Equal(t, "codex-auto-review", gjson.GetBytes(sentBody, "model").String())
+		require.Equal(t, "gpt-5.6-luna", gjson.GetBytes(sentBody, "model").String())
+		require.Equal(t, "codex-auto-review", gjson.GetBytes(body, "model").String())
 		require.Equal(t, "Bearer test-access", sentHeaders.Get("Authorization"))
 		require.Equal(t, a.AccountID, sentHeaders.Get("Chatgpt-Account-Id"))
 		require.Equal(t, a.AccountID, sentHeaders.Get("X-Openai-Account-Id"))
@@ -101,7 +102,8 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		}
 		require.Equal(t, "codex-auto-review", d.BPS.RequestedModel)
 		require.Equal(t, 1, d.BPS.Images.MIMENormalized)
-		require.Equal(t, "codex-auto-review", d.BPS.SentModel)
+		require.Equal(t, "gpt-5.6-luna", d.BPS.SentModel)
+		require.Contains(t, d.BPS.AdaptedFields, "model: codex-auto-review → gpt-5.6-luna")
 		require.Contains(t, d.BPS.RemovedFields, "tool_choice")
 		require.NotContains(t, string(sentBody), "bps_compat")
 	}
