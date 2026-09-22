@@ -908,6 +908,27 @@ func isSupportedConnectionTestModel(model string) bool {
 	return false
 }
 
+// codexAccountAdvertisesTextModel allows a connection test to use a model
+// learned from the account's upstream manifest even before the global model
+// registry has been synced. The account catalog is the source used by the
+// model picker, so rejecting it here makes a visible model impossible to test.
+func codexAccountAdvertisesTextModel(account *auth.Account, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	if account == nil || requested == "" {
+		return false
+	}
+	for _, model := range account.Models {
+		model = strings.TrimSpace(model)
+		if strings.Contains(strings.ToLower(model), "image") {
+			continue
+		}
+		if strings.EqualFold(model, requested) {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) connectionTestModel(ctx context.Context) string {
 	model := strings.TrimSpace(h.store.GetTestModel())
 	if proxy.IsTextTestModelID(ctx, h.db, model) {
@@ -998,7 +1019,7 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 		if requested == "" {
 			return h.connectionTestModel(ctx), nil
 		}
-		if !proxy.IsTextTestModelID(ctx, h.db, requested) {
+		if !proxy.IsTextTestModelID(ctx, h.db, requested) && !codexAccountAdvertisesTextModel(account, requested) {
 			return "", fmt.Errorf("不支持的测试模型: %s", requested)
 		}
 		return requested, nil

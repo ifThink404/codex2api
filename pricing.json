@@ -102,5 +102,32 @@
     "input_priority": 20,
     "cached_input_priority": 2,
     "output_priority": 100
+  },
+  "gpt-6-luna": {
+    "input": 0.2,
+    "cached_input": 0.02,
+    "output": 1.2,
+    "input_long": 0.4,
+    "cached_input_long": 0.04,
+    "output_long": 1.8
+  },
+  "gpt-6-terra": {
+    "input": 2,
+    "cached_input": 0.2,
+    "output": 12,
+    "input_priority": 4,
+    "cached_input_priority": 0.4,
+    "output_priority": 24,
+    "input_long": 4,
+    "cached_input_long": 0.4,
+    "output_long": 18
+  },
+  "gpt-6-sol": {
+    "input": 5,
+    "cached_input": 0.5,
+    "output": 30,
+    "input_long": 10,
+    "cached_input_long": 1,
+    "output_long": 45
   }
 }

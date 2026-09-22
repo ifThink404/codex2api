@@ -24,6 +24,12 @@ func TestGetModelPricingUsesMostSpecificOpenAIPrefix(t *testing.T) {
 	}
 }
 
+func TestGetModelPricingSupportsGPT6CodexTiers(t *testing.T) {
+	assertPricing(t, GetModelPricing("gpt-6-sol"), 5.0, 30.0)
+	assertPricing(t, GetModelPricing("gpt-6-terra"), 2.0, 12.0)
+	assertPricing(t, GetModelPricing("gpt-6-luna"), 0.2, 1.2)
+}
+
 func TestGetModelPricingUsesSub2APICodexFallbacks(t *testing.T) {
 	tests := []struct {
 		model      string

@@ -69,6 +69,26 @@ var (
 			OutputPricePerMToken:    50.0,
 			CacheReadPricePerMToken: 1.0,
 		}},
+		// Current Codex manifests may advertise the 5.6 tiers with a gpt-6
+		// prefix. Their billing rates match the corresponding 5.6 tiers.
+		{model: "gpt-6-sol", pricing: ModelPricing{
+			InputPricePerMToken: 5.0, OutputPricePerMToken: 30.0,
+			CacheReadPricePerMToken: 0.5, LongInputPricePerMToken: 10.0,
+			LongOutputPricePerMToken: 45.0, LongCacheReadPricePerMToken: 1.0,
+		}},
+		{model: "gpt-6-terra", pricing: ModelPricing{
+			InputPricePerMToken: 2.0, InputPricePerMTokenPriority: 4.0,
+			OutputPricePerMToken: 12.0, OutputPricePerMTokenPriority: 24.0,
+			CacheReadPricePerMToken: 0.2, CacheReadPricePerMTokenPriority: 0.4,
+			LongInputPricePerMToken: 4.0, LongInputPricePerMTokenPriority: 8.0,
+			LongOutputPricePerMToken: 18.0, LongOutputPricePerMTokenPriority: 36.0,
+			LongCacheReadPricePerMToken: 0.4, LongCacheReadPricePerMTokenPriority: 0.8,
+		}},
+		{model: "gpt-6-luna", pricing: ModelPricing{
+			InputPricePerMToken: 0.2, OutputPricePerMToken: 1.2,
+			CacheReadPricePerMToken: 0.02, LongInputPricePerMToken: 0.4,
+			LongOutputPricePerMToken: 1.8, LongCacheReadPricePerMToken: 0.04,
+		}},
 		{model: "gpt-5.5", pricing: ModelPricing{
 			InputPricePerMToken:                 5.0,
 			InputPricePerMTokenPriority:         12.5,
@@ -468,6 +488,12 @@ func normalizeCodexBillingModel(model string) (string, bool) {
 		}
 	}
 	switch {
+	case strings.Contains(compact, "gpt-6-sol") || strings.Contains(compact, "gpt6-sol"):
+		return "gpt-6-sol", true
+	case strings.Contains(compact, "gpt-6-terra") || strings.Contains(compact, "gpt6-terra"):
+		return "gpt-6-terra", true
+	case strings.Contains(compact, "gpt-6-luna") || strings.Contains(compact, "gpt6-luna"):
+		return "gpt-6-luna", true
 	case strings.Contains(compact, "gpt-5.5-pro") || strings.Contains(compact, "gpt5-5-pro") || strings.Contains(compact, "gpt5.5-pro"):
 		return "gpt-5.5-pro", true
 	case strings.Contains(compact, "gpt-5.5") || strings.Contains(compact, "gpt5-5") || strings.Contains(compact, "gpt5.5"):
