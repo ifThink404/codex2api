@@ -101,16 +101,29 @@ func bpsImageUploadKey(account *auth.Account, data []byte) string {
 	return codexIdentityDigest("bps-image-upload-v1", fmt.Sprintf("%d:%s", account.ID(), account.EffectiveAccountID()), hex.EncodeToString(digest[:]))
 }
 
-// BPS user attachments use input_image.file_id, unlike inline tool images.
+// BPS user attachments and custom tool images need uploaded references.
+// Ordinary function tool images support inline data URLs and stay in place.
 // Keep the same message, content order, detail and all other fields. Never
 // manufacture assistant tool calls or fetch arbitrary remote image URLs.
 func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, body []byte, d *CodexBPSDiagnostic, upload func(context.Context, []byte, string) (string, error)) ([]byte, map[string]string, error) {
 	used := make(map[string]string)
+	if d != nil && d.Images != nil {
+		d.Images.Uploaded, d.Images.UploadReused, d.Images.ToolAttachmentMessages = 0, 0, 0
+	}
 	for i, item := range gjson.GetBytes(body, "input").Array() {
-		if typ := item.Get("type").String(); (typ != "message" && typ != "") || item.Get("role").String() != "user" {
+		field, adapted := "", ""
+		switch item.Get("type").String() {
+		case "message", "":
+			if item.Get("role").String() == "user" {
+				field, adapted = "content", "user input image → uploaded attachment"
+			}
+		case "custom_tool_call_output":
+			field, adapted = "output", "custom tool image → uploaded attachment"
+		}
+		if field == "" {
 			continue
 		}
-		for j, part := range item.Get("content").Array() {
+		for j, part := range item.Get(field).Array() {
 			if part.Get("type").String() != "input_image" || part.Get("file_id").String() != "" {
 				continue
 			}
@@ -118,11 +131,11 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			if len(url) < 5 || !strings.EqualFold(url[:5], "data:") {
 				continue
 			}
-			path := fmt.Sprintf("input.%d.content.%d", i, j)
+			path := fmt.Sprintf("input.%d.%s.%d", i, field, j)
 			detail := codexBPSImageDetail{}
 			normalized := normalizeBPSImageDataURL(url, &detail)
 			if detail.DetectedMIME == "" {
-				return nil, nil, bpsImageInputError("用户消息中的图片数据无效或格式不受支持，请使用 PNG、JPEG、GIF 或 WebP 图片。")
+				return nil, nil, bpsImageInputError("图片数据无效或格式不受支持，请使用 PNG、JPEG、GIF 或 WebP 图片。")
 			}
 			_, encoded, _ := strings.Cut(normalized, ",")
 			// Bound allocations by the same limit as the gateway's request body.
@@ -154,7 +167,7 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 				}
 				for k := range d.Images.Details {
 					v := &d.Images.Details[k]
-					if v.Path == fmt.Sprintf("input[%d].content[%d]", i, j) {
+					if v.Path == fmt.Sprintf("input[%d].%s[%d]", i, field, j) {
 						v.OutboundReference = "file_id"
 						v.Action = "uploaded"
 						if reused {
@@ -163,10 +176,10 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 					}
 				}
 			}
+			if d != nil && !slices.Contains(d.AdaptedFields, adapted) {
+				d.AdaptedFields = append(d.AdaptedFields, adapted)
+			}
 		}
-	}
-	if len(used) > 0 && d != nil && !slices.Contains(d.AdaptedFields, "user input image → uploaded attachment") {
-		d.AdaptedFields = append(d.AdaptedFields, "user input image → uploaded attachment")
 	}
 	return body, used, nil
 }

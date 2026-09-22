@@ -15,17 +15,20 @@ import (
 // Keep only a bounded structural summary. Image bytes, URLs, text and tool
 // arguments must never be copied into the local compatibility diagnostic.
 type codexBPSImageDiagnostic struct {
-	Count          int                   `json:"count"`
-	MIMENormalized int                   `json:"mime_normalized"`
-	Uploaded       int                   `json:"uploaded,omitempty"`
-	UploadReused   int                   `json:"upload_reused,omitempty"`
-	DetailsOmitted int                   `json:"details_omitted,omitempty"`
-	Details        []codexBPSImageDetail `json:"details"`
+	Count                  int                   `json:"count"`
+	MIMENormalized         int                   `json:"mime_normalized"`
+	Uploaded               int                   `json:"uploaded,omitempty"`
+	UploadReused           int                   `json:"upload_reused,omitempty"`
+	ToolAttachmentMessages int                   `json:"tool_attachment_messages,omitempty"`
+	DetailsOmitted         int                   `json:"details_omitted,omitempty"`
+	Details                []codexBPSImageDetail `json:"details"`
 }
 
 type codexBPSImageDetail struct {
 	Path              string `json:"path"`
 	Carrier           string `json:"carrier"`
+	ItemType          string `json:"item_type,omitempty"`
+	Detail            string `json:"detail,omitempty"`
 	Role              string `json:"role,omitempty"`
 	Reference         string `json:"reference"`
 	URLBytes          int    `json:"url_bytes,omitempty"`
@@ -64,6 +67,15 @@ func normalizeBPSInputImages(items []json.RawMessage) ([]json.RawMessage, *codex
 			}
 			path := fmt.Sprintf("%s.%d.image_url", field, partIndex)
 			detail := codexBPSImageDetail{Path: fmt.Sprintf("input[%d].%s[%d]", index, field, partIndex), Carrier: carrier, Reference: "unknown", Action: "preserved"}
+			detail.ItemType = item.Get("type").String()
+			if value := part.Get("detail"); value.Exists() {
+				switch value.String() {
+				case "auto", "low", "high", "original":
+					detail.Detail = value.String()
+				default:
+					detail.Detail = "other"
+				}
+			}
 			if field == "content" {
 				detail.Role = item.Get("role").String()
 			}

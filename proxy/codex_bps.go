@@ -234,6 +234,10 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		for key, id := range filesUsed {
 			used[key] = id
 		}
+		projected, err = bridgeBPSToolAttachments(projected, diagnostic)
+		if err != nil {
+			return nil, ErrInternalError("构建工具附件引用失败", err)
+		}
 		req, err = http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(projected))
 		if err != nil {
 			return nil, ErrInternalError("创建上游请求失败", err)
