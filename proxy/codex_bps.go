@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -155,6 +156,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	}
 	applyCodexBPSHeaders(req.Header, account, token, cacheKey, compact)
 	req.Header.Set("X-Codex2API-BPS-Requested-Model", diagnostic.RequestedModel)
+	log.Printf("[CODEX-TRANSPORT] endpoint=%s account=%d bps=true compact=%t requested_model=%s sent_model=%s", endpoint, account.ID(), compact, diagnostic.RequestedModel, diagnostic.SentModel)
 	proxyURL := account.GetProxyURL()
 	if strings.TrimSpace(proxyOverride) != "" {
 		proxyURL = proxyOverride

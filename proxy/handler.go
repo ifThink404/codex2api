@@ -5121,6 +5121,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		// 跨账号 turn-state 回带一律剥离（头 + 体）；来源未知的按 strict 开关处理，
 		// 并计数到会话防护统计。见 session_guards.go。
 		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, upstreamBody)
+		log.Printf("[CODEX-TRANSPORT] endpoint=/v1/responses account=%d bps=%t websocket=%t attempt=%d model=%s", account.ID(), useBPS, useWebsocket, attempt+1, attemptEffectiveModel)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			if useBPS {
 				return executeCodexBPS(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, false)
@@ -6550,8 +6551,12 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		var resp *http.Response
 		var reqErr error
 		codexBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, codexBody)
+		bpsEnabled := account.CodexBPSEnabled()
 		if compactViaResponses {
 			upstreamEndpointLabel = "/v1/responses"
+		}
+		log.Printf("[CODEX-TRANSPORT] endpoint=%s account=%d bps=%t compact_via_responses=%t attempt=%d model=%s", upstreamEndpointLabel, account.ID(), bpsEnabled, compactViaResponses, attempt+1, effectiveModel)
+		if compactViaResponses {
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
 				if account.CodexBPSEnabled() {
 					return executeCodexBPS(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, false)
