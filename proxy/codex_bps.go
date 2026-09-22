@@ -18,14 +18,16 @@ const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
 	projection        *bpsResponseProjection
-	UpstreamTurnState *usageTurnStateValue `json:"upstream_turn_state,omitempty"`
-	ClientTurnState   *usageTurnStateValue `json:"client_turn_state,omitempty"`
-	Mode              string               `json:"mode"`
-	RequestedModel    string               `json:"requested_model"`
-	SentModel         string               `json:"sent_model"`
-	Compact           bool                 `json:"compact,omitempty"`
-	AdaptedFields     []string             `json:"adapted_fields,omitempty"`
-	RemovedFields     []string             `json:"removed_fields,omitempty"`
+	UpstreamTurnState *usageTurnStateValue     `json:"upstream_turn_state,omitempty"`
+	ClientTurnState   *usageTurnStateValue     `json:"client_turn_state,omitempty"`
+	Mode              string                   `json:"mode"`
+	RequestedModel    string                   `json:"requested_model"`
+	SentModel         string                   `json:"sent_model"`
+	Compact           bool                     `json:"compact,omitempty"`
+	AdaptedFields     []string                 `json:"adapted_fields,omitempty"`
+	RemovedFields     []string                 `json:"removed_fields,omitempty"`
+	Images            *codexBPSImageDiagnostic `json:"images,omitempty"`
+	Files             *codexBPSFileDiagnostic  `json:"files,omitempty"`
 }
 type codexBPSDiagnosticKey struct{}
 
@@ -97,6 +99,10 @@ func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *C
 		d.AdaptedFields = append(d.AdaptedFields, "instructions → input.developer")
 	}
 	items = append(prefix, items...)
+	items, d.Images = normalizeBPSInputImages(items)
+	if d.Images != nil && d.Images.MIMENormalized > 0 {
+		d.AdaptedFields = append(d.AdaptedFields, "input image MIME normalized")
+	}
 	if items == nil {
 		items = []json.RawMessage{}
 	}
@@ -209,14 +215,43 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	if err := ConsumeAPIKeyModelRequestQuota(ctx, diagnostic.RequestedModel); err != nil {
 		return nil, err
 	}
-	resp, err := doTracedUpstreamRequest(client, req, account, proxyURL, projected)
-	if err != nil {
-		if shouldRecyclePooledClient(err) {
-			recyclePooledClient(account, proxyURL)
+	originalProjected, requestHeaders := projected, req.Header.Clone()
+	for attempt := 0; ; attempt++ {
+		var used map[string]string
+		projected, used, err = prepareBPSUserImageAttachments(ctx, account, originalProjected, diagnostic, func(uploadCtx context.Context, data []byte, mime string) (string, error) {
+			return uploadBPSImage(uploadCtx, client, requestHeaders, data, mime)
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil, ErrUpstream(0, "请求上游失败", err)
+		var filesUsed map[string]string
+		projected, filesUsed, err = prepareBPSFileAttachments(ctx, account, projected, diagnostic, func(uploadCtx context.Context, file bpsFileAttachment) (string, error) {
+			return uploadBPSAttachment(uploadCtx, client, requestHeaders, file)
+		})
+		if err != nil {
+			return nil, err
+		}
+		for key, id := range filesUsed {
+			used[key] = id
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(projected))
+		if err != nil {
+			return nil, ErrInternalError("创建上游请求失败", err)
+		}
+		req.Header = requestHeaders.Clone()
+		resp, sendErr := doTracedUpstreamRequest(client, req, account, proxyURL, projected)
+		if sendErr != nil {
+			if shouldRecyclePooledClient(sendErr) {
+				recyclePooledClient(account, proxyURL)
+			}
+			return nil, ErrUpstream(0, "请求上游失败", sendErr)
+		}
+		if attempt == 0 && invalidateMissingBPSAttachments(resp, used) {
+			resp.Body.Close()
+			continue
+		}
+		return resp, nil
 	}
-	return resp, nil
 }
 
 func applyCodexBPSHeaders(headers http.Header, account *auth.Account, token, cacheKey string, compact bool) {

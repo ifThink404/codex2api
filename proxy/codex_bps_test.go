@@ -34,10 +34,12 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 	var session, task, turn string
 	for _, compact := range []bool{false, true} {
 		headers, body := accountIdentityFixture(t, false, true)
+		imageData := bpsTestPNG(t)
 		body, _ = sjson.SetBytes(body, "model", "codex-auto-review")
 		body, _ = sjson.SetBytes(body, "instructions", "Keep the original instructions.")
 		body, _ = sjson.SetRawBytes(body, "tools", []byte(`[{"type":"function","name":"echo","parameters":{"type":"object","properties":{"n":{"type":"integer","maximum":9007199254740993}}}}]`))
 		body, _ = sjson.SetRawBytes(body, "input", []byte(`[{"type":"additional_tools","tools":[{"type":"custom","name":"note"}]},{"type":"function_call","id":"fc_history","call_id":"call_history","name":"echo","arguments":"{\"n\":1}"},{"type":"function_call_output","call_id":"call_history","output":"1"},{"type":"reasoning","encrypted_content":"opaque-history"}]`))
+		body, _ = sjson.SetBytes(body, "input.2.output", []map[string]string{{"type": "input_text", "text": "1"}, {"type": "input_image", "image_url": "data:application/octet-stream;base64," + imageData, "detail": "original"}})
 		for _, field := range []string{"service_tier", "include", "text", "tool_choice", "parallel_tool_calls"} {
 			body, _ = sjson.SetBytes(body, field, "unsupported-fixture")
 		}
@@ -71,6 +73,8 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.Equal(t, "note", gjson.GetBytes(sentBody, "input.3.tools.0.name").String())
 		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.4.call_id").String())
 		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.5.call_id").String())
+		require.Equal(t, "data:image/png;base64,"+imageData, gjson.GetBytes(sentBody, "input.5.output.1.image_url").String())
+		require.Equal(t, "original", gjson.GetBytes(sentBody, "input.5.output.1.detail").String())
 		require.Equal(t, "opaque-history", gjson.GetBytes(sentBody, "input.6.encrypted_content").String())
 		if session == "" {
 			session = sentHeaders.Get("Session-Id")
@@ -96,6 +100,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 			require.Equal(t, "matched", d.OutboundIdentity.SessionConsistency)
 		}
 		require.Equal(t, "codex-auto-review", d.BPS.RequestedModel)
+		require.Equal(t, 1, d.BPS.Images.MIMENormalized)
 		require.Equal(t, "codex-auto-review", d.BPS.SentModel)
 		require.Contains(t, d.BPS.RemovedFields, "tool_choice")
 		require.NotContains(t, string(sentBody), "bps_compat")

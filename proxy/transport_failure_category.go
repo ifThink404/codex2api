@@ -58,6 +58,13 @@ func classifyTransportDiagnostic(diagnostic *UpstreamTransportDiagnostic) {
 			continue
 		}
 		if category := transportFailureCodeCategory(candidate.value); category != "" {
+			// BPS wraps request validation failures in a generic server_error.
+			// Preserve explicit identity/quota codes above, but do not interpret
+			// this HTTP 422 wrapper as evidence that the account is unavailable.
+			if diagnostic.BPS != nil && diagnostic.ErrorSource == "upstream_http" && diagnostic.HTTPStatus == http.StatusUnprocessableEntity && candidate.evidence == "error_type" && strings.EqualFold(strings.TrimSpace(candidate.value), "server_error") {
+				diagnostic.FailureCategory, diagnostic.FailureEvidence = "invalid_request", "http_status"
+				return
+			}
 			diagnostic.FailureCategory, diagnostic.FailureEvidence = category, candidate.evidence
 			return
 		}
