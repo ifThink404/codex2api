@@ -18,7 +18,13 @@ func buildCodexIndependentTestPayload(account *auth.Account, model, content, ses
 	parentTurnID := proxy.NewUpstreamSessionUUID()
 	contextWindowID := proxy.NewUpstreamSessionUUID()
 	windowID := threadID + ":0"
+	// Connection tests have no incoming client metadata. Explicitly model the
+	// official base URL in both locations; the common outbound pass derives the
+	// HTTP compatibility header from this same turn metadata.
+	baseURL := proxy.CodexBaseURL
 	turnMetadata := map[string]any{
+		"base_url":                baseURL,
+		"openai_base_url":         baseURL,
 		"request_kind":            "turn",
 		"thread_source":           "subagent",
 		"subagent_kind":           "thread_spawn",
@@ -34,6 +40,8 @@ func buildCodexIndependentTestPayload(account *auth.Account, model, content, ses
 		"turn_started_at_unix_ms": time.Now().UnixMilli(),
 	}
 	clientMetadata := map[string]any{
+		"base_url":                 baseURL,
+		"openai_base_url":          baseURL,
 		"session_id":               sessionID,
 		"thread_id":                threadID,
 		"turn_id":                  turnID,

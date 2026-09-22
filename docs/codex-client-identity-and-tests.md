@@ -18,7 +18,7 @@ OAuth、订阅、邀请等浏览器/认证端点不属于上述统一范围；Re
 - 每次测试新建子线程 thread_id、context_window_id、turn_id 和测试父轮次 ID；parent_thread_id 等于固定主会话，parent_turn_id 与 root_turn_id 指向本次测试父轮次。window_id 为 `thread_id:0`，window_number 为 0，不随测试次数递增。
 - prompt_cache_key 和传入执行器的会话键使用固定 session_id，账号级出站映射及缓存分区继续生效。测试使用专属的稳定内部归属，不借用真实用户身份；数据库读取或保存失败时停止测试，不退回随机新主会话。无数据库的嵌入式调用使用按账号派生的稳定 UUIDv7。
 - 通过 client_metadata 和内嵌 x-codex-turn-metadata 提供一致的当前请求快照；request_kind 为普通协议请求 `turn`。
-- thread_source 为 `subagent`，subagent_kind 与 X-OpenAI-Subagent 为 `thread_spawn`；这些字段描述测试专用父子线程结构，不会启动真实子智能体，也不表示已经发出父会话请求。
+- thread_source 为 `subagent`，嵌套 subagent_kind 为 `thread_spawn`；共同出站入口将 X-OpenAI-Subagent（及其平铺元数据项）规范为 `collab_spawn`。这些字段描述测试专用父子线程结构，不会启动真实子智能体，也不表示已经发出父会话请求。
 - 不设置 passive_feature 或被动授权；仍直接测试管理员选中的账号，不查找父账号、不因等待主根而挂起，也不重新调度其他账号。
 - 有已保存/自定义设备 ID 时复用该值，不为每次测试重新生成设备 ID。
 - 使用配置的测试模型和测活内容，reasoning.effort 为 `medium`，instructions 为空字符串。每次仍只发送本次测活文本，不携带 previous_response_id 或累积历史。公共 Payload 改写规则仍按现有顺序执行。
@@ -27,6 +27,18 @@ OAuth、订阅、邀请等浏览器/认证端点不属于上述统一范围；Re
 测试元数据不授予被动权限。默认 preserve 或账号级 account 出站模式会保留每次新子线程的结构；显式 legacy/off/observe 出站身份模式仍服从既有指纹收敛设置。这里没有更改真实用户请求的收敛、缓存隔离策略或永久账号粘性。
 
 独立测连验证认证、模型响应和身份字段传输，不代表已经验证真实附属请求的父根绑定，也不证明多轮历史、压缩或工具调用都能成功。
+
+### 测连的地址元数据
+
+单次、批量和回收站中的原生 Codex 测连主动补齐 `client_metadata.base_url` 与 `client_metadata.openai_base_url`，内嵌的 JSON 字符串 `x-codex-turn-metadata` 也使用相同值：`https://chatgpt.com/backend-api/codex`。这是基础地址，不含 `/responses`；完整 Responses 端点为 `https://chatgpt.com/backend-api/codex/responses`。这些元数据不决定实际网络路由，连接仍使用执行器及代理配置。
+
+| 位置 | Codex HTTP 测连 | Codex WS 测连 | BPS 测连 |
+| --- | --- | --- | --- |
+| 正文 `client_metadata` 中的两个地址 | 均为上述官方基础地址 | 均放入 `response.create` 帧 | 按现有协议移除整个 Codex 元数据 |
+| 内嵌 `x-codex-turn-metadata` 的两个地址 | 与平铺值一致 | 与平铺值一致，放入帧内 | 不发送 |
+| HTTP `X-Codex-Turn-Metadata` | 从处理后的正文元数据生成，两个地址一致 | 握手继续使用协议字段白名单，不额外放入地址；帧携带本轮完整元数据 | 不发送，继续使用原有 BPS 头和正文 |
+
+这次补全不强制添加独立 `Base-URL` / `OpenAI-Base-URL` 请求头，也不在测试请求里伪造上游 `X-Codex-Turn-State`。新测试没有上一次响应的 Turn-State；上游返回后按现有诊断逻辑记录。UA、Originator、Version 和设备身份仍由账号与已保存的客户端配置决定，不使用固定示例值覆盖管理员配置。
 
 ### 批量测试结果与账号状态
 

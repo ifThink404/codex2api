@@ -20,6 +20,10 @@ func assertCodexIndependentTestIdentity(test *testing.T, body []byte, outbound .
 	test.Helper()
 	metadata := gjson.GetBytes(body, "client_metadata")
 	turnMetadata := gjson.Parse(metadata.Get("x-codex-turn-metadata").String())
+	for _, field := range []string{"base_url", "openai_base_url"} {
+		require.Equal(test, proxy.CodexBaseURL, metadata.Get(field).String())
+		require.Equal(test, proxy.CodexBaseURL, turnMetadata.Get(field).String())
+	}
 	sessionID := metadata.Get("session_id").String()
 	threadID := metadata.Get("thread_id").String()
 	turnID := metadata.Get("turn_id").String()
@@ -64,6 +68,9 @@ func assertCodexIndependentTestIdentity(test *testing.T, body []byte, outbound .
 		test.Fatal("test transport identity differs from the independent session")
 	}
 	headers := proxy.CodexRequestMetadataHeaders(nil, body)
+	for _, field := range []string{"base_url", "openai_base_url"} {
+		require.Equal(test, proxy.CodexBaseURL, gjson.Get(headers.Get("X-Codex-Turn-Metadata"), field).String())
+	}
 	for name, expected := range map[string]string{
 		"Session-Id": sessionID, "Thread-Id": threadID,
 		"X-Codex-Window-Id": threadID + ":0", "X-Client-Request-Id": threadID,

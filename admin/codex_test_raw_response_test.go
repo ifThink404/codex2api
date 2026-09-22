@@ -58,7 +58,11 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 				if status == "completed" {
 					frames = []string{metadata, `{"type":"response.output_text.delta","delta":"OK"}`, string(terminal)}
 				}
-				received := make(chan []byte, 1)
+				type capturedRequest struct {
+					headers http.Header
+					body    []byte
+				}
+				received := make(chan capturedRequest, 1)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if transport == "websocket" {
 						conn, err := (&websocket.Upgrader{EnableCompression: true}).Upgrade(w, r, nil)
@@ -70,7 +74,7 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 						if err != nil {
 							return
 						}
-						received <- body
+						received <- capturedRequest{r.Header.Clone(), body}
 						for _, frame := range frames {
 							if conn.WriteMessage(websocket.TextMessage, []byte(frame)) != nil {
 								return
@@ -79,7 +83,7 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 						return
 					}
 					body, _ := io.ReadAll(r.Body)
-					received <- body
+					received <- capturedRequest{r.Header.Clone(), body}
 					w.Header().Set("Content-Type", "text/event-stream")
 					w.Header().Set("X-Codex-Turn-State", state)
 					w.Header().Set("X-Request-ID", "original-request")
@@ -147,7 +151,17 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 				require.NotContains(t, d.ResponseBody, secret)
 				require.Contains(t, d.ResponseBody, "[REDACTED]")
 				require.Len(t, received, 1)
-				outbound := <-received
+				sent := <-received
+				outbound := sent.body
+				if transport == "bps" {
+					// The shared test builder supplies Codex URL metadata, but the
+					// BPS projection must continue to use only its own protocol.
+					require.False(t, gjson.GetBytes(outbound, "client_metadata").Exists())
+					require.NotContains(t, string(outbound), "base_url")
+					require.Empty(t, sent.headers.Get("X-Codex-Turn-Metadata"))
+					require.NotEmpty(t, gjson.GetBytes(outbound, "metadata.task_id").String())
+					require.Equal(t, "word", sent.headers.Get("X-Openai-Internal-Basispoints-Client-Editor"))
+				}
 				require.Equal(t, "gpt-5.5", gjson.GetBytes(outbound, "model").String())
 				require.False(t, strings.Contains(string(outbound), state), "response opt-out must not copy upstream state into the test request")
 			})

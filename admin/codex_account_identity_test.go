@@ -139,6 +139,17 @@ func testCodexAccountIdentitySingleAndBatchTests(test *testing.T, mode string, u
 			require.NotEqual(test, session, cache)
 		}
 		metadata := gjson.Parse(gjson.GetBytes(sent.body, "client_metadata.x-codex-turn-metadata").String())
+		for _, field := range []string{"base_url", "openai_base_url"} {
+			require.Equal(test, proxy.CodexBaseURL, metadata.Get(field).String())
+			require.Equal(test, proxy.CodexBaseURL, gjson.GetBytes(sent.body, "client_metadata."+field).String())
+			if useWS {
+				// The persistent WS handshake keeps only its protocol allowlist;
+				// per-request extension metadata travels in the response.create frame.
+				require.False(test, gjson.Get(sent.headers.Get("X-Codex-Turn-Metadata"), field).Exists())
+			} else {
+				require.Equal(test, proxy.CodexBaseURL, gjson.Get(sent.headers.Get("X-Codex-Turn-Metadata"), field).String())
+			}
+		}
 		require.Equal(test, thread+":0", metadata.Get("window_id").String())
 		require.Equal(test, int64(0), metadata.Get("window_number").Int())
 		require.Equal(test, "subagent", metadata.Get("thread_source").String())
