@@ -4245,6 +4245,12 @@ func (h *Handler) Responses(c *gin.Context) {
 		// relay/Grok 账号默认走 HTTP，这里排除全局强制 WS，避免日志把它们错标成 via_websocket。
 		// 打开了上游 WebSocket 的 OpenAI Responses 中转账号在体积判断之后单独改回 WS。
 		useWebsocket := h.shouldUseWebsocketForHTTP() && !wsHTTPFallback.ForceHTTP() && !account.IsRelayStyle()
+		// BPS is an HTTP-only account transport. Keep the existing native
+		// executor untouched and route only opted-in Codex accounts here.
+		useBPS := account.CodexBPSEnabled()
+		if useBPS {
+			useWebsocket = false
+		}
 		// 生图请求强制走 HTTP：WebSocket 传输大体积图片数据会卡死（issue #220）；
 		// 自然语言生图意图也需保留 image_generation 工具（issue #288）。
 		if useWebsocket && rawResponsesBodyShouldForceHTTPForImageGeneration(rawBody) {
@@ -5116,6 +5122,9 @@ func (h *Handler) Responses(c *gin.Context) {
 		// 并计数到会话防护统计。见 session_guards.go。
 		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, upstreamBody)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+			if useBPS {
+				return executeCodexBPS(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, false)
+			}
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
 		durationMs := int(time.Since(start).Milliseconds())
@@ -6544,10 +6553,16 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		if compactViaResponses {
 			upstreamEndpointLabel = "/v1/responses"
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+				if account.CodexBPSEnabled() {
+					return executeCodexBPS(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, false)
+				}
 				return ExecuteRequest(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, false)
 			})
 		} else {
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+				if account.CodexBPSEnabled() {
+					return executeCodexBPS(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, true)
+				}
 				return ExecuteCompactRequest(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders)
 			})
 		}

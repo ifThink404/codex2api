@@ -47,6 +47,10 @@ const (
 
 const UpstreamOpenAIResponses = "openai_responses"
 
+// CodexBPSEnabledCredentialKey enables the optional Basis Points (BPS)
+// transport for an individual Codex OAuth account.
+const CodexBPSEnabledCredentialKey = "codex_bps_enabled"
+
 const (
 	CodexClientMetadataModeAuto   = "auto"
 	CodexClientMetadataModeAlways = "always"
@@ -217,6 +221,9 @@ type Account struct {
 	CodexTurnState         string
 	CodexTurnStateModels   string
 	CodexTurnStateSetAt    time.Time
+	// CodexBPS selects the BPS transport for this account's Responses requests.
+	// It is deliberately account-scoped so native Codex remains the default.
+	CodexBPS bool
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
@@ -559,6 +566,17 @@ func (a *Account) ID() int64 {
 // Mu 返回读写锁（供外部包安全读取字段）
 func (a *Account) Mu() *sync.RWMutex {
 	return &a.mu
+}
+
+// CodexBPSEnabled reports whether this account opts into the Basis Points
+// transport. Relay and agent-identity accounts cannot use the BPS OAuth path.
+func (a *Account) CodexBPSEnabled() bool {
+	if a == nil || a.IsRelayStyle() || a.IsCodexAgentIdentity() {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.CodexBPS
 }
 
 func (a *Account) isOpenAIResponsesAPILocked() bool {
@@ -5689,6 +5707,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		Timezone:                     accountTimezone,
 		CodexTurnStateProxyURL:       strings.TrimSpace(row.GetCredential(CodexTurnStateProxyURLCredentialKey)),
 		CodexTurnStateDisabled:       row.GetCredentialBool(CodexTurnStateDisabledCredentialKey),
+		CodexBPS:                     row.GetCredentialBool(CodexBPSEnabledCredentialKey),
 		CodexTurnState:               strings.TrimSpace(row.GetCredential(CodexTurnStateCredentialKey)),
 		CodexTurnStateModels:         NormalizeCodexTurnStateModels(row.GetCredential(CodexTurnStateModelsCredentialKey)),
 		CodexTurnStateSetAt:          ParseCodexTurnStateSetAt(row.GetCredential(CodexTurnStateSetAtCredentialKey)),
@@ -10049,6 +10068,19 @@ func (s *Store) ApplyAccountCustomHeaders(dbID int64, headers map[string]string)
 	}
 	acc.mu.Lock()
 	acc.CustomHeaders = cloneStringMap(headers)
+	acc.mu.Unlock()
+	return true
+}
+
+// ApplyAccountCodexBPS synchronizes the persisted BPS switch with the runtime
+// account after an admin update or a scheduler reload.
+func (s *Store) ApplyAccountCodexBPS(dbID int64, enabled bool) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	acc.mu.Lock()
+	acc.CodexBPS = enabled
 	acc.mu.Unlock()
 	return true
 }

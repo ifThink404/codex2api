@@ -279,6 +279,7 @@ func (h *Handler) buildAccountResponse(
 		Timezone:                     accountTimezone,
 		CodexTurnStateProxyURL:       strings.TrimSpace(row.GetCredential(auth.CodexTurnStateProxyURLCredentialKey)),
 		CodexTurnStateDisabled:       row.GetCredentialBool(auth.CodexTurnStateDisabledCredentialKey),
+		CodexBPS:                     row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
 		CodexTurnState:               strings.TrimSpace(row.GetCredential(auth.CodexTurnStateCredentialKey)),
 		CodexTurnStateModels:         auth.NormalizeCodexTurnStateModels(row.GetCredential(auth.CodexTurnStateModelsCredentialKey)),
 		CodexTurnStateSetAt:          strings.TrimSpace(row.GetCredential(auth.CodexTurnStateSetAtCredentialKey)),

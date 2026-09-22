@@ -1713,6 +1713,7 @@ type accountResponse struct {
 	Timezone                      string                      `json:"timezone,omitempty"`
 	CodexTurnStateProxyURL        string                      `json:"codex_turn_state_proxy_url,omitempty"`
 	CodexTurnStateDisabled        bool                        `json:"codex_turn_state_disabled"`
+	CodexBPS                      bool                        `json:"codex_bps_enabled"`
 	CodexTurnState                string                      `json:"codex_turn_state,omitempty"`
 	CodexTurnStateModels          string                      `json:"codex_turn_state_models,omitempty"`
 	CodexTurnStateSetAt           string                      `json:"codex_turn_state_set_at,omitempty"`
@@ -2207,6 +2208,7 @@ type updateAccountSchedulerReq struct {
 	Timezone                json.RawMessage `json:"timezone"`
 	CodexTurnStateProxyURL  json.RawMessage `json:"codex_turn_state_proxy_url"`
 	CodexTurnStateDisabled  json.RawMessage `json:"codex_turn_state_disabled"`
+	CodexBPS                json.RawMessage `json:"codex_bps_enabled"`
 	CodexTurnState          json.RawMessage `json:"codex_turn_state"`
 	CodexTurnStateModels    json.RawMessage `json:"codex_turn_state_models"`
 }
@@ -2238,6 +2240,7 @@ type accountSchedulerUpdate struct {
 	Timezone                database.OptionalString
 	CodexTurnStateProxyURL  database.OptionalString
 	CodexTurnStateDisabled  database.OptionalBool
+	CodexBPS                database.OptionalBool
 	CodexTurnState          database.OptionalString
 	CodexTurnStateModels    database.OptionalString
 	CredentialUpdates       map[string]interface{}
@@ -2375,6 +2378,10 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	codexBPS, err := parseOptionalBoolField(req.CodexBPS, "codex_bps_enabled")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
 	codexTurnStateField, err := parseOptionalStringField(req.CodexTurnState, "codex_turn_state", auth.ValidateCodexTurnState)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2423,6 +2430,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 	if codexTurnStateDisabled.Set {
 		credentialUpdates[auth.CodexTurnStateDisabledCredentialKey] = codexTurnStateDisabled.Value
+	}
+	if codexBPS.Set {
+		credentialUpdates[auth.CodexBPSEnabledCredentialKey] = codexBPS.Value
 	}
 	if codexTurnStateField.Set {
 		credentialUpdates[auth.CodexTurnStateCredentialKey] = codexTurnStateField.Value
@@ -2590,6 +2600,7 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 	return len(u.CredentialUpdates) > 0 || u.ScoreBiasOverride.Set ||
 		u.CodexTurnStateProxyURL.Set ||
 		u.CodexTurnStateDisabled.Set ||
+		u.CodexBPS.Set ||
 		u.CodexTurnState.Set ||
 		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
@@ -2925,6 +2936,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.CodexTurnStateDisabled.Set {
 		h.store.ApplyAccountCodexTurnStateDisabled(id, update.CodexTurnStateDisabled.Value)
+	}
+	if update.CodexBPS.Set {
+		h.store.ApplyAccountCodexBPS(id, update.CodexBPS.Value)
 	}
 	if update.CodexTurnState.Set || update.CodexTurnStateModels.Set {
 		if account := h.store.FindByID(id); account != nil {
