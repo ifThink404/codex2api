@@ -3,6 +3,14 @@ import test from "node:test";
 
 import { buildBatchMetadataUpdate } from "./accountBatchUpdate.ts";
 
+test("image history trimming is explicit and can be disabled without changing BPS routing", () => {
+  const base = { ids: [1, 2], updateTags: false, tags: [], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, codexBPSImageTrimEnabled: true }), { ids: [1, 2] });
+  for (const enabled of [true, false]) {
+    assert.deepEqual(buildBatchMetadataUpdate({ ...base, updateCodexBPSImageTrimEnabled: true, codexBPSImageTrimEnabled: enabled }), { ids: [1, 2], codex_bps_image_trim_enabled: enabled });
+  }
+});
+
 test("buildBatchMetadataUpdate includes enabled scheduler fields", () => {
   const payload = buildBatchMetadataUpdate({
     ids: [3, 7],

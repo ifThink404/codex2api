@@ -1634,6 +1634,7 @@ type accountResponse struct {
 	ModelMapping                   string                      `json:"model_mapping,omitempty"`
 	CodexClientMetadataMode        string                      `json:"codex_client_metadata_mode,omitempty"`
 	CodexBPSEnabled                bool                        `json:"codex_bps_enabled"`
+	CodexBPSImageTrim              bool                        `json:"codex_bps_image_trim_enabled"`
 	CodexFingerprintMode           string                      `json:"codex_fingerprint_mode,omitempty"`
 	CodexInstallationID            string                      `json:"codex_installation_id,omitempty"`
 	ClaudeFingerprintMode          string                      `json:"claude_fingerprint_mode,omitempty"`
@@ -2089,6 +2090,7 @@ type updateAccountSchedulerReq struct {
 	ProxyURL                json.RawMessage `json:"proxy_url"`
 	CustomHeaders           json.RawMessage `json:"custom_headers"`
 	CodexBPSEnabled         json.RawMessage `json:"codex_bps_enabled"`
+	CodexBPSImageTrim       json.RawMessage `json:"codex_bps_image_trim_enabled"`
 	CodexFingerprintMode    json.RawMessage `json:"codex_fingerprint_mode"`
 	ClaudeFingerprintMode   json.RawMessage `json:"claude_fingerprint_mode"`
 	SessionCapacityEnabled  json.RawMessage `json:"session_capacity_enabled"`
@@ -2118,6 +2120,7 @@ type accountSchedulerUpdate struct {
 	ProxyURL                database.OptionalString
 	CustomHeaders           optionalCustomHeaders
 	CodexBPSEnabled         database.OptionalBool
+	CodexBPSImageTrim       database.OptionalBool
 	CodexFingerprintMode    database.OptionalString
 	ClaudeFingerprintMode   database.OptionalString
 	SessionCapacityEnabled  database.OptionalBool
@@ -2266,7 +2269,14 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	codexBPSImageTrim, err := parseOptionalBoolField(req.CodexBPSImageTrim, "codex_bps_image_trim_enabled")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
 	credentialUpdates := make(map[string]interface{})
+	if codexBPSImageTrim.Set {
+		credentialUpdates[auth.CodexBPSImageTrimCredentialKey] = codexBPSImageTrim.Value
+	}
 	if codexBPS.Set {
 		credentialUpdates[auth.CodexBPSEnabledCredentialKey] = codexBPS.Value
 	}
@@ -2376,6 +2386,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ProxyURL:                proxyURL,
 		CustomHeaders:           customHeaders,
 		CodexBPSEnabled:         codexBPS,
+		CodexBPSImageTrim:       codexBPSImageTrim,
 		CodexFingerprintMode:    codexFingerprintMode,
 		ClaudeFingerprintMode:   claudeFingerprintMode,
 		ClaudeClientPlatform:    claudeClientPlatform,
@@ -2459,6 +2470,7 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.ProxyURL.Set ||
 		u.CustomHeaders.Set ||
 		u.CodexBPSEnabled.Set ||
+		u.CodexBPSImageTrim.Set ||
 		u.CodexFingerprintMode.Set ||
 		u.ClaudeFingerprintMode.Set ||
 		u.ClaudeClientPlatform.Set ||
@@ -2551,7 +2563,7 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	if update.CodexBPSEnabled.Set && update.CodexBPSEnabled.Value {
+	if (update.CodexBPSEnabled.Set && update.CodexBPSEnabled.Value) || (update.CodexBPSImageTrim.Set && update.CodexBPSImageTrim.Value) {
 		row, err := h.db.GetAccountByID(ctx, id)
 		if err != nil || row == nil {
 			writeError(c, http.StatusNotFound, "账号不存在")
@@ -2803,6 +2815,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.CodexBPSEnabled.Set {
 		h.store.ApplyAccountCodexBPS(id, update.CodexBPSEnabled.Value)
+	}
+	if update.CodexBPSImageTrim.Set {
+		h.store.ApplyAccountCodexBPSImageTrim(id, update.CodexBPSImageTrim.Value)
 	}
 	if update.CodexFingerprintMode.Set {
 		h.store.ApplyAccountCodexFingerprintMode(id, update.CodexFingerprintMode.Value)
@@ -4737,6 +4752,7 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 // importToken 导入时的统一 token 载体
 type importToken struct {
 	codexBPSEnabled       bool
+	codexBPSImageTrim     bool
 	refreshToken          string
 	sessionToken          string
 	accessToken           string // AT-only 兼容路径
@@ -4898,6 +4914,7 @@ type jsonAccountEntry struct {
 	Codex5HUsageUpdatedAt string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt   string                 `json:"codex_usage_updated_at"`
 	CodexBPSEnabled       bool                   `json:"codex_bps_enabled"`
+	CodexBPSImageTrim     bool                   `json:"codex_bps_image_trim_enabled"`
 	ProxyURL              string                 `json:"proxy_url"`
 	ProxyLabel            string                 `json:"proxy_label"`
 	ProxyEnabled          *bool                  `json:"proxy_enabled"`
@@ -4970,6 +4987,7 @@ type sub2apiAccountCredentials struct {
 	Codex5HUsageUpdatedAt string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt   string                 `json:"codex_usage_updated_at"`
 	CodexBPSEnabled       bool                   `json:"codex_bps_enabled"`
+	CodexBPSImageTrim     bool                   `json:"codex_bps_image_trim_enabled"`
 	ProxyURL              string                 `json:"proxy_url"`
 	ProxyLabel            string                 `json:"proxy_label"`
 	ProxyEnabled          *bool                  `json:"proxy_enabled"`
@@ -5188,6 +5206,7 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 				codex5HResetAt:        strings.TrimSpace(entry.Codex5HResetAt),
 				codex5HUsageUpdatedAt: strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 				codexBPSEnabled:       entry.CodexBPSEnabled,
+				codexBPSImageTrim:     entry.CodexBPSImageTrim,
 				codexUsageUpdatedAt:   strings.TrimSpace(entry.CodexUsageUpdatedAt),
 				proxyURL:              strings.TrimSpace(entry.ProxyURL),
 				proxyLabel:            strings.TrimSpace(entry.ProxyLabel),
@@ -5263,6 +5282,7 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 				codex5HResetAt:        strings.TrimSpace(c.Codex5HResetAt),
 				codex5HUsageUpdatedAt: strings.TrimSpace(c.Codex5HUsageUpdatedAt),
 				codexBPSEnabled:       c.CodexBPSEnabled,
+				codexBPSImageTrim:     c.CodexBPSImageTrim,
 				codexUsageUpdatedAt:   strings.TrimSpace(c.CodexUsageUpdatedAt),
 				proxyURL:              proxyURL,
 				proxyLabel:            proxyLabel,
@@ -5372,6 +5392,7 @@ func importTokenSeed(t importToken, conflicts map[string]bool) tokenCredentialSe
 		codex5HResetAt:        t.codex5HResetAt,
 		codex5HUsageUpdatedAt: t.codex5HUsageUpdatedAt,
 		codexBPSEnabled:       t.codexBPSEnabled,
+		codexBPSImageTrim:     t.codexBPSImageTrim,
 		codexUsageUpdatedAt:   t.codexUsageUpdatedAt,
 	})
 }
@@ -6552,6 +6573,7 @@ func tokenCredentialSeedFromAccountRow(row *database.AccountRow) tokenCredential
 		codex5HResetAt:        row.GetCredential("codex_5h_reset_at"),
 		codex5HUsageUpdatedAt: row.GetCredential("codex_5h_usage_updated_at"),
 		codexBPSEnabled:       row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		codexBPSImageTrim:     row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
 		codexUsageUpdatedAt:   row.GetCredential("codex_usage_updated_at"),
 	})
 }
@@ -6847,7 +6869,7 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	if schedulerUpdate.CodexBPSEnabled.Set && schedulerUpdate.CodexBPSEnabled.Value {
+	if (schedulerUpdate.CodexBPSEnabled.Set && schedulerUpdate.CodexBPSEnabled.Value) || (schedulerUpdate.CodexBPSImageTrim.Set && schedulerUpdate.CodexBPSImageTrim.Value) {
 		for _, id := range ids {
 			row, err := h.db.GetAccountByID(ctx, id)
 			if err != nil || row == nil {
@@ -12426,6 +12448,7 @@ func (h *Handler) TestImageStorageConnection(c *gin.Context) {
 
 type cpaExportEntry struct {
 	CodexBPSEnabled       bool   `json:"codex_bps_enabled,omitempty"`
+	CodexBPSImageTrim     bool   `json:"codex_bps_image_trim_enabled,omitempty"`
 	Type                  string `json:"type"`
 	Email                 string `json:"email"`
 	PlanType              string `json:"plan_type,omitempty"`
@@ -12602,6 +12625,7 @@ func accountRowToCPAExportEntry(row *database.AccountRow, proxies exportProxyRes
 	proxyURL, proxyLabel, proxyEnabled := proxies.resolve(row.ProxyURL)
 	return cpaExportEntry{
 		CodexBPSEnabled:       row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		CodexBPSImageTrim:     row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
 		Type:                  "codex",
 		Email:                 row.GetCredential("email"),
 		PlanType:              row.GetCredential("plan_type"),
@@ -12828,6 +12852,7 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 			codex5HResetAt:        strings.TrimSpace(entry.Codex5HResetAt),
 			codex5HUsageUpdatedAt: strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 			codexBPSEnabled:       entry.CodexBPSEnabled,
+			codexBPSImageTrim:     entry.CodexBPSImageTrim,
 			codexUsageUpdatedAt:   strings.TrimSpace(entry.CodexUsageUpdatedAt),
 		})
 	}

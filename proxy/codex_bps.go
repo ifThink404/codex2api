@@ -18,16 +18,17 @@ const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
 	projection        *bpsResponseProjection
-	UpstreamTurnState *usageTurnStateValue     `json:"upstream_turn_state,omitempty"`
-	ClientTurnState   *usageTurnStateValue     `json:"client_turn_state,omitempty"`
-	Mode              string                   `json:"mode"`
-	RequestedModel    string                   `json:"requested_model"`
-	SentModel         string                   `json:"sent_model"`
-	Compact           bool                     `json:"compact,omitempty"`
-	AdaptedFields     []string                 `json:"adapted_fields,omitempty"`
-	RemovedFields     []string                 `json:"removed_fields,omitempty"`
-	Images            *codexBPSImageDiagnostic `json:"images,omitempty"`
-	Files             *codexBPSFileDiagnostic  `json:"files,omitempty"`
+	UpstreamTurnState *usageTurnStateValue            `json:"upstream_turn_state,omitempty"`
+	ClientTurnState   *usageTurnStateValue            `json:"client_turn_state,omitempty"`
+	Mode              string                          `json:"mode"`
+	RequestedModel    string                          `json:"requested_model"`
+	SentModel         string                          `json:"sent_model"`
+	Compact           bool                            `json:"compact,omitempty"`
+	AdaptedFields     []string                        `json:"adapted_fields,omitempty"`
+	RemovedFields     []string                        `json:"removed_fields,omitempty"`
+	Images            *codexBPSImageDiagnostic        `json:"images,omitempty"`
+	Files             *codexBPSFileDiagnostic         `json:"files,omitempty"`
+	ImageHistory      *codexBPSImageHistoryDiagnostic `json:"image_history,omitempty"`
 }
 type codexBPSDiagnosticKey struct{}
 
@@ -67,6 +68,10 @@ func codexRequestUsesBPS(ctx context.Context, account *auth.Account) (bool, erro
 }
 
 func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *CodexBPSDiagnostic, error) {
+	return prepareCodexBPSBodyWithImageTrim(body, cacheKey, compact, false, nil)
+}
+
+func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, trimImages bool, headers http.Header) ([]byte, *CodexBPSDiagnostic, error) {
 	var source map[string]json.RawMessage
 	if err := json.Unmarshal(body, &source); err != nil {
 		return nil, nil, err
@@ -111,6 +116,12 @@ func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *C
 	items, imageErr = projectBPSCustomImageOutputs(items, d)
 	if imageErr != nil {
 		return nil, nil, imageErr
+	}
+	if trimImages {
+		items, imageErr = trimBPSImageHistory(items, body, headers, compact, d)
+		if imageErr != nil {
+			return nil, nil, imageErr
+		}
 	}
 	if items == nil {
 		items = []json.RawMessage{}
@@ -192,7 +203,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		cacheKey = NewUpstreamSessionUUID()
 	}
 	cacheKey = codexIdentityDigest("bps-prompt-cache-v1", account.EffectiveAccountID(), cacheKey)
-	projected, diagnostic, err := prepareCodexBPSBody(body, cacheKey, compact)
+	projected, diagnostic, err := prepareCodexBPSBodyWithImageTrim(body, cacheKey, compact, account.CodexBPSImageTrimEnabled(), headers)
 	if err != nil {
 		if _, ok := err.(*Error); ok {
 			return nil, err
