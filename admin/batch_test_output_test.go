@@ -25,7 +25,7 @@ func TestBatchTestStreamsIncludeActualOutputWithoutAnotherRequest(test *testing.
 		writer.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好！\"}\n\n")
 		fmt.Fprint(writer, "data: {\"type\":\"response.output_text.done\",\"text\":\"你好！\"}\n\n")
-		fmt.Fprint(writer, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output_text\":\"你好！\"}}\n\n")
+		fmt.Fprint(writer, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-6-sol\",\"output_text\":\"你好！\"}}\n\n")
 	}))
 	defer server.Close()
 	store := auth.NewStore(nil, nil, nil)
@@ -62,6 +62,9 @@ func TestBatchTestStreamsIncludeActualOutputWithoutAnotherRequest(test *testing.
 		assert.Equal(test, "你好！", event.Output)
 		assert.False(test, event.OutputTruncated)
 		assert.Equal(test, "gpt-4o-mini", event.TestModel)
+		assert.Equal(test, "gpt-6-sol", event.ResponseModel)
+		require.NotNil(test, event.ResponseFieldCount)
+		assert.Equal(test, 3, *event.ResponseFieldCount)
 	}
 	assert.EqualValues(test, 2, upstreamCalls.Load())
 }

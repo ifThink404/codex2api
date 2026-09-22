@@ -12,6 +12,8 @@ export interface AccountOperationEvent {
   output_truncated?: boolean;
   test_model?: string;
   test_mode?: string;
+  response_model?: string;
+  response_field_count?: number;
 }
 
 export interface AccountOperationResult {
@@ -25,6 +27,8 @@ export interface AccountOperationResult {
   outputTruncated?: boolean;
   testModel?: string;
   testMode?: string;
+  responseModel?: string;
+  responseFieldCount?: number;
 }
 
 export interface AccountOperationSummary {
@@ -100,6 +104,10 @@ export function collectAccountOperationResult(
     ...(event.output_truncated ? { outputTruncated: true } : {}),
     ...(event.test_model ? { testModel: event.test_model } : {}),
     ...(event.test_mode ? { testMode: event.test_mode } : {}),
+    ...(event.response_model ? { responseModel: event.response_model } : {}),
+    ...(typeof event.response_field_count === "number"
+      ? { responseFieldCount: event.response_field_count }
+      : {}),
   });
 }
 

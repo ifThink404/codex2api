@@ -304,8 +304,23 @@ export default function OperationResultsModal({
                                 {t("accounts.operationResultsViewOutput")}
                               </summary>
                               {result.testModel ? (
-                                <div className="mt-2 font-mono text-muted-foreground">
-                                  {result.testModel}
+                                <div className="mt-2 space-y-0.5 text-muted-foreground">
+                                  <div>
+                                    {t("accounts.operationResultsTestModel")}：{" "}
+                                    <span className="font-mono">{result.testModel}</span>
+                                  </div>
+                                  {result.responseModel ? (
+                                    <div>
+                                      {t("accounts.operationResultsResponseModel")}：{" "}
+                                      <span className="font-mono">{result.responseModel}</span>
+                                    </div>
+                                  ) : null}
+                                  {result.responseFieldCount != null ? (
+                                    <div>
+                                      {t("accounts.operationResultsResponseFields")}：{" "}
+                                      <span className="font-mono">{result.responseFieldCount}</span>
+                                    </div>
+                                  ) : null}
                                 </div>
                               ) : null}
                               <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed select-text">

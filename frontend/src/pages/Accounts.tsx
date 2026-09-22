@@ -1090,6 +1090,8 @@ interface BatchOperationEvent {
   output?: string;
   output_truncated?: boolean;
   test_model?: string;
+  response_model?: string;
+  response_field_count?: number;
   current?: number;
   total?: number;
   success?: number;

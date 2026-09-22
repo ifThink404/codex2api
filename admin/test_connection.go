@@ -1213,26 +1213,28 @@ func (h *Handler) persistRecycleBinTestResult(id int64, status string) {
 }
 
 type batchOperationEvent struct {
-	Type            string `json:"type"` // start | progress | complete
-	Action          string `json:"action"`
-	Status          string `json:"status,omitempty"`
-	HTTPStatus      int    `json:"http_status,omitempty"`
-	Current         int    `json:"current"`
-	Total           int    `json:"total"`
-	Success         int64  `json:"success"`
-	Failed          int64  `json:"failed"`
-	Banned          int64  `json:"banned,omitempty"`
-	RateLimited     int64  `json:"rate_limited,omitempty"`
-	Deleted         int64  `json:"deleted,omitempty"`
-	AccountID       int64  `json:"account_id,omitempty"`
-	AccountName     string `json:"account_name,omitempty"`
-	AccountEmail    string `json:"account_email,omitempty"`
-	Message         string `json:"message,omitempty"`
-	Error           string `json:"error,omitempty"`
-	Output          string `json:"output,omitempty"`
-	OutputTruncated bool   `json:"output_truncated,omitempty"`
-	TestModel       string `json:"test_model,omitempty"`
-	TestMode        string `json:"test_mode,omitempty"`
+	Type               string `json:"type"` // start | progress | complete
+	Action             string `json:"action"`
+	Status             string `json:"status,omitempty"`
+	HTTPStatus         int    `json:"http_status,omitempty"`
+	Current            int    `json:"current"`
+	Total              int    `json:"total"`
+	Success            int64  `json:"success"`
+	Failed             int64  `json:"failed"`
+	Banned             int64  `json:"banned,omitempty"`
+	RateLimited        int64  `json:"rate_limited,omitempty"`
+	Deleted            int64  `json:"deleted,omitempty"`
+	AccountID          int64  `json:"account_id,omitempty"`
+	AccountName        string `json:"account_name,omitempty"`
+	AccountEmail       string `json:"account_email,omitempty"`
+	Message            string `json:"message,omitempty"`
+	Error              string `json:"error,omitempty"`
+	Output             string `json:"output,omitempty"`
+	OutputTruncated    bool   `json:"output_truncated,omitempty"`
+	TestModel          string `json:"test_model,omitempty"`
+	TestMode           string `json:"test_mode,omitempty"`
+	ResponseModel      string `json:"response_model,omitempty"`
+	ResponseFieldCount *int   `json:"response_field_count,omitempty"`
 }
 
 func runtimeAccountOperationIdentity(account *auth.Account) (string, string) {
@@ -1614,6 +1616,8 @@ func (h *Handler) emitBatchTestProgress(
 		event.OutputTruncated = output.truncated
 		event.TestModel = output.model
 		event.TestMode = output.mode
+		event.ResponseModel = output.responseModel
+		event.ResponseFieldCount = output.responseFieldCount
 		if event.TestMode == "bps" {
 			event.TestMode = "responses"
 		}

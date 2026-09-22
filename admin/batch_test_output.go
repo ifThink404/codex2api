@@ -12,10 +12,12 @@ const batchTestOutputLimit = 4 << 10
 type batchTestOutputContextKey struct{}
 
 type batchTestOutput struct {
-	text      []byte
-	truncated bool
-	model     string
-	mode      string
+	text               []byte
+	truncated          bool
+	model              string
+	mode               string
+	responseModel      string
+	responseFieldCount *int
 }
 
 func batchTestOutputFromContext(ctx context.Context) *batchTestOutput {
@@ -41,6 +43,19 @@ func (output *batchTestOutput) append(text string) {
 func (output *batchTestOutput) observeResponses(data []byte) {
 	if output == nil {
 		return
+	}
+	// Keep the model and top-level field count from the actual Responses object.
+	// The requested test model may be an alias or may be rewritten upstream.
+	response := gjson.GetBytes(data, "response")
+	if !response.IsObject() && gjson.GetBytes(data, "object").String() == "response" {
+		response = gjson.ParseBytes(data)
+	}
+	if response.IsObject() {
+		if model := response.Get("model").String(); model != "" {
+			output.responseModel = model
+		}
+		fieldCount := len(response.Map())
+		output.responseFieldCount = &fieldCount
 	}
 	switch gjson.GetBytes(data, "type").String() {
 	case "response.output_text.delta":
