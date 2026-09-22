@@ -53,3 +53,25 @@ func TestProbePolicyGrokAutomaticPathsRespectOffAndAutoKey(t *testing.T) {
 		})
 	}
 }
+
+func TestGrokCapabilityQueuePreservesAccountProbePolicy(t *testing.T) {
+	for _, mode := range []string{"off", "auto", "on"} {
+		t.Run(mode, func(t *testing.T) {
+			h, _, id := newGrokAdminTestAccount(t, "https://example.invalid", false)
+			h.store.ApplyAccountProbePolicyPatch(id, map[string]interface{}{auth.ProbeModeCredentialKey: mode})
+			account := h.store.FindByID(id)
+			now := time.Now()
+			due, err := grokNextCapabilityDue(account, nil, now)
+			if err != nil {
+				t.Fatalf("optional capability queue rejected account policy %s: %v", mode, err)
+			}
+			want := now.Add(24 * time.Hour)
+			if mode == "on" {
+				want = now.Add(account.ProbeInterval(30 * time.Minute))
+			}
+			if !due.Equal(want) {
+				t.Fatalf("next capability check = %v, want %v", due, want)
+			}
+		})
+	}
+}

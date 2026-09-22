@@ -29,6 +29,8 @@ const grokStateBackfillInitTimeout = 5 * time.Minute
 
 // AccountRow 数据库中的账号行
 type AccountRow struct {
+	GrokPlanDisplay       *GrokPlanDisplay
+	GrokModels            *GrokModelSummary
 	ID                    int64
 	CredentialGeneration  int64
 	CredentialFamilyID    string
@@ -510,6 +512,11 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		}
 		if err := db.ensurePromptConversationLocksTable(ctx); err != nil {
 			return nil, fmt.Errorf("创建提示词会话锁表失败: %w", err)
+		}
+		if err := db.ensureImageAssetRetentionSchema(ctx); err != nil {
+			backgroundTaskCancel()
+			_ = conn.Close()
+			return nil, fmt.Errorf("initialize image asset retention: %w", err)
 		}
 	}
 	if err := db.ensureProxyRiskScoringTables(ctx); err != nil {

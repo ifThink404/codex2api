@@ -227,6 +227,8 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
 
 对于原生 WebSocket 的结构化输出，`gpt-6-astra` 和 `gpt-5.6-luna` 在显式启用 Responses Lite 时保留 JSON Schema 的 `minLength` / `maxLength`。Lite 信号可来自 `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite=true`、`X-OpenAI-Internal-Codex-Responses-Lite: true` 请求头，或由 Payload Rules 注入该元数据标记。该放行仅用于结构化输出；已有工具参数清洗继续使用保守规则。长度约束在入口准备阶段暂时保留，最终出站前才根据最终模型、规则改写后的 Lite 信号、账号 Lite 能力和实际传输统一处理。其他模型、最终未启用 Lite、HTTP 和 Compact 请求沿用原有清洗策略，HTTP 降级请求不会携带不适用的约束。
 
+OpenAI Responses 中转账号默认仍用 HTTP POST `/v1/responses`。账号设置 `responses_upstream_transport=websocket` 后，这个账号的 Responses 出站改为 WebSocket：地址由 Base URL 换成 `ws`/`wss`，路径仍是 `/v1/responses`，握手使用该账号的 API Key 和 `OpenAI-Beta: responses_websockets=2026-02-06`，上行帧为 `response.create`。这个开关只作用于 OpenAI Responses 中转账号，和全局 `codex_force_websocket` 无关；Grok、Antigravity、Claude 不会走这条连接。握手失败返回上游状态或传输错误，不会改回 HTTP。生图请求仍走 HTTP。连接按账号、Base URL 和 API Key 隔离；带 `previous_response_id` 时优先复用产出该响应的连接。客户端 `GET /v1/responses` 也会选中已打开该开关的中转账号。
+
 原生 WebSocket 入口为 `GET /v1/responses`。通过校验与 API Key 限制后，较新的同 API Key、同渠道/分组路由作用域、同会话请求会抢占仍在运行的旧请求，并先取消旧上游以释放账号与并发位。`stream_id` 是抢占键的一部分，因此多路复用的不同流互不影响；不同 API Key 或不同路由作用域也不会互相取消。只有 `prompt_cache_key`、显式会话头、`previous_response_id`、turn state、专用 affinity key 或可稳定派生的内容会话存在时才启用，纯 API Key 兜底身份不会把无关请求合并。Redis 模式支持跨实例抢占，Memory 模式仅在当前进程内生效。
 
 **响应示例:**
@@ -395,7 +397,12 @@ Images 入口的 2.5 token 计费区分文本输入、图片输入与各自缓�
 
 - `POST /v1/images/jobs`：以后台创建的 API Key 认证，返回 HTTP 202 和 `job`。
 - `GET /v1/images/jobs/:id`：使用创建时的同一 API Key 查询，其他密钥返回 404。
+- `POST /v1/images/jobs/results`：批量查询最多 500 个任务的精简结果，兼容 `/v1/images/jobs/result`。
+- `GET /v1/images/jobs/:id/output`：流式返回生成结果 Base64；仅对主动选择 `delete_after_read` 的图片在完整交付后清理。
+- `POST /v1/images/jobs/:id/ack`：URL 下载方确认已保存结果，幂等清理本任务中 `delete_after_read` 的图片。
 - `GET /v1/images/jobs/:id/result`：使用同一 API Key 查询精简状态和结果；不返回提示词、`params_json`、输入图片、密钥展示信息或图片 Base64 缓存。适合频繁轮询，原创建和查询接口保持不变。
+
+创建接口可选 `storage_mode`（legacy/temporary/delete_after_read）与 `retention_seconds`；不传保留旧逻辑。临时存储 2 小时示例：`"storage_mode":"temporary","retention_seconds":7200`。详见 [图片结果存储策略](IMAGE_RESULT_STORAGE.md)，包括过期时间、消费接口和安全重试语义。
 
 精简查询在 queued/running 时也返回 HTTP 200，`assets` 为空数组；成功后通过 `job.assets[].proxy_url` 下载图片文件，相对路径按服务地址解析。失败原因在 `error_message`，部分成功的提示在 `warning`。该接口忽略 `include_cache`，始终不附带图片缓存。不存在或不属于当前 Key 的任务均返回 404。
 
@@ -527,7 +534,7 @@ curl 'https://your-host/v1/images/jobs/42/result' \
 }
 ```
 
-池内存在 Grok 账号时会一并列出其文本模型（如 `grok-4.6`）与媒体模型（`grok-imagine-*`）。媒体模型与账号的文本模型白名单相互独立：白名单只声明文本模型不会关闭媒体能力；白名单里显式写了 `grok-imagine` 条目时以声明为准收窄。
+池内存在 Grok 账号时会一并列出其文本模型（如 `grok-4.7`）与媒体模型（`grok-imagine-*`）。媒体模型与账号的文本模型白名单相互独立：白名单只声明文本模型不会关闭媒体能力；白名单里显式写了 `grok-imagine` 条目时以声明为准收窄。
 
 #### Grok 的 GPT 兼容别名
 
@@ -2675,6 +2682,7 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 | server_error                     | 服务器错误       | 查看日志排查问题                 |
 | upstream_error                   | 上游服务错误     | 检查 Codex 服务状态              |
 | no_available_account             | 当前无可调度账号 | 稍后重试、启用账号或补充可用账号 |
+| account_pool_concurrency_saturated | 匹配账号的并发窗口已满 | 稍后重试，或提高单账号并发上限 |
 | account_pool_usage_limit_reached | 账号池额度耗尽   | 等待冷却或添加新账号             |
 | rate_limit_exceeded              | 限流触发         | 降低请求频率                     |
 | response_context_unavailable     | `previous_response_id` 所需上下文不可用 | 重新发送完整上下文或开始新的响应链 |
@@ -2795,6 +2803,18 @@ Responses WebSocket 升级后用对应错误帧返回拒绝信息，每个 `resp
 }
 ```
 
+匹配账号都在、只是并发槽位已经占满时，接口仍返回 `503`，但错误码改为 `account_pool_concurrency_saturated`，并带 `Retry-After: 1`。这和「池里没有可调度账号」不是同一种失败：提高并发上限，或等进行中的请求释放槽位后再试。
+
+```json
+{
+  "error": {
+    "message": "账号并发窗口已满，请稍后重试或提高并发上限",
+    "type": "server_error",
+    "code": "account_pool_concurrency_saturated"
+  }
+}
+```
+
 ### 账号池额度耗尽响应
 
 当上游返回账号额度耗尽类 `429` 时，系统会对外改写为 `503 Service Unavailable`，并保留 `Retry-After` 头：
@@ -2821,3 +2841,8 @@ Retry-After: 3600
 2. 实现指数退避重试策略
 3. 处理 429/503 状态码，根据 `Retry-After` 等待后重试
 4. 避免在短时内发送大量请求
+
+
+### 可选的持久化生图队列
+
+设置 `IMAGE_JOB_WORKERS=2` 可启用固定并发的数据库任务队列。启用后创建接口只返回 `job.id` 和 `job.status`；参考图在任务执行时读取。数据库增量迁移、内存限制、重启恢复及兼容性详见 [图片任务队列](IMAGE_JOB_QUEUE.md)。

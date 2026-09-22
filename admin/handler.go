@@ -45,6 +45,7 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	imageQueue         *imageJobQueue
 	qualityTestContext context.Context
 	qualityTestWG      sync.WaitGroup
 	store              *auth.Store
@@ -1054,8 +1055,10 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 	handler.autoActivate5hWake = make(chan struct{}, 1)
 	if db != nil {
 		handler.recordAccountEvent = db.InsertAccountEventAsync
-		if err := db.MarkInterruptedImageJobs(context.Background()); err != nil {
-			log.Printf("标记中断生图任务失败: %v", err)
+		if workers, _ := ImageJobWorkerCount(); workers == 0 {
+			if err := db.MarkInterruptedImageJobs(context.Background()); err != nil {
+				log.Printf("标记中断生图任务失败: %v", err)
+			}
 		}
 	}
 	return handler
@@ -1680,6 +1683,8 @@ type accountResponse struct {
 	AgentIdentity                 bool                        `json:"agent_identity,omitempty"`
 	GrokAuthKind                  string                      `json:"grok_auth_kind,omitempty"`
 	GrokPlan                      *auth.GrokPlan              `json:"grok_plan,omitempty"`
+	GrokPlanDisplay               *database.GrokPlanDisplay   `json:"grok_plan_display,omitempty"`
+	GrokModels                    *database.GrokModelSummary  `json:"grok_models,omitempty"`
 	GrokBilling                   json.RawMessage             `json:"grok_billing,omitempty"`
 	GrokRateLimit                 *auth.GrokRateLimitSnapshot `json:"grok_rate_limit,omitempty"`
 	GrokFreeQuota                 *auth.GrokFreeQuotaSnapshot `json:"grok_free_quota,omitempty"`
@@ -1695,6 +1700,7 @@ type accountResponse struct {
 	ModelMapping                  string                      `json:"model_mapping,omitempty"`
 	CodexClientMetadataMode       string                      `json:"codex_client_metadata_mode,omitempty"`
 	CodexPassthroughMode          string                      `json:"codex_passthrough_mode,omitempty"`
+	ResponsesUpstreamTransport    string                      `json:"responses_upstream_transport,omitempty"`
 	CodexFingerprintMode          string                      `json:"codex_fingerprint_mode,omitempty"`
 	ClaudeFingerprintMode         string                      `json:"claude_fingerprint_mode,omitempty"`
 	ClaudeUserAgent               string                      `json:"claude_user_agent,omitempty"`
@@ -1909,6 +1915,11 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 		return
 	}
 
+	if err := h.db.HydrateGrokDisplay(ctx, rows); err != nil {
+		writeInternalError(c, err)
+		return
+	}
+
 	// 合并内存中的调度指标
 	accountMap := make(map[int64]*auth.Account)
 	if view == "page" {
@@ -2053,6 +2064,10 @@ func (h *Handler) GetAccount(c *gin.Context) {
 		usage7d = make(map[int64]*database.AccountTimeRangeUsage)
 	}
 
+	if err := h.db.HydrateGrokDisplay(ctx, []*database.AccountRow{row}); err != nil {
+		writeInternalError(c, err)
+		return
+	}
 	runtimeAccount := h.store.FindByID(id)
 	resp := h.buildAccountResponse(row, runtimeAccount, requestCounts[id], usage5h[id], usage7d[id], true)
 	if runtimeAccount != nil {
@@ -4317,16 +4332,17 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 }
 
 type addOpenAIResponsesAccountReq struct {
-	Name                    string            `json:"name"`
-	BaseURL                 string            `json:"base_url"`
-	APIKey                  string            `json:"api_key"`
-	BalanceQueryURL         string            `json:"balance_query_url"`
-	Models                  []string          `json:"models"`
-	ModelMapping            string            `json:"model_mapping"`
-	CodexClientMetadataMode *string           `json:"codex_client_metadata_mode"`
-	CodexPassthroughMode    *string           `json:"codex_passthrough_mode"`
-	ProxyURL                string            `json:"proxy_url"`
-	CustomHeaders           map[string]string `json:"custom_headers"`
+	Name                       string            `json:"name"`
+	BaseURL                    string            `json:"base_url"`
+	APIKey                     string            `json:"api_key"`
+	BalanceQueryURL            string            `json:"balance_query_url"`
+	Models                     []string          `json:"models"`
+	ModelMapping               string            `json:"model_mapping"`
+	CodexClientMetadataMode    *string           `json:"codex_client_metadata_mode"`
+	CodexPassthroughMode       *string           `json:"codex_passthrough_mode"`
+	ResponsesUpstreamTransport *string           `json:"responses_upstream_transport"`
+	ProxyURL                   string            `json:"proxy_url"`
+	CustomHeaders              map[string]string `json:"custom_headers"`
 }
 
 type fetchOpenAIResponsesModelsReq struct {
@@ -4405,6 +4421,14 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		}
 		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(*req.CodexPassthroughMode)
 	}
+	responsesUpstreamTransport := auth.OpenAIResponsesTransportHTTP
+	if req.ResponsesUpstreamTransport != nil {
+		if !auth.IsValidOpenAIResponsesUpstreamTransport(*req.ResponsesUpstreamTransport) {
+			writeError(c, http.StatusBadRequest, "responses_upstream_transport 必须是 http 或 websocket")
+			return
+		}
+		responsesUpstreamTransport = auth.NormalizeOpenAIResponsesUpstreamTransport(*req.ResponsesUpstreamTransport)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -4438,6 +4462,7 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		"model_mapping":                          modelMapping,
 		"codex_client_metadata_mode":             codexClientMetadataMode,
 		"codex_passthrough_mode":                 codexPassthroughMode,
+		"responses_upstream_transport":           responsesUpstreamTransport,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 	}
@@ -4452,19 +4477,20 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 	h.db.InsertAccountEventAsync(id, "added", "manual_openai_responses")
 
 	h.store.AddAccount(&auth.Account{
-		DBID:                    id,
-		ProxyURL:                req.ProxyURL,
-		HealthTier:              auth.HealthTierHealthy,
-		UpstreamType:            auth.UpstreamOpenAIResponses,
-		BaseURL:                 baseURL,
-		APIKey:                  req.APIKey,
-		Models:                  models,
-		ModelMapping:            modelMapping,
-		CodexClientMetadataMode: codexClientMetadataMode,
-		CodexPassthroughMode:    codexPassthroughMode,
-		CustomHeaders:           customHeaders,
-		Email:                   baseURL,
-		PlanType:                "api",
+		DBID:                       id,
+		ProxyURL:                   req.ProxyURL,
+		HealthTier:                 auth.HealthTierHealthy,
+		UpstreamType:               auth.UpstreamOpenAIResponses,
+		BaseURL:                    baseURL,
+		APIKey:                     req.APIKey,
+		Models:                     models,
+		ModelMapping:               modelMapping,
+		CodexClientMetadataMode:    codexClientMetadataMode,
+		CodexPassthroughMode:       codexPassthroughMode,
+		ResponsesUpstreamTransport: responsesUpstreamTransport,
+		CustomHeaders:              customHeaders,
+		Email:                      baseURL,
+		PlanType:                   "api",
 	})
 
 	security.SecurityAuditLog("OPENAI_RESPONSES_ACCOUNT_ADDED", fmt.Sprintf("account_id=%d models=%d ip=%s", id, len(models), c.ClientIP()))
@@ -4625,6 +4651,14 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		}
 		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(*req.CodexPassthroughMode)
 	}
+	responsesUpstreamTransport := auth.NormalizeOpenAIResponsesUpstreamTransport(row.GetCredential(auth.OpenAIResponsesUpstreamTransportCredentialKey))
+	if req.ResponsesUpstreamTransport != nil {
+		if !auth.IsValidOpenAIResponsesUpstreamTransport(*req.ResponsesUpstreamTransport) {
+			writeError(c, http.StatusBadRequest, "responses_upstream_transport 必须是 http 或 websocket")
+			return
+		}
+		responsesUpstreamTransport = auth.NormalizeOpenAIResponsesUpstreamTransport(*req.ResponsesUpstreamTransport)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -4648,6 +4682,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		"model_mapping":                          modelMapping,
 		"codex_client_metadata_mode":             codexClientMetadataMode,
 		"codex_passthrough_mode":                 codexPassthroughMode,
+		"responses_upstream_transport":           responsesUpstreamTransport,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 		"custom_headers":                         cloneCustomHeaders(customHeaders),

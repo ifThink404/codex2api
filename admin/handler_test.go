@@ -3642,6 +3642,14 @@ func newTestAdminDB(t *testing.T) *database.DB {
 		_ = db.Close()
 		_ = os.Remove(dbPath)
 	})
+	// Import tests must not launch real invitation eligibility requests with
+	// fixture credentials. Tests of the invitation guide can enable it explicitly.
+	if strings.HasPrefix(t.Name(), "TestImport") || strings.HasPrefix(t.Name(), "TestAdd") || strings.HasPrefix(t.Name(), "TestStreamAdd") {
+		inviteGuideEnabled := false
+		if err := db.SaveInviteGuideConfig(context.Background(), database.InviteGuideConfig{Enabled: &inviteGuideEnabled}); err != nil {
+			t.Fatalf("disable invitation network probes in test database: %v", err)
+		}
+	}
 	return db
 }
 

@@ -342,6 +342,22 @@ func isSparkPlanCandidate(planType string) bool {
 	}
 }
 
+// accountFilterForResponsesWebSocket 在 Codex 选号之外，放行打开了上游 WebSocket
+// 的 OpenAI Responses 中转账号。Grok、Antigravity、Claude 以及仍走 HTTP 的中转账号继续排除。
+func accountFilterForResponsesWebSocket(model string) auth.AccountFilter {
+	model = strings.TrimSpace(model)
+	codex := accountFilterForModel(model)
+	return func(account *auth.Account) bool {
+		if account != nil && account.OpenAIResponsesUsesUpstreamWebsocket() {
+			if model == "" || account.IsModelRateLimited(model) {
+				return false
+			}
+			return relayAccountSupportsModel(account, model)
+		}
+		return codex(account)
+	}
+}
+
 func accountFilterForModel(model string) auth.AccountFilter {
 	model = strings.TrimSpace(model)
 	return func(account *auth.Account) bool {
@@ -662,6 +678,34 @@ func noAvailableAccountError(model string) gin.H {
 			"type":    ErrorTypeServerError,
 			"code":    ErrorCodeNoAvailableAccount,
 		},
+	}
+}
+
+const (
+	concurrencySaturatedMessageZH = "账号并发窗口已满，请稍后重试或提高并发上限"
+	concurrencySaturatedMessageEN = "Account concurrency window is full; retry later or raise the concurrency limit"
+)
+
+func concurrencySaturatedError() gin.H {
+	return gin.H{
+		"error": gin.H{
+			"message": concurrencySaturatedMessageZH,
+			"type":    ErrorTypeServerError,
+			"code":    ErrorCodeAccountPoolConcurrencySaturated,
+		},
+	}
+}
+
+func (h *Handler) accountPoolConcurrencySaturated(apiKeyID int64, exclude map[int64]bool, filter auth.AccountFilter, policy auth.DispatchPolicy) bool {
+	if h == nil || h.store == nil {
+		return false
+	}
+	return h.store.CapacitySaturatedCandidateSummary(apiKeyID, exclude, filter, policy).Found
+}
+
+func setConcurrencySaturatedRetryAfter(c *gin.Context) {
+	if c != nil && !c.Writer.Written() {
+		c.Header("Retry-After", "1")
 	}
 }
 
@@ -4155,6 +4199,14 @@ func (h *Handler) Responses(c *gin.Context) {
 				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
 				return
 			}
+			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
+				setConcurrencySaturatedRetryAfter(c)
+				if isStream && writeCommittedResponsesRetryError(c, concurrencySaturatedMessageZH) {
+					return
+				}
+				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+				return
+			}
 			if isStream && writeCommittedResponsesRetryError(c, noAvailableAccountMessage(effectiveModel)) {
 				return
 			}
@@ -4190,8 +4242,8 @@ func (h *Handler) Responses(c *gin.Context) {
 		}
 		attemptEffectiveModel := effectiveModel
 		attemptLogEffectiveModel := logEffectiveModel
-		// relay/Grok 账号走 HTTP 执行器（下方 IsRelayStyle 分支优先于 WS），这里同步排除，
-		// 避免日志把 relay 请求错标成 via_websocket。
+		// relay/Grok 账号默认走 HTTP，这里排除全局强制 WS，避免日志把它们错标成 via_websocket。
+		// 打开了上游 WebSocket 的 OpenAI Responses 中转账号在体积判断之后单独改回 WS。
 		useWebsocket := h.shouldUseWebsocketForHTTP() && !wsHTTPFallback.ForceHTTP() && !account.IsRelayStyle()
 		// 生图请求强制走 HTTP：WebSocket 传输大体积图片数据会卡死（issue #220）；
 		// 自然语言生图意图也需保留 image_generation 工具（issue #288）。
@@ -4204,6 +4256,11 @@ func (h *Handler) Responses(c *gin.Context) {
 			if attempt == 0 {
 				log.Printf("[WS] 请求体 %dKB 达到已学习的 1009 体积阈值，直接走 HTTP 上游 (endpoint=/v1/responses)", len(codexBody)/1024)
 			}
+		}
+		// OpenAI Responses 中转的上游 WebSocket 是账号自己的开关，不吃全局强制 WS，
+		// 也不吃 Codex 的 1009 体积学习。生图仍由上面的判断留在 HTTP。
+		if openAIResponsesRelayUsesUpstreamWebsocket(account, rawBody) {
+			useWebsocket = true
 		}
 
 		// 提取 API Key 用于设备指纹稳定化
@@ -6193,6 +6250,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					sendCompactionUpstreamUnavailable(c)
 					return
 				}
+				if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
+					setConcurrencySaturatedRetryAfter(c)
+					c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+					return
+				}
 				c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
 				return
 			}
@@ -7028,6 +7090,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
 				return
 			}
+			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
+				setConcurrencySaturatedRetryAfter(c)
+				if isStream && writeCommittedChatRetryError(c, concurrencySaturatedMessageZH) {
+					return
+				}
+				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+				return
+			}
 			if isStream && writeCommittedChatRetryError(c, noAvailableAccountMessage(effectiveModel)) {
 				return
 			}
@@ -7072,6 +7142,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if attempt == 0 {
 				log.Printf("[WS] 请求体 %dKB 达到已学习的 1009 体积阈值，直接走 HTTP 上游 (endpoint=/v1/chat/completions)", len(codexBody)/1024)
 			}
+		}
+		if openAIResponsesRelayUsesUpstreamWebsocket(account, codexBody) {
+			useWebsocket = true
 		}
 		upstreamEndpoint := "/v1/responses"
 		if isRelayAccount {
@@ -7171,7 +7244,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if wsHTTPFallback.ForceHTTP() && !useWebsocket {
 				wsHTTPFallback.LogHTTPAttemptCompletion("/v1/chat/completions", account.ID(), attempt+1, durationMs, 0, logStatusUpstreamStreamBreak)
 			}
-			if useWebsocket && kind == upstreamErrorKindMessageTooBig {
+			if useWebsocket && kind == upstreamErrorKindMessageTooBig && !account.OpenAIResponsesUsesUpstreamWebsocket() {
 				wsElapsed := time.Since(start)
 				globalWSSizeRouter.RecordMessageTooBig(len(codexBody))
 				wsHTTPFallback.Retain(account, proxyURL, wsElapsed, websocketMessageTooBigSource(reqErr.Error()))
@@ -7764,7 +7837,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			wsHTTPFallback.LogHTTPAttemptCompletion("/v1/chat/completions", account.ID(), attempt+1, totalDuration, firstTokenMs, outcome.logStatusCode)
 		}
 		downstreamWrote := streamAttempt.downstreamWrote(wroteAnyBody)
-		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, downstreamWrote, c.Request.Context().Err(), writeErr) {
+		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, downstreamWrote, c.Request.Context().Err(), writeErr) && !account.OpenAIResponsesUsesUpstreamWebsocket() {
 			_ = streamAttempt.Close()
 			wsElapsed := time.Since(start)
 			resp.Body.Close()

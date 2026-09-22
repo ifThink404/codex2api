@@ -113,6 +113,9 @@ func (h *Handler) buildAccountResponse(
 			planType = runtimePlan
 		}
 	}
+	if isGrokAccount && row.GrokPlanDisplay != nil {
+		planType = row.GrokPlanDisplay.Plan
+	}
 	var grokPlan *auth.GrokPlan
 	if isGrokAccount {
 		if resolved, ok := auth.ResolveGrokPlan(planType); ok {
@@ -126,6 +129,10 @@ func (h *Handler) buildAccountResponse(
 	codexPassthroughMode := ""
 	if isOpenAIResponsesAccount && includeDetails {
 		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(row.GetCredential("codex_passthrough_mode"))
+	}
+	responsesUpstreamTransport := ""
+	if isOpenAIResponsesAccount && includeDetails {
+		responsesUpstreamTransport = auth.NormalizeOpenAIResponsesUpstreamTransport(row.GetCredential(auth.OpenAIResponsesUpstreamTransportCredentialKey))
 	}
 	balanceQueryURL := ""
 	if isOpenAIResponsesAccount && includeDetails {
@@ -244,6 +251,8 @@ func (h *Handler) buildAccountResponse(
 		AgentIdentity:                isAgentIdentityCredentialRow(row),
 		GrokAuthKind:                 grokAuthKind,
 		GrokPlan:                     grokPlan,
+		GrokPlanDisplay:              row.GrokPlanDisplay,
+		GrokModels:                   row.GrokModels,
 		GrokBilling:                  grokBilling,
 		AvatarURL:                    row.GetCredential("avatar_url"),
 		VerifiedEmail:                row.GetCredentialBool("verified_email"),
@@ -257,6 +266,7 @@ func (h *Handler) buildAccountResponse(
 		ModelMapping:                 modelMapping,
 		CodexClientMetadataMode:      codexClientMetadataMode,
 		CodexPassthroughMode:         codexPassthroughMode,
+		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeUserAgent:              claudeUserAgent,
