@@ -911,8 +911,8 @@ export const api = {
   releaseAccountSession: (id: number, sessionId?: string) =>
     request<MessageResponse>(`/accounts/${id}/sessions${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`, { method: 'DELETE' }),
   // 设置 OAuth 账号的支持模型白名单;空数组表示清空(该账号可调度所有模型)。返回归一化后的白名单。
-  updateAccountModels: (id: number, models: string[]) =>
-    request<{ models: string[] }>(`/accounts/${id}/models`, { method: 'PATCH', body: JSON.stringify({ models }) }),
+  updateAccountModels: (id: number, models: string[], routes?: Pick<UpdateAccountSchedulerRequest, 'codex_native_models' | 'codex_bps_models'>) =>
+    request<{ models: string[] }>(`/accounts/${id}/models`, { method: 'PATCH', body: JSON.stringify({ models, ...routes }) }),
   batchUpdateAccountModels: (data: BatchUpdateAccountModelsRequest) =>
     request<BatchUpdateAccountModelsResponse>('/accounts/batch-models', {
       method: 'POST',

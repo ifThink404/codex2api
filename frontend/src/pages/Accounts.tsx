@@ -18,6 +18,11 @@ import OperationResultsModal from "../components/OperationResultsModal";
 import { cn } from "@/lib/utils";
 import TestConnectionModal from "../components/TestConnectionModal";
 import CodexTestModeDialog from "../components/CodexTestModeDialog";
+import CodexRoutesCard from "../components/CodexRoutesCard";
+import AccountModelScopeTabs, {
+  type AccountModelScope,
+  type AccountModelDrafts,
+} from "../components/AccountModelScopeTabs";
 import {
   DEFAULT_TEST_MODEL,
   exactModelMappingAliases,
@@ -798,7 +803,7 @@ function persistEmailDomainVisibility(visible: boolean) {
 function parseModelTokens(value: string): string[] {
   const seen = new Set<string>();
   return value
-    .split(/[\n,\t ]+/)
+    .split(/[\n,，\t ]+/)
     .map((item) => item.trim())
     .filter((item) => {
       if (!item) return false;
@@ -2053,8 +2058,6 @@ export default function Accounts() {
   const [editCustomHeadersText, setEditCustomHeadersText] = useState("");
   const [editCodexBPSEnabled, setEditCodexBPSEnabled] = useState(false);
   const [editCodexNativeEnabled, setEditCodexNativeEnabled] = useState(true);
-  const [editCodexNativeModels, setEditCodexNativeModels] = useState("");
-  const [editCodexBPSModels, setEditCodexBPSModels] = useState("");
   const [editCodexBPSImageTrimEnabled, setEditCodexBPSImageTrimEnabled] = useState(false);
   const [editCodexNativeCompactionOnly, setEditCodexNativeCompactionOnly] = useState(false);
   const [editCodexFingerprintMode, setEditCodexFingerprintMode] =
@@ -2234,7 +2237,17 @@ export default function Accounts() {
   );
   // OAuth 账号“支持模型”白名单编辑器状态;空白名单表示该账号可调度所有模型。
   const [modelsAccount, setModelsAccount] = useState<AccountRow | null>(null);
-  const [modelsDraft, setModelsDraft] = useState<string[]>([]);
+  const [modelsScope, setModelsScope] = useState<AccountModelScope>("account");
+  const [modelDrafts, setModelDrafts] = useState<AccountModelDrafts>({
+    account: [], codex: [], bps: [],
+  });
+  const modelsDraft = modelDrafts[modelsScope];
+  const setModelsDraft = (next: string[] | ((current: string[]) => string[])) => {
+    setModelDrafts((current) => ({
+      ...current,
+      [modelsScope]: typeof next === "function" ? next(current[modelsScope]) : next,
+    }));
+  };
   const [modelsInputDraft, setModelsInputDraft] = useState("");
   const [modelsSyncing, setModelsSyncing] = useState(false);
   const [modelsProbing, setModelsProbing] = useState(false);
@@ -5279,7 +5292,12 @@ export default function Accounts() {
 
   const populateModelsEditor = (account: AccountRow) => {
     setModelsAccount(account);
-    setModelsDraft([...(account.models ?? [])]);
+    setModelsScope("account");
+    setModelDrafts({
+      account: [...(account.models ?? [])],
+      codex: [...(account.codex_native_models ?? [])],
+      bps: [...(account.codex_bps_models ?? [])],
+    });
     setModelsInputDraft("");
     setProbeBoard([]);
   };
@@ -5299,7 +5317,7 @@ export default function Accounts() {
   const closeModelsEditor = () => {
     if (modelsSaving || modelsSyncing || modelsProbing) return;
     setModelsAccount(null);
-    setModelsDraft([]);
+    setModelDrafts({ account: [], codex: [], bps: [] });
     setModelsInputDraft("");
     setProbeBoard([]);
   };
@@ -5439,11 +5457,22 @@ export default function Accounts() {
     if (!modelsAccount) return;
     setModelsSaving(true);
     try {
-      await api.updateAccountModels(modelsAccount.id, modelsDraft);
+      const drafts = {
+        ...modelDrafts,
+        [modelsScope]: mergeModelLists(modelsDraft, parseModelTokens(modelsInputDraft)),
+      };
+      const routes = isCodexOfficialAccount(modelsAccount) ? {
+        codex_native_models: drafts.codex,
+        ...(!modelsAccount.agent_identity ? { codex_bps_models: drafts.bps } : {}),
+      } : undefined;
+      await api.updateAccountModels(modelsAccount.id, drafts.account, routes);
+      setEditingAccount((current) => current?.id === modelsAccount.id
+        ? { ...current, models: drafts.account, ...routes }
+        : current);
       showToast(t("accounts.supportedModelsSaveDone"));
       void reloadSilently();
       setModelsAccount(null);
-      setModelsDraft([]);
+      setModelDrafts({ account: [], codex: [], bps: [] });
       setModelsInputDraft("");
     } catch (error) {
       showToast(
@@ -5928,8 +5957,6 @@ export default function Accounts() {
     setEditCodexFingerprintMode(account.codex_fingerprint_mode ?? "off");
     setEditCodexBPSEnabled(account.codex_bps_enabled ?? false);
     setEditCodexNativeEnabled(account.codex_native_enabled ?? !account.codex_bps_enabled);
-    setEditCodexNativeModels((account.codex_native_models ?? []).join("\n"));
-    setEditCodexBPSModels((account.codex_bps_models ?? []).join("\n"));
     setEditCodexBPSImageTrimEnabled(account.codex_bps_image_trim_enabled ?? false);
     setEditCodexNativeCompactionOnly(account.codex_native_compaction_only ?? false);
     setEditSessionCapacityEnabled(account.session_capacity_enabled ?? false);
@@ -5995,8 +6022,6 @@ export default function Accounts() {
     setEditCodexFingerprintMode("off");
     setEditCodexBPSEnabled(false);
     setEditCodexNativeEnabled(true);
-    setEditCodexNativeModels("");
-    setEditCodexBPSModels("");
     setEditCodexBPSImageTrimEnabled(false);
     setEditCodexNativeCompactionOnly(false);
     setEditSessionCapacityEnabled(false);
@@ -6175,8 +6200,6 @@ export default function Accounts() {
               codex_fingerprint_mode: editCodexFingerprintMode,
               codex_bps_enabled: editCodexBPSEnabled,
               codex_native_enabled: editCodexNativeEnabled,
-              codex_native_models: editCodexNativeModels.split(/[\s,，]+/).filter(Boolean),
-              codex_bps_models: editCodexBPSModels.split(/[\s,，]+/).filter(Boolean),
               codex_bps_image_trim_enabled: editCodexBPSImageTrimEnabled,
             }
           : {}),
@@ -10219,31 +10242,24 @@ export default function Accounts() {
                         </div>
 
                         {isCodexOfficialAccount(editingAccount) ? (
-                          <div className="rounded-xl border border-border/70 bg-card p-4.5 md:col-span-2">
-                            <div className="flex items-center justify-between gap-4"><span className="text-sm font-semibold">Codex</span><Switch checked={editCodexNativeEnabled} onCheckedChange={setEditCodexNativeEnabled} aria-label="启用 Codex" /></div>
-                            <p className="mt-2 text-xs text-muted-foreground">与 BPS 独立控制，两项都开即 Codex + BPS，按模型选择路径。关闭当前路径后按禁用换号设置处理，优先原账号 BPS；BPS 会话不能返回 Codex。保存后生效，进行中的响应正常收尾。</p>
-                            <label className="mt-3 block text-sm">Codex 主对话模型<textarea className="mt-2 block w-full rounded-md border border-input bg-background p-2 text-sm" value={editCodexNativeModels} onChange={(e) => setEditCodexNativeModels(e.target.value)} placeholder="gpt-5.6-*" rows={3} /></label>
-                            <p className="mt-1 text-xs text-muted-foreground">每行一个或逗号分隔，支持末尾 *。留空表示不额外限制；同一模型两边都匹配时，新会话优先 Codex。相关后台请求跟随主窗口路径。</p>
-                          </div>
+                          <CodexRoutesCard
+                            nativeEnabled={editCodexNativeEnabled}
+                            bpsEnabled={editCodexBPSEnabled}
+                            supportsBPS={!editingAccount.agent_identity}
+                            nativeModelCount={editingAccount.codex_native_models?.length ?? 0}
+                            bpsModelCount={editingAccount.codex_bps_models?.length ?? 0}
+                            onNativeChange={setEditCodexNativeEnabled}
+                            onBPSChange={setEditCodexBPSEnabled}
+                            onConfigureModels={() => openModelsEditor(editingAccount)}
+                          />
                         ) : null}
                         {isCodexOfficialAccount(editingAccount) && !editingAccount.agent_identity ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 md:col-span-2">
-                            <div className="flex items-center justify-between gap-4">
-                              <div>
-                                <div className="text-sm font-semibold">BPS 兼容模式</div>
-                                <p className="mt-1 text-xs text-muted-foreground">与 Codex 独立开启，按各自模型配置选择路径。Codex 会话可单向迁入 BPS；codex-auto-review 映射为 gpt-5.6-luna，max 自动调整为 xhigh。</p>
-                              </div>
-                              <Switch checked={editCodexBPSEnabled} onCheckedChange={setEditCodexBPSEnabled} aria-label="BPS 兼容模式" />
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-semibold">{t("accounts.bpsImageTrimTitle")}</span>
+                              <Switch checked={editCodexBPSImageTrimEnabled} onCheckedChange={setEditCodexBPSImageTrimEnabled} aria-label={t("accounts.bpsImageTrimTitle")} />
                             </div>
-                            <label className="mt-3 block text-sm">BPS 主对话模型<textarea className="mt-2 block w-full rounded-md border border-input bg-background p-2 text-sm" value={editCodexBPSModels} onChange={(e) => setEditCodexBPSModels(e.target.value)} placeholder="gpt-6-*" rows={3} /></label>
-                            <p className="mt-1 mb-3 text-xs text-muted-foreground">每行一个或逗号分隔，支持末尾 *，留空表示不额外限制。关闭后，已有 BPS 会话只能转到其他可用 BPS 账号。</p>
-                            <div className="rounded-xl border border-border p-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <span className="text-sm font-medium">BPS 历史图片精简</span>
-                                <Switch checked={editCodexBPSImageTrimEnabled} onCheckedChange={setEditCodexBPSImageTrimEnabled} aria-label="BPS 历史图片精简" />
-                              </div>
-                              <p className="mt-2 text-xs text-muted-foreground">默认关闭，保存后仅对 BPS 主请求生效。保留当前用户附图、最近 3 张工具图及最新整组结果；其他旧图换成文字提示。有原路径可按需重读，无来源的图片可能无法恢复。不会新增服务端图片存档或回读工具。</p>
-                            </div>
+                            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("accounts.bpsImageTrimSummary")}</p>
                           </div>
                         ) : null}
                         {!editingAccount.grok_api ? (
@@ -10564,11 +10580,7 @@ export default function Accounts() {
                   disabled={modelsSaving || modelsSyncing || modelsProbing}
                   onClick={() => void handleSaveModels()}
                 >
-                  {modelsSaving
-                    ? t("common.saving")
-                    : modelsDraft.length === 0
-                      ? t("accounts.supportedModelsClearSave")
-                      : t("common.save")}
+                  {modelsSaving ? t("common.saving") : t("common.save")}
                 </Button>
               </>
             }
@@ -10578,116 +10590,138 @@ export default function Accounts() {
                 <div className="font-semibold text-foreground">
                   {modelsAccount ? formatAccountName(modelsAccount) : ""}
                 </div>
-                <div className="mt-1">{t("accounts.supportedModelsDesc")}</div>
+                <div className="mt-1">{modelsAccount && isCodexOfficialAccount(modelsAccount) ? t("accounts.modelScopesSummary") : t("accounts.supportedModelsDesc")}</div>
               </div>
 
-              {/* 自动获取：探测/同步按钮 + 说明，成一体 */}
-              <div className="rounded-lg border border-border bg-muted/10 p-3">
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={modelsSyncing || modelsSaving || modelsProbing}
-                    onClick={() => void handleProbeModels()}
-                  >
-                    <Zap
-                      className={`size-3.5 ${modelsProbing ? "animate-pulse" : ""}`}
-                    />
-                    {modelsProbing
-                      ? t("accounts.supportedModelsProbing")
-                      : t("accounts.supportedModelsProbe")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={modelsSyncing || modelsSaving || modelsProbing}
-                    onClick={() => void handleSyncModelsUpstream()}
-                  >
-                    <RefreshCw
-                      className={`size-3.5 ${modelsSyncing ? "animate-spin" : ""}`}
-                    />
-                    {modelsSyncing
-                      ? t("accounts.supportedModelsSyncing")
-                      : t("accounts.supportedModelsSync")}
-                  </Button>
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {t("accounts.supportedModelsSyncHint")}
-                </p>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {t("accounts.supportedModelsProbeHint")}
-                </p>
-                {probeBoard.length > 0 && (
-                  <div className="mt-3">
-                    <ModelProbeBoard items={probeBoard} t={t} />
-                  </div>
-                )}
-              </div>
-
-              {/* 手动添加 */}
-              <div className="flex gap-2">
-                <Input
-                  placeholder={t("accounts.openaiModelsPlaceholder")}
-                  value={modelsInputDraft}
-                  disabled={modelsSaving}
-                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                    setModelsInputDraft(event.target.value)
-                  }
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addModelsDraftValues(modelsInputDraft);
-                    }
-                  }}
-                  onPaste={(event) => {
-                    const pasted = event.clipboardData.getData("text");
-                    if (parseModelTokens(pasted).length > 1) {
-                      event.preventDefault();
-                      addModelsDraftValues(pasted);
-                    }
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => addModelsDraftValues(modelsInputDraft)}
-                  disabled={!modelsInputDraft.trim() || modelsSaving}
-                >
-                  <Plus className="size-3.5" />
-                  {t("accounts.openaiModelsAdd")}
-                </Button>
-              </div>
-
-              {/* 白名单列表：计数 + 清空 在上，紧凑 pills 在下 */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">
-                    {modelsDraft.length === 0
-                      ? t("accounts.supportedModelsHintAll")
-                      : t("accounts.supportedModelsHintCount", {
-                          count: modelsDraft.length,
-                        })}
-                  </span>
-                  {modelsDraft.length > 0 && (
-                    <button
-                      type="button"
-                      className="shrink-0 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                      disabled={modelsSaving}
-                      onClick={clearModelsDraft}
-                    >
-                      {t("accounts.supportedModelsClearAll")}
-                    </button>
+              {modelsAccount && isCodexOfficialAccount(modelsAccount) && (
+                <AccountModelScopeTabs value={modelsScope} drafts={modelDrafts} supportsBPS={!modelsAccount.agent_identity} disabled={modelsSaving || modelsSyncing || modelsProbing}
+                  onChange={(scope) => {
+                    if (modelsInputDraft.trim()) setModelsDraft((current) => mergeModelLists(current, parseModelTokens(modelsInputDraft)));
+                    setModelsInputDraft("");
+                    setModelsScope(scope);
+                  }} />
+              )}
+              {modelsScope !== "account" && (
+                <div className="rounded-lg border border-border/70 bg-muted/10 p-3 text-xs leading-relaxed text-muted-foreground">
+                  <p>{t("accounts.routeModelsHint", { route: modelsScope === "codex" ? "Codex" : "BPS" })}</p>
+                  <p className="mt-1">{t("accounts.routeModelsSharedHint")}</p>
+                  {modelsAccount && !(modelsScope === "codex" ? modelsAccount.codex_native_enabled ?? !modelsAccount.codex_bps_enabled : modelsAccount.codex_bps_enabled) && (
+                    <p className="mt-2 text-amber-600 dark:text-amber-400">{t("accounts.routeCurrentlyDisabled")}</p>
                   )}
                 </div>
-                <ModelChipGrid
-                  variant="pills"
-                  models={modelsDraft}
-                  onRemove={removeModelsDraftValue}
-                  emptyLabel={t("accounts.supportedModelsEmpty")}
-                />
-              </div>
+              )}
+              {/* 自动获取仅更新账号白名单，不推断路径模型。 */}
+              {modelsScope === "account" && (
+                <div className="rounded-lg border border-border bg-muted/10 p-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={modelsSyncing || modelsSaving || modelsProbing}
+                      onClick={() => void handleProbeModels()}
+                    >
+                      <Zap
+                        className={`size-3.5 ${modelsProbing ? "animate-pulse" : ""}`}
+                      />
+                      {modelsProbing
+                        ? t("accounts.supportedModelsProbing")
+                        : t("accounts.supportedModelsProbe")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={modelsSyncing || modelsSaving || modelsProbing}
+                      onClick={() => void handleSyncModelsUpstream()}
+                    >
+                      <RefreshCw
+                        className={`size-3.5 ${modelsSyncing ? "animate-spin" : ""}`}
+                      />
+                      {modelsSyncing
+                        ? t("accounts.supportedModelsSyncing")
+                        : t("accounts.supportedModelsSync")}
+                    </Button>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t("accounts.supportedModelsSyncHint")}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t("accounts.supportedModelsProbeHint")}
+                  </p>
+                  {probeBoard.length > 0 && (
+                    <div className="mt-3">
+                      <ModelProbeBoard items={probeBoard} t={t} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 手动添加 */}
+              <fieldset disabled={modelsSaving || modelsSyncing || modelsProbing} className="space-y-4">
+                <div className="flex gap-2">
+                  <Input
+                    aria-label={t("accounts.modelInput")}
+                    placeholder={modelsScope === "account" ? t("accounts.openaiModelsPlaceholder") : t("accounts.routeModelsPlaceholder")}
+                    value={modelsInputDraft}
+                    disabled={modelsSaving}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                      setModelsInputDraft(event.target.value)
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addModelsDraftValues(modelsInputDraft);
+                      }
+                    }}
+                    onPaste={(event) => {
+                      const pasted = event.clipboardData.getData("text");
+                      if (parseModelTokens(pasted).length > 1) {
+                        event.preventDefault();
+                        addModelsDraftValues(pasted);
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => addModelsDraftValues(modelsInputDraft)}
+                    disabled={!modelsInputDraft.trim() || modelsSaving}
+                  >
+                    <Plus className="size-3.5" />
+                    {t("accounts.openaiModelsAdd")}
+                  </Button>
+                </div>
+
+                {/* 白名单列表：计数 + 清空 在上，紧凑 pills 在下 */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      {modelsScope !== "account" ? t("accounts.routeModelsSelected", { count: modelsDraft.length }) : modelsDraft.length === 0
+                        ? t("accounts.supportedModelsHintAll")
+                        : t("accounts.supportedModelsHintCount", {
+                            count: modelsDraft.length,
+                          })}
+                    </span>
+                    {modelsDraft.length > 0 && (
+                      <button
+                        type="button"
+                        className="shrink-0 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                        disabled={modelsSaving}
+                        onClick={clearModelsDraft}
+                      >
+                        {t("accounts.supportedModelsClearAll")}
+                      </button>
+                    )}
+                  </div>
+                  <ModelChipGrid
+                    variant="pills"
+                    models={modelsDraft}
+                    onRemove={removeModelsDraftValue}
+                    emptyLabel={t(modelsScope === "account" ? "accounts.supportedModelsEmpty" : "accounts.routeModelsUnrestricted")}
+                  />
+                </div>
+              </fieldset>
             </div>
           </Modal>
 

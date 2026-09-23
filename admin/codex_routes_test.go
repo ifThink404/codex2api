@@ -82,3 +82,39 @@ func TestCodexLegacyBatchSwitchesStayIndependent(t *testing.T) {
 		require.Equal(t, id == first, row.GetCredentialBool(auth.CodexNativeEnabledCredentialKey))
 	}
 }
+
+func TestSupportedModelsEditorSavesRoutesTogether(t *testing.T) {
+	db := newTestAdminDB(t)
+	id := insertTestAccount(t, db)
+	store := auth.NewStore(db, nil, nil)
+	defer store.Stop()
+	require.NoError(t, store.LoadAccountByID(t.Context(), id))
+	h := &Handler{db: db, store: store}
+	require.Equal(t, 200, patchAccountScheduler(t, h, id, `{"codex_native_enabled":true,"codex_bps_enabled":true}`).Code)
+	patch := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(id)}}
+		c.Request = httptest.NewRequest("PATCH", "/accounts/models", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		h.UpdateAccountModels(c)
+		return w
+	}
+	w := patch(`{"models":["gpt-5.6-sol","gpt-6-astra"],"codex_native_models":["gpt-5.6-*"],"codex_bps_models":["gpt-6-astra"]}`)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	a := store.FindByID(id)
+	require.True(t, a.CodexRouteAllows("native", "gpt-5.6-sol", false))
+	require.False(t, a.CodexRouteAllows("native", "gpt-6-astra", false))
+	require.True(t, a.CodexRouteAllows("bps", "gpt-6-astra", false))
+	require.Equal(t, 400, patch(`{"models":[],"codex_bps_models":["gpt*invalid"]}`).Code)
+	row, err := db.GetAccountByID(t.Context(), id)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.6-sol", "gpt-6-astra"}, row.GetCredentialStringSlice("models"), "invalid route must not partially clear the common whitelist")
+	require.Equal(t, []string{"gpt-6-astra"}, row.GetCredentialStringSlice(auth.CodexBPSModelsCredentialKey))
+	require.Equal(t, 200, patch(`{"models":[],"codex_native_models":[]}`).Code)
+	require.True(t, a.CodexRouteAllows("native", "gpt-6-astra", false), "empty route removes its extra restriction")
+	require.False(t, a.CodexRouteAllows("bps", "gpt-5.6-sol", false), "omitted route is preserved")
+	require.NoError(t, store.LoadAccountByID(t.Context(), id))
+	require.True(t, store.FindByID(id).CodexRouteAllows("native", "gpt-6-astra", false))
+	require.False(t, store.FindByID(id).CodexRouteAllows("bps", "gpt-5.6-sol", false))
+}

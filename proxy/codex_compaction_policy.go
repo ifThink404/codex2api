@@ -33,6 +33,6 @@ func ValidateNativeCompactionPolicy(account *auth.Account, body []byte, headers 
 	return &Error{
 		Code: "native_compaction_required", Type: ErrorTypeInvalidRequest,
 		HTTPStatus: http.StatusBadRequest,
-		Message:    "此账号仅允许原生远程压缩，请升级或调整 Codex 客户端，同时将 [model_providers.custom] 下的 name 改成 name = \"OpenAI\"。",
+		Message:    "此账号仅允许原生远程压缩，请升级或调整 Codex 客户端，同时在配置文件 config.toml 中设置 model_provider = \"OpenAI\"，将对应的提供商配置段改为 [model_providers.OpenAI]，并在该段设置 name = \"OpenAI\"。",
 	}
 }

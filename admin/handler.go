@@ -4645,7 +4645,9 @@ func fetchOpenAIResponsesModelIDs(ctx context.Context, baseURL, apiKey, proxyURL
 }
 
 type updateAccountModelsRequest struct {
-	Models []string `json:"models"`
+	Models            []string  `json:"models"`
+	CodexNativeModels *[]string `json:"codex_native_models"`
+	CodexBPSModels    *[]string `json:"codex_bps_models"`
 }
 
 // UpdateAccountModels 设置 OAuth 账号的支持模型白名单。
@@ -4687,16 +4689,44 @@ func (h *Handler) UpdateAccountModels(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "中转/Grok 账号请在账号设置中编辑模型列表")
 		return
 	}
+	updates := map[string]interface{}{"models": models}
+	var nativeModels, bpsModels []string
+	if req.CodexNativeModels != nil || req.CodexBPSModels != nil {
+		if account.IsRelayStyle() || account.IsClaudeOAuth() || (account.IsCodexAgentIdentity() && req.CodexBPSModels != nil) {
+			writeError(c, http.StatusBadRequest, "此账号不支持指定的 Codex / BPS 模型配置")
+			return
+		}
+		for key, values := range map[string]*[]string{
+			auth.CodexNativeModelsCredentialKey: req.CodexNativeModels,
+			auth.CodexBPSModelsCredentialKey:    req.CodexBPSModels,
+		} {
+			if values == nil {
+				continue
+			}
+			normalized := auth.NormalizeAccountModels(*values)
+			if err := auth.ValidateCodexRouteModels(normalized); err != nil {
+				writeError(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			updates[key] = normalized
+			if key == auth.CodexNativeModelsCredentialKey {
+				nativeModels = normalized
+			} else {
+				bpsModels = normalized
+			}
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	if err := h.db.UpdateCredentials(ctx, id, map[string]interface{}{"models": models}); err != nil {
+	if err := h.db.UpdateCredentials(ctx, id, updates); err != nil {
 		writeInternalError(c, err)
 		return
 	}
 	h.store.ApplyAccountModels(id, models)
+	h.store.ApplyAccountCodexRoutes(id, database.OptionalBool{}, database.OptionalBool{}, nativeModels, bpsModels, req.CodexNativeModels != nil, req.CodexBPSModels != nil)
 	h.db.InsertAccountEventAsync(id, "updated", "account_models")
-	c.JSON(http.StatusOK, gin.H{"models": models})
+	c.JSON(http.StatusOK, updates)
 }
 
 // validateAccountModelsForAccount keeps provider-specific model namespaces
