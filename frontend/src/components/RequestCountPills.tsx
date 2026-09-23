@@ -136,7 +136,7 @@ export default function RequestCountPills({
             </span>
           ) : null}
           {rateLimits > 0 ? (
-            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">
+            <span title={t("accounts.rateLimitBadgeHint")} className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">
               429 {rateLimits}
             </span>
           ) : null}

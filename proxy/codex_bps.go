@@ -36,38 +36,17 @@ type CodexBPSDiagnostic struct {
 type codexBPSDiagnosticKey struct{}
 
 func codexAccountUpstreamMode(account *auth.Account) string {
-	if account.CodexBPSEnabled() {
+	if !account.CodexRouteAllows("native", "", false) && account.CodexBPSEnabled() {
 		return "bps"
 	}
 	return "native"
 }
 
-// A committed root pins the route, including related/passive requests. An old
-// record without this field means native; changing account settings never
-// silently moves an existing conversation and its opaque history to BPS.
-func codexRequestUsesBPS(ctx context.Context, account *auth.Account) (bool, error) {
-	if mode, _ := ctx.Value(codexTestModeKey{}).(string); mode != "" && mode != "auto" {
-		if err := ValidateCodexTestMode(ctx, account); err != nil {
-			return false, err
-		}
-		return mode == "bps", nil
-	}
-	if account == nil || account.IsRelayStyle() || account.IsCodexAgentIdentity() {
-		return false, nil
-	}
-	if epoch := outboundEpochFromContext(ctx); epoch != nil && epoch.record.AccountID > 0 {
-		return epoch.record.UpstreamMode == "bps", nil
-	}
-	if s, _ := ctx.Value(protocolIdentityKey{}).(*responseIdentitySession); s != nil && s.root != "" {
-		entry, found, err := s.handler.readSessionContinuity(ctx, s.rootKey)
-		if err != nil {
-			return false, codexAccountIdentityError("无法确认会话的上游请求模式，请稍后重试。")
-		}
-		if found {
-			return entry.Record.UpstreamMode == "bps", nil
-		}
-	}
-	return account.CodexBPSEnabled(), nil
+// Resolve the actual request route; existing roots can only migrate through
+// the persistent failover transaction, never by changing a live account flag.
+func codexRequestUsesBPS(ctx context.Context, account *auth.Account, models ...string) (bool, error) {
+	mode, err := codexRequestRouteMode(ctx, account, models...)
+	return mode == "bps", err
 }
 
 func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *CodexBPSDiagnostic, error) {

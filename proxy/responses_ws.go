@@ -447,6 +447,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	if prevID := strings.TrimSpace(gjson.GetBytes(rawBody, "previous_response_id").String()); prevID != "" {
 		lookupCtx, cancel := context.WithTimeout(c.Request.Context(), 300*time.Millisecond)
 		previousResponseAffinity, previousResponseAffinityFound = lookupResponseAccountAffinity(lookupCtx, h.cache, respCacheOwner, prevID)
+		if previousResponseAffinityFound && previousResponseAffinity.UpstreamMode == "bps" {
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteFloorKey{}, "bps"))
+		}
 		cancel()
 	}
 	markResponsesWSContinuationCapable(respCacheOwner, rawBody)
@@ -536,6 +539,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
 	}
 	if compactionAffinity.Known {
+		applyCompactionRouteFloor(c, compactionAffinity)
 		accountFilter = compactionDomainFilter(compactionAffinity.CompatibilityDomain, accountFilter, selectionTraceForRequest(c))
 	}
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
@@ -697,10 +701,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			} else if msg := scopeBudgetExhaustedMessage(c); msg != "" {
 				// 候选被 scope 预算剔空（issue #439）：按限流语义回帧，而不是「无可用账号」。
 				apiErr = api.NewAPIError(api.ErrCodeRateLimitReached, msg, api.ErrorTypeRateLimit)
-			} else if h.store.HasUsageLimitedCandidateWithDispatch(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
-				apiErr = api.NewAPIError(api.ErrCodeRateLimitReached, "Codex 账号用量窗口已达上限", api.ErrorTypeRateLimit)
-			} else if h.store.HasSessionCapacityExhaustionWithDispatch(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy, affinityKey, time.Now()) {
-				apiErr = api.NewAPIError(api.ErrCodeAccountSessionCapacity, accountSessionCapacityExceededMessage, api.ErrorTypeInvalidRequest)
+			} else if windowError := h.accountWindowUnavailableAPIError(c, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy, affinityKey); windowError != nil {
+				apiErr = windowError
 			} else {
 				apiErr = h.dispatchUnavailableAPIError(c)
 			}

@@ -25,6 +25,7 @@ const (
 	compactionProvenanceCacheNamespace = "compaction-provenance"
 	compactionAffinityTTLEnv           = "CODEX_COMPACTION_AFFINITY_TTL"
 	nativeCodexCompactionDomain        = "codex:openai"
+	bpsCodexCompactionDomain           = "codex:bps"
 	defaultCompactionProvenanceTTL     = 7 * 24 * time.Hour
 	compactionProvenanceRecordVersion  = 1
 	compactionProvenanceCacheTimeout   = 500 * time.Millisecond
@@ -100,7 +101,32 @@ func accountCompactionDomain(account *auth.Account) string {
 		}
 		return ""
 	}
+	if codexAccountUpstreamMode(account) == "bps" {
+		return bpsCodexCompactionDomain
+	}
 	return nativeCodexCompactionDomain
+}
+
+func requestCompactionDomain(ctx context.Context, account *auth.Account) string {
+	if account != nil && !account.IsRelayStyle() && ctx != nil {
+		// Use the captured request epoch, not switches edited while streaming.
+		if epoch := outboundEpochFromContext(ctx); epoch != nil {
+			if normalizedCodexRoute(epoch.record.UpstreamMode) == "bps" {
+				return bpsCodexCompactionDomain
+			}
+			return nativeCodexCompactionDomain
+		}
+		if mode, err := codexRequestRouteMode(ctx, account); err == nil && mode == "bps" {
+			return bpsCodexCompactionDomain
+		}
+	}
+	return accountCompactionDomain(account)
+}
+
+func applyCompactionRouteFloor(c *gin.Context, resolution compactionAffinityResolution) {
+	if resolution.CompatibilityDomain == bpsCodexCompactionDomain {
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteFloorKey{}, "bps"))
+	}
 }
 
 func decodeCompactionProvenanceRecord(raw json.RawMessage) (compactionProvenanceRecord, error) {
@@ -119,7 +145,7 @@ func (h *Handler) recordCompactionProvenance(ctx context.Context, account *auth.
 		return nil
 	}
 	encryptedContent = strings.TrimSpace(encryptedContent)
-	domain := accountCompactionDomain(account)
+	domain := requestCompactionDomain(ctx, account)
 	if encryptedContent == "" || domain == "" || account.ID() <= 0 {
 		return nil
 	}
@@ -273,7 +299,16 @@ func (h *Handler) resolveCompactionAffinity(ctx context.Context, body []byte) (c
 			continue
 		}
 		if resolution.Known && resolution.CompatibilityDomain != record.CompatibilityDomain {
-			return compactionAffinityResolution{}, errConflictingCompactionProvenance
+			if (resolution.CompatibilityDomain == nativeCodexCompactionDomain && record.CompatibilityDomain == bpsCodexCompactionDomain) ||
+				(resolution.CompatibilityDomain == bpsCodexCompactionDomain && record.CompatibilityDomain == nativeCodexCompactionDomain) {
+				// A native conversation may have moved to BPS, never the reverse.
+				resolution.CompatibilityDomain = bpsCodexCompactionDomain
+				if record.CompatibilityDomain == bpsCodexCompactionDomain {
+					resolution.PreferredAccountID = record.AccountID
+				}
+			} else {
+				return compactionAffinityResolution{}, errConflictingCompactionProvenance
+			}
 		}
 		if !resolution.Known {
 			resolution = compactionAffinityResolution{
@@ -311,7 +346,16 @@ func sendCompactionUpstreamUnavailable(c *gin.Context) {
 func compactionDomainFilter(domain string, next auth.AccountFilter, traces ...*auth.SelectionTrace) auth.AccountFilter {
 	domain = strings.TrimSpace(domain)
 	return func(account *auth.Account) bool {
-		if account == nil || accountCompactionDomain(account) != domain {
+		compatible := account != nil && accountCompactionDomain(account) == domain
+		if account != nil && !account.IsRelayStyle() {
+			switch domain {
+			case bpsCodexCompactionDomain:
+				compatible = account.CodexRouteAllows("bps", "", true)
+			case nativeCodexCompactionDomain:
+				compatible = account.CodexRouteAllows("native", "", true) || account.CodexRouteAllows("bps", "", true)
+			}
+		}
+		if !compatible {
 			if len(traces) > 0 {
 				traces[0].Reject("compaction_domain_mismatch")
 			}

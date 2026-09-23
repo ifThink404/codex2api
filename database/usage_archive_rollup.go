@@ -627,7 +627,8 @@ func mergeAccountRequestCount(dst map[int64]*AccountRequestCount, src *AccountRe
 	item.SuccessCount += src.SuccessCount
 	item.ErrorCount += src.ErrorCount
 	item.RetryErrorCount += src.RetryErrorCount
-	item.RateLimitAttemptCount += src.RateLimitAttemptCount
+	// The 429 badge describes retained logs, so clearing logs resets it.
+	// Keep archived 429 statistics for historical usage/error breakdowns only.
 }
 
 func (db *DB) archivedAccountRequestCounts(ctx context.Context, since time.Time, ids []int64) (map[int64]*AccountRequestCount, error) {

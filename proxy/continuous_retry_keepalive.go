@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/codex2api/api"
 	"github.com/codex2api/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -485,6 +486,16 @@ func retryKeepaliveCommitted(c *gin.Context) bool {
 }
 
 func writeCommittedResponsesRetryError(c *gin.Context, message string) bool {
+	return writeCommittedResponsesError(c, message, nil)
+}
+
+// Local admission errors contain gateway-authored text only. Keep their code
+// and recovery estimate instead of passing them through upstream redaction.
+func writeCommittedResponsesLocalError(c *gin.Context, localError *api.APIError) bool {
+	return writeCommittedResponsesError(c, localError.Message, localError)
+}
+
+func writeCommittedResponsesError(c *gin.Context, message string, localError *api.APIError) bool {
 	if !retryKeepaliveCommitted(c) {
 		if c != nil && c.Request != nil && !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 			return true
@@ -511,12 +522,19 @@ func writeCommittedResponsesRetryError(c *gin.Context, message string) bool {
 		code = ErrorCodeUpstreamTimeout
 		message = continuousRetryTimeoutMessage
 	}
+	var responseError any
+	if localError != nil && !timedOut {
+		responseError = localError
+		api.ObserveError(c, api.HTTPStatusCode(localError.Code), localError)
+	} else {
+		responseError = dispatchStreamError(c, message, code)
+	}
 	payload, _ := json.Marshal(gin.H{
 		"type": "response.failed",
 		"response": gin.H{
 			"created_at": time.Now().Unix(),
 			"status":     "failed",
-			"error":      dispatchStreamError(c, message, code),
+			"error":      responseError,
 		},
 	})
 	_, _ = c.Writer.WriteString("data: " + string(payload) + "\n\n")

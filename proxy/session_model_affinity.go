@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -35,6 +36,28 @@ func sessionModelErrorForRequest(requestContext *gin.Context) *api.APIError {
 }
 
 func (handler *Handler) configureSessionModelAffinity(requestContext *gin.Context, identity requestSessionIdentity, key, originalModel, effectiveModel string, compact bool, bodies ...[]byte) (apiError *api.APIError) {
+	// Forks copy history into a new root. Preserve a known BPS origin even when
+	// both paths on the inherited account support the fork's requested model.
+	if identity.forkSourceAffinityID != "" {
+		sourceKey := sessionAffinityKey(identity.forkSourceAffinityID, requestAPIKeyID(requestContext))
+		if sourceKey != "" && sourceKey != key {
+			entry, found, err := handler.readSessionContinuity(requestContext.Request.Context(), hashRiskIdentity(sourceKey))
+			if err != nil {
+				return sessionContinuityError("ownership_unavailable")
+			}
+			if found && entry.Record.UpstreamMode == "bps" {
+				requestContext.Request = requestContext.Request.WithContext(context.WithValue(requestContext.Request.Context(), codexRouteFloorKey{}, "bps"))
+			}
+		}
+	}
+	related := backgroundAccountMatchFromContext(requestContext.Request.Context()) != nil
+	if _, ok := auth.RelatedSessionRootKey(key); ok {
+		related = true
+	}
+	if len(bodies) > 0 {
+		related = related || codexRouteIsAuxiliary(bodies[0])
+	}
+	requestContext.Request = requestContext.Request.WithContext(context.WithValue(requestContext.Request.Context(), codexRouteRequestKey{}, codexRouteRequest{Model: effectiveModel, Auxiliary: related || compact}))
 	// Evaluate after selection rejects the bound owner, including a restored
 	// failover owner. Never recommend a model from an unrelated pool account.
 	publicModel := originalModel
@@ -112,7 +135,7 @@ func sessionModelSupportFilter(originalModel, effectiveModel string, compact boo
 			return supported
 		}
 		if !account.IsRelayStyle() {
-			return account.SupportsCodexModel(effectiveModel)
+			return account.SupportsCodexModel(effectiveModel) && selectCodexRoute(account, effectiveModel, "", compact) != ""
 		}
 		routedModel, mapped := resolveAccountModelMappingForCandidates(account, candidates...)
 		if compact {

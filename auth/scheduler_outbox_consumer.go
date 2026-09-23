@@ -521,6 +521,13 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.CodexPassthroughMode = src.CodexPassthroughMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
 	dst.CodexBPS = src.CodexBPS
+	dst.CodexNative = nil
+	if src.CodexNative != nil {
+		v := *src.CodexNative
+		dst.CodexNative = &v
+	}
+	dst.CodexNativeModels = cloneStringSlice(src.CodexNativeModels)
+	dst.CodexBPSModels = cloneStringSlice(src.CodexBPSModels)
 	dst.CodexNativeCompactionOnly = src.CodexNativeCompactionOnly
 	dst.CodexInstallationID = src.CodexInstallationID
 	dst.ClaudeFingerprintMode = src.ClaudeFingerprintMode

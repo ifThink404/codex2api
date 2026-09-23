@@ -835,6 +835,7 @@
     "activeRequestsTooltip": "当前正在处理 {{count}} 个请求",
     "occupiedRequestsTooltip": "当前真实在途 {{active}}，占用槽位 {{occupied}}（含 {{buffered}} 个会话缓冲槽）",
     "requests": "请求(7d)",
+    "rateLimitBadgeHint": "最近 7 天未清空日志中的 429 次数，清空日志后重新计数",
     "requestSuccess": "成功请求",
     "requestError": "错误请求",
     "requestSuccessTooltipAria": "{{count}} 个成功请求，悬停查看模型分布",

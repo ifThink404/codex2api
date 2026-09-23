@@ -1649,10 +1649,6 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		return status, msg
 	}
 
-	if status, msg, done := h.batchTestWhamPreflight(testCtx, acc); done {
-		return status, msg
-	}
-
 	testModel, modelErr := h.connectionTestModelForAccount(testCtx, acc, "")
 	if modelErr != nil {
 		if msg, ok := batchTestContextFailure(testCtx, modelErr); ok {
@@ -1660,9 +1656,12 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		}
 		return "failed", modelErr.Error()
 	}
+	if status, msg, done := h.batchTestWhamPreflight(testCtx, acc, testModel); done {
+		return status, msg
+	}
 	if output := batchTestOutputFromContext(testCtx); output != nil {
 		output.model = testModel
-		output.mode = proxy.CodexTestModeLabel(testCtx, acc)
+		output.mode = proxy.CodexTestModeLabel(testCtx, acc, testModel)
 	}
 	securityCfg := h.store.ClaudeSecurityConfig()
 	payload, payloadErr := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, securityCfg)
@@ -1815,7 +1814,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	}
 	if output := batchTestOutputFromContext(testCtx); output != nil {
 		output.model = testModel
-		output.mode = proxy.CodexTestModeLabel(testCtx, acc)
+		output.mode = proxy.CodexTestModeLabel(testCtx, acc, testModel)
 	}
 	claudeSecurityCfg := h.store.ClaudeSecurityConfig()
 	payload, payloadErr := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, claudeSecurityCfg)
@@ -1976,8 +1975,8 @@ func (h *Handler) batchTestSkipDeactivatedWorkspace(acc *auth.Account) (string, 
 	return "failed", msg, true
 }
 
-func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account) (string, string, bool) {
-	if proxy.CodexTestModeLabel(ctx, acc) == "bps" {
+func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account, models ...string) (string, string, bool) {
+	if proxy.CodexTestModeLabel(ctx, acc, models...) == "bps" {
 		return "", "", false
 	}
 	if h == nil || h.store == nil || acc == nil || acc.IsRelayStyle() || acc.GetAccessToken() == "" {

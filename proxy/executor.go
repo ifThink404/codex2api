@@ -531,7 +531,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	useBPS, modeErr := codexRequestUsesBPS(ctx, account)
+	useBPS, modeErr := codexRequestUsesBPS(ctx, account, gjson.GetBytes(requestBody, "model").String())
 	if modeErr != nil {
 		return nil, modeErr
 	}
@@ -1182,7 +1182,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
 	}
 
-	useBPS, modeErr := codexRequestUsesBPS(ctx, account)
+	useBPS, modeErr := codexRequestUsesBPS(ctx, account, gjson.GetBytes(requestBody, "model").String())
 	if modeErr != nil {
 		return nil, modeErr
 	}

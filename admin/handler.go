@@ -132,6 +132,7 @@ type Handler struct {
 	// 账号请求统计缓存,按渠道分键(codex/grok 各自刷新互不牵连;旧全量路径
 	// 用 "all" 键)。分页路径 stale-while-revalidate,TTL 见 requestCountCacheTTL。
 	reqCountMu         sync.RWMutex
+	reqCountGeneration atomic.Uint64
 	reqCountCache      map[string]*requestCountCacheEntry
 	reqCountRefreshMu  sync.Mutex
 	reqCountRefreshing map[string]bool
@@ -1634,6 +1635,9 @@ type accountResponse struct {
 	ModelMapping                   string                      `json:"model_mapping,omitempty"`
 	CodexClientMetadataMode        string                      `json:"codex_client_metadata_mode,omitempty"`
 	CodexBPSEnabled                bool                        `json:"codex_bps_enabled"`
+	CodexNativeEnabled             *bool                       `json:"codex_native_enabled,omitempty"`
+	CodexNativeModels              []string                    `json:"codex_native_models,omitempty"`
+	CodexBPSModels                 []string                    `json:"codex_bps_models,omitempty"`
 	CodexBPSImageTrim              bool                        `json:"codex_bps_image_trim_enabled"`
 	CodexNativeCompactionOnly      bool                        `json:"codex_native_compaction_only"`
 	CodexFingerprintMode           string                      `json:"codex_fingerprint_mode,omitempty"`
@@ -2091,6 +2095,9 @@ type updateAccountSchedulerReq struct {
 	ProxyURL                  json.RawMessage `json:"proxy_url"`
 	CustomHeaders             json.RawMessage `json:"custom_headers"`
 	CodexBPSEnabled           json.RawMessage `json:"codex_bps_enabled"`
+	CodexNativeEnabled        json.RawMessage `json:"codex_native_enabled"`
+	CodexNativeModels         json.RawMessage `json:"codex_native_models"`
+	CodexBPSModels            json.RawMessage `json:"codex_bps_models"`
 	CodexBPSImageTrim         json.RawMessage `json:"codex_bps_image_trim_enabled"`
 	CodexNativeCompactionOnly json.RawMessage `json:"codex_native_compaction_only"`
 	CodexFingerprintMode      json.RawMessage `json:"codex_fingerprint_mode"`
@@ -2122,6 +2129,9 @@ type accountSchedulerUpdate struct {
 	ProxyURL                  database.OptionalString
 	CustomHeaders             optionalCustomHeaders
 	CodexBPSEnabled           database.OptionalBool
+	CodexNativeEnabled        database.OptionalBool
+	CodexNativeModels         optionalStringSlice
+	CodexBPSModels            optionalStringSlice
 	CodexBPSImageTrim         database.OptionalBool
 	CodexNativeCompactionOnly database.OptionalBool
 	CodexFingerprintMode      database.OptionalString
@@ -2280,7 +2290,33 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	codexNative, err := parseOptionalBoolField(req.CodexNativeEnabled, "codex_native_enabled")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	codexNativeModels, err := parseOptionalStringSliceField(req.CodexNativeModels, "codex_native_models")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	codexBPSModels, err := parseOptionalStringSliceField(req.CodexBPSModels, "codex_bps_models")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	for _, models := range [][]string{codexNativeModels.Values, codexBPSModels.Values} {
+		if err := auth.ValidateCodexRouteModels(models); err != nil {
+			return accountSchedulerUpdate{}, err
+		}
+	}
 	credentialUpdates := make(map[string]interface{})
+	if codexNative.Set {
+		credentialUpdates[auth.CodexNativeEnabledCredentialKey] = codexNative.Value
+	}
+	if codexNativeModels.Set {
+		credentialUpdates[auth.CodexNativeModelsCredentialKey] = codexNativeModels.Values
+	}
+	if codexBPSModels.Set {
+		credentialUpdates[auth.CodexBPSModelsCredentialKey] = codexBPSModels.Values
+	}
 	if codexNativeCompactionOnly.Set {
 		credentialUpdates[auth.CodexNativeCompactionOnlyCredentialKey] = codexNativeCompactionOnly.Value
 	}
@@ -2396,6 +2432,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ProxyURL:                  proxyURL,
 		CustomHeaders:             customHeaders,
 		CodexBPSEnabled:           codexBPS,
+		CodexNativeEnabled:        codexNative,
+		CodexNativeModels:         codexNativeModels,
+		CodexBPSModels:            codexBPSModels,
 		CodexBPSImageTrim:         codexBPSImageTrim,
 		CodexNativeCompactionOnly: codexNativeCompactionOnly,
 		CodexFingerprintMode:      codexFingerprintMode,
@@ -2480,7 +2519,7 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.SchedulerPriority.Set ||
 		u.ProxyURL.Set ||
 		u.CustomHeaders.Set ||
-		u.CodexBPSEnabled.Set ||
+		u.CodexBPSEnabled.Set || u.CodexNativeEnabled.Set || u.CodexNativeModels.Set || u.CodexBPSModels.Set ||
 		u.CodexBPSImageTrim.Set ||
 		u.CodexNativeCompactionOnly.Set ||
 		u.CodexFingerprintMode.Set ||
@@ -2825,9 +2864,7 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 		}
 		h.store.ApplyAccountClaudeClientPolicy(id, policy)
 	}
-	if update.CodexBPSEnabled.Set {
-		h.store.ApplyAccountCodexBPS(id, update.CodexBPSEnabled.Value)
-	}
+	h.store.ApplyAccountCodexRoutes(id, update.CodexNativeEnabled, update.CodexBPSEnabled, update.CodexNativeModels.Values, update.CodexBPSModels.Values, update.CodexNativeModels.Set, update.CodexBPSModels.Set)
 	if update.CodexBPSImageTrim.Set {
 		h.store.ApplyAccountCodexBPSImageTrim(id, update.CodexBPSImageTrim.Value)
 	}
@@ -3480,6 +3517,7 @@ func reflectInt64Field(value interface{}, field string) (int64, bool) {
 // per-channel paged caches.
 func (h *Handler) getCachedRequestCounts() map[int64]*database.AccountRequestCount {
 	const cacheKey = "all"
+	generation := h.reqCountGeneration.Load()
 	h.reqCountMu.RLock()
 	entry := h.reqCountCache[cacheKey]
 	if entry != nil && time.Now().Before(entry.expiresAt) {
@@ -3495,7 +3533,7 @@ func (h *Handler) getCachedRequestCounts() map[int64]*database.AccountRequestCou
 		log.Printf("获取账号请求统计失败: %v", err)
 		return make(map[int64]*database.AccountRequestCount)
 	}
-	h.storeRequestCountCache(cacheKey, counts, nil, time.Time{})
+	h.storeRequestCountCache(cacheKey, counts, nil, time.Time{}, generation)
 	return counts
 }
 
@@ -4767,6 +4805,9 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 // importToken 导入时的统一 token 载体
 type importToken struct {
 	codexBPSEnabled           bool
+	codexNativeEnabled        *bool
+	codexNativeModels         []string
+	codexBPSModels            []string
 	codexBPSImageTrim         bool
 	codexNativeCompactionOnly bool
 	refreshToken              string
@@ -4930,6 +4971,9 @@ type jsonAccountEntry struct {
 	Codex5HUsageUpdatedAt     string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt       string                 `json:"codex_usage_updated_at"`
 	CodexBPSEnabled           bool                   `json:"codex_bps_enabled"`
+	CodexNativeEnabled        *bool                  `json:"codex_native_enabled,omitempty"`
+	CodexNativeModels         []string               `json:"codex_native_models,omitempty"`
+	CodexBPSModels            []string               `json:"codex_bps_models,omitempty"`
 	CodexBPSImageTrim         bool                   `json:"codex_bps_image_trim_enabled"`
 	CodexNativeCompactionOnly bool                   `json:"codex_native_compaction_only"`
 	ProxyURL                  string                 `json:"proxy_url"`
@@ -5004,6 +5048,9 @@ type sub2apiAccountCredentials struct {
 	Codex5HUsageUpdatedAt     string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt       string                 `json:"codex_usage_updated_at"`
 	CodexBPSEnabled           bool                   `json:"codex_bps_enabled"`
+	CodexNativeEnabled        *bool                  `json:"codex_native_enabled,omitempty"`
+	CodexNativeModels         []string               `json:"codex_native_models,omitempty"`
+	CodexBPSModels            []string               `json:"codex_bps_models,omitempty"`
 	CodexBPSImageTrim         bool                   `json:"codex_bps_image_trim_enabled"`
 	CodexNativeCompactionOnly bool                   `json:"codex_native_compaction_only"`
 	ProxyURL                  string                 `json:"proxy_url"`
@@ -5224,6 +5271,9 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 				codex5HResetAt:            strings.TrimSpace(entry.Codex5HResetAt),
 				codex5HUsageUpdatedAt:     strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 				codexBPSEnabled:           entry.CodexBPSEnabled,
+				codexNativeEnabled:        entry.CodexNativeEnabled,
+				codexNativeModels:         entry.CodexNativeModels,
+				codexBPSModels:            entry.CodexBPSModels,
 				codexBPSImageTrim:         entry.CodexBPSImageTrim,
 				codexNativeCompactionOnly: entry.CodexNativeCompactionOnly,
 				codexUsageUpdatedAt:       strings.TrimSpace(entry.CodexUsageUpdatedAt),
@@ -5301,6 +5351,9 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 				codex5HResetAt:            strings.TrimSpace(c.Codex5HResetAt),
 				codex5HUsageUpdatedAt:     strings.TrimSpace(c.Codex5HUsageUpdatedAt),
 				codexBPSEnabled:           c.CodexBPSEnabled,
+				codexNativeEnabled:        c.CodexNativeEnabled,
+				codexNativeModels:         c.CodexNativeModels,
+				codexBPSModels:            c.CodexBPSModels,
 				codexBPSImageTrim:         c.CodexBPSImageTrim,
 				codexNativeCompactionOnly: c.CodexNativeCompactionOnly,
 				codexUsageUpdatedAt:       strings.TrimSpace(c.CodexUsageUpdatedAt),
@@ -5412,6 +5465,9 @@ func importTokenSeed(t importToken, conflicts map[string]bool) tokenCredentialSe
 		codex5HResetAt:            t.codex5HResetAt,
 		codex5HUsageUpdatedAt:     t.codex5HUsageUpdatedAt,
 		codexBPSEnabled:           t.codexBPSEnabled,
+		codexNativeEnabled:        t.codexNativeEnabled,
+		codexNativeModels:         t.codexNativeModels,
+		codexBPSModels:            t.codexBPSModels,
 		codexBPSImageTrim:         t.codexBPSImageTrim,
 		codexNativeCompactionOnly: t.codexNativeCompactionOnly,
 		codexUsageUpdatedAt:       t.codexUsageUpdatedAt,
@@ -6594,6 +6650,9 @@ func tokenCredentialSeedFromAccountRow(row *database.AccountRow) tokenCredential
 		codex5HResetAt:            row.GetCredential("codex_5h_reset_at"),
 		codex5HUsageUpdatedAt:     row.GetCredential("codex_5h_usage_updated_at"),
 		codexBPSEnabled:           row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		codexNativeEnabled:        auth.CodexNativeEnabledFromRow(row),
+		codexNativeModels:         row.GetCredentialStringSlice(auth.CodexNativeModelsCredentialKey),
+		codexBPSModels:            row.GetCredentialStringSlice(auth.CodexBPSModelsCredentialKey),
 		codexBPSImageTrim:         row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
 		codexNativeCompactionOnly: row.GetCredentialBool(auth.CodexNativeCompactionOnlyCredentialKey),
 		codexUsageUpdatedAt:       row.GetCredential("codex_usage_updated_at"),
@@ -8597,6 +8656,7 @@ func (h *Handler) ClearUsageLogs(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
+	h.invalidateAccountRequestStats()
 	h.deleteRuntimeCache(ctx, adminUsageStatsCacheNamespace, "global")
 	h.chartCacheMu.Lock()
 	h.chartCacheData = make(map[string]*chartCacheEntry)
@@ -12469,24 +12529,27 @@ func (h *Handler) TestImageStorageConnection(c *gin.Context) {
 // ==================== 导出 & 迁移 ====================
 
 type cpaExportEntry struct {
-	CodexBPSEnabled           bool   `json:"codex_bps_enabled,omitempty"`
-	CodexBPSImageTrim         bool   `json:"codex_bps_image_trim_enabled,omitempty"`
-	CodexNativeCompactionOnly bool   `json:"codex_native_compaction_only,omitempty"`
-	Type                      string `json:"type"`
-	Email                     string `json:"email"`
-	PlanType                  string `json:"plan_type,omitempty"`
-	Codex7DUsedPercent        string `json:"codex_7d_used_percent,omitempty"`
-	Codex7DResetAt            string `json:"codex_7d_reset_at,omitempty"`
-	Codex5HUsedPercent        string `json:"codex_5h_used_percent,omitempty"`
-	Codex5HResetAt            string `json:"codex_5h_reset_at,omitempty"`
-	Codex5HUsageUpdatedAt     string `json:"codex_5h_usage_updated_at,omitempty"`
-	CodexUsageUpdatedAt       string `json:"codex_usage_updated_at,omitempty"`
-	Expired                   string `json:"expired"`
-	IDToken                   string `json:"id_token"`
-	AccountID                 string `json:"account_id"`
-	AccessToken               string `json:"access_token"`
-	LastRefresh               string `json:"last_refresh"`
-	RefreshToken              string `json:"refresh_token"`
+	CodexBPSEnabled           bool     `json:"codex_bps_enabled,omitempty"`
+	CodexNativeEnabled        *bool    `json:"codex_native_enabled,omitempty"`
+	CodexNativeModels         []string `json:"codex_native_models,omitempty"`
+	CodexBPSModels            []string `json:"codex_bps_models,omitempty"`
+	CodexBPSImageTrim         bool     `json:"codex_bps_image_trim_enabled,omitempty"`
+	CodexNativeCompactionOnly bool     `json:"codex_native_compaction_only,omitempty"`
+	Type                      string   `json:"type"`
+	Email                     string   `json:"email"`
+	PlanType                  string   `json:"plan_type,omitempty"`
+	Codex7DUsedPercent        string   `json:"codex_7d_used_percent,omitempty"`
+	Codex7DResetAt            string   `json:"codex_7d_reset_at,omitempty"`
+	Codex5HUsedPercent        string   `json:"codex_5h_used_percent,omitempty"`
+	Codex5HResetAt            string   `json:"codex_5h_reset_at,omitempty"`
+	Codex5HUsageUpdatedAt     string   `json:"codex_5h_usage_updated_at,omitempty"`
+	CodexUsageUpdatedAt       string   `json:"codex_usage_updated_at,omitempty"`
+	Expired                   string   `json:"expired"`
+	IDToken                   string   `json:"id_token"`
+	AccountID                 string   `json:"account_id"`
+	AccessToken               string   `json:"access_token"`
+	LastRefresh               string   `json:"last_refresh"`
+	RefreshToken              string   `json:"refresh_token"`
 	// 代理三件套只在 include_proxy=1 时写出：代理 URL 常带明文用户名密码。
 	// ProxyEnabled 用指针区分"文件没带这个字段"（老文件，按启用处理）与
 	// "源端显式禁用"，bool 的零值会被 omitempty 一起吞掉。
@@ -12648,6 +12711,9 @@ func accountRowToCPAExportEntry(row *database.AccountRow, proxies exportProxyRes
 	proxyURL, proxyLabel, proxyEnabled := proxies.resolve(row.ProxyURL)
 	return cpaExportEntry{
 		CodexBPSEnabled:           row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		CodexNativeEnabled:        auth.CodexNativeEnabledFromRow(row),
+		CodexNativeModels:         row.GetCredentialStringSlice(auth.CodexNativeModelsCredentialKey),
+		CodexBPSModels:            row.GetCredentialStringSlice(auth.CodexBPSModelsCredentialKey),
 		CodexBPSImageTrim:         row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
 		CodexNativeCompactionOnly: row.GetCredentialBool(auth.CodexNativeCompactionOnlyCredentialKey),
 		Type:                      "codex",
@@ -12876,6 +12942,9 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 			codex5HResetAt:            strings.TrimSpace(entry.Codex5HResetAt),
 			codex5HUsageUpdatedAt:     strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 			codexBPSEnabled:           entry.CodexBPSEnabled,
+			codexNativeEnabled:        entry.CodexNativeEnabled,
+			codexNativeModels:         entry.CodexNativeModels,
+			codexBPSModels:            entry.CodexBPSModels,
 			codexBPSImageTrim:         entry.CodexBPSImageTrim,
 			codexNativeCompactionOnly: entry.CodexNativeCompactionOnly,
 			codexUsageUpdatedAt:       strings.TrimSpace(entry.CodexUsageUpdatedAt),

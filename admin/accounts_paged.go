@@ -603,6 +603,19 @@ func (h *Handler) invalidateAccountSnapshotCaches() {
 	h.accountAnalysisCacheMu.Unlock()
 }
 
+// Clear cached counters with the logs, including unfinished refresh batches.
+// A refresh started before this reset cannot reinstall the old 429 badge.
+func (h *Handler) invalidateAccountRequestStats() {
+	h.reqCountMu.Lock()
+	h.reqCountGeneration.Add(1)
+	h.reqCountCache = nil
+	h.reqCountMu.Unlock()
+	h.reqCountStagingMu.Lock()
+	h.reqCountStaging = nil
+	h.reqCountStagingMu.Unlock()
+	h.invalidateAccountSnapshotCaches()
+}
+
 // pruneAccountsFromSnapshotCaches 从各渠道列表快照里拿掉已删除账号并重算
 // 统计卡。比整份失效便宜:不必再 ListAccountListProjection 全池。
 // 代数加一,避免在途全量重建把已删账号写回缓存。
@@ -883,6 +896,7 @@ func (h *Handler) getCachedRequestCountsNonBlocking(channel string, ids []int64)
 }
 
 func (h *Handler) refreshRequestCountsAsync(channel string, ids []int64) {
+	generation := h.reqCountGeneration.Load()
 	h.reqCountRefreshMu.Lock()
 	if h.reqCountRefreshing == nil {
 		h.reqCountRefreshing = make(map[string]bool)
@@ -916,7 +930,7 @@ func (h *Handler) refreshRequestCountsAsync(channel string, ids []int64) {
 		if elapsed := time.Since(started); elapsed > 2*time.Second {
 			log.Printf("账号请求统计刷新耗时 %s channel=%s ids=%d batches=%d(分批 7 天聚合)", elapsed.Round(time.Millisecond), channel, len(ids), accountRequestStatBatchCount(len(ids)))
 		}
-		h.storeRequestCountCache(channel, counts, today, todayStart)
+		h.storeRequestCountCache(channel, counts, today, todayStart, generation)
 		// stats_state 是烙在列表快照里的:快照重建时统计缓存还没刷完,烙出来
 		// 就是 stale,并一直随快照被返回。统计刷完后把本渠道快照标记为过期,
 		// 下一次轮询即触发重建、烙上 ready——否则要等快照自然过期再叠一轮轮询,
@@ -982,6 +996,7 @@ func (h *Handler) loadAccountRequestStats(ctx context.Context, channel string, i
 // 作废:进度存回 Handler,下一轮跳过已完成账号接着跑。刷新协程间由
 // reqCountRefreshing 串行化,这里的锁只负责跨轮的存取与内存可见性。
 type requestCountStaging struct {
+	generation uint64
 	counts     map[int64]*database.AccountRequestCount
 	today      map[int64]*database.AccountTimeRangeUsage
 	done       map[int64]struct{}
@@ -996,12 +1011,13 @@ func (h *Handler) takeRequestCountStaging(channel string, todayStart time.Time) 
 	delete(h.reqCountStaging, channel)
 	if staging != nil {
 		// 换天(今日口径已变)或搁太久(数据太陈)的半成品不能续,重来。
-		if !staging.todayStart.Equal(todayStart) || time.Since(staging.startedAt) > requestCountStagingMaxAge {
+		if staging.generation != h.reqCountGeneration.Load() || !staging.todayStart.Equal(todayStart) || time.Since(staging.startedAt) > requestCountStagingMaxAge {
 			staging = nil
 		}
 	}
 	if staging == nil {
 		staging = &requestCountStaging{
+			generation: h.reqCountGeneration.Load(),
 			counts:     make(map[int64]*database.AccountRequestCount),
 			today:      make(map[int64]*database.AccountTimeRangeUsage),
 			done:       make(map[int64]struct{}),
@@ -1014,11 +1030,14 @@ func (h *Handler) takeRequestCountStaging(channel string, todayStart time.Time) 
 
 func (h *Handler) saveRequestCountStaging(channel string, staging *requestCountStaging) {
 	h.reqCountStagingMu.Lock()
+	defer h.reqCountStagingMu.Unlock()
+	if staging.generation != h.reqCountGeneration.Load() {
+		return
+	}
 	if h.reqCountStaging == nil {
 		h.reqCountStaging = make(map[string]*requestCountStaging)
 	}
 	h.reqCountStaging[channel] = staging
-	h.reqCountStagingMu.Unlock()
 }
 
 // requestCountBatchRefreshTimeout 按批数缩放全池刷新时限:固定时限在 3 万+
@@ -1072,8 +1091,12 @@ func accountRequestStatBatchCount(idCount int) int {
 	return (idCount + requestCountBatchSize - 1) / requestCountBatchSize
 }
 
-func (h *Handler) storeRequestCountCache(channel string, counts map[int64]*database.AccountRequestCount, today map[int64]*database.AccountTimeRangeUsage, todayStart time.Time) {
+func (h *Handler) storeRequestCountCache(channel string, counts map[int64]*database.AccountRequestCount, today map[int64]*database.AccountTimeRangeUsage, todayStart time.Time, generations ...uint64) {
 	h.reqCountMu.Lock()
+	defer h.reqCountMu.Unlock()
+	if len(generations) > 0 && generations[0] != h.reqCountGeneration.Load() {
+		return
+	}
 	if h.reqCountCache == nil {
 		h.reqCountCache = make(map[string]*requestCountCacheEntry)
 	}
@@ -1083,7 +1106,6 @@ func (h *Handler) storeRequestCountCache(channel string, counts map[int64]*datab
 		todayStart: todayStart,
 		expiresAt:  time.Now().Add(requestCountCacheTTL),
 	}
-	h.reqCountMu.Unlock()
 }
 
 // expireAccountListSnapshot 把指定渠道的列表快照标记为过期,但保留内容:

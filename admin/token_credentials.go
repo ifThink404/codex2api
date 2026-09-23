@@ -13,6 +13,9 @@ import (
 
 type tokenCredentialSeed struct {
 	codexBPSEnabled           bool
+	codexNativeEnabled        *bool
+	codexNativeModels         []string
+	codexBPSModels            []string
 	codexBPSImageTrim         bool
 	codexNativeCompactionOnly bool
 	codexInstallationID       string
@@ -225,6 +228,15 @@ func tokenCredentialMap(seed tokenCredentialSeed) map[string]interface{} {
 	if seed.codexNativeCompactionOnly {
 		credentials[auth.CodexNativeCompactionOnlyCredentialKey] = true
 	}
+	if seed.codexNativeEnabled != nil {
+		credentials[auth.CodexNativeEnabledCredentialKey] = *seed.codexNativeEnabled
+	}
+	if seed.codexNativeModels != nil {
+		credentials[auth.CodexNativeModelsCredentialKey] = seed.codexNativeModels
+	}
+	if seed.codexBPSModels != nil {
+		credentials[auth.CodexBPSModelsCredentialKey] = seed.codexBPSModels
+	}
 	if seed.codexBPSEnabled {
 		credentials[auth.CodexBPSEnabledCredentialKey] = true
 	}
@@ -275,6 +287,9 @@ func accountFromCredentialSeed(id int64, proxyURL string, seed tokenCredentialSe
 	account := &auth.Account{
 		DBID:                      id,
 		CodexBPS:                  seed.codexBPSEnabled,
+		CodexNative:               seed.codexNativeEnabled,
+		CodexNativeModels:         append([]string(nil), seed.codexNativeModels...),
+		CodexBPSModels:            append([]string(nil), seed.codexBPSModels...),
 		CodexBPSImageTrim:         seed.codexBPSImageTrim,
 		CodexNativeCompactionOnly: seed.codexNativeCompactionOnly,
 		RefreshToken:              seed.refreshToken,

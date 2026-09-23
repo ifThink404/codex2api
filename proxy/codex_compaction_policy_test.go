@@ -87,7 +87,7 @@ func TestNativeCompactionPolicyBPSExemptionFollowsActualRoute(t *testing.T) {
 		{name: "bps account", savedBPS: true, wantBPS: true},
 		{name: "probe bps", testMode: "bps", wantBPS: true},
 		{name: "probe native", savedBPS: true, testMode: "codex"},
-		{name: "pinned bps", pinnedMode: "bps", wantBPS: true},
+		{name: "pinned bps", savedBPS: true, pinnedMode: "bps", wantBPS: true},
 		{name: "pinned native", savedBPS: true, pinnedMode: "native"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,6 +113,8 @@ func TestNativeCompactionPolicyBPSExemptionFollowsActualRoute(t *testing.T) {
 			require.NoError(t, err)
 			ctx := WithCodexIdentityStore(t.Context(), db)
 			if tc.pinnedMode != "" {
+				native := true
+				a.CodexNative = &native
 				record := database.SessionContinuityRecord{AccountID: a.ID(), UpstreamMode: tc.pinnedMode}
 				rootKey := hashRiskIdentity(tc.name)
 				_, commitErr := db.CommitSessionContinuity(ctx, rootKey, record)

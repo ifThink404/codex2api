@@ -695,6 +695,7 @@ func (db *DB) ensureUsageStatsBaselineBillingColumns(ctx context.Context) error 
 			{name: "cache_hit_requests", def: "INTEGER NOT NULL DEFAULT 0"},
 			{name: "first_token_ms_sum", def: "REAL NOT NULL DEFAULT 0"},
 			{name: "first_token_samples", def: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "rate_limit_badge_cleared_at", def: "TIMESTAMP"},
 		} {
 			if _, ok := columns[column.name]; ok {
 				continue
@@ -711,6 +712,7 @@ func (db *DB) ensureUsageStatsBaselineBillingColumns(ctx context.Context) error 
 		ALTER TABLE usage_stats_baseline ADD COLUMN IF NOT EXISTS cache_hit_requests BIGINT NOT NULL DEFAULT 0;
 		ALTER TABLE usage_stats_baseline ADD COLUMN IF NOT EXISTS first_token_ms_sum DOUBLE PRECISION NOT NULL DEFAULT 0;
 		ALTER TABLE usage_stats_baseline ADD COLUMN IF NOT EXISTS first_token_samples BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE usage_stats_baseline ADD COLUMN IF NOT EXISTS rate_limit_badge_cleared_at TIMESTAMP;
 	`)
 	return err
 }
@@ -6766,6 +6768,7 @@ func (db *DB) walkUsageLogExport(ctx context.Context, filter *UsageLogFilter, in
 // ClearUsageLogs 清空所有使用日志（先快照累计值到基线表）。billingWindows
 // 是可选的显式 5h/long 窗口；清理与查询共享同一个稳定窗口 anchor。
 func (db *DB) ClearUsageLogs(ctx context.Context, billingWindows ...AccountBillingWindow) error {
+	clearedAt := time.Now()
 	// 先校验增量汇总是否与明细日志同步。这也兼容测试、手工 SQL 等绕过正常写入队列的场景。
 	if _, err := db.loadUsageStatsRollup(ctx, ""); err != nil {
 		return fmt.Errorf("读取清理前完整累计失败: %w", err)
@@ -6817,6 +6820,11 @@ func (db *DB) ClearUsageLogs(ctx context.Context, billingWindows ...AccountBilli
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE usage_stats_rollup_state SET initialized=1, last_log_id=0, updated_at=CURRENT_TIMESTAMP WHERE id=1`); err != nil {
+		return err
+	}
+	// Buffered pre-clear logs may commit later. Their original timestamps must
+	// not resurrect the 429 badge after the reset, even following a restart.
+	if _, err = tx.ExecContext(ctx, `UPDATE usage_stats_baseline SET rate_limit_badge_cleared_at=$1 WHERE id=1`, db.timeArg(clearedAt)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -6905,7 +6913,7 @@ func (db *DB) GetAccountRequestCounts(ctx context.Context) (map[int64]*AccountRe
 		COALESCE(SUM(CASE WHEN status_code < 400 AND %s THEN 1 ELSE 0 END), 0) AS success_count,
 		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0) AS error_count,
 		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0) AS retry_error_count,
-		COALESCE(SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END), 0) AS rate_limit_attempt_count
+		COALESCE(SUM(CASE WHEN status_code = 429 AND COALESCE(created_at >= (SELECT rate_limit_badge_cleared_at FROM usage_stats_baseline WHERE id=1), TRUE) THEN 1 ELSE 0 END), 0) AS rate_limit_attempt_count
 	FROM usage_logs
 	WHERE created_at >= $1 AND %s
 	GROUP BY account_id
@@ -7831,7 +7839,7 @@ func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scor
 		}
 		if len(credentialUpdates) > 0 {
 			current := decodeCredentials(currentRaw)
-			merged := mergeCredentialMaps(cloneCredentialUpdates(current), credentialUpdates)
+			merged := mergeCodexRouteCredentials(current, credentialUpdates)
 			if err := validateSessionCapacityCredentialUpdate(merged, credentialUpdates); err != nil {
 				return err
 			}
@@ -8053,7 +8061,7 @@ func (db *DB) batchUpdateAccountCredentials(ctx context.Context, tx *sql.Tx, cur
 		// Each account can start with a different value. Compare independently
 		// so an idempotent update for one row does not inherit another row's
 		// generation bump.
-		merged := mergeCredentialMaps(cloneCredentialUpdates(credentials), updates)
+		merged := mergeCodexRouteCredentials(credentials, updates)
 		if err := validateSessionCapacityCredentialUpdate(merged, updates); err != nil {
 			return err
 		}

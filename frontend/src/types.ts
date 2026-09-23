@@ -285,6 +285,9 @@ export interface AccountRow {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
+  codex_native_enabled?: boolean
+  codex_native_models?: string[]
+  codex_bps_models?: string[]
   codex_bps_enabled?: boolean
   codex_bps_image_trim_enabled?: boolean
   codex_native_compaction_only?: boolean
@@ -1444,6 +1447,9 @@ export interface UpdateAccountSchedulerRequest {
   dispatch_count_limit?: number | null
   scheduler_priority?: number | null
   custom_headers?: Record<string, string> | null
+  codex_native_enabled?: boolean
+  codex_native_models?: string[]
+  codex_bps_models?: string[]
   codex_bps_enabled?: boolean
   codex_bps_image_trim_enabled?: boolean
   codex_native_compaction_only?: boolean

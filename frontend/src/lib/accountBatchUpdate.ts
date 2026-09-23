@@ -14,6 +14,11 @@ export interface BuildBatchMetadataUpdateOptions {
   skipWarmTier?: boolean;
   updateSchedulerPriority: boolean;
   schedulerPriority: number | null;
+  updateCodexNativeEnabled?: boolean;
+  codexNativeEnabled?: boolean;
+  updateCodexRouteModels?: boolean;
+  codexNativeModels?: string[];
+  codexBPSModels?: string[];
   updateCodexBPSEnabled?: boolean;
   updateCodexBPSImageTrimEnabled?: boolean;
   updateCodexNativeCompactionOnly?: boolean;
@@ -43,6 +48,11 @@ export function buildBatchMetadataUpdate({
   skipWarmTier,
   updateSchedulerPriority,
   schedulerPriority,
+  updateCodexNativeEnabled,
+  codexNativeEnabled,
+  updateCodexRouteModels,
+  codexNativeModels,
+  codexBPSModels,
   updateCodexBPSEnabled,
   updateCodexBPSImageTrimEnabled,
   updateCodexNativeCompactionOnly,
@@ -65,6 +75,11 @@ export function buildBatchMetadataUpdate({
     payload.base_concurrency_override = baseConcurrency;
   if (updateSkipWarmTier) payload.skip_warm_tier = skipWarmTier ?? false;
   if (updateSchedulerPriority) payload.scheduler_priority = schedulerPriority;
+  if (updateCodexNativeEnabled) payload.codex_native_enabled = codexNativeEnabled ?? true;
+  if (updateCodexRouteModels) {
+    payload.codex_native_models = [...(codexNativeModels ?? [])];
+    payload.codex_bps_models = [...(codexBPSModels ?? [])];
+  }
   if (updateCodexBPSEnabled) payload.codex_bps_enabled = codexBPSEnabled ?? false;
   if (updateCodexBPSImageTrimEnabled) payload.codex_bps_image_trim_enabled = codexBPSImageTrimEnabled ?? false;
   if (updateCodexNativeCompactionOnly) payload.codex_native_compaction_only = codexNativeCompactionOnly ?? false;

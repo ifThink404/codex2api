@@ -62,7 +62,7 @@ func (db *DB) getAccountRequestCountsByIDs(ctx context.Context, ids []int64, wit
 			COALESCE(SUM(CASE WHEN status_code < 400 AND %s THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status_code = 429 AND COALESCE(created_at >= (SELECT rate_limit_badge_cleared_at FROM usage_stats_baseline WHERE id=1), TRUE) THEN 1 ELSE 0 END), 0)
 		FROM usage_logs
 		WHERE created_at >= $1 AND %s AND %s
 		GROUP BY account_id`, retryFalse, retryFalse, retryTrue, db.endUserUsageLogPredicate(), idFilter)

@@ -74,17 +74,20 @@ type PromptSafetyDiagnostic struct {
 }
 
 type SessionAccountFailoverDiagnostic struct {
-	Result            string                    `json:"result"`
-	Reason            string                    `json:"reason,omitempty"`
-	TriggerReason     string                    `json:"trigger_reason,omitempty"`
-	BlockReason       string                    `json:"block_reason,omitempty"`
-	Phase             string                    `json:"phase,omitempty"`
-	PreviousAccountID int64                     `json:"previous_account_id,omitempty"`
-	AccountID         int64                     `json:"account_id,omitempty"`
-	Generation        uint64                    `json:"generation"`
-	ContextBlockers   []SessionContextBlocker   `json:"context_blockers,omitempty"`
-	ContextCleanup    *SessionContextCleanup    `json:"context_cleanup,omitempty"`
-	Selection         *SessionFailoverSelection `json:"selection,omitempty"`
+	PreviousUpstreamMode        string                    `json:"previous_upstream_mode,omitempty"`
+	UpstreamMode                string                    `json:"upstream_mode,omitempty"`
+	OriginalAccountBPSAttempted bool                      `json:"original_account_bps_attempted,omitempty"`
+	Result                      string                    `json:"result"`
+	Reason                      string                    `json:"reason,omitempty"`
+	TriggerReason               string                    `json:"trigger_reason,omitempty"`
+	BlockReason                 string                    `json:"block_reason,omitempty"`
+	Phase                       string                    `json:"phase,omitempty"`
+	PreviousAccountID           int64                     `json:"previous_account_id,omitempty"`
+	AccountID                   int64                     `json:"account_id,omitempty"`
+	Generation                  uint64                    `json:"generation"`
+	ContextBlockers             []SessionContextBlocker   `json:"context_blockers,omitempty"`
+	ContextCleanup              *SessionContextCleanup    `json:"context_cleanup,omitempty"`
+	Selection                   *SessionFailoverSelection `json:"selection,omitempty"`
 }
 
 type SessionFailoverSelection struct {

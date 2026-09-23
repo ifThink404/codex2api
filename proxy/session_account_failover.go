@@ -232,6 +232,9 @@ func (handler *Handler) sessionFailoverReasonForRequest(request *gin.Context, ac
 	if reason := sessionAccountFailoverReason(account, policy); reason != "" {
 		return reason
 	}
+	if reason := codexRouteFailureForRequest(request.Request.Context(), account); reason != "" {
+		return reason
+	}
 	if account != nil && account.SessionCapacityLimits().Enabled && !handler.store.CanAdmitAccountSession(account, key, time.Now(), selectionTraceForRequest(request)) {
 		return "account_session_capacity_full"
 	}
@@ -255,7 +258,7 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 	if reason == "" {
 		return false, nil
 	}
-	diagnostic := &sessionAccountFailoverDiagnostic{Result: "blocked", Reason: reason, TriggerReason: reason, Phase: "before_switch", PreviousAccountID: owner.ID(), Generation: state.Record.FailoverCount}
+	diagnostic := &sessionAccountFailoverDiagnostic{PreviousUpstreamMode: normalizedCodexRoute(state.Record.UpstreamMode), Result: "blocked", Reason: reason, TriggerReason: reason, Phase: "before_switch", PreviousAccountID: owner.ID(), Generation: state.Record.FailoverCount}
 	state.Diagnostic.AccountFailover = diagnostic
 	usageRequestDiagnosticState(request).AccountFailover = diagnostic
 	preserveInput := CurrentRuntimeSettings().CodexSessionFailoverPreserveInput || state.Record.PreserveRestartInput
@@ -369,11 +372,16 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 	}()
 	eligible := func(account *auth.Account) bool {
-		mode := entry.Record.UpstreamMode
-		if mode == "" {
-			mode = "native"
+		info := codexRouteRequestInfo(ctx)
+		prior := entry.Record.UpstreamMode
+		if floor, _ := ctx.Value(codexRouteFloorKey{}).(string); floor == "bps" {
+			prior = "bps"
 		}
-		if codexAccountUpstreamMode(account) != mode {
+		mode := selectCodexRoute(account, info.Model, prior, info.Auxiliary)
+		if account.ID() == old.ID() && mode != "bps" {
+			return false
+		}
+		if mode == "" {
 			trace.RejectAccount(account.ID(), "upstream_mode_mismatch")
 			return false
 		}
@@ -387,7 +395,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			trace.RejectAccount(account.ID(), "window_grant_capacity_mismatch")
 			return false
 		}
-		if account.IsRelayStyle() || account.EffectiveAccountID() == "" || account.EffectiveAccountID() == old.EffectiveAccountID() {
+		if account.IsRelayStyle() || account.EffectiveAccountID() == "" || account.ID() != old.ID() && account.EffectiveAccountID() == old.EffectiveAccountID() {
 			trace.RejectAccount(account.ID(), "account_identity_ineligible")
 			return false
 		}
@@ -401,14 +409,36 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		return true
 	}
+	tryOriginalBPS := normalizedCodexRoute(entry.Record.UpstreamMode) == "native" && codexRouteFailureForRequest(ctx, old) != "" && sessionAccountFailoverReason(old, policy) == ""
 	for range 16 {
 		selection.Attempts++
-		candidate := handler.store.NextExcludingWithDispatch(apiKeyID, excluded, eligible, policy, trace)
+		var candidate *auth.Account
+		if tryOriginalBPS {
+			tryOriginalBPS = false
+			plan.Diagnostic.OriginalAccountBPSAttempted = true
+			if !exclude[old.ID()] {
+				candidate = handler.store.NextExcludingWithDispatch(apiKeyID, exclude, func(a *auth.Account) bool { return a.ID() == old.ID() && eligible(a) }, policy, trace)
+			}
+		}
+		if candidate == nil {
+			candidate = handler.store.NextExcludingWithDispatch(apiKeyID, excluded, eligible, policy, trace)
+		}
 		if candidate == nil {
 			break
 		}
 		excluded[candidate.ID()] = true
+		info := codexRouteRequestInfo(ctx)
+		prior := entry.Record.UpstreamMode
+		if floor, _ := ctx.Value(codexRouteFloorKey{}).(string); floor == "bps" {
+			prior = "bps"
+		}
+		targetMode := selectCodexRoute(candidate, info.Model, prior, info.Auxiliary)
+		if targetMode == "" {
+			handler.store.Release(candidate)
+			continue
+		}
 		preview := entry.Record
+		preview.UpstreamMode = targetMode
 		preview.AccountID, preview.FailoverCount = candidate.ID(), entry.Record.FailoverCount+1
 		preview.OutboundWindowReset = true
 		preview.OutboundWindowBases = map[string]uint64{state.ThreadID: state.Number}
@@ -426,12 +456,14 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			continue
 		}
 		if !old.HasExactGroupIDs(ownerGroups) || !candidate.HasExactGroupIDs(ownerGroups) {
-			handler.store.RemoveAccountSession(candidate.ID(), key)
+			if candidate.ID() != old.ID() {
+				handler.store.RemoveAccountSession(candidate.ID(), key)
+			}
 			handler.store.Release(candidate)
 			plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "account_groups_changed"
 			return nil, "", true
 		}
-		input := database.SessionAccountFailover{RootKey: state.Key, AffinityKey: key, ExpectedAccountID: old.ID(), AccountID: candidate.ID(), ExpectedGeneration: entry.Record.FailoverCount, Reason: plan.Diagnostic.Reason, At: time.Now().UTC(), ResetOutboundWindow: true, WindowThreadID: state.ThreadID, WindowNumber: state.Number}
+		input := database.SessionAccountFailover{RootKey: state.Key, AffinityKey: key, ExpectedAccountID: old.ID(), AccountID: candidate.ID(), ExpectedGeneration: entry.Record.FailoverCount, UpstreamMode: targetMode, Reason: plan.Diagnostic.Reason, At: time.Now().UTC(), ResetOutboundWindow: true, WindowThreadID: state.ThreadID, WindowNumber: state.Number}
 		input.WindowContextID = fingerprint.accountWindowInputs[state.ThreadID].ContextID
 		input.LossyContextRestart = true
 		input.PreserveRestartInput = plan.PreserveInput
@@ -443,12 +475,16 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		committed, updatedGrant, commitErr := handler.db.SwitchSessionContinuityAccount(ctx, input)
 		if commitErr != nil {
-			handler.store.RemoveAccountSession(candidate.ID(), key)
+			if candidate.ID() != old.ID() {
+				handler.store.RemoveAccountSession(candidate.ID(), key)
+			}
 			handler.store.Release(candidate)
 			plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "ownership_commit_failed"
 			return nil, "", true
 		}
-		handler.store.UnbindSessionAffinity(key, old.ID())
+		if candidate.ID() != old.ID() {
+			handler.store.UnbindSessionAffinity(key, old.ID())
+		}
 		handler.store.BindSessionAffinity(key, candidate, candidate.GetProxyURL())
 		handler.cacheSessionContinuity(state.Key, sessionContinuityCacheEntry{Record: committed, CheckedAt: time.Now(), WrittenAt: time.Now()})
 		state.Record = committed
@@ -458,6 +494,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		selectionTraceForRequest(request).PinAccount(candidate.ID())
 		plan.Diagnostic.Result, plan.Diagnostic.AccountID, plan.Diagnostic.Generation = "switched", candidate.ID(), committed.FailoverCount
 		plan.Diagnostic.Phase = "after_switch"
+		plan.Diagnostic.UpstreamMode = committed.UpstreamMode
 		recordUsageRootAccount(request, candidate.ID(), true)
 		if updatedGrant != nil && grant != nil {
 			grant.Grant = *updatedGrant

@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2005,7 +2006,7 @@ func TestParseImportJSONTokensStreamMatchesFullParse(t *testing.T) {
 				t.Fatalf("len mismatch: full=%d stream=%d\nfull=%+v\nstream=%+v", len(full), len(stream), full, stream)
 			}
 			for i := range full {
-				if full[i] != stream[i] {
+				if !reflect.DeepEqual(full[i], stream[i]) {
 					t.Fatalf("token[%d] mismatch:\n full=%+v\n strm=%+v", i, full[i], stream[i])
 				}
 			}

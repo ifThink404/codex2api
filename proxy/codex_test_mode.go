@@ -40,7 +40,7 @@ func ValidateCodexTestMode(ctx context.Context, account *auth.Account) error {
 	return nil
 }
 
-func CodexTestModeLabel(ctx context.Context, account *auth.Account) string {
+func CodexTestModeLabel(ctx context.Context, account *auth.Account, models ...string) string {
 	mode, _ := ctx.Value(codexTestModeKey{}).(string)
 	if mode != "" && mode != "auto" {
 		return mode
@@ -48,7 +48,7 @@ func CodexTestModeLabel(ctx context.Context, account *auth.Account) string {
 	if account == nil || account.IsRelayStyle() {
 		return "account"
 	}
-	if account.CodexBPSEnabled() {
+	if route, err := codexRequestRouteMode(ctx, account, models...); err == nil && route == "bps" {
 		return "bps"
 	}
 	return "codex"

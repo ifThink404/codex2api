@@ -34,7 +34,12 @@ func (handler *Handler) commitContinuityRestart(request *gin.Context, account *a
 	}
 	next := state.Record
 	if next.AccountID == 0 {
-		next.UpstreamMode = codexAccountUpstreamMode(account)
+		info := codexRouteRequestInfo(request.Request.Context())
+		floor, _ := request.Request.Context().Value(codexRouteFloorKey{}).(string)
+		next.UpstreamMode = selectCodexRoute(account, info.Model, floor, info.Auxiliary)
+		if next.UpstreamMode == "" {
+			return sessionModelUnavailableError(request)
+		}
 	}
 	next.AccountID, next.ThreadID, next.Number, next.NumberKnown = account.ID(), state.ThreadID, state.Number, true
 	next.LastSeen, next.LastFailoverReason = state.StartedAt, "continuity_"+state.RestartReason

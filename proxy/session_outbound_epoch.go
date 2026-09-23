@@ -41,6 +41,7 @@ func (epoch *sessionOutboundEpoch) identityKey() string {
 func (handler *Handler) attachSessionOutboundEpoch(request *gin.Context, key string, record database.SessionContinuityRecord) {
 	var epoch *sessionOutboundEpoch
 	if key != "" && record.AccountID > 0 {
+		usageRequestDiagnosticState(request).UpstreamRoute = &codexRouteDiagnostic{Mode: normalizedCodexRoute(record.UpstreamMode), AccountID: record.AccountID, Generation: record.FailoverCount}
 		epoch = &sessionOutboundEpoch{handler: handler, key: key, record: record, owner: responseCacheOwnerForRequest(request, requestAPIKeyID(request))}
 		if handler.store != nil {
 			if account := handler.store.FindByID(record.AccountID); account != nil {
@@ -50,7 +51,7 @@ func (handler *Handler) attachSessionOutboundEpoch(request *gin.Context, key str
 		if record.LossyContextRestart {
 			state := usageRequestDiagnosticState(request)
 			if state.AccountFailover == nil {
-				state.AccountFailover = &sessionAccountFailoverDiagnostic{Result: "restored", Phase: "after_switch", Reason: record.LastFailoverReason, PreviousAccountID: record.PreviousAccountID, AccountID: record.AccountID, Generation: record.FailoverCount}
+				state.AccountFailover = &sessionAccountFailoverDiagnostic{UpstreamMode: normalizedCodexRoute(record.UpstreamMode), Result: "restored", Phase: "after_switch", Reason: record.LastFailoverReason, PreviousAccountID: record.PreviousAccountID, AccountID: record.AccountID, Generation: record.FailoverCount}
 			}
 			epoch.diagnostic = state.AccountFailover
 		}
@@ -83,7 +84,7 @@ func validateSessionOutboundEpoch(ctx context.Context, account *auth.Account) er
 		return nil
 	}
 	entry, found, err := epoch.handler.readSessionContinuity(ctx, epoch.key)
-	if err != nil || !found || entry.Record.AccountID != epoch.record.AccountID || entry.Record.FailoverCount != epoch.record.FailoverCount || entry.Record.OutboundWindowReset != epoch.record.OutboundWindowReset {
+	if err != nil || !found || entry.Record.AccountID != epoch.record.AccountID || entry.Record.FailoverCount != epoch.record.FailoverCount || normalizedCodexRoute(entry.Record.UpstreamMode) != normalizedCodexRoute(epoch.record.UpstreamMode) || entry.Record.OutboundWindowReset != epoch.record.OutboundWindowReset {
 		return codexAccountIdentityError("会话账号迁移段已变化或暂时无法核实，请重新发起请求。")
 	}
 	return nil

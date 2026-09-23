@@ -104,12 +104,18 @@ func (a *Account) sparkUsageExhaustedLocked(now time.Time) bool {
 // SparkDispatchUsageLimited reports that the account is blocked only because
 // the independent spark window is full. Used to return 429 instead of 503.
 func (a *Account) SparkDispatchUsageLimited() bool {
-	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 || atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if a == nil {
 		return false
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	now := time.Now()
+	return a.sparkDispatchUsageLimitedLocked(time.Now())
+}
+
+func (a *Account) sparkDispatchUsageLimitedLocked(now time.Time) bool {
+	if atomic.LoadInt32(&a.Disabled) != 0 || atomic.LoadInt32(&a.DispatchPaused) != 0 {
+		return false
+	}
 	if a.Status == StatusError || a.healthTierLocked() == HealthTierBanned || !a.hasDispatchCredentialLocked() {
 		return false
 	}

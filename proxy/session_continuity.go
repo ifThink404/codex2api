@@ -409,7 +409,12 @@ func (handler *Handler) commitSessionContinuity(request *gin.Context, account *a
 	next := entry.Record
 	next.AccountID, next.LastSeen = account.ID(), state.StartedAt
 	if !found {
-		next.UpstreamMode = codexAccountUpstreamMode(account)
+		info := codexRouteRequestInfo(request.Request.Context())
+		floor, _ := request.Request.Context().Value(codexRouteFloorKey{}).(string)
+		next.UpstreamMode = selectCodexRoute(account, info.Model, floor, info.Auxiliary)
+		if next.UpstreamMode == "" {
+			return sessionModelUnavailableError(request)
+		}
 	}
 	trackNumber := state.Known && state.ThreadID != "" && (next.ThreadID == "" || next.ThreadID == state.ThreadID)
 	changed := !found || trackNumber && (!next.NumberKnown || state.Number > next.Number)

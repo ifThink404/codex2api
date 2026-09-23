@@ -835,6 +835,7 @@
     "activeRequestsTooltip": "{{count}} request(s) in progress",
     "occupiedRequestsTooltip": "{{active}} live request(s), {{occupied}} occupied slot(s), including {{buffered}} buffered session slot(s)",
     "requests": "Requests(7d)",
+    "rateLimitBadgeHint": "429 attempts in retained logs from the last 7 days. Resets when logs are cleared.",
     "requestSuccess": "Successful requests",
     "requestError": "Failed requests",
     "requestSuccessTooltipAria": "{{count}} successful requests. Hover for model breakdown",

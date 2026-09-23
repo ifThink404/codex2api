@@ -543,7 +543,7 @@ func accountFilterForModel(model string) auth.AccountFilter {
 		if model != "" && account.IsModelRateLimited(model) {
 			return false
 		}
-		if !account.SupportsCodexModel(model) {
+		if !account.SupportsCodexModel(model) || selectCodexRoute(account, "", "", true) == "" {
 			return false
 		}
 		if isProOnlyModel(model) {
@@ -570,7 +570,8 @@ func passiveInternalAccountEligible(account *auth.Account, effectiveModel string
 // applyPassiveInternalModelRouting bypasses model lists for classified internal
 // requests. Existing roots retain their account; rootless requests use normal
 // scheduling without creating a replacement root binding.
-func (h *Handler) applyPassiveInternalModelRouting(c *gin.Context, effectiveModel string, identity requestSessionIdentity, affinityKey string, allowRelay bool, filter auth.AccountFilter) auth.AccountFilter {
+func (h *Handler) applyPassiveInternalModelRouting(c *gin.Context, effectiveModel string, identity requestSessionIdentity, affinityKey string, allowRelay bool, filter auth.AccountFilter) (result auth.AccountFilter) {
+	defer func() { result = codexRouteAccountFilter(c, result) }()
 	h.recordUsageAuthorization(c, "dispatch")
 	allowModelBypass := h.passiveInternalModelsAllowed(c)
 	if identity.requiresRootAccount && (!identity.relatedToRoot || identity.unlinkedFallbackOnly) {
@@ -4245,6 +4246,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		return
 	}
 	if compactionAffinity.Known {
+		applyCompactionRouteFloor(c, compactionAffinity)
 		accountFilter = compactionDomainFilter(compactionAffinity.CompatibilityDomain, accountFilter, selectionTraceForRequest(c))
 	}
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
@@ -4294,6 +4296,9 @@ func (h *Handler) Responses(c *gin.Context) {
 	if bodyPreparation.PreviousResponseID != "" {
 		lookupCtx, cancel := context.WithTimeout(c.Request.Context(), 300*time.Millisecond)
 		previousResponseAffinity, previousResponseAffinityFound = lookupResponseAccountAffinity(lookupCtx, h.cache, respCacheOwner, bodyPreparation.PreviousResponseID)
+		if previousResponseAffinityFound && previousResponseAffinity.UpstreamMode == "bps" {
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteFloorKey{}, "bps"))
+		}
 		cancel()
 	}
 	var affinityGuard auth.SessionAffinityGuard
@@ -4364,16 +4369,11 @@ func (h *Handler) Responses(c *gin.Context) {
 				return
 			}
 			selectionTraceForRequest(c).Freeze()
-			if h.store.HasUsageLimitedCandidateWithDispatch(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
-				if isStream && writeCommittedResponsesRetryError(c, "Codex account usage window limit reached") {
+			if windowError := h.accountWindowUnavailableAPIError(c, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy, affinityKey); windowError != nil {
+				if isStream && writeCommittedResponsesLocalError(c, windowError) {
 					return
 				}
-				SendAPIKeyLimitError(c, http.StatusTooManyRequests, "Codex 账号用量窗口已达上限")
-				return
-			}
-			selectionTraceForRequest(c).Freeze()
-			if h.store.HasSessionCapacityExhaustionWithDispatch(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy, affinityKey, time.Now()) {
-				SendAccountSessionCapacityError(c)
+				api.SendError(c, windowError)
 				return
 			}
 			if continuationUnavailable && !relayContinuationAttempted {
@@ -6393,6 +6393,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	if bodyPreparation.PreviousResponseID != "" {
 		lookupCtx, cancel := context.WithTimeout(c.Request.Context(), 300*time.Millisecond)
 		previousResponseAffinity, previousResponseAffinityFound = lookupResponseAccountAffinity(lookupCtx, h.cache, respCacheOwner, bodyPreparation.PreviousResponseID)
+		if previousResponseAffinityFound && previousResponseAffinity.UpstreamMode == "bps" {
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteFloorKey{}, "bps"))
+		}
 		cancel()
 	}
 	continuationStatus, continuationReason, continuationUnavailable := responseCachePreparationFailure(bodyPreparation)
@@ -6447,6 +6450,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		return
 	}
 	if compactionAffinity.Known {
+		applyCompactionRouteFloor(c, compactionAffinity)
 		accountFilter = compactionDomainFilter(compactionAffinity.CompatibilityDomain, accountFilter, selectionTraceForRequest(c))
 	}
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
@@ -6863,10 +6867,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		// compact（会话压缩续写）刻意保留确定性 IsolateCodexSessionID、不走 resolveUpstreamSessionID
 		// 的默认隔离：压缩本身是对同一会话的延续，需要稳定的 prompt_cache_key 维持缓存连续性。
 		upstreamSessionID := IsolateCodexSessionID(apiKeyID, sessionIdentity.upstreamSeed)
-		// compact_via_responses_enabled：上游已下线 /responses/compact 专用端点（404），
+		// compact_via_responses_enabled：兼容不支持 /responses/compact 的原生上游，
 		// 开启后官方账号改走 /responses + compaction_trigger 的 body-signal 形态
 		// （强制 HTTP SSE），成功后聚合回 compact 的一次性 JSON。
-		compactViaResponses := CurrentRuntimeSettings().CompactViaResponses
+		routeMode, routeErr := codexRequestRouteMode(c.Request.Context(), account, effectiveModel)
+		compactViaResponses := routeErr == nil && routeMode == "native" && CurrentRuntimeSettings().CompactViaResponses
 		upstreamEndpointLabel := "/v1/responses/compact"
 		var resp *http.Response
 		var reqErr error

@@ -129,8 +129,9 @@ func TestBPSRoutePinnedToDurableRootAndPassiveRequests(t *testing.T) {
 	require.Equal(t, "bps", record.UpstreamMode)
 	a.CodexBPS = false
 	use, err := codexRequestUsesBPS(c.Request.Context(), a)
-	require.NoError(t, err)
-	require.True(t, use)
+	require.Error(t, err)
+	require.False(t, use)
+	a.CodexBPS = true
 	h.continuityRecords = nil // Restart/cache eviction: child resolves the same persisted parent.
 	ctx := context.WithValue(t.Context(), protocolIdentityKey{}, &responseIdentitySession{handler: h, root: key, rootKey: hashRiskIdentity(key)})
 	use, err = codexRequestUsesBPS(ctx, a)
@@ -139,13 +140,15 @@ func TestBPSRoutePinnedToDurableRootAndPassiveRequests(t *testing.T) {
 	_, err = h.db.CommitSessionContinuity(t.Context(), "old-root", database.SessionContinuityRecord{AccountID: a.ID(), ThreadID: continuityTestThread})
 	require.NoError(t, err)
 	a.CodexBPS = true
+	native := true
+	a.CodexNative = &native
 	ctx = context.WithValue(t.Context(), protocolIdentityKey{}, &responseIdentitySession{handler: h, root: "old", rootKey: "old-root"})
 	use, err = codexRequestUsesBPS(ctx, a)
 	require.NoError(t, err)
 	require.False(t, use)
 	use, err = codexRequestUsesBPS(t.Context(), a)
 	require.NoError(t, err)
-	require.True(t, use) // fresh probe
+	require.False(t, use) // New dual-path requests prefer native.
 }
 
 func TestBPSMetadataPrivacyPreservesToolBusinessData(t *testing.T) {
@@ -170,8 +173,9 @@ func TestBPSUnboundContinuityRestartPinsMode(t *testing.T) {
 	require.Equal(t, "bps", state.Record.UpstreamMode)
 	a.CodexBPS = false
 	use, err := codexRequestUsesBPS(c.Request.Context(), a)
-	require.NoError(t, err)
-	require.True(t, use)
+	require.Error(t, err)
+	require.False(t, use)
+	a.CodexBPS = true
 	record, found, err := h.db.ReadSessionContinuity(t.Context(), state.Key)
 	require.NoError(t, err)
 	require.True(t, found)

@@ -21,6 +21,7 @@ const responseAccountAffinityTTL = time.Hour
 const responseAccountAffinityNamespace = "codex-response-account-v1"
 
 type responseAccountAffinity struct {
+	UpstreamMode    string    `json:"upstream_mode,omitempty"`
 	AccountID       int64     `json:"account_id"`
 	Owner           string    `json:"owner"`
 	AffinityKey     string    `json:"affinity_key,omitempty"`
@@ -92,7 +93,15 @@ func (h *Handler) recordResponseAccountAffinity(owner, responseID string, accoun
 		record.LocalAlias = h.db.IsManagedCodexResponseID(responseID)
 	}
 	if len(contexts) > 0 {
-		record.OutboundSegment = outboundEpochFromContext(contexts[0]).identityKey()
+		epoch := outboundEpochFromContext(contexts[0])
+		record.OutboundSegment = epoch.identityKey()
+		if epoch != nil {
+			record.UpstreamMode = normalizedCodexRoute(epoch.record.UpstreamMode)
+		} else if h != nil && h.store != nil {
+			if account := h.store.FindByID(accountID); account != nil && !account.IsRelayStyle() {
+				record.UpstreamMode, _ = codexRequestRouteMode(contexts[0], account, model)
+			}
+		}
 	}
 	key := responseAffinityKey(owner, responseID)
 	responseAffinityLocal.Lock()

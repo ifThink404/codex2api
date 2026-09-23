@@ -173,6 +173,9 @@ type Account struct {
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode      string
 	CodexBPS                  bool
+	CodexNative               *bool
+	CodexNativeModels         []string
+	CodexBPSModels            []string
 	CodexBPSImageTrim         bool
 	CodexNativeCompactionOnly bool
 	CodexInstallationID       string
@@ -1881,12 +1884,18 @@ func (a *Account) UsageLimitContinuationEligible() bool {
 // account is blocked specifically by a usage-limit observation. It lets API
 // handlers return 429 instead of misreporting an exhausted pool as 503.
 func (a *Account) FreshDispatchUsageLimited() bool {
-	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 || atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if a == nil {
 		return false
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	now := time.Now()
+	return a.freshDispatchUsageLimitedLocked(time.Now())
+}
+
+func (a *Account) freshDispatchUsageLimitedLocked(now time.Time) bool {
+	if atomic.LoadInt32(&a.Disabled) != 0 || atomic.LoadInt32(&a.DispatchPaused) != 0 {
+		return false
+	}
 	if a.Status == StatusError || a.healthTierLocked() == HealthTierBanned || !a.hasDispatchCredentialLocked() {
 		return false
 	}
@@ -5331,6 +5340,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CodexClientMetadataMode:       codexClientMetadataMode,
 		CodexFingerprintMode:          codexFingerprintMode,
 		CodexBPS:                      row.GetCredentialBool(CodexBPSEnabledCredentialKey),
+		CodexNative:                   CodexNativeEnabledFromRow(row),
+		CodexNativeModels:             row.GetCredentialStringSlice(CodexNativeModelsCredentialKey),
+		CodexBPSModels:                row.GetCredentialStringSlice(CodexBPSModelsCredentialKey),
 		CodexBPSImageTrim:             row.GetCredentialBool(CodexBPSImageTrimCredentialKey),
 		CodexNativeCompactionOnly:     row.GetCredentialBool(CodexNativeCompactionOnlyCredentialKey),
 		CodexInstallationID:           installationID,
@@ -7887,38 +7899,8 @@ func (s *Store) HasUsageLimitedCandidateWithFilter(apiKeyID int64, exclude map[i
 }
 
 func (s *Store) HasUsageLimitedCandidateWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) bool {
-	if s == nil {
-		return false
-	}
-	filter = s.withUsableEgressFilter(filter)
-	for _, acc := range s.accountSnapshotAccounts() {
-		if acc == nil || (exclude != nil && exclude[acc.DBID]) {
-			continue
-		}
-		if !s.accountAllowedForAPIKey(acc, apiKeyID) {
-			continue
-		}
-		if filter != nil && !filter(acc) {
-			continue
-		}
-		cachedCooldown := s.accountHasCachedCooldown(acc)
-		usageLimited := acc.FreshDispatchUsageLimited()
-		if policy == DispatchPolicySpark {
-			usageLimited = acc.SparkDispatchUsageLimited()
-		}
-		if cachedCooldown && !usageLimited {
-			if policy == DispatchPolicySpark && acc.SparkDispatchEligible() {
-				continue
-			}
-			if policy != DispatchPolicySpark {
-				continue
-			}
-		}
-		if usageLimited {
-			return true
-		}
-	}
-	return false
+	_, limited := s.UsageLimitRecoveryWithDispatch(apiKeyID, exclude, filter, policy)
+	return limited
 }
 
 func (s *Store) hasContinuationCandidateWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter) bool {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // attempt_index 是 1-based：首次尝试写 1，第一次重试写 2。请求构成里的「重试」曾经写成
@@ -54,6 +56,60 @@ func TestFeatureStatsRetryCountsOnlyRetryAttempts(t *testing.T) {
 	if got := detail.RetryRequests; got != 1 {
 		t.Fatalf("account RetryRequests = %d, want 1", got)
 	}
+}
+
+func TestClearUsageLogsResets429BadgeAndKeepsHistory(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "429-badge.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	ctx := t.Context()
+	const id int64 = 42
+	for _, entry := range []*UsageLogInput{
+		{AccountID: id, StatusCode: 200, TotalTokens: 100},
+		{AccountID: id, StatusCode: 429},
+		{AccountID: id, StatusCode: 429, IsRetryAttempt: true},
+	} {
+		require.NoError(t, db.InsertUsageLog(ctx, entry))
+	}
+	db.FlushUsageLogs()
+	checkBadge := func(want int64) {
+		t.Helper()
+		for _, read := range []func() (map[int64]*AccountRequestCount, error){
+			func() (map[int64]*AccountRequestCount, error) { return db.GetAccountRequestCounts(ctx) },
+			func() (map[int64]*AccountRequestCount, error) {
+				return db.GetAccountRequestCountsByIDs(ctx, []int64{id})
+			},
+			func() (map[int64]*AccountRequestCount, error) {
+				return db.GetAccountRequestCountTotalsByIDs(ctx, []int64{id})
+			},
+		} {
+			counts, err := read()
+			require.NoError(t, err)
+			require.NotNil(t, counts[id])
+			require.Equal(t, want, counts[id].RateLimitAttemptCount)
+		}
+	}
+	checkBadge(2)
+	before, err := db.GetAccountUsageStats(ctx, id, 0)
+	require.NoError(t, err)
+	require.NoError(t, db.ClearUsageLogs(ctx))
+	checkBadge(0)
+	after, err := db.GetAccountUsageStats(ctx, id, 0)
+	require.NoError(t, err)
+	require.Equal(t, before.TotalRequests, after.TotalRequests)
+	require.Equal(t, before.TotalTokens, after.TotalTokens)
+	archived, err := db.archivedAccountRequestCounts(ctx, time.Now().Add(-time.Hour), []int64{id})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), archived[id].RateLimitAttemptCount)
+	// A delayed writer retains its original event time and must not look new.
+	_, err = db.conn.ExecContext(ctx, `INSERT INTO usage_logs(account_id,status_code,created_at) VALUES($1,429,$2)`, id, db.timeArg(time.Now().Add(-time.Minute)))
+	require.NoError(t, err)
+	checkBadge(0)
+	require.NoError(t, db.InsertUsageLog(ctx, &UsageLogInput{AccountID: id, StatusCode: 429}))
+	db.FlushUsageLogs()
+	checkBadge(1)
+	require.NoError(t, db.ClearUsageLogs(ctx))
+	checkBadge(0)
 }
 
 func TestAccountRequestCountsExcludeClientCanceledAndKeepRawUsage(t *testing.T) {

@@ -157,3 +157,12 @@ test("BPS batch setting changes only when explicitly selected, including false",
   assert.deepEqual(buildBatchMetadataUpdate({...options, updateCodexBPSEnabled:true, codexBPSEnabled:true}), {ids:[1],codex_bps_enabled:true});
   assert.deepEqual(buildBatchMetadataUpdate({...options, updateCodexBPSEnabled:true, codexBPSEnabled:false}), {ids:[1],codex_bps_enabled:false});
 });
+
+
+test("Codex and BPS switches and models require explicit batch selection", () => {
+  const base = { ids: [1, 2], updateTags: false, tags: [], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, codexNativeEnabled: false, codexBPSEnabled: true, codexNativeModels: ["gpt-5.6-*"], codexBPSModels: ["gpt-6-*"] }), { ids: [1, 2] });
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, updateCodexNativeEnabled: true, codexNativeEnabled: false }), { ids: [1, 2], codex_native_enabled: false });
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, updateCodexBPSEnabled: true, codexBPSEnabled: false }), { ids: [1, 2], codex_bps_enabled: false });
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, updateCodexRouteModels: true, codexNativeModels: ["gpt-5.6-*"], codexBPSModels: [] }), { ids: [1, 2], codex_native_models: ["gpt-5.6-*"], codex_bps_models: [] });
+});
