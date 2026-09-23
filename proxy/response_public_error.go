@@ -19,7 +19,7 @@ var publicErrorParam = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.\[\]]{0,127}$`)
 
 func publicProtocolError(c *gin.Context, raw json.RawMessage) json.RawMessage {
 	body, _ := json.Marshal(map[string]json.RawMessage{"error": raw})
-	apiErr := publicUpstreamAPIError(c, body, 502, "upstream_error")
+	apiErr := publicUpstreamAPIError(c, body, 0, "upstream_error")
 	value := gjson.ParseBytes(raw)
 	encoded, _ := json.Marshal(apiErr)
 	var fields map[string]json.RawMessage
@@ -71,7 +71,17 @@ func publicErrorMessage(code string) (string, bool) {
 	return "", false
 }
 
-func publicUpstreamAPIError(c *gin.Context, body []byte, status int, fallbackCode string) (result *api.APIError) {
+func publicUpstreamAPIError(c *gin.Context, body []byte, status int, fallbackCode string) *api.APIError {
+	source, stage := "upstream_http", "http_response"
+	if status == 0 {
+		source, stage = "upstream_event", "response_error"
+	}
+	captureUpstreamErrorDiagnostic(c, body, status, source, stage)
+	publishUpstreamErrorHeader(c)
+	return normalizePublicUpstreamAPIError(c, body, status, fallbackCode)
+}
+
+func normalizePublicUpstreamAPIError(c *gin.Context, body []byte, status int, fallbackCode string) (result *api.APIError) {
 	defer func() {
 		if result == nil {
 			return
@@ -164,6 +174,9 @@ func publicUpstreamMessage(code string) string {
 // Run only on the client copy, after retry, billing and safety classification.
 // This function is shared by HTTP JSON, SSE, and WebSocket event writers.
 func publicResponseErrorPayload(c *gin.Context, data []byte) []byte {
+	if upstreamErrorEventPath(data) != "" {
+		captureUpstreamErrorDiagnostic(c, data, 0, "upstream_event", "response_error")
+	}
 	data = upstreamprivacy.Bytes(data)
 	parsed := gjson.ParseBytes(data)
 	if !parsed.IsObject() {
@@ -260,5 +273,9 @@ func publicResponseErrorPayload(c *gin.Context, data []byte) []byte {
 		out, _ := json.Marshal(object)
 		return out
 	}
-	return walk(data, false, 0)
+	result := []byte(walk(data, false, 0))
+	if c != nil && isResponsesWebSocketUpgradeRequest(c.Request) {
+		result = protectedUpstreamErrorWS(c, result)
+	}
+	return result
 }

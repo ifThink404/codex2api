@@ -163,6 +163,14 @@ func dispatchStreamError(ctx *gin.Context, message, code string) gin.H {
 		return gin.H{"message": failure.Message, "type": failure.Type, "code": failure.Code, "details": failure.Details}
 	}
 	err := gin.H{"message": publicUpstreamMessage(code), "type": "upstream_error", "code": code}
+	if message != dispatchPublicMessage {
+		body, _ := json.Marshal(gin.H{"error": gin.H{"message": message, "code": code, "type": "upstream_error"}})
+		captureUpstreamErrorDiagnostic(ctx, body, 0, "transport", "stream_read")
+		public, _ := json.Marshal(gin.H{"error": err})
+		if comment := upstreamErrorSSEComment(ctx, public); comment != "" {
+			_, _ = ctx.Writer.WriteString(comment)
+		}
+	}
 	if cached, ok := ctx.Get(dispatchFailureContextKey); ok && message == dispatchPublicMessage && (code == "upstream_error" || code == ErrorCodeUpstreamStreamBreak) {
 		if failure, valid := cached.(dispatchFailure); valid {
 			err["message"] = dispatchPublicMessage

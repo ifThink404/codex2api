@@ -89,6 +89,7 @@ func serviceErrorAuditForRequest(ctx *gin.Context) *serviceErrorAudit {
 }
 
 func resetServiceErrorFrame(ctx *gin.Context) {
+	ctx.Set(upstreamErrorDiagnosticKey, nil)
 	if previous := serviceErrorAuditForRequest(ctx); previous != nil {
 		ctx.Set(serviceErrorContextKey, &serviceErrorAudit{
 			started: time.Now(), authenticated: previous.authenticated, websocket: true,

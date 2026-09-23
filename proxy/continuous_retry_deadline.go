@@ -37,7 +37,9 @@ type continuousRetryDeadline struct {
 }
 
 type continuousRetryFailure struct {
-	status      int
+	status int
+	// Actual HTTP response status; status alone can be inferred from a stream or transport error.
+	httpStatus  int
 	body        []byte
 	contentType string
 }
@@ -237,6 +239,7 @@ func rememberContinuousRetryHTTPFailure(ctx context.Context, resp *http.Response
 	}
 	rememberContinuousRetryFailure(ctx, continuousRetryFailure{
 		status:      resp.StatusCode,
+		httpStatus:  resp.StatusCode,
 		body:        body,
 		contentType: resp.Header.Get("Content-Type"),
 	})
@@ -302,6 +305,7 @@ func rememberContinuousRetryFailure(ctx context.Context, failure continuousRetry
 	}
 	deadline.lastFailure = continuousRetryFailure{
 		status:      failure.status,
+		httpStatus:  failure.httpStatus,
 		body:        append([]byte(nil), failure.body...),
 		contentType: failure.contentType,
 	}
@@ -407,9 +411,15 @@ func writeContinuousRetryLastFailure(c *gin.Context, protocol continuousRetryHTT
 	if status < 400 || status > 599 {
 		status = http.StatusBadGateway
 	}
-	publicError := publicUpstreamAPIError(c, failure.body, status, "")
+	captureUpstreamErrorDiagnostic(c, failure.body, failure.httpStatus, "gateway", "retry_exhausted")
+	publishUpstreamErrorHeader(c)
+	publicError := normalizePublicUpstreamAPIError(c, failure.body, status, "")
 	message, code := publicError.Message, string(publicError.Code)
 	if retryKeepaliveCommitted(c) {
+		diagnosticEvent, _ := json.Marshal(gin.H{"error": publicError})
+		if comment := upstreamErrorSSEComment(c, diagnosticEvent); comment != "" {
+			_, _ = c.Writer.WriteString(comment)
+		}
 		var payload []byte
 		switch protocol {
 		case continuousRetryProtocolAnthropic:

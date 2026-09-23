@@ -695,7 +695,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			} else if compactionAffinity.Known {
 				apiErr = compactionUpstreamUnavailableAPIError()
 			} else if lastRetryableUpstreamErr != nil {
-				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
+				apiErr = diagnosticWSClientUpstreamAPIError(c, lastRetryableUpstreamErr, hideUpstreamErrors)
 			} else if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
 				apiErr = responsesWSUpstreamAPIError(lastStatusCode, lastBody)
 			} else if msg := scopeBudgetExhaustedMessage(c); msg != "" {
@@ -893,7 +893,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 					_ = writeAuditedResponsesWSError(c, conn, capacityError)
 					return newResponsesWSCloseError(responsesWSTerminalCloseCode(capacityError, websocket.CloseTryAgainLater), capacityError.Message, reqErr)
 				}
-				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+				clientErr := diagnosticWSClientUpstreamAPIError(c, apiErr, hideUpstreamErrors)
 				_ = writeAuditedResponsesWSError(c, conn, clientErr)
 				return newResponsesWSCloseError(websocket.CloseInternalServerErr, clientErr.Message, reqErr)
 			}
@@ -916,7 +916,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				continue
 			}
 			apiErr = lastRetryableUpstreamErr
-			clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+			clientErr := diagnosticWSClientUpstreamAPIError(c, apiErr, hideUpstreamErrors)
 			if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
@@ -1046,11 +1046,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				return nil
 			}
 
+			captureUpstreamErrorDiagnostic(c, errBody, resp.StatusCode, "upstream_http", "http_response")
 			apiErr = responsesWSUpstreamAPIError(resp.StatusCode, errBody)
 			if isUpstreamPromptSafetyRefusal(errBody) && !isExplicitUpstreamCyberPolicy(errBody) {
 				apiErr = upstreamPromptSafetyAPIError(c, errBody)
 			}
-			clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+			clientErr := diagnosticWSClientUpstreamAPIError(c, apiErr, hideUpstreamErrors)
 			if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
@@ -1122,8 +1123,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				if h.deferStickyStream429Cooldown(account, retryErr.outcome, retryErr.outcome.failurePayload, effectiveModel, true, continuousRetryPolicy) {
 					h.applyResponseFailedCooldown(account, retryErr.outcome.failurePayload, resp, effectiveModel)
 				}
+				captureUpstreamErrorDiagnostic(c, retryErr.outcome.failurePayload, 0, "upstream_event", "response_error")
 				apiErr = lastRetryableUpstreamErr
-				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+				clientErr := diagnosticWSClientUpstreamAPIError(c, apiErr, hideUpstreamErrors)
 				if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 					return errResponsesWSClientGone
 				}
@@ -1733,6 +1735,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		return newResponsesWSCloseError(responsesWSTerminalCloseCode(capacityError, websocket.CloseTryAgainLater), capacityError.Message, capacityError)
 	}
 	if abortedForErrorClose && !downstreamWrote {
+		captureUpstreamErrorDiagnostic(c, terminalFailurePayload, 0, "upstream_event", "response_error")
 		// 首 token 前上游失败且未向客户端写过任何帧:发结构化 error 帧后按错误类别
 		// 关闭连接,避免下游把"正常收尾的会话"当成功并按预估 input token 计费。
 		apiErr := api.NewAPIError(api.ErrCodeUpstreamError, outcome.failureMessage, api.ErrorTypeUpstream)
@@ -1745,7 +1748,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		}
 		clientErr := apiErr
 		if !preserveErrorCode {
-			clientErr = responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+			clientErr = diagnosticWSClientUpstreamAPIError(c, apiErr, hideUpstreamErrors)
 		}
 		if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 			return errResponsesWSClientGone
@@ -1766,8 +1769,9 @@ func (h *Handler) streamResponsesWSUpstream(
 		return nil
 	}
 	if outcome.logStatusCode != http.StatusOK && hideUpstreamErrors && len(terminalFailurePayload) > 0 && !downstreamWrote {
+		captureUpstreamErrorDiagnostic(c, terminalFailurePayload, 0, "upstream_event", "response_error")
 		apiErr := api.NewAPIError(api.ErrCodeUpstreamError, outcome.failureMessage, api.ErrorTypeUpstream)
-		clientErr := responsesWSClientUpstreamAPIError(apiErr, true)
+		clientErr := diagnosticWSClientUpstreamAPIError(c, apiErr, true)
 		if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 			return errResponsesWSClientGone
 		}
@@ -1782,7 +1786,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			errCode = api.ErrorCode(ErrorCodeUpstreamStreamBreak)
 		}
 		apiErr := api.NewAPIError(errCode, outcome.failureMessage, api.ErrorTypeUpstream)
-		clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+		clientErr := diagnosticWSClientUpstreamAPIError(c, apiErr, hideUpstreamErrors)
 		if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 			return errResponsesWSClientGone
 		}
@@ -1930,16 +1934,23 @@ func writeAuditedResponsesWSError(c *gin.Context, conn *websocket.Conn, apiErr *
 		if err != nil {
 			return err
 		}
-		return writeResponsesWSMessage(conn, encoded)
+		return writeResponsesWSMessage(conn, protectedUpstreamErrorWS(c, encoded))
 	}
 	if apiErr != nil && c != nil && c.GetString("responses_client_stream_id") != "" {
 		payload, err := json.Marshal(gin.H{"type": "error", "stream_id": c.GetString("responses_client_stream_id"), "status": api.HTTPStatusCode(apiErr.Code), "error": apiErr})
 		if err != nil {
 			return err
 		}
-		return writeResponsesWSMessage(conn, payload)
+		return writeResponsesWSMessage(conn, protectedUpstreamErrorWS(c, payload))
 	}
-	return writeResponsesWSError(conn, apiErr)
+	if apiErr == nil {
+		return writeResponsesWSError(conn, apiErr)
+	}
+	payload, err := json.Marshal(gin.H{"type": "error", "error": apiErr})
+	if err != nil {
+		return err
+	}
+	return writeResponsesWSMessage(conn, protectedUpstreamErrorWS(c, payload))
 }
 
 func writeResponsesWSError(conn *websocket.Conn, apiErr *api.APIError) error {

@@ -342,9 +342,24 @@ func ErrorToGinResponse(c *gin.Context, err error) {
 
 	var e *Error
 	if errors.As(err, &e) {
-		c.JSON(e.HTTPStatus, e.ToGinH())
+		if e.Type == ErrorTypeUpstreamError {
+			body := e.UpstreamErrorBody()
+			if e.Cause != nil {
+				body, _ = json.Marshal(gin.H{"error": gin.H{"code": e.Code, "type": e.Type, "message": e.Error()}})
+			}
+			// HTTPStatus on Error may be synthesized for a transport timeout.
+			// Only the transport observer can attest to an upstream HTTP response.
+			captureUpstreamErrorDiagnostic(c, body, 0, "gateway", "request_error")
+			publishUpstreamErrorHeader(c)
+			c.JSON(e.HTTPStatus, gin.H{"error": normalizePublicUpstreamAPIError(c, body, e.HTTPStatus, e.Code)})
+		} else {
+			c.JSON(e.HTTPStatus, e.ToGinH())
+		}
 		return
 	}
+	body, _ := json.Marshal(gin.H{"error": gin.H{"message": err.Error(), "code": ErrorCodeInternalError, "type": ErrorTypeServerError}})
+	captureUpstreamErrorDiagnostic(c, body, 0, "gateway", "request_error")
+	publishUpstreamErrorHeader(c)
 
 	// 兜底识别:WS 握手阶段的工作区停用错误若因任何原因未在 wsrelay 层转换成
 	// 结构化响应(文本形如 "websocket handshake failed: ... deactivated_workspace"),

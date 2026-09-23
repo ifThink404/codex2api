@@ -193,6 +193,9 @@ func writeDeferredSSEData(streamWriter *streamFlushWriter, pending *bytes.Buffer
 	}
 	data = publicResponseErrorPayload(streamWriter.clientContext, data)
 	if shouldDefer {
+		if pending != nil {
+			pending.WriteString(upstreamErrorSSEComment(streamWriter.clientContext, data))
+		}
 		appendSSEData(pending, data)
 		if pending != nil && pending.Len() <= pendingFirstTokenFlushBytes {
 			return false, nil
@@ -200,6 +203,7 @@ func writeDeferredSSEData(streamWriter *streamFlushWriter, pending *bytes.Buffer
 	}
 	if pending != nil && pending.Len() > 0 {
 		if !shouldDefer {
+			pending.WriteString(upstreamErrorSSEComment(streamWriter.clientContext, data))
 			appendSSEData(pending, data)
 		}
 		before := streamWriter.deliveredBytes()
@@ -316,6 +320,7 @@ func (w *streamFlushWriter) WriteSSEData(data []byte) error {
 	}
 	data = publicResponseErrorPayload(w.clientContext, data)
 	framed := make([]byte, 0, len(sseDataPrefix)+len(data)+len(sseDataSuffix))
+	framed = append(framed, upstreamErrorSSEComment(w.clientContext, data)...)
 	framed = append(framed, sseDataPrefix...)
 	framed = append(framed, data...)
 	framed = append(framed, sseDataSuffix...)
