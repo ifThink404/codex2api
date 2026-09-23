@@ -481,9 +481,6 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		if err := db.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("数据库迁移失败: %w", err)
 		}
-		if err := db.ensureCodexTurnStateTemplateSchema(ctx); err != nil {
-			return nil, fmt.Errorf("初始化 Turn-State 模板表失败: %w", err)
-		}
 		if err := db.ensureQualityTestSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化检测记录表失败: %w", err)
 		}
@@ -1576,7 +1573,8 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_before_expiry_min INT DEFAULT 60;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_activate_5h_window_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(20) DEFAULT 'off';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(64) DEFAULT 'off';
+	ALTER TABLE system_settings ALTER COLUMN codex_fingerprint_default_mode TYPE VARCHAR(64);
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864;
@@ -2452,8 +2450,6 @@ type SystemSettings struct {
 	CodexMinCLIVersion                  string
 	CodexUserAgentConfig                string
 	CodexTelemetryEnabled               bool
-	CodexTurnStateTemplateCacheEnabled  bool
-	CodexTurnStateAccountMode           string
 	CodexTelemetryTimingDebug           bool
 	CodexTurnStateStrict                bool   // 来源未知的 X-Codex-Turn-State 回带也剥离，并按帧携带
 	CodexSessionNoBorrowEnabled         bool   // 绑定账号并发满时先等待而不是借用其他账号
@@ -2918,13 +2914,6 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if strings.TrimSpace(s.PayloadRules) == "" {
 		s.PayloadRules = "{}"
 	}
-	if settingErr := db.conn.QueryRowContext(ctx, `
-		SELECT COALESCE(codex_turn_state_template_cache_enabled, false),
-		       COALESCE(NULLIF(TRIM(codex_turn_state_account_mode), ''), 'auto')
-		FROM system_settings WHERE id = 1
-	`).Scan(&s.CodexTurnStateTemplateCacheEnabled, &s.CodexTurnStateAccountMode); settingErr != nil && !errors.Is(settingErr, sql.ErrNoRows) {
-		return nil, settingErr
-	}
 	var continuousRetryRaw sql.NullString
 	if policyErr := db.conn.QueryRowContext(ctx, `SELECT COALESCE(continuous_retry_policy, '') FROM system_settings WHERE id = 1`).Scan(&continuousRetryRaw); policyErr == nil {
 		s.ContinuousRetryPolicy = continuousRetryRaw.String
@@ -3035,11 +3024,13 @@ func continuousRetryPolicySelectQuery(forUpdate bool) string {
 	return query
 }
 
-// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到四个已知
+// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到已知
 // 取值之一；空值和非法值回落 off（与 auth.NormalizeCodexFingerprintMode 语义一致，
 // database 包不能反向依赖 auth，故此处独立实现）。
 func NormalizeCodexFingerprintDefaultMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "single_machine_multi_window":
+		return "single_machine_multi_window"
 	case "device":
 		return "device"
 	case "session":
@@ -3361,12 +3352,6 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 	if err != nil {
 		return err
 	}
-	_, err = db.conn.ExecContext(ctx, `
-		UPDATE system_settings
-		SET codex_turn_state_template_cache_enabled = $1,
-		    codex_turn_state_account_mode = $2
-		WHERE id = 1
-	`, s.CodexTurnStateTemplateCacheEnabled, strings.TrimSpace(s.CodexTurnStateAccountMode))
 	return err
 }
 

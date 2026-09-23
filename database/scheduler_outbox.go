@@ -212,8 +212,6 @@ func (db *DB) installSQLiteSchedulerOutboxTriggers(ctx context.Context) error {
 		  OR COALESCE(json_extract(OLD.credentials,'$.probe_mode'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.probe_mode'),'')
 		  OR COALESCE(json_extract(OLD.credentials,'$.probe_interval_minutes'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.probe_interval_minutes'),'')
 		  OR COALESCE(json_extract(OLD.credentials,'$.api_auto_recovery_enabled'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.api_auto_recovery_enabled'),'')
-		  OR COALESCE(json_extract(OLD.credentials,'$.codex_turn_state'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.codex_turn_state'),'')
-		  OR COALESCE(json_extract(OLD.credentials,'$.codex_turn_state_models'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.codex_turn_state_models'),'')
 		  OR COALESCE(json_extract(OLD.credentials,'$.allowed_api_key_ids'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.allowed_api_key_ids'),'')
 		  OR COALESCE(json_extract(OLD.credentials,'$.plan_type'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.plan_type'),'')
 		  OR COALESCE(json_extract(OLD.credentials,'$.dispatch_count_limit'),'') IS NOT COALESCE(json_extract(NEW.credentials,'$.dispatch_count_limit'),'')
@@ -365,8 +363,6 @@ func (db *DB) installPostgresSchedulerOutboxTriggers(ctx context.Context) error 
 			COALESCE(OLD.credentials->>'probe_mode','') IS DISTINCT FROM COALESCE(NEW.credentials->>'probe_mode','') OR
 			COALESCE(OLD.credentials->>'probe_interval_minutes','') IS DISTINCT FROM COALESCE(NEW.credentials->>'probe_interval_minutes','') OR
 			COALESCE(OLD.credentials->>'api_auto_recovery_enabled','') IS DISTINCT FROM COALESCE(NEW.credentials->>'api_auto_recovery_enabled','') OR
-			COALESCE(OLD.credentials->>'codex_turn_state','') IS DISTINCT FROM COALESCE(NEW.credentials->>'codex_turn_state','') OR
-			COALESCE(OLD.credentials->>'codex_turn_state_models','') IS DISTINCT FROM COALESCE(NEW.credentials->>'codex_turn_state_models','') OR
 			COALESCE(OLD.credentials->'allowed_api_key_ids','null'::jsonb) IS DISTINCT FROM COALESCE(NEW.credentials->'allowed_api_key_ids','null'::jsonb) OR
 			COALESCE(OLD.credentials->>'plan_type','') IS DISTINCT FROM COALESCE(NEW.credentials->>'plan_type','') OR
 			COALESCE(OLD.credentials->>'dispatch_count_limit','') IS DISTINCT FROM COALESCE(NEW.credentials->>'dispatch_count_limit','') OR

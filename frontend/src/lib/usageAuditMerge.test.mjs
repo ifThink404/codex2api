@@ -40,7 +40,7 @@ test('proxy field combines custom issuance hint with existing matched proxy and 
   assert.match(source, /<ProxyTimezoneHint/)
 })
 
-test('merged locale objects keep probes, audit and renewal history without duplicate keys', () => {
+test('merged locales keep probes and audit while removing retired template controls', () => {
   for (const locale of ['zh', 'en', 'zh-TW']) {
     const source = read(`../locales/${locale}.json`)
     assert.doesNotMatch(source, /^(<<<<<<<|=======|>>>>>>>)/m)
@@ -56,9 +56,9 @@ test('merged locale objects keep probes, audit and renewal history without dupli
     visit(ast)
     assert.ok(messages.accounts.probePolicyTitle)
     assert.ok(messages.accounts.apiAutoRecoveryHint)
-    assert.ok(messages.accounts.codexTurnStateProxyPoolHint)
-    assert.ok(messages.accounts.turnStateStatus)
-    assert.ok(messages.turnStateHistory.statuses)
+    assert.equal(messages.accounts.codexTurnStateProxyPoolHint, undefined)
+    assert.equal(messages.accounts.turnStateStatus, undefined)
+    assert.equal(messages.turnStateHistory, undefined)
     assert.ok(messages.usage.turnState)
     for (const key of ['responseModel', 'modelMismatch', 'modelVariant', 'filterModelMismatch', 'filterModelMismatchHint', 'modelMismatchFastTierHint', 'sentUpstreamModel', 'requestedModel']) {
       assert.ok(messages.usage[key], `${locale}: missing usage.${key}`)
