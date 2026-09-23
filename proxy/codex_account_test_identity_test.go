@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -86,4 +87,49 @@ func TestCodexAccountTestOwnerExcludesOrdinaryAnonymousRequests(test *testing.T)
 	require.NoError(test, claim(second))
 	require.Equal(test, WebsocketTransportOwner(first, ""), WebsocketTransportOwner(second, ""))
 	require.Error(test, claim(WithCodexIdentityStore(test.Context(), db)))
+}
+
+func TestCodexAccountTestRootRotatesAtLocalMidnight(test *testing.T) {
+	zone := time.FixedZone("UTC+08", 8*60*60)
+	beforeMidnight := time.Date(2026, 9, 23, 23, 59, 59, 0, zone)
+	account := &auth.Account{DBID: 42, AccountID: "workspace-a"}
+	for _, persistent := range []bool{false, true} {
+		name := "without_database"
+		if persistent {
+			name = "persisted_across_restart"
+		}
+		test.Run(name, func(test *testing.T) {
+			var store CodexIdentityStore
+			var db *database.DB
+			path := filepath.Join(test.TempDir(), "daily-roots.db")
+			if persistent {
+				var err error
+				db, err = database.New("sqlite", path)
+				require.NoError(test, err)
+				store = db
+				test.Cleanup(func() { require.NoError(test, db.Close()) })
+			}
+			resolve := func(at time.Time) string {
+				session, err := resolveCodexAccountTestSessionIDAt(test.Context(), store, account, at)
+				require.NoError(test, err)
+				return session
+			}
+			root := resolve(beforeMidnight)
+			require.Equal(test, root, resolve(beforeMidnight.Add(-23*time.Hour)), "crossing UTC midnight within the same local day must not rotate the root")
+			nextRoot := resolve(beforeMidnight.Add(time.Second))
+			require.NotEqual(test, root, nextRoot, "new probes must switch roots at local midnight")
+			require.Equal(test, nextRoot, resolve(beforeMidnight.Add(12*time.Hour)))
+			parsed, err := uuid.Parse(nextRoot)
+			require.NoError(test, err)
+			require.Equal(test, uuid.Version(7), parsed.Version())
+			if persistent {
+				require.NoError(test, db.Close())
+				db, err = database.New("sqlite", path)
+				require.NoError(test, err)
+				store = db
+			}
+			require.Equal(test, nextRoot, resolve(beforeMidnight.Add(2*time.Second)), "restart must not create another root within the day")
+			require.Equal(test, root, resolve(beforeMidnight), "rotation must not rewrite the preceding day's saved root")
+		})
+	}
 }
