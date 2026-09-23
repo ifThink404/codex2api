@@ -9,6 +9,7 @@ export default function AccountModelScopeTabs(props: {
   onChange: (scope: AccountModelScope) => void;
   drafts: AccountModelDrafts;
   supportsBPS: boolean;
+  markedScopes?: Record<AccountModelScope, boolean>;
   disabled: boolean;
 }) {
   const { t } = useTranslation();
@@ -30,6 +31,7 @@ export default function AccountModelScopeTabs(props: {
           )}
         >
           {scope === "account" ? t("accounts.accountModelAllowlist") : scope === "codex" ? "Codex" : "BPS"}
+          {props.markedScopes?.[scope] && <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />}
           {props.drafts[scope].length > 0 && (
             <span className="rounded bg-muted px-1.5 text-[10px] tabular-nums">{props.drafts[scope].length}</span>
           )}

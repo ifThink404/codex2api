@@ -6811,11 +6811,13 @@ func uniqueAccountIDs(ids []int64) []int64 {
 }
 
 type batchUpdateAccountModelsRequest struct {
-	IDs    []int64  `json:"ids"`
-	Models []string `json:"models"`
+	IDs               []int64   `json:"ids"`
+	Models            *[]string `json:"models"`
+	CodexNativeModels *[]string `json:"codex_native_models"`
+	CodexBPSModels    *[]string `json:"codex_bps_models"`
 }
 
-// BatchUpdateAccountModels 批量替换 Codex OAuth 账号的模型白名单。
+// BatchUpdateAccountModels replaces only the explicitly selected model lists.
 func (h *Handler) BatchUpdateAccountModels(c *gin.Context) {
 	var req batchUpdateAccountModelsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -6827,16 +6829,44 @@ func (h *Handler) BatchUpdateAccountModels(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "请提供要更新的账号 ID 列表")
 		return
 	}
-	models := auth.NormalizeAccountModels(req.Models)
-	if len(models) > 200 {
-		writeError(c, http.StatusBadRequest, "模型数量不能超过 200")
-		return
-	}
-	for _, model := range models {
-		if err := security.ValidateModelName(model); err != nil {
-			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
+	updates := make(map[string]interface{})
+	var models, nativeModels, bpsModels []string
+	if req.Models != nil {
+		models = auth.NormalizeAccountModels(*req.Models)
+		if len(models) > 200 {
+			writeError(c, http.StatusBadRequest, "模型数量不能超过 200")
 			return
 		}
+		for _, model := range models {
+			if err := security.ValidateModelName(model); err != nil {
+				writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
+				return
+			}
+		}
+		updates["models"] = models
+	}
+	for key, values := range map[string]*[]string{
+		auth.CodexNativeModelsCredentialKey: req.CodexNativeModels,
+		auth.CodexBPSModelsCredentialKey:    req.CodexBPSModels,
+	} {
+		if values == nil {
+			continue
+		}
+		normalized := auth.NormalizeAccountModels(*values)
+		if err := auth.ValidateCodexRouteModels(normalized); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		updates[key] = normalized
+		if key == auth.CodexNativeModelsCredentialKey {
+			nativeModels = normalized
+		} else {
+			bpsModels = normalized
+		}
+	}
+	if len(updates) == 0 {
+		writeError(c, http.StatusBadRequest, "请选择要修改的模型列表")
+		return
 	}
 	timeout := 15*time.Second + time.Duration(len(ids))*50*time.Millisecond
 	if timeout > 60*time.Second {
@@ -6847,19 +6877,27 @@ func (h *Handler) BatchUpdateAccountModels(c *gin.Context) {
 	var success, failed int64
 	for _, id := range ids {
 		account := h.store.FindByID(id)
-		if account == nil || account.IsRelayStyle() {
+		if account == nil || account.IsRelayStyle() ||
+			(req.CodexBPSModels != nil && account.IsCodexAgentIdentity()) {
 			failed++
 			continue
 		}
-		if err := h.db.UpdateCredentials(ctx, id, map[string]interface{}{"models": models}); err != nil {
+		if err := h.db.UpdateCredentials(ctx, id, updates); err != nil {
 			failed++
 			continue
 		}
-		h.store.ApplyAccountModels(id, models)
+		if req.Models != nil {
+			h.store.ApplyAccountModels(id, models)
+		}
+		h.store.ApplyAccountCodexRoutes(id, database.OptionalBool{}, database.OptionalBool{}, nativeModels, bpsModels, req.CodexNativeModels != nil, req.CodexBPSModels != nil)
 		h.db.InsertAccountEventAsync(id, "updated", "batch_account_models")
 		success++
 	}
-	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("已更新 %d 个账号，失败 %d 个", success, failed), "success": success, "failed": failed, "models": models})
+	result := gin.H{"message": fmt.Sprintf("已更新 %d 个账号，失败 %d 个", success, failed), "success": success, "failed": failed}
+	for key, value := range updates {
+		result[key] = value
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *Handler) streamBatchDeleteAccounts(c *gin.Context, ids []int64) {

@@ -1467,10 +1467,19 @@ export interface UpdateAccountSchedulerRequest {
 
 export interface BatchUpdateAccountModelsRequest {
   ids: number[]
-  models: string[]
+  models?: string[]
+  codex_native_models?: string[]
+  codex_bps_models?: string[]
 }
 
-export type BatchUpdateAccountModelsResponse = BatchUpdateGrokModelsResponse
+export interface BatchUpdateAccountModelsResponse {
+  message: string
+  success: number
+  failed: number
+  models?: string[]
+  codex_native_models?: string[]
+  codex_bps_models?: string[]
+}
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {
   ids?: number[]

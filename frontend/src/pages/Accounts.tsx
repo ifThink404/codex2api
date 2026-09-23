@@ -2252,11 +2252,33 @@ export default function Accounts() {
   const [modelsSyncing, setModelsSyncing] = useState(false);
   const [modelsProbing, setModelsProbing] = useState(false);
   const [modelsSaving, setModelsSaving] = useState(false);
-  // 批量模型编辑：候选模型可从所选 OAuth 账号中随机取一个实时拉取，
-  // 也可由管理员手动补充；保存时统一覆盖全部所选 OAuth 账号。
+  // Each scope is explicitly selected for replacement; untouched scopes stay unchanged.
   const [showBatchModelsEditor, setShowBatchModelsEditor] = useState(false);
-  const [batchModelsDraft, setBatchModelsDraft] = useState<string[]>([]);
-  const [batchModelsInputDraft, setBatchModelsInputDraft] = useState("");
+  const [batchModelsScope, setBatchModelsScope] = useState<AccountModelScope>("account");
+  const [batchModelDrafts, setBatchModelDrafts] = useState<AccountModelDrafts>({
+    account: [], codex: [], bps: [],
+  });
+  const [batchModelsApply, setBatchModelsApply] = useState<Record<AccountModelScope, boolean>>({
+    account: false, codex: false, bps: false,
+  });
+  const [batchModelInputs, setBatchModelInputs] = useState<Record<AccountModelScope, string>>({
+    account: "", codex: "", bps: "",
+  });
+  const batchModelsDraft = batchModelDrafts[batchModelsScope];
+  const batchModelsInputDraft = batchModelInputs[batchModelsScope];
+  const setBatchModelsDraft = (next: string[] | ((current: string[]) => string[])) => {
+    setBatchModelDrafts((current) => ({
+      ...current,
+      [batchModelsScope]: typeof next === "function" ? next(current[batchModelsScope]) : next,
+    }));
+  };
+  const setBatchModelsInputDraft = (value: string) => {
+    setBatchModelInputs((current) => ({ ...current, [batchModelsScope]: value }));
+  };
+  const batchModelsScopeLabel = {
+    account: t("accounts.accountModelAllowlist"), codex: "Codex", bps: "BPS",
+  }[batchModelsScope];
+  const batchModelsHasChanges = Object.values(batchModelsApply).some(Boolean);
   const [batchModelsSyncing, setBatchModelsSyncing] = useState(false);
   const [batchModelsSaving, setBatchModelsSaving] = useState(false);
   const [batchModelsSource, setBatchModelsSource] = useState("");
@@ -5486,19 +5508,23 @@ export default function Accounts() {
     }
   };
 
-  const openBatchModelsEditor = () => {
-    setBatchModelsDraft([]);
-    setBatchModelsInputDraft("");
+  const resetBatchModelDrafts = () => {
+    setBatchModelsScope("account");
+    setBatchModelDrafts({ account: [], codex: [], bps: [] });
+    setBatchModelInputs({ account: "", codex: "", bps: "" });
+    setBatchModelsApply({ account: false, codex: false, bps: false });
     setBatchModelsSource("");
+  };
+
+  const openBatchModelsEditor = () => {
+    resetBatchModelDrafts();
     setShowBatchModelsEditor(true);
   };
 
   const closeBatchModelsEditor = () => {
     if (batchModelsSyncing || batchModelsSaving) return;
     setShowBatchModelsEditor(false);
-    setBatchModelsDraft([]);
-    setBatchModelsInputDraft("");
-    setBatchModelsSource("");
+    resetBatchModelDrafts();
   };
 
   const addBatchModelsDraftValues = (raw: string) => {
@@ -5515,6 +5541,7 @@ export default function Accounts() {
   };
 
   const handleBatchSyncModelsUpstream = async () => {
+    if (batchModelsScope !== "account" || !batchModelsApply.account) return;
     const candidateIDs = Array.from(selected);
     if (candidateIDs.length === 0) {
       showToast(t("accounts.batchModelsNoEligibleAccount"), "error");
@@ -5571,12 +5598,20 @@ export default function Accounts() {
 
   const handleBatchSaveModels = async () => {
     const ids = Array.from(selected);
-    if (ids.length === 0) return;
+    if (ids.length === 0 || !batchModelsHasChanges) return;
+    // Include pending text from every selected tab, even if Add was not clicked.
+    const lists = {
+      account: mergeModelLists(batchModelDrafts.account, parseModelTokens(batchModelInputs.account)),
+      codex: mergeModelLists(batchModelDrafts.codex, parseModelTokens(batchModelInputs.codex)),
+      bps: mergeModelLists(batchModelDrafts.bps, parseModelTokens(batchModelInputs.bps)),
+    };
     setBatchModelsSaving(true);
     try {
       const result = await api.batchUpdateAccountModels({
         ids,
-        models: batchModelsDraft,
+        ...(batchModelsApply.account ? { models: lists.account } : {}),
+        ...(batchModelsApply.codex ? { codex_native_models: lists.codex } : {}),
+        ...(batchModelsApply.bps ? { codex_bps_models: lists.bps } : {}),
       });
       showToast(
         t("accounts.batchModelsSaveDone", {
@@ -5585,9 +5620,7 @@ export default function Accounts() {
         }),
       );
       setShowBatchModelsEditor(false);
-      setBatchModelsDraft([]);
-      setBatchModelsInputDraft("");
-      setBatchModelsSource("");
+      resetBatchModelDrafts();
       await reload();
     } catch (error) {
       showToast(
@@ -10742,57 +10775,82 @@ export default function Accounts() {
                 </Button>
                 <Button
                   type="button"
-                  disabled={batchModelsSaving || batchModelsSyncing}
+                  disabled={batchModelsSaving || batchModelsSyncing || !batchModelsHasChanges}
                   onClick={() => void handleBatchSaveModels()}
                 >
                   {batchModelsSaving
                     ? t("common.saving")
-                    : batchModelsDraft.length === 0
-                      ? t("accounts.batchModelsClearSave")
-                      : t("common.save")}
+                    : t("accounts.batchModelsSaveSelected")}
                 </Button>
               </>
             }
           >
             <div className="space-y-4">
               <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
-                {t("accounts.batchModelsDesc", { count: selected.size })}
+                {t("accounts.batchModelScopesDesc", { count: selected.size })}
               </div>
 
-              <div className="rounded-lg border border-border bg-muted/10 p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={batchModelsSyncing || batchModelsSaving}
-                    onClick={() => void handleBatchSyncModelsUpstream()}
-                  >
-                    <RefreshCw
-                      className={`size-3.5 ${batchModelsSyncing ? "animate-spin" : ""}`}
-                    />
-                    {batchModelsSyncing
-                      ? t("accounts.batchModelsFetching")
-                      : t("accounts.batchModelsFetch")}
-                  </Button>
-                  {batchModelsSource ? (
-                    <span className="text-xs text-muted-foreground">
-                      {t("accounts.batchModelsSource", {
-                        account: batchModelsSource,
-                      })}
-                    </span>
-                  ) : null}
+              <AccountModelScopeTabs
+                value={batchModelsScope}
+                drafts={batchModelDrafts}
+                supportsBPS
+                markedScopes={batchModelsApply}
+                disabled={batchModelsSaving || batchModelsSyncing}
+                onChange={setBatchModelsScope}
+              />
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/10 p-3">
+                <div>
+                  <p className="text-sm font-medium">{t("accounts.batchModelsApplyScope", { scope: batchModelsScopeLabel })}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t(batchModelsApply[batchModelsScope] ? "accounts.batchModelsScopeReplace" : "accounts.batchModelsScopeKeep")}</p>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {t("accounts.batchModelsFetchHint")}
-                </p>
+                <Switch
+                  checked={batchModelsApply[batchModelsScope]}
+                  disabled={batchModelsSaving || batchModelsSyncing}
+                  onCheckedChange={(checked) => setBatchModelsApply((current) => ({ ...current, [batchModelsScope]: checked }))}
+                  aria-label={t("accounts.batchModelsApplyScope", { scope: batchModelsScopeLabel })}
+                />
               </div>
+              {batchModelsScope !== "account" && (
+                <p className="text-xs leading-relaxed text-muted-foreground">{t("accounts.routeModelsHint", { route: batchModelsScopeLabel })} {t("accounts.routeModelsSharedHint")}</p>
+              )}
+
+              {batchModelsScope === "account" && (
+                <div className="rounded-lg border border-border bg-muted/10 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={batchModelsSyncing || batchModelsSaving || !batchModelsApply[batchModelsScope]}
+                      onClick={() => void handleBatchSyncModelsUpstream()}
+                    >
+                      <RefreshCw
+                        className={`size-3.5 ${batchModelsSyncing ? "animate-spin" : ""}`}
+                      />
+                      {batchModelsSyncing
+                        ? t("accounts.batchModelsFetching")
+                        : t("accounts.batchModelsFetch")}
+                    </Button>
+                    {batchModelsSource ? (
+                      <span className="text-xs text-muted-foreground">
+                        {t("accounts.batchModelsSource", {
+                          account: batchModelsSource,
+                        })}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t("accounts.batchModelsFetchHint")}
+                  </p>
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <Input
-                  placeholder={t("accounts.openaiModelsPlaceholder")}
+                  aria-label={t("accounts.modelInput")}
+                  placeholder={t(batchModelsScope === "account" ? "accounts.openaiModelsPlaceholder" : "accounts.routeModelsPlaceholder")}
                   value={batchModelsInputDraft}
-                  disabled={batchModelsSaving || batchModelsSyncing}
+                  disabled={batchModelsSaving || batchModelsSyncing || !batchModelsApply[batchModelsScope]}
                   onChange={(event: ChangeEvent<HTMLInputElement>) =>
                     setBatchModelsInputDraft(event.target.value)
                   }
@@ -10814,6 +10872,7 @@ export default function Accounts() {
                   type="button"
                   variant="outline"
                   disabled={
+                    !batchModelsApply[batchModelsScope] ||
                     !batchModelsInputDraft.trim() ||
                     batchModelsSaving ||
                     batchModelsSyncing
@@ -10830,18 +10889,16 @@ export default function Accounts() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs text-muted-foreground">
-                    {batchModelsDraft.length === 0
-                      ? t("accounts.supportedModelsHintAll")
-                      : t("accounts.supportedModelsHintCount", {
-                          count: batchModelsDraft.length,
-                        })}
+                    {!batchModelsApply[batchModelsScope]
+                      ? t("accounts.batchModelsScopeKeep")
+                      : t("accounts.routeModelsSelected", { count: batchModelsDraft.length })}
                   </span>
                   {batchModelsDraft.length > 0 ? (
                     <button
                       type="button"
                       className="shrink-0 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                      disabled={batchModelsSaving || batchModelsSyncing}
-                      onClick={() => setBatchModelsDraft([])}
+                      disabled={batchModelsSaving || batchModelsSyncing || !batchModelsApply[batchModelsScope]}
+                      onClick={() => { setBatchModelsDraft([]); setBatchModelsInputDraft(""); }}
                     >
                       {t("accounts.supportedModelsClearAll")}
                     </button>
@@ -10851,11 +10908,12 @@ export default function Accounts() {
                   variant="pills"
                   models={batchModelsDraft}
                   onRemove={removeBatchModelsDraftValue}
-                  emptyLabel={t("accounts.supportedModelsEmpty")}
+                  disabled={!batchModelsApply[batchModelsScope] || batchModelsSaving || batchModelsSyncing}
+                  emptyLabel={t(batchModelsApply[batchModelsScope] ? "accounts.routeModelsUnrestricted" : "accounts.batchModelsScopeKeep")}
                 />
-                {batchModelsDraft.length === 0 ? (
+                {batchModelsApply[batchModelsScope] && batchModelsDraft.length === 0 && !batchModelsInputDraft.trim() ? (
                   <p className="text-xs text-amber-600 dark:text-amber-400">
-                    {t("accounts.batchModelsEmptyWarning")}
+                    {t("accounts.batchModelsScopeClearWarning", { scope: batchModelsScopeLabel })}
                   </p>
                 ) : null}
               </div>
@@ -13088,11 +13146,13 @@ function ModelChipGrid({
   onRemove,
   emptyLabel,
   variant = "grid",
+  disabled = false,
 }: {
   models: string[];
   onRemove: (model: string) => void;
   emptyLabel: string;
   variant?: "grid" | "pills";
+  disabled?: boolean;
 }) {
   if (models.length === 0) {
     return (
@@ -13114,6 +13174,7 @@ function ModelChipGrid({
             <button
               type="button"
               className="inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              disabled={disabled}
               onClick={() => onRemove(model)}
               aria-label={`Remove ${model}`}
             >
@@ -13138,7 +13199,8 @@ function ModelChipGrid({
           <button
             type="button"
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            onClick={() => onRemove(model)}
+            disabled={disabled}
+              onClick={() => onRemove(model)}
             aria-label={`Remove ${model}`}
           >
             <X className="size-3.5" />
