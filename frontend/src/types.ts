@@ -287,6 +287,7 @@ export interface AccountRow {
   codex_passthrough_mode?: CodexPassthroughMode
   codex_bps_enabled?: boolean
   codex_bps_image_trim_enabled?: boolean
+  codex_native_compaction_only?: boolean
   codex_fingerprint_mode?: CodexFingerprintMode
   codex_installation_id?: string
   session_capacity_enabled?: boolean
@@ -1445,6 +1446,7 @@ export interface UpdateAccountSchedulerRequest {
   custom_headers?: Record<string, string> | null
   codex_bps_enabled?: boolean
   codex_bps_image_trim_enabled?: boolean
+  codex_native_compaction_only?: boolean
   codex_fingerprint_mode?: CodexFingerprintMode | null
   session_capacity_enabled?: boolean
   session_capacity_max?: number

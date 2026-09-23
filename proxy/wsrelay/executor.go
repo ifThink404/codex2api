@@ -112,6 +112,9 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	ginHeaders http.Header,
 	poolRouteKey string,
 ) (response *WsResponse, resultErr error) {
+	if err := proxy.ValidateNativeCompactionPolicy(account, requestBody, ginHeaders); err != nil {
+		return nil, err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

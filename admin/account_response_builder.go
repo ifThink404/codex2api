@@ -288,6 +288,7 @@ func (h *Handler) buildAccountResponse(
 		CodexClientMetadataMode:        codexClientMetadataMode,
 		CodexBPSEnabled:                row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
 		CodexBPSImageTrim:              row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
+		CodexNativeCompactionOnly:      row.GetCredentialBool(auth.CodexNativeCompactionOnlyCredentialKey),
 		CodexFingerprintMode:           codexFingerprintMode,
 		CodexInstallationID:            codexInstallationID,
 		SessionCapacityEnabled:         sessionCapacityEnabled,

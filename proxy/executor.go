@@ -531,6 +531,17 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	useBPS, modeErr := codexRequestUsesBPS(ctx, account)
+	if modeErr != nil {
+		return nil, modeErr
+	}
+	// BPS keeps its existing summary compaction flow. Follow the resolved route
+	// (including pinned sessions and test overrides), not the live account flag.
+	if !useBPS {
+		if err := ValidateNativeCompactionPolicy(account, requestBody, headers); err != nil {
+			return nil, err
+		}
+	}
 	resetUpstreamUserAgentAudit(ctx)
 	ctx = ensureTransportTrace(ctx)
 	resetWsAcquireAudit(ctx)
@@ -570,10 +581,6 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
 	responsesLite := gateResponsesLiteForAccount(codexResponsesLiteRequested(requestBody, headers), requestBody, account)
-	useBPS, modeErr := codexRequestUsesBPS(ctx, account)
-	if modeErr != nil {
-		return nil, modeErr
-	}
 	wantWebsocket := CurrentRuntimeSettings().CodexForceWebsocket
 	if len(useWebsocket) > 0 {
 		wantWebsocket = useWebsocket[0]
@@ -809,6 +816,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 }
 
 func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
+	if err := ValidateNativeCompactionPolicy(account, requestBody, headers); err != nil {
+		return nil, err
+	}
 	defer func() { finishTurnStateResponse(ctx, account, &upstreamResponse, &upstreamErr) }()
 	ctx, requestBody, headers, upstreamErr = PrepareCodexURLPrivacy(ctx, account, requestBody, headers)
 	if upstreamErr != nil {

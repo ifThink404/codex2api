@@ -22,7 +22,8 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 			antigravity_sync_error text, antigravity_sync_warning text,
 			antigravity_permissions text, antigravity_entitlements text, antigravity_quota text,
 			claude_usage_probe_at text, claude_usage_probe_error text,
-			claude_auth_kind text, codex_bps_enabled boolean, codex_bps_image_trim_enabled boolean
+			claude_auth_kind text, codex_bps_enabled boolean, codex_bps_image_trim_enabled boolean,
+			codex_native_compaction_only boolean
 		)`
 	credentialColumns := `
 		COALESCE(account_public.upstream_type, ''),
@@ -44,7 +45,8 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 		COALESCE(account_public.claude_usage_probe_error, ''),
 		COALESCE(account_public.claude_auth_kind, ''),
 		COALESCE(account_public.codex_bps_enabled, false),
-		COALESCE(account_public.codex_bps_image_trim_enabled, false)`
+		COALESCE(account_public.codex_bps_image_trim_enabled, false),
+		COALESCE(account_public.codex_native_compaction_only, false)`
 	if db.isSQLite() {
 		upstreamExpr = `LOWER(COALESCE(json_extract(credentials, '$.upstream_type'), ''))`
 		fromClause = `FROM accounts`
@@ -68,7 +70,8 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 			COALESCE(json_extract(credentials, '$.claude_usage_probe_error'), ''),
 			COALESCE(json_extract(credentials, '$.claude_auth_kind'), ''),
 			COALESCE(json_extract(credentials, '$.codex_bps_enabled'), 0),
-			COALESCE(json_extract(credentials, '$.codex_bps_image_trim_enabled'), 0)`
+			COALESCE(json_extract(credentials, '$.codex_bps_image_trim_enabled'), 0),
+			COALESCE(json_extract(credentials, '$.codex_native_compaction_only'), 0)`
 	}
 	where += accountChannelFilterSQL(channel, upstreamExpr)
 	query := `SELECT id, name, type, proxy_url, status, cooldown_reason, cooldown_until,
@@ -105,6 +108,7 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 	var claudeUsageProbeAt, claudeUsageProbeError, claudeAuthKind string
 	var modelsRaw interface{}
 	var hasAPIKey, hasRefreshToken, verifiedEmail, codexBPS, codexBPSImageTrim bool
+	var codexNativeCompactionOnly bool
 	if err := scanner.Scan(
 		&row.ID, &row.Name, &row.Type, &row.ProxyURL, &row.Status, &row.CooldownReason, &cooldownRaw,
 		&row.ErrorMessage, &row.Enabled, &row.Locked, &row.ScoreBiasOverride, &row.BaseConcurrencyOverride,
@@ -114,6 +118,7 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 		&avatarURL, &verifiedEmail, &projectID,
 		&antigravitySyncError, &antigravitySyncWarning, &antigravityPermissions, &antigravityQuota,
 		&claudeUsageProbeAt, &claudeUsageProbeError, &claudeAuthKind, &codexBPS, &codexBPSImageTrim,
+		&codexNativeCompactionOnly,
 	); err != nil {
 		return nil, fmt.Errorf("扫描账号列表投影失败: %w", err)
 	}
@@ -134,6 +139,7 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 	row.Credentials = map[string]interface{}{
 		"codex_bps_enabled":            codexBPS,
 		"codex_bps_image_trim_enabled": codexBPSImageTrim,
+		"codex_native_compaction_only": codexNativeCompactionOnly,
 		"upstream_type":                upstreamType,
 		"email":                        email,
 		"base_url":                     baseURL,

@@ -16,8 +16,10 @@ export interface BuildBatchMetadataUpdateOptions {
   schedulerPriority: number | null;
   updateCodexBPSEnabled?: boolean;
   updateCodexBPSImageTrimEnabled?: boolean;
+  updateCodexNativeCompactionOnly?: boolean;
   codexBPSEnabled?: boolean;
   codexBPSImageTrimEnabled?: boolean;
+  codexNativeCompactionOnly?: boolean;
   updateCodexFingerprintMode?: boolean;
   codexFingerprintMode?: CodexFingerprintMode;
   updateSessionCapacity?: boolean;
@@ -43,8 +45,10 @@ export function buildBatchMetadataUpdate({
   schedulerPriority,
   updateCodexBPSEnabled,
   updateCodexBPSImageTrimEnabled,
+  updateCodexNativeCompactionOnly,
   codexBPSEnabled,
   codexBPSImageTrimEnabled,
+  codexNativeCompactionOnly,
   updateCodexFingerprintMode,
   codexFingerprintMode,
   updateSessionCapacity,
@@ -63,6 +67,7 @@ export function buildBatchMetadataUpdate({
   if (updateSchedulerPriority) payload.scheduler_priority = schedulerPriority;
   if (updateCodexBPSEnabled) payload.codex_bps_enabled = codexBPSEnabled ?? false;
   if (updateCodexBPSImageTrimEnabled) payload.codex_bps_image_trim_enabled = codexBPSImageTrimEnabled ?? false;
+  if (updateCodexNativeCompactionOnly) payload.codex_native_compaction_only = codexNativeCompactionOnly ?? false;
   if (updateCodexFingerprintMode)
     payload.codex_fingerprint_mode = codexFingerprintMode ?? "off";
   if (updateSessionCapacity) {

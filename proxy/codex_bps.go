@@ -11,24 +11,27 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const CodexBPSBaseURL = "https://bps.openai.com/basispoints/api"
 const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
-	projection        *bpsResponseProjection
-	UpstreamTurnState *usageTurnStateValue            `json:"upstream_turn_state,omitempty"`
-	ClientTurnState   *usageTurnStateValue            `json:"client_turn_state,omitempty"`
-	Mode              string                          `json:"mode"`
-	RequestedModel    string                          `json:"requested_model"`
-	SentModel         string                          `json:"sent_model"`
-	Compact           bool                            `json:"compact,omitempty"`
-	AdaptedFields     []string                        `json:"adapted_fields,omitempty"`
-	RemovedFields     []string                        `json:"removed_fields,omitempty"`
-	Images            *codexBPSImageDiagnostic        `json:"images,omitempty"`
-	Files             *codexBPSFileDiagnostic         `json:"files,omitempty"`
-	ImageHistory      *codexBPSImageHistoryDiagnostic `json:"image_history,omitempty"`
+	projection               *bpsResponseProjection
+	UpstreamTurnState        *usageTurnStateValue            `json:"upstream_turn_state,omitempty"`
+	ClientTurnState          *usageTurnStateValue            `json:"client_turn_state,omitempty"`
+	Mode                     string                          `json:"mode"`
+	RequestedModel           string                          `json:"requested_model"`
+	SentModel                string                          `json:"sent_model"`
+	RequestedReasoningEffort string                          `json:"requested_reasoning_effort,omitempty"`
+	SentReasoningEffort      string                          `json:"sent_reasoning_effort,omitempty"`
+	Compact                  bool                            `json:"compact,omitempty"`
+	AdaptedFields            []string                        `json:"adapted_fields,omitempty"`
+	RemovedFields            []string                        `json:"removed_fields,omitempty"`
+	Images                   *codexBPSImageDiagnostic        `json:"images,omitempty"`
+	Files                    *codexBPSFileDiagnostic         `json:"files,omitempty"`
+	ImageHistory             *codexBPSImageHistoryDiagnostic `json:"image_history,omitempty"`
 }
 type codexBPSDiagnosticKey struct{}
 
@@ -94,6 +97,22 @@ func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, tri
 	} else if input.Exists() && input.Type != gjson.Null {
 		return nil, nil, &Error{Code: "invalid_request_error", Type: ErrorTypeInvalidRequest, HTTPStatus: 400, Message: "BPS 请求的 input 必须是文本或数组"}
 	}
+	// A configuration_update can change effort after the request baseline. Only
+	// rewrite protocol items, never messages, tool data, or JSON inside strings.
+	configurationMapped := false
+	for i, item := range items {
+		if gjson.GetBytes(item, "type").String() == "configuration_update" && strings.EqualFold(strings.TrimSpace(gjson.GetBytes(item, "reasoning.effort").String()), "max") {
+			updated, err := sjson.SetBytes(item, "reasoning.effort", "xhigh")
+			if err != nil {
+				return nil, nil, err
+			}
+			items[i] = updated
+			configurationMapped = true
+		}
+	}
+	if configurationMapped {
+		d.AdaptedFields = append(d.AdaptedFields, "input.configuration_update.reasoning.effort: max → xhigh")
+	}
 	var prefix []json.RawMessage
 	runtimeMessage, _ := json.Marshal(map[string]any{"type": "message", "role": "developer", "content": []map[string]string{{"type": "input_text", "text": bpsCallerRuntimeInstructions}}})
 	prefix = append(prefix, runtimeMessage)
@@ -144,10 +163,16 @@ func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, tri
 	}
 	result := map[string]any{"model": d.SentModel, "input": items, "metadata": metadata}
 	if !compact {
-		effort := gjson.GetBytes(body, "reasoning.effort").String()
+		effort := extractReasoningEffort(body)
 		if effort == "" {
 			effort = "low"
 		}
+		d.RequestedReasoningEffort = effort
+		if strings.EqualFold(strings.TrimSpace(effort), "max") {
+			effort = "xhigh"
+			d.AdaptedFields = append(d.AdaptedFields, "reasoning_effort: max → xhigh")
+		}
+		d.SentReasoningEffort = effort
 		result["model_selection"], result["stream"], result["store"] = "explicit", true, false
 		result["reasoning_effort"], result["prompt_cache_key"] = effort, cacheKey
 		if _, found := source["reasoning"]; found {

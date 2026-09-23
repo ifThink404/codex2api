@@ -2052,6 +2052,7 @@ export default function Accounts() {
   const [editCustomHeadersText, setEditCustomHeadersText] = useState("");
   const [editCodexBPSEnabled, setEditCodexBPSEnabled] = useState(false);
   const [editCodexBPSImageTrimEnabled, setEditCodexBPSImageTrimEnabled] = useState(false);
+  const [editCodexNativeCompactionOnly, setEditCodexNativeCompactionOnly] = useState(false);
   const [editCodexFingerprintMode, setEditCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
   const [editSessionCapacityEnabled, setEditSessionCapacityEnabled] = useState(false);
@@ -2323,8 +2324,10 @@ export default function Accounts() {
   ] = useState(false);
   const [batchUpdateCodexBPSEnabled, setBatchUpdateCodexBPSEnabled] = useState(false);
   const [batchUpdateCodexBPSImageTrimEnabled, setBatchUpdateCodexBPSImageTrimEnabled] = useState(false);
+  const [batchUpdateCodexNativeCompactionOnly, setBatchUpdateCodexNativeCompactionOnly] = useState(false);
   const [batchCodexBPSEnabled, setBatchCodexBPSEnabled] = useState(false);
   const [batchCodexBPSImageTrimEnabled, setBatchCodexBPSImageTrimEnabled] = useState(false);
+  const [batchCodexNativeCompactionOnly, setBatchCodexNativeCompactionOnly] = useState(false);
   const [batchCodexFingerprintMode, setBatchCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
   const [batchUpdateSessionCapacity, setBatchUpdateSessionCapacity] =
@@ -5185,8 +5188,10 @@ export default function Accounts() {
     setBatchSchedulerPriorityInput("");
     setBatchUpdateCodexBPSEnabled(false);
     setBatchUpdateCodexBPSImageTrimEnabled(false);
+    setBatchUpdateCodexNativeCompactionOnly(false);
     setBatchCodexBPSEnabled(false);
     setBatchCodexBPSImageTrimEnabled(false);
+    setBatchCodexNativeCompactionOnly(false);
     setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
     setBatchUpdateSessionCapacity(false);
@@ -5213,8 +5218,10 @@ export default function Accounts() {
     setBatchSchedulerPriorityInput("");
     setBatchUpdateCodexBPSEnabled(false);
     setBatchUpdateCodexBPSImageTrimEnabled(false);
+    setBatchUpdateCodexNativeCompactionOnly(false);
     setBatchCodexBPSEnabled(false);
     setBatchCodexBPSImageTrimEnabled(false);
+    setBatchCodexNativeCompactionOnly(false);
     setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
     setBatchUpdateSessionCapacity(false);
@@ -5597,6 +5604,7 @@ export default function Accounts() {
     batchUpdateSchedulerPriority ||
     batchUpdateCodexBPSEnabled ||
     batchUpdateCodexBPSImageTrimEnabled ||
+    batchUpdateCodexNativeCompactionOnly ||
     batchUpdateCodexFingerprintMode ||
     batchUpdateSessionCapacity;
   const batchMetaInvalid =
@@ -5635,8 +5643,10 @@ export default function Accounts() {
           ),
           updateCodexBPSEnabled: batchUpdateCodexBPSEnabled,
           updateCodexBPSImageTrimEnabled: batchUpdateCodexBPSImageTrimEnabled,
+          updateCodexNativeCompactionOnly: batchUpdateCodexNativeCompactionOnly,
           codexBPSEnabled: batchCodexBPSEnabled,
           codexBPSImageTrimEnabled: batchCodexBPSImageTrimEnabled,
+          codexNativeCompactionOnly: batchCodexNativeCompactionOnly,
           updateCodexFingerprintMode: batchUpdateCodexFingerprintMode,
           codexFingerprintMode: batchCodexFingerprintMode,
           updateSessionCapacity: batchUpdateSessionCapacity,
@@ -5894,6 +5904,7 @@ export default function Accounts() {
     setEditCodexFingerprintMode(account.codex_fingerprint_mode ?? "off");
     setEditCodexBPSEnabled(account.codex_bps_enabled ?? false);
     setEditCodexBPSImageTrimEnabled(account.codex_bps_image_trim_enabled ?? false);
+    setEditCodexNativeCompactionOnly(account.codex_native_compaction_only ?? false);
     setEditSessionCapacityEnabled(account.session_capacity_enabled ?? false);
     setEditSessionCapacityMax(String(account.session_capacity_max ?? 5));
     setEditSessionCapacityReserved(String(account.session_capacity_reserved ?? 0));
@@ -5957,6 +5968,7 @@ export default function Accounts() {
     setEditCodexFingerprintMode("off");
     setEditCodexBPSEnabled(false);
     setEditCodexBPSImageTrimEnabled(false);
+    setEditCodexNativeCompactionOnly(false);
     setEditSessionCapacityEnabled(false);
     setEditSessionCapacityMax("5");
     setEditSessionCapacityIdleMinutes("60");
@@ -6125,6 +6137,9 @@ export default function Accounts() {
         ),
         custom_headers: parsedCustomHeaders.value,
         // 指纹收敛只作用于 Codex 官方出站路径，中转/Grok 账号不下发该字段。
+        ...(!editingAccount.grok_api
+          ? { codex_native_compaction_only: editCodexNativeCompactionOnly }
+          : {}),
         ...(isCodexOfficialAccount(editingAccount)
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
@@ -10175,7 +10190,7 @@ export default function Accounts() {
                             <div className="flex items-center justify-between gap-4">
                               <div>
                                 <div className="text-sm font-semibold">BPS 兼容模式</div>
-                                <p className="mt-1 text-xs text-muted-foreground">保存后对新绑定窗口生效，已有窗口保持原请求路径。普通请求、后台请求和压缩统一走 BPS；codex-auto-review 使用原模型名发送。</p>
+                                <p className="mt-1 text-xs text-muted-foreground">保存后对新绑定窗口生效，已有窗口保持原请求路径。普通请求、后台请求和压缩统一走 BPS；codex-auto-review 映射为 gpt-5.6-luna，max 思考强度自动调整为 xhigh。</p>
                               </div>
                               <Switch checked={editCodexBPSEnabled} onCheckedChange={setEditCodexBPSEnabled} aria-label="BPS 兼容模式" />
                             </div>
@@ -10185,6 +10200,17 @@ export default function Accounts() {
                                 <Switch checked={editCodexBPSImageTrimEnabled} onCheckedChange={setEditCodexBPSImageTrimEnabled} aria-label="BPS 历史图片精简" />
                               </div>
                               <p className="mt-2 text-xs text-muted-foreground">默认关闭，保存后仅对 BPS 主请求生效。保留当前用户附图、最近 3 张工具图及最新整组结果；其他旧图换成文字提示。有原路径可按需重读，无来源的图片可能无法恢复。不会新增服务端图片存档或回读工具。</p>
+                            </div>
+                          </div>
+                        ) : null}
+                        {!editingAccount.grok_api ? (
+                          <div className="rounded-xl border border-border/70 bg-card p-4.5 md:col-span-2">
+                            <div className="flex items-center justify-between gap-4">
+                              <div>
+                                <div className="text-sm font-semibold">仅允许原生远程压缩</div>
+                                <p className="mt-1 text-xs text-muted-foreground">默认关闭，保存后仅限制实际走非 BPS 路径的请求。开启后拒绝旧式文本摘要压缩，客户端需支持原生压缩；实际走 BPS 的请求仍允许旧式压缩。不会自动切换客户端压缩方式。</p>
+                              </div>
+                              <Switch checked={editCodexNativeCompactionOnly} onCheckedChange={setEditCodexNativeCompactionOnly} aria-label="仅允许原生远程压缩" />
                             </div>
                           </div>
                         ) : null}
@@ -10992,12 +11018,17 @@ export default function Accounts() {
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 兼容模式</span><Switch checked={batchUpdateCodexBPSEnabled} onCheckedChange={setBatchUpdateCodexBPSEnabled} aria-label="修改 BPS 兼容模式" /></div>
                     <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>开启 BPS 兼容模式</span><Switch checked={batchCodexBPSEnabled} onCheckedChange={setBatchCodexBPSEnabled} disabled={!batchUpdateCodexBPSEnabled} aria-label="开启 BPS 兼容模式" /></label>
-                    <p className="mt-2 text-xs text-muted-foreground">保存后对新绑定窗口生效。开启仅支持普通 Codex OAuth / AT 账号。</p>
+                    <p className="mt-2 text-xs text-muted-foreground">保存后对新绑定窗口生效。开启仅支持普通 Codex OAuth / AT 账号；max 思考强度自动调整为 xhigh。</p>
                   </div>
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 历史图片精简</span><Switch checked={batchUpdateCodexBPSImageTrimEnabled} onCheckedChange={setBatchUpdateCodexBPSImageTrimEnabled} aria-label="修改 BPS 历史图片精简" /></div>
                     <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>精简历史图片</span><Switch checked={batchCodexBPSImageTrimEnabled} onCheckedChange={setBatchCodexBPSImageTrimEnabled} disabled={!batchUpdateCodexBPSImageTrimEnabled} aria-label="批量开启历史图片精简" /></label>
                     <p className="mt-2 text-xs text-muted-foreground">保存后仅对 BPS 主请求生效。旧图可能无法恢复；保留当前用户附图、最近 3 张工具图及最新整组结果。</p>
+                  </div>
+                  <div className="rounded-xl border border-border p-4 md:col-span-2">
+                    <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改原生远程压缩限制</span><Switch checked={batchUpdateCodexNativeCompactionOnly} onCheckedChange={setBatchUpdateCodexNativeCompactionOnly} aria-label="修改原生远程压缩限制" /></div>
+                    <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>仅允许原生远程压缩</span><Switch checked={batchCodexNativeCompactionOnly} onCheckedChange={setBatchCodexNativeCompactionOnly} disabled={!batchUpdateCodexNativeCompactionOnly} aria-label="批量仅允许原生远程压缩" /></label>
+                    <p className="mt-2 text-xs text-muted-foreground">保存后对所选账号实际走非 BPS 路径的请求生效。拒绝旧式文本摘要压缩，不兼容的客户端需调整配置；实际走 BPS 的请求仍允许旧式压缩。</p>
                   </div>
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="flex items-start justify-between gap-3">

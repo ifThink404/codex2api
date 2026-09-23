@@ -3,6 +3,14 @@ import test from "node:test";
 
 import { buildBatchMetadataUpdate } from "./accountBatchUpdate.ts";
 
+test("native compaction restriction is explicit and can be disabled independently", () => {
+  const base = { ids: [1, 2], updateTags: false, tags: [], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, codexNativeCompactionOnly: true }), { ids: [1, 2] });
+  for (const enabled of [true, false]) {
+    assert.deepEqual(buildBatchMetadataUpdate({ ...base, updateCodexNativeCompactionOnly: true, codexNativeCompactionOnly: enabled }), { ids: [1, 2], codex_native_compaction_only: enabled });
+  }
+});
+
 test("image history trimming is explicit and can be disabled without changing BPS routing", () => {
   const base = { ids: [1, 2], updateTags: false, tags: [], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
   assert.deepEqual(buildBatchMetadataUpdate({ ...base, codexBPSImageTrimEnabled: true }), { ids: [1, 2] });
