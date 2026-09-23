@@ -147,12 +147,13 @@ func (h *Handler) extraRelayManifestModels(ctx context.Context, row *database.AP
 		return nil
 	}
 	records := h.scopedModelRecords(ctx, row)
+	observed := h.observedCodexManifestModels(ctx, row)
 	extras := make([]api.Model, 0, len(records))
 	for _, record := range records {
 		if record == nil {
 			continue
 		}
-		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 {
+		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 && !observed[strings.ToLower(record.id)] {
 			continue
 		}
 		extras = append(extras, api.Model{ID: record.id, Object: "model", OwnedBy: scopedModelOwner(record)})

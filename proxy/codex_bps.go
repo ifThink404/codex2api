@@ -36,6 +36,11 @@ type CodexBPSDiagnostic struct {
 
 type codexBPSDiagnosticKey struct{}
 
+// ExecuteCodexBPSProbe uses the account's configured transport for admin probes.
+func ExecuteCodexBPSProbe(ctx context.Context, account *auth.Account, body []byte, proxyURL string) (*http.Response, error) {
+	return executeCodexBPS(ctx, account, body, "", proxyURL, false)
+}
+
 func codexBPSDigest(parts ...string) string {
 	h := sha256.New()
 	for _, part := range parts {

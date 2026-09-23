@@ -349,6 +349,8 @@ export interface AccountRow {
   codex_turn_state_status?: CodexTurnStateStatus
   codex_turn_state_proxy_url?: string
   codex_turn_state_disabled?: boolean
+  codex_bps_enabled?: boolean
+  model_observations?: AccountModelObservation[]
   /** Forced X-Codex-Turn-State injected on every outbound Codex request; empty = off. */
   codex_turn_state?: string
   /** Comma-separated model scope for the injection; empty = all models. */
@@ -1494,7 +1496,16 @@ export interface GrokBatchImportResponse {
   proxy_warning?: string
 }
 
+export interface AccountModelObservation {
+  model: string
+  transport: 'codex' | 'bps'
+  source: 'manifest' | 'probe'
+  outcome: 'listed' | 'available' | 'unsupported' | 'throttled' | 'error'
+  observed_at: number
+}
+
 export interface UpdateAccountSchedulerRequest {
+  codex_bps_enabled?: boolean
   api_auto_recovery_enabled?: boolean
   probe_mode?: AccountProbeMode
   probe_interval_minutes?: number

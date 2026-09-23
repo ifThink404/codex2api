@@ -1777,7 +1777,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_image_assets_created ON image_assets(created_at);
 	CREATE INDEX IF NOT EXISTS idx_image_assets_job_id ON image_assets(job_id);
 	`
-	_, err := db.conn.ExecContext(ctx, query)
+	_, err := db.conn.ExecContext(ctx, query+accountModelObservationsSchema)
 	if err != nil {
 		return err
 	}

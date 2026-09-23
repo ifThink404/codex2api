@@ -406,6 +406,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					oauth_model_cooldown_backoff_enabled INTEGER NOT NULL DEFAULT 1
 				);`,
 		modelCapabilitiesSchema,
+		accountModelObservationsSchema,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
 			enabled INTEGER DEFAULT 1,

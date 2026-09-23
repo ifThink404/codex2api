@@ -8,6 +8,9 @@ import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
 import CodexTurnStateBadge, { isCodexTurnStateAccount } from "../components/CodexTurnStateBadge";
+import BPSTransportField from '../components/BPSTransportField';
+import { isBPSAccount } from '../lib/accountModelAvailability';
+import { AccountModelAvailabilityProvider, AccountModelAvailabilityToolbar, AccountModelAvailabilityBadge, AccountModelAvailabilityPanel } from '../components/AccountModelAvailability';
 import SubscriptionBadge from "../components/SubscriptionBadge";
 import {
   buildProxyBindingContext,
@@ -1348,6 +1351,8 @@ const AccountTableRow = memo(function AccountTableRow({
                                         </button>
                                       )}
                                       <CodexTurnStateBadge account={account} />
+                                      {account.codex_bps_enabled && <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">BPS</span>}
+                                      <AccountModelAvailabilityBadge account={account} onClick={() => actions.openModelsEditor(account)} />
                                       {getCreditBalanceDisplay(account) !==
                                         null && (
                                         <button
@@ -2112,6 +2117,7 @@ export default function Accounts() {
   const [modelsSyncing, setModelsSyncing] = useState(false);
   const [modelsProbing, setModelsProbing] = useState(false);
   const [modelsSaving, setModelsSaving] = useState(false);
+  const [editBPSEnabled, setEditBPSEnabled] = useState(false);
   // 探测看板：逐模型的实时测试状态（pending→testing→结果）。
   const [probeBoard, setProbeBoard] = useState<ModelProbeItem[]>([]);
   const [tagFilter, setTagFilter] = useState<string>("");
@@ -5238,6 +5244,8 @@ export default function Accounts() {
     setModelsSyncing(true);
     try {
       const result = await api.syncAccountModelsUpstream(modelsAccount.id);
+      setModelsAccount(await api.getAccount(modelsAccount.id));
+      void reloadSilently();
       const fetched = result.models ?? [];
       setModelsDraft((current) => mergeModelLists(current, fetched));
       showToast(
@@ -5334,6 +5342,8 @@ export default function Accounts() {
           t("accounts.supportedModelsProbeDone", { count: available.length }),
         );
       }
+      setModelsAccount(await api.getAccount(modelsAccount.id));
+      void reloadSilently();
     } catch (error) {
       showToast(
         t("accounts.supportedModelsProbeFailed", {
@@ -5690,6 +5700,7 @@ export default function Accounts() {
     setEditCodexTurnState(account.codex_turn_state ?? "");
     setEditCodexTurnStateProxyUrl(account.codex_turn_state_proxy_url ?? "");
     setEditCodexTurnStateDisabled(account.codex_turn_state_disabled ?? false);
+    setEditBPSEnabled(account.codex_bps_enabled ?? false);
     setEditCodexTurnStateModels(account.codex_turn_state_models ?? "");
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
@@ -5925,6 +5936,7 @@ export default function Accounts() {
               timezone: editTimezone.trim(),
               codex_turn_state_proxy_url: editCodexTurnStateProxyUrl.trim() || null,
               codex_turn_state_disabled: editCodexTurnStateDisabled,
+              ...(isBPSAccount(editingAccount) ? { codex_bps_enabled: editBPSEnabled } : {}),
               codex_turn_state: editCodexTurnState.trim(),
               codex_turn_state_models: editCodexTurnStateModels.trim(),
             }
@@ -6252,6 +6264,7 @@ export default function Accounts() {
   }
 
   return (
+    <AccountModelAvailabilityProvider>
     <div
       key="provider-codex"
       className="relative @container/accounts animate-channel-switch-in"
@@ -7420,6 +7433,7 @@ export default function Accounts() {
             />
           ) : null}
 
+          <AccountModelAvailabilityToolbar accounts={accounts} onUpdated={() => void reloadSilently()} />
           <Card className={shouldRenderMobileCards ? "codex-account-list" : undefined}>
             <CardContent className={shouldRenderMobileCards ? "p-0" : "p-3 sm:p-4"}>
               <StateShell
@@ -10127,6 +10141,7 @@ export default function Accounts() {
                         </div>
 
                         {/* 设备指纹收敛 */}
+                        {isBPSAccount(editingAccount) && <div className="md:col-span-2"><BPSTransportField checked={editBPSEnabled} onChange={setEditBPSEnabled} disabled={editSubmitting} /></div>}
                         {isCodexOfficialAccount(editingAccount) ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                             <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
@@ -10510,6 +10525,7 @@ export default function Accounts() {
               </div>
 
               {/* 自动获取：探测/同步按钮 + 说明，成一体 */}
+              {modelsAccount && <AccountModelAvailabilityPanel account={modelsAccount} draft={modelsDraft} onAdd={addModelsDraftValues} onRefreshed={account => { setModelsAccount(account); void reloadSilently(); }} />}
               <div className="rounded-lg border border-border bg-muted/10 p-3">
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -11527,6 +11543,7 @@ export default function Accounts() {
         </>
       </StateShell>
     </div>
+    </AccountModelAvailabilityProvider>
   );
 }
 
@@ -14090,6 +14107,8 @@ function AccountMobileCard({
             )}
             <div className="codex-account-card__flags">
               <CodexTurnStateBadge account={account} />
+              {account.codex_bps_enabled && <span className="codex-account-card__flag">BPS</span>}
+              {onEditModels && <AccountModelAvailabilityBadge account={account} onClick={onEditModels} />}
               <SubscriptionBadge
                 accountId={account.id}
                 subscription={account.subscription}

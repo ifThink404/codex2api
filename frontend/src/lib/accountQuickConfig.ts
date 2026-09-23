@@ -2,7 +2,10 @@ import type {
   CodexFingerprintMode,
   UpdateAccountSchedulerRequest,
 } from "../types";
-import { accountProbePolicyFromAccount, type AccountProbePolicy } from "./accountProbePolicy.ts";
+import {
+  accountProbePolicyFromAccount,
+  type AccountProbePolicy,
+} from "./accountProbePolicy.ts";
 
 export type QuickConfigLoadStatus = "loading" | "ready" | "error";
 
@@ -13,9 +16,13 @@ export type QuickConfigSaveError =
   | "invalid_concurrency"
   | "invalid_priority";
 
-export type QuickConfigReadySaveError = Exclude<QuickConfigSaveError, "not_ready">;
+export type QuickConfigReadySaveError = Exclude<
+  QuickConfigSaveError,
+  "not_ready"
+>;
 
 export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
+  codex_bps_enabled?: boolean;
   upstream_request_id_header?: string | null;
   id: number;
   detail_loaded?: boolean;
@@ -31,6 +38,7 @@ export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
 }
 
 export interface QuickConfigFormState {
+  bpsEnabled: boolean;
   probePolicy: AccountProbePolicy;
   upstreamRequestIdHeader: string;
   accountId: number;
@@ -110,12 +118,17 @@ export function formStateFromAccount(
 ): QuickConfigFormState {
   return {
     probePolicy: accountProbePolicyFromAccount(account),
+    bpsEnabled: account.codex_bps_enabled ?? false,
     accountId: account.id,
     upstreamRequestIdHeader: account.upstream_request_id_header ?? "",
-    fingerprintMode: normalizeCodexFingerprintMode(account.codex_fingerprint_mode),
+    fingerprintMode: normalizeCodexFingerprintMode(
+      account.codex_fingerprint_mode,
+    ),
     scoreMode: account.score_bias_override != null ? "custom" : "default",
     scoreInput:
-      account.score_bias_override != null ? String(account.score_bias_override) : "",
+      account.score_bias_override != null
+        ? String(account.score_bias_override)
+        : "",
     concurrencyMode:
       account.base_concurrency_override != null ? "custom" : "default",
     concurrencyInput:
@@ -123,7 +136,9 @@ export function formStateFromAccount(
         ? String(account.base_concurrency_override)
         : "",
     schedulerPriorityInput:
-      account.scheduler_priority != null ? String(account.scheduler_priority) : "",
+      account.scheduler_priority != null
+        ? String(account.scheduler_priority)
+        : "",
     skipWarmTier: account.skip_warm_tier ?? false,
     proxyUrl: account.proxy_url ?? "",
     customHeadersText: formatCustomHeadersText(account.custom_headers),
@@ -198,6 +213,7 @@ export function buildQuickConfigSavePayload(
     ok: true,
     payload: {
       ...form.probePolicy,
+      codex_bps_enabled: form.bpsEnabled,
       score_bias_override: form.scoreMode === "custom" ? parsedScoreBias : null,
       base_concurrency_override:
         form.concurrencyMode === "custom" ? parsedBaseConcurrency : null,

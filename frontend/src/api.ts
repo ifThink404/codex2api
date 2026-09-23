@@ -900,15 +900,15 @@ export const api = {
   // 设置 OAuth 账号的支持模型白名单;空数组表示清空(该账号可调度所有模型)。返回归一化后的白名单。
   updateAccountModels: (id: number, models: string[]) =>
     request<{ models: string[] }>(`/accounts/${id}/models`, { method: 'PATCH', body: JSON.stringify({ models }) }),
-  // 拉取该账号真实的上游模型清单(slug 列表,不落库),供白名单编辑器合并使用。
+  // 拉取并记录账号清单证据；白名单只在管理员保存后更新。
   syncAccountModelsUpstream: (id: number) =>
     request<{ models: string[] }>(`/accounts/${id}/models/sync-upstream`, { method: 'POST' }),
-  // 用账号自身凭据并发探测系统文本模型(已排除 image),返回确认可用的模型及每个模型的判定明细。只读不落库。
-  probeAccountModels: (id: number) =>
+  // 实测并记录账号模型证据，model 非空时只测该模型；不修改白名单/调度健康。
+  probeAccountModels: (id: number, model?: string) =>
     request<{
       available: string[];
       results: { model: string; outcome: string; detail?: string }[];
-    }>(`/accounts/${id}/models/probe`, { method: 'POST' }),
+    }>(`/accounts/${id}/models/probe${model ? `?model=${encodeURIComponent(model)}` : ''}`, { method: 'POST' }),
   listAccountGroups: () => request<AccountGroupsResponse>('/account-groups'),
   createAccountGroup: (data: CreateAccountGroupRequest) =>
     request<{ id: number; message: string }>('/account-groups', { method: 'POST', body: JSON.stringify(data) }),

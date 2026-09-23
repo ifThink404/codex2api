@@ -1806,6 +1806,9 @@ type accountResponse struct {
 	// LatestTurnState 是该账号最近一条终端用户请求的 turn-state 读数（健康状态条
 	// 下面那一行）。没有可用记录时整个对象缺席；?view=lite 不带。
 	LatestTurnState *accountLatestTurnStateResponse `json:"latest_turn_state,omitempty"`
+
+	// Per-account evidence, independent of the configured allowlist.
+	ModelObservations []database.AccountModelObservation `json:"model_observations,omitempty"`
 }
 
 type modelCooldownResponse struct {
@@ -1971,6 +1974,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 	// 有上界。老的全量接口一次带回整个号池，为一个展示字段跑几百路 LATERAL 查找
 	// 不划算（超过上界批量查询本来也整体跳过，等于白跑一趟）。失败不影响列表本身。
 	if view == "page" {
+		h.attachAccountModelObservations(ctx, accounts)
 		h.attachAccountLatestTurnStates(ctx, accounts)
 	}
 
@@ -2091,7 +2095,9 @@ func (h *Handler) GetAccount(c *gin.Context) {
 			}
 		}
 	}
-	c.JSON(http.StatusOK, resp)
+	observedAccounts := []accountResponse{resp}
+	h.attachAccountModelObservations(ctx, observedAccounts)
+	c.JSON(http.StatusOK, observedAccounts[0])
 }
 
 // accountLiteResponse 是 ?view=lite 的账号条目:身份 + 绑定字段,无调度/用量指标。
@@ -2521,6 +2527,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		Timezone:                timezoneField,
 		CodexTurnStateProxyURL:  codexTurnStateProxyURL,
 		CodexTurnStateDisabled:  codexTurnStateDisabled,
+		CodexBPS:                codexBPS,
 		CodexTurnState:          codexTurnStateField,
 		CodexTurnStateModels:    codexTurnStateModelsField,
 		CredentialUpdates:       credentialUpdates,
@@ -4920,6 +4927,7 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
+	manifestGeneration, manifestObservedAt := account.GetCredentialGeneration(), time.Now()
 	manifest, err := proxy.FetchCodexModelsManifest(ctx, account, h.store.ResolveProxyForAccount(account), "", "")
 	if err != nil {
 		writeError(c, http.StatusBadGateway, fmt.Sprintf("拉取上游模型清单失败: %s", err.Error()))
@@ -4929,6 +4937,10 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 	models := auth.NormalizeAccountModels(proxy.ExtractManifestModelSlugs(manifest.Body))
 	if len(models) == 0 {
 		writeError(c, http.StatusBadGateway, "上游模型清单未返回可用模型")
+		return
+	}
+	if err := h.recordAccountManifestModels(ctx, account, manifestGeneration, manifestObservedAt, models); err != nil {
+		writeInternalError(c, err)
 		return
 	}
 	// 学习失败只记日志，不影响本次探测结果的返回。
