@@ -21,32 +21,31 @@ func TestAccountModelObservationsAreGenerationAndTransportScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	save := func(generation, at int64, transport, outcome string) {
+	save := func(generation, at int64, outcome string) {
 		t.Helper()
-		err := db.SaveAccountModelObservations(ctx, id, generation, []AccountModelObservation{{Model: "gpt-6-sol", Transport: transport, Outcome: outcome, Source: "probe", ObservedAt: at}})
+		err := db.SaveAccountModelObservations(ctx, id, generation, []AccountModelObservation{{Model: "gpt-6-sol", Outcome: outcome, Source: "probe", ObservedAt: at}})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	save(row.CredentialGeneration, 20, "codex", "available")
-	save(row.CredentialGeneration, 10, "codex", "unsupported")
-	save(row.CredentialGeneration, 30, "bps", "unsupported")
+	save(row.CredentialGeneration, 20, "available")
+	save(row.CredentialGeneration, 10, "unsupported")
 	got, err := db.ListAccountModelObservations(ctx, []int64{id})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got[id]) != 2 {
-		t.Fatalf("transport observations lost: %+v", got)
+	if len(got[id]) != 1 {
+		t.Fatalf("account observations lost: %+v", got)
 	}
 	for _, o := range got[id] {
-		if o.Transport == "codex" && o.Outcome != "available" {
+		if o.Outcome != "available" {
 			t.Fatal("older observation overwrote newer")
 		}
 	}
 	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET credential_generation=credential_generation+1 WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	save(row.CredentialGeneration, 40, "codex", "available")
+	save(row.CredentialGeneration, 40, "available")
 	got, err = db.ListAccountModelObservations(ctx, []int64{id})
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +53,7 @@ func TestAccountModelObservationsAreGenerationAndTransportScoped(t *testing.T) {
 	if len(got[id]) != 0 {
 		t.Fatal("old credential evidence leaked")
 	}
-	save(row.CredentialGeneration+1, 50, "codex", "throttled")
+	save(row.CredentialGeneration+1, 50, "throttled")
 	got, err = db.ListAccountModelObservations(ctx, []int64{id})
 	if err != nil {
 		t.Fatal(err)

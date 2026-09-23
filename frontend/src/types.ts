@@ -1498,7 +1498,6 @@ export interface GrokBatchImportResponse {
 
 export interface AccountModelObservation {
   model: string
-  transport: 'codex' | 'bps'
   source: 'manifest' | 'probe'
   outcome: 'listed' | 'available' | 'unsupported' | 'throttled' | 'error'
   observed_at: number

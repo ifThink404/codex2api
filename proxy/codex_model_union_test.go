@@ -26,7 +26,7 @@ func TestCodexManifestExtrasIncludeObservedModelsInKeyScope(t *testing.T) {
 	if _, err := LearnModelsFromManifest(ctx, db, []byte(`{"models":[{"slug":"gpt-6-sol"}]}`), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SaveAccountModelObservations(ctx, id, row.CredentialGeneration, []database.AccountModelObservation{{Model: "gpt-6-sol", Transport: "codex", Source: "manifest", Outcome: "listed", ObservedAt: time.Now().Unix()}}); err != nil {
+	if err := db.SaveAccountModelObservations(ctx, id, row.CredentialGeneration, []database.AccountModelObservation{{Model: "gpt-6-sol", Source: "manifest", Outcome: "listed", ObservedAt: time.Now().Unix()}}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(store, db, nil, nil)

@@ -20,7 +20,7 @@ import { api } from "../api";
 import type { AccountRow } from "../types";
 import {
   accountModelAvailability,
-  isBPSAccount,
+  isCodexModelAccount,
   type ModelAvailabilityState,
 } from "../lib/accountModelAvailability";
 import { Button } from "@/components/ui/button";
@@ -136,13 +136,12 @@ export function AccountModelAvailabilityBadge({
   onClick: () => void;
 }) {
   const { model } = useContext(WatchedModel);
-  if (!isBPSAccount(account) || !model) return null;
+  if (!isCodexModelAccount(account) || !model) return null;
   const result = accountModelAvailability(account, model);
   const Icon = icons[result.state];
   const label = `${model} · ${labels[result.state]}${result.blocked ? " · 白名单未放行" : ""}`;
   const title = [
     label,
-    `检测通道：${account.codex_bps_enabled ? "BPS" : "Codex"}`,
     result.observation
       ? `记录于 ${new Date(result.observation.observed_at * 1000).toLocaleString()}`
       : "没有检测记录，未检测不代表不支持",
@@ -185,7 +184,7 @@ export function AccountModelAvailabilityToolbar({
   const [progress, setProgress] = useState("");
   const { showToast } = useToast();
   const eligible = accounts.filter(
-    (a) => isBPSAccount(a) && a.enabled !== false,
+    (a) => isCodexModelAccount(a) && a.enabled !== false,
   );
   const run = async (kind: "probe" | "manifest") => {
     if (busy) return;
@@ -275,8 +274,7 @@ export function AccountModelAvailabilityToolbar({
         </Button>
       </div>
       <p className="text-[11px] text-muted-foreground">
-        徽标展示各账户的检测结果；清单可见不代表调用成功。实测会消耗少量额度，不会自动修改白名单。BPS
-        与 Codex 分别记录，24 小时后提示复测。
+        徽标展示各账户的检测结果；清单可见不代表调用成功。实测会消耗少量额度，不会自动修改白名单。记录超过 24 小时后提示复测。
       </p>
       {error && (
         <p role="alert" className="text-xs text-destructive">
@@ -301,7 +299,7 @@ export function AccountModelAvailabilityPanel({
   const { model, refresh } = useContext(WatchedModel);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  if (!isBPSAccount(account) || !model) return null;
+  if (!isCodexModelAccount(account) || !model) return null;
   const result = accountModelAvailability(account, model);
   const allowed =
     !draft.length || draft.some((m) => m.toLowerCase() === model.toLowerCase());
@@ -324,7 +322,6 @@ export function AccountModelAvailabilityPanel({
         {model} · {labels[result.state]}
       </div>
       <p className="text-xs text-muted-foreground">
-        当前通道：{account.codex_bps_enabled ? "BPS" : "Codex"}。
         {allowed
           ? "当前白名单已放行；这不代表上游确认支持。"
           : "当前白名单尚未放行此模型。"}

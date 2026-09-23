@@ -47,7 +47,7 @@ import StateShell from "./StateShell";
 import AccountProbePolicyFields from "./AccountProbePolicyFields";
 import { isAPIKeyProbeAccount } from "../lib/accountProbePolicy";
 import BPSTransportField from './BPSTransportField';
-import { isBPSAccount } from '../lib/accountModelAvailability';
+import { isBPSAccount } from '../lib/bpsAccount';
 
 function formatSignedNumber(value: number): string {
   if (value > 0) return `+${value}`;

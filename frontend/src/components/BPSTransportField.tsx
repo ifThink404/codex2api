@@ -26,7 +26,7 @@ export default function BPSTransportField({
       </div>
       <p className="text-xs text-muted-foreground">
         仅此账户的 HTTP Responses / compact 请求使用 BPS；关闭后使用普通
-        Codex。模型权限需要按通道单独检测。
+        Codex。可随时关闭。
       </p>
     </div>
   );

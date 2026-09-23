@@ -2,7 +2,6 @@ import type { AccountModelObservation } from "../types";
 
 type Source = {
   models?: string[];
-  codex_bps_enabled?: boolean;
   model_observations?: AccountModelObservation[];
 };
 export type ModelAvailabilityState =
@@ -21,12 +20,10 @@ export function accountModelAvailability(
     (m) => m.toLowerCase() === key,
   );
   const blocked = !!account.models?.length && !configured;
-  const transport = account.codex_bps_enabled ? "bps" : "codex";
   const observation = (account.model_observations ?? [])
     .filter(
       (o) =>
         o.model.toLowerCase() === key &&
-        o.transport === transport &&
         o.observed_at <= now + 60,
     )
     .sort(
@@ -44,7 +41,7 @@ export function accountModelAvailability(
   return { state, blocked, observation };
 }
 
-export function isBPSAccount(account: {
+export function isCodexModelAccount(account: {
   openai_responses_api?: boolean;
   grok_api?: boolean;
   claude_api?: boolean;

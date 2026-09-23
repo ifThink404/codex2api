@@ -35,7 +35,7 @@ func (h *Handler) recordAccountManifestModels(ctx context.Context, account *auth
 	}
 	observations := make([]database.AccountModelObservation, 0, len(models))
 	for _, model := range models {
-		observations = append(observations, database.AccountModelObservation{Model: model, Transport: "codex", Source: "manifest", Outcome: "listed", ObservedAt: observedAt.Unix()})
+		observations = append(observations, database.AccountModelObservation{Model: model, Source: "manifest", Outcome: "listed", ObservedAt: observedAt.Unix()})
 	}
 	return h.db.SaveAccountModelObservations(ctx, account.ID(), generation, observations)
 }

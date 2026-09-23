@@ -155,10 +155,6 @@ func (h *Handler) streamProbeModels(c *gin.Context, account *auth.Account, model
 func (h *Handler) runProbeModels(ctx context.Context, account *auth.Account, models []string, concurrency int, onEvent func(modelProbeEvent)) []modelProbeResult {
 	generation := account.GetCredentialGeneration()
 	observedAt := time.Now().Unix()
-	transport := "codex"
-	if account.CodexBPSEnabled() {
-		transport = "bps"
-	}
 	var (
 		wg        sync.WaitGroup
 		mu        sync.Mutex
@@ -201,10 +197,10 @@ func (h *Handler) runProbeModels(ctx context.Context, account *auth.Account, mod
 		}(i, model)
 	}
 	wg.Wait()
-	if h.db != nil && !account.IsRelayStyle() && ((transport == "bps") == account.CodexBPSEnabled()) {
+	if h.db != nil && !account.IsRelayStyle() {
 		observations := make([]database.AccountModelObservation, 0, len(results))
 		for _, result := range results {
-			observations = append(observations, database.AccountModelObservation{Model: result.Model, Transport: transport, Source: "probe", Outcome: result.Outcome, ObservedAt: observedAt})
+			observations = append(observations, database.AccountModelObservation{Model: result.Model, Source: "probe", Outcome: result.Outcome, ObservedAt: observedAt})
 		}
 		if err := h.db.SaveAccountModelObservations(ctx, account.ID(), generation, observations); err != nil {
 			log.Printf("save account model probe: %v", err)
@@ -234,13 +230,7 @@ func (h *Handler) probeAccountModel(ctx context.Context, account *auth.Account, 
 	defer cancel()
 
 	payload := buildConnectionTestPayload(h.store, model)
-	var resp *http.Response
-	var err error
-	if account.CodexBPSEnabled() {
-		resp, err = proxy.ExecuteCodexBPSProbe(probeCtx, account, payload, h.store.ResolveProxyForAccount(account))
-	} else {
-		resp, err = proxy.ExecuteRequest(probeCtx, account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
-	}
+	resp, err := proxy.ExecuteRequest(probeCtx, account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
 	if err != nil {
 		if msg, ok := batchTestContextFailure(probeCtx, err); ok {
 			return modelProbeError, msg

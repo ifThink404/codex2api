@@ -3624,6 +3624,9 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-codex-transport" title={t('settings.nav.codexTransport')} description={t('settings.nav.codexTransportDesc')} icon={<Wifi className="size-4" />}>
+                <SettingsCard title="BPS 通道（账户级）" description="可选请求转发方式，可按账户随时开启或关闭。" icon={<Wifi className="size-4" />}>
+                  <BPSAccountSettings />
+                </SettingsCard>
               <SettingsCard title={t('settings.codexWebsocket')} description={t('settings.codexWebsocketDesc')} icon={<Wifi className="size-4" />}>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -4389,9 +4392,6 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-models" title={t('settings.nav.models')} description={t('settings.nav.modelsDesc')} icon={<Layers className="size-4" />}>
-                <SettingsCard title="BPS 通道（账户级）" description="选择哪些 Codex 账户走 BPS。账户编辑和快捷配置中也可设置。" icon={<Layers className="size-4" />}>
-                  <BPSAccountSettings />
-                </SettingsCard>
                 <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-border/80 bg-card/80 px-3.5 py-2.5 shadow-sm">
                   <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <Badge variant="secondary" className="tabular-nums">

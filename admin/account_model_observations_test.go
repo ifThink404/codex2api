@@ -20,7 +20,7 @@ func TestAccountModelObservationsVisibleInPageAndDetailWithoutChangingAllowlist(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.db.SaveAccountModelObservations(ctx, ids[0], row.CredentialGeneration, []database.AccountModelObservation{{Model: "gpt-6-sol", Transport: "codex", Source: "probe", Outcome: "available", ObservedAt: time.Now().Unix()}}); err != nil {
+	if err := h.db.SaveAccountModelObservations(ctx, ids[0], row.CredentialGeneration, []database.AccountModelObservation{{Model: "gpt-6-sol", Source: "probe", Outcome: "available", ObservedAt: time.Now().Unix()}}); err != nil {
 		t.Fatal(err)
 	}
 	rec := invokeListAccounts(t, h, "/api/admin/accounts?view=page&channel=codex&page_size=20")

@@ -30,13 +30,9 @@ func (h *Handler) observedCodexManifestModels(ctx context.Context, row *database
 	}
 	for id, rows := range observations {
 		a := accounts[id]
-		transport := "codex"
-		if a.CodexBPSEnabled() {
-			transport = "bps"
-		}
 		newest := map[string]database.AccountModelObservation{}
 		for _, o := range rows {
-			if o.Transport != transport || now.Unix()-o.ObservedAt > 86400 || o.ObservedAt > now.Unix()+60 {
+			if now.Unix()-o.ObservedAt > 86400 || o.ObservedAt > now.Unix()+60 {
 				continue
 			}
 			key := strings.ToLower(o.Model)

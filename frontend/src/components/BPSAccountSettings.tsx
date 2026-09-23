@@ -3,7 +3,7 @@ import { api } from "../api";
 import type { AccountRow } from "../types";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { isBPSAccount } from "../lib/accountModelAvailability";
+import { isBPSAccount } from "../lib/bpsAccount";
 import { getErrorMessage } from "../utils/error";
 
 export default function BPSAccountSettings() {
@@ -53,8 +53,7 @@ export default function BPSAccountSettings() {
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        按账户开启，保存后立即生效。仅影响 HTTP Responses /
-        compact；模型检测结果也按 BPS 与 Codex 分开记录。
+        按账户开启，保存后立即生效。仅影响 HTTP Responses / compact 请求转发，可随时关闭。
       </p>
       {error && (
         <p role="alert" className="text-sm text-destructive">

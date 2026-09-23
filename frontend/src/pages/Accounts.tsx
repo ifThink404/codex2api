@@ -9,7 +9,7 @@ import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
 import CodexTurnStateBadge, { isCodexTurnStateAccount } from "../components/CodexTurnStateBadge";
 import BPSTransportField from '../components/BPSTransportField';
-import { isBPSAccount } from '../lib/accountModelAvailability';
+import { isBPSAccount } from '../lib/bpsAccount';
 import { AccountModelAvailabilityProvider, AccountModelAvailabilityToolbar, AccountModelAvailabilityBadge, AccountModelAvailabilityPanel } from '../components/AccountModelAvailability';
 import SubscriptionBadge from "../components/SubscriptionBadge";
 import {
