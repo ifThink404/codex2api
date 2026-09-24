@@ -425,7 +425,7 @@ function parseAdvancedProtection(value: AdvancedConfigObject): AdvancedProtectio
       conversation_lock_ttl_hours: typeof enforcement.conversation_lock_ttl_hours === 'number' && enforcement.conversation_lock_ttl_hours > 0
         ? enforcement.conversation_lock_ttl_hours
         : defaultAdvancedProtection.enforcement.conversation_lock_ttl_hours,
-      user_cyber_cooldown_minutes: typeof enforcement.user_cyber_cooldown_minutes === 'number' && enforcement.user_cyber_cooldown_minutes > 0
+      user_cyber_cooldown_minutes: typeof enforcement.user_cyber_cooldown_minutes === 'number' && enforcement.user_cyber_cooldown_minutes >= 0
         ? enforcement.user_cyber_cooldown_minutes
         : defaultAdvancedProtection.enforcement.user_cyber_cooldown_minutes,
       cyb_strike_enabled: typeof enforcement.cyb_strike_enabled === 'boolean'
@@ -1247,7 +1247,7 @@ function AdvancedProtectionEditor({
             <SwitchField label={t('promptFilter.conversationLockEnabled')} hint={t('promptFilter.help.conversationLockEnabled')} checked={config.enforcement.conversation_lock_enabled} onCheckedChange={(next) => update('enforcement', { conversation_lock_enabled: next })} />
             {config.enforcement.conversation_lock_enabled ? <div className="grid gap-3 sm:grid-cols-2">
               <CompactField label={t('promptFilter.conversationLockTTL')} hint={t('promptFilter.help.conversationLockTTL')}><DraftNumberInput min={1} max={720} value={config.enforcement.conversation_lock_ttl_hours} onValueChange={(next) => update('enforcement', { conversation_lock_ttl_hours: next })} /></CompactField>
-              <CompactField label={t('promptFilter.userCyberCooldownMinutes')} hint={t('promptFilter.help.userCyberCooldownMinutes')}><DraftNumberInput min={1} max={1440} value={config.enforcement.user_cyber_cooldown_minutes} onValueChange={(next) => update('enforcement', { user_cyber_cooldown_minutes: next })} /></CompactField>
+              <CompactField label={t('promptFilter.userCyberCooldownMinutes')} hint={t('promptFilter.help.userCyberCooldownMinutes')}><DraftNumberInput min={0} max={1440} value={config.enforcement.user_cyber_cooldown_minutes} onValueChange={(next) => update('enforcement', { user_cyber_cooldown_minutes: next })} /></CompactField>
             </div> : null}
             <SwitchField label={t('promptFilter.cybStrikeEnabled')} hint={t('promptFilter.help.cybStrikeEnabled')} checked={config.enforcement.cyb_strike_enabled} onCheckedChange={(next) => update('enforcement', { cyb_strike_enabled: next })} />
             <SwitchField label={t('promptFilter.localSevereStrikeEnabled')} hint={t('promptFilter.help.localSevereStrikeEnabled')} checked={config.enforcement.local_severe_strike_enabled} onCheckedChange={(next) => update('enforcement', { local_severe_strike_enabled: next })} />
@@ -3444,7 +3444,7 @@ function OverviewView({
                 </Field>
                 <Field label={t('promptFilter.userCyberCooldownMinutes')} hint={t('promptFilter.help.userCyberCooldownMinutes')}>
                   <DraftNumberInput
-                    min={1}
+                    min={0}
                     max={1440}
                     disabled={!advancedProtection.enforcement.conversation_lock_enabled}
                     value={advancedProtection.enforcement.user_cyber_cooldown_minutes}

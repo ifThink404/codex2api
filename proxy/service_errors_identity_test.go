@@ -63,6 +63,38 @@ func TestServiceErrorsRecordIdentityRejectionAfterAccountSelection(test *testing
 	require.Equal(test, "01a08303-49f4-7b53-b545-920f29610317", gjson.GetBytes(event.UpstreamInfo, "outbound_identity.account_mapping.references.0.original").String())
 }
 
+func TestServiceErrorsRecordClaimConflictBeforeUpstreamStarts(test *testing.T) {
+	test.Setenv("CODEX_OUTBOUND_SESSION_MODE", "preserve")
+	handler := newServiceErrorTestHandler(test)
+	account := &auth.Account{DBID: 7, AccountID: accountIdentitySampleAccount}
+	headers, body := accountIdentityFixture(test, false, true)
+	first := codexOwnerTestContext(test, handler, "old-owner", true)
+	fingerprint := NewCodexTransportFingerprint(account, headers, body, "cache")
+	require.NoError(test, fingerprint.ClaimSessionIdentity(first.Request.Context(), account, "private-key"))
+	router := gin.New()
+	router.Use(handler.ServiceErrorMiddleware())
+	router.POST("/v1/responses", func(request *gin.Context) {
+		bindTransportOwner(request, verifiedNewAPIPolicyContext{APIKeyID: 1, Platform: "platform", MetaVerified: true, Identity: newAPIIdentity{UserID: "new-owner"}}, true)
+		handler.bindCodexIdentityClaims(request)
+		fresh := NewCodexTransportFingerprint(account, headers, body, "cache")
+		failure := fresh.ClaimSessionIdentity(request.Request.Context(), account, "private-key")
+		require.Error(test, failure)
+		ErrorToGinResponse(request, failure)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	require.Equal(test, http.StatusBadRequest, recorder.Code)
+	page := serviceErrorTestPage(test, handler)
+	require.Len(test, page.Items, 1)
+	upstream := page.Items[0].UpstreamInfo
+	require.Equal(test, "not_started", gjson.GetBytes(upstream, "transport").String())
+	require.Equal(test, "conflict", gjson.GetBytes(upstream, "identity_claim.result").String())
+	require.Equal(test, "signed_newapi", gjson.GetBytes(upstream, "identity_claim.owner_source").String())
+	require.NotEmpty(test, gjson.GetBytes(upstream, "identity_claim.existing_owner_hash").String())
+	require.NotContains(test, string(upstream), "private-key")
+	require.NotContains(test, recorder.Body.String(), "owner_hash")
+}
+
 func TestCodexIdentityErrorAPIStatusRemainsClientError(test *testing.T) {
 	for _, code := range []string{"codex_session_identity_invalid", "codex_session_identity_conflict", "codex_session_identity_unavailable", "codex_background_account_mismatch"} {
 		test.Run(code, func(test *testing.T) {

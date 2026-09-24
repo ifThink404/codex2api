@@ -89,7 +89,7 @@ func (claims *localCodexIdentityClaims) ClaimCodexIdentities(ctx context.Context
 	newKeys := make(map[string]bool)
 	for _, key := range keys {
 		if existing := claims.owners[key]; existing != "" && existing != owner {
-			return database.ErrCodexIdentityConflict
+			return &database.CodexIdentityConflictError{IdentityKey: key, ExistingOwner: existing}
 		} else if existing == "" {
 			newKeys[key] = true
 		}
@@ -122,7 +122,9 @@ func codexIdentityDigest(parts ...string) string {
 }
 
 func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, account *auth.Account, apiKey string) (requestErr error) {
+	diagnostic := &codexIdentityClaimDiagnostic{Result: "not_claimed", Relaxed: CurrentRuntimeSettings().CodexForkAccountFallbackEnabled}
 	defer func() {
+		recordCodexIdentityClaim(ctx, diagnostic)
 		if requestErr != nil {
 			UpstreamTransportObserver(ctx).Failure("gateway", "identity_validation", 0)
 		} else {
@@ -150,9 +152,12 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 		return nil
 	}
 	owner := verifiedTransportUser(ctx)
+	diagnostic.OwnerSource = "signed_newapi"
 	if owner == "" {
+		diagnostic.OwnerSource = "credential"
 		owner = "credential:" + strings.TrimSpace(apiKey)
 		if strings.TrimSpace(apiKey) == "" {
+			diagnostic.OwnerSource = "anonymous"
 			if contextOwner, ok := ctx.Value(codexAnonymousIdentityContextKey{}).(string); ok && contextOwner != "" {
 				owner = contextOwner
 			} else if connectionID := DownstreamWebsocketConnectionID(ctx); connectionID != "" {
@@ -163,6 +168,8 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 		}
 	}
 	owner = codexIdentityDigest("codex-owner-v1", owner)
+	diagnostic.OwnerHash = owner
+	diagnostic.AccountID = account.ID()
 	if mapping := fingerprint.accountIdentity; mapping != nil && (mapping.owner != owner || mapping.account != strings.TrimSpace(account.EffectiveAccountID()) || mapping.epoch != outboundEpochFromContext(ctx).identityKey()) {
 		return codexAccountIdentityError("出站身份快照与当前账号或用户不一致，已停止请求。")
 	}
@@ -196,6 +203,7 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 	}
 	claimCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	originalHeaders := fingerprint.headers.Clone()
 	if fingerprint.accountIdentity == nil {
 		if err := fingerprint.prepareAccountIdentity(claimCtx, account, owner, accountScopes); err != nil {
 			return err
@@ -203,9 +211,51 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 	}
 	if err := claimer.ClaimCodexIdentities(claimCtx, keys, owner); err != nil {
 		if errors.Is(err, database.ErrCodexIdentityConflict) {
+			diagnostic.Result = "conflict"
+			var conflict *database.CodexIdentityConflictError
+			if errors.As(err, &conflict) {
+				diagnostic.IdentityHash, diagnostic.ExistingOwnerHash = conflict.IdentityKey, conflict.ExistingOwner
+			}
+			if diagnostic.Relaxed && fingerprint.accountIdentityRequested {
+				if _, ok := claimer.(CodexIdentityStore); ok {
+					fingerprint.headers = originalHeaders
+					fingerprint.accountIdentity = nil
+					fingerprint.isolateConflictingIdentity = true
+					if mapErr := fingerprint.prepareAccountIdentity(claimCtx, account, owner, accountScopes); mapErr != nil {
+						diagnostic.Result = "isolation_failed"
+						return mapErr
+					}
+					// Claim only actual outbound IDs, never transfer the original
+					// owner's records or forward an unchanged legacy identity.
+					mappedKeys := make([]string, 0, len(keys))
+					if mapping := fingerprint.accountIdentity; mapping != nil {
+						for original := range seen {
+							mapped := mapping.rewriteValue(original)
+							if mapped == "" || mapped == original {
+								mappedKeys = nil
+								break
+							}
+							for _, scope := range accountScopes {
+								mappedKeys = append(mappedKeys, codexIdentityDigest("codex-session-v1", scope, mapped))
+							}
+						}
+					}
+					if len(mappedKeys) > 0 {
+						if mappedErr := claimer.ClaimCodexIdentities(claimCtx, mappedKeys, owner); mappedErr != nil {
+							diagnostic.Result = "isolation_failed"
+							return codexAccountIdentityError("暂时无法登记隔离后的会话标识，请稍后重试。")
+						}
+						diagnostic.Result = "isolated"
+						return nil
+					}
+					diagnostic.Result = "isolation_incomplete"
+				}
+			}
 			return &Error{Code: "codex_session_identity_conflict", Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest, Message: "当前会话标识已归属其他用户，请新建会话。"}
 		}
+		diagnostic.Result = "store_error"
 		return &Error{Code: "codex_session_identity_unavailable", Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest, Message: "暂时无法核实会话归属，请稍后重试。", Cause: err}
 	}
+	diagnostic.Result = "claimed"
 	return nil
 }

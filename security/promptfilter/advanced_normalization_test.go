@@ -177,7 +177,10 @@ func TestAdaptiveReviewCompatibilityAndRecommendedDefaults(t *testing.T) {
 }
 
 func TestConversationLockTTLDefaultsAndClamps(t *testing.T) {
-	cfg := NormalizeAdvancedConfig(AdvancedConfig{})
+	cfg, err := ParseAdvancedConfig(`{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Enforcement.ConversationLockTTLHours != 168 {
 		t.Fatalf("default conversation lock TTL = %d, want 168", cfg.Enforcement.ConversationLockTTLHours)
 	}

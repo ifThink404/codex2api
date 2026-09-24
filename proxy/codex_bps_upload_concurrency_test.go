@@ -31,16 +31,16 @@ func concurrentBPSImageBody(t *testing.T, seed, count int) ([]byte, map[string]i
 	return body, positions
 }
 
-func TestBPSImageUploadsTenPerRequestWithoutAccountCap(t *testing.T) {
+func TestBPSImageUploadsHundredPerRequestWithoutAccountCap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	a := &auth.Account{DBID: 89011, AccountID: "concurrent-uploads"}
-	started, release := make(chan int, 40), make(chan struct{})
+	started, release := make(chan int, 402), make(chan struct{})
 	finished := make(chan error, 2)
 	var active [2]atomic.Int32
 	var peak [2]atomic.Int32
 	for request := 0; request < 2; request++ {
-		body, _ := concurrentBPSImageBody(t, request, 21)
+		body, _ := concurrentBPSImageBody(t, request, 201)
 		go func() {
 			_, _, err := prepareBPSUserImageAttachments(ctx, a, body, nil, func(workCtx context.Context, _ []byte, _ string) (string, error) {
 				n := active[request].Add(1)
@@ -61,9 +61,9 @@ func TestBPSImageUploadsTenPerRequestWithoutAccountCap(t *testing.T) {
 			finished <- err
 		}()
 	}
-	// Both requests, on the SAME account, must reach ten blocked uploads.
+	// Both requests, on the SAME account, must reach 100 blocked uploads.
 	counts := [2]int{}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 200; i++ {
 		select {
 		case request := <-started:
 			counts[request]++
@@ -71,13 +71,13 @@ func TestBPSImageUploadsTenPerRequestWithoutAccountCap(t *testing.T) {
 			t.Fatal("uploads did not overlap: ", counts)
 		}
 	}
-	require.Equal(t, [2]int{10, 10}, counts)
+	require.Equal(t, [2]int{100, 100}, counts)
 	close(release)
 	for i := 0; i < 2; i++ {
 		require.NoError(t, <-finished)
 	}
 	for request := 0; request < 2; request++ {
-		require.EqualValues(t, 10, peak[request].Load())
+		require.EqualValues(t, 100, peak[request].Load())
 		require.Zero(t, active[request].Load())
 	}
 }
@@ -134,12 +134,12 @@ func TestBPSImageUploadsOutOfOrderKeepOriginalPositions(t *testing.T) {
 func TestBPSImageUploadFailureCancelsAndJoinsWorkers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	started, fail := make(chan struct{}, 10), make(chan struct{})
+	started, fail := make(chan struct{}, 100), make(chan struct{})
 	finished := make(chan error, 1)
 	var active, calls atomic.Int32
 	expected := errors.New("attachment upload failed")
 	go func() {
-		finished <- runBPSAttachmentJobs(ctx, 30, func(workCtx context.Context, i int) error {
+		finished <- runBPSAttachmentJobs(ctx, 300, func(workCtx context.Context, i int) error {
 			active.Add(1)
 			calls.Add(1)
 			defer active.Add(-1)
@@ -156,7 +156,7 @@ func TestBPSImageUploadFailureCancelsAndJoinsWorkers(t *testing.T) {
 			return workCtx.Err()
 		})
 	}()
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		select {
 		case <-started:
 		case <-ctx.Done():
@@ -166,5 +166,5 @@ func TestBPSImageUploadFailureCancelsAndJoinsWorkers(t *testing.T) {
 	close(fail)
 	require.ErrorIs(t, <-finished, expected)
 	require.Zero(t, active.Load(), "must join before the handler returns")
-	require.EqualValues(t, 10, calls.Load(), "queued work must not start after failure")
+	require.EqualValues(t, 100, calls.Load(), "queued work must not start after failure")
 }

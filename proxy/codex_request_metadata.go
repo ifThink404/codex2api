@@ -16,6 +16,7 @@ type CodexFingerprint struct {
 	preserveSessionIDs           bool
 	identityValues               []string
 	accountIdentityRequested     bool
+	isolateConflictingIdentity   bool
 	accountIdentityInputs        []string
 	accountRequestIdentityInputs []string
 	accountTurnIdentityInputs    map[string]codexTurnIdentityInput

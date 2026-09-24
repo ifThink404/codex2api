@@ -23,7 +23,13 @@ func TestCodexIdentityClaimsPersistAndRollback(test *testing.T) {
 	require.NoError(test, err)
 	test.Cleanup(func() { require.NoError(test, db.Close()) })
 	require.NoError(test, db.ClaimCodexIdentities(ctx, []string{first}, owner))
-	require.ErrorIs(test, db.ClaimCodexIdentities(ctx, []string{fresh, first}, other), ErrCodexIdentityConflict)
+	conflictErr := db.ClaimCodexIdentities(ctx, []string{fresh, first}, other)
+	require.ErrorIs(test, conflictErr, ErrCodexIdentityConflict)
+	var conflict *CodexIdentityConflictError
+	require.ErrorAs(test, conflictErr, &conflict)
+	require.Equal(test, first, conflict.IdentityKey)
+	require.Equal(test, owner, conflict.ExistingOwner)
+	require.NotContains(test, conflictErr.Error(), owner)
 	require.NoError(test, db.ClaimCodexIdentities(ctx, []string{fresh}, owner))
 	require.Error(test, db.ClaimCodexIdentities(ctx, []string{"raw-private-id"}, owner))
 	var count int

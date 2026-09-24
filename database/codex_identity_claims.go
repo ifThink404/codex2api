@@ -9,6 +9,15 @@ import (
 
 var ErrCodexIdentityConflict = errors.New("codex session identity belongs to another owner")
 
+// All fields are already one-way hashes. Keep them out of the public error text.
+type CodexIdentityConflictError struct {
+	IdentityKey   string
+	ExistingOwner string
+}
+
+func (e *CodexIdentityConflictError) Error() string { return ErrCodexIdentityConflict.Error() }
+func (e *CodexIdentityConflictError) Unwrap() error { return ErrCodexIdentityConflict }
+
 func (db *DB) ensureCodexIdentityClaimsTable(ctx context.Context) error {
 	_, err := db.conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS codex_identity_claims (identity_key TEXT PRIMARY KEY, owner_key TEXT NOT NULL)`)
 	return err
@@ -39,7 +48,7 @@ func (db *DB) ClaimCodexIdentities(ctx context.Context, keys []string, owner str
 				return err
 			}
 			if existing != owner {
-				return ErrCodexIdentityConflict
+				return &CodexIdentityConflictError{IdentityKey: key, ExistingOwner: existing}
 			}
 		}
 		return nil

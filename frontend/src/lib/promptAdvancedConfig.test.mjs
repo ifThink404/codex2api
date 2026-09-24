@@ -41,6 +41,17 @@ test('advanced config parsing keeps invalid input distinct from defaults', () =>
   assert.equal(failedPatch.serialized, '{broken')
 })
 
+test('zero user cooldown survives a settings patch and reload', () => {
+  const result = patchAdvancedConfigDocument('{"enforcement":{"user_cyber_cooldown_minutes":30,"conversation_lock_enabled":true}}', [
+    { path: ['enforcement', 'user_cyber_cooldown_minutes'], value: 0 },
+  ])
+  assert.equal(result.ok, true)
+  const reloaded = parseAdvancedConfigDocument(result.serialized)
+  assert.equal(reloaded.ok, true)
+  assert.equal(reloaded.value.enforcement.user_cyber_cooldown_minutes, 0)
+  assert.equal(reloaded.value.enforcement.conversation_lock_enabled, true)
+})
+
 test('field-level advanced config patches preserve unknown nested fields and enum values', () => {
   const raw = JSON.stringify({
     future_top_level: { enabled: true, revision: 7 },
@@ -267,7 +278,7 @@ test('conversation CY locks expose a bounded automatic expiry control', () => {
   assert.match(source, /conversationLockTTL/)
   assert.match(source, /userCyberCooldownMinutes/)
   assert.match(source, /min=\{1\} max=\{720\}/)
-  assert.match(source, /min=\{1\} max=\{1440\}/)
+  assert.match(source, /min=\{0\} max=\{1440\}/)
 })
 
 test('review prompt defaults are owned by the backend rather than duplicated in the UI', () => {

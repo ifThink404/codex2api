@@ -24,6 +24,7 @@ type upstreamTraceAttempt struct {
 }
 
 type upstreamTraceSnapshot struct {
+	IdentityClaim     *codexIdentityClaimDiagnostic
 	RequestID         string
 	accountID         int64
 	UpstreamRequestID string
@@ -38,12 +39,13 @@ func snapshotUpstreamTrace(ctx context.Context) upstreamTraceSnapshot {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	result := upstreamTraceSnapshot{RequestID: a.requestID}
+	result := upstreamTraceSnapshot{RequestID: a.requestID, IdentityClaim: a.identityClaim}
 	if a.current != nil {
 		result.accountID = a.current.accountID
 		result.UpstreamRequestID = a.current.requestID
 		result.Proxy = a.current.proxy
 		transport := a.current.transport
+		transport.IdentityClaim = a.identityClaim
 		result.Transport = &transport
 	}
 	return result
@@ -64,10 +66,11 @@ func (s upstreamTraceSnapshot) apply(input *database.UsageLogInput) {
 }
 
 type upstreamTraceAudit struct {
-	mu        sync.Mutex
-	requestID string
-	store     *auth.Store
-	current   *upstreamTraceAttempt
+	identityClaim *codexIdentityClaimDiagnostic
+	mu            sync.Mutex
+	requestID     string
+	store         *auth.Store
+	current       *upstreamTraceAttempt
 }
 
 func upstreamTraceFromContext(ctx context.Context) *upstreamTraceAudit {
@@ -95,6 +98,7 @@ func resetUpstreamRequestTrace(c *gin.Context) {
 		a.mu.Lock()
 		a.requestID = NewUpstreamSessionUUID()
 		a.current = nil
+		a.identityClaim = nil
 		a.mu.Unlock()
 	}
 }
@@ -103,6 +107,7 @@ func resetUpstreamAttemptTrace(ctx context.Context) {
 	if a := upstreamTraceFromContext(ctx); a != nil {
 		a.mu.Lock()
 		a.current = nil
+		a.identityClaim = nil
 		a.mu.Unlock()
 	}
 }
@@ -245,7 +250,9 @@ func populateUpstreamTrace(c *gin.Context, input *database.UsageLogInput) {
 		input.UpstreamProxyID = current.proxy.ID
 		input.UpstreamProxyName = current.proxy.Name
 		applyBPSUsageTransport(input, &current.transport)
-		input.UpstreamDiagnostics = transportDiagnosticJSON(&current.transport)
+		transport := current.transport
+		transport.IdentityClaim = a.identityClaim
+		input.UpstreamDiagnostics = transportDiagnosticJSON(&transport)
 		input.UpstreamResponseModel = current.transport.ResponseModel
 	}
 }

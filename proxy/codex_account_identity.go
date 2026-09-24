@@ -190,6 +190,11 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		}
 	}
 	policy, err := store.ResolveCodexIdentityMapping(ctx, rootKey, legacyKeys, fingerprint.accountIdentityRequested || epochKey != "" || mappedReference)
+	if err == nil && policy.Mode == "preserve" && fingerprint.isolateConflictingIdentity {
+		// Leave the legacy owner's policy intact. Reuse the global mapping
+		// secret but create an isolated policy for this authenticated owner.
+		policy, err = store.ResolveCodexIdentityMapping(ctx, codexIdentityDigest("codex-owner-isolated-policy-v1", rootKey), nil, true)
+	}
 	if err != nil {
 		return codexAccountIdentityError("暂时无法核实出站身份映射，请稍后重试。")
 	}
@@ -298,6 +303,9 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 			identityLegacyKeys = nil
 		}
 		identityPolicy, err := store.ResolveCodexIdentityMapping(ctx, identityKey, identityLegacyKeys, true)
+		if err == nil && identityPolicy.Mode == "preserve" && fingerprint.isolateConflictingIdentity {
+			identityPolicy, err = store.ResolveCodexIdentityMapping(ctx, codexIdentityDigest("codex-owner-isolated-policy-v1", identityKey), nil, true)
+		}
 		if err != nil {
 			return codexAccountIdentityError("暂时无法核实关联会话身份映射，请稍后重试。")
 		}

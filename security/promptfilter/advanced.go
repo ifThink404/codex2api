@@ -166,7 +166,7 @@ type EnforcementConfig struct {
 
 const (
 	DefaultUserCyberCooldownMinutes = 30
-	MinUserCyberCooldownMinutes     = 1
+	MinUserCyberCooldownMinutes     = 0
 	MaxUserCyberCooldownMinutes     = 24 * 60
 	MaxLocalBlockMessageRunes       = 2000
 )

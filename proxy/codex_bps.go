@@ -20,6 +20,7 @@ const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
 	projection               *bpsResponseProjection
+	ToolNamespaceRepair      *bpsNamespaceRepairDiagnostic   `json:"tool_namespace_repair,omitempty"`
 	Timing                   *bpsTimingDiagnostic            `json:"timing,omitempty"`
 	Usage                    *bpsUsageDiagnostic             `json:"usage_billing,omitempty"`
 	Profile                  auth.CodexBPSProfile            `json:"profile"`
@@ -69,6 +70,18 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 	}
 	model := gjson.GetBytes(body, "model").String()
 	d := &CodexBPSDiagnostic{Mode: "bps", RequestedModel: model, SentModel: model, Compact: compact, Profile: profile.profile, ToolsVersion: profile.toolsVersion}
+	repaired, repair, err := repairBPSToolNamespaces(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if repair.Repaired > 0 || repair.Unresolved > 0 || repair.ScanTruncated {
+		d.ToolNamespaceRepair = repair
+	}
+	if repair.Repaired > 0 {
+		body = repaired
+		source["input"] = json.RawMessage(gjson.GetBytes(body, "input").Raw)
+		d.AdaptedFields = append(d.AdaptedFields, "tool call namespace restored from unique declaration")
+	}
 	if strings.EqualFold(strings.TrimSpace(model), "codex-auto-review") {
 		d.SentModel = "gpt-5.6-luna"
 		d.AdaptedFields = append(d.AdaptedFields, "model: codex-auto-review → gpt-5.6-luna")

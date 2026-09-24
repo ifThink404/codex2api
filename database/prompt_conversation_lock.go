@@ -312,10 +312,10 @@ func (db *DB) GetActivePromptConversationRestriction(ctx context.Context, lockKe
 	}
 	query := promptConversationLockSelect + ` WHERE status='active' AND (
 		($1<>'' AND lock_key=$1 AND locked_at>$4) OR
-		(platform=$2 AND newapi_user_id=$3 AND reason_code IN ('upstream_cyber_policy', 'upstream_bio_policy') AND locked_at>$5)
+		($6=TRUE AND platform=$2 AND newapi_user_id=$3 AND reason_code IN ('upstream_cyber_policy', 'upstream_bio_policy') AND locked_at>$5)
 	) ORDER BY CASE WHEN $1<>'' AND lock_key=$1 THEN 0 ELSE 1 END, locked_at DESC LIMIT 1`
 	item, err := scanPromptConversationLock(db.conn.QueryRowContext(ctx, query,
-		lockKey, platform, newAPIUserID, conversationCutoff, userCutoff,
+		lockKey, platform, newAPIUserID, conversationCutoff, userCutoff, userCooldown > 0,
 	))
 	if err != nil {
 		return nil, false, err
@@ -335,6 +335,9 @@ func (db *DB) GetActivePromptConversationLockBySessionHash(ctx context.Context, 
 // existence gate: deriving a replay fingerprint requires a full request
 // envelope build, which is wasted work while no cooldown exists anywhere.
 func (db *DB) HasActivePromptFingerprintReplayLocks(ctx context.Context, ttl time.Duration) (bool, error) {
+	if ttl <= 0 {
+		return false, nil
+	}
 	if err := db.ensurePromptConversationLocksTable(ctx); err != nil {
 		return false, err
 	}

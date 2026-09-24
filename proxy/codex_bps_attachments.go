@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -44,11 +45,18 @@ func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload fun
 	timing := bpsTimingFromContext(ctx)
 	c.mu.Lock()
 	now := time.Now()
+	expired := 0
 	for k, e := range c.entries {
 		if !e.expires.IsZero() && !now.Before(e.expires) {
 			delete(c.entries, k)
+			expired++
 		}
 	}
+	timing.update(func(v *bpsTimingValues) {
+		v.CacheExpiredEntries += expired
+		v.CacheEntryLimit = bpsAttachmentCacheLimit
+		v.UploadConcurrencyLimit = bpsAttachmentUploadConcurrency
+	})
 	if e := c.entries[key]; e != nil {
 		waiting := e.expires.IsZero()
 		c.mu.Unlock()
@@ -68,7 +76,10 @@ func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload fun
 			return e.id, e.err == nil, e.err
 		}
 	}
-	timing.update(func(v *bpsTimingValues) { v.CacheMisses++ })
+	timing.update(func(v *bpsTimingValues) {
+		v.CacheMisses++
+		v.CacheEntriesAtMissMax = max(v.CacheEntriesAtMissMax, len(c.entries))
+	})
 	if len(c.entries) >= bpsAttachmentCacheLimit {
 		oldestKey := ""
 		var oldest time.Time
@@ -79,7 +90,9 @@ func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload fun
 		}
 		if oldestKey != "" {
 			delete(c.entries, oldestKey)
+			timing.update(func(v *bpsTimingValues) { v.CacheEvictions++ })
 		} else {
+			timing.update(func(v *bpsTimingValues) { v.CacheCapacityBypasses++ })
 			// Do not let many concurrent unique uploads grow the cache unbounded.
 			c.mu.Unlock()
 			id, err := upload()
@@ -120,9 +133,11 @@ func bpsImageUploadKey(account *auth.Account, data []byte) string {
 func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, body []byte, d *CodexBPSDiagnostic, upload func(context.Context, []byte, string) (string, error)) ([]byte, map[string]string, error) {
 	used := make(map[string]string)
 	type imageJob struct {
-		url, path, diagnosticPath, adapted string
-		key, id                            string
-		reused                             bool
+		url, diagnosticPath, adapted string
+		itemIndex, partIndex         int
+		field                        string
+		key, id                      string
+		reused                       bool
 	}
 	var jobs []imageJob
 	if d != nil && d.Images != nil {
@@ -152,7 +167,7 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			if field == "output" && strings.TrimSpace(item.Get("call_id").String()) == "" {
 				return nil, nil, bpsImageInputError("图片工具结果缺少 call_id，无法关联原工具调用。")
 			}
-			jobs = append(jobs, imageJob{url: url, path: fmt.Sprintf("input.%d.%s.%d", i, field, j), diagnosticPath: fmt.Sprintf("input[%d].%s[%d]", i, field, j), adapted: adapted})
+			jobs = append(jobs, imageJob{url: url, itemIndex: i, partIndex: j, field: field, diagnosticPath: fmt.Sprintf("input[%d].%s[%d]", i, field, j), adapted: adapted})
 		}
 	}
 	err := runBPSAttachmentJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
@@ -179,15 +194,16 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 	if err != nil {
 		return nil, nil, err
 	}
+	references := make(map[int][]bpsImageReference)
+	for _, job := range jobs {
+		references[job.itemIndex] = append(references[job.itemIndex], bpsImageReference{Part: job.partIndex, Field: job.field, ID: job.id})
+	}
+	body, err = rewriteBPSImageReferences(body, references)
+	if err != nil {
+		return nil, nil, ErrInternalError("构建图片附件引用失败", err)
+	}
 	for _, job := range jobs {
 		used[job.key] = job.id
-		body, err = sjson.DeleteBytes(body, job.path+".image_url")
-		if err == nil {
-			body, err = sjson.SetBytes(body, job.path+".file_id", job.id)
-		}
-		if err != nil {
-			return nil, nil, ErrInternalError("构建图片附件引用失败", err)
-		}
 		if d != nil && d.Images != nil {
 			if job.reused {
 				d.Images.UploadReused++
@@ -223,6 +239,60 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 		}
 	}
 	return body, used, nil
+}
+
+type bpsImageReference struct {
+	Part  int
+	Field string
+	ID    string
+}
+
+// Rewrite each affected item once, and the full input once. Repeated sjson
+// updates of the entire body copied tens of MB for every historical image.
+func rewriteBPSImageReferences(body []byte, references map[int][]bpsImageReference) ([]byte, error) {
+	if len(references) == 0 {
+		return body, nil
+	}
+	parsed := gjson.GetBytes(body, "input").Array()
+	items := make([]json.RawMessage, len(parsed))
+	for i, item := range parsed {
+		items[i] = json.RawMessage(item.Raw)
+	}
+	for index, replacements := range references {
+		fields := map[string][]json.RawMessage{}
+		for _, replacement := range replacements {
+			parts, ok := fields[replacement.Field]
+			if !ok {
+				for _, part := range parsed[index].Get(replacement.Field).Array() {
+					parts = append(parts, json.RawMessage(part.Raw))
+				}
+				fields[replacement.Field] = parts
+			}
+			encoded, err := sjson.DeleteBytes(parts[replacement.Part], "image_url")
+			if err == nil {
+				encoded, err = sjson.SetBytes(encoded, "file_id", replacement.ID)
+			}
+			if err != nil {
+				return nil, err
+			}
+			parts[replacement.Part] = encoded
+		}
+		for field, parts := range fields {
+			encoded, err := json.Marshal(parts)
+			if err != nil {
+				return nil, err
+			}
+			items[index], err = sjson.SetRawBytes(items[index], field, encoded)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return nil, err
+	}
+	return sjson.SetRawBytes(body, "input", encoded)
 }
 
 func bpsImageInputError(message string) *Error {

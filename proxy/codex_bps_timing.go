@@ -24,6 +24,12 @@ type bpsTimingValues struct {
 	CacheMisses                 int    `json:"cache_misses"`
 	CacheWaits                  int    `json:"cache_waits"`
 	CacheWaitMS                 int64  `json:"cache_wait_ms"`
+	CacheExpiredEntries         int    `json:"cache_expired_entries"`
+	CacheEvictions              int    `json:"cache_evictions"`
+	CacheCapacityBypasses       int    `json:"cache_capacity_bypasses"`
+	CacheEntriesAtMissMax       int    `json:"cache_entries_at_miss_max"`
+	CacheEntryLimit             int    `json:"cache_entry_limit,omitempty"`
+	UploadConcurrencyLimit      int    `json:"upload_concurrency_limit,omitempty"`
 	AttachmentRetries           int    `json:"attachment_retries"`
 	InferenceAttempts           int    `json:"inference_attempts"`
 	InferenceHeadersTotalMS     int64  `json:"inference_headers_total_ms"`
@@ -59,6 +65,20 @@ func (t *bpsTimingDiagnostic) MarshalJSON() ([]byte, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return json.Marshal(t.values)
+}
+
+// Usage diagnostics decode the transport snapshot before storing it. The
+// collector's private fields must round-trip rather than silently becoming zero.
+func (t *bpsTimingDiagnostic) UnmarshalJSON(data []byte) error {
+	var values bpsTimingValues
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.values = values
+	t.started, t.inferenceStart = time.Time{}, time.Time{}
+	return nil
 }
 
 func (t *bpsTimingDiagnostic) startInference(now time.Time) {

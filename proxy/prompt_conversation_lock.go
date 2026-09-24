@@ -465,7 +465,7 @@ func (h *Handler) resolvePromptConversationLockIdentity(c *gin.Context, cfg prom
 const promptFingerprintReplayGateTTL = 10 * time.Second
 
 func (h *Handler) hasActiveFingerprintReplayLocks(ctx context.Context, cooldownTTL time.Duration) bool {
-	if h == nil || h.db == nil {
+	if h == nil || h.db == nil || cooldownTTL <= 0 {
 		return false
 	}
 	now := time.Now()
@@ -629,6 +629,9 @@ func (h *Handler) lockPromptConversationAfterUpstreamCYB(c *gin.Context, endpoin
 		}
 		exactConversation = true
 	}
+	if !exactConversation && promptUserCyberCooldownTTL(cfg) <= 0 {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 	defer cancel()
 	item, _, err := h.db.LockPromptConversation(ctx, database.PromptConversationLockInput{
@@ -664,6 +667,9 @@ func (h *Handler) lockPromptConversationAfterUnsignedUpstreamCYB(c *gin.Context,
 	signedBody := ingressRequestBody(c, nil)
 	identity, reasonCode, ok := h.unsignedUpstreamCyberLockIdentity(c, signedBody, endpoint, model)
 	if !ok {
+		return false
+	}
+	if identity.Kind == database.PromptConversationLockIdentityFingerprintReplay && promptUserCyberCooldownTTL(cfg) <= 0 {
 		return false
 	}
 	if len(errorCodes) > 0 && errorCodes[0] == "bio_policy" {

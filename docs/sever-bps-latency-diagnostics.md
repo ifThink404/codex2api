@@ -1,9 +1,9 @@
 # BPS latency diagnostics on sever
 
 `upstream.bps_compat.timing` separates attachment preparation from the
-inference HTTP request. Image preparation now uploads at most ten images
+inference HTTP request. Image preparation now uploads at most 100 images
 concurrently per request, with no account-wide or global upload semaphore.
-Two requests on the same account may each have ten uploads in flight. File
+Two requests on the same account may each have 100 uploads in flight. File
 attachments retain their existing preparation path. All image uploads finish
 before inference begins; results are written back in original input order.
 Failure cancels and joins all image workers before returning. Cache policy,

@@ -980,6 +980,9 @@ func (db *DB) promptRiskActiveRestrictionSubjects(ctx context.Context, conversat
 		}
 		effectiveTTL := conversationTTL
 		if identityKind == PromptConversationLockIdentityFingerprintReplay {
+			if userCooldownTTL <= 0 {
+				continue
+			}
 			effectiveTTL = userCooldownTTL
 		}
 		if sessionHash = strings.ToLower(strings.TrimSpace(sessionHash)); sessionHash != "" &&
@@ -1017,7 +1020,7 @@ func (db *DB) promptRiskActiveRestrictionSubjects(ctx context.Context, conversat
 		// blocks remain attached to the exact session to avoid implicating every
 		// conversation of a shared user.
 		if identityKind == PromptConversationLockIdentityNewAPI && (reasonCode == "upstream_cyber_policy" || reasonCode == "upstream_bio_policy") &&
-			(userCooldownTTL <= 0 || lockedAt.After(now.Add(-userCooldownTTL))) {
+			userCooldownTTL > 0 && lockedAt.After(now.Add(-userCooldownTTL)) {
 			if subjectKey := PromptRiskNewAPIUserSubjectKey(platform, userID); subjectKey != "" {
 				key := PromptRiskSubjectNewAPIUser + "\x00" + subjectKey
 				profile := PromptRiskProfile{

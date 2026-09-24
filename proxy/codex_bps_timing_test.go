@@ -3,12 +3,41 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestBPSTimingSurvivesUsageDiagnosticSnapshot(t *testing.T) {
+	start := time.Unix(100, 0)
+	timing := &bpsTimingDiagnostic{started: start}
+	timing.update(func(v *bpsTimingValues) {
+		v.ImagePrepareMS, v.FilePrepareMS, v.ToolBridgeMS = 12000, 300, 40
+		v.CacheHits, v.CacheMisses, v.CacheWaits = 1, 67, 2
+	})
+	timing.uploaded(10*time.Second, 4096, 200, false)
+	timing.startInference(start.Add(13 * time.Second))
+	timing.receivedHeaders(start.Add(15 * time.Second))
+	timing.event(start.Add(20*time.Second), true)
+	transport := &UpstreamTransportDiagnostic{Transport: "http", BPS: &CodexBPSDiagnostic{Profile: auth.BPSExcel, Mode: "bps", Timing: timing}}
+	var decoded UpstreamTransportDiagnostic
+	require.NoError(t, json.Unmarshal([]byte(transportDiagnosticJSON(transport)), &decoded))
+	usage := &database.UsageLogInput{StatusCode: 200, UpstreamDiagnostics: transportDiagnosticJSON(transport)}
+	populateUsageRequestDiagnostics(promptSessionLimitTestContext(""), usage)
+	want, err := json.Marshal(timing)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), gjson.Get(usage.RequestDiagnostics, "upstream.bps_compat.timing").Raw)
+	// A second deserialize/serialize is used by diagnostic readers as well.
+	snapshot := readUsageDiagnosticSnapshot(t, usage)
+	got, err := json.Marshal(snapshot.Upstream.BPS.Timing)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), string(got))
+}
 
 func TestBPSTimingSeparatesPreparationHeadersAndContent(t *testing.T) {
 	start := time.Unix(100, 0)
@@ -69,6 +98,35 @@ func TestBPSCacheTimingDistinguishesReadyAndInflight(t *testing.T) {
 	require.EqualValues(t, 1, gjson.GetBytes(encoded, "cache_waits").Int())
 	require.EqualValues(t, 1, gjson.GetBytes(encoded, "cache_misses").Int())
 	require.NotContains(t, string(encoded), "file-existing")
+}
+
+func TestBPSCacheTimingExplainsCapacityChurn(t *testing.T) {
+	timing := &bpsTimingDiagnostic{}
+	ctx := context.WithValue(t.Context(), bpsTimingContextKey{}, timing)
+	cache := &bpsAttachmentCache{entries: map[string]*bpsAttachmentEntry{}}
+	ready := make(chan struct{})
+	close(ready)
+	for i := 0; i < bpsAttachmentCacheLimit; i++ {
+		cache.entries[fmt.Sprint(i)] = &bpsAttachmentEntry{ready: ready, id: "file", expires: time.Now().Add(time.Hour)}
+	}
+	upload := func() (string, error) { return "file-new", nil }
+	_, _, err := cache.resolve(ctx, "new", upload)
+	require.NoError(t, err)
+	cache.entries["expired"] = &bpsAttachmentEntry{ready: ready, expires: time.Now().Add(-time.Second)}
+	_, _, err = cache.resolve(ctx, "new", upload)
+	require.NoError(t, err)
+	for _, entry := range cache.entries {
+		entry.expires = time.Time{}
+	}
+	_, _, err = cache.resolve(ctx, "bypassed", upload)
+	require.NoError(t, err)
+	encoded, err := json.Marshal(timing)
+	require.NoError(t, err)
+	for _, key := range []string{"cache_evictions", "cache_expired_entries", "cache_capacity_bypasses"} {
+		require.EqualValues(t, 1, gjson.GetBytes(encoded, key).Int())
+	}
+	require.EqualValues(t, bpsAttachmentCacheLimit, gjson.GetBytes(encoded, "cache_entries_at_miss_max").Int())
+	require.NotContains(t, cache.entries, "bypassed")
 }
 
 func TestBPSTimingObserverSkipsEmptyDeltaAndLifecycleContent(t *testing.T) {

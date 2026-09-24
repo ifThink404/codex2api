@@ -277,6 +277,7 @@ func (handler *Handler) recordServiceError(ctx *gin.Context, status int, apiErro
 	if upstream.ErrorSource == "" {
 		upstream.ErrorSource, upstream.ErrorStage = "gateway", event.Stage
 	}
+	upstream.IdentityClaim = trace.IdentityClaim
 	event.UpstreamInfo = []byte(transportDiagnosticJSON(upstream))
 	event.TurnState = turnStateDiagnostic(ctx.Request.Context())
 	event.ResponseIdentity = responseIdentityDiagnostic(ctx.Request.Context())

@@ -17,6 +17,7 @@ import (
 )
 
 type UpstreamTransportDiagnostic struct {
+	IdentityClaim          *codexIdentityClaimDiagnostic      `json:"identity_claim,omitempty"`
 	ClientTurnState        *usageTurnStateValue               `json:"client_turn_state,omitempty"`
 	BPS                    *CodexBPSDiagnostic                `json:"bps_compat,omitempty"`
 	RequestTurnState       *usageTurnStateValue               `json:"request_turn_state,omitempty"`

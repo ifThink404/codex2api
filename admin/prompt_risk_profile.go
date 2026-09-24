@@ -501,6 +501,9 @@ func (h *Handler) attachPromptConversationLocks(ctx context.Context, profiles []
 				effectiveTTL := lockTTL
 				if item != nil && item.IdentityKind == database.PromptConversationLockIdentityFingerprintReplay {
 					effectiveTTL = userCooldownTTL
+					if effectiveTTL <= 0 {
+						item = nil
+					}
 				}
 				if effectiveTTL > 0 && (item == nil || !item.LockedAt.After(time.Now().UTC().Add(-effectiveTTL))) {
 					item = nil
