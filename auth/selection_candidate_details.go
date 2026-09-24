@@ -9,8 +9,18 @@ type SelectionCandidateDetails struct {
 }
 
 type SelectionCandidateRejection struct {
-	AccountID int64  `json:"account_id"`
-	Reason    string `json:"reason"`
+	AccountID int64                  `json:"account_id"`
+	Reason    string                 `json:"reason"`
+	State     *SelectionAccountState `json:"state,omitempty"`
+}
+
+type SelectionAccountState struct {
+	Usage5hBlocked    bool   `json:"usage_5h_blocked"`
+	Usage7dBlocked    bool   `json:"usage_7d_blocked"`
+	AutoPause5h       bool   `json:"auto_pause_5h"`
+	AutoPause7d       bool   `json:"auto_pause_7d"`
+	CooldownUntilUnix int64  `json:"cooldown_until_unix,omitempty"`
+	CooldownReason    string `json:"cooldown_reason,omitempty"`
 }
 
 func (trace *SelectionTrace) EnableCandidateDetails() {
@@ -22,7 +32,7 @@ func (trace *SelectionTrace) EnableCandidateDetails() {
 	trace.candidateDetails = &SelectionCandidateDetails{RejectionCounts: make(map[string]int)}
 }
 
-func (trace *SelectionTrace) RejectAccount(accountID int64, reason string) {
+func (trace *SelectionTrace) RejectAccount(accountID int64, reason string, states ...SelectionAccountState) {
 	if trace == nil {
 		return
 	}
@@ -44,7 +54,12 @@ func (trace *SelectionTrace) RejectAccount(accountID int64, reason string) {
 		details.OmittedObservations++
 		return
 	}
-	details.Samples = append(details.Samples, SelectionCandidateRejection{accountID, reason})
+	sample := SelectionCandidateRejection{AccountID: accountID, Reason: reason}
+	if len(states) > 0 {
+		state := states[0]
+		sample.State = &state
+	}
+	details.Samples = append(details.Samples, sample)
 }
 
 func (trace *SelectionTrace) CandidateDetails() SelectionCandidateDetails {
@@ -59,6 +74,12 @@ func (trace *SelectionTrace) CandidateDetails() SelectionCandidateDetails {
 			result.RejectionCounts[reason] = count
 		}
 		result.Samples = append([]SelectionCandidateRejection(nil), trace.candidateDetails.Samples...)
+		for index := range result.Samples {
+			if result.Samples[index].State != nil {
+				state := *result.Samples[index].State
+				result.Samples[index].State = &state
+			}
+		}
 		result.OmittedObservations = trace.candidateDetails.OmittedObservations
 	}
 	return result

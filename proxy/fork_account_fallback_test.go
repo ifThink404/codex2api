@@ -268,7 +268,7 @@ func TestForkAccountFallbackContextAndBPSBoundary(t *testing.T) {
 	}
 }
 
-func TestForkAccountFallbackDoesNotRelaxCompactionExistingOwnerOrStorage(t *testing.T) {
+func TestForkAccountFallbackAllowsUnboundCompactionAndPreservesOtherGuards(t *testing.T) {
 	for _, scenario := range []string{"compaction", "existing", "background", "bad_window", "storage_error", "empty_context"} {
 		t.Run(scenario, func(t *testing.T) {
 			h, parent, _, _, child := forkFallbackSetup(t, true, "missing", "enforce")
@@ -294,7 +294,12 @@ func TestForkAccountFallbackDoesNotRelaxCompactionExistingOwnerOrStorage(t *test
 				body, _ = sjson.SetRawBytes(body, "input", []byte(`[{"type":"reasoning","encrypted_content":"old"}]`))
 			}
 			failure := h.configureSessionModelAffinity(c, identity, child, "gpt-5.6-sol", "gpt-5.6-sol", scenario == "compaction", body)
-			if scenario == "existing" {
+			if scenario == "compaction" {
+				// sever admits first-seen compaction without inventing a parent
+				// binding or activating the lossy fork fallback.
+				require.Nil(t, failure)
+				require.Zero(t, selectionTraceForRequest(c).PinnedAccount())
+			} else if scenario == "existing" {
 				require.Nil(t, failure)
 				require.Equal(t, parent.ID(), selectionTraceForRequest(c).PinnedAccount())
 			} else if scenario == "background" {

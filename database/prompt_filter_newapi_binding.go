@@ -263,7 +263,9 @@ func (db *DB) ReplacePromptFilterNewAPIBindingSecretAt(ctx context.Context, apiK
 		previousExpiryArg = expiresAt
 	}
 	return db.withSQLiteWriteLock(ctx, func() error {
-		result, err := db.conn.ExecContext(ctx, `UPDATE prompt_filter_newapi_bindings SET previous_secret=CASE WHEN $1 IS NULL THEN '' ELSE secret END, previous_secret_expires_at=$1, secret=$2, updated_at=CURRENT_TIMESTAMP WHERE api_key_id=$3`, previousExpiryArg, secret, apiKeyID)
+		// Give each parameter an unambiguous type: PostgreSQL cannot infer a
+		// timestamp parameter first encountered as "$1 IS NULL" in the CASE.
+		result, err := db.conn.ExecContext(ctx, `UPDATE prompt_filter_newapi_bindings SET previous_secret=CASE WHEN $1 THEN secret ELSE '' END, previous_secret_expires_at=$2, secret=$3, updated_at=CURRENT_TIMESTAMP WHERE api_key_id=$4`, previousExpiry != nil, previousExpiryArg, secret, apiKeyID)
 		if err != nil {
 			return err
 		}

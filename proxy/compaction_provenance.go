@@ -124,9 +124,21 @@ func requestCompactionDomain(ctx context.Context, account *auth.Account) string 
 }
 
 func applyCompactionRouteFloor(c *gin.Context, resolution compactionAffinityResolution) {
+	if state := usageRequestDiagnosticState(c); state != nil {
+		domain := resolution.CompatibilityDomain
+		if domain != nativeCodexCompactionDomain && domain != bpsCodexCompactionDomain {
+			domain = "hash:" + compactionContentDigest(domain)[:24]
+		}
+		state.CompactionRouting = &compactionRoutingDiagnostic{PreferredAccountID: resolution.PreferredAccountID, CompatibilityDomain: domain}
+	}
 	if resolution.CompatibilityDomain == bpsCodexCompactionDomain {
 		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteFloorKey{}, "bps"))
 	}
+}
+
+type compactionRoutingDiagnostic struct {
+	PreferredAccountID  int64  `json:"preferred_account_id"`
+	CompatibilityDomain string `json:"compatibility_domain"`
 }
 
 func decodeCompactionProvenanceRecord(raw json.RawMessage) (compactionProvenanceRecord, error) {

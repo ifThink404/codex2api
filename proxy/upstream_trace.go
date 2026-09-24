@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -207,7 +208,12 @@ func doTracedUpstreamRequest(client *http.Client, req *http.Request, account *au
 			}
 		}
 	})
+	timing := bpsTimingFromContext(req.Context())
+	timing.startInference(time.Now())
 	resp, err := client.Do(traceHTTPTransport(req, observer))
+	if resp != nil {
+		timing.receivedHeaders(time.Now())
+	}
 	record(resp)
 	if observer != nil && resp != nil && resp.Body != nil {
 		resp.Body = &tracedResponseBody{ReadCloser: resp.Body, observer: observer, captureError: resp.StatusCode >= 400,

@@ -2046,22 +2046,8 @@ func validateChatCompletionFunctionNames(req openAIRequest) error {
 		}
 	}
 	for toolIdx, rawTool := range req.Tools {
-		if tool := gjson.ParseBytes(rawTool); tool.Get("type").String() == "custom" {
-			name, field := tool.Get("name").String(), "name"
-			if tool.Get("custom").IsObject() {
-				name, field = tool.Get("custom.name").String(), "custom.name"
-			}
-			if strings.TrimSpace(name) == "" {
-				return invalidFunctionNameError(fmt.Sprintf("tools[%d].%s", toolIdx, field))
-			}
-			continue
-		}
-		var parsed openAIToolParsed
-		if err := json.Unmarshal(rawTool, &parsed); err != nil || parsed.Type != "function" || parsed.Function == nil {
-			continue
-		}
-		if strings.TrimSpace(parsed.Function.Name) == "" {
-			return invalidFunctionNameError(fmt.Sprintf("tools[%d].function.name", toolIdx))
+		if err := validateToolDeclarationName(gjson.ParseBytes(rawTool), fmt.Sprintf("tools[%d]", toolIdx), true); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -2079,6 +2065,13 @@ func ValidateResponsesFunctionNames(rawBody []byte) error {
 	// 放行一致），无需先做一次全量 ValidBytes 扫描。
 	var funcErr error
 	gjson.GetBytes(rawBody, "input").ForEach(func(idx, item gjson.Result) bool {
+		if kind := item.Get("type").String(); kind == "additional_tools" || kind == "tool_search_output" {
+			item.Get("tools").ForEach(func(toolIdx, tool gjson.Result) bool {
+				funcErr = validateToolDeclarationName(tool, fmt.Sprintf("input[%d].tools[%d]", idx.Int(), toolIdx.Int()), false)
+				return funcErr == nil
+			})
+			return funcErr == nil
+		}
 		if strings.TrimSpace(item.Get("type").String()) != "function_call" {
 			return true
 		}
@@ -2093,24 +2086,46 @@ func ValidateResponsesFunctionNames(rawBody []byte) error {
 	}
 
 	gjson.GetBytes(rawBody, "tools").ForEach(func(idx, tool gjson.Result) bool {
-		if strings.TrimSpace(tool.Get("type").String()) != "function" {
-			return true
-		}
-		name := strings.TrimSpace(tool.Get("name").String())
-		if name == "" {
-			name = strings.TrimSpace(tool.Get("function.name").String())
-		}
-		if name == "" {
-			path := fmt.Sprintf("tools[%d].name", idx.Int())
-			if tool.Get("function").IsObject() {
-				path = fmt.Sprintf("tools[%d].function.name", idx.Int())
-			}
-			funcErr = invalidFunctionNameError(path)
-			return false
-		}
-		return true
+		funcErr = validateToolDeclarationName(tool, fmt.Sprintf("tools[%d]", idx.Int()), false)
+		return funcErr == nil
 	})
 	return funcErr
+}
+
+// Match the converter's field precedence; never invent a name for a tool the
+// client could not execute. Provider built-ins need no function name.
+func validateToolDeclarationName(tool gjson.Result, path string, chat bool) error {
+	kind := strings.TrimSpace(tool.Get("type").String())
+	field := "name"
+	switch kind {
+	case "namespace":
+	case "custom":
+		if chat && tool.Get("custom").IsObject() {
+			field = "custom.name"
+		}
+	case "function", "":
+		if kind == "" && !tool.Get("function").IsObject() && !tool.Get("name").Exists() {
+			return nil
+		}
+		if tool.Get("function").IsObject() && (chat || strings.TrimSpace(tool.Get("name").String()) == "") {
+			field = "function.name"
+		}
+	default:
+		return nil
+	}
+	name := tool.Get(field)
+	if name.Type != gjson.String || strings.TrimSpace(name.String()) == "" {
+		return invalidFunctionNameError(path + "." + field)
+	}
+	if kind == "namespace" {
+		var err error
+		tool.Get("tools").ForEach(func(index, child gjson.Result) bool {
+			err = validateToolDeclarationName(child, fmt.Sprintf("%s.tools[%d]", path, index.Int()), chat)
+			return err == nil
+		})
+		return err
+	}
+	return nil
 }
 
 func normalizeResponsesFunctionTools(body map[string]any) bool {
@@ -2759,12 +2774,16 @@ func convertMessagesToInputSlice(messages []openAIMessage) []any {
 						input = append(input, item)
 						continue
 					}
-					input = append(input, map[string]any{
+					item := map[string]any{
 						"type":      "function_call",
 						"call_id":   tc.ID,
 						"name":      tc.Function.Name,
 						"arguments": tc.Function.Arguments,
-					})
+					}
+					if tc.Namespace != "" {
+						item["namespace"] = tc.Namespace
+					}
+					input = append(input, item)
 				}
 			} else {
 				input = append(input, map[string]any{
@@ -3741,7 +3760,7 @@ func isCodexToolInputDoneEvent(eventType string) bool {
 }
 
 // newToolCallAnnouncementChunk 构建 tool call 首块（含 id、type、function.name）
-func newToolCallAnnouncementChunk(id, model string, created int64, tcIndex int, callID, funcName string) []byte {
+func newToolCallAnnouncementChunk(id, model string, created int64, tcIndex int, callID, funcName, namespace string) []byte {
 	chunk := openAIStreamChunk{
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []streamChoice{{
@@ -3749,9 +3768,10 @@ func newToolCallAnnouncementChunk(id, model string, created int64, tcIndex int, 
 			Delta: &streamDelta{
 				Role: "assistant",
 				ToolCalls: []toolCallDelta{{
-					Index: tcIndex,
-					ID:    callID,
-					Type:  "function",
+					Index:     tcIndex,
+					ID:        callID,
+					Type:      "function",
+					Namespace: namespace,
 					Function: &toolCallFuncDelta{
 						Name:      funcName,
 						Arguments: "",
@@ -4125,7 +4145,7 @@ func (st *StreamTranslator) TranslateParsed(parsed gjson.Result) ([]byte, bool) 
 		if itemType == "custom_tool_call" {
 			return newCustomToolChunk(st.ChunkID, st.Model, st.Created, tcIdx, callID, name, "", parsed.Get("item.namespace").String()), false
 		}
-		return newToolCallAnnouncementChunk(st.ChunkID, st.Model, st.Created, tcIdx, callID, name), false
+		return newToolCallAnnouncementChunk(st.ChunkID, st.Model, st.Created, tcIdx, callID, name, parsed.Get("item.namespace").String()), false
 
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		tcIdx, ok := st.toolCallIndex(parsed)

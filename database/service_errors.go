@@ -177,6 +177,9 @@ type ServiceErrorEvent struct {
 	RootAccountWaitMs      int64                             `json:"root_account_wait_ms,omitempty"`
 	BackgroundWindowWait   *BackgroundWindowWaitDiagnostic   `json:"background_window_wait,omitempty"`
 	CandidateRejections    []string                          `json:"candidate_rejections,omitempty"`
+	RootAccountID          int64                             `json:"root_account_id,omitempty"`
+	DispatchSelection      json.RawMessage                   `json:"dispatch_selection,omitempty"`
+	ToolProtocol           json.RawMessage                   `json:"tool_protocol,omitempty"`
 	ClientInfo             map[string]string                 `json:"client_info,omitempty"`
 	UpstreamInfo           json.RawMessage                   `json:"upstream,omitempty"`
 	AccountFailover        *SessionAccountFailoverDiagnostic `json:"account_failover,omitempty"`
@@ -316,6 +319,13 @@ func normalizeServiceError(event ServiceErrorEvent) ServiceErrorEvent {
 		rejections = append(rejections, serviceErrorString(reason, 80))
 	}
 	event.CandidateRejections = rejections
+	for _, raw := range []*json.RawMessage{&event.DispatchSelection, &event.ToolProtocol} {
+		if len(*raw) > 16384 || !json.Valid(*raw) {
+			*raw = nil
+		} else {
+			*raw = append(json.RawMessage(nil), (*raw)...)
+		}
+	}
 	clientInfo := make(map[string]string)
 	keys := make([]string, 0, min(len(event.ClientInfo), 24))
 	for key := range event.ClientInfo {

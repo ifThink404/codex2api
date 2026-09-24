@@ -169,6 +169,9 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 					}
 				} else {
 					original, err = projectBPSResponse(r.ctx, original)
+					if err == nil {
+						original = projectBillingTierResponse(r.ctx, original)
+					}
 					if err == nil && !r.raw {
 						original, err = maskResponsePayload(r.ctx, r.account, original, true)
 					}
@@ -334,6 +337,7 @@ func (r *turnStateStream) maskFrame(frame []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	encoded = projectBillingTierResponse(r.ctx, encoded)
 	if !r.raw {
 		encoded, err = maskResponsePayload(r.ctx, r.account, encoded, false)
 	} else if alias, _ := r.ctx.Value(syntheticTurnStateKey{}).(string); alias != "" && gjson.ValidBytes(data) {

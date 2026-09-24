@@ -76,7 +76,7 @@ func TestBPSUserImageAttachmentsExecutor(t *testing.T) {
 			require.Equal(t, "unchanged-business-data", gjson.GetBytes(body, "input.4.content").String())
 			require.NotContains(t, string(body), imageData)
 			require.Len(t, gjson.GetBytes(body, "input").Array(), 5)
-			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_test","output":[]}`)), Request: r}, nil
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_test","service_tier":"priority","output":[]}`)), Request: r}, nil
 		})
 		body := []byte(`{"model":"gpt-6-astra","input":[{"role":"user","id":"user-original","large_integer":9007199254740993,"content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":"data:application/octet-stream;base64,` + imageData + `","detail":"original"},{"type":"input_text","text":"between"},{"type":"input_image","image_url":"data:image/png;base64,` + imageData + `","detail":"low"}]},{"type":"function_call_output","call_id":"call_original","output":[{"type":"input_image","image_url":"data:image/png;base64,` + imageData + `"}]},{"role":"assistant","content":"unchanged-business-data"}]}`)
 		original := bytes.Clone(body)
@@ -89,15 +89,32 @@ func TestBPSUserImageAttachmentsExecutor(t *testing.T) {
 				resp, err = ExecuteRequest(ctx, a, body, "session", "", "", nil, nil, false)
 			}
 			require.NoError(t, err)
+			responseBody, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, "priority", gjson.GetBytes(responseBody, "codex2api_billing.service_tier").String())
 			require.NoError(t, resp.Body.Close())
 			d := CodexBPSResponseDiagnostic(resp)
 			require.NotNil(t, d)
+			require.NotNil(t, d.Timing)
+			timingJSON, e := json.Marshal(d.Timing)
+			require.NoError(t, e)
+			timing := gjson.ParseBytes(timingJSON)
+			require.EqualValues(t, 1, timing.Get("inference_attempts").Int())
+			require.True(t, timing.Get("pre_inference_ms").Exists())
+			require.True(t, timing.Get("last_inference_headers_ms").Exists())
+			require.False(t, timing.Get("last_inference_first_event_ms").Exists())
 			if round == 0 {
 				require.Equal(t, 1, d.Images.Uploaded)
 				require.Equal(t, 2, d.Images.UploadReused)
+				require.EqualValues(t, 1, timing.Get("upload_requests").Int())
+				require.EqualValues(t, len(decoded), timing.Get("upload_bytes").Int())
+				require.EqualValues(t, 1, timing.Get("cache_misses").Int())
+				require.EqualValues(t, 2, timing.Get("cache_hits").Int()+timing.Get("cache_waits").Int())
 			} else {
 				require.Zero(t, d.Images.Uploaded)
 				require.Equal(t, 3, d.Images.UploadReused)
+				require.Zero(t, timing.Get("upload_requests").Int())
+				require.EqualValues(t, 3, timing.Get("cache_hits").Int())
 			}
 			logged, e := json.Marshal(d)
 			require.NoError(t, e)
@@ -219,6 +236,11 @@ func TestBPSAttachmentExpiredReferenceRetriesOnce(t *testing.T) {
 	require.Equal(t, 400, resp.StatusCode)
 	require.Equal(t, 2, uploads)
 	require.Equal(t, 2, responses)
+	timingJSON, err := json.Marshal(CodexBPSResponseDiagnostic(resp).Timing)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, gjson.GetBytes(timingJSON, "upload_requests").Int())
+	require.EqualValues(t, 2, gjson.GetBytes(timingJSON, "inference_attempts").Int())
+	require.EqualValues(t, 1, gjson.GetBytes(timingJSON, "attachment_retries").Int())
 	for _, status := range []int{400, 422, 500} {
 		raw := `{"error":{"message":"unrelated error"}}`
 		resp := &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(raw))}

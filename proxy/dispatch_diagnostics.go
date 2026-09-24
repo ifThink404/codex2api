@@ -50,10 +50,34 @@ func selectionTraceForRequest(ctx *gin.Context) *auth.SelectionTrace {
 
 func beginDispatchSelection(ctx *gin.Context) {
 	trace := &auth.SelectionTrace{}
+	trace.EnableCandidateDetails()
 	if grant := windowGrantForRequest(ctx); grant != nil {
 		trace.SetExpandedWindow(grant.Grant.Expanded)
 	}
 	ctx.Request = ctx.Request.WithContext(auth.WithSelectionTrace(ctx.Request.Context(), trace))
+}
+
+// Saved only in administrator diagnostics, never in the public error body.
+type dispatchSelectionDiagnostic struct {
+	PinnedAccountID int64                          `json:"pinned_account_id,omitempty"`
+	RootAccountID   int64                          `json:"root_account_id,omitempty"`
+	Candidates      auth.SelectionCandidateDetails `json:"candidates"`
+	Compaction      *compactionRoutingDiagnostic   `json:"compaction,omitempty"`
+}
+
+func dispatchSelectionSnapshot(ctx *gin.Context) *dispatchSelectionDiagnostic {
+	trace := selectionTraceForRequest(ctx)
+	if trace == nil {
+		return nil
+	}
+	result := &dispatchSelectionDiagnostic{
+		PinnedAccountID: trace.PinnedAccount(), RootAccountID: trace.Snapshot().RootAccount,
+		Candidates: trace.CandidateDetails(),
+	}
+	if state := usageRequestDiagnosticState(ctx); state != nil {
+		result.Compaction = state.CompactionRouting
+	}
+	return result
 }
 
 func sealDispatchDiagnostic(secret, requestID, userID, platform string, diagnostic dispatchDiagnosticEnvelope, random io.Reader) (string, error) {

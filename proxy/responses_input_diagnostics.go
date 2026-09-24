@@ -116,11 +116,13 @@ func (observer *TransportObserver) ResponsesInput(body []byte, headers http.Head
 		return
 	}
 	shape := diagnoseResponsesInput(body, headers, endpoint)
+	toolProtocol := diagnoseToolProtocol(body)
 	outbound := captureOutboundIdentityBody(body)
 	accessPrograms := captureAccessPrograms(body)
 	turnState := captureUsageOutboundTurnState(body, headers)
 	observer.update(func(diagnostic *UpstreamTransportDiagnostic) {
 		diagnostic.ResponsesInput = shape
+		diagnostic.ToolProtocol = toolProtocol
 		diagnostic.AccessPrograms = accessPrograms
 		diagnostic.RequestTurnState = turnState
 	})

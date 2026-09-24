@@ -558,6 +558,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if !responsesBodyRequestsImageGeneration(requestBody) {
 		RecordObservedInstructions(requestBody, headers)
 		requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
+		ctx = context.WithValue(ctx, billingTierRequestKey{}, knownBillingTier(extractServiceTier(requestBody)))
 		// 规则改写发生在各 handler 的 service_tier 净化之后，规则注入的 flex/auto 等
 		// 上游不接受的层级会原样发出并触发 400，这里补一次净化兜底。用量日志的
 		// requested tier 归因走 EffectiveRequestedServiceTier（净化前取值），不受影响。
@@ -884,6 +885,7 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 
 	client := getPooledClient(account, proxyURL)
 	send := func(body []byte) (*http.Response, error) {
+		ctx = context.WithValue(ctx, billingTierRequestKey{}, knownBillingTier(extractServiceTier(body)))
 		body = StripCodexProjectMetadata(body)
 		body, headers = PrepareCodexTurnStateOutbound(ctx, account, body, headers)
 		body, _ = FinalizeCodexOutboundMetadata(body, headers, ctx)
@@ -1063,6 +1065,7 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 	}
 
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses/compact")
+	ctx = context.WithValue(ctx, billingTierRequestKey{}, knownBillingTier(extractServiceTier(requestBody)))
 	requestBody = StripCodexProjectMetadata(requestBody)
 	requestBody, headers = PrepareCodexTurnStateOutbound(ctx, account, requestBody, headers)
 	requestBody, headers = FinalizeCodexOutboundMetadata(requestBody, headers, ctx)
@@ -1107,6 +1110,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = context.WithValue(ctx, billingTierRequestKey{}, knownBillingTier(extractServiceTier(requestBody)))
 	resetUpstreamUserAgentAudit(ctx)
 	resetWsAcquireAudit(ctx)
 	ctx, requestBody, upstreamErr = PreparePreservedInputTransport(ctx, requestBody)

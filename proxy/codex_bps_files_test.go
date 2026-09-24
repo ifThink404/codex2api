@@ -199,10 +199,22 @@ func TestBPSFileUploadFailureStopsInference(t *testing.T) {
 	body := []byte(`{"model":"gpt-6-astra","input":[{"role":"user","content":[{"type":"input_file","filename":"test.future","file_data":"aGVsbG8="}]}]}`)
 	ctx := WithCodexAccountTestIdentityStore(t.Context(), db, a)
 	for i := 0; i < 2; i++ {
+		ctx = ensureTransportTrace(ctx)
 		resp, err := ExecuteRequest(ctx, a, body, "session", "", "", nil, nil, false)
 		require.Error(t, err)
 		require.Nil(t, resp)
 		require.NotContains(t, err.Error(), "secret filename")
+		trace := snapshotUpstreamTrace(ctx)
+		require.NotNil(t, trace.Transport)
+		require.Equal(t, "before_payload", trace.Transport.SendPhase)
+		require.Equal(t, "bps_file_preparation", trace.Transport.ErrorStage)
+		logged := transportDiagnosticJSON(trace.Transport)
+		require.EqualValues(t, 1, gjson.Get(logged, "bps_compat.timing.upload_requests").Int())
+		require.EqualValues(t, 1, gjson.Get(logged, "bps_compat.timing.upload_failures").Int())
+		require.EqualValues(t, 422, gjson.Get(logged, "bps_compat.timing.upload_last_http_status").Int())
+		require.Zero(t, gjson.Get(logged, "bps_compat.timing.inference_attempts").Int())
+		require.False(t, gjson.Get(logged, "bps_compat.timing.pre_inference_ms").Exists())
+		require.NotContains(t, logged, "secret filename")
 	}
 	require.Equal(t, 2, requests) // failed uploads are not cached
 }

@@ -27,6 +27,7 @@ type UpstreamTransportDiagnostic struct {
 	StreamDelivery         *ResponsesStreamDeliveryDiagnostic `json:"stream_delivery,omitempty"`
 	OutboundIdentity       *outboundIdentityDiagnostic        `json:"outbound_identity,omitempty"`
 	ResponsesInput         *responsesInputDiagnostic          `json:"responses_input,omitempty"`
+	ToolProtocol           *toolProtocolDiagnostic            `json:"tool_protocol,omitempty"`
 	AccountID              int64                              `json:"account_id,omitempty"`
 	Transport              string                             `json:"transport"`
 	UpstreamEndpoint       string                             `json:"upstream_endpoint,omitempty"`
@@ -259,6 +260,13 @@ func (observer *TransportObserver) event(name string, payload []byte) {
 		eventType := gjson.GetBytes(payload, "type").String()
 		if eventType == "" {
 			eventType = name
+		}
+		if diagnostic.BPS != nil && eventType != "" {
+			content := isFirstTokenPayload(payload)
+			if gjson.GetBytes(payload, "type").String() == "" {
+				content = isFirstTokenEvent(eventType)
+			}
+			diagnostic.BPS.Timing.event(time.Now(), content)
 		}
 		observeUpstreamResponseModel(observer.attempt, payload, eventType)
 		if eventType == "error" || eventType == "response.failed" {

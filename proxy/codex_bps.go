@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -19,6 +20,7 @@ const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
 	projection               *bpsResponseProjection
+	Timing                   *bpsTimingDiagnostic            `json:"timing,omitempty"`
 	Usage                    *bpsUsageDiagnostic             `json:"usage_billing,omitempty"`
 	Profile                  auth.CodexBPSProfile            `json:"profile"`
 	ToolsVersion             string                          `json:"tools_version"`
@@ -184,6 +186,7 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 }
 
 func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, cacheKey, proxyOverride, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, fingerprint *CodexFingerprint, compact bool) (*http.Response, error) {
+	started := time.Now()
 	account.Mu().RLock()
 	accessToken, proxyURL := account.AccessToken, account.ProxyURL
 	profile := bpsProfile(account.CodexBPSProfile)
@@ -224,6 +227,15 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		return nil, ErrInternalError("构建 BPS 请求失败", err)
 	}
 	ctx = context.WithValue(ctx, codexBPSDiagnosticKey{}, diagnostic)
+	diagnostic.Timing = &bpsTimingDiagnostic{started: started}
+	ctx = context.WithValue(ctx, bpsTimingContextKey{}, diagnostic.Timing)
+	ctx = ensureTransportTrace(ctx)
+	// Preparation errors happen before the inference transport is created. Keep
+	// their upload/wait measurements available to the normal error log as well.
+	preparationFailed := func(stage string) {
+		beginUpstreamTrace(ctx, account, proxyURL, false)
+		UpstreamTransportObserver(ctx).Failure("gateway", stage, 0)
+	}
 	diagnostic.projection = newBPSResponseProjection(body)
 	endpoint := CodexBPSBaseURL + "/responses"
 	if compact {
@@ -254,24 +266,33 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	originalProjected, requestHeaders := projected, req.Header.Clone()
 	for attempt := 0; ; attempt++ {
 		var used map[string]string
+		phaseStarted := time.Now()
 		projected, used, err = prepareBPSUserImageAttachments(ctx, account, originalProjected, diagnostic, func(uploadCtx context.Context, data []byte, mime string) (string, error) {
 			return uploadBPSImage(uploadCtx, client, requestHeaders, data, mime)
 		})
+		diagnostic.Timing.update(func(v *bpsTimingValues) { v.ImagePrepareMS += time.Since(phaseStarted).Milliseconds() })
 		if err != nil {
+			preparationFailed("bps_image_preparation")
 			return nil, err
 		}
 		var filesUsed map[string]string
+		phaseStarted = time.Now()
 		projected, filesUsed, err = prepareBPSFileAttachments(ctx, account, projected, diagnostic, func(uploadCtx context.Context, file bpsFileAttachment) (string, error) {
 			return uploadBPSAttachment(uploadCtx, client, requestHeaders, file)
 		})
+		diagnostic.Timing.update(func(v *bpsTimingValues) { v.FilePrepareMS += time.Since(phaseStarted).Milliseconds() })
 		if err != nil {
+			preparationFailed("bps_file_preparation")
 			return nil, err
 		}
 		for key, id := range filesUsed {
 			used[key] = id
 		}
+		phaseStarted = time.Now()
 		projected, err = bridgeBPSToolAttachments(projected, diagnostic)
+		diagnostic.Timing.update(func(v *bpsTimingValues) { v.ToolBridgeMS += time.Since(phaseStarted).Milliseconds() })
 		if err != nil {
+			preparationFailed("bps_tool_attachment_bridge")
 			return nil, ErrInternalError("构建工具附件引用失败", err)
 		}
 		req, err = http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(projected))
@@ -287,6 +308,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 			return nil, ErrUpstream(0, "请求上游失败", sendErr)
 		}
 		if attempt == 0 && invalidateMissingBPSAttachments(resp, used) {
+			diagnostic.Timing.update(func(v *bpsTimingValues) { v.AttachmentRetries++ })
 			resp.Body.Close()
 			continue
 		}

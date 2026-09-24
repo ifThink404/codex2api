@@ -41,6 +41,7 @@ type bpsAttachmentCache struct {
 var bpsImages = bpsAttachmentCache{entries: make(map[string]*bpsAttachmentEntry)}
 
 func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload func() (string, error)) (string, bool, error) {
+	timing := bpsTimingFromContext(ctx)
 	c.mu.Lock()
 	now := time.Now()
 	for k, e := range c.entries {
@@ -49,7 +50,17 @@ func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload fun
 		}
 	}
 	if e := c.entries[key]; e != nil {
+		waiting := e.expires.IsZero()
 		c.mu.Unlock()
+		if waiting {
+			started := time.Now()
+			timing.update(func(v *bpsTimingValues) { v.CacheWaits++ })
+			defer func() {
+				timing.update(func(v *bpsTimingValues) { v.CacheWaitMS += time.Since(started).Milliseconds() })
+			}()
+		} else {
+			timing.update(func(v *bpsTimingValues) { v.CacheHits++ })
+		}
 		select {
 		case <-ctx.Done():
 			return "", false, ctx.Err()
@@ -57,6 +68,7 @@ func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload fun
 			return e.id, e.err == nil, e.err
 		}
 	}
+	timing.update(func(v *bpsTimingValues) { v.CacheMisses++ })
 	if len(c.entries) >= bpsAttachmentCacheLimit {
 		oldestKey := ""
 		var oldest time.Time
@@ -107,6 +119,12 @@ func bpsImageUploadKey(account *auth.Account, data []byte) string {
 // manufacture assistant tool calls or fetch arbitrary remote image URLs.
 func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, body []byte, d *CodexBPSDiagnostic, upload func(context.Context, []byte, string) (string, error)) ([]byte, map[string]string, error) {
 	used := make(map[string]string)
+	type imageJob struct {
+		url, path, diagnosticPath, adapted string
+		key, id                            string
+		reused                             bool
+	}
+	var jobs []imageJob
 	if d != nil && d.Images != nil {
 		d.Images.Uploaded, d.Images.UploadReused, d.Images.ToolAttachmentMessages = 0, 0, 0
 	}
@@ -134,54 +152,60 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			if field == "output" && strings.TrimSpace(item.Get("call_id").String()) == "" {
 				return nil, nil, bpsImageInputError("图片工具结果缺少 call_id，无法关联原工具调用。")
 			}
-			path := fmt.Sprintf("input.%d.%s.%d", i, field, j)
-			detail := codexBPSImageDetail{}
-			normalized := normalizeBPSImageDataURL(url, &detail)
-			if detail.DetectedMIME == "" {
-				return nil, nil, bpsImageInputError("图片数据无效或格式不受支持，请使用 PNG、JPEG、GIF 或 WebP 图片。")
+			jobs = append(jobs, imageJob{url: url, path: fmt.Sprintf("input.%d.%s.%d", i, field, j), diagnosticPath: fmt.Sprintf("input[%d].%s[%d]", i, field, j), adapted: adapted})
+		}
+	}
+	err := runBPSAttachmentJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
+		job := &jobs[index]
+		detail := codexBPSImageDetail{}
+		normalized := normalizeBPSImageDataURL(job.url, &detail)
+		if detail.DetectedMIME == "" {
+			return bpsImageInputError("图片数据无效或格式不受支持，请使用 PNG、JPEG、GIF 或 WebP 图片。")
+		}
+		_, encoded, _ := strings.Cut(normalized, ",")
+		if len(encoded) > security.MaxRequestBodySize {
+			return bpsImageInputError("图片数据超过请求大小限制。")
+		}
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return bpsImageInputError("图片 Base64 数据不完整或无效，请重新附加图片。")
+		}
+		job.key = bpsImageUploadKey(account, data)
+		job.id, job.reused, err = bpsImages.resolve(workCtx, job.key, func() (string, error) {
+			return upload(workCtx, data, detail.DetectedMIME)
+		})
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, job := range jobs {
+		used[job.key] = job.id
+		body, err = sjson.DeleteBytes(body, job.path+".image_url")
+		if err == nil {
+			body, err = sjson.SetBytes(body, job.path+".file_id", job.id)
+		}
+		if err != nil {
+			return nil, nil, ErrInternalError("构建图片附件引用失败", err)
+		}
+		if d != nil && d.Images != nil {
+			if job.reused {
+				d.Images.UploadReused++
+			} else {
+				d.Images.Uploaded++
 			}
-			_, encoded, _ := strings.Cut(normalized, ",")
-			// Bound allocations by the same limit as the gateway's request body.
-			if len(encoded) > security.MaxRequestBodySize {
-				return nil, nil, bpsImageInputError("图片数据超过请求大小限制。")
-			}
-			data, err := base64.StdEncoding.DecodeString(encoded)
-			if err != nil {
-				return nil, nil, bpsImageInputError("图片 Base64 数据不完整或无效，请重新附加图片。")
-			}
-			key := bpsImageUploadKey(account, data)
-			id, reused, err := bpsImages.resolve(ctx, key, func() (string, error) { return upload(ctx, data, detail.DetectedMIME) })
-			if err != nil {
-				return nil, nil, err
-			}
-			used[key] = id
-			body, err = sjson.DeleteBytes(body, path+".image_url")
-			if err == nil {
-				body, err = sjson.SetBytes(body, path+".file_id", id)
-			}
-			if err != nil {
-				return nil, nil, ErrInternalError("构建图片附件引用失败", err)
-			}
-			if d != nil && d.Images != nil {
-				if reused {
-					d.Images.UploadReused++
-				} else {
-					d.Images.Uploaded++
-				}
-				for k := range d.Images.Details {
-					v := &d.Images.Details[k]
-					if v.Path == fmt.Sprintf("input[%d].%s[%d]", i, field, j) {
-						v.OutboundReference = "file_id"
-						v.Action = "uploaded"
-						if reused {
-							v.Action = "upload_reused"
-						}
+			for k := range d.Images.Details {
+				v := &d.Images.Details[k]
+				if v.Path == job.diagnosticPath {
+					v.OutboundReference, v.Action = "file_id", "uploaded"
+					if job.reused {
+						v.Action = "upload_reused"
 					}
 				}
 			}
-			if d != nil && !slices.Contains(d.AdaptedFields, adapted) {
-				d.AdaptedFields = append(d.AdaptedFields, adapted)
-			}
+		}
+		if d != nil && !slices.Contains(d.AdaptedFields, job.adapted) {
+			d.AdaptedFields = append(d.AdaptedFields, job.adapted)
 		}
 	}
 	// Describe the final representation, not the pre-upload or pre-trim input.
@@ -210,7 +234,11 @@ func uploadBPSImage(ctx context.Context, client *http.Client, headers http.Heade
 	return uploadBPSAttachment(ctx, client, headers, bpsFileAttachment{Data: data, Name: name, ContentType: mime})
 }
 
-func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.Header, file bpsFileAttachment) (string, error) {
+func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.Header, file bpsFileAttachment) (result string, resultErr error) {
+	started, status := time.Now(), 0
+	defer func() {
+		bpsTimingFromContext(ctx).uploaded(time.Since(started), len(file.Data), status, resultErr != nil)
+	}()
 	uploadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var buffer bytes.Buffer
@@ -248,6 +276,7 @@ func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.
 		return "", ErrUpstream(http.StatusBadGateway, "附件上传失败，请稍后重试。", nil)
 	}
 	defer resp.Body.Close()
+	status = resp.StatusCode
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		status := resp.StatusCode

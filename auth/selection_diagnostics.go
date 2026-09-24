@@ -156,7 +156,9 @@ func (trace *SelectionTrace) Reset() {
 		trace.rootAccount = 0
 		trace.frozen = false
 		trace.sessionModelDenied = false
-		trace.candidateDetails = nil
+		if trace.candidateDetails != nil {
+			trace.candidateDetails = &SelectionCandidateDetails{RejectionCounts: make(map[string]int)}
+		}
 		trace.mu.Unlock()
 	}
 }
@@ -176,6 +178,25 @@ func (account *Account) selectionUnavailableReasonLocked(now time.Time) string {
 	default:
 		return "account_unavailable"
 	}
+}
+
+func (account *Account) selectionAccountStateLocked(now time.Time) SelectionAccountState {
+	state := SelectionAccountState{
+		Usage5hBlocked: !account.creditSkipsUsageWindowLocked() && account.rawPremium5hRateLimitedLocked(now),
+		Usage7dBlocked: !account.creditSkipsUsageWindowLocked() && (account.rawUsageExhaustedLocked() || account.rawUsageWindow7dExhaustedLocked(now)),
+		AutoPause5h:    quotaAutoPausedByWindow(account.UsagePercent5h, account.UsagePercent5hValid, account.Reset5hAt, account.effectiveAutoPause5h, account.AutoPause5hDisabled, now),
+		AutoPause7d:    quotaAutoPausedByWindow(account.UsagePercent7d, account.UsagePercent7dValid, account.Reset7dAt, account.effectiveAutoPause7d, account.AutoPause7dDisabled, now),
+	}
+	if account.Status == StatusCooldown && now.Before(account.CooldownUtil) {
+		state.CooldownUntilUnix = account.CooldownUtil.Unix()
+		switch account.CooldownReason {
+		case "rate_limited", "rate_limited_5h", "rate_limited_7d", ResponsesRateLimitedCooldownReason, "usage_limited", "usage_limit", "unauthorized", "forbidden", "overloaded", "credential_refresh", "version_required", "payment_required":
+			state.CooldownReason = account.CooldownReason
+		default:
+			state.CooldownReason = "other"
+		}
+	}
+	return state
 }
 
 func (trace *SelectionTrace) Filter(reason string, filter AccountFilter) AccountFilter {

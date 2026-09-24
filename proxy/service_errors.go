@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -282,6 +283,10 @@ func (handler *Handler) recordServiceError(ctx *gin.Context, status int, apiErro
 	if value, exists := ctx.Get(usageRequestDiagnosticsContextKey); exists {
 		if diagnostics, ok := value.(*usageRequestDiagnostics); ok && diagnostics != nil {
 			incoming = diagnostics.Incoming
+			event.RootAccountID = diagnostics.RootAccountID
+			if diagnostics.ToolProtocol != nil {
+				event.ToolProtocol, _ = json.Marshal(diagnostics.ToolProtocol)
+			}
 			event.AccountFailover = diagnostics.AccountFailover
 			event.PromptSafety = diagnostics.PromptSafety
 			if event.AccountFailover == nil && diagnostics.Continuity != nil {
@@ -360,6 +365,7 @@ func (handler *Handler) recordServiceError(ctx *gin.Context, status int, apiErro
 	}
 	if selection := selectionTraceForRequest(ctx); selection != nil {
 		event.CandidateRejections = selection.Snapshot().Reasons
+		event.DispatchSelection, _ = json.Marshal(dispatchSelectionSnapshot(ctx))
 	}
 	if endpoint == "/v1/session-windows" {
 		event.RequestType, event.RequestKind = "gateway_internal", "window_control"

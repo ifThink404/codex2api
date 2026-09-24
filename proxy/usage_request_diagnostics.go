@@ -114,6 +114,10 @@ type usageRequestDiagnostics struct {
 	SelectedAccountID      int64                                    `json:"selected_account_id,omitempty"`
 	Selection              string                                   `json:"selection"`
 	CandidateRejections    []string                                 `json:"candidate_rejections,omitempty"`
+	DispatchSelection      *dispatchSelectionDiagnostic             `json:"dispatch_selection,omitempty"`
+	ToolProtocol           *toolProtocolDiagnostic                  `json:"tool_protocol,omitempty"`
+	ClientServiceTier      *clientServiceTierDiagnostic             `json:"client_service_tier,omitempty"`
+	CompactionRouting      *compactionRoutingDiagnostic             `json:"compaction_routing,omitempty"`
 	Attempt                int                                      `json:"attempt"`
 	Truncated              bool                                     `json:"truncated,omitempty"`
 	rootCaptured           bool
@@ -293,6 +297,8 @@ func captureUsageRequestIngress(c *gin.Context, body []byte) {
 		}
 	}
 	state.ResponsesInput = diagnoseResponsesInput(body, headers, endpoint)
+	state.ToolProtocol = diagnoseToolProtocol(body)
+	state.ClientServiceTier = captureClientServiceTier(body)
 	state.SessionIDPrefix = requestSessionIDPrefix(headers, body)
 	state.WindowNumberOriginal, state.WindowNumberOutbound = "", ""
 	if c.Request != nil {
@@ -527,6 +533,7 @@ func populateUsageRequestDiagnostics(c *gin.Context, input *database.UsageLogInp
 	}
 	if trace := selectionTraceForRequest(c); trace != nil {
 		snapshot.CandidateRejections = trace.Snapshot().Reasons
+		snapshot.DispatchSelection = dispatchSelectionSnapshot(c)
 	}
 	populateUsageTurnStart(state, input)
 	if snapshot.TurnStart != nil {
