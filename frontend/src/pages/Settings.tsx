@@ -3438,18 +3438,6 @@ export default function Settings() {
                       onCheckedChange={(checked) => autoSaveBooleanField('codex_fork_account_fallback_enabled', checked)}
                     />
                   </SettingField>
-                  <SettingField label={t('settings.initialSessionAge')} description={t('settings.initialSessionAgeHint')} channels={CHANNELS_CODEX_ONLY}>
-                    <div className="flex items-center gap-3">
-                    <DraftNumberInput min={1} max={86400} integer emptyValue={60}
-                      disabled={settingsForm.codex_initial_session_age_check_disabled}
-                      value={settingsForm.codex_initial_session_max_age_seconds}
-                      onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_initial_session_max_age_seconds: value }))}
-                      onValueCommit={(value) => { void autoSaveSettingsPatch({ codex_initial_session_max_age_seconds: value }) }} />
-                    <Switch aria-label={t('settings.initialSessionAgeEnabled')}
-                      checked={!settingsForm.codex_initial_session_age_check_disabled}
-                      onCheckedChange={(checked) => autoSaveBooleanField('codex_initial_session_age_check_disabled', !checked)} />
-                    </div>
-                  </SettingField>
                   <SettingField
                     label={t('settings.codexSessionFailoverPreserveInput')}
                     description={t('settings.codexSessionFailoverPreserveInputHint')}

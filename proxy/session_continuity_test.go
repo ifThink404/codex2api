@@ -302,11 +302,13 @@ func TestInitialSessionHTTPAndWebsocketEntrypoints(test *testing.T) {
 			if endpoint != "websocket" {
 				request, recorder := signedRootlessPassiveModelContext(test, http.MethodPost, endpoint, body, meta)
 				map[string]func(*gin.Context){"/v1/responses": handler.Responses, "/v1/responses/compact": handler.ResponsesCompact, "/v1/chat/completions": handler.ChatCompletions}[endpoint](request)
-				require.Equal(test, http.StatusBadRequest, recorder.Code, recorder.Body.String())
-				expectedCode := "codex_session_identity_unavailable"
+				// With no accounts, ordinary requests now reach account selection.
+				expectedStatus, expectedCode := http.StatusServiceUnavailable, "service_unavailable"
 				if endpoint == "/v1/responses/compact" {
+					expectedStatus = http.StatusBadRequest
 					expectedCode = "codex_session_continuity_unbound_compaction"
 				}
+				require.Equal(test, expectedStatus, recorder.Code, recorder.Body.String())
 				require.Equal(test, expectedCode, gjson.GetBytes(recorder.Body.Bytes(), "error.code").String())
 				return
 			}
@@ -326,7 +328,7 @@ func TestInitialSessionHTTPAndWebsocketEntrypoints(test *testing.T) {
 			require.NoError(test, connection.SetReadDeadline(time.Now().Add(5*time.Second)))
 			_, response, err := connection.ReadMessage()
 			require.NoError(test, err)
-			require.Equal(test, "codex_session_identity_unavailable", gjson.GetBytes(response, "error.code").String(), string(response))
+			require.Equal(test, "service_unavailable", gjson.GetBytes(response, "error.code").String())
 		})
 	}
 }

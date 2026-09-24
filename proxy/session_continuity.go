@@ -325,23 +325,10 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 		diagnostic.Action = "blocked"
 		return sessionContinuityError(diagnostic.Result)
 	}
-	// First-account admission is independent from the sequence-validation mode.
-	// This function already excludes unrelated/background and API-relay traffic.
+	// First bindings only mark stale turn-state for cleanup. The sever branch
+	// accepts ordinary SDK session IDs and does not enforce UUIDv7 timestamps.
 	if !found && owner == 0 && forkFallbackReason == "" {
-		initialThread := resolveRequestRootSessionIdentity(request.Request.Header, body).sessionID
-		if status, policy := handler.cachedNewAPIPolicyAuditState(request); (status == "verified" || status == "signed_response") && policy.MetaVerified && policy.Meta.RootSessionID != "" {
-			initialThread = policy.Meta.RootSessionID
-		}
-		if initialThread == "" {
-			initialThread = thread
-		}
-		if invalid != "" && invalid != "window_missing" {
-			initialThread = ""
-		}
-		if failure := checkInitialSessionAdmission(request, initialThread); failure != nil {
-			diagnostic.Action, diagnostic.WouldBlock = "blocked", true
-			return failure
-		}
+		prepareInitialSession(request)
 	}
 	restartReason := forkFallbackReason
 	if forkFallbackReason != "" {

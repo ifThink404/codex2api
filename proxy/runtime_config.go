@@ -107,12 +107,14 @@ type RuntimeSettings struct {
 	GithubProxyURL string
 	// Codex 过载熔断：单账号滑动窗口内 server_is_overloaded 错误占比达到阈值且样本数
 	// 足够时，自动暂停该账号调度一段时间（默认关闭）。
-	CodexOverloadPauseEnabled           bool
-	CodexCapacityRetryEnabled           bool
-	CodexSessionFailoverEnabled         bool
-	CodexForkAccountFallbackEnabled     bool
-	CodexSessionFailoverPreserveInput   bool
-	CodexWebSearchProxyLocation         bool
+	CodexOverloadPauseEnabled         bool
+	CodexCapacityRetryEnabled         bool
+	CodexSessionFailoverEnabled       bool
+	CodexForkAccountFallbackEnabled   bool
+	CodexSessionFailoverPreserveInput bool
+	CodexWebSearchProxyLocation       bool
+	// Legacy settings retained for settings import/export compatibility only.
+	// The sever branch does not enforce first-session ID format or age.
 	CodexInitialSessionMaxAgeSeconds    int
 	CodexInitialSessionAgeCheckDisabled bool
 	CodexOverloadThresholdPercent       int // 触发比例（%），默认 20

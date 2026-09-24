@@ -10,4 +10,4 @@
 
 各配置分区依次提交，跨分区并非一个数据库事务。若某一区域校验或保存失败，立即停止后续区域，并显示失败原因及此前已成功应用的区域，不会显示整体成功。完成或出现部分成功后刷新页面，确保主设置与独立卡片显示服务端当前状态。
 
-首次会话 ID 时间差开关包含在此文件中，保存键为 `codex_initial_session_age_check_disabled`。默认 `false`，即检查开启，兼容旧服务器已有行为。关闭仅放开 ID 时间差，保留原秒数、UUID 格式校验、序号检查及首次绑定时的旧 Turn-State 清理。运行状态页明确显示检查已关闭，时间差仍统计。重新开启立即恢复已保存的 ±秒容限。
+`sever` 保留旧字段 `codex_initial_session_age_check_disabled` 和 `codex_initial_session_max_age_seconds` 的导入导出兼容性，但已移除首次会话 ID 格式和时间差准入校验。无论导入何值，都不会重新开启检查；首次绑定时的旧 Turn-State 清理和独立的会话序号模式仍保留。详见 [首次主会话处理](initial-session-admission.md)。

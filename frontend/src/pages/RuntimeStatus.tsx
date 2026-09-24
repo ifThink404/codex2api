@@ -98,37 +98,6 @@ export default function RuntimeStatus() {
               </CardContent>
             </Card>
 
-            {status.initial_session && (
-              <Card>
-                <CardContent className="space-y-4 p-4 sm:p-6">
-                  <div>
-                    <h2 className="font-semibold">{t('runtime.initialSessionAge')}</h2>
-                    <p className="mt-1 text-xs text-muted-foreground">{t(status.initial_session.enabled === false ? 'runtime.initialSessionAgeDisabledHint' : 'runtime.initialSessionAgeHint', { limit: status.initial_session.limit_seconds, started: new Date(status.initial_session.started_at).toLocaleString() })}</p>
-                  </div>
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    {(['recent_hour', 'since_start'] as const).map((period) => {
-                      const stats = status.initial_session![period]
-                      return <div key={period} className="rounded-lg border p-3 space-y-2">
-                        <h3 className="text-sm font-medium">{t(`runtime.initialAge_${period}`)}</h3>
-                        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                          {([
-                            ['samples', formatNumber(stats.samples)],
-                            ['valid', formatNumber(stats.valid_samples)],
-                            ['average', stats.valid_samples ? `${(stats.average_ms / 1000).toFixed(3)} s` : '—'],
-                            ['max', stats.valid_samples ? `${(stats.max_ms / 1000).toFixed(3)} s` : '—'],
-                            ['allowed', formatNumber(stats.allowed)],
-                            ['rejected', formatNumber(stats.rejected)],
-                            ['invalid', formatNumber(stats.invalid)],
-                            ['future', formatNumber(stats.future)],
-                          ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground">{t(`runtime.initialAge_${label}`)}</dt><dd className="font-mono tabular-nums break-all">{value}</dd></div>)}
-                        </dl>
-                      </div>
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
             <div className="grid gap-4 lg:grid-cols-2">
               <StatusPanel
                 title={status.database.label || t('runtime.database')}
