@@ -54,7 +54,11 @@ func (output *batchTestOutput) observeResponses(data []byte) {
 		if model := response.Get("model").String(); model != "" {
 			output.responseModel = model
 		}
-		fieldCount := len(response.Map())
+		fields := response.Map()
+		// Gateway billing metadata is added after inference; it is not evidence
+		// of the upstream model's response shape.
+		delete(fields, "codex2api_billing")
+		fieldCount := len(fields)
 		output.responseFieldCount = &fieldCount
 	}
 	switch gjson.GetBytes(data, "type").String() {

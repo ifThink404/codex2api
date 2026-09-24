@@ -94,6 +94,14 @@ func TestBatchTestOutputKeepsTerminalSnapshotsAndFailureStatus(test *testing.T) 
 	}
 }
 
+func TestBatchTestResponseShapeExcludesGatewayBillingMetadata(test *testing.T) {
+	output := &batchTestOutput{}
+	output.observeResponses([]byte(`{"object":"response","model":"gpt-6-astra","output":[],"codex2api_billing":{"service_tier":"priority"}}`))
+	require.NotNil(test, output.responseFieldCount)
+	require.Equal(test, 3, *output.responseFieldCount)
+	require.Equal(test, "gpt-6-astra", output.responseModel)
+}
+
 func TestBatchTestOutputIsBoundedAndAccountScoped(test *testing.T) {
 	first, second := &batchTestOutput{}, &batchTestOutput{}
 	first.append(strings.Repeat("中", batchTestOutputLimit))
