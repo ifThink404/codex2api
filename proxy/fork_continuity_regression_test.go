@@ -85,7 +85,7 @@ func TestTakeForkSourceAccountUsesDurableOwnerRatherThanStaleLiveBinding(test *t
 	handler.store.Release(selected)
 }
 
-func TestForkContinuityCannotBypassCompactionOwnerOrExistingChildOwner(test *testing.T) {
+func TestForkCompactionKeepsExistingChildOrSelectsFirstOwner(test *testing.T) {
 	for _, existing := range []bool{false, true} {
 		test.Run(fmt.Sprint(existing), func(test *testing.T) {
 			handler, parent, child, _ := failoverTestSetup(test, true)
@@ -103,8 +103,9 @@ func TestForkContinuityCannotBypassCompactionOwnerOrExistingChildOwner(test *tes
 				require.Nil(test, failure)
 				require.Equal(test, child.ID(), selectionTraceForRequest(request).PinnedAccount())
 			} else {
-				require.NotNil(test, failure)
-				require.Equal(test, "codex_session_continuity_unbound_compaction", string(failure.Code))
+				require.Nil(test, failure)
+				require.Zero(test, selectionTraceForRequest(request).PinnedAccount())
+				require.True(test, continuityRequest(request).InitialCompaction)
 			}
 		})
 	}

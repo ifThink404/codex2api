@@ -162,7 +162,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		diagnostic.Status = "not_applicable"
 		return nil
 	}
-	rootKey := codexIdentityDigest("codex-account-root-v1", owner, upstreamAccount, strings.ToLower(root))
+	rootKey := codexIdentityDigest("codex-account-root-v1", owner, upstreamAccount, canonicalCodexAccountIdentity(root))
 	epoch := outboundEpochFromContext(ctx)
 	epochKey := epoch.identityKey()
 	legacyKeys := make([]string, 0, len(accountScopes))
@@ -170,7 +170,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		legacyKeys = append(legacyKeys, codexIdentityDigest("codex-session-v1", scope, root))
 	}
 	if epochKey != "" {
-		rootKey = codexIdentityDigest("codex-account-segment-root-v1", owner, upstreamAccount, epochKey, strings.ToLower(root))
+		rootKey = codexIdentityDigest("codex-account-segment-root-v1", owner, upstreamAccount, epochKey, canonicalCodexAccountIdentity(root))
 		legacyKeys = nil
 		diagnostic.Generation, diagnostic.SegmentHash = epoch.record.FailoverCount, epochKey[:24]
 	}
@@ -225,11 +225,10 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		if original = strings.TrimSpace(original); original == "" {
 			continue
 		}
-		parsed, err := uuid.Parse(original)
-		if err != nil || parsed.Version() != 7 || parsed.Variant() != uuid.RFC4122 {
-			return codexAccountIdentityError("账号级出站映射仅支持 UUIDv7 会话及上下文标识，请检查客户端元数据。")
+		if len(original) > 512 {
+			return codexAccountIdentityError("会话标识过长，请检查客户端请求。")
 		}
-		values[parsed.String()] = true
+		values[canonicalCodexAccountIdentity(original)] = true
 	}
 	if len(values) == 0 || len(values) > 32 {
 		return codexAccountIdentityError("出站会话身份数量无效，请检查客户端元数据。")
@@ -334,6 +333,12 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		identityMapping := *mapping
 		identityMapping.epoch = identityEpoch.Segment
 		identityMapping.mode = identityPolicy.Mode
+		if parsed, err := uuid.Parse(original); err != nil || parsed.Version() != 7 || parsed.Variant() != uuid.RFC4122 {
+			// sever accepts SDK UUIDv4 and opaque session/context identifiers.
+			// Allocate a stable account-scoped UUIDv7 instead of forwarding them
+			// unchanged or using the legacy UUID suffix transformation.
+			identityMapping.mode = database.CodexIdentityMappingUUIDv7
+		}
 		outbound, err := identityMapping.mapUUID(ctx, store, "identity", original)
 		if err != nil {
 			return err
@@ -395,7 +400,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 					return codexAccountIdentityError("父会话出站引用已变化或暂时不可用，请重新发起请求。")
 				}
 			}
-			for _, original := range []string{strings.ToLower(root), strings.ToLower(fingerprint.headers.Get(codexThreadIDHeader))} {
+			for _, original := range []string{canonicalCodexAccountIdentity(root), canonicalCodexAccountIdentity(fingerprint.headers.Get(codexThreadIDHeader))} {
 				if mapping.aliases[original] == "" || fingerprint.accountIdentityReferences[original] {
 					continue
 				}
@@ -475,11 +480,17 @@ func (mapping *codexAccountIdentity) digest(domain, original string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func canonicalCodexAccountIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	if parsed, err := uuid.Parse(value); err == nil {
+		return parsed.String()
+	}
+	return value
+}
+
 func (mapping *codexAccountIdentity) rewriteValue(original string) string {
-	if parsed, err := uuid.Parse(strings.TrimSpace(original)); err == nil {
-		if alias := mapping.aliases[parsed.String()]; alias != "" {
-			return alias
-		}
+	if alias := mapping.aliases[canonicalCodexAccountIdentity(original)]; alias != "" {
+		return alias
 	}
 	return original
 }

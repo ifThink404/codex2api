@@ -38,15 +38,16 @@ type sessionContinuityCacheEntry struct {
 }
 
 type sessionContinuityRequest struct {
-	Key           string
-	ThreadID      string
-	Number        uint64
-	Known         bool
-	Record        database.SessionContinuityRecord
-	Admitted      bool
-	StartedAt     time.Time
-	Diagnostic    *sessionContinuityDiagnostic
-	RestartReason string
+	Key               string
+	ThreadID          string
+	Number            uint64
+	Known             bool
+	Record            database.SessionContinuityRecord
+	Admitted          bool
+	StartedAt         time.Time
+	Diagnostic        *sessionContinuityDiagnostic
+	RestartReason     string
+	InitialCompaction bool
 }
 
 func continuityRequest(request *gin.Context) *sessionContinuityRequest {
@@ -58,7 +59,7 @@ func continuityRequest(request *gin.Context) *sessionContinuityRequest {
 	return state
 }
 
-func requestRequiresCompactionOwner(request *gin.Context, body []byte) bool {
+func requestIsSessionCompaction(request *gin.Context, body []byte) bool {
 	websocket := isResponsesWebSocketUpgradeRequest(request.Request)
 	resolved := usageRequestDiagnosticState(request).Resolved
 	if !websocket && resolved != nil && strings.EqualFold(strings.TrimSpace(resolved.RequestKind), "compaction") {
@@ -281,7 +282,7 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 		}
 	}
 	forkFallbackReason := ""
-	if err == nil && !found && owner == 0 && invalid == "" && known && identity.forkSourceAffinityID != "" && !requestRequiresCompactionOwner(request, body) {
+	if err == nil && !found && owner == 0 && invalid == "" && known && identity.forkSourceAffinityID != "" && !requestIsSessionCompaction(request, body) {
 		owner, diagnostic.OwnerSource, err = handler.resolveForkSourceOwner(request.Request.Context(), identity, affinityKey, requestAPIKeyID(request))
 		if err == nil && allowForkAccountFallback(request, identity) {
 			forkFallbackReason = handler.forkAccountFallbackReason(request, owner, affinityKey)
@@ -317,9 +318,11 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 		diagnostic.Result, diagnostic.WouldBlock, diagnostic.Action = "ownership_unavailable", true, "blocked"
 		return sessionContinuityError("ownership_unavailable")
 	}
-	if owner == 0 && requestRequiresCompactionOwner(request, body) {
-		diagnostic.Result, diagnostic.WouldBlock, diagnostic.Action = "unbound_compaction", true, "blocked"
-		return sessionContinuityError("unbound_compaction")
+	unboundCompaction := owner == 0 && (invalid == "" || invalid == "window_missing") && requestIsSessionCompaction(request, body)
+	if unboundCompaction {
+		// sever may establish the first account at the current compaction
+		// window. Preserve the complete payload instead of a lossy restart.
+		diagnostic.Result, diagnostic.WouldBlock = "unbound_compaction_allowed", false
 	}
 	if mode == "enforce" && diagnostic.WouldBlock {
 		diagnostic.Action = "blocked"
@@ -350,6 +353,7 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 		}
 	}
 	state := &sessionContinuityRequest{Key: key, ThreadID: thread, Number: number, Known: known && invalid == "", Record: entry.Record, StartedAt: time.Now().UTC(), Diagnostic: diagnostic, RestartReason: restartReason}
+	state.InitialCompaction = unboundCompaction
 	request.Set(sessionContinuityContextKey, state)
 	if owner > 0 {
 		if err := handler.bindWindowGrantOwner(request, owner, affinityKey); err != nil {
@@ -363,8 +367,6 @@ func sessionContinuityError(reason string) *api.APIError {
 	message := "会话上下文序号不连续，请恢复正确的对话后重试。"
 	if reason == "unbound_nonzero" {
 		message = "当前请求来自已有上下文窗口，请新开对话后重试。"
-	} else if reason == "unbound_compaction" {
-		message = "无法恢复当前压缩请求的原会话账号，请先恢复主会话连接；无法恢复时请新开对话。"
 	} else if reason == "fork_owner_unavailable" {
 		message = "无法核实 fork 父会话的原始账号归属，请先恢复父会话后重试。"
 	} else if reason == "window_missing" || reason == "window_invalid" || reason == "number_conflict" || reason == "thread_conflict" {
@@ -407,7 +409,7 @@ func (handler *Handler) commitSessionContinuity(request *gin.Context, account *a
 	if found && (entry.Record.AccountID != account.ID() || state.Record.AccountID > 0 && entry.Record.FailoverCount != state.Record.FailoverCount) {
 		return sessionContinuityError("owner_conflict")
 	}
-	if state.Diagnostic.Mode == "enforce" && state.Known {
+	if state.Diagnostic.Mode == "enforce" && state.Known && !(state.InitialCompaction && !found) {
 		if reason, blocked := evaluateSessionContinuity(entry.Record, found, state.ThreadID, state.Number, account.ID()); blocked {
 			state.Diagnostic.Result, state.Diagnostic.WouldBlock, state.Diagnostic.Action = reason, true, "blocked"
 			return sessionContinuityError(reason)

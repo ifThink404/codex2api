@@ -10,7 +10,7 @@ import (
 
 func (mapping *codexAccountIdentity) mapUUID(ctx context.Context, store CodexIdentityStore, domain, original string) (string, error) {
 	entropy := mapping.digest(domain, original)
-	outbound := original[:len(original)-9] + entropy[:9]
+	var outbound string
 	if mapping.mode == database.CodexIdentityMappingUUIDv7 {
 		key := codexIdentityDigest(database.CodexIdentityMappingUUIDv7, domain, mapping.owner, mapping.account, mapping.epoch, original)
 		var err error
@@ -18,6 +18,8 @@ func (mapping *codexAccountIdentity) mapUUID(ctx context.Context, store CodexIde
 		if err != nil {
 			return "", codexAccountIdentityError("暂时无法读取或持久化 UUIDv7 出站映射，已停止发送，请核实数据库。")
 		}
+	} else {
+		outbound = original[:len(original)-9] + entropy[:9]
 	}
 	if outbound == original {
 		return "", codexAccountIdentityError("出站会话标识发生冲突，已停止请求，请联系管理员。")

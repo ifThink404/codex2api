@@ -157,7 +157,7 @@ func (handler *Handler) configureAPIRelaySessionPolicy(request *gin.Context, bod
 	if foundOther {
 		_, number, known, invalid := parseContinuityWindow(request.Request.Header, body, false)
 		continuityBlocked := handler.promptFilterConfigForRequest(request).Advanced.Risk.SessionContinuityMode == "enforce" && (invalid != "" || known && number > 0)
-		if identity.requiresRootAccount || identity.forkSourceAffinityID != "" || !requestRequiresCompactionOwner(request, body) && !continuityBlocked {
+		if identity.requiresRootAccount || identity.forkSourceAffinityID != "" || !requestIsSessionCompaction(request, body) && !continuityBlocked {
 			return identity
 		}
 	}

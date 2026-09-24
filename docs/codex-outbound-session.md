@@ -86,7 +86,7 @@ busy 同会话溢出功能保留，只使用同账号、同隔离分区及兼容
 
 设置 `CODEX_OUTBOUND_SESSION_MODE=account` 并重启服务，为尚未登记的 Codex 会话启用 `account-uuid7-v2`。默认仍为 preserve，不自动改变线上策略。不适用于 Responses 中转或其他提供商。
 
-- 新策略生成完整 UUIDv7，不再保留原 UUID 的时间前缀。首次建立出站映射时使用服务端 UTC Unix 毫秒时间，固定 UUIDv7 版本和 RFC variant 位，剩余 74 bit 由 HMAC 派生。只接受合法 UUIDv7 入站身份，其他格式拒绝发送。
+- 新策略生成完整 UUIDv7，不再保留原 UUID 的时间前缀。首次建立出站映射时使用服务端 UTC Unix 毫秒时间，固定 UUIDv7 版本和 RFC variant 位，剩余 74 bit 由 HMAC 派生。`sever` 的 session/thread/context 入站身份也接受 UUIDv4 和普通字符串，统一映射为账号范围内稳定的 UUIDv7；普通字符串保留大小写区别，长度及数量上限继续生效。轮次控制字段使用独立处理规则。
 - HMAC 密钥为数据库中持久保存的 32 字节随机值，派生域包含版本、身份种类、已验证用户归属、目标实际 `Chatgpt-Account-Id`、完整原始 UUID，以及已有迁移段。第一次生成的完整 UUID 存入 `codex_identity_uuid7_values`；后续请求只读取，不重新取当前时间生成。并发实例通过唯一约束复用同一个获胜值，而不是各自生成后直接发出。
 - 同用户、同实际 `Chatgpt-Account-Id`、同完整原始 ID 的结果稳定；HTTP、compact、WS、重试和重启一致。同上游账号重复导入不会因为本地账号编号不同而改变映射。实际账号不同则独立映射，默认仍禁止自动换号；只有显式开启下述开关才允许受保护的迁移。
 - Session-Id、Thread-Id、正文 session/thread、父线程、fork 来源、context_window_id 及窗口 ID 前缀共用映射。原本相等仍相等，子线程不会折叠成父线程，窗口序号不变。X-Client-Request-Id 及正文投影只在其值引用这些身份时同步替换，不改写独立的请求跟踪 ID。

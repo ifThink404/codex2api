@@ -6,6 +6,6 @@
 
 首次选号仍标记 `initial_session.result: disabled`，并在每次出站边界清除旧 `X-Codex-Turn-State` 和 `client_metadata.x-codex-turn-state`，覆盖内部重试与 HTTP/WS 转换。不修改 input、tools 或其他历史，已绑定请求沿用原有处理。
 
-账号绑定、会话序号模式、压缩原账号归属、NewAPI 签名验证和出站身份映射独立运行。本次不关闭这些机制；其他阶段仍可能返回同名身份错误，应结合日志 stage 定位。
+`sever` 的后续兼容调整还允许 UUIDv4/普通字符串生成账号级出站 UUIDv7，并允许无原账号归属的压缩请求首次选号、建立当前窗口基线。已有账号绑定、NewAPI 签名验证和其他独立校验继续运行；其他阶段仍可能返回同名身份错误，应结合日志 stage 定位。
 
 此行为仅适用于 `sever`，不修改 `main`。

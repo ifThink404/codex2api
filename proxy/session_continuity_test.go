@@ -236,11 +236,11 @@ func TestSessionContinuityEnforceStopsUnboundContextBeforeHTTPOrWebSocketDispatc
 			if endpoint != "websocket" {
 				request, recorder := signedRootlessPassiveModelContext(test, http.MethodPost, endpoint, body, meta)
 				map[string]func(*gin.Context){"/v1/responses": handler.Responses, "/v1/responses/compact": handler.ResponsesCompact, "/v1/chat/completions": handler.ChatCompletions}[endpoint](request)
-				require.Equal(test, http.StatusBadRequest, recorder.Code, recorder.Body.String())
-				expectedCode := "codex_session_continuity_unbound_nonzero"
+				expectedStatus, expectedCode := http.StatusBadRequest, "codex_session_continuity_unbound_nonzero"
 				if endpoint == "/v1/responses/compact" {
-					expectedCode = "codex_session_continuity_unbound_compaction"
+					expectedStatus, expectedCode = http.StatusServiceUnavailable, "service_unavailable"
 				}
+				require.Equal(test, expectedStatus, recorder.Code, recorder.Body.String())
 				require.Equal(test, expectedCode, gjson.GetBytes(recorder.Body.Bytes(), "error.code").String())
 				return
 			}
@@ -304,10 +304,6 @@ func TestInitialSessionHTTPAndWebsocketEntrypoints(test *testing.T) {
 				map[string]func(*gin.Context){"/v1/responses": handler.Responses, "/v1/responses/compact": handler.ResponsesCompact, "/v1/chat/completions": handler.ChatCompletions}[endpoint](request)
 				// With no accounts, ordinary requests now reach account selection.
 				expectedStatus, expectedCode := http.StatusServiceUnavailable, "service_unavailable"
-				if endpoint == "/v1/responses/compact" {
-					expectedStatus = http.StatusBadRequest
-					expectedCode = "codex_session_continuity_unbound_compaction"
-				}
 				require.Equal(test, expectedStatus, recorder.Code, recorder.Body.String())
 				require.Equal(test, expectedCode, gjson.GetBytes(recorder.Body.Bytes(), "error.code").String())
 				return

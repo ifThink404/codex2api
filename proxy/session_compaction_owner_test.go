@@ -19,7 +19,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestSessionContinuityCompactionRequiresExistingOwner(test *testing.T) {
+func TestSessionContinuityCompactionAllowsFirstOwner(test *testing.T) {
 	for _, mode := range []string{"off", "observe", "enforce"} {
 		for _, scenario := range []string{"metadata", "nonzero", "missing_window", "missing_source", "endpoint", "protocol", "header", "body_metadata"} {
 			test.Run(mode+"/"+scenario, func(test *testing.T) {
@@ -52,16 +52,13 @@ func TestSessionContinuityCompactionRequiresExistingOwner(test *testing.T) {
 				}
 				key := "unbound-compaction::api-key:101"
 				apiErr := handler.prepareSessionContinuity(request, requestSessionIdentity{stableIdentity: true}, key, body)
-				require.NotNil(test, apiErr)
-				require.Equal(test, "codex_session_continuity_unbound_compaction", string(apiErr.Code))
-				require.Equal(test, http.StatusBadRequest, api.HTTPStatusCode(apiErr.Code))
-				require.Equal(test, gin.H{"reason": "unbound_compaction", "retry": "stop"}, apiErr.Details)
+				require.Nil(test, apiErr)
 				diagnostic := usageRequestDiagnosticState(request).Continuity
-				require.Equal(test, "unbound_compaction", diagnostic.Result)
-				require.Equal(test, "blocked", diagnostic.Action)
-				require.True(test, diagnostic.WouldBlock)
+				require.NotEqual(test, "blocked", diagnostic.Action)
+				require.False(test, diagnostic.WouldBlock)
 				require.Equal(test, "missing", diagnostic.OwnerSource)
-				require.Nil(test, continuityRequest(request))
+				require.NotNil(test, continuityRequest(request))
+				require.True(test, continuityRequest(request).InitialCompaction)
 				require.Zero(test, selectionTraceForRequest(request).PinnedAccount())
 				_, found := handler.store.LiveSessionAccountID(key, time.Now())
 				require.False(test, found)
@@ -137,9 +134,9 @@ func TestSessionContinuityCompactionDoesNotBorrowDifferentBinding(test *testing.
 	request, body := continuityTestRequest(0, "compaction")
 	key := "same-root::api-key:101"
 	apiErr := handler.configureSessionModelAffinity(request, requestSessionIdentity{stableIdentity: true}, key, "gpt-5.6-sol", "gpt-5.6-sol", false, body)
-	require.NotNil(test, apiErr)
-	require.Equal(test, "codex_session_continuity_unbound_compaction", string(apiErr.Code))
-	require.Nil(test, continuityRequest(request))
+	require.Nil(test, apiErr)
+	require.NotNil(test, continuityRequest(request))
+	require.Zero(test, selectionTraceForRequest(request).PinnedAccount())
 	_, found, err := handler.db.ReadSessionContinuity(context.Background(), hashRiskIdentity(key))
 	require.NoError(test, err)
 	require.False(test, found)
@@ -162,7 +159,7 @@ func TestSessionContinuityCompactionIgnoresHistoryAndStaleWebSocketMetadata(test
 				request.Request.Header.Set(codexTurnMetadataHeader, `{"request_kind":"compaction"}`)
 				cacheRequestCompactionMeta(request, requestCompactionMeta{UsageTriggered: true})
 			}
-			require.False(test, requestRequiresCompactionOwner(request, body))
+			require.False(test, requestIsSessionCompaction(request, body))
 			require.Nil(test, handler.prepareSessionContinuity(request, requestSessionIdentity{stableIdentity: true}, "fresh-root::api-key:101", body))
 			require.Equal(test, "new_root", usageRequestDiagnosticState(request).Continuity.Result)
 			require.NotNil(test, continuityRequest(request))
@@ -170,7 +167,7 @@ func TestSessionContinuityCompactionIgnoresHistoryAndStaleWebSocketMetadata(test
 	}
 }
 
-func TestSessionContinuityUnboundCompactionStopsBeforeHTTPOrWebSocketDispatch(test *testing.T) {
+func TestSessionContinuityUnboundCompactionReachesHTTPOrWebSocketUpstream(test *testing.T) {
 	for _, mode := range []string{"off", "observe", "enforce"} {
 		for _, endpoint := range []string{"/v1/responses", "/v1/responses/compact", "websocket"} {
 			test.Run(mode+"/"+endpoint, func(test *testing.T) {
@@ -198,9 +195,9 @@ func TestSessionContinuityUnboundCompactionStopsBeforeHTTPOrWebSocketDispatch(te
 					} else {
 						handler.ResponsesCompact(request)
 					}
-					require.Equal(test, http.StatusBadRequest, recorder.Code, recorder.Body.String())
-					require.Equal(test, "codex_session_continuity_unbound_compaction", gjson.GetBytes(recorder.Body.Bytes(), "error.code").String())
-					require.Equal(test, "blocked", usageRequestDiagnosticState(request).Continuity.Action)
+					require.Equal(test, http.StatusOK, recorder.Code, recorder.Body.String())
+					require.Empty(test, gjson.GetBytes(recorder.Body.Bytes(), "error.code").String())
+					require.NotEqual(test, "blocked", usageRequestDiagnosticState(request).Continuity.Action)
 				} else {
 					router := gin.New()
 					router.GET("/v1/responses", func(request *gin.Context) {
@@ -218,9 +215,9 @@ func TestSessionContinuityUnboundCompactionStopsBeforeHTTPOrWebSocketDispatch(te
 					require.NoError(test, connection.SetReadDeadline(time.Now().Add(5*time.Second)))
 					_, response, err := connection.ReadMessage()
 					require.NoError(test, err)
-					require.Equal(test, "codex_session_continuity_unbound_compaction", gjson.GetBytes(response, "error.code").String(), string(response))
+					require.Equal(test, "response.completed", gjson.GetBytes(response, "type").String(), string(response))
 				}
-				require.Zero(test, upstreamCalls.Load())
+				require.Equal(test, int32(1), upstreamCalls.Load())
 			})
 		}
 	}

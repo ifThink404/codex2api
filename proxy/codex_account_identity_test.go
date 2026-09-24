@@ -153,8 +153,9 @@ func TestCodexAccountIdentityPreservesExistingAndFailsClosed(test *testing.T) {
 	otherHeaders, otherBody := accountIdentityFixture(test, false, true)
 	otherHeaders.Set("Session-Id", "invalid-root")
 	otherBody, _ = sjson.SetBytes(otherBody, "client_metadata.x-codex-turn-metadata.session_id", "invalid-root")
-	invalid := NewCodexTransportFingerprint(account, otherHeaders, otherBody, "cache")
-	require.Error(test, invalid.ClaimSessionIdentity(request.Request.Context(), account, "test-key"))
+	opaque := NewCodexTransportFingerprint(account, otherHeaders, otherBody, "cache")
+	require.NoError(test, opaque.ClaimSessionIdentity(request.Request.Context(), account, "test-key"))
+	require.NotEqual(test, "invalid-root", opaque.headers.Get(codexSessionIDHeader))
 }
 
 func TestCodexAccountIdentityHTTPAndCompactFinalBytes(test *testing.T) {
