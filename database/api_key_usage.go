@@ -996,7 +996,7 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 			COALESCE(image_input_tokens, 0), COALESCE(image_output_tokens, 0), COALESCE(cached_image_input_tokens, 0),
 			COALESCE(total_tokens, 0),
 			COALESCE(user_billed, 0),
-			COALESCE(NULLIF(billing_service_tier, ''), NULLIF(actual_service_tier, ''), NULLIF(service_tier, ''), ''),
+			` + usageLogBillingTierSQL("") + `,
 			COALESCE(stream, false),
 			COALESCE(compact, false),
 			COALESCE(has_compaction_history, false),

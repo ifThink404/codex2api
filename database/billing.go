@@ -331,19 +331,27 @@ func CalculateCost(inputTokens, outputTokens, cachedTokens int, model string, se
 	return CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens, model, serviceTier).TotalCost
 }
 
-// usageLogBillingServiceTier 解析一条待写入用量事件的计费 service tier:
-// 显式 BillingServiceTier 优先,其次上游实际 tier,最后请求 tier。
+// An empty billing tier in a split-tier event means ordinary billing. Never
+// promote it to the upstream's unsolicited Priority observation. Only legacy
+// events without either split field may fall back to ServiceTier.
 func usageLogBillingServiceTier(log *UsageLogInput) string {
 	if log == nil {
 		return ""
 	}
-	if tier := log.BillingServiceTier; tier != "" {
+	if tier := strings.TrimSpace(log.BillingServiceTier); tier != "" {
 		return tier
 	}
-	if tier := log.ActualServiceTier; tier != "" {
-		return tier
+	if strings.TrimSpace(log.RequestedServiceTier) != "" || strings.TrimSpace(log.ActualServiceTier) != "" {
+		return "default"
 	}
 	return log.ServiceTier
+}
+
+// prefix is a fixed internal SQL alias (empty or "u."), never request input.
+// Use the same tier for statistics, filtering, and the self-service cost view.
+func usageLogBillingTierSQL(prefix string) string {
+	billing, requested, actual, legacy := prefix+"billing_service_tier", prefix+"requested_service_tier", prefix+"actual_service_tier", prefix+"service_tier"
+	return "CASE WHEN TRIM(COALESCE(" + billing + ", '')) <> '' THEN TRIM(" + billing + ") WHEN TRIM(COALESCE(" + requested + ", '')) <> '' OR TRIM(COALESCE(" + actual + ", '')) <> '' THEN 'default' ELSE COALESCE(" + legacy + ", '') END"
 }
 
 // UsageLogBilledCost 返回一条待写入用量事件的计费金额(美元),与 InsertUsageLog 落库时

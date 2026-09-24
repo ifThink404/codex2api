@@ -28,6 +28,7 @@ import type { APIKeyRow, OpsErrorSummary, SystemSettings, UsageAPIKeyStat, Usage
 import { cn, formatCompactEmail } from '../lib/utils'
 import { formatUsageNumber as formatTokens } from '../lib/usageFormat'
 import { getUsageTokenBreakdown } from '../lib/usageTokenDisplay'
+import { getUsageBillingTier } from '../lib/usageBillingTier'
 import { formatBeijingTime } from '../utils/time'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -357,7 +358,7 @@ function UsageCostCell({ log }: { log: UsageLog }) {
   // legacy 行（三字段拆分前）只有 service_tier 可用；新行 actual 为空表示上游未回传，
   // 不能回退到偏好请求意图的 legacy 列冒充“上游回传 Tier”。
   const actualTier = log.actual_service_tier || (requestedTier ? '' : log.service_tier || '')
-  const billingTier = log.billing_service_tier || log.service_tier || ''
+  const billingTier = getUsageBillingTier(log)
   const hasCostContext = log.status_code < 400 && (
     accountBilled > 0 ||
     userBilled > 0 ||
@@ -2820,13 +2821,13 @@ export default function Usage() {
                             ) : null}
                             {visibleColumns.model && <UsageWindowNumberBadge log={log} />}
                           </span>
-                          {visibleColumns.type && isFastTier(log.billing_service_tier || log.service_tier) ? (
+                          {visibleColumns.type && isFastTier(getUsageBillingTier(log)) ? (
                             <Badge
                               variant="outline"
                               className="gap-0.5 border-transparent bg-blue-500/12 text-[11px] font-semibold text-blue-600 dark:bg-blue-500/20 dark:text-blue-400"
                             >
                               <Zap className="size-3" />
-                              {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
+                              {formatServiceTierLabel(t, getUsageBillingTier(log))}
                             </Badge>
                           ) : null}
                           {visibleColumns.type && <StreamBadge stream={log.stream} />}
@@ -3058,14 +3059,14 @@ export default function Usage() {
                             {isImageUsageLog(log) && (
                               <ImageUsageBadge log={log} />
                             )}
-                            {isFastTier(log.billing_service_tier || log.service_tier) && (
+                            {isFastTier(getUsageBillingTier(log)) && (
                               <Badge
                                 variant="outline"
                                 className="text-[11px] font-semibold gap-0.5 border-transparent bg-blue-500/12 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400"
-                                title={`${t('usage.billingTier')}: ${formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}`}
+                                title={`${t('usage.billingTier')}: ${formatServiceTierLabel(t, getUsageBillingTier(log))}`}
                               >
                                 <Zap className="size-3" />
-                                {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
+                                {formatServiceTierLabel(t, getUsageBillingTier(log))}
                               </Badge>
                             )}
                           </div>

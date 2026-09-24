@@ -24,11 +24,19 @@ claim an unobserved upstream tier was actually delivered. Known `fast` is
 normalized to `priority` for interoperability. Local billing follows the
 existing policy and can differ from the reported execution tier.
 
-NewAPI consumes successful terminal responses from its bound, signed
-codex2api destination. Original user `service_tier: priority` OR reported
-execution tier `priority` matches the existing Priority expression, once.
+NewAPI observes successful terminal responses from its bound, signed
+codex2api destination for diagnostics only. Its existing Priority expression
+matches the original user `service_tier: priority`; upstream default Priority
+must not fill in or replace the original request for billing.
 Chat Completions conversion retains its standard terminal `service_tier`,
-which NewAPI accepts as a legacy report from the same trusted destination.
+which NewAPI accepts as a legacy diagnostic from the same trusted destination.
+
+For split-tier usage records, an empty billing tier means ordinary billing,
+even if the actual tier is priority. Database writes persist this as default;
+in-memory quota, cost breakdowns, Fast counts/filters and UI badges follow
+the billing decision. Only older records lacking both requested and actual
+split-tier values may fall back to the legacy `service_tier` field. Stored
+historical charges are not automatically rewritten or refunded.
 
 The codex2api admin request diagnostic adds `client_service_tier` before
 normalization and rewriting. It distinguishes missing, null, string and
