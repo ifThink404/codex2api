@@ -110,6 +110,7 @@ type RuntimeSettings struct {
 	CodexOverloadPauseEnabled         bool
 	CodexCapacityRetryEnabled         bool
 	CodexSessionFailoverEnabled       bool
+	CodexForkAccountFallbackEnabled   bool
 	CodexSessionFailoverPreserveInput bool
 	CodexWebSearchProxyLocation       bool
 	CodexInitialSessionMaxAgeSeconds  int
@@ -181,6 +182,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexUserAgentConfig:              DefaultCodexUserAgentConfigJSON(),
 		CodexTelemetryEnabled:             false,
 		CodexSessionFailoverEnabled:       false,
+		CodexForkAccountFallbackEnabled:   false,
 		CodexSessionFailoverPreserveInput: false,
 		CodexWebSearchProxyLocation:       false,
 		CodexInitialSessionMaxAgeSeconds:  60,
@@ -389,6 +391,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexOverloadPauseEnabled = settings.CodexOverloadPauseEnabled
 		next.CodexCapacityRetryEnabled = settings.CodexCapacityRetryEnabled
 		next.CodexSessionFailoverEnabled = settings.CodexSessionFailoverEnabled
+		next.CodexForkAccountFallbackEnabled = settings.CodexForkAccountFallbackEnabled
 		next.CodexSessionFailoverPreserveInput = settings.CodexSessionFailoverPreserveInput
 		next.CodexWebSearchProxyLocation = settings.CodexWebSearchProxyLocation
 		next.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)

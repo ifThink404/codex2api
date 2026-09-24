@@ -1683,6 +1683,7 @@ func (h *Handler) resolveRequestSessionIdentityForContext(c *gin.Context, body [
 
 func (h *Handler) resolveRequestSessionIdentityWithBase(c *gin.Context, body []byte, identity requestSessionIdentity) requestSessionIdentity {
 	c.Set(relatedSessionObservationContextKey, nil)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), relaxedAccountFallbackKey{}, (*relaxedAccountFallback)(nil)))
 	status, policyContext := h.cachedNewAPIPolicyAuditState(c)
 	verifiedPolicy := (status == "verified" || status == "signed_response") && policyContext.MetaVerified
 	bindTransportOwner(c, policyContext, verifiedPolicy)
@@ -1763,7 +1764,12 @@ func (h *Handler) resolveRequestSessionIdentityWithBase(c *gin.Context, body []b
 	if identity.unlinkedFallbackOnly {
 		identity.affinityID = ""
 	}
-	identity = h.configureAPIRelaySessionPolicy(c, body, identity)
+	identity = h.configureRelaxedAccountFallback(c, body, identity, rootIdentity)
+	if relaxedAccountFallbackFromContext(c.Request.Context()) == nil {
+		identity = h.configureAPIRelaySessionPolicy(c, body, identity)
+	} else {
+		c.Set(apiRelaySessionExemptContextKey, false)
+	}
 	h.captureUsageRequestResolution(c, body, identity, rootIdentity, policyContext, status)
 	h.captureSessionOperationsIdentity(c, body, rootIdentity, policyContext, verifiedPolicy)
 	h.bindTurnStateSession(c, body, identity)

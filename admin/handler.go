@@ -1639,6 +1639,9 @@ type accountResponse struct {
 	CodexNativeModels              []string                    `json:"codex_native_models,omitempty"`
 	CodexBPSModels                 []string                    `json:"codex_bps_models,omitempty"`
 	CodexBPSImageTrim              bool                        `json:"codex_bps_image_trim_enabled"`
+	CodexBPSProfile                auth.CodexBPSProfile        `json:"codex_bps_profile"`
+	CodexUsageLimitBypassEnabled   bool                        `json:"codex_usage_limit_bypass_enabled"`
+	CodexUsageLimitBypassModels    []string                    `json:"codex_usage_limit_bypass_models"`
 	CodexNativeCompactionOnly      bool                        `json:"codex_native_compaction_only"`
 	CodexFingerprintMode           string                      `json:"codex_fingerprint_mode,omitempty"`
 	CodexInstallationID            string                      `json:"codex_installation_id,omitempty"`
@@ -2078,73 +2081,79 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 }
 
 type updateAccountSchedulerReq struct {
-	UpstreamRequestIDHeader   json.RawMessage `json:"upstream_request_id_header"`
-	ScoreBiasOverride         json.RawMessage `json:"score_bias_override"`
-	BaseConcurrencyOverride   json.RawMessage `json:"base_concurrency_override"`
-	SkipWarmTier              json.RawMessage `json:"skip_warm_tier"`
-	AllowedAPIKeyIDs          json.RawMessage `json:"allowed_api_key_ids"`
-	Tags                      json.RawMessage `json:"tags"`
-	GroupIDs                  json.RawMessage `json:"group_ids"`
-	AutoPause5hThreshold      json.RawMessage `json:"auto_pause_5h_threshold"`
-	AutoPause7dThreshold      json.RawMessage `json:"auto_pause_7d_threshold"`
-	AutoPause5hDisabled       json.RawMessage `json:"auto_pause_5h_disabled"`
-	AutoPause7dDisabled       json.RawMessage `json:"auto_pause_7d_disabled"`
-	UsageLimitOverride        json.RawMessage `json:"ignore_usage_limit_status_override"`
-	DispatchCountLimit        json.RawMessage `json:"dispatch_count_limit"`
-	SchedulerPriority         json.RawMessage `json:"scheduler_priority"`
-	ProxyURL                  json.RawMessage `json:"proxy_url"`
-	CustomHeaders             json.RawMessage `json:"custom_headers"`
-	CodexBPSEnabled           json.RawMessage `json:"codex_bps_enabled"`
-	CodexNativeEnabled        json.RawMessage `json:"codex_native_enabled"`
-	CodexNativeModels         json.RawMessage `json:"codex_native_models"`
-	CodexBPSModels            json.RawMessage `json:"codex_bps_models"`
-	CodexBPSImageTrim         json.RawMessage `json:"codex_bps_image_trim_enabled"`
-	CodexNativeCompactionOnly json.RawMessage `json:"codex_native_compaction_only"`
-	CodexFingerprintMode      json.RawMessage `json:"codex_fingerprint_mode"`
-	ClaudeFingerprintMode     json.RawMessage `json:"claude_fingerprint_mode"`
-	SessionCapacityEnabled    json.RawMessage `json:"session_capacity_enabled"`
-	SessionCapacityMax        json.RawMessage `json:"session_capacity_max"`
-	SessionCapacityReserved   json.RawMessage `json:"session_capacity_reserved"`
-	SessionCapacityIdleTTL    json.RawMessage `json:"session_capacity_idle_ttl_seconds"`
-	ClaudeClientPlatform      json.RawMessage `json:"claude_client_platform"`
-	ClaudeVersionPolicy       json.RawMessage `json:"claude_version_policy"`
-	ClaudeClientVersion       json.RawMessage `json:"claude_client_version"`
-	Timezone                  json.RawMessage `json:"timezone"`
+	UpstreamRequestIDHeader      json.RawMessage `json:"upstream_request_id_header"`
+	ScoreBiasOverride            json.RawMessage `json:"score_bias_override"`
+	BaseConcurrencyOverride      json.RawMessage `json:"base_concurrency_override"`
+	SkipWarmTier                 json.RawMessage `json:"skip_warm_tier"`
+	AllowedAPIKeyIDs             json.RawMessage `json:"allowed_api_key_ids"`
+	Tags                         json.RawMessage `json:"tags"`
+	GroupIDs                     json.RawMessage `json:"group_ids"`
+	AutoPause5hThreshold         json.RawMessage `json:"auto_pause_5h_threshold"`
+	AutoPause7dThreshold         json.RawMessage `json:"auto_pause_7d_threshold"`
+	AutoPause5hDisabled          json.RawMessage `json:"auto_pause_5h_disabled"`
+	AutoPause7dDisabled          json.RawMessage `json:"auto_pause_7d_disabled"`
+	UsageLimitOverride           json.RawMessage `json:"ignore_usage_limit_status_override"`
+	DispatchCountLimit           json.RawMessage `json:"dispatch_count_limit"`
+	SchedulerPriority            json.RawMessage `json:"scheduler_priority"`
+	ProxyURL                     json.RawMessage `json:"proxy_url"`
+	CustomHeaders                json.RawMessage `json:"custom_headers"`
+	CodexBPSEnabled              json.RawMessage `json:"codex_bps_enabled"`
+	CodexNativeEnabled           json.RawMessage `json:"codex_native_enabled"`
+	CodexNativeModels            json.RawMessage `json:"codex_native_models"`
+	CodexBPSModels               json.RawMessage `json:"codex_bps_models"`
+	CodexBPSImageTrim            json.RawMessage `json:"codex_bps_image_trim_enabled"`
+	CodexBPSProfile              json.RawMessage `json:"codex_bps_profile"`
+	CodexUsageLimitBypassEnabled json.RawMessage `json:"codex_usage_limit_bypass_enabled"`
+	CodexUsageLimitBypassModels  json.RawMessage `json:"codex_usage_limit_bypass_models"`
+	CodexNativeCompactionOnly    json.RawMessage `json:"codex_native_compaction_only"`
+	CodexFingerprintMode         json.RawMessage `json:"codex_fingerprint_mode"`
+	ClaudeFingerprintMode        json.RawMessage `json:"claude_fingerprint_mode"`
+	SessionCapacityEnabled       json.RawMessage `json:"session_capacity_enabled"`
+	SessionCapacityMax           json.RawMessage `json:"session_capacity_max"`
+	SessionCapacityReserved      json.RawMessage `json:"session_capacity_reserved"`
+	SessionCapacityIdleTTL       json.RawMessage `json:"session_capacity_idle_ttl_seconds"`
+	ClaudeClientPlatform         json.RawMessage `json:"claude_client_platform"`
+	ClaudeVersionPolicy          json.RawMessage `json:"claude_version_policy"`
+	ClaudeClientVersion          json.RawMessage `json:"claude_client_version"`
+	Timezone                     json.RawMessage `json:"timezone"`
 }
 
 type accountSchedulerUpdate struct {
-	ScoreBiasOverride         database.OptionalNullInt64
-	BaseConcurrencyOverride   database.OptionalNullInt64
-	SkipWarmTier              database.OptionalBool
-	AllowedAPIKeyIDs          database.OptionalInt64Slice
-	Tags                      optionalStringSlice
-	GroupIDs                  database.OptionalInt64Slice
-	AutoPause5hThreshold      optionalFloat64
-	AutoPause7dThreshold      optionalFloat64
-	AutoPause5hDisabled       database.OptionalBool
-	AutoPause7dDisabled       database.OptionalBool
-	UsageLimitOverride        optionalNullableBool
-	DispatchCountLimit        database.OptionalNullInt64
-	SchedulerPriority         database.OptionalNullInt64
-	ProxyURL                  database.OptionalString
-	CustomHeaders             optionalCustomHeaders
-	CodexBPSEnabled           database.OptionalBool
-	CodexNativeEnabled        database.OptionalBool
-	CodexNativeModels         optionalStringSlice
-	CodexBPSModels            optionalStringSlice
-	CodexBPSImageTrim         database.OptionalBool
-	CodexNativeCompactionOnly database.OptionalBool
-	CodexFingerprintMode      database.OptionalString
-	ClaudeFingerprintMode     database.OptionalString
-	SessionCapacityEnabled    database.OptionalBool
-	SessionCapacityMax        database.OptionalNullInt64
-	SessionCapacityReserved   database.OptionalNullInt64
-	SessionCapacityIdleTTL    database.OptionalNullInt64
-	ClaudeClientPlatform      database.OptionalString
-	ClaudeVersionPolicy       database.OptionalString
-	ClaudeClientVersion       database.OptionalString
-	Timezone                  database.OptionalString
-	CredentialUpdates         map[string]interface{}
+	ScoreBiasOverride            database.OptionalNullInt64
+	BaseConcurrencyOverride      database.OptionalNullInt64
+	SkipWarmTier                 database.OptionalBool
+	AllowedAPIKeyIDs             database.OptionalInt64Slice
+	Tags                         optionalStringSlice
+	GroupIDs                     database.OptionalInt64Slice
+	AutoPause5hThreshold         optionalFloat64
+	AutoPause7dThreshold         optionalFloat64
+	AutoPause5hDisabled          database.OptionalBool
+	AutoPause7dDisabled          database.OptionalBool
+	UsageLimitOverride           optionalNullableBool
+	DispatchCountLimit           database.OptionalNullInt64
+	SchedulerPriority            database.OptionalNullInt64
+	ProxyURL                     database.OptionalString
+	CustomHeaders                optionalCustomHeaders
+	CodexBPSEnabled              database.OptionalBool
+	CodexNativeEnabled           database.OptionalBool
+	CodexNativeModels            optionalStringSlice
+	CodexBPSModels               optionalStringSlice
+	CodexBPSImageTrim            database.OptionalBool
+	CodexBPSProfile              database.OptionalString
+	CodexUsageLimitBypassEnabled database.OptionalBool
+	CodexUsageLimitBypassModels  optionalStringSlice
+	CodexNativeCompactionOnly    database.OptionalBool
+	CodexFingerprintMode         database.OptionalString
+	ClaudeFingerprintMode        database.OptionalString
+	SessionCapacityEnabled       database.OptionalBool
+	SessionCapacityMax           database.OptionalNullInt64
+	SessionCapacityReserved      database.OptionalNullInt64
+	SessionCapacityIdleTTL       database.OptionalNullInt64
+	ClaudeClientPlatform         database.OptionalString
+	ClaudeVersionPolicy          database.OptionalString
+	ClaudeClientVersion          database.OptionalString
+	Timezone                     database.OptionalString
+	CredentialUpdates            map[string]interface{}
 }
 
 func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedulerUpdate, error) {
@@ -2282,6 +2291,15 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	codexBPSProfile, err := parseOptionalStringField(req.CodexBPSProfile, "codex_bps_profile", auth.ValidateCodexBPSProfile)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if codexBPSProfile.Set {
+		if err := auth.ValidateCodexBPSProfile(codexBPSProfile.Value); err != nil {
+			return accountSchedulerUpdate{}, err
+		}
+	}
 	codexBPSImageTrim, err := parseOptionalBoolField(req.CodexBPSImageTrim, "codex_bps_image_trim_enabled")
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2307,7 +2325,27 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 			return accountSchedulerUpdate{}, err
 		}
 	}
+	usageBypassEnabled, err := parseOptionalBoolField(req.CodexUsageLimitBypassEnabled, auth.CodexUsageLimitBypassEnabledKey)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	usageBypassModels, err := parseOptionalStringSliceField(req.CodexUsageLimitBypassModels, auth.CodexUsageLimitBypassModelsKey)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if usageBypassModels.Set {
+		usageBypassModels.Values = auth.NormalizeAccountModels(usageBypassModels.Values)
+		if err := auth.ValidateCodexUsageLimitBypassModels(usageBypassModels.Values); err != nil {
+			return accountSchedulerUpdate{}, err
+		}
+	}
 	credentialUpdates := make(map[string]interface{})
+	if usageBypassEnabled.Set {
+		credentialUpdates[auth.CodexUsageLimitBypassEnabledKey] = usageBypassEnabled.Value
+	}
+	if usageBypassModels.Set {
+		credentialUpdates[auth.CodexUsageLimitBypassModelsKey] = usageBypassModels.Values
+	}
 	if codexNative.Set {
 		credentialUpdates[auth.CodexNativeEnabledCredentialKey] = codexNative.Value
 	}
@@ -2319,6 +2357,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 	if codexNativeCompactionOnly.Set {
 		credentialUpdates[auth.CodexNativeCompactionOnlyCredentialKey] = codexNativeCompactionOnly.Value
+	}
+	if codexBPSProfile.Set {
+		credentialUpdates[auth.CodexBPSProfileCredentialKey] = codexBPSProfile.Value
 	}
 	if codexBPSImageTrim.Set {
 		credentialUpdates[auth.CodexBPSImageTrimCredentialKey] = codexBPSImageTrim.Value
@@ -2416,38 +2457,41 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 
 	return accountSchedulerUpdate{
-		ScoreBiasOverride:         scoreBiasOverride,
-		BaseConcurrencyOverride:   baseConcurrencyOverride,
-		SkipWarmTier:              skipWarmTier,
-		AllowedAPIKeyIDs:          allowedAPIKeyIDs,
-		Tags:                      tags,
-		GroupIDs:                  groupIDs,
-		AutoPause5hThreshold:      autoPause5hThreshold,
-		AutoPause7dThreshold:      autoPause7dThreshold,
-		AutoPause5hDisabled:       autoPause5hDisabled,
-		AutoPause7dDisabled:       autoPause7dDisabled,
-		UsageLimitOverride:        ignoreUsageLimitStatusOverride,
-		DispatchCountLimit:        dispatchCountLimit,
-		SchedulerPriority:         schedulerPriority,
-		ProxyURL:                  proxyURL,
-		CustomHeaders:             customHeaders,
-		CodexBPSEnabled:           codexBPS,
-		CodexNativeEnabled:        codexNative,
-		CodexNativeModels:         codexNativeModels,
-		CodexBPSModels:            codexBPSModels,
-		CodexBPSImageTrim:         codexBPSImageTrim,
-		CodexNativeCompactionOnly: codexNativeCompactionOnly,
-		CodexFingerprintMode:      codexFingerprintMode,
-		ClaudeFingerprintMode:     claudeFingerprintMode,
-		ClaudeClientPlatform:      claudeClientPlatform,
-		ClaudeVersionPolicy:       claudeVersionPolicy,
-		ClaudeClientVersion:       claudeClientVersion,
-		Timezone:                  timezoneField,
-		SessionCapacityEnabled:    sessionCapacityEnabled,
-		SessionCapacityMax:        sessionCapacityMax,
-		SessionCapacityReserved:   sessionCapacityReserved,
-		SessionCapacityIdleTTL:    sessionCapacityIdleTTL,
-		CredentialUpdates:         credentialUpdates,
+		ScoreBiasOverride:            scoreBiasOverride,
+		BaseConcurrencyOverride:      baseConcurrencyOverride,
+		SkipWarmTier:                 skipWarmTier,
+		AllowedAPIKeyIDs:             allowedAPIKeyIDs,
+		Tags:                         tags,
+		GroupIDs:                     groupIDs,
+		AutoPause5hThreshold:         autoPause5hThreshold,
+		AutoPause7dThreshold:         autoPause7dThreshold,
+		AutoPause5hDisabled:          autoPause5hDisabled,
+		AutoPause7dDisabled:          autoPause7dDisabled,
+		UsageLimitOverride:           ignoreUsageLimitStatusOverride,
+		DispatchCountLimit:           dispatchCountLimit,
+		SchedulerPriority:            schedulerPriority,
+		ProxyURL:                     proxyURL,
+		CustomHeaders:                customHeaders,
+		CodexBPSEnabled:              codexBPS,
+		CodexNativeEnabled:           codexNative,
+		CodexNativeModels:            codexNativeModels,
+		CodexBPSModels:               codexBPSModels,
+		CodexBPSImageTrim:            codexBPSImageTrim,
+		CodexBPSProfile:              codexBPSProfile,
+		CodexUsageLimitBypassEnabled: usageBypassEnabled,
+		CodexUsageLimitBypassModels:  usageBypassModels,
+		CodexNativeCompactionOnly:    codexNativeCompactionOnly,
+		CodexFingerprintMode:         codexFingerprintMode,
+		ClaudeFingerprintMode:        claudeFingerprintMode,
+		ClaudeClientPlatform:         claudeClientPlatform,
+		ClaudeVersionPolicy:          claudeVersionPolicy,
+		ClaudeClientVersion:          claudeClientVersion,
+		Timezone:                     timezoneField,
+		SessionCapacityEnabled:       sessionCapacityEnabled,
+		SessionCapacityMax:           sessionCapacityMax,
+		SessionCapacityReserved:      sessionCapacityReserved,
+		SessionCapacityIdleTTL:       sessionCapacityIdleTTL,
+		CredentialUpdates:            credentialUpdates,
 	}, nil
 }
 
@@ -2520,7 +2564,7 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.ProxyURL.Set ||
 		u.CustomHeaders.Set ||
 		u.CodexBPSEnabled.Set || u.CodexNativeEnabled.Set || u.CodexNativeModels.Set || u.CodexBPSModels.Set ||
-		u.CodexBPSImageTrim.Set ||
+		u.CodexBPSImageTrim.Set || u.CodexBPSProfile.Set || u.CodexUsageLimitBypassEnabled.Set || u.CodexUsageLimitBypassModels.Set ||
 		u.CodexNativeCompactionOnly.Set ||
 		u.CodexFingerprintMode.Set ||
 		u.ClaudeFingerprintMode.Set ||
@@ -2614,7 +2658,21 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	if (update.CodexBPSEnabled.Set && update.CodexBPSEnabled.Value) || (update.CodexBPSImageTrim.Set && update.CodexBPSImageTrim.Value) {
+	if update.CodexUsageLimitBypassEnabled.Set || update.CodexUsageLimitBypassModels.Set {
+		for _, accountID := range []int64{id} {
+			row, err := h.db.GetAccountByID(ctx, accountID)
+			if err != nil || row == nil {
+				writeError(c, http.StatusNotFound, "账号不存在")
+				return
+			}
+			kind := strings.ToLower(strings.TrimSpace(row.GetCredential("upstream_type")))
+			if kind != "" && kind != "codex" {
+				writeError(c, http.StatusBadRequest, "指定模型额度放行仅支持 Codex 账号")
+				return
+			}
+		}
+	}
+	if update.CodexBPSProfile.Set || (update.CodexBPSEnabled.Set && update.CodexBPSEnabled.Value) || (update.CodexBPSImageTrim.Set && update.CodexBPSImageTrim.Value) {
 		row, err := h.db.GetAccountByID(ctx, id)
 		if err != nil || row == nil {
 			writeError(c, http.StatusNotFound, "账号不存在")
@@ -2865,6 +2923,12 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 		h.store.ApplyAccountClaudeClientPolicy(id, policy)
 	}
 	h.store.ApplyAccountCodexRoutes(id, update.CodexNativeEnabled, update.CodexBPSEnabled, update.CodexNativeModels.Values, update.CodexBPSModels.Values, update.CodexNativeModels.Set, update.CodexBPSModels.Set)
+	if update.CodexUsageLimitBypassEnabled.Set || update.CodexUsageLimitBypassModels.Set {
+		h.store.ApplyAccountUsageLimitBypass(id, update.CodexUsageLimitBypassEnabled, database.OptionalStringSlice{Set: update.CodexUsageLimitBypassModels.Set, Values: update.CodexUsageLimitBypassModels.Values})
+	}
+	if update.CodexBPSProfile.Set {
+		h.store.ApplyAccountCodexBPSProfile(id, auth.CodexBPSProfile(update.CodexBPSProfile.Value))
+	}
 	if update.CodexBPSImageTrim.Set {
 		h.store.ApplyAccountCodexBPSImageTrim(id, update.CodexBPSImageTrim.Value)
 	}
@@ -4834,28 +4898,31 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 
 // importToken 导入时的统一 token 载体
 type importToken struct {
-	codexBPSEnabled           bool
-	codexNativeEnabled        *bool
-	codexNativeModels         []string
-	codexBPSModels            []string
-	codexBPSImageTrim         bool
-	codexNativeCompactionOnly bool
-	refreshToken              string
-	sessionToken              string
-	accessToken               string // AT-only 兼容路径
-	name                      string
-	email                     string
-	idToken                   string
-	accountID                 string
-	chatgptAccountID          string // sub2api 等导出格式中的 ChatGPT 账号唯一标识，用于精确去重
-	planType                  string
-	expiresAt                 string
-	codex7DUsedPercent        string
-	codex7DResetAt            string
-	codex5HUsedPercent        string
-	codex5HResetAt            string
-	codex5HUsageUpdatedAt     string
-	codexUsageUpdatedAt       string
+	codexBPSEnabled              bool
+	codexNativeEnabled           *bool
+	codexNativeModels            []string
+	codexBPSModels               []string
+	codexBPSImageTrim            bool
+	codexBPSProfile              auth.CodexBPSProfile
+	codexUsageLimitBypassEnabled bool
+	codexUsageLimitBypassModels  []string
+	codexNativeCompactionOnly    bool
+	refreshToken                 string
+	sessionToken                 string
+	accessToken                  string // AT-only 兼容路径
+	name                         string
+	email                        string
+	idToken                      string
+	accountID                    string
+	chatgptAccountID             string // sub2api 等导出格式中的 ChatGPT 账号唯一标识，用于精确去重
+	planType                     string
+	expiresAt                    string
+	codex7DUsedPercent           string
+	codex7DResetAt               string
+	codex5HUsedPercent           string
+	codex5HResetAt               string
+	codex5HUsageUpdatedAt        string
+	codexUsageUpdatedAt          string
 	// Agent Identity（auth_mode=agentIdentity）：无 RT/ST/AT，凭私钥动态签名。
 	agentRuntimeID  string
 	agentPrivateKey string
@@ -4969,46 +5036,49 @@ func agentIdentityImportTokenFromNode(node *jsonAgentIdentityNode, fallbackName 
 
 // jsonAccountEntry CLIProxyAPI 凭证 JSON 条目
 type jsonAccountEntry struct {
-	AuthMode                  string                 `json:"auth_mode"`
-	AgentIdentity             *jsonAgentIdentityNode `json:"agent_identity"`
-	AgentRuntimeID            string                 `json:"agent_runtime_id"`
-	AgentPrivateKey           string                 `json:"agent_private_key"`
-	AgentTaskID               string                 `json:"task_id"`
-	ChatGPTUserID             string                 `json:"chatgpt_user_id"`
-	AgentFedRAMP              bool                   `json:"chatgpt_account_is_fedramp"`
-	RefreshToken              string                 `json:"refresh_token"`
-	SessionToken              string                 `json:"session_token"`
-	SessionTokenCamel         string                 `json:"sessionToken"`
-	AccessToken               string                 `json:"access_token"`
-	AccessTokenCamel          string                 `json:"accessToken"`
-	IDToken                   string                 `json:"id_token"`
-	IDTokenCamel              string                 `json:"idToken"`
-	AccountID                 string                 `json:"account_id"`
-	ChatGPTAccountID          string                 `json:"chatgpt_account_id"`
-	Email                     string                 `json:"email"`
-	Name                      string                 `json:"name"`
-	PlanType                  string                 `json:"plan_type"`
-	PlanTypeCamel             string                 `json:"planType"`
-	User                      jsonAccountUser        `json:"user"`
-	Account                   jsonAccountAccount     `json:"account"`
-	Expired                   importJSONScalarString `json:"expired"`
-	ExpiresAt                 importJSONScalarString `json:"expires_at"`
-	Expires                   importJSONScalarString `json:"expires"`
-	Codex7DUsedPercent        importJSONScalarString `json:"codex_7d_used_percent"`
-	Codex7DResetAt            string                 `json:"codex_7d_reset_at"`
-	Codex5HUsedPercent        importJSONScalarString `json:"codex_5h_used_percent"`
-	Codex5HResetAt            string                 `json:"codex_5h_reset_at"`
-	Codex5HUsageUpdatedAt     string                 `json:"codex_5h_usage_updated_at"`
-	CodexUsageUpdatedAt       string                 `json:"codex_usage_updated_at"`
-	CodexBPSEnabled           bool                   `json:"codex_bps_enabled"`
-	CodexNativeEnabled        *bool                  `json:"codex_native_enabled,omitempty"`
-	CodexNativeModels         []string               `json:"codex_native_models,omitempty"`
-	CodexBPSModels            []string               `json:"codex_bps_models,omitempty"`
-	CodexBPSImageTrim         bool                   `json:"codex_bps_image_trim_enabled"`
-	CodexNativeCompactionOnly bool                   `json:"codex_native_compaction_only"`
-	ProxyURL                  string                 `json:"proxy_url"`
-	ProxyLabel                string                 `json:"proxy_label"`
-	ProxyEnabled              *bool                  `json:"proxy_enabled"`
+	AuthMode                     string                 `json:"auth_mode"`
+	AgentIdentity                *jsonAgentIdentityNode `json:"agent_identity"`
+	AgentRuntimeID               string                 `json:"agent_runtime_id"`
+	AgentPrivateKey              string                 `json:"agent_private_key"`
+	AgentTaskID                  string                 `json:"task_id"`
+	ChatGPTUserID                string                 `json:"chatgpt_user_id"`
+	AgentFedRAMP                 bool                   `json:"chatgpt_account_is_fedramp"`
+	RefreshToken                 string                 `json:"refresh_token"`
+	SessionToken                 string                 `json:"session_token"`
+	SessionTokenCamel            string                 `json:"sessionToken"`
+	AccessToken                  string                 `json:"access_token"`
+	AccessTokenCamel             string                 `json:"accessToken"`
+	IDToken                      string                 `json:"id_token"`
+	IDTokenCamel                 string                 `json:"idToken"`
+	AccountID                    string                 `json:"account_id"`
+	ChatGPTAccountID             string                 `json:"chatgpt_account_id"`
+	Email                        string                 `json:"email"`
+	Name                         string                 `json:"name"`
+	PlanType                     string                 `json:"plan_type"`
+	PlanTypeCamel                string                 `json:"planType"`
+	User                         jsonAccountUser        `json:"user"`
+	Account                      jsonAccountAccount     `json:"account"`
+	Expired                      importJSONScalarString `json:"expired"`
+	ExpiresAt                    importJSONScalarString `json:"expires_at"`
+	Expires                      importJSONScalarString `json:"expires"`
+	Codex7DUsedPercent           importJSONScalarString `json:"codex_7d_used_percent"`
+	Codex7DResetAt               string                 `json:"codex_7d_reset_at"`
+	Codex5HUsedPercent           importJSONScalarString `json:"codex_5h_used_percent"`
+	Codex5HResetAt               string                 `json:"codex_5h_reset_at"`
+	Codex5HUsageUpdatedAt        string                 `json:"codex_5h_usage_updated_at"`
+	CodexUsageUpdatedAt          string                 `json:"codex_usage_updated_at"`
+	CodexBPSEnabled              bool                   `json:"codex_bps_enabled"`
+	CodexNativeEnabled           *bool                  `json:"codex_native_enabled,omitempty"`
+	CodexNativeModels            []string               `json:"codex_native_models,omitempty"`
+	CodexBPSModels               []string               `json:"codex_bps_models,omitempty"`
+	CodexBPSImageTrim            bool                   `json:"codex_bps_image_trim_enabled"`
+	CodexBPSProfile              auth.CodexBPSProfile   `json:"codex_bps_profile"`
+	CodexUsageLimitBypassEnabled bool                   `json:"codex_usage_limit_bypass_enabled"`
+	CodexUsageLimitBypassModels  []string               `json:"codex_usage_limit_bypass_models"`
+	CodexNativeCompactionOnly    bool                   `json:"codex_native_compaction_only"`
+	ProxyURL                     string                 `json:"proxy_url"`
+	ProxyLabel                   string                 `json:"proxy_label"`
+	ProxyEnabled                 *bool                  `json:"proxy_enabled"`
 }
 
 type jsonAccountUser struct {
@@ -5047,45 +5117,48 @@ func (a sub2apiAccountEntry) proxyFields() (string, string, *bool) {
 }
 
 type sub2apiAccountCredentials struct {
-	AuthMode                  string                 `json:"auth_mode"`
-	AgentIdentity             *jsonAgentIdentityNode `json:"agent_identity"`
-	AgentRuntimeID            string                 `json:"agent_runtime_id"`
-	AgentPrivateKey           string                 `json:"agent_private_key"`
-	AgentTaskID               string                 `json:"task_id"`
-	ChatGPTUserID             string                 `json:"chatgpt_user_id"`
-	AgentFedRAMP              bool                   `json:"chatgpt_account_is_fedramp"`
-	RefreshToken              string                 `json:"refresh_token"`
-	SessionToken              string                 `json:"session_token"`
-	SessionTokenCamel         string                 `json:"sessionToken"`
-	AccessToken               string                 `json:"access_token"`
-	AccessTokenCamel          string                 `json:"accessToken"`
-	IDToken                   string                 `json:"id_token"`
-	IDTokenCamel              string                 `json:"idToken"`
-	AccountID                 string                 `json:"account_id"`
-	ChatGPTAccountID          string                 `json:"chatgpt_account_id"`
-	Email                     string                 `json:"email"`
-	PlanType                  string                 `json:"plan_type"`
-	PlanTypeCamel             string                 `json:"planType"`
-	User                      jsonAccountUser        `json:"user"`
-	Account                   jsonAccountAccount     `json:"account"`
-	ExpiresAt                 importJSONScalarString `json:"expires_at"`
-	Expired                   importJSONScalarString `json:"expired"`
-	Expires                   importJSONScalarString `json:"expires"`
-	Codex7DUsedPercent        importJSONScalarString `json:"codex_7d_used_percent"`
-	Codex7DResetAt            string                 `json:"codex_7d_reset_at"`
-	Codex5HUsedPercent        importJSONScalarString `json:"codex_5h_used_percent"`
-	Codex5HResetAt            string                 `json:"codex_5h_reset_at"`
-	Codex5HUsageUpdatedAt     string                 `json:"codex_5h_usage_updated_at"`
-	CodexUsageUpdatedAt       string                 `json:"codex_usage_updated_at"`
-	CodexBPSEnabled           bool                   `json:"codex_bps_enabled"`
-	CodexNativeEnabled        *bool                  `json:"codex_native_enabled,omitempty"`
-	CodexNativeModels         []string               `json:"codex_native_models,omitempty"`
-	CodexBPSModels            []string               `json:"codex_bps_models,omitempty"`
-	CodexBPSImageTrim         bool                   `json:"codex_bps_image_trim_enabled"`
-	CodexNativeCompactionOnly bool                   `json:"codex_native_compaction_only"`
-	ProxyURL                  string                 `json:"proxy_url"`
-	ProxyLabel                string                 `json:"proxy_label"`
-	ProxyEnabled              *bool                  `json:"proxy_enabled"`
+	AuthMode                     string                 `json:"auth_mode"`
+	AgentIdentity                *jsonAgentIdentityNode `json:"agent_identity"`
+	AgentRuntimeID               string                 `json:"agent_runtime_id"`
+	AgentPrivateKey              string                 `json:"agent_private_key"`
+	AgentTaskID                  string                 `json:"task_id"`
+	ChatGPTUserID                string                 `json:"chatgpt_user_id"`
+	AgentFedRAMP                 bool                   `json:"chatgpt_account_is_fedramp"`
+	RefreshToken                 string                 `json:"refresh_token"`
+	SessionToken                 string                 `json:"session_token"`
+	SessionTokenCamel            string                 `json:"sessionToken"`
+	AccessToken                  string                 `json:"access_token"`
+	AccessTokenCamel             string                 `json:"accessToken"`
+	IDToken                      string                 `json:"id_token"`
+	IDTokenCamel                 string                 `json:"idToken"`
+	AccountID                    string                 `json:"account_id"`
+	ChatGPTAccountID             string                 `json:"chatgpt_account_id"`
+	Email                        string                 `json:"email"`
+	PlanType                     string                 `json:"plan_type"`
+	PlanTypeCamel                string                 `json:"planType"`
+	User                         jsonAccountUser        `json:"user"`
+	Account                      jsonAccountAccount     `json:"account"`
+	ExpiresAt                    importJSONScalarString `json:"expires_at"`
+	Expired                      importJSONScalarString `json:"expired"`
+	Expires                      importJSONScalarString `json:"expires"`
+	Codex7DUsedPercent           importJSONScalarString `json:"codex_7d_used_percent"`
+	Codex7DResetAt               string                 `json:"codex_7d_reset_at"`
+	Codex5HUsedPercent           importJSONScalarString `json:"codex_5h_used_percent"`
+	Codex5HResetAt               string                 `json:"codex_5h_reset_at"`
+	Codex5HUsageUpdatedAt        string                 `json:"codex_5h_usage_updated_at"`
+	CodexUsageUpdatedAt          string                 `json:"codex_usage_updated_at"`
+	CodexBPSEnabled              bool                   `json:"codex_bps_enabled"`
+	CodexNativeEnabled           *bool                  `json:"codex_native_enabled,omitempty"`
+	CodexNativeModels            []string               `json:"codex_native_models,omitempty"`
+	CodexBPSModels               []string               `json:"codex_bps_models,omitempty"`
+	CodexBPSImageTrim            bool                   `json:"codex_bps_image_trim_enabled"`
+	CodexBPSProfile              auth.CodexBPSProfile   `json:"codex_bps_profile"`
+	CodexUsageLimitBypassEnabled bool                   `json:"codex_usage_limit_bypass_enabled"`
+	CodexUsageLimitBypassModels  []string               `json:"codex_usage_limit_bypass_models"`
+	CodexNativeCompactionOnly    bool                   `json:"codex_native_compaction_only"`
+	ProxyURL                     string                 `json:"proxy_url"`
+	ProxyLabel                   string                 `json:"proxy_label"`
+	ProxyEnabled                 *bool                  `json:"proxy_enabled"`
 }
 
 type importJSONScalarString string
@@ -5285,31 +5358,34 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 
 		if rt != "" || st != "" || at != "" {
 			tokens = append(tokens, importToken{
-				refreshToken:              rt,
-				sessionToken:              st,
-				accessToken:               at,
-				name:                      name,
-				email:                     email,
-				idToken:                   idTok,
-				accountID:                 strings.TrimSpace(entry.AccountID),
-				chatgptAccountID:          firstNonEmpty(entry.ChatGPTAccountID, accID),
-				planType:                  planType,
-				expiresAt:                 expiresAt,
-				codex7DUsedPercent:        strings.TrimSpace(entry.Codex7DUsedPercent.String()),
-				codex7DResetAt:            strings.TrimSpace(entry.Codex7DResetAt),
-				codex5HUsedPercent:        strings.TrimSpace(entry.Codex5HUsedPercent.String()),
-				codex5HResetAt:            strings.TrimSpace(entry.Codex5HResetAt),
-				codex5HUsageUpdatedAt:     strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
-				codexBPSEnabled:           entry.CodexBPSEnabled,
-				codexNativeEnabled:        entry.CodexNativeEnabled,
-				codexNativeModels:         entry.CodexNativeModels,
-				codexBPSModels:            entry.CodexBPSModels,
-				codexBPSImageTrim:         entry.CodexBPSImageTrim,
-				codexNativeCompactionOnly: entry.CodexNativeCompactionOnly,
-				codexUsageUpdatedAt:       strings.TrimSpace(entry.CodexUsageUpdatedAt),
-				proxyURL:                  strings.TrimSpace(entry.ProxyURL),
-				proxyLabel:                strings.TrimSpace(entry.ProxyLabel),
-				proxyEnabled:              entry.ProxyEnabled,
+				refreshToken:                 rt,
+				sessionToken:                 st,
+				accessToken:                  at,
+				name:                         name,
+				email:                        email,
+				idToken:                      idTok,
+				accountID:                    strings.TrimSpace(entry.AccountID),
+				chatgptAccountID:             firstNonEmpty(entry.ChatGPTAccountID, accID),
+				planType:                     planType,
+				expiresAt:                    expiresAt,
+				codex7DUsedPercent:           strings.TrimSpace(entry.Codex7DUsedPercent.String()),
+				codex7DResetAt:               strings.TrimSpace(entry.Codex7DResetAt),
+				codex5HUsedPercent:           strings.TrimSpace(entry.Codex5HUsedPercent.String()),
+				codex5HResetAt:               strings.TrimSpace(entry.Codex5HResetAt),
+				codex5HUsageUpdatedAt:        strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
+				codexBPSEnabled:              entry.CodexBPSEnabled,
+				codexNativeEnabled:           entry.CodexNativeEnabled,
+				codexNativeModels:            entry.CodexNativeModels,
+				codexBPSModels:               entry.CodexBPSModels,
+				codexBPSImageTrim:            entry.CodexBPSImageTrim,
+				codexBPSProfile:              entry.CodexBPSProfile,
+				codexUsageLimitBypassEnabled: entry.CodexUsageLimitBypassEnabled,
+				codexUsageLimitBypassModels:  entry.CodexUsageLimitBypassModels,
+				codexNativeCompactionOnly:    entry.CodexNativeCompactionOnly,
+				codexUsageUpdatedAt:          strings.TrimSpace(entry.CodexUsageUpdatedAt),
+				proxyURL:                     strings.TrimSpace(entry.ProxyURL),
+				proxyLabel:                   strings.TrimSpace(entry.ProxyLabel),
+				proxyEnabled:                 entry.ProxyEnabled,
 			})
 		}
 	}
@@ -5365,31 +5441,34 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 
 		if rt != "" || st != "" || at != "" {
 			tokens = append(tokens, importToken{
-				refreshToken:              rt,
-				sessionToken:              st,
-				accessToken:               at,
-				name:                      name,
-				email:                     email,
-				idToken:                   idTok,
-				accountID:                 strings.TrimSpace(c.AccountID),
-				chatgptAccountID:          firstNonEmpty(c.ChatGPTAccountID, accID),
-				planType:                  planType,
-				expiresAt:                 expiresAt,
-				codex7DUsedPercent:        strings.TrimSpace(c.Codex7DUsedPercent.String()),
-				codex7DResetAt:            strings.TrimSpace(c.Codex7DResetAt),
-				codex5HUsedPercent:        strings.TrimSpace(c.Codex5HUsedPercent.String()),
-				codex5HResetAt:            strings.TrimSpace(c.Codex5HResetAt),
-				codex5HUsageUpdatedAt:     strings.TrimSpace(c.Codex5HUsageUpdatedAt),
-				codexBPSEnabled:           c.CodexBPSEnabled,
-				codexNativeEnabled:        c.CodexNativeEnabled,
-				codexNativeModels:         c.CodexNativeModels,
-				codexBPSModels:            c.CodexBPSModels,
-				codexBPSImageTrim:         c.CodexBPSImageTrim,
-				codexNativeCompactionOnly: c.CodexNativeCompactionOnly,
-				codexUsageUpdatedAt:       strings.TrimSpace(c.CodexUsageUpdatedAt),
-				proxyURL:                  proxyURL,
-				proxyLabel:                proxyLabel,
-				proxyEnabled:              proxyEnabled,
+				refreshToken:                 rt,
+				sessionToken:                 st,
+				accessToken:                  at,
+				name:                         name,
+				email:                        email,
+				idToken:                      idTok,
+				accountID:                    strings.TrimSpace(c.AccountID),
+				chatgptAccountID:             firstNonEmpty(c.ChatGPTAccountID, accID),
+				planType:                     planType,
+				expiresAt:                    expiresAt,
+				codex7DUsedPercent:           strings.TrimSpace(c.Codex7DUsedPercent.String()),
+				codex7DResetAt:               strings.TrimSpace(c.Codex7DResetAt),
+				codex5HUsedPercent:           strings.TrimSpace(c.Codex5HUsedPercent.String()),
+				codex5HResetAt:               strings.TrimSpace(c.Codex5HResetAt),
+				codex5HUsageUpdatedAt:        strings.TrimSpace(c.Codex5HUsageUpdatedAt),
+				codexBPSEnabled:              c.CodexBPSEnabled,
+				codexNativeEnabled:           c.CodexNativeEnabled,
+				codexNativeModels:            c.CodexNativeModels,
+				codexBPSModels:               c.CodexBPSModels,
+				codexBPSImageTrim:            c.CodexBPSImageTrim,
+				codexBPSProfile:              c.CodexBPSProfile,
+				codexUsageLimitBypassEnabled: c.CodexUsageLimitBypassEnabled,
+				codexUsageLimitBypassModels:  c.CodexUsageLimitBypassModels,
+				codexNativeCompactionOnly:    c.CodexNativeCompactionOnly,
+				codexUsageUpdatedAt:          strings.TrimSpace(c.CodexUsageUpdatedAt),
+				proxyURL:                     proxyURL,
+				proxyLabel:                   proxyLabel,
+				proxyEnabled:                 proxyEnabled,
 			})
 		}
 	}
@@ -5481,26 +5560,29 @@ func importStoredAccountID(t importToken, conflicts map[string]bool) string {
 
 func importTokenSeed(t importToken, conflicts map[string]bool) tokenCredentialSeed {
 	return normalizeTokenCredentialSeed(tokenCredentialSeed{
-		refreshToken:              t.refreshToken,
-		sessionToken:              t.sessionToken,
-		accessToken:               t.accessToken,
-		idToken:                   t.idToken,
-		accountID:                 importStoredAccountID(t, conflicts),
-		email:                     t.email,
-		planType:                  t.planType,
-		expiresAtRaw:              t.expiresAt,
-		codex7DUsedPercent:        t.codex7DUsedPercent,
-		codex7DResetAt:            t.codex7DResetAt,
-		codex5HUsedPercent:        t.codex5HUsedPercent,
-		codex5HResetAt:            t.codex5HResetAt,
-		codex5HUsageUpdatedAt:     t.codex5HUsageUpdatedAt,
-		codexBPSEnabled:           t.codexBPSEnabled,
-		codexNativeEnabled:        t.codexNativeEnabled,
-		codexNativeModels:         t.codexNativeModels,
-		codexBPSModels:            t.codexBPSModels,
-		codexBPSImageTrim:         t.codexBPSImageTrim,
-		codexNativeCompactionOnly: t.codexNativeCompactionOnly,
-		codexUsageUpdatedAt:       t.codexUsageUpdatedAt,
+		refreshToken:                 t.refreshToken,
+		sessionToken:                 t.sessionToken,
+		accessToken:                  t.accessToken,
+		idToken:                      t.idToken,
+		accountID:                    importStoredAccountID(t, conflicts),
+		email:                        t.email,
+		planType:                     t.planType,
+		expiresAtRaw:                 t.expiresAt,
+		codex7DUsedPercent:           t.codex7DUsedPercent,
+		codex7DResetAt:               t.codex7DResetAt,
+		codex5HUsedPercent:           t.codex5HUsedPercent,
+		codex5HResetAt:               t.codex5HResetAt,
+		codex5HUsageUpdatedAt:        t.codex5HUsageUpdatedAt,
+		codexBPSEnabled:              t.codexBPSEnabled,
+		codexNativeEnabled:           t.codexNativeEnabled,
+		codexNativeModels:            t.codexNativeModels,
+		codexBPSModels:               t.codexBPSModels,
+		codexBPSImageTrim:            t.codexBPSImageTrim,
+		codexBPSProfile:              t.codexBPSProfile,
+		codexUsageLimitBypassEnabled: t.codexUsageLimitBypassEnabled,
+		codexUsageLimitBypassModels:  t.codexUsageLimitBypassModels,
+		codexNativeCompactionOnly:    t.codexNativeCompactionOnly,
+		codexUsageUpdatedAt:          t.codexUsageUpdatedAt,
 	})
 }
 
@@ -6663,29 +6745,32 @@ func tokenCredentialSeedFromAccountRow(row *database.AccountRow) tokenCredential
 		return tokenCredentialSeed{}
 	}
 	return normalizeTokenCredentialSeed(tokenCredentialSeed{
-		refreshToken:              row.GetCredential("refresh_token"),
-		sessionToken:              row.GetCredential("session_token"),
-		accessToken:               row.GetCredential("access_token"),
-		accessTokenType:           row.GetCredential("access_token_type"),
-		idToken:                   row.GetCredential("id_token"),
-		accountID:                 firstNonEmpty(row.GetCredential("account_id"), row.GetCredential("chatgpt_account_id")),
-		workspaceID:               row.GetCredential("workspace_id"),
-		customHeaders:             row.GetCredentialStringMap("custom_headers"),
-		email:                     row.GetCredential("email"),
-		planType:                  row.GetCredential("plan_type"),
-		expiresAtRaw:              row.GetCredential("expires_at"),
-		codex7DUsedPercent:        row.GetCredential("codex_7d_used_percent"),
-		codex7DResetAt:            row.GetCredential("codex_7d_reset_at"),
-		codex5HUsedPercent:        row.GetCredential("codex_5h_used_percent"),
-		codex5HResetAt:            row.GetCredential("codex_5h_reset_at"),
-		codex5HUsageUpdatedAt:     row.GetCredential("codex_5h_usage_updated_at"),
-		codexBPSEnabled:           row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
-		codexNativeEnabled:        auth.CodexNativeEnabledFromRow(row),
-		codexNativeModels:         row.GetCredentialStringSlice(auth.CodexNativeModelsCredentialKey),
-		codexBPSModels:            row.GetCredentialStringSlice(auth.CodexBPSModelsCredentialKey),
-		codexBPSImageTrim:         row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
-		codexNativeCompactionOnly: row.GetCredentialBool(auth.CodexNativeCompactionOnlyCredentialKey),
-		codexUsageUpdatedAt:       row.GetCredential("codex_usage_updated_at"),
+		refreshToken:                 row.GetCredential("refresh_token"),
+		sessionToken:                 row.GetCredential("session_token"),
+		accessToken:                  row.GetCredential("access_token"),
+		accessTokenType:              row.GetCredential("access_token_type"),
+		idToken:                      row.GetCredential("id_token"),
+		accountID:                    firstNonEmpty(row.GetCredential("account_id"), row.GetCredential("chatgpt_account_id")),
+		workspaceID:                  row.GetCredential("workspace_id"),
+		customHeaders:                row.GetCredentialStringMap("custom_headers"),
+		email:                        row.GetCredential("email"),
+		planType:                     row.GetCredential("plan_type"),
+		expiresAtRaw:                 row.GetCredential("expires_at"),
+		codex7DUsedPercent:           row.GetCredential("codex_7d_used_percent"),
+		codex7DResetAt:               row.GetCredential("codex_7d_reset_at"),
+		codex5HUsedPercent:           row.GetCredential("codex_5h_used_percent"),
+		codex5HResetAt:               row.GetCredential("codex_5h_reset_at"),
+		codex5HUsageUpdatedAt:        row.GetCredential("codex_5h_usage_updated_at"),
+		codexBPSEnabled:              row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		codexNativeEnabled:           auth.CodexNativeEnabledFromRow(row),
+		codexNativeModels:            row.GetCredentialStringSlice(auth.CodexNativeModelsCredentialKey),
+		codexBPSModels:               row.GetCredentialStringSlice(auth.CodexBPSModelsCredentialKey),
+		codexBPSImageTrim:            row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
+		codexBPSProfile:              auth.NormalizeCodexBPSProfile(row.GetCredential(auth.CodexBPSProfileCredentialKey)),
+		codexUsageLimitBypassEnabled: row.GetCredentialBool(auth.CodexUsageLimitBypassEnabledKey),
+		codexUsageLimitBypassModels:  row.GetCredentialStringSlice(auth.CodexUsageLimitBypassModelsKey),
+		codexNativeCompactionOnly:    row.GetCredentialBool(auth.CodexNativeCompactionOnlyCredentialKey),
+		codexUsageUpdatedAt:          row.GetCredential("codex_usage_updated_at"),
 	})
 }
 
@@ -7018,7 +7103,21 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	if (schedulerUpdate.CodexBPSEnabled.Set && schedulerUpdate.CodexBPSEnabled.Value) || (schedulerUpdate.CodexBPSImageTrim.Set && schedulerUpdate.CodexBPSImageTrim.Value) {
+	if schedulerUpdate.CodexUsageLimitBypassEnabled.Set || schedulerUpdate.CodexUsageLimitBypassModels.Set {
+		for _, accountID := range ids {
+			row, err := h.db.GetAccountByID(ctx, accountID)
+			if err != nil || row == nil {
+				writeError(c, http.StatusNotFound, "账号不存在")
+				return
+			}
+			kind := strings.ToLower(strings.TrimSpace(row.GetCredential("upstream_type")))
+			if kind != "" && kind != "codex" {
+				writeError(c, http.StatusBadRequest, "指定模型额度放行仅支持 Codex 账号")
+				return
+			}
+		}
+	}
+	if schedulerUpdate.CodexBPSProfile.Set || (schedulerUpdate.CodexBPSEnabled.Set && schedulerUpdate.CodexBPSEnabled.Value) || (schedulerUpdate.CodexBPSImageTrim.Set && schedulerUpdate.CodexBPSImageTrim.Value) {
 		for _, id := range ids {
 			row, err := h.db.GetAccountByID(ctx, id)
 			if err != nil || row == nil {
@@ -9484,6 +9583,7 @@ type settingsResponse struct {
 	CodexOverloadPauseEnabled           bool   `json:"codex_overload_pause_enabled"`
 	CodexCapacityRetryEnabled           bool   `json:"codex_capacity_retry_enabled"`
 	CodexSessionFailoverEnabled         bool   `json:"codex_session_failover_enabled"`
+	CodexForkAccountFallbackEnabled     bool   `json:"codex_fork_account_fallback_enabled"`
 	CodexSessionFailoverPreserveInput   bool   `json:"codex_session_failover_preserve_input"`
 	CodexWebSearchProxyLocation         bool   `json:"codex_web_search_proxy_location"`
 	CodexInitialSessionMaxAgeSeconds    int    `json:"codex_initial_session_max_age_seconds"`
@@ -9677,6 +9777,7 @@ type updateSettingsReq struct {
 	CodexOverloadPauseEnabled           *bool                            `json:"codex_overload_pause_enabled"`
 	CodexCapacityRetryEnabled           *bool                            `json:"codex_capacity_retry_enabled"`
 	CodexSessionFailoverEnabled         *bool                            `json:"codex_session_failover_enabled"`
+	CodexForkAccountFallbackEnabled     *bool                            `json:"codex_fork_account_fallback_enabled"`
 	CodexSessionFailoverPreserveInput   *bool                            `json:"codex_session_failover_preserve_input"`
 	CodexWebSearchProxyLocation         *bool                            `json:"codex_web_search_proxy_location"`
 	CodexInitialSessionMaxAgeSeconds    *int                             `json:"codex_initial_session_max_age_seconds"`
@@ -10517,6 +10618,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
 		CodexCapacityRetryEnabled:           runtimeCfg.CodexCapacityRetryEnabled,
 		CodexSessionFailoverEnabled:         runtimeCfg.CodexSessionFailoverEnabled,
+		CodexForkAccountFallbackEnabled:     runtimeCfg.CodexForkAccountFallbackEnabled,
 		CodexSessionFailoverPreserveInput:   runtimeCfg.CodexSessionFailoverPreserveInput,
 		CodexWebSearchProxyLocation:         runtimeCfg.CodexWebSearchProxyLocation,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
@@ -11017,6 +11119,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	previousAutoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	if existingSettings != nil {
 		runtimeCfg.CodexSessionFailoverEnabled = existingSettings.CodexSessionFailoverEnabled
+		runtimeCfg.CodexForkAccountFallbackEnabled = existingSettings.CodexForkAccountFallbackEnabled
 		runtimeCfg.CodexSessionFailoverPreserveInput = existingSettings.CodexSessionFailoverPreserveInput
 		runtimeCfg.CodexWebSearchProxyLocation = existingSettings.CodexWebSearchProxyLocation
 		runtimeCfg.CodexInitialSessionMaxAgeSeconds = existingSettings.CodexInitialSessionMaxAgeSeconds
@@ -11368,6 +11471,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 		runtimeCfg.CodexInitialSessionMaxAgeSeconds = *req.CodexInitialSessionMaxAgeSeconds
+	}
+	if req.CodexForkAccountFallbackEnabled != nil {
+		runtimeCfg.CodexForkAccountFallbackEnabled = *req.CodexForkAccountFallbackEnabled
+		log.Printf("设置已更新: codex_fork_account_fallback_enabled = %t", runtimeCfg.CodexForkAccountFallbackEnabled)
 	}
 	if req.CodexSessionFailoverEnabled != nil {
 		runtimeCfg.CodexSessionFailoverEnabled = *req.CodexSessionFailoverEnabled
@@ -12097,6 +12204,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
 		CodexCapacityRetryEnabled:           runtimeCfg.CodexCapacityRetryEnabled,
 		CodexSessionFailoverEnabled:         runtimeCfg.CodexSessionFailoverEnabled,
+		CodexForkAccountFallbackEnabled:     runtimeCfg.CodexForkAccountFallbackEnabled,
 		CodexSessionFailoverPreserveInput:   runtimeCfg.CodexSessionFailoverPreserveInput,
 		CodexWebSearchProxyLocation:         runtimeCfg.CodexWebSearchProxyLocation,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
@@ -12435,6 +12543,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
 		CodexCapacityRetryEnabled:           runtimeCfg.CodexCapacityRetryEnabled,
 		CodexSessionFailoverEnabled:         runtimeCfg.CodexSessionFailoverEnabled,
+		CodexForkAccountFallbackEnabled:     runtimeCfg.CodexForkAccountFallbackEnabled,
 		CodexSessionFailoverPreserveInput:   runtimeCfg.CodexSessionFailoverPreserveInput,
 		CodexWebSearchProxyLocation:         runtimeCfg.CodexWebSearchProxyLocation,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
@@ -12597,27 +12706,30 @@ func (h *Handler) TestImageStorageConnection(c *gin.Context) {
 // ==================== 导出 & 迁移 ====================
 
 type cpaExportEntry struct {
-	CodexBPSEnabled           bool     `json:"codex_bps_enabled,omitempty"`
-	CodexNativeEnabled        *bool    `json:"codex_native_enabled,omitempty"`
-	CodexNativeModels         []string `json:"codex_native_models,omitempty"`
-	CodexBPSModels            []string `json:"codex_bps_models,omitempty"`
-	CodexBPSImageTrim         bool     `json:"codex_bps_image_trim_enabled,omitempty"`
-	CodexNativeCompactionOnly bool     `json:"codex_native_compaction_only,omitempty"`
-	Type                      string   `json:"type"`
-	Email                     string   `json:"email"`
-	PlanType                  string   `json:"plan_type,omitempty"`
-	Codex7DUsedPercent        string   `json:"codex_7d_used_percent,omitempty"`
-	Codex7DResetAt            string   `json:"codex_7d_reset_at,omitempty"`
-	Codex5HUsedPercent        string   `json:"codex_5h_used_percent,omitempty"`
-	Codex5HResetAt            string   `json:"codex_5h_reset_at,omitempty"`
-	Codex5HUsageUpdatedAt     string   `json:"codex_5h_usage_updated_at,omitempty"`
-	CodexUsageUpdatedAt       string   `json:"codex_usage_updated_at,omitempty"`
-	Expired                   string   `json:"expired"`
-	IDToken                   string   `json:"id_token"`
-	AccountID                 string   `json:"account_id"`
-	AccessToken               string   `json:"access_token"`
-	LastRefresh               string   `json:"last_refresh"`
-	RefreshToken              string   `json:"refresh_token"`
+	CodexBPSEnabled              bool                 `json:"codex_bps_enabled,omitempty"`
+	CodexNativeEnabled           *bool                `json:"codex_native_enabled,omitempty"`
+	CodexNativeModels            []string             `json:"codex_native_models,omitempty"`
+	CodexBPSModels               []string             `json:"codex_bps_models,omitempty"`
+	CodexBPSImageTrim            bool                 `json:"codex_bps_image_trim_enabled,omitempty"`
+	CodexBPSProfile              auth.CodexBPSProfile `json:"codex_bps_profile,omitempty"`
+	CodexUsageLimitBypassEnabled bool                 `json:"codex_usage_limit_bypass_enabled"`
+	CodexUsageLimitBypassModels  []string             `json:"codex_usage_limit_bypass_models"`
+	CodexNativeCompactionOnly    bool                 `json:"codex_native_compaction_only,omitempty"`
+	Type                         string               `json:"type"`
+	Email                        string               `json:"email"`
+	PlanType                     string               `json:"plan_type,omitempty"`
+	Codex7DUsedPercent           string               `json:"codex_7d_used_percent,omitempty"`
+	Codex7DResetAt               string               `json:"codex_7d_reset_at,omitempty"`
+	Codex5HUsedPercent           string               `json:"codex_5h_used_percent,omitempty"`
+	Codex5HResetAt               string               `json:"codex_5h_reset_at,omitempty"`
+	Codex5HUsageUpdatedAt        string               `json:"codex_5h_usage_updated_at,omitempty"`
+	CodexUsageUpdatedAt          string               `json:"codex_usage_updated_at,omitempty"`
+	Expired                      string               `json:"expired"`
+	IDToken                      string               `json:"id_token"`
+	AccountID                    string               `json:"account_id"`
+	AccessToken                  string               `json:"access_token"`
+	LastRefresh                  string               `json:"last_refresh"`
+	RefreshToken                 string               `json:"refresh_token"`
 	// 代理三件套只在 include_proxy=1 时写出：代理 URL 常带明文用户名密码。
 	// ProxyEnabled 用指针区分"文件没带这个字段"（老文件，按启用处理）与
 	// "源端显式禁用"，bool 的零值会被 omitempty 一起吞掉。
@@ -12778,30 +12890,33 @@ func accountRowToCPAExportEntry(row *database.AccountRow, proxies exportProxyRes
 	}
 	proxyURL, proxyLabel, proxyEnabled := proxies.resolve(row.ProxyURL)
 	return cpaExportEntry{
-		CodexBPSEnabled:           row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
-		CodexNativeEnabled:        auth.CodexNativeEnabledFromRow(row),
-		CodexNativeModels:         row.GetCredentialStringSlice(auth.CodexNativeModelsCredentialKey),
-		CodexBPSModels:            row.GetCredentialStringSlice(auth.CodexBPSModelsCredentialKey),
-		CodexBPSImageTrim:         row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
-		CodexNativeCompactionOnly: row.GetCredentialBool(auth.CodexNativeCompactionOnlyCredentialKey),
-		Type:                      "codex",
-		Email:                     row.GetCredential("email"),
-		PlanType:                  row.GetCredential("plan_type"),
-		Codex7DUsedPercent:        row.GetCredential("codex_7d_used_percent"),
-		Codex7DResetAt:            row.GetCredential("codex_7d_reset_at"),
-		Codex5HUsedPercent:        row.GetCredential("codex_5h_used_percent"),
-		Codex5HResetAt:            row.GetCredential("codex_5h_reset_at"),
-		Codex5HUsageUpdatedAt:     row.GetCredential("codex_5h_usage_updated_at"),
-		CodexUsageUpdatedAt:       row.GetCredential("codex_usage_updated_at"),
-		Expired:                   row.GetCredential("expires_at"),
-		IDToken:                   row.GetCredential("id_token"),
-		AccountID:                 accountID,
-		AccessToken:               at,
-		LastRefresh:               row.UpdatedAt.Format(time.RFC3339),
-		RefreshToken:              rt,
-		ProxyURL:                  proxyURL,
-		ProxyLabel:                proxyLabel,
-		ProxyEnabled:              proxyEnabled,
+		CodexBPSEnabled:              row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		CodexNativeEnabled:           auth.CodexNativeEnabledFromRow(row),
+		CodexNativeModels:            row.GetCredentialStringSlice(auth.CodexNativeModelsCredentialKey),
+		CodexBPSModels:               row.GetCredentialStringSlice(auth.CodexBPSModelsCredentialKey),
+		CodexBPSImageTrim:            row.GetCredentialBool(auth.CodexBPSImageTrimCredentialKey),
+		CodexBPSProfile:              auth.NormalizeCodexBPSProfile(row.GetCredential(auth.CodexBPSProfileCredentialKey)),
+		CodexUsageLimitBypassEnabled: row.GetCredentialBool(auth.CodexUsageLimitBypassEnabledKey),
+		CodexUsageLimitBypassModels:  row.GetCredentialStringSlice(auth.CodexUsageLimitBypassModelsKey),
+		CodexNativeCompactionOnly:    row.GetCredentialBool(auth.CodexNativeCompactionOnlyCredentialKey),
+		Type:                         "codex",
+		Email:                        row.GetCredential("email"),
+		PlanType:                     row.GetCredential("plan_type"),
+		Codex7DUsedPercent:           row.GetCredential("codex_7d_used_percent"),
+		Codex7DResetAt:               row.GetCredential("codex_7d_reset_at"),
+		Codex5HUsedPercent:           row.GetCredential("codex_5h_used_percent"),
+		Codex5HResetAt:               row.GetCredential("codex_5h_reset_at"),
+		Codex5HUsageUpdatedAt:        row.GetCredential("codex_5h_usage_updated_at"),
+		CodexUsageUpdatedAt:          row.GetCredential("codex_usage_updated_at"),
+		Expired:                      row.GetCredential("expires_at"),
+		IDToken:                      row.GetCredential("id_token"),
+		AccountID:                    accountID,
+		AccessToken:                  at,
+		LastRefresh:                  row.UpdatedAt.Format(time.RFC3339),
+		RefreshToken:                 rt,
+		ProxyURL:                     proxyURL,
+		ProxyLabel:                   proxyLabel,
+		ProxyEnabled:                 proxyEnabled,
 	}, true
 }
 
@@ -12996,26 +13111,29 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 			name = "migrate"
 		}
 		tokens = append(tokens, importToken{
-			refreshToken:              rt,
-			accessToken:               at,
-			name:                      name,
-			email:                     strings.TrimSpace(entry.Email),
-			idToken:                   strings.TrimSpace(entry.IDToken),
-			accountID:                 strings.TrimSpace(entry.AccountID),
-			planType:                  strings.TrimSpace(entry.PlanType),
-			expiresAt:                 strings.TrimSpace(entry.Expired),
-			codex7DUsedPercent:        strings.TrimSpace(entry.Codex7DUsedPercent),
-			codex7DResetAt:            strings.TrimSpace(entry.Codex7DResetAt),
-			codex5HUsedPercent:        strings.TrimSpace(entry.Codex5HUsedPercent),
-			codex5HResetAt:            strings.TrimSpace(entry.Codex5HResetAt),
-			codex5HUsageUpdatedAt:     strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
-			codexBPSEnabled:           entry.CodexBPSEnabled,
-			codexNativeEnabled:        entry.CodexNativeEnabled,
-			codexNativeModels:         entry.CodexNativeModels,
-			codexBPSModels:            entry.CodexBPSModels,
-			codexBPSImageTrim:         entry.CodexBPSImageTrim,
-			codexNativeCompactionOnly: entry.CodexNativeCompactionOnly,
-			codexUsageUpdatedAt:       strings.TrimSpace(entry.CodexUsageUpdatedAt),
+			refreshToken:                 rt,
+			accessToken:                  at,
+			name:                         name,
+			email:                        strings.TrimSpace(entry.Email),
+			idToken:                      strings.TrimSpace(entry.IDToken),
+			accountID:                    strings.TrimSpace(entry.AccountID),
+			planType:                     strings.TrimSpace(entry.PlanType),
+			expiresAt:                    strings.TrimSpace(entry.Expired),
+			codex7DUsedPercent:           strings.TrimSpace(entry.Codex7DUsedPercent),
+			codex7DResetAt:               strings.TrimSpace(entry.Codex7DResetAt),
+			codex5HUsedPercent:           strings.TrimSpace(entry.Codex5HUsedPercent),
+			codex5HResetAt:               strings.TrimSpace(entry.Codex5HResetAt),
+			codex5HUsageUpdatedAt:        strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
+			codexBPSEnabled:              entry.CodexBPSEnabled,
+			codexNativeEnabled:           entry.CodexNativeEnabled,
+			codexNativeModels:            entry.CodexNativeModels,
+			codexBPSModels:               entry.CodexBPSModels,
+			codexBPSImageTrim:            entry.CodexBPSImageTrim,
+			codexBPSProfile:              entry.CodexBPSProfile,
+			codexUsageLimitBypassEnabled: entry.CodexUsageLimitBypassEnabled,
+			codexUsageLimitBypassModels:  entry.CodexUsageLimitBypassModels,
+			codexNativeCompactionOnly:    entry.CodexNativeCompactionOnly,
+			codexUsageUpdatedAt:          strings.TrimSpace(entry.CodexUsageUpdatedAt),
 		})
 	}
 

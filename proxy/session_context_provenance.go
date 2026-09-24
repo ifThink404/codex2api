@@ -77,7 +77,7 @@ func (handler *Handler) sessionContextVerifierForScope(ctx context.Context, scop
 
 func recordSessionContextTokens(ctx context.Context, account *auth.Account, collect func(func(string, string))) {
 	epoch := outboundEpochFromContext(ctx)
-	if epoch == nil || epoch.preview || epoch.handler == nil || account == nil || epoch.record.AccountID != account.ID() {
+	if epoch == nil || epoch.preview || epoch.temporary || epoch.handler == nil || account == nil || epoch.record.AccountID != account.ID() {
 		return
 	}
 	scope := sessionContextScope(epoch.owner, epoch.key, epoch.upstreamAccount, epoch.record)

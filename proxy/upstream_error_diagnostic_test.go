@@ -38,6 +38,33 @@ func TestUpstreamErrorDiagnosticRetainsCauseWithoutPublicDisclosure(t *testing.T
 	require.True(t, strings.HasPrefix(recorder.Header().Get("X-Codex2API-Error-Diagnostic"), "v1."), "original failure must reach the bound administrator over a protected carrier")
 }
 
+func TestUpstreamErrorDiagnosticNonstandardHTTPMessages(t *testing.T) {
+	for name, body := range map[string]string{
+		"detail":      `{"detail":"Worker pool exhausted"}`,
+		"error":       `{"error":"Worker pool exhausted"}`,
+		"nested":      `{"response":{"error":"Worker pool exhausted"}}`,
+		"json_string": `"Worker pool exhausted"`,
+		"plain_text":  `Worker pool exhausted`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, recorder, h := upstreamErrorDiagnosticTestContext(t)
+			h.sendUpstreamError(c, 500, []byte(body))
+			require.Equal(t, 500, recorder.Code)
+			require.Contains(t, recorder.Body.String(), publicUpstreamFailureMessage)
+			require.NotContains(t, recorder.Body.String(), "Worker pool exhausted")
+			state := currentUpstreamErrorDiagnostic(c)
+			require.NotNil(t, state, "must capture the original cause before normalization")
+			require.Equal(t, "Worker pool exhausted", state.diagnostic.Message)
+			require.True(t, strings.HasPrefix(recorder.Header().Get(upstreamErrorDiagnosticHeader), "v1."))
+		})
+	}
+	for _, body := range []string{`{"unrelated":"do not export this body"}`, `["do not export arbitrary arrays"]`} {
+		c, _, h := upstreamErrorDiagnosticTestContext(t)
+		h.sendUpstreamError(c, 500, []byte(body))
+		require.Nil(t, currentUpstreamErrorDiagnostic(c))
+	}
+}
+
 func TestUpstreamErrorDiagnosticHTTPAndEventPrivacy(t *testing.T) {
 	for _, transport := range []string{"http", "sse", "deferred_sse", "ws", "committed_sse"} {
 		t.Run(transport, func(t *testing.T) {

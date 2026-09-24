@@ -17,6 +17,7 @@ type sessionOutboundEpoch struct {
 	key             string
 	record          database.SessionContinuityRecord
 	preview         bool
+	temporary       bool // Executable request-local segment; no persistent root ownership.
 	owner           string
 	upstreamAccount string
 	diagnostic      *sessionAccountFailoverDiagnostic
@@ -80,7 +81,7 @@ func validateSessionOutboundEpoch(ctx context.Context, account *auth.Account) er
 	if epoch.upstreamAccount != "" && account.EffectiveAccountID() != epoch.upstreamAccount {
 		return codexAccountIdentityError("请求的上游账号身份已变化，已停止发送正文。")
 	}
-	if epoch.preview {
+	if epoch.preview || epoch.temporary {
 		return nil
 	}
 	entry, found, err := epoch.handler.readSessionContinuity(ctx, epoch.key)

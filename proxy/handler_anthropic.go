@@ -501,6 +501,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		baseIdentity = resolveClaudeRequestSessionIdentity(c.Request.Header, rawBody)
 	}
 	sessionIdentity := h.resolveRequestSessionIdentityWithBase(c, rawBody, baseIdentity)
+	defer h.cleanupRelaxedAccountFallback(c)
 	rawBody = normalizeTurnStateIngress(c, rawBody)
 	if h.inspectPromptFilterAnthropic(c, canonicalBody, "/v1/messages", model) {
 		return

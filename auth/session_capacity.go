@@ -624,7 +624,7 @@ func (s *Store) HasSessionCapacityExhaustionWithDispatch(apiKeyID int64, exclude
 		if !account.dispatchableForPolicy(policy) {
 			continue
 		}
-		if policy == DispatchPolicyStandard && s.GetLazyMode() && !s.accountLazySelectable(account) {
+		if !policy.IsSpark() && !account.UsageLimitBypassEligible(policy) && s.GetLazyMode() && !s.accountLazySelectable(account) {
 			continue
 		}
 		if s.accountHasBlockingCachedCooldown(account, policy) || !s.accountAllowedForAPIKey(account, apiKeyID) {

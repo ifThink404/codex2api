@@ -13,9 +13,11 @@ import (
 // in-flight requests from the previous segment across gateway instances.
 func (db *DB) RestartSessionContinuity(ctx context.Context, key string, expected, next SessionContinuityRecord) (SessionContinuityRecord, error) {
 	var record SessionContinuityRecord
+	forkRestart := next.LastFailoverReason == "continuity_fork_parent_missing" || next.LastFailoverReason == "continuity_fork_parent_capacity_full"
 	if key == "" || next.AccountID <= 0 || next.ThreadID == "" || !next.NumberKnown ||
 		(expected.AccountID > 0 && expected.AccountID != next.AccountID) ||
-		(next.LastFailoverReason != "continuity_window_gap" && next.LastFailoverReason != "continuity_unbound_nonzero") || expected.FailoverCount == ^uint64(0) {
+		(forkRestart && expected.AccountID != 0) ||
+		(!forkRestart && next.LastFailoverReason != "continuity_window_gap" && next.LastFailoverReason != "continuity_unbound_nonzero") || expected.FailoverCount == ^uint64(0) {
 		return record, errors.New("invalid continuity restart")
 	}
 	err := db.withWriteTx(ctx, func(tx *sql.Tx) error {
@@ -52,6 +54,10 @@ func (db *DB) RestartSessionContinuity(ctx context.Context, key string, expected
 		record.LastSeen, record.LastFailoverAt, record.LastFailoverReason = next.LastSeen, next.LastSeen, next.LastFailoverReason
 		record.FailoverCount++
 		record.OutboundWindowReset, record.LossyContextRestart = true, true
+		if forkRestart {
+			record.PreserveRestartInput = next.PreserveRestartInput
+			record.DetachedForkReferences = append([]string(nil), next.DetachedForkReferences...)
+		}
 		record.OutboundWindowMode = "context-v1"
 		record.OutboundWindowBases = map[string]uint64{next.ThreadID: next.Number}
 		window := SessionOutboundWindowInput{Number: next.Number}

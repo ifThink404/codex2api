@@ -126,10 +126,17 @@ func (a *Account) sparkDispatchUsageLimitedLocked(now time.Time) bool {
 }
 
 func (a *Account) dispatchableForPolicy(policy DispatchPolicy, traces ...*SelectionTrace) bool {
-	if policy == DispatchPolicySpark {
+	if policy.IsSpark() {
 		eligible := a.SparkDispatchEligible()
 		if !eligible {
 			selectionTrace(traces).Reject("spark_account_unavailable")
+		}
+		return eligible
+	}
+	if a.UsageLimitBypassMatches(policy) {
+		eligible := a.UsageLimitBypassEligible(policy)
+		if !eligible {
+			selectionTrace(traces).Reject("quota_bypass_account_unavailable")
 		}
 		return eligible
 	}
@@ -137,14 +144,21 @@ func (a *Account) dispatchableForPolicy(policy DispatchPolicy, traces ...*Select
 }
 
 func (a *Account) dispatchableForPolicyLocked(now time.Time, policy DispatchPolicy) bool {
-	if policy == DispatchPolicySpark {
+	if policy.IsSpark() {
 		return a.sparkDispatchEligibleLocked(now)
+	}
+	if a.usageLimitBypassMatchesLocked(policy) {
+		return a.usageLimitBypassEligibleLocked(now)
 	}
 	return a.isAvailableLocked(now)
 }
 
 func (a *Account) schedulerSnapshotForPolicy(baseLimit int64, policy DispatchPolicy) (AccountHealthTier, float64, float64, int64) {
-	if policy != DispatchPolicySpark {
+	if a.UsageLimitBypassMatches(policy) {
+		tier, score, limit, _, _ := a.fastSchedulerSnapshotForUsageBypass(baseLimit, time.Now())
+		return tier, score, score, limit
+	}
+	if !policy.IsSpark() {
 		return a.schedulerSnapshot(baseLimit)
 	}
 	now := time.Now()
@@ -234,7 +248,7 @@ func (s *Store) accountHasBlockingCachedCooldown(acc *Account, policy DispatchPo
 	if !s.accountHasCachedCooldown(acc) {
 		return false
 	}
-	if policy == DispatchPolicySpark && acc.SparkDispatchEligible() {
+	if acc.dispatchUsageOverrideEligible(policy) {
 		return false
 	}
 	return true

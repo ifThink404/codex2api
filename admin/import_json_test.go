@@ -796,16 +796,16 @@ func TestImportAccountsCommonMarksImported7dUsageAsRateLimited(t *testing.T) {
 		t.Fatalf("RuntimeStatus() = %q, want rate_limited", got)
 	}
 	reason, until := account.GetCooldownSnapshot()
-	if reason != "rate_limited" || !until.After(time.Now()) {
-		t.Fatalf("cooldown = (%q, %s), want active rate_limited", reason, until)
+	if reason != "rate_limited_7d" || !until.After(time.Now()) {
+		t.Fatalf("cooldown = (%q, %s), want local rate_limited_7d", reason, until)
 	}
 
 	row, err := db.GetAccountByID(context.Background(), account.DBID)
 	if err != nil {
 		t.Fatalf("GetAccountByID: %v", err)
 	}
-	if row.CooldownReason != "rate_limited" || !row.CooldownUntil.Valid {
-		t.Fatalf("persisted cooldown = (%q, %v), want active rate_limited", row.CooldownReason, row.CooldownUntil)
+	if row.CooldownReason != "rate_limited_7d" || !row.CooldownUntil.Valid {
+		t.Fatalf("persisted cooldown = (%q, %v), want local rate_limited_7d", row.CooldownReason, row.CooldownUntil)
 	}
 }
 

@@ -4872,8 +4872,8 @@ func TestSyncCodexUsageStateMarks7dUsageLimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccountByID returned error: %v", err)
 	}
-	if row.CooldownReason != "rate_limited" || !row.CooldownUntil.Valid {
-		t.Fatalf("persisted cooldown = (%q, %v), want active rate_limited", row.CooldownReason, row.CooldownUntil)
+	if row.CooldownReason != "rate_limited_7d" || !row.CooldownUntil.Valid {
+		t.Fatalf("persisted cooldown = (%q, %v), want local rate_limited_7d", row.CooldownReason, row.CooldownUntil)
 	}
 }
 

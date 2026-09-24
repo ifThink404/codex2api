@@ -39,11 +39,18 @@ func (s *Store) UsageLimitRecoveryWithDispatch(apiKeyID int64, exclude map[int64
 func (a *Account) dispatchUsageLimitRecovery(policy DispatchPolicy, now time.Time) (time.Time, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if policy == DispatchPolicySpark {
+	if policy.IsSpark() {
 		if !a.sparkDispatchUsageLimitedLocked(now) {
 			return time.Time{}, false
 		}
 		return a.ResetSparkAt, true
+	}
+	if a.usageLimitBypassMatchesLocked(policy) {
+		if a.freshDispatchUsageLimitedLocked(now) && a.Status == StatusCooldown && a.CooldownUtil.After(now) &&
+			isUsageLimitCooldownReason(a.CooldownReason) && a.CooldownReason != premium5hCooldownReason && !a.usageWindowCooldownLocked() {
+			return a.CooldownUtil, true
+		}
+		return time.Time{}, false
 	}
 	if !a.freshDispatchUsageLimitedLocked(now) {
 		return time.Time{}, false

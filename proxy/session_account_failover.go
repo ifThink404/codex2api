@@ -217,7 +217,10 @@ func sessionAccountFailoverReason(account *auth.Account, policy auth.DispatchPol
 	if account == nil {
 		return ""
 	}
-	if policy == auth.DispatchPolicySpark {
+	if account.UsageLimitBypassEligible(policy) {
+		return ""
+	}
+	if policy.IsSpark() {
 		if account.SparkDispatchEligible() {
 			return ""
 		}

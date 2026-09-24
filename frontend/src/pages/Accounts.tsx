@@ -18,6 +18,7 @@ import OperationResultsModal from "../components/OperationResultsModal";
 import { cn } from "@/lib/utils";
 import TestConnectionModal from "../components/TestConnectionModal";
 import CodexTestModeDialog from "../components/CodexTestModeDialog";
+import BPSProfileSelector from "../components/BPSProfileSelector";
 import CodexRoutesCard from "../components/CodexRoutesCard";
 import AccountModelScopeTabs, {
   type AccountModelScope,
@@ -66,6 +67,7 @@ import type {
   CodexClientMetadataMode,
   CodexPassthroughMode,
   CodexFingerprintMode,
+  CodexBPSProfile,
   UpdateOpenAIResponsesAccountRequest,
   APIKeyRow,
   AccountAnalysisResponse,
@@ -235,6 +237,7 @@ import AccountGroupFilterSelect, {
   type AccountGroupFilterValue,
 } from "../components/AccountGroupFilterSelect";
 import ChipInput from "../components/ChipInput";
+import UsageLimitBypassSettings from "../components/UsageLimitBypassSettings";
 
 const OPERATION_PROGRESS_FLUSH_INTERVAL_MS = 200;
 
@@ -2058,6 +2061,9 @@ export default function Accounts() {
   const [editCustomHeadersText, setEditCustomHeadersText] = useState("");
   const [editCodexBPSEnabled, setEditCodexBPSEnabled] = useState(false);
   const [editCodexNativeEnabled, setEditCodexNativeEnabled] = useState(true);
+  const [editCodexBPSProfile, setEditCodexBPSProfile] = useState<CodexBPSProfile>("word");
+  const [editUsageLimitBypassEnabled, setEditUsageLimitBypassEnabled] = useState(false);
+  const [editUsageLimitBypassModels, setEditUsageLimitBypassModels] = useState<string[]>([]);
   const [editCodexBPSImageTrimEnabled, setEditCodexBPSImageTrimEnabled] = useState(false);
   const [editCodexNativeCompactionOnly, setEditCodexNativeCompactionOnly] = useState(false);
   const [editCodexFingerprintMode, setEditCodexFingerprintMode] =
@@ -2364,9 +2370,11 @@ export default function Accounts() {
   const [batchUpdateCodexBPSEnabled, setBatchUpdateCodexBPSEnabled] = useState(false);
   const [batchUpdateCodexNativeEnabled, setBatchUpdateCodexNativeEnabled] = useState(false);
   const [batchCodexNativeEnabled, setBatchCodexNativeEnabled] = useState(true);
-  const [batchUpdateCodexRouteModels, setBatchUpdateCodexRouteModels] = useState(false);
-  const [batchCodexNativeModels, setBatchCodexNativeModels] = useState("");
-  const [batchCodexBPSModels, setBatchCodexBPSModels] = useState("");
+  const [batchUpdateUsageLimitBypass, setBatchUpdateUsageLimitBypass] = useState(false);
+  const [batchUsageLimitBypassEnabled, setBatchUsageLimitBypassEnabled] = useState(false);
+  const [batchUsageLimitBypassModels, setBatchUsageLimitBypassModels] = useState<string[]>([]);
+  const [batchUpdateCodexBPSProfile, setBatchUpdateCodexBPSProfile] = useState(false);
+  const [batchCodexBPSProfile, setBatchCodexBPSProfile] = useState<CodexBPSProfile>("word");
   const [batchUpdateCodexBPSImageTrimEnabled, setBatchUpdateCodexBPSImageTrimEnabled] = useState(false);
   const [batchUpdateCodexNativeCompactionOnly, setBatchUpdateCodexNativeCompactionOnly] = useState(false);
   const [batchCodexBPSEnabled, setBatchCodexBPSEnabled] = useState(false);
@@ -5233,9 +5241,11 @@ export default function Accounts() {
     setBatchUpdateCodexBPSEnabled(false);
     setBatchUpdateCodexNativeEnabled(false);
     setBatchCodexNativeEnabled(true);
-    setBatchUpdateCodexRouteModels(false);
-    setBatchCodexNativeModels("");
-    setBatchCodexBPSModels("");
+    setBatchUpdateUsageLimitBypass(false);
+    setBatchUsageLimitBypassEnabled(false);
+    setBatchUsageLimitBypassModels([]);
+    setBatchUpdateCodexBPSProfile(false);
+    setBatchCodexBPSProfile("word");
     setBatchUpdateCodexBPSImageTrimEnabled(false);
     setBatchUpdateCodexNativeCompactionOnly(false);
     setBatchCodexBPSEnabled(false);
@@ -5268,9 +5278,11 @@ export default function Accounts() {
     setBatchUpdateCodexBPSEnabled(false);
     setBatchUpdateCodexNativeEnabled(false);
     setBatchCodexNativeEnabled(true);
-    setBatchUpdateCodexRouteModels(false);
-    setBatchCodexNativeModels("");
-    setBatchCodexBPSModels("");
+    setBatchUpdateUsageLimitBypass(false);
+    setBatchUsageLimitBypassEnabled(false);
+    setBatchUsageLimitBypassModels([]);
+    setBatchUpdateCodexBPSProfile(false);
+    setBatchCodexBPSProfile("word");
     setBatchUpdateCodexBPSImageTrimEnabled(false);
     setBatchUpdateCodexNativeCompactionOnly(false);
     setBatchCodexBPSEnabled(false);
@@ -5683,8 +5695,8 @@ export default function Accounts() {
     batchUpdateBaseConcurrency ||
     batchUpdateSkipWarmTier ||
     batchUpdateSchedulerPriority ||
-    batchUpdateCodexBPSEnabled || batchUpdateCodexNativeEnabled || batchUpdateCodexRouteModels ||
-    batchUpdateCodexBPSImageTrimEnabled ||
+    batchUpdateCodexBPSEnabled || batchUpdateCodexNativeEnabled || batchUpdateUsageLimitBypass ||
+    batchUpdateCodexBPSProfile || batchUpdateCodexBPSImageTrimEnabled ||
     batchUpdateCodexNativeCompactionOnly ||
     batchUpdateCodexFingerprintMode ||
     batchUpdateSessionCapacity;
@@ -5725,9 +5737,11 @@ export default function Accounts() {
           updateCodexBPSEnabled: batchUpdateCodexBPSEnabled,
           updateCodexNativeEnabled: batchUpdateCodexNativeEnabled,
           codexNativeEnabled: batchCodexNativeEnabled,
-          updateCodexRouteModels: batchUpdateCodexRouteModels,
-          codexNativeModels: batchCodexNativeModels.split(/[\s,，]+/).filter(Boolean),
-          codexBPSModels: batchCodexBPSModels.split(/[\s,，]+/).filter(Boolean),
+          updateUsageLimitBypass: batchUpdateUsageLimitBypass,
+          usageLimitBypassEnabled: batchUsageLimitBypassEnabled,
+          usageLimitBypassModels: batchUsageLimitBypassModels,
+          updateCodexBPSProfile: batchUpdateCodexBPSProfile,
+          codexBPSProfile: batchCodexBPSProfile,
           updateCodexBPSImageTrimEnabled: batchUpdateCodexBPSImageTrimEnabled,
           updateCodexNativeCompactionOnly: batchUpdateCodexNativeCompactionOnly,
           codexBPSEnabled: batchCodexBPSEnabled,
@@ -5990,6 +6004,9 @@ export default function Accounts() {
     setEditCodexFingerprintMode(account.codex_fingerprint_mode ?? "off");
     setEditCodexBPSEnabled(account.codex_bps_enabled ?? false);
     setEditCodexNativeEnabled(account.codex_native_enabled ?? !account.codex_bps_enabled);
+    setEditCodexBPSProfile(account.codex_bps_profile ?? "word");
+    setEditUsageLimitBypassEnabled(account.codex_usage_limit_bypass_enabled ?? false);
+    setEditUsageLimitBypassModels([...(account.codex_usage_limit_bypass_models ?? [])]);
     setEditCodexBPSImageTrimEnabled(account.codex_bps_image_trim_enabled ?? false);
     setEditCodexNativeCompactionOnly(account.codex_native_compaction_only ?? false);
     setEditSessionCapacityEnabled(account.session_capacity_enabled ?? false);
@@ -6055,6 +6072,9 @@ export default function Accounts() {
     setEditCodexFingerprintMode("off");
     setEditCodexBPSEnabled(false);
     setEditCodexNativeEnabled(true);
+    setEditCodexBPSProfile("word");
+    setEditUsageLimitBypassEnabled(false);
+    setEditUsageLimitBypassModels([]);
     setEditCodexBPSImageTrimEnabled(false);
     setEditCodexNativeCompactionOnly(false);
     setEditSessionCapacityEnabled(false);
@@ -6233,6 +6253,9 @@ export default function Accounts() {
               codex_fingerprint_mode: editCodexFingerprintMode,
               codex_bps_enabled: editCodexBPSEnabled,
               codex_native_enabled: editCodexNativeEnabled,
+              codex_usage_limit_bypass_enabled: editUsageLimitBypassEnabled,
+              codex_usage_limit_bypass_models: editUsageLimitBypassModels,
+              ...(!editingAccount.agent_identity ? { codex_bps_profile: editCodexBPSProfile } : {}),
               codex_bps_image_trim_enabled: editCodexBPSImageTrimEnabled,
             }
           : {}),
@@ -10286,6 +10309,18 @@ export default function Accounts() {
                             onConfigureModels={() => openModelsEditor(editingAccount)}
                           />
                         ) : null}
+                        {isCodexOfficialAccount(editingAccount) ? (
+                          <div className="rounded-xl border border-border/70 bg-card p-4.5 md:col-span-2">
+                            <UsageLimitBypassSettings enabled={editUsageLimitBypassEnabled} onEnabledChange={setEditUsageLimitBypassEnabled} models={editUsageLimitBypassModels} onModelsChange={setEditUsageLimitBypassModels} options={editingAccount.models} />
+                          </div>
+                        ) : null}
+                        {isCodexOfficialAccount(editingAccount) && !editingAccount.agent_identity ? (
+                          <div className="rounded-xl border border-border/70 bg-card p-4.5 md:col-span-2">
+                            <div className="mb-3 text-sm font-semibold">BPS 类型</div>
+                            <BPSProfileSelector value={editCodexBPSProfile} onChange={setEditCodexBPSProfile} />
+                            <p className="mt-2 text-xs text-muted-foreground">四选一，默认 Word；保存后用于新的 BPS 请求。</p>
+                          </div>
+                        ) : null}
                         {isCodexOfficialAccount(editingAccount) && !editingAccount.agent_identity ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 md:col-span-2">
                             <div className="flex items-center justify-between gap-3">
@@ -11156,15 +11191,21 @@ export default function Accounts() {
                     <p className="mt-2 text-xs text-muted-foreground">关闭后按禁用换号设置处理，优先原账号 BPS。两项都关闭时，该账号不再接收这两条路径的请求。</p>
                   </div>
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改两条路径的模型配置</span><Switch checked={batchUpdateCodexRouteModels} onCheckedChange={setBatchUpdateCodexRouteModels} aria-label="修改路径模型" /></div>
-                    <label className="mt-3 block text-sm">Codex 主对话模型<textarea className="mt-2 block w-full rounded-md border border-input bg-background p-2 text-sm" value={batchCodexNativeModels} onChange={(e) => setBatchCodexNativeModels(e.target.value)} disabled={!batchUpdateCodexRouteModels} placeholder="gpt-5.6-*" rows={3} /></label>
-                    <label className="mt-3 block text-sm">BPS 主对话模型<textarea className="mt-2 block w-full rounded-md border border-input bg-background p-2 text-sm" value={batchCodexBPSModels} onChange={(e) => setBatchCodexBPSModels(e.target.value)} disabled={!batchUpdateCodexRouteModels} placeholder="gpt-6-*" rows={3} /></label>
-                    <p className="mt-2 text-xs text-muted-foreground">每行一个或逗号分隔，支持末尾 *；保存时替换两份模型配置，留空表示不额外限制。</p>
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold">{t("accounts.usageLimitBypassBatchTitle")}</span>
+                      <Switch checked={batchUpdateUsageLimitBypass} onCheckedChange={setBatchUpdateUsageLimitBypass} aria-label={t("accounts.usageLimitBypassBatchTitle")} />
+                    </div>
+                    <UsageLimitBypassSettings enabled={batchUsageLimitBypassEnabled} onEnabledChange={setBatchUsageLimitBypassEnabled} models={batchUsageLimitBypassModels} onModelsChange={setBatchUsageLimitBypassModels} disabled={!batchUpdateUsageLimitBypass} />
                   </div>
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 兼容模式</span><Switch checked={batchUpdateCodexBPSEnabled} onCheckedChange={setBatchUpdateCodexBPSEnabled} aria-label="修改 BPS 兼容模式" /></div>
                     <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>开启 BPS 兼容模式</span><Switch checked={batchCodexBPSEnabled} onCheckedChange={setBatchCodexBPSEnabled} disabled={!batchUpdateCodexBPSEnabled} aria-label="开启 BPS 兼容模式" /></label>
                     <p className="mt-2 text-xs text-muted-foreground">保存后生效，与 Codex 开关独立；仅支持普通 Codex OAuth / AT 账号。BPS 会话不能返回 Codex，max 自动调整为 xhigh。</p>
+                  </div>
+                  <div className="rounded-xl border border-border p-4 md:col-span-2">
+                    <div className="mb-3 flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 类型</span><Switch checked={batchUpdateCodexBPSProfile} onCheckedChange={setBatchUpdateCodexBPSProfile} aria-label="修改 BPS 类型" /></div>
+                    <BPSProfileSelector value={batchCodexBPSProfile} onChange={setBatchCodexBPSProfile} disabled={!batchUpdateCodexBPSProfile} />
+                    <p className="mt-2 text-xs text-muted-foreground">开启修改后，将所选账号统一设置为此类型；否则保留各账号原值。</p>
                   </div>
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 历史图片精简</span><Switch checked={batchUpdateCodexBPSImageTrimEnabled} onCheckedChange={setBatchUpdateCodexBPSImageTrimEnabled} aria-label="修改 BPS 历史图片精简" /></div>

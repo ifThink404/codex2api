@@ -171,14 +171,17 @@ type Account struct {
 	CodexPassthroughMode string
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
-	CodexFingerprintMode      string
-	CodexBPS                  bool
-	CodexNative               *bool
-	CodexNativeModels         []string
-	CodexBPSModels            []string
-	CodexBPSImageTrim         bool
-	CodexNativeCompactionOnly bool
-	CodexInstallationID       string
+	CodexFingerprintMode         string
+	CodexBPS                     bool
+	CodexNative                  *bool
+	CodexNativeModels            []string
+	CodexBPSModels               []string
+	CodexBPSImageTrim            bool
+	CodexBPSProfile              CodexBPSProfile
+	CodexUsageLimitBypassEnabled bool
+	CodexUsageLimitBypassModels  []string
+	CodexNativeCompactionOnly    bool
+	CodexInstallationID          string
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go：Claude Code 出站身份头
 	// 收敛模式（preserve/force；空=跟随全局默认）。
 	ClaudeFingerprintMode string
@@ -1792,12 +1795,14 @@ func (a *Account) rawUsageExhaustedLocked() bool {
 
 // usageWindowCooldownLocked 判断当前 cooldown 是否由本地用量窗口判罚产生，而非上游 429。
 //
-// 两者共用 "rate_limited" 这个 reason，光看 reason 分不开。可靠的区分点是判罚时长：
-// MarkUsage7dRateLimited 直接把 CooldownUtil 设成 Reset7dAt，而上游 429 的冷却时长
-// 来自 Retry-After / 限流决策，不会正好落在 7d 重置时刻上。留 2s 容差吸收计算抖动。
+// 新的本地 7d 判罚使用独立 reason，即使重置时间未知也能与真实 429 区分。
+// 旧记录继续用 Reset7dAt 与冷却结束时间匹配，留 2s 容差吸收计算抖动。
 func (a *Account) usageWindowCooldownLocked() bool {
 	if a.Status != StatusCooldown {
 		return false
+	}
+	if a.CooldownReason == "rate_limited_7d" {
+		return true
 	}
 	switch a.CooldownReason {
 	case "rate_limited", "rate_limited_7d", "usage_limited", "usage_limit":
@@ -2062,7 +2067,7 @@ func (a *Account) ModelCatalogEligible() bool {
 	// Legacy Codex Free windows are an account availability gate. Grok billing
 	// is represented separately by an explicit, fresh exhausted fact; a lone
 	// 100% percentage must not override PAYG/prepaid semantics.
-	if !a.isGrokAPILocked() && a.usageExhaustedLocked() {
+	if !a.isGrokAPILocked() && a.usageExhaustedLocked() && !a.hasUsageLimitBypassLocked() {
 		return false
 	}
 	return a.hasDispatchCredentialLocked()
@@ -2237,7 +2242,7 @@ func (s *Store) MarkUsage7dRateLimited(acc *Account) bool {
 		duration = untilReset
 	}
 
-	s.MarkCooldown(acc, duration, "rate_limited")
+	s.MarkCooldown(acc, duration, "rate_limited_7d")
 	return true
 }
 
@@ -5344,6 +5349,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CodexNativeModels:             row.GetCredentialStringSlice(CodexNativeModelsCredentialKey),
 		CodexBPSModels:                row.GetCredentialStringSlice(CodexBPSModelsCredentialKey),
 		CodexBPSImageTrim:             row.GetCredentialBool(CodexBPSImageTrimCredentialKey),
+		CodexBPSProfile:               NormalizeCodexBPSProfile(row.GetCredential(CodexBPSProfileCredentialKey)),
+		CodexUsageLimitBypassEnabled:  row.GetCredentialBool(CodexUsageLimitBypassEnabledKey),
+		CodexUsageLimitBypassModels:   NormalizeAccountModels(row.GetCredentialStringSlice(CodexUsageLimitBypassModelsKey)),
 		CodexNativeCompactionOnly:     row.GetCredentialBool(CodexNativeCompactionOnlyCredentialKey),
 		CodexInstallationID:           installationID,
 		ClaudeFingerprintMode:         claudeFingerprintMode,
@@ -6085,6 +6093,9 @@ func (s *Store) CollectCleanTargets(targetStatus string, match func(*Account) bo
 		if acc.UsingCredits() {
 			continue
 		}
+		if (targetStatus == "rate_limited" || targetStatus == "usage_exhausted") && acc.canServeUsageLimitBypassModels() {
+			continue
+		}
 		if match != nil && !match(acc) {
 			continue
 		}
@@ -6494,7 +6505,7 @@ func (a *Account) lazySelectableLocked(now time.Time) bool {
 		strings.TrimSpace(a.SessionToken) != ""
 }
 
-func (s *Store) ensureLazyDispatchReady(acc *Account) bool {
+func (s *Store) ensureLazyDispatchReady(acc *Account, policies ...DispatchPolicy) bool {
 	if acc == nil {
 		return false
 	}
@@ -6502,7 +6513,11 @@ func (s *Store) ensureLazyDispatchReady(acc *Account) bool {
 		s.triggerLazyRefreshAsync(acc)
 		return false
 	}
-	return acc.IsAvailable()
+	policy := DispatchPolicyStandard
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	return acc.dispatchableForPolicy(policy)
 }
 
 func (s *Store) lazyNeedsDispatchRefresh(acc *Account) bool {
@@ -6551,11 +6566,15 @@ func (s *Store) lazyCanRefreshForMetadata(acc *Account) bool {
 		acc.healthTierLocked() != HealthTierBanned
 }
 
-func (s *Store) acquireLazyCandidate(acc *Account, maxConcurrency int64) bool {
-	if !s.ensureLazyDispatchReady(acc) {
+func (s *Store) acquireLazyCandidate(acc *Account, maxConcurrency int64, policies ...DispatchPolicy) bool {
+	if !s.ensureLazyDispatchReady(acc, policies...) {
 		return false
 	}
-	_, _, _, limit := acc.schedulerSnapshot(maxConcurrency)
+	policy := DispatchPolicyStandard
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	_, _, _, limit := acc.schedulerSnapshotForPolicy(maxConcurrency, policy)
 	if limit <= 0 {
 		return false
 	}
@@ -6580,7 +6599,7 @@ func (s *Store) nextExcludingWithFilterLazy(apiKeyID int64, exclude map[int64]bo
 			if !acc.dispatchableForPolicy(policy, traces...) {
 				continue
 			}
-			if policy == DispatchPolicyStandard && !s.accountLazySelectable(acc) {
+			if !policy.IsSpark() && !acc.UsageLimitBypassEligible(policy) && !s.accountLazySelectable(acc) {
 				selectionTrace(traces).RejectAccount(acc.DBID, "lazy_account_unavailable")
 				continue
 			}
@@ -6635,7 +6654,7 @@ func (s *Store) nextExcludingWithFilterLazy(apiKeyID int64, exclude map[int64]bo
 			selectionTrace(traces).RejectAccount(best.DBID, "account_cooldown")
 			continue
 		}
-		if s.acquireLazyCandidate(best, maxConcurrency) {
+		if s.acquireLazyCandidate(best, maxConcurrency, policy) {
 			return best
 		}
 		selectionTrace(traces).RejectAccount(best.DBID, "dispatch_state_changed")
@@ -7157,7 +7176,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 		// prompt cache 必然过期。活跃会话不轮换(issue #584)。
 		escape := false
 		if mode == AffinityModeBounded && !preserveBinding {
-			if !s.affinityAccountStillHealthy(binding.accountID) {
+			if !s.affinityAccountStillHealthy(binding.accountID, policy) {
 				escape = true
 			} else if !binding.lastUsedAt.IsZero() && now.Sub(binding.lastUsedAt) >= sessionAffinityIdleEscape() {
 				escape = true
@@ -7247,7 +7266,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 		if override := s.resolveGrokAffinityOverride(binding.accountID); override != "" {
 			cacheMode = override
 		}
-		if cacheMode == AffinityModeBounded && !preserveBinding && !s.affinityAccountStillHealthy(binding.accountID) {
+		if cacheMode == AffinityModeBounded && !preserveBinding && !s.affinityAccountStillHealthy(binding.accountID, policy) {
 			// 不复用,落到完整挑号；找到替代账号后清理旧缓存，避免
 			// 自动暂停/状态恢复前的旧 owner 反复命中。
 			fallback := s.nextCapacityAdmittedFreshAccountExcluding(key, apiKeyID, exclude, filter, policy, now, binding.accountID, traces...)
@@ -7376,7 +7395,7 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		if !acc.dispatchableForPolicy(policy, traces...) {
 			continue
 		}
-		if policy == DispatchPolicyStandard && s.GetLazyMode() && !s.accountLazySelectable(acc) {
+		if !policy.IsSpark() && !acc.UsageLimitBypassEligible(policy) && s.GetLazyMode() && !s.accountLazySelectable(acc) {
 			selectionTrace(traces).Reject("lazy_account_unavailable")
 			continue
 		}
@@ -7538,7 +7557,7 @@ func buildProxyPoolSet(urls []string) map[string]struct{} {
 // affinityAccountStillHealthy 检查一个粘性绑定的账号是否仍适合 fresh
 // dispatch。若已掉到 warm/risky/banned、主动暂停、有效冷却或用量自动暂停,
 // 则 bounded 模式会逃逸并重新挑号；已过期的 cooldown 不会造成无谓换号。
-func (s *Store) affinityAccountStillHealthy(accountID int64) bool {
+func (s *Store) affinityAccountStillHealthy(accountID int64, policies ...DispatchPolicy) bool {
 	if s == nil || accountID == 0 {
 		return false
 	}
@@ -7556,6 +7575,9 @@ func (s *Store) affinityAccountStillHealthy(accountID int64) bool {
 	defer target.mu.RUnlock()
 	if target.Status == StatusError {
 		return false
+	}
+	if len(policies) > 0 && target.usageLimitBypassMatchesLocked(policies[0]) {
+		return target.usageLimitBypassEligibleLocked(now)
 	}
 	// A cooldown that has already elapsed is recoverable and should not force
 	// an otherwise healthy sticky session to rotate. Active cooldowns and
@@ -7642,6 +7664,9 @@ func (s *Store) shouldRetainFailurePinnedBinding(accountID int64, now time.Time,
 		if target.Status == StatusError || target.healthTierLocked() == HealthTierBanned || !target.hasDispatchCredentialLocked() {
 			return false
 		}
+		if target.usageLimitBypassMatchesLocked(policy) {
+			return target.usageLimitBypassEligibleLocked(now)
+		}
 		// A usage/auto-pause fence is not a transient transport failure. It is
 		// safe for a fresh root request to migrate even when a previous retry
 		// pinned this session to the account.
@@ -7654,7 +7679,7 @@ func (s *Store) shouldRetainFailurePinnedBinding(accountID int64, now time.Time,
 		// is exhausted; the normal Spark scheduler can use another account. Keep
 		// the pin for recoverable transport cooldowns, which are intentionally
 		// handled below as a separate condition.
-		if policy == DispatchPolicySpark && target.sparkUsageExhaustedLocked(now) {
+		if policy.IsSpark() && target.sparkUsageExhaustedLocked(now) {
 			return false
 		}
 		if target.Status == StatusCooldown && now.Before(target.CooldownUtil) && isUsageLimitCooldownReason(target.CooldownReason) {
@@ -7756,19 +7781,19 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 		return nil, false
 	}
 	continuationEligible := continuation && target.UsageLimitContinuationEligible()
-	sparkEligible := policy == DispatchPolicySpark && target.SparkDispatchEligible()
+	usageOverrideEligible := target.dispatchUsageOverrideEligible(policy)
 	if s.GetLazyMode() {
-		if !s.accountLazySelectable(target) && !continuationEligible && !sparkEligible {
+		if !s.accountLazySelectable(target) && !continuationEligible && !usageOverrideEligible {
 			selectionTrace(traces).Reject("lazy_account_unavailable")
 			return nil, false
 		}
-	} else if !continuationEligible && !sparkEligible && !target.IsAvailable(traces...) {
+	} else if !continuationEligible && !usageOverrideEligible && !target.IsAvailable(traces...) {
 		return nil, false
 	}
 	if s.accountHasCachedCooldown(target) {
 		continuationEligible = continuation && target.UsageLimitContinuationEligible()
-		sparkEligible = policy == DispatchPolicySpark && target.SparkDispatchEligible()
-		if !continuationEligible && !sparkEligible {
+		usageOverrideEligible = target.dispatchUsageOverrideEligible(policy)
+		if !continuationEligible && !usageOverrideEligible {
 			selectionTrace(traces).Reject("account_cooldown")
 			return nil, false
 		}
@@ -7788,11 +7813,11 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 		if s.tryReclaimSessionSlot(target, sessionKey, true) {
 			return target, false
 		}
-		if !s.ensureLazyDispatchReady(target) {
+		if !s.ensureLazyDispatchReady(target, policy) {
 			selectionTrace(traces).Reject("lazy_refresh_failed")
 			return nil, false
 		}
-		_, _, _, limit := target.schedulerSnapshot(maxConcurrency)
+		_, _, _, limit := target.schedulerSnapshotForPolicy(maxConcurrency, policy)
 		if limit <= 0 {
 			selectionTrace(traces).Reject("dispatch_state_changed")
 			return nil, false
@@ -7811,7 +7836,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 
 	var limit int64
 	var available bool
-	if continuationEligible {
+	if continuationEligible && !usageOverrideEligible {
 		_, _, limit, _, available = target.fastSchedulerSnapshotForContinuation(maxConcurrency, now)
 	} else {
 		_, _, limit, _, available = target.fastSchedulerSnapshotForPolicy(maxConcurrency, now, policy)
@@ -7870,7 +7895,7 @@ func (s *Store) hasDispatchCandidateWithDispatch(apiKeyID int64, exclude map[int
 		if !acc.dispatchableForPolicy(policy) {
 			continue
 		}
-		if policy == DispatchPolicyStandard && s.GetLazyMode() && !s.accountLazySelectable(acc) {
+		if !policy.IsSpark() && !acc.UsageLimitBypassEligible(policy) && s.GetLazyMode() && !s.accountLazySelectable(acc) {
 			continue
 		}
 		if s.accountHasBlockingCachedCooldown(acc, policy) {
@@ -7928,25 +7953,25 @@ func (s *Store) hasContinuationCandidateWithDispatch(key string, apiKeyID int64,
 	}
 
 	continuationEligible := acc.UsageLimitContinuationEligible()
-	sparkEligible := policy == DispatchPolicySpark && acc.SparkDispatchEligible()
-	if !acc.IsAvailable() && !continuationEligible && !sparkEligible {
+	usageOverrideEligible := acc.dispatchUsageOverrideEligible(policy)
+	if !acc.IsAvailable() && !continuationEligible && !usageOverrideEligible {
 		return false
 	}
 	if s.accountHasCachedCooldown(acc) {
 		continuationEligible = acc.UsageLimitContinuationEligible()
-		sparkEligible = policy == DispatchPolicySpark && acc.SparkDispatchEligible()
-		if !continuationEligible && !sparkEligible {
+		usageOverrideEligible = acc.dispatchUsageOverrideEligible(policy)
+		if !continuationEligible && !usageOverrideEligible {
 			return false
 		}
 	}
 
 	maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
-	if continuationEligible {
+	if continuationEligible && !usageOverrideEligible {
 		_, _, limit, _, available := acc.fastSchedulerSnapshotForContinuation(maxConcurrency, time.Now())
 		return available && limit > 0
 	}
-	if sparkEligible {
-		_, _, limit, _, available := acc.fastSchedulerSnapshotForSpark(maxConcurrency, time.Now())
+	if usageOverrideEligible {
+		_, _, limit, _, available := acc.fastSchedulerSnapshotForPolicy(maxConcurrency, time.Now(), policy)
 		return available && limit > 0
 	}
 	_, _, limit, _, available := acc.fastSchedulerSnapshot(maxConcurrency, time.Now())
@@ -11431,7 +11456,7 @@ func (s *Store) CleanFullUsageAccounts(ctx context.Context) int {
 
 		// 用量窗口对该账号仅作展示参考时（忽略用量限制/重置券跳过窗口），
 		// 快照不构成"账号已耗尽"的依据，不做自动清理。
-		if acc.SkipsUsageWindowLimits() {
+		if acc.SkipsUsageWindowLimits() || acc.canServeUsageLimitBypassModels() {
 			continue
 		}
 

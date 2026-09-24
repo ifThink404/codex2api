@@ -162,8 +162,15 @@ func captureUpstreamErrorDiagnostic(c *gin.Context, body []byte, status int, sou
 			message, code, kind = value.Get("message").String(), value.Get("code").String(), value.Get("type").String()
 			break
 		}
+		// Several HTTP backends (including their edge proxies) return a
+		// string-valued error/detail instead of the OpenAI error object. Do not
+		// discard their only explanation before generating the public 500.
+		if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+			message, code, kind = value.String(), parsed.Get("code").String(), parsed.Get("type").String()
+			break
+		}
 	}
-	if message == "" && !parsed.IsObject() {
+	if message == "" && !gjson.ValidBytes(body) {
 		message = string(body)
 	}
 	if strings.TrimSpace(message) == "" {

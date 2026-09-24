@@ -233,6 +233,14 @@ func (h *Handler) checkPromptSessionCreationLimitForSelectedAccountAdmission(c *
 
 func (h *Handler) admitSelectedAccountWindow(c *gin.Context, body []byte, account *auth.Account, affinityKey string, priorSessionAccountID int64) (promptSessionCreationLimitStatus, bool) {
 	clearAccountSessionObservationContext(c)
+	if state := relaxedAccountFallbackFromContext(c.Request.Context()); state != nil && account != nil {
+		state.accounts[account.ID()] = true
+		// The scheduler has admitted normal account capacity. A temporary child
+		// must not create/confirm a user window under the missing parent's ID.
+		setUsageUserWindow(c, "temporary_passive")
+		recordUsageAccountWindow(c, account, affinityKey, priorSessionAccountID, false)
+		return promptSessionCreationLimitStatus{}, false
+	}
 	if account == nil || (c != nil && c.GetBool("prompt_intelligence_internal")) {
 		return promptSessionCreationLimitStatus{}, false
 	}

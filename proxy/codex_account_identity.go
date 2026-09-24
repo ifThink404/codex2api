@@ -379,27 +379,29 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 				}
 			}
 		}
-		for identityKey, turnEpoch := range turnPlan.epochs {
-			if err := store.PublishCodexIdentityEpoch(ctx, identityKey, turnEpoch); err != nil {
-				return codexAccountIdentityError("轮次映射阶段已变化或暂时不可用，已停止发送，请重试。")
+		if epoch == nil || !epoch.temporary {
+			for identityKey, turnEpoch := range turnPlan.epochs {
+				if err := store.PublishCodexIdentityEpoch(ctx, identityKey, turnEpoch); err != nil {
+					return codexAccountIdentityError("轮次映射阶段已变化或暂时不可用，已停止发送，请重试。")
+				}
 			}
-		}
-		for referenceKey, turnEpoch := range turnPlan.references {
-			if err := store.ClaimCodexIdentityReference(ctx, referenceKey, turnEpoch); err != nil {
-				return codexAccountIdentityError("轮次引用映射已变化或暂时不可用，已停止发送，请重试。")
+			for referenceKey, turnEpoch := range turnPlan.references {
+				if err := store.ClaimCodexIdentityReference(ctx, referenceKey, turnEpoch); err != nil {
+					return codexAccountIdentityError("轮次引用映射已变化或暂时不可用，已停止发送，请重试。")
+				}
 			}
-		}
-		for referenceKey, referenceEpoch := range references {
-			if err := store.ClaimCodexIdentityReference(ctx, referenceKey, referenceEpoch); err != nil {
-				return codexAccountIdentityError("父会话出站引用已变化或暂时不可用，请重新发起请求。")
+			for referenceKey, referenceEpoch := range references {
+				if err := store.ClaimCodexIdentityReference(ctx, referenceKey, referenceEpoch); err != nil {
+					return codexAccountIdentityError("父会话出站引用已变化或暂时不可用，请重新发起请求。")
+				}
 			}
-		}
-		for _, original := range []string{strings.ToLower(root), strings.ToLower(fingerprint.headers.Get(codexThreadIDHeader))} {
-			if mapping.aliases[original] == "" || fingerprint.accountIdentityReferences[original] {
-				continue
-			}
-			if err := store.PublishCodexIdentityEpoch(ctx, codexIdentityDigest("codex-account-root-v1", owner, upstreamAccount, original), currentEpoch); err != nil {
-				return codexAccountIdentityError("会话出站映射代数已变化或暂时不可用，请重新发起请求。")
+			for _, original := range []string{strings.ToLower(root), strings.ToLower(fingerprint.headers.Get(codexThreadIDHeader))} {
+				if mapping.aliases[original] == "" || fingerprint.accountIdentityReferences[original] {
+					continue
+				}
+				if err := store.PublishCodexIdentityEpoch(ctx, codexIdentityDigest("codex-account-root-v1", owner, upstreamAccount, original), currentEpoch); err != nil {
+					return codexAccountIdentityError("会话出站映射代数已变化或暂时不可用，请重新发起请求。")
+				}
 			}
 		}
 	}

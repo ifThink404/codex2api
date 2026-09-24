@@ -110,6 +110,9 @@ func PreserveSessionInput(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
+	if fork := forkAccountFallbackFromContext(ctx); fork != nil && fork.PreserveInput {
+		return true
+	}
 	if plan, _ := ctx.Value(sessionAccountFailoverContextKey{}).(*sessionAccountFailoverPlan); plan != nil && plan.PreserveInput {
 		return true
 	}

@@ -715,7 +715,7 @@ func TestWaitForSessionAvailableVariantsRespectContextCancellation(t *testing.T)
 			return store.WaitForSessionAvailableWithFilter(ctx, "", time.Hour, 0, nil, nil)
 		}},
 		{name: "dispatch", wait: func(ctx context.Context) (*Account, string) {
-			return store.WaitForSessionAvailableWithDispatch(ctx, "", time.Hour, 0, nil, nil, DispatchPolicy(0))
+			return store.WaitForSessionAvailableWithDispatch(ctx, "", time.Hour, 0, nil, nil, DispatchPolicyStandard)
 		}},
 	}
 	for _, tc := range tests {

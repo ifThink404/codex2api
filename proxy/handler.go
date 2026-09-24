@@ -134,7 +134,7 @@ func dispatchPolicyForModel(model string) auth.DispatchPolicy {
 	if isProOnlyModel(model) {
 		return auth.DispatchPolicySpark
 	}
-	return auth.DispatchPolicyStandard
+	return auth.DispatchPolicyStandard.WithModel(model)
 }
 
 func (h *Handler) withModelCooldownFilter(model string, filter auth.AccountFilter) auth.AccountFilter {
@@ -297,6 +297,9 @@ func capacityAwareSessionAffinityKey(identity requestSessionIdentity, apiKeyID i
 // remains independent, so the fork keeps its own accounting window and can
 // fall back to normal scheduling when the source account is unavailable.
 func (h *Handler) takeForkSourceAccount(ctx context.Context, identity requestSessionIdentity, targetKey string, apiKeyID int64, exclude map[int64]bool, filter auth.AccountFilter, policy auth.DispatchPolicy, traces ...*auth.SelectionTrace) (*auth.Account, string) {
+	if forkAccountFallbackFromContext(ctx) != nil {
+		return nil, ""
+	}
 	if h == nil || h.store == nil || strings.TrimSpace(targetKey) == "" || strings.TrimSpace(identity.forkSourceAffinityID) == "" {
 		return nil, ""
 	}
@@ -4131,6 +4134,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	h.primeNewAPIPolicyContext(c, ingressRequestBody(c, rawBody))
 	sessionIdentity := h.resolveRequestSessionIdentityForContext(c, rawBody)
+	defer h.cleanupRelaxedAccountFallback(c)
 	rawBody = normalizeTurnStateIngress(c, rawBody)
 	if err := validateResponseIdentityIngress(c, rawBody); err != nil {
 		ErrorToGinResponse(c, err)
@@ -6342,6 +6346,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	}
 	h.primeNewAPIPolicyContext(c, ingressRequestBody(c, rawBody))
 	sessionIdentity := h.resolveRequestSessionIdentityForContext(c, rawBody)
+	defer h.cleanupRelaxedAccountFallback(c)
 	rawBody = normalizeTurnStateIngress(c, rawBody)
 	if err := validateResponseIdentityIngress(c, rawBody); err != nil {
 		ErrorToGinResponse(c, err)
@@ -7342,6 +7347,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	logEffectiveModel := usageEffectiveModelForMapping(logModel, effectiveModel, mappingApplied)
 	h.primeNewAPIPolicyContext(c, ingressRequestBody(c, rawBody))
 	sessionIdentity := h.resolveRequestSessionIdentityForContext(c, codexBody)
+	defer h.cleanupRelaxedAccountFallback(c)
 	codexBody = normalizeTurnStateIngress(c, codexBody)
 	if err := validateResponseIdentityIngress(c, codexBody); err != nil {
 		ErrorToGinResponse(c, err)

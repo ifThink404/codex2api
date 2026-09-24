@@ -22,8 +22,8 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 			antigravity_sync_error text, antigravity_sync_warning text,
 			antigravity_permissions text, antigravity_entitlements text, antigravity_quota text,
 			claude_usage_probe_at text, claude_usage_probe_error text,
-			claude_auth_kind text, codex_bps_enabled boolean, codex_bps_image_trim_enabled boolean,
-			codex_native_compaction_only boolean, codex_native_enabled boolean, codex_native_models jsonb, codex_bps_models jsonb
+			claude_auth_kind text, codex_bps_enabled boolean, codex_bps_image_trim_enabled boolean, codex_bps_profile text,
+			codex_native_compaction_only boolean, codex_native_enabled boolean, codex_native_models jsonb, codex_bps_models jsonb, codex_usage_limit_bypass_enabled boolean, codex_usage_limit_bypass_models jsonb
 		)`
 	credentialColumns := `
 		COALESCE(account_public.upstream_type, ''),
@@ -46,8 +46,10 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 		COALESCE(account_public.claude_auth_kind, ''),
 		COALESCE(account_public.codex_bps_enabled, false),
 		COALESCE(account_public.codex_bps_image_trim_enabled, false),
+		COALESCE(account_public.codex_bps_profile, 'word'),
 		COALESCE(account_public.codex_native_compaction_only, false), account_public.codex_native_enabled,
-		COALESCE(account_public.codex_native_models, '[]'::jsonb)::text, COALESCE(account_public.codex_bps_models, '[]'::jsonb)::text`
+		COALESCE(account_public.codex_native_models, '[]'::jsonb)::text, COALESCE(account_public.codex_bps_models, '[]'::jsonb)::text,
+		COALESCE(account_public.codex_usage_limit_bypass_enabled, false), COALESCE(account_public.codex_usage_limit_bypass_models, '[]'::jsonb)::text`
 	if db.isSQLite() {
 		upstreamExpr = `LOWER(COALESCE(json_extract(credentials, '$.upstream_type'), ''))`
 		fromClause = `FROM accounts`
@@ -72,8 +74,10 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 			COALESCE(json_extract(credentials, '$.claude_auth_kind'), ''),
 			COALESCE(json_extract(credentials, '$.codex_bps_enabled'), 0),
 			COALESCE(json_extract(credentials, '$.codex_bps_image_trim_enabled'), 0),
+			COALESCE(json_extract(credentials, '$.codex_bps_profile'), 'word'),
 			COALESCE(json_extract(credentials, '$.codex_native_compaction_only'), 0), json_extract(credentials, '$.codex_native_enabled'),
-			COALESCE(json_extract(credentials, '$.codex_native_models'), '[]'), COALESCE(json_extract(credentials, '$.codex_bps_models'), '[]')`
+			COALESCE(json_extract(credentials, '$.codex_native_models'), '[]'), COALESCE(json_extract(credentials, '$.codex_bps_models'), '[]'),
+			COALESCE(json_extract(credentials, '$.codex_usage_limit_bypass_enabled'), 0), COALESCE(json_extract(credentials, '$.codex_usage_limit_bypass_models'), '[]')`
 	}
 	where += accountChannelFilterSQL(channel, upstreamExpr)
 	query := `SELECT id, name, type, proxy_url, status, cooldown_reason, cooldown_until,
@@ -110,6 +114,9 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 	var claudeUsageProbeAt, claudeUsageProbeError, claudeAuthKind string
 	var modelsRaw interface{}
 	var hasAPIKey, hasRefreshToken, verifiedEmail, codexBPS, codexBPSImageTrim bool
+	var codexBPSProfile string
+	var usageBypassEnabled bool
+	var usageBypassModels interface{}
 	var codexNativeCompactionOnly bool
 	var codexNative sql.NullBool
 	var codexNativeModels, codexBPSModels interface{}
@@ -121,8 +128,8 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 		&hasAPIKey, &hasRefreshToken, &schedulerPriority,
 		&avatarURL, &verifiedEmail, &projectID,
 		&antigravitySyncError, &antigravitySyncWarning, &antigravityPermissions, &antigravityQuota,
-		&claudeUsageProbeAt, &claudeUsageProbeError, &claudeAuthKind, &codexBPS, &codexBPSImageTrim,
-		&codexNativeCompactionOnly, &codexNative, &codexNativeModels, &codexBPSModels,
+		&claudeUsageProbeAt, &claudeUsageProbeError, &claudeAuthKind, &codexBPS, &codexBPSImageTrim, &codexBPSProfile,
+		&codexNativeCompactionOnly, &codexNative, &codexNativeModels, &codexBPSModels, &usageBypassEnabled, &usageBypassModels,
 	); err != nil {
 		return nil, fmt.Errorf("扫描账号列表投影失败: %w", err)
 	}
@@ -141,13 +148,16 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 		return nil, fmt.Errorf("解析 updated_at 失败: %w", err)
 	}
 	row.Credentials = map[string]interface{}{
-		"codex_bps_enabled":            codexBPS,
-		"codex_bps_image_trim_enabled": codexBPSImageTrim,
-		"codex_native_compaction_only": codexNativeCompactionOnly,
-		"upstream_type":                upstreamType,
-		"email":                        email,
-		"base_url":                     baseURL,
-		"plan_type":                    planType,
+		"codex_bps_profile":                codexBPSProfile,
+		"codex_usage_limit_bypass_enabled": usageBypassEnabled,
+		"codex_usage_limit_bypass_models":  decodeProjectionStringSlice(usageBypassModels),
+		"codex_bps_enabled":                codexBPS,
+		"codex_bps_image_trim_enabled":     codexBPSImageTrim,
+		"codex_native_compaction_only":     codexNativeCompactionOnly,
+		"upstream_type":                    upstreamType,
+		"email":                            email,
+		"base_url":                         baseURL,
+		"plan_type":                        planType,
 	}
 	if codexNative.Valid {
 		row.Credentials["codex_native_enabled"] = codexNative.Bool

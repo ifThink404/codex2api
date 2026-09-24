@@ -18,16 +18,17 @@ import (
 const sessionContinuityContextKey = "codex_session_continuity"
 
 type sessionContinuityDiagnostic struct {
-	Mode            string                            `json:"mode"`
-	Result          string                            `json:"result"`
-	WouldBlock      bool                              `json:"would_block"`
-	Action          string                            `json:"action"`
-	ThreadID        string                            `json:"thread_id,omitempty"`
-	Previous        *uint64                           `json:"previous_number,omitempty"`
-	Current         *uint64                           `json:"current_number,omitempty"`
-	OwnerSource     string                            `json:"owner_source"`
-	OwnerAccount    int64                             `json:"owner_account_id,omitempty"`
-	AccountFailover *sessionAccountFailoverDiagnostic `json:"account_failover,omitempty"`
+	ForkAccountFallback *forkAccountFallbackDiagnostic    `json:"fork_account_fallback,omitempty"`
+	Mode                string                            `json:"mode"`
+	Result              string                            `json:"result"`
+	WouldBlock          bool                              `json:"would_block"`
+	Action              string                            `json:"action"`
+	ThreadID            string                            `json:"thread_id,omitempty"`
+	Previous            *uint64                           `json:"previous_number,omitempty"`
+	Current             *uint64                           `json:"current_number,omitempty"`
+	OwnerSource         string                            `json:"owner_source"`
+	OwnerAccount        int64                             `json:"owner_account_id,omitempty"`
+	AccountFailover     *sessionAccountFailoverDiagnostic `json:"account_failover,omitempty"`
 }
 
 type sessionContinuityCacheEntry struct {
@@ -279,9 +280,21 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 			diagnostic.Previous = &previous
 		}
 	}
+	forkFallbackReason := ""
 	if err == nil && !found && owner == 0 && invalid == "" && known && identity.forkSourceAffinityID != "" && !requestRequiresCompactionOwner(request, body) {
 		owner, diagnostic.OwnerSource, err = handler.resolveForkSourceOwner(request.Request.Context(), identity, affinityKey, requestAPIKeyID(request))
-		if err != nil || owner == 0 || handler.store.FindByID(owner) == nil {
+		if err == nil && allowForkAccountFallback(request, identity) {
+			forkFallbackReason = handler.forkAccountFallbackReason(request, owner, affinityKey)
+			if forkFallbackReason != "" {
+				beginForkAccountFallback(request, body, diagnostic, owner, forkFallbackReason)
+				if failure := handler.prepareContinuityRestart(request, body); failure != nil {
+					diagnostic.Result, diagnostic.WouldBlock, diagnostic.Action = forkFallbackReason, true, "blocked"
+					return failure
+				}
+				owner = 0
+			}
+		}
+		if err != nil || forkFallbackReason == "" && (owner == 0 || handler.store.FindByID(owner) == nil) {
 			diagnostic.Result, diagnostic.WouldBlock, diagnostic.Action = "fork_owner_unavailable", true, "blocked"
 			return sessionContinuityError("fork_owner_unavailable")
 		}
@@ -295,6 +308,8 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 		diagnostic.Result, diagnostic.WouldBlock = "storage_unavailable", true
 	} else if invalid != "" {
 		diagnostic.Result, diagnostic.WouldBlock = invalid, true
+	} else if forkFallbackReason != "" {
+		diagnostic.Result, diagnostic.WouldBlock = forkFallbackReason, false
 	} else {
 		diagnostic.Result, diagnostic.WouldBlock = evaluateSessionContinuity(entry.Record, found, thread, number, owner)
 	}
@@ -312,7 +327,7 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 	}
 	// First-account admission is independent from the sequence-validation mode.
 	// This function already excludes unrelated/background and API-relay traffic.
-	if !found && owner == 0 {
+	if !found && owner == 0 && forkFallbackReason == "" {
 		initialThread := resolveRequestRootSessionIdentity(request.Request.Header, body).sessionID
 		if status, policy := handler.cachedNewAPIPolicyAuditState(request); (status == "verified" || status == "signed_response") && policy.MetaVerified && policy.Meta.RootSessionID != "" {
 			initialThread = policy.Meta.RootSessionID
@@ -328,8 +343,10 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 			return failure
 		}
 	}
-	restartReason := ""
-	if mode == "off" && known && invalid == "" && err == nil && (diagnostic.Result == "window_gap" || diagnostic.Result == "unbound_nonzero") {
+	restartReason := forkFallbackReason
+	if forkFallbackReason != "" {
+		diagnostic.Action = "restart_pending"
+	} else if mode == "off" && known && invalid == "" && err == nil && (diagnostic.Result == "window_gap" || diagnostic.Result == "unbound_nonzero") {
 		if restartError := handler.prepareContinuityRestart(request, body); restartError != nil {
 			diagnostic.Action = "blocked"
 			return restartError
@@ -376,6 +393,9 @@ func sessionContinuityError(reason string) *api.APIError {
 }
 
 func (handler *Handler) commitSessionContinuity(request *gin.Context, account *auth.Account) *api.APIError {
+	if fallback := relaxedAccountFallbackFromContext(request.Request.Context()); fallback != nil {
+		return handler.commitRelaxedAccountFallback(request, account, fallback)
+	}
 	state := continuityRequest(request)
 	if state == nil || account == nil {
 		return nil

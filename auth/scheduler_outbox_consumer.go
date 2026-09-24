@@ -521,6 +521,9 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.CodexPassthroughMode = src.CodexPassthroughMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
 	dst.CodexBPS = src.CodexBPS
+	dst.CodexBPSProfile = src.CodexBPSProfile
+	dst.CodexUsageLimitBypassEnabled = src.CodexUsageLimitBypassEnabled
+	dst.CodexUsageLimitBypassModels = append([]string(nil), src.CodexUsageLimitBypassModels...)
 	dst.CodexNative = nil
 	if src.CodexNative != nil {
 		v := *src.CodexNative

@@ -78,6 +78,14 @@ func (handler *Handler) configureSessionModelAffinity(requestContext *gin.Contex
 	if blocked := handler.sessionBlacklistError(requestContext); blocked != nil {
 		return blocked
 	}
+	if relaxedAccountFallbackFromContext(requestContext.Request.Context()) != nil {
+		requestContext.Set(sessionContinuityContextKey, nil)
+		handler.attachSessionOutboundEpoch(requestContext, "", database.SessionContinuityRecord{})
+		if len(bodies) > 0 {
+			return prepareRelaxedAccountContext(requestContext, bodies[0])
+		}
+		return nil
+	}
 	defer func() {
 		if apiError != nil && handler.db != nil && len(bodies) > 0 && (usageRequestDiagnosticState(requestContext).Continuity != nil || usageRequestDiagnosticState(requestContext).BackgroundAccountMatch != nil || usageRequestDiagnosticState(requestContext).AccountFailover != nil) {
 			handler.logUsageForRequest(requestContext, &database.UsageLogInput{Endpoint: requestContext.Request.URL.Path, Model: originalModel, EffectiveModel: effectiveModel, StatusCode: 400, ErrorMessage: apiError.Message, Stream: gjson.GetBytes(bodies[0], "stream").Bool(), Compact: compact})

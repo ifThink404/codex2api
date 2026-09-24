@@ -1,3 +1,5 @@
+export type CodexBPSProfile = "word" | "excel" | "sheets" | "powerpoint";
+
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
 export type ISODateString = string
 export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
@@ -289,6 +291,9 @@ export interface AccountRow {
   codex_native_models?: string[]
   codex_bps_models?: string[]
   codex_bps_enabled?: boolean
+  codex_bps_profile?: CodexBPSProfile
+  codex_usage_limit_bypass_enabled?: boolean
+  codex_usage_limit_bypass_models?: string[]
   codex_bps_image_trim_enabled?: boolean
   codex_native_compaction_only?: boolean
   codex_fingerprint_mode?: CodexFingerprintMode
@@ -1451,6 +1456,9 @@ export interface UpdateAccountSchedulerRequest {
   codex_native_models?: string[]
   codex_bps_models?: string[]
   codex_bps_enabled?: boolean
+  codex_bps_profile?: CodexBPSProfile
+  codex_usage_limit_bypass_enabled?: boolean
+  codex_usage_limit_bypass_models?: string[]
   codex_bps_image_trim_enabled?: boolean
   codex_native_compaction_only?: boolean
   codex_fingerprint_mode?: CodexFingerprintMode | null
@@ -2097,6 +2105,7 @@ export interface SystemSettings {
   codex_overload_pause_enabled: boolean
   codex_capacity_retry_enabled: boolean
   codex_session_failover_enabled: boolean
+  codex_fork_account_fallback_enabled: boolean
   codex_session_failover_preserve_input: boolean
   codex_web_search_proxy_location: boolean
   codex_initial_session_max_age_seconds: number

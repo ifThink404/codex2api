@@ -1,4 +1,4 @@
-import type { BatchUpdateAccountsRequest, CodexFingerprintMode } from "../types";
+import type { BatchUpdateAccountsRequest, CodexFingerprintMode, CodexBPSProfile } from "../types";
 
 export interface BuildBatchMetadataUpdateOptions {
   ids: number[];
@@ -16,10 +16,12 @@ export interface BuildBatchMetadataUpdateOptions {
   schedulerPriority: number | null;
   updateCodexNativeEnabled?: boolean;
   codexNativeEnabled?: boolean;
-  updateCodexRouteModels?: boolean;
-  codexNativeModels?: string[];
-  codexBPSModels?: string[];
+  updateUsageLimitBypass?: boolean;
+  usageLimitBypassEnabled?: boolean;
+  usageLimitBypassModels?: string[];
   updateCodexBPSEnabled?: boolean;
+  updateCodexBPSProfile?: boolean;
+  codexBPSProfile?: CodexBPSProfile;
   updateCodexBPSImageTrimEnabled?: boolean;
   updateCodexNativeCompactionOnly?: boolean;
   codexBPSEnabled?: boolean;
@@ -50,10 +52,12 @@ export function buildBatchMetadataUpdate({
   schedulerPriority,
   updateCodexNativeEnabled,
   codexNativeEnabled,
-  updateCodexRouteModels,
-  codexNativeModels,
-  codexBPSModels,
+  updateUsageLimitBypass,
+  usageLimitBypassEnabled,
+  usageLimitBypassModels,
   updateCodexBPSEnabled,
+  updateCodexBPSProfile,
+  codexBPSProfile,
   updateCodexBPSImageTrimEnabled,
   updateCodexNativeCompactionOnly,
   codexBPSEnabled,
@@ -76,11 +80,12 @@ export function buildBatchMetadataUpdate({
   if (updateSkipWarmTier) payload.skip_warm_tier = skipWarmTier ?? false;
   if (updateSchedulerPriority) payload.scheduler_priority = schedulerPriority;
   if (updateCodexNativeEnabled) payload.codex_native_enabled = codexNativeEnabled ?? true;
-  if (updateCodexRouteModels) {
-    payload.codex_native_models = [...(codexNativeModels ?? [])];
-    payload.codex_bps_models = [...(codexBPSModels ?? [])];
+  if (updateUsageLimitBypass) {
+    payload.codex_usage_limit_bypass_enabled = usageLimitBypassEnabled ?? false;
+    payload.codex_usage_limit_bypass_models = [...(usageLimitBypassModels ?? [])];
   }
   if (updateCodexBPSEnabled) payload.codex_bps_enabled = codexBPSEnabled ?? false;
+  if (updateCodexBPSProfile) payload.codex_bps_profile = codexBPSProfile ?? "word";
   if (updateCodexBPSImageTrimEnabled) payload.codex_bps_image_trim_enabled = codexBPSImageTrimEnabled ?? false;
   if (updateCodexNativeCompactionOnly) payload.codex_native_compaction_only = codexNativeCompactionOnly ?? false;
   if (updateCodexFingerprintMode)

@@ -228,6 +228,10 @@ func PrepareSessionRestartOutbound(ctx context.Context, account *auth.Account, b
 		}
 	}()
 	var initialErr error
+	body, headers, initialErr = prepareRelaxedAccountOutbound(ctx, body, headers)
+	if initialErr != nil {
+		return nil, nil, initialErr
+	}
 	body, headers, initialErr = PrepareInitialSessionOutbound(ctx, account, body, headers)
 	if initialErr != nil {
 		return nil, nil, initialErr
@@ -244,6 +248,9 @@ func PrepareSessionRestartOutbound(ctx context.Context, account *auth.Account, b
 	known, cancel := epoch.restartContextVerifier(ctx)
 	defer cancel()
 	cleaned, outgoingHeaders, report, err := cleanSessionRestartContext(headers, body, known, epoch.record.PreserveRestartInput)
+	if err == nil {
+		cleaned, outgoingHeaders, err = detachForkParentOutbound(cleaned, outgoingHeaders, epoch.record.DetachedForkReferences)
+	}
 	if epoch.diagnostic != nil {
 		report.Phase = "outbound"
 		report.Pass, report.DetailsPass = 1, 1
@@ -265,6 +272,12 @@ func PrepareSessionRestartOutbound(ctx context.Context, account *auth.Account, b
 }
 
 func sessionRestartRoutingContext(request *gin.Context, body []byte) ([]byte, http.Header) {
+	if relaxedAccountFallbackFromContext(request.Request.Context()) != nil {
+		cleaned, headers, err := prepareRelaxedAccountOutbound(request.Request.Context(), body, sessionFailoverRequestHeaders(request))
+		if err == nil {
+			return cleaned, headers
+		}
+	}
 	plan, _ := request.Request.Context().Value(sessionAccountFailoverContextKey{}).(*sessionAccountFailoverPlan)
 	epoch := outboundEpochFromContext(request.Request.Context())
 	state := continuityRequest(request)

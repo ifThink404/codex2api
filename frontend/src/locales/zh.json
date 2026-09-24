@@ -686,6 +686,11 @@
     "heroChannelTitle": "{{channel}}：可用账号 {{available}}/{{total}} · 今日请求 {{requests}}"
   },
   "accounts": {
+    "usageLimitBypassTitle": "额度耗尽后允许指定模型",
+    "usageLimitBypassHint": "默认关闭。允许名单内的模型在本地 5h / 7d 额度限流或用量自动暂停后继续请求。仍受账号错误、手动禁用/暂停、模型权限和并发限制；上游实际拒绝仍会返回错误。",
+    "usageLimitBypassPlaceholder": "输入模型 ID，按回车添加",
+    "usageLimitBypassModelsHint": "仅匹配完整模型 ID，不支持通配符；名单为空时不放行任何模型。Codex / BPS 的原有模型配置仍需允许该模型。",
+    "usageLimitBypassBatchTitle": "修改指定模型额度放行",
     "title": "账号管理",
     "description": "管理 Codex 反代账号（Refresh Token）",
     "loadingTitle": "正在加载账号",
@@ -4911,6 +4916,8 @@
     "codexWebSearchProxyLocationHint": "默认关闭。开启后使用代理测试保存的国家、省州、城市和时区；手动编辑值优先。切换代理后使用对应地区，请求时不查询 IP。",
     "codexSessionFailoverPreserveInput": "切号时完整保留 input（实验）",
     "codexSessionFailoverPreserveInputHint": "默认关闭，仅在允许换号时生效。开启后保留整个 input，包括加密推理、压缩项、输入项 ID 和动态工具；仍更换账号身份并清理旧 turn-state。未知续写引用或工具调用缺失时停止发送，请客户端提供完整历史。上游拒绝时不会自动删减加密内容重试，也不改写 input 内的环境日期和时区。模式随新出站段保存，关闭开关不会把已启用的会话自动降为有损清理。跨账号兼容性不保证。",
+    "codexForkAccountFallbackEnabled": "宽松模式",
+    "codexForkAccountFallbackEnabledHint": "默认关闭。新 fork 在父账号会话容量已满或找不到父账号时可独立选号；被动请求找不到父账号，或父账号额度耗尽、暂停、禁用、无法接纳会话时，可临时选择其他可用账号，请求结束即释放，不改变父会话归属。父账号可用时优先跟随，保留权限、容量、计费授权和黑名单校验，BPS 不回流 Codex。按完整保留 input 设置处理上下文；默认清理不可复用状态，可能丢失部分历史。",
     "codexSessionFailoverEnabled": "账号不可用或会话容量不足时允许换号",
     "codexSessionFailoverEnabledHint": "默认关闭。账号额度耗尽、自动/手动暂停、禁用或无法接纳当前窗口时，允许后续请求重开，默认使用有损清理；目标账号分组集合必须完全一致，不能多组或少组。每次换号创建新的出站身份段及握手，窗口从 0 开始（47→0、48→1）；同一上下文保持编号，回退或恢复的上下文独立持久化映射，不产生负数，切回旧账号也新建一段。仅在出站副本清理旧加密上下文（加密推理、加密压缩）、文件/输入项引用、未知的 previous_response_id 和旧 turn-state；会丢失对应历史或资料，请优先提供完整明文上下文。清理后没有可用输入时需补充资料或新建会话。当前账号本段已核实的新内容保留。原始找根、入站编号、用户额度及窗口授权过期时间不变。不会仅因 500、busy、黑名单或绑定过期而换号，不绕过用户并发、扩容确认或黑名单限制。",
     "globalAutoPauseDesc": "为所有账号设置默认的自动暂停阈值。账号级别或分组级别的设置优先于全局设置。",

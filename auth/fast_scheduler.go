@@ -723,13 +723,25 @@ func (a *Account) fastSchedulerKeepInPool(baseLimit int64, now time.Time, tier A
 	if available && limit > 0 {
 		return true
 	}
+	a.mu.RLock()
+	bypassConfigured := a.hasUsageLimitBypassLocked()
+	a.mu.RUnlock()
+	if bypassConfigured {
+		_, _, limit, _, available := a.fastSchedulerSnapshotForUsageBypass(baseLimit, now)
+		if available && limit > 0 {
+			return true
+		}
+	}
 	_, _, sparkLimit, _, sparkOK := a.fastSchedulerSnapshotForSpark(baseLimit, now)
 	return sparkOK && sparkLimit > 0
 }
 
 func (a *Account) fastSchedulerSnapshotForPolicy(baseLimit int64, now time.Time, policy DispatchPolicy) (AccountHealthTier, float64, int64, bool, bool) {
-	if policy == DispatchPolicySpark {
+	if policy.IsSpark() {
 		return a.fastSchedulerSnapshotForSpark(baseLimit, now)
+	}
+	if a.UsageLimitBypassMatches(policy) {
+		return a.fastSchedulerSnapshotForUsageBypass(baseLimit, now)
 	}
 	return a.fastSchedulerSnapshot(baseLimit, now)
 }

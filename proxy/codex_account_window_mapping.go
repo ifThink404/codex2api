@@ -147,7 +147,7 @@ func (fingerprint *CodexFingerprint) prepareAccountWindows(ctx context.Context, 
 	for thread := range fingerprint.accountWindowInputs {
 		numbers[thread] = 0
 	}
-	if !epoch.preview {
+	if !epoch.preview && !epoch.temporary {
 		var err error
 		numbers, err = epoch.handler.db.ResolveSessionOutboundWindowNumbers(ctx, epoch.key, epoch.record.AccountID, epoch.record.FailoverCount, fingerprint.accountWindowInputs)
 		if err != nil {

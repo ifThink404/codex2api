@@ -131,6 +131,10 @@ func (handler *Handler) windowQuoteOwner(request *gin.Context, identity verified
 		parentKey := sessionAffinityKey("newapi-root-session:"+identity.Meta.ForkedFromSessionFingerprint, identity.APIKeyID)
 		parentLookup := appendWindowOwnerLookup(diagnostic, "fork_parent", identity.Meta.ForkedFromSessionFingerprint, parentKey)
 		owner, _, err := handler.resolveForkSourceOwnerWithDiagnostic(request.Request.Context(), requestSessionIdentity{forkSourceAffinityID: "newapi-root-session:" + identity.Meta.ForkedFromSessionFingerprint}, key, identity.APIKeyID, parentLookup)
+		if err == nil && CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
+			handler.deferForkQuoteOwner(request, owner, key)
+			return 0, key, nil
+		}
 		if err != nil || owner == 0 {
 			return 0, "", errors.New("无法恢复 fork 父会话账号")
 		}

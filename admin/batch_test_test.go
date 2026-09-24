@@ -400,8 +400,8 @@ func TestApplyUsageLimitedTestStateMarks7dRateLimited(t *testing.T) {
 		t.Fatalf("RuntimeStatus() = %q, want rate_limited", got)
 	}
 	reason, until := account.GetCooldownSnapshot()
-	if reason != "rate_limited" || until.IsZero() {
-		t.Fatalf("cooldown = (%q, %s), want active rate_limited cooldown", reason, until)
+	if reason != "rate_limited_7d" || until.IsZero() {
+		t.Fatalf("cooldown = (%q, %s), want local rate_limited_7d cooldown", reason, until)
 	}
 }
 

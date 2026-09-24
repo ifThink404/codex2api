@@ -19,6 +19,9 @@ const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
 	projection               *bpsResponseProjection
+	Usage                    *bpsUsageDiagnostic             `json:"usage_billing,omitempty"`
+	Profile                  auth.CodexBPSProfile            `json:"profile"`
+	ToolsVersion             string                          `json:"tools_version"`
 	UpstreamTurnState        *usageTurnStateValue            `json:"upstream_turn_state,omitempty"`
 	ClientTurnState          *usageTurnStateValue            `json:"client_turn_state,omitempty"`
 	Mode                     string                          `json:"mode"`
@@ -54,12 +57,16 @@ func prepareCodexBPSBody(body []byte, cacheKey string, compact bool) ([]byte, *C
 }
 
 func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, trimImages bool, headers http.Header) ([]byte, *CodexBPSDiagnostic, error) {
+	return prepareCodexBPSBodyForProfile(body, cacheKey, compact, trimImages, headers, bpsProfile(auth.BPSWord))
+}
+
+func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimImages bool, headers http.Header, profile bpsProfileConfig) ([]byte, *CodexBPSDiagnostic, error) {
 	var source map[string]json.RawMessage
 	if err := json.Unmarshal(body, &source); err != nil {
 		return nil, nil, err
 	}
 	model := gjson.GetBytes(body, "model").String()
-	d := &CodexBPSDiagnostic{Mode: "bps", RequestedModel: model, SentModel: model, Compact: compact}
+	d := &CodexBPSDiagnostic{Mode: "bps", RequestedModel: model, SentModel: model, Compact: compact, Profile: profile.profile, ToolsVersion: profile.toolsVersion}
 	if strings.EqualFold(strings.TrimSpace(model), "codex-auto-review") {
 		d.SentModel = "gpt-5.6-luna"
 		d.AdaptedFields = append(d.AdaptedFields, "model: codex-auto-review → gpt-5.6-luna")
@@ -93,7 +100,7 @@ func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, tri
 		d.AdaptedFields = append(d.AdaptedFields, "input.configuration_update.reasoning.effort: max → xhigh")
 	}
 	var prefix []json.RawMessage
-	runtimeMessage, _ := json.Marshal(map[string]any{"type": "message", "role": "developer", "content": []map[string]string{{"type": "input_text", "text": bpsCallerRuntimeInstructions}}})
+	runtimeMessage, _ := json.Marshal(map[string]any{"type": "message", "role": "developer", "content": []map[string]string{{"type": "input_text", "text": profile.runtimeInstructions()}}})
 	prefix = append(prefix, runtimeMessage)
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
 		item, _ := json.Marshal(map[string]any{"type": "additional_tools", "role": "developer", "tools": source["tools"]})
@@ -138,7 +145,7 @@ func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, tri
 	metadata := map[string]string{
 		"task_id":              "task_" + codexIdentityDigest("bps-task-v1", cacheKey, taskSeed),
 		"turn_id":              "turn_" + codexIdentityDigest("bps-turn-v1", cacheKey, turnSeed),
-		"bps_tools_version_id": bpsToolsVersion, "agent_iteration": "1",
+		"bps_tools_version_id": profile.toolsVersion, "agent_iteration": "1",
 	}
 	result := map[string]any{"model": d.SentModel, "input": items, "metadata": metadata}
 	if !compact {
@@ -179,6 +186,8 @@ func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, tri
 func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, cacheKey, proxyOverride, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, fingerprint *CodexFingerprint, compact bool) (*http.Response, error) {
 	account.Mu().RLock()
 	accessToken, proxyURL := account.AccessToken, account.ProxyURL
+	profile := bpsProfile(account.CodexBPSProfile)
+	trimImages := account.CodexBPSImageTrim
 	account.Mu().RUnlock()
 	if accessToken == "" {
 		return nil, ErrNoAvailableAccount()
@@ -206,8 +215,8 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	if cacheKey == "" {
 		cacheKey = NewUpstreamSessionUUID()
 	}
-	cacheKey = codexIdentityDigest("bps-prompt-cache-v1", account.EffectiveAccountID(), cacheKey)
-	projected, diagnostic, err := prepareCodexBPSBodyWithImageTrim(body, cacheKey, compact, account.CodexBPSImageTrimEnabled(), headers)
+	cacheKey = bpsProfileCacheKey(account.EffectiveAccountID(), cacheKey, profile)
+	projected, diagnostic, err := prepareCodexBPSBodyForProfile(body, cacheKey, compact, trimImages, headers, profile)
 	if err != nil {
 		if _, ok := err.(*Error); ok {
 			return nil, err
@@ -234,7 +243,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 			req.Header.Set(name, value)
 		}
 	}
-	applyCodexBPSHeaders(req.Header, account, accessToken, cacheKey, compact)
+	applyCodexBPSHeadersForProfile(req.Header, account, accessToken, cacheKey, compact, profile)
 	if IsResinEnabled() {
 		req.Header.Set("X-Resin-Account", ResinAccountID(account))
 	}
@@ -286,6 +295,10 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 }
 
 func applyCodexBPSHeaders(headers http.Header, account *auth.Account, token, cacheKey string, compact bool) {
+	applyCodexBPSHeadersForProfile(headers, account, token, cacheKey, compact, bpsProfile(account.EffectiveCodexBPSProfile()))
+}
+
+func applyCodexBPSHeadersForProfile(headers http.Header, account *auth.Account, token, cacheKey string, compact bool, profile bpsProfileConfig) {
 	headers.Set("Authorization", "Bearer "+token)
 	headers.Set("Chatgpt-Account-Id", account.EffectiveAccountID())
 	headers.Set("X-Openai-Account-Id", account.EffectiveAccountID())
@@ -303,14 +316,7 @@ func applyCodexBPSHeaders(headers http.Header, account *auth.Account, token, cac
 		deviceID = codexIdentityDigest("bps-device-v1", account.EffectiveAccountID())
 	}
 	headers.Set("X-Openai-Internal-Basispoints-Client-Device-Id", deviceID)
-	for key, value := range map[string]string{
-		"Client-Agent-Profile": "document", "Client-Editor": "word", "Client-Host": "Word",
-		"Client-Platform": "word", "Client-Platform-Class": "desktop", "Client-Product": "basispoints-word-plugin",
-		"Client-Runtime": "officejs", "Office-Host": "Word", "Office-Host-Version": "16.113",
-		"Office-Platform": "Mac", "Tools-Version-Id": bpsToolsVersion,
-	} {
-		headers.Set("X-Openai-Internal-Basispoints-"+key, value)
-	}
+	profile.applyHeaders(headers)
 	headers.Set("X-Openai-Internal-Codex-Responses-Lite", "true")
 }
 

@@ -2092,6 +2092,7 @@ export default function Settings() {
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
       codex_session_failover_enabled: cacheNormalized.codex_session_failover_enabled ?? false,
+      codex_fork_account_fallback_enabled: cacheNormalized.codex_fork_account_fallback_enabled ?? false,
       codex_session_failover_preserve_input: cacheNormalized.codex_session_failover_preserve_input ?? false,
       codex_web_search_proxy_location: cacheNormalized.codex_web_search_proxy_location ?? false,
       codex_initial_session_max_age_seconds: cacheNormalized.codex_initial_session_max_age_seconds ?? 60,
@@ -2169,6 +2170,7 @@ export default function Settings() {
     codex_overload_pause_enabled: false,
     codex_capacity_retry_enabled: false,
     codex_session_failover_enabled: false,
+    codex_fork_account_fallback_enabled: false,
     codex_session_failover_preserve_input: false,
     codex_web_search_proxy_location: false,
     codex_initial_session_max_age_seconds: 60,
@@ -3419,6 +3421,17 @@ export default function Settings() {
                     <Switch
                       checked={settingsForm.codex_session_failover_enabled}
                       onCheckedChange={(checked) => autoSaveBooleanField('codex_session_failover_enabled', checked)}
+                    />
+                  </SettingField>
+                  <SettingField
+                    label={t('settings.codexForkAccountFallbackEnabled')}
+                    description={t('settings.codexForkAccountFallbackEnabledHint')}
+                    layout="switch"
+                    channels={CHANNELS_CODEX_ONLY}
+                  >
+                    <Switch
+                      checked={settingsForm.codex_fork_account_fallback_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('codex_fork_account_fallback_enabled', checked)}
                     />
                   </SettingField>
                   <SettingField label={t('settings.initialSessionAge')} description={t('settings.initialSessionAgeHint')} channels={CHANNELS_CODEX_ONLY}>

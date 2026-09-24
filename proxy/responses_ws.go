@@ -403,6 +403,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, err)
 	}
 	sessionIdentity := h.resolveRequestSessionIdentityForContext(c, rawBody)
+	defer h.cleanupRelaxedAccountFallback(c)
 	rawBody = normalizeTurnStateIngress(c, rawBody)
 	if err := validateResponseIdentityIngress(c, rawBody); err != nil {
 		apiErr = api.NewAPIError(api.ErrorCode("previous_response_not_found"), invalidPreviousResponse().Message, api.ErrorTypeInvalidRequest)

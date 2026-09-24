@@ -12,20 +12,23 @@ import (
 )
 
 type tokenCredentialSeed struct {
-	codexBPSEnabled           bool
-	codexNativeEnabled        *bool
-	codexNativeModels         []string
-	codexBPSModels            []string
-	codexBPSImageTrim         bool
-	codexNativeCompactionOnly bool
-	codexInstallationID       string
-	refreshToken              string
-	sessionToken              string
-	accessToken               string
-	accessTokenType           string
-	idToken                   string
-	accountID                 string
-	workspaceID               string
+	codexBPSEnabled              bool
+	codexNativeEnabled           *bool
+	codexNativeModels            []string
+	codexBPSModels               []string
+	codexBPSImageTrim            bool
+	codexBPSProfile              auth.CodexBPSProfile
+	codexUsageLimitBypassEnabled bool
+	codexUsageLimitBypassModels  []string
+	codexNativeCompactionOnly    bool
+	codexInstallationID          string
+	refreshToken                 string
+	sessionToken                 string
+	accessToken                  string
+	accessTokenType              string
+	idToken                      string
+	accountID                    string
+	workspaceID                  string
 	// userID 是 OpenAI 用户 ID（user-...），仅作为账号元数据保存。
 	userID string
 	// allowDuplicate 仅允许有效工作区（Token workspace 或请求头覆盖）为空的账号重复。
@@ -46,6 +49,8 @@ type tokenCredentialSeed struct {
 }
 
 func normalizeTokenCredentialSeed(seed tokenCredentialSeed) tokenCredentialSeed {
+	seed.codexBPSProfile = auth.NormalizeCodexBPSProfile(string(seed.codexBPSProfile))
+	seed.codexUsageLimitBypassModels = auth.NormalizeAccountModels(seed.codexUsageLimitBypassModels)
 	seed.refreshToken = strings.TrimSpace(seed.refreshToken)
 	seed.sessionToken = strings.TrimSpace(seed.sessionToken)
 	seed.accessToken = strings.TrimSpace(seed.accessToken)
@@ -222,6 +227,9 @@ func tokenCredentialMap(seed tokenCredentialSeed) map[string]interface{} {
 	if seed.codex5HUsageUpdatedAt != "" {
 		credentials["codex_5h_usage_updated_at"] = seed.codex5HUsageUpdatedAt
 	}
+	credentials[auth.CodexBPSProfileCredentialKey] = string(auth.NormalizeCodexBPSProfile(string(seed.codexBPSProfile)))
+	credentials[auth.CodexUsageLimitBypassEnabledKey] = seed.codexUsageLimitBypassEnabled
+	credentials[auth.CodexUsageLimitBypassModelsKey] = seed.codexUsageLimitBypassModels
 	if seed.codexBPSImageTrim {
 		credentials[auth.CodexBPSImageTrimCredentialKey] = true
 	}
@@ -285,24 +293,27 @@ func (h *Handler) newCodexAccountFromSeed(id int64, proxyURL string, seed tokenC
 func accountFromCredentialSeed(id int64, proxyURL string, seed tokenCredentialSeed) *auth.Account {
 	seed = normalizeTokenCredentialSeed(seed)
 	account := &auth.Account{
-		DBID:                      id,
-		CodexBPS:                  seed.codexBPSEnabled,
-		CodexNative:               seed.codexNativeEnabled,
-		CodexNativeModels:         append([]string(nil), seed.codexNativeModels...),
-		CodexBPSModels:            append([]string(nil), seed.codexBPSModels...),
-		CodexBPSImageTrim:         seed.codexBPSImageTrim,
-		CodexNativeCompactionOnly: seed.codexNativeCompactionOnly,
-		RefreshToken:              seed.refreshToken,
-		SessionToken:              seed.sessionToken,
-		AccessToken:               seed.accessToken,
-		ExpiresAt:                 seed.expiresAt,
-		AccountID:                 seed.accountID,
-		Email:                     seed.email,
-		PlanType:                  seed.planType,
-		ProxyURL:                  proxyURL,
-		CustomHeaders:             cloneCustomHeaders(seed.customHeaders),
-		Status:                    auth.StatusReady,
-		SubscriptionExpiresAt:     seed.subscriptionExpiresAt,
+		DBID:                         id,
+		CodexBPS:                     seed.codexBPSEnabled,
+		CodexNative:                  seed.codexNativeEnabled,
+		CodexNativeModels:            append([]string(nil), seed.codexNativeModels...),
+		CodexBPSModels:               append([]string(nil), seed.codexBPSModels...),
+		CodexBPSImageTrim:            seed.codexBPSImageTrim,
+		CodexBPSProfile:              seed.codexBPSProfile,
+		CodexUsageLimitBypassEnabled: seed.codexUsageLimitBypassEnabled,
+		CodexUsageLimitBypassModels:  seed.codexUsageLimitBypassModels,
+		CodexNativeCompactionOnly:    seed.codexNativeCompactionOnly,
+		RefreshToken:                 seed.refreshToken,
+		SessionToken:                 seed.sessionToken,
+		AccessToken:                  seed.accessToken,
+		ExpiresAt:                    seed.expiresAt,
+		AccountID:                    seed.accountID,
+		Email:                        seed.email,
+		PlanType:                     seed.planType,
+		ProxyURL:                     proxyURL,
+		CustomHeaders:                cloneCustomHeaders(seed.customHeaders),
+		Status:                       auth.StatusReady,
+		SubscriptionExpiresAt:        seed.subscriptionExpiresAt,
 	}
 	if pct, ok := parseSeedUsagePercent(seed.codex7DUsedPercent); ok {
 		updatedAt := parseSeedRFC3339(seed.codexUsageUpdatedAt)

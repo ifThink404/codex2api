@@ -56,6 +56,14 @@ func codexRouteAccountFilter(c *gin.Context, next auth.AccountFilter) auth.Accou
 		if account == nil {
 			return false
 		}
+		if fallback := relaxedAccountFallbackFromContext(ctx); fallback != nil {
+			if account.IsRelayStyle() || account.ID() == fallback.ParentAccountID {
+				return false
+			}
+		}
+		if !forkFallbackAccountFilter(ctx, account) {
+			return false
+		}
 		if account.IsRelayStyle() {
 			return prior != "bps" && (next == nil || next(account))
 		}

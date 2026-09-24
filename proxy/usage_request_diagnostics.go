@@ -69,8 +69,9 @@ type usageRecentAccountDiagnostic struct {
 }
 
 type usageRequestDiagnostics struct {
-	UpstreamRoute          *codexRouteDiagnostic `json:"upstream_route,omitempty"`
-	TurnStart              *usageTurnStart       `json:"turn_start,omitempty"`
+	RelaxedFallback        *relaxedAccountFallback `json:"relaxed_account_fallback,omitempty"`
+	UpstreamRoute          *codexRouteDiagnostic   `json:"upstream_route,omitempty"`
+	TurnStart              *usageTurnStart         `json:"turn_start,omitempty"`
 	turnStartCaptured      bool
 	ResponseIdentity       []responseIdentityEvent                  `json:"response_identity,omitempty"`
 	AccessPrograms         *accessProgramsDiagnostic                `json:"access_programs,omitempty"`
