@@ -2113,6 +2113,7 @@
   "runtime": {
     "initialSessionAge": "Initial session ID time difference",
     "initialSessionAgeHint": "Tolerance: ±{{limit}} s. This process since {{started}}; resets on restart. Average/max use absolute time differences, including allowed and out-of-range IDs, excluding invalid IDs. Internal retries count once; client resubmissions count separately. Recent hour uses second buckets.",
+    "initialSessionAgeDisabledHint": "Time check is off (saved tolerance: ±{{limit}} s). Statistics since {{started}} still measure differences while off, without rejecting IDs based on time.",
     "initialAge_recent_hour": "Last hour",
     "initialAge_since_start": "Since process start",
     "initialAge_samples": "Requests checked",
@@ -4149,8 +4150,36 @@
     }
   },
   "settings": {
+    "transfer": {
+      "export": "Export settings",
+      "import": "Import settings",
+      "exportHint": "Export saved settings. The file includes service credentials; keep it private. Save pending edits first.",
+      "importHint": "Import a settings JSON from another server. Save pending edits first.",
+      "scope": "Import overwrites fields present in the file. Admin login credentials, accounts, API keys, logs and custom Prompt rules from the separate rules page are excluded. Service credentials are included. Local files such as backgrounds must be moved separately.",
+      "summary": "{{count}} general settings; additional sections: {{sections}}.",
+      "confirm": "Import and overwrite",
+      "importing": "Importing…",
+      "exported": "Settings exported. Keep the file containing service credentials private.",
+      "imported": "Settings imported",
+      "refresh": "Refresh to view settings",
+      "tooLarge": "Settings files must be 10 MB or smaller.",
+      "invalid_format": "Invalid codex2api settings file or unsupported file version.",
+      "invalid_field": "Unsupported or protected field on the target server: {{field}}.",
+      "invalid_type": "Invalid field type: {{field}}.",
+      "failedSection": "Could not import “{{section}}”: {{error}}. Earlier successful sections were saved; refresh to review.",
+      "applied": "Applied: {{sections}}.",
+      "sections": {
+        "settings": "General settings",
+        "claude": "Claude",
+        "antigravity": "Antigravity",
+        "channel_tests": "Channel tests",
+        "invite_guide": "Invite guide",
+        "visible_channels": "Visible channels"
+      }
+    },
     "initialSessionAge": "Initial session ID time tolerance (±seconds)",
-    "initialSessionAgeHint": "Default ±60 seconds; enter 1–86400. The ID timestamp may be up to this many seconds before or after gateway receipt, including both boundaries. Out-of-range or invalid IDs are rejected. Checks unbound Codex main sessions before initial account selection. Existing bindings are exempt. Independent of sequence validation.",
+    "initialSessionAgeHint": "Enabled by default, with a ±60-second tolerance (1–86400). Turning it off preserves the value and removes the time limit; ID format validation remains. Turning it back on restores the saved tolerance. Existing bindings and sequence checks are unaffected.",
+    "initialSessionAgeEnabled": "Enable initial session ID time check",
 
     "title": "Settings",
     "description": "Manage system configuration and runtime parameters. Most toggles auto-save immediately.",

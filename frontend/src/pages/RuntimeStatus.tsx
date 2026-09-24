@@ -103,7 +103,7 @@ export default function RuntimeStatus() {
                 <CardContent className="space-y-4 p-4 sm:p-6">
                   <div>
                     <h2 className="font-semibold">{t('runtime.initialSessionAge')}</h2>
-                    <p className="mt-1 text-xs text-muted-foreground">{t('runtime.initialSessionAgeHint', { limit: status.initial_session.limit_seconds, started: new Date(status.initial_session.started_at).toLocaleString() })}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{t(status.initial_session.enabled === false ? 'runtime.initialSessionAgeDisabledHint' : 'runtime.initialSessionAgeHint', { limit: status.initial_session.limit_seconds, started: new Date(status.initial_session.started_at).toLocaleString() })}</p>
                   </div>
                   <div className="grid gap-4 lg:grid-cols-2">
                     {(['recent_hour', 'since_start'] as const).map((period) => {

@@ -2114,6 +2114,7 @@
 
     "initialSessionAge": "首次会话 ID 时间差统计",
     "initialSessionAgeHint": "当前容限 ±{{limit}} 秒；本进程自 {{started}} 开始统计，重启重置。平均值、最大值按时间差绝对值统计，包含放行和超限拦截，不含无效 ID。内部重试只计一次，客户端重新请求另计。最近一小时按秒分桶。",
+    "initialSessionAgeDisabledHint": "时间差检查已关闭（已保留容限 ±{{limit}} 秒）。以下为本进程自 {{started}} 起的统计，关闭期间仍统计时间差，但不因时间差拦截。",
     "initialAge_recent_hour": "最近 1 小时",
     "initialAge_since_start": "本次进程启动以来",
     "initialAge_samples": "检查请求数",
@@ -4150,9 +4151,37 @@
     }
   },
   "settings": {
+    "transfer": {
+      "export": "导出设置",
+      "import": "导入设置",
+      "exportHint": "导出已保存的配置；文件包含服务密钥，请妥善保存。未保存的修改需先保存。",
+      "importHint": "导入其他服务器的设置 JSON；未保存的修改需先保存。",
+      "scope": "导入会覆盖文件中的设置。管理员登录密钥、账号、API 密钥、日志和独立规则页的自定义 Prompt 规则不迁移；服务配置密钥包含在文件中。背景图等本地文件需另行迁移。",
+      "summary": "通用设置 {{count}} 项；其他配置：{{sections}}。",
+      "confirm": "导入并覆盖",
+      "importing": "正在导入…",
+      "exported": "设置已导出，请妥善保存包含服务密钥的文件。",
+      "imported": "设置导入完成",
+      "refresh": "刷新页面查看设置",
+      "tooLarge": "设置文件不能超过 10 MB。",
+      "invalid_format": "不是有效的 codex2api 设置文件，或文件版本不受支持。",
+      "invalid_field": "目标服务器不支持或不允许导入字段：{{field}}。",
+      "invalid_type": "设置字段类型错误：{{field}}。",
+      "failedSection": "“{{section}}”导入失败：{{error}}。此前成功的配置已保存，请刷新查看。",
+      "applied": "已应用：{{sections}}。",
+      "sections": {
+        "settings": "通用设置",
+        "claude": "Claude",
+        "antigravity": "Antigravity",
+        "channel_tests": "渠道测连",
+        "invite_guide": "邀请引导",
+        "visible_channels": "可见渠道"
+      }
+    },
 
     "initialSessionAge": "首次会话 ID 时间差容限（±秒）",
-    "initialSessionAgeHint": "默认 ±60 秒，可填写 1–86400。允许会话 ID 时间比网关接收时间早或晚最多该秒数，边界值放行；超出范围或无效 ID 拒绝。仅在 Codex 主会话无账号绑定、首次选号前检查；已有绑定不受影响，独立于序号校验。",
+    "initialSessionAgeHint": "默认开启，容限默认 ±60 秒（1–86400）。关闭后保留秒数，不再限制首次会话 ID 的时间差，仍校验 ID 格式。重新开启后恢复原容限；已有绑定和序号校验不受影响。",
+    "initialSessionAgeEnabled": "启用首次会话 ID 时间差检查",
 
     "title": "系统设置",
     "description": "管理系统配置和运行参数。多数开关会即时自动保存。",

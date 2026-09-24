@@ -1218,6 +1218,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/session-errors/activity", h.GetSessionActivities)
 	api.POST("/session-errors/blacklist", h.SetSessionBlacklist)
 	api.GET("/settings", h.GetSettings)
+	api.GET("/settings/export", h.ExportSettings)
 	api.PUT("/settings", h.UpdateSettings)
 	api.GET("/settings/codex-user-agent/catalog", h.GetCodexUserAgentCatalog)
 	api.POST("/settings/codex-user-agent/preview", h.PreviewCodexUserAgent)
@@ -9587,6 +9588,7 @@ type settingsResponse struct {
 	CodexSessionFailoverPreserveInput   bool   `json:"codex_session_failover_preserve_input"`
 	CodexWebSearchProxyLocation         bool   `json:"codex_web_search_proxy_location"`
 	CodexInitialSessionMaxAgeSeconds    int    `json:"codex_initial_session_max_age_seconds"`
+	CodexInitialSessionAgeCheckDisabled bool   `json:"codex_initial_session_age_check_disabled"`
 	CodexOverloadThresholdPercent       int    `json:"codex_overload_threshold_percent"`
 	CodexOverloadPauseMinutes           int    `json:"codex_overload_pause_minutes"`
 	CodexOverloadWindowMinutes          int    `json:"codex_overload_window_minutes"`
@@ -9781,6 +9783,7 @@ type updateSettingsReq struct {
 	CodexSessionFailoverPreserveInput   *bool                            `json:"codex_session_failover_preserve_input"`
 	CodexWebSearchProxyLocation         *bool                            `json:"codex_web_search_proxy_location"`
 	CodexInitialSessionMaxAgeSeconds    *int                             `json:"codex_initial_session_max_age_seconds"`
+	CodexInitialSessionAgeCheckDisabled *bool                            `json:"codex_initial_session_age_check_disabled"`
 	CodexOverloadThresholdPercent       *int                             `json:"codex_overload_threshold_percent"`
 	CodexOverloadPauseMinutes           *int                             `json:"codex_overload_pause_minutes"`
 	CodexOverloadWindowMinutes          *int                             `json:"codex_overload_window_minutes"`
@@ -10489,20 +10492,30 @@ func (h *Handler) GetObservedInstructions(c *gin.Context) {
 }
 
 func (h *Handler) GetSettings(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	snapshot, err := h.settingsSnapshot(c.Request.Context())
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, snapshot)
+}
+
+func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, error) {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	cacheSettingsStore := h.cacheSettingsStore()
 	if cacheSettingsStore == nil {
-		writeError(c, http.StatusInternalServerError, "响应缓存设置存储不可用")
-		return
+		return nil, fmt.Errorf("响应缓存设置存储不可用")
 	}
 	responseCacheSettings, err := cacheSettingsStore.GetResponseCacheSettings(ctx)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "读取响应缓存设置失败："+err.Error())
-		return
+		return nil, fmt.Errorf("读取响应缓存设置失败：%w", err)
 	}
-	dbSettings, _ := h.db.GetSystemSettings(ctx)
-	_, adminAuthSource := h.resolveAdminSecret(c.Request.Context())
+	dbSettings, err := h.db.GetSystemSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("读取系统设置失败: %w", err)
+	}
+	_, adminAuthSource := h.resolveAdminSecret(parent)
 	adminSecret := ""
 	var resinURL, resinPlatformName string
 	branding := brandingFromSettings(dbSettings)
@@ -10548,7 +10561,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	}
 	modelCooldownSettings := h.store.GetModelCooldownSettings()
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
-	c.JSON(http.StatusOK, settingsResponse{
+	return &settingsResponse{
 		antigravityOAuthSettingsView:        currentAntigravityOAuthSettingsView(),
 		SiteName:                            branding.SiteName,
 		SiteLogo:                            branding.SiteLogo,
@@ -10622,6 +10635,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexSessionFailoverPreserveInput:   runtimeCfg.CodexSessionFailoverPreserveInput,
 		CodexWebSearchProxyLocation:         runtimeCfg.CodexWebSearchProxyLocation,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
+		CodexInitialSessionAgeCheckDisabled: runtimeCfg.CodexInitialSessionAgeCheckDisabled,
 		CodexOverloadThresholdPercent:       runtimeCfg.CodexOverloadThresholdPercent,
 		CodexOverloadPauseMinutes:           runtimeCfg.CodexOverloadPauseMinutes,
 		CodexOverloadWindowMinutes:          runtimeCfg.CodexOverloadWindowMinutes,
@@ -10733,7 +10747,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		SmartPacingMinConcurrency:           h.store.GetSmartPacingMinConcurrency(),
 		SmartPacingWindows:                  h.store.GetSmartPacingWindows(),
 		IgnoreUsageLimitStatus:              h.store.IgnoreUsageLimitStatus(),
-	})
+	}, nil
 }
 
 func promptFilterCustomPatternSnapshotsEquivalent(leftRaw, rightRaw string) bool {
@@ -11123,6 +11137,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexSessionFailoverPreserveInput = existingSettings.CodexSessionFailoverPreserveInput
 		runtimeCfg.CodexWebSearchProxyLocation = existingSettings.CodexWebSearchProxyLocation
 		runtimeCfg.CodexInitialSessionMaxAgeSeconds = existingSettings.CodexInitialSessionMaxAgeSeconds
+		runtimeCfg.CodexInitialSessionAgeCheckDisabled = existingSettings.CodexInitialSessionAgeCheckDisabled
 		runtimeCfg.CodexWSContextTakeover = existingSettings.CodexWSContextTakeover
 		runtimeCfg.CodexWSCompressionLevel = database.NormalizeCodexWSCompressionLevel(existingSettings.CodexWSCompressionLevel)
 		runtimeCfg.CodexWSDisableFragmentation = existingSettings.CodexWSDisableFragmentation
@@ -11464,6 +11479,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	if req.CodexWebSearchProxyLocation != nil {
 		runtimeCfg.CodexWebSearchProxyLocation = *req.CodexWebSearchProxyLocation
+	}
+	if req.CodexInitialSessionAgeCheckDisabled != nil {
+		runtimeCfg.CodexInitialSessionAgeCheckDisabled = *req.CodexInitialSessionAgeCheckDisabled
 	}
 	if req.CodexInitialSessionMaxAgeSeconds != nil {
 		if *req.CodexInitialSessionMaxAgeSeconds < 1 || *req.CodexInitialSessionMaxAgeSeconds > 86400 {
@@ -12208,6 +12226,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexSessionFailoverPreserveInput:   runtimeCfg.CodexSessionFailoverPreserveInput,
 		CodexWebSearchProxyLocation:         runtimeCfg.CodexWebSearchProxyLocation,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
+		CodexInitialSessionAgeCheckDisabled: runtimeCfg.CodexInitialSessionAgeCheckDisabled,
 		CodexOverloadThresholdPercent:       runtimeCfg.CodexOverloadThresholdPercent,
 		CodexOverloadPauseMinutes:           runtimeCfg.CodexOverloadPauseMinutes,
 		CodexOverloadWindowMinutes:          runtimeCfg.CodexOverloadWindowMinutes,
@@ -12547,6 +12566,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexSessionFailoverPreserveInput:   runtimeCfg.CodexSessionFailoverPreserveInput,
 		CodexWebSearchProxyLocation:         runtimeCfg.CodexWebSearchProxyLocation,
 		CodexInitialSessionMaxAgeSeconds:    runtimeCfg.CodexInitialSessionMaxAgeSeconds,
+		CodexInitialSessionAgeCheckDisabled: runtimeCfg.CodexInitialSessionAgeCheckDisabled,
 		CodexOverloadThresholdPercent:       runtimeCfg.CodexOverloadThresholdPercent,
 		CodexOverloadPauseMinutes:           runtimeCfg.CodexOverloadPauseMinutes,
 		CodexOverloadWindowMinutes:          runtimeCfg.CodexOverloadWindowMinutes,

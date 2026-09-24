@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -52,6 +53,40 @@ func TestInitialSessionAgeBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	for _, secret := range []string{"age_ms", "expired", "60", "uuid", "reason"} {
 		require.NotContains(t, string(encoded), secret)
+	}
+}
+
+func TestInitialSessionAgeToggleRetainsIdentityAndOutboundCleanup(t *testing.T) {
+	previous := CurrentRuntimeSettings()
+	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
+	now := time.Now().UTC()
+	for _, disabled := range []bool{true, false} {
+		ApplyRuntimeSettingsFromSystem(&database.SystemSettings{CodexInitialSessionMaxAgeSeconds: 12, CodexInitialSessionAgeCheckDisabled: disabled})
+		status := GetInitialSessionAgeStatus()
+		require.Equal(t, !disabled, status.Enabled)
+		require.Equal(t, 12, status.LimitSeconds)
+		for _, age := range []time.Duration{time.Hour, -time.Hour} {
+			request, _ := continuityTestRequest(0, "turn")
+			usageRequestDiagnosticState(request).StartedAt = now
+			err := checkInitialSessionAdmission(request, initialTestID(now.Add(-age)))
+			if !disabled {
+				require.NotNil(t, err)
+				continue
+			}
+			require.Nil(t, err)
+			d := usageRequestDiagnosticState(request).InitialSession
+			require.True(t, d.AgeCheckDisabled)
+			require.Equal(t, age.Milliseconds(), d.AgeMillis)
+			out, headers, outboundErr := PrepareInitialSessionOutbound(request.Request.Context(), &auth.Account{DBID: 1}, []byte(`{"input":"hi","client_metadata":{"x-codex-turn-state":"stale"}}`), http.Header{"X-Codex-Turn-State": []string{"stale"}})
+			require.NoError(t, outboundErr)
+			require.Empty(t, headers.Get("X-Codex-Turn-State"))
+			require.False(t, gjson.GetBytes(out, "client_metadata.x-codex-turn-state").Exists())
+			before := GetInitialSessionAgeStatus().SinceStart.Samples
+			require.Nil(t, checkInitialSessionAdmission(request, initialTestID(now.Add(-age))))
+			require.Equal(t, before, GetInitialSessionAgeStatus().SinceStart.Samples)
+		}
+		request, _ := continuityTestRequest(0, "turn")
+		require.NotNil(t, checkInitialSessionAdmission(request, "invalid-id"), "disabling age validation must retain ID format validation")
 	}
 }
 

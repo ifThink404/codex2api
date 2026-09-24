@@ -117,7 +117,11 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 				require.Equal(t, "original-ray", d.CFRay)
 				require.Equal(t, status, d.ResponseStatus)
 				require.NotNil(t, d.Usage)
-				require.EqualValues(t, 23, *d.Usage.InputTokens)
+				if transport == "bps" {
+					require.Zero(t, *d.Usage.InputTokens, "BPS preview uses the adjusted billing count")
+				} else {
+					require.EqualValues(t, 23, *d.Usage.InputTokens)
+				}
 				require.EqualValues(t, 144, *d.Usage.OutputTokens)
 				headers := make(map[string]string)
 				for _, header := range d.ResponseHeaders {
@@ -142,6 +146,9 @@ func TestConnectionCodexPreservesRawDiagnosticResponse(t *testing.T) {
 						require.NotContains(t, string(encoded), marker)
 					}
 					require.NotNil(t, d.Compatibility)
+					require.NotNil(t, d.Compatibility.Usage)
+					require.EqualValues(t, 23, d.Compatibility.Usage.UpstreamInput)
+					require.EqualValues(t, 144, d.Compatibility.Usage.UpstreamOutput)
 				} else {
 					require.Contains(t, d.ResponseBody, "original-account")
 				}

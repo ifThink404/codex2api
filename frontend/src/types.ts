@@ -1936,6 +1936,7 @@ export interface InitialSessionAgeSummary {
 
 export interface RuntimeStatusResponse {
   initial_session?: {
+    enabled?: boolean
     started_at: string
     limit_seconds: number
     recent_hour: InitialSessionAgeSummary
@@ -2109,6 +2110,7 @@ export interface SystemSettings {
   codex_session_failover_preserve_input: boolean
   codex_web_search_proxy_location: boolean
   codex_initial_session_max_age_seconds: number
+  codex_initial_session_age_check_disabled: boolean
   codex_overload_threshold_percent: number
   codex_overload_pause_minutes: number
   codex_overload_window_minutes: number

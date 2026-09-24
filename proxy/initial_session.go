@@ -23,6 +23,7 @@ type initialSessionDiagnostic struct {
 	IDTime             *time.Time `json:"id_time,omitempty"`
 	AgeMillis          int64      `json:"age_ms"`
 	LimitSeconds       int        `json:"limit_seconds"`
+	AgeCheckDisabled   bool       `json:"age_check_disabled"`
 	IdentitySource     string     `json:"identity_source"`
 	HeaderStateRemoved bool       `json:"header_turn_state_removed"`
 	BodyStateRemoved   bool       `json:"body_turn_state_removed"`
@@ -94,6 +95,7 @@ func (s *initialAgeStats) record(d initialSessionDiagnostic) {
 }
 
 type InitialSessionAgeStatus struct {
+	Enabled      bool                     `json:"enabled"`
 	StartedAt    time.Time                `json:"started_at"`
 	LimitSeconds int                      `json:"limit_seconds"`
 	RecentHour   InitialSessionAgeSummary `json:"recent_hour"`
@@ -127,7 +129,10 @@ func (s *initialAgeStats) snapshot(now time.Time, limit int) InitialSessionAgeSt
 }
 
 func GetInitialSessionAgeStatus() InitialSessionAgeStatus {
-	return initialSessionStats.snapshot(time.Now(), database.NormalizeCodexInitialSessionMaxAgeSeconds(CurrentRuntimeSettings().CodexInitialSessionMaxAgeSeconds))
+	settings := CurrentRuntimeSettings()
+	status := initialSessionStats.snapshot(time.Now(), database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds))
+	status.Enabled = !settings.CodexInitialSessionAgeCheckDisabled
+	return status
 }
 
 func evaluateInitialSessionAge(id string, received time.Time, limit int) initialSessionDiagnostic {
@@ -164,7 +169,12 @@ func initialSessionAdmissionError() *api.APIError {
 func checkInitialSessionAdmission(request *gin.Context, thread string) *api.APIError {
 	state := usageRequestDiagnosticState(request)
 	if state.InitialSession == nil {
-		d := evaluateInitialSessionAge(thread, state.StartedAt, database.NormalizeCodexInitialSessionMaxAgeSeconds(CurrentRuntimeSettings().CodexInitialSessionMaxAgeSeconds))
+		settings := CurrentRuntimeSettings()
+		d := evaluateInitialSessionAge(thread, state.StartedAt, database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds))
+		d.AgeCheckDisabled = settings.CodexInitialSessionAgeCheckDisabled
+		if d.AgeCheckDisabled && d.Result != "invalid" {
+			d.Result = "allowed"
+		}
 		state.InitialSession = &d
 		initialSessionStats.record(d)
 	}

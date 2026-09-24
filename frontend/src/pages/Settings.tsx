@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { api, resetAdminAuthState, setAdminKey } from '../api'
 import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
 import PageHeader from '../components/PageHeader'
+import SettingsTransfer from '../components/SettingsTransfer'
 import CodexUAObservation from '../components/CodexUAObservation'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
@@ -2096,6 +2097,7 @@ export default function Settings() {
       codex_session_failover_preserve_input: cacheNormalized.codex_session_failover_preserve_input ?? false,
       codex_web_search_proxy_location: cacheNormalized.codex_web_search_proxy_location ?? false,
       codex_initial_session_max_age_seconds: cacheNormalized.codex_initial_session_max_age_seconds ?? 60,
+      codex_initial_session_age_check_disabled: cacheNormalized.codex_initial_session_age_check_disabled ?? false,
       codex_ws_context_takeover: cacheNormalized.codex_ws_context_takeover ?? false,
       codex_ws_compression_level: cacheNormalized.codex_ws_compression_level ?? 1,
       codex_ws_disable_fragmentation: cacheNormalized.codex_ws_disable_fragmentation ?? false,
@@ -2174,6 +2176,7 @@ export default function Settings() {
     codex_session_failover_preserve_input: false,
     codex_web_search_proxy_location: false,
     codex_initial_session_max_age_seconds: 60,
+    codex_initial_session_age_check_disabled: false,
     codex_overload_threshold_percent: 20,
     codex_overload_pause_minutes: 30,
     codex_overload_window_minutes: 5,
@@ -3156,6 +3159,7 @@ export default function Settings() {
           actions={
             <>
               <SaveStatusPill autoSaveStatus={autoSaveStatus} dirtyCount={dirtyCount} />
+              <SettingsTransfer disabled={savingSettings || autoSaveStatus === 'saving' || dirtyCount > 0} />
               {renderSaveButton('shrink-0')}
             </>
           }
@@ -3435,10 +3439,16 @@ export default function Settings() {
                     />
                   </SettingField>
                   <SettingField label={t('settings.initialSessionAge')} description={t('settings.initialSessionAgeHint')} channels={CHANNELS_CODEX_ONLY}>
+                    <div className="flex items-center gap-3">
                     <DraftNumberInput min={1} max={86400} integer emptyValue={60}
+                      disabled={settingsForm.codex_initial_session_age_check_disabled}
                       value={settingsForm.codex_initial_session_max_age_seconds}
                       onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_initial_session_max_age_seconds: value }))}
                       onValueCommit={(value) => { void autoSaveSettingsPatch({ codex_initial_session_max_age_seconds: value }) }} />
+                    <Switch aria-label={t('settings.initialSessionAgeEnabled')}
+                      checked={!settingsForm.codex_initial_session_age_check_disabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('codex_initial_session_age_check_disabled', !checked)} />
+                    </div>
                   </SettingField>
                   <SettingField
                     label={t('settings.codexSessionFailoverPreserveInput')}

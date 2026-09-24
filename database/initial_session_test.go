@@ -33,6 +33,26 @@ func TestInitialSessionSettingMigrationAndPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 60, s.CodexInitialSessionMaxAgeSeconds)
 	require.Equal(t, "existing", s.SiteName)
+	require.False(t, s.CodexInitialSessionAgeCheckDisabled)
+	for _, disabled := range []bool{true, false, true} {
+		s.CodexInitialSessionAgeCheckDisabled = disabled
+		require.NoError(t, db.UpdateSystemSettings(ctx, s))
+		require.NoError(t, db.Close())
+		db, err = New("sqlite", path)
+		require.NoError(t, err)
+		s, err = db.GetSystemSettings(ctx)
+		require.NoError(t, err)
+		require.Equal(t, disabled, s.CodexInitialSessionAgeCheckDisabled)
+		require.Equal(t, 60, s.CodexInitialSessionMaxAgeSeconds)
+	}
+	_, err = db.conn.ExecContext(ctx, "ALTER TABLE system_settings DROP COLUMN codex_initial_session_age_check_disabled")
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	db, err = New("sqlite", path)
+	require.NoError(t, err)
+	s, err = db.GetSystemSettings(ctx)
+	require.NoError(t, err)
+	require.False(t, s.CodexInitialSessionAgeCheckDisabled, "old installations keep age validation enabled")
 	for _, n := range []int{1, 86400, 0, -1, 86401} {
 		s.CodexInitialSessionMaxAgeSeconds = n
 		s.CodexWebSearchProxyLocation = true

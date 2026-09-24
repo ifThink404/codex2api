@@ -107,16 +107,17 @@ type RuntimeSettings struct {
 	GithubProxyURL string
 	// Codex 过载熔断：单账号滑动窗口内 server_is_overloaded 错误占比达到阈值且样本数
 	// 足够时，自动暂停该账号调度一段时间（默认关闭）。
-	CodexOverloadPauseEnabled         bool
-	CodexCapacityRetryEnabled         bool
-	CodexSessionFailoverEnabled       bool
-	CodexForkAccountFallbackEnabled   bool
-	CodexSessionFailoverPreserveInput bool
-	CodexWebSearchProxyLocation       bool
-	CodexInitialSessionMaxAgeSeconds  int
-	CodexOverloadThresholdPercent     int // 触发比例（%），默认 20
-	CodexOverloadPauseMinutes         int // 暂停时长（分钟），默认 30
-	CodexOverloadWindowMinutes        int // 统计窗口（分钟），默认 5
+	CodexOverloadPauseEnabled           bool
+	CodexCapacityRetryEnabled           bool
+	CodexSessionFailoverEnabled         bool
+	CodexForkAccountFallbackEnabled     bool
+	CodexSessionFailoverPreserveInput   bool
+	CodexWebSearchProxyLocation         bool
+	CodexInitialSessionMaxAgeSeconds    int
+	CodexInitialSessionAgeCheckDisabled bool
+	CodexOverloadThresholdPercent       int // 触发比例（%），默认 20
+	CodexOverloadPauseMinutes           int // 暂停时长（分钟），默认 30
+	CodexOverloadWindowMinutes          int // 统计窗口（分钟），默认 5
 	// OverflowAutoCompact 上下文超窗时自动摘要旧轮次并重试一次（实验性，默认 false，issue #415）。
 	// 全局开关与 per-key limits.auto_compact_overflow 为「或」关系。
 	OverflowAutoCompact bool
@@ -395,6 +396,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexSessionFailoverPreserveInput = settings.CodexSessionFailoverPreserveInput
 		next.CodexWebSearchProxyLocation = settings.CodexWebSearchProxyLocation
 		next.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)
+		next.CodexInitialSessionAgeCheckDisabled = settings.CodexInitialSessionAgeCheckDisabled
 		next.CodexOverloadThresholdPercent = settings.CodexOverloadThresholdPercent
 		next.CodexOverloadPauseMinutes = settings.CodexOverloadPauseMinutes
 		next.CodexOverloadWindowMinutes = settings.CodexOverloadWindowMinutes

@@ -296,8 +296,36 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
-    "initialSessionAge": "首次會話 ID 最大年齡（秒）",
-    "initialSessionAgeHint": "預設 60，範圍 1–86400。僅在 Codex 主會話無帳號綁定、首次選號前檢查；已有綁定不受影響，獨立於序號校驗。未來時間或無效 ID 不放行。",
+    "transfer": {
+      "export": "匯出設定",
+      "import": "匯入設定",
+      "exportHint": "匯出已儲存的設定；檔案包含服務金鑰，請妥善保存。請先儲存未儲存的修改。",
+      "importHint": "匯入其他伺服器的設定 JSON；請先儲存未儲存的修改。",
+      "scope": "匯入會覆蓋檔案中的設定。管理員登入金鑰、帳號、API 金鑰、日誌及獨立規則頁的自訂 Prompt 規則不遷移；服務設定金鑰包含在檔案中。背景圖等本機檔案需另外遷移。",
+      "summary": "一般設定 {{count}} 項；其他設定：{{sections}}。",
+      "confirm": "匯入並覆蓋",
+      "importing": "正在匯入…",
+      "exported": "設定已匯出，請妥善保存包含服務金鑰的檔案。",
+      "imported": "設定匯入完成",
+      "refresh": "重新整理以查看設定",
+      "tooLarge": "設定檔案不能超過 10 MB。",
+      "invalid_format": "不是有效的 codex2api 設定檔案，或檔案版本不受支援。",
+      "invalid_field": "目標伺服器不支援或不允許匯入欄位：{{field}}。",
+      "invalid_type": "設定欄位類型錯誤：{{field}}。",
+      "failedSection": "「{{section}}」匯入失敗：{{error}}。先前成功的設定已儲存，請重新整理查看。",
+      "applied": "已套用：{{sections}}。",
+      "sections": {
+        "settings": "一般設定",
+        "claude": "Claude",
+        "antigravity": "Antigravity",
+        "channel_tests": "渠道測連",
+        "invite_guide": "邀請引導",
+        "visible_channels": "可見渠道"
+      }
+    },
+    "initialSessionAge": "首次會話 ID 時間差容限（±秒）",
+    "initialSessionAgeHint": "預設開啟，容限預設 ±60 秒（1–86400）。關閉後保留秒數，不再限制首次會話 ID 的時間差，仍驗證 ID 格式。重新開啟後恢復原容限；既有綁定和序號檢查不受影響。",
+    "initialSessionAgeEnabled": "啟用首次會話 ID 時間差檢查",
 
     "codexWSContextTakeover": "WS 壓縮字典重用",
     "codexWSCompressionLevel": "WS 壓縮等級",
@@ -2110,6 +2138,7 @@
   "runtime": {
     "initialSessionAge": "首次會話 ID 時間差統計",
     "initialSessionAgeHint": "目前容限 ±{{limit}} 秒；本程序自 {{started}} 開始統計，重新啟動後歸零。平均值、最大值依時間差絕對值統計，包含放行與超限攔截，不含無效 ID。內部重試只計一次，用戶端重新請求另計。最近一小時按秒分桶。",
+    "initialSessionAgeDisabledHint": "時間差檢查已關閉（已保留容限 ±{{limit}} 秒）。以下為本程序自 {{started}} 起的統計，關閉期間仍統計時間差，但不因時間差攔截。",
     "initialAge_recent_hour": "最近 1 小時",
     "initialAge_since_start": "本次程序啟動以來",
     "initialAge_samples": "檢查請求數",
