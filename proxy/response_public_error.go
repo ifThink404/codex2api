@@ -177,7 +177,9 @@ func publicResponseErrorPayload(c *gin.Context, data []byte) []byte {
 	if upstreamErrorEventPath(data) != "" {
 		captureUpstreamErrorDiagnostic(c, data, 0, "upstream_event", "response_error")
 	}
-	data = upstreamprivacy.Bytes(data)
+	if c == nil || c.Request == nil || !preserveUpstreamSource(c.Request.Context()) {
+		data = upstreamprivacy.Bytes(data)
+	}
 	parsed := gjson.ParseBytes(data)
 	if !parsed.IsObject() {
 		return data

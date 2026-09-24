@@ -61,6 +61,8 @@ type newAPIOriginalAuditMeta struct {
 }
 
 type newAPIPolicyMeta struct {
+	PreserveUpstreamSource bool `json:"preserve_upstream_source,omitempty"`
+
 	WindowGrant      string `json:"window_grant,omitempty"`
 	PlatformID       string `json:"platform_id,omitempty"`
 	UserName         string `json:"user_name,omitempty"`

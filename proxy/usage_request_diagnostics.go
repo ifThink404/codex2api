@@ -370,7 +370,8 @@ func (h *Handler) captureUsageRequestResolution(c *gin.Context, body []byte, ide
 			"subagent_kind": diagnosticLabel(policy.Meta.SubagentKind), "root_state": policy.Meta.RootSessionState,
 			"root_relation": policy.Meta.RootSessionRelation, "root_fingerprint": policy.Meta.RootSessionFingerprint,
 			"session_fingerprint": policy.Meta.SessionFingerprint, "session_accounting": policy.Meta.SessionAccounting,
-			"passive_feature": policy.Meta.PassiveFeature,
+			"passive_feature":          policy.Meta.PassiveFeature,
+			"preserve_upstream_source": strconv.FormatBool(preserveUpstreamSource(c.Request.Context())),
 		}
 		if policy.Meta.InstallationID != "" {
 			state.Incoming["signed_newapi"]["installation_id"] = diagnosticIdentifier(policy.Meta.InstallationID)

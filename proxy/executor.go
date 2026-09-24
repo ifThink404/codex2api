@@ -1686,6 +1686,7 @@ func (h *Handler) resolveRequestSessionIdentityWithBase(c *gin.Context, body []b
 	status, policyContext := h.cachedNewAPIPolicyAuditState(c)
 	verifiedPolicy := (status == "verified" || status == "signed_response") && policyContext.MetaVerified
 	bindTransportOwner(c, policyContext, verifiedPolicy)
+	bindUpstreamSourceVisibility(c, policyContext, verifiedPolicy)
 	h.bindCodexIdentityClaims(c)
 	accountingBypass := h.verifiedNewAPISessionAccountingBypass(c)
 	rootIdentity := h.resolveRequestRootSessionIdentityForContext(c, body)

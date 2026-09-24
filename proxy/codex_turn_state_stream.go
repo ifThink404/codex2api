@@ -69,6 +69,9 @@ func maskTurnStateResponseMode(ctx context.Context, account *auth.Account, respo
 			delete(response.Header, name)
 			continue
 		}
+		if preserveUpstreamSource(ctx) {
+			continue
+		}
 		for i, value := range values {
 			values[i] = upstreamprivacy.Text(value)
 		}
@@ -151,9 +154,11 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 			if err == nil {
 				if !gjson.ValidBytes(original) {
 					if r.raw {
-						original = upstreamprivacy.Bytes(original)
-						if bpsDiagnosticFromContext(r.ctx) != nil {
-							original = []byte(upstreamprivacy.SourceText(string(original)))
+						if !preserveUpstreamSource(r.ctx) {
+							original = upstreamprivacy.Bytes(original)
+							if bpsDiagnosticFromContext(r.ctx) != nil {
+								original = []byte(upstreamprivacy.SourceText(string(original)))
+							}
 						}
 					} else if r.statusCode >= 400 && r.statusCode <= 599 {
 						// Keep the real HTTP failure category, but discard HTML/plain
@@ -167,7 +172,9 @@ func (r *responsePrivacyBody) Read(p []byte) (int, error) {
 					if err == nil && !r.raw {
 						original, err = maskResponsePayload(r.ctx, r.account, original, true)
 					}
-					original = upstreamprivacy.Bytes(original)
+					if !preserveUpstreamSource(r.ctx) {
+						original = upstreamprivacy.Bytes(original)
+					}
 				}
 			}
 			if err != nil {
@@ -341,16 +348,21 @@ func (r *turnStateStream) maskFrame(frame []byte) ([]byte, error) {
 	// in one fragment may still belong to a hostname buffered in an earlier one.
 	delta := gjson.GetBytes(encoded, "delta")
 	kind := gjson.GetBytes(encoded, "type").String()
-	encoded = upstreamprivacy.Bytes(encoded)
+	if !preserveUpstreamSource(r.ctx) {
+		encoded = upstreamprivacy.Bytes(encoded)
+	}
 	if strings.HasSuffix(kind, ".delta") && delta.Type == gjson.String {
 		encoded, err = sjson.SetBytes(encoded, "delta", delta.String())
 		if err != nil {
 			return nil, err
 		}
 	}
-	frame = upstreamprivacy.Bytes(frame)
+	if !preserveUpstreamSource(r.ctx) {
+		frame = upstreamprivacy.Bytes(frame)
+	}
 	if r.projects == nil {
-		r.projects = &projectStreamBuffer{ctx: r.ctx, account: r.account, channels: make(map[string]*projectDeltaChannel), domainGuard: true, sourceGuard: bpsDiagnosticFromContext(r.ctx) != nil}
+		redactSource := !preserveUpstreamSource(r.ctx)
+		r.projects = &projectStreamBuffer{ctx: r.ctx, account: r.account, channels: make(map[string]*projectDeltaChannel), domainGuard: redactSource, sourceGuard: redactSource && bpsDiagnosticFromContext(r.ctx) != nil}
 	}
 	return r.projects.push(frame, encoded)
 }

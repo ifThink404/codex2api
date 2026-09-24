@@ -18,6 +18,14 @@
 
 WS 的“隐藏上游错误”开关控制是否使用统一友好提示，不能关闭隐私处理。关闭时显示经过过滤的错误类别。
 
+## NewAPI 管理员的来源文字豁免
+
+NewAPI 在已绑定渠道的签名策略元数据中，为启用状态的管理员和 Root 用户自动发送 `preserve_upstream_source: true`，身份以请求令牌所属用户为准。codex2api 仅在用户身份、正文摘要、策略元数据签名和 API Key 绑定验证通过后接受它。普通请求头、正文中同名字段、缺失或无效签名不能开启豁免。
+
+豁免仅保留模型回答、代码、链接和工具参数中的上游来源名称及地址，覆盖 HTTP JSON、compact、SSE 分片及 Responses WebSocket 共享响应出口；原生 Codex 和 BPS 请求均适用。账号凭据、会话身份、Turn-State/response ID 映射、BPS 调用方工具投影及公开错误安全处理继续执行，不启用测连的原始响应模式。
+
+此功能需要同时更新 NewAPI 和 codex2api，并启用两端已有的签名绑定。旧版 NewAPI 没有发送标记时继续执行原有替换；长连接需重新连接以取得新的签名身份。使用日志的 `diagnostics.incoming.signed_newapi.preserve_upstream_source` 记录实际生效值（字符串 `true` 或 `false`）。不增加客户端开关或依据客户端自报角色放行。
+
 ## 自助用量
 
 公开 Key 用量接口使用独立的 `publicAPIKeyLimits` 结构，保留用户自己的预算、模型和功能限制；不再直接返回内部限制对象中的账号 scope ID 和分组 ID。后台配置不被修改。

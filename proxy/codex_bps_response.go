@@ -179,7 +179,9 @@ func projectBPSResponse(ctx context.Context, data []byte) ([]byte, error) {
 				if text, ok := child.(string); ok {
 					switch key {
 					case "text", "refusal", "message", "detail", "code", "param":
-						v[key] = upstreamprivacy.SourceText(text)
+						if !preserveUpstreamSource(ctx) {
+							v[key] = upstreamprivacy.SourceText(text)
+						}
 					case "metadata", "client_metadata", "headers":
 						var nested any
 						dec := json.NewDecoder(strings.NewReader(text))
