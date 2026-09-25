@@ -10,7 +10,8 @@ import (
 
 // The endpoint still owns its retry budget and the no-visible-output check.
 // This state only prepares a migration when that endpoint selects another
-// attempt after an observed quota failure; it never initiates a retry itself.
+// attempt after an observed quota failure, or after a retryable request-local
+// exclusion in relaxed mode; it never initiates a retry itself.
 type sessionQuotaRetry struct {
 	request *gin.Context
 	key     string
@@ -33,6 +34,16 @@ func (r *retryAccountExclusions) noteQuotaFailure(accountID int64, status int, p
 	r.quotaFailures[accountID] = true
 }
 
+func (r *retryAccountExclusions) noteRetryFailure(accountID int64) {
+	if r == nil || accountID <= 0 {
+		return
+	}
+	if r.retryFailures == nil {
+		r.retryFailures = make(map[int64]bool)
+	}
+	r.retryFailures[accountID] = true
+}
+
 func (h *Handler) prepareSessionQuotaRetry(ctx context.Context, key string, exclusions *retryAccountExclusions, policy auth.DispatchPolicy) (context.Context, bool) {
 	if exclusions == nil || exclusions.sessionQuota == nil || ctx.Err() != nil || sessionAccountFailoverEnabledBy("account_usage_exhausted") == "" {
 		return ctx, false
@@ -43,14 +54,18 @@ func (h *Handler) prepareSessionQuotaRetry(ctx context.Context, key string, excl
 		return ctx, false
 	}
 	state := continuityRequest(request)
-	if state == nil || state.Diagnostic == nil || !exclusions.quotaFailures[state.Record.AccountID] {
+	if state == nil || state.Diagnostic == nil {
 		return ctx, false
 	}
 	ownerID := state.Record.AccountID
+	requestExcluded := CurrentRuntimeSettings().CodexForkAccountFallbackEnabled && exclusions.retryFailures[ownerID] && exclusions.ForSelection()[ownerID]
+	if !exclusions.quotaFailures[ownerID] && !requestExcluded {
+		return ctx, false
+	}
 	delete(exclusions.quotaFailures, ownerID)
 	owner := h.store.FindByID(ownerID)
 	reason := sessionAccountFailoverReason(owner, policy)
-	if reason != "account_usage_exhausted" && reason != "account_spark_usage_exhausted" {
+	if reason != "account_usage_exhausted" && reason != "account_spark_usage_exhausted" && !requestExcluded {
 		return ctx, false
 	}
 	// A brand-new root had no owner when ingress diagnostics were created.
@@ -59,8 +74,12 @@ func (h *Handler) prepareSessionQuotaRetry(ctx context.Context, key string, excl
 		state.Diagnostic.OwnerAccount = ownerID
 	}
 	// Reuse all normal switch checks (root ownership, complete context, exact
-	// groups/tags, grants and capacity) and the normal atomic epoch transition.
-	pending, failure := h.prepareSessionAccountFailover(request, key, retry.body, policy)
+	// groups, grants and capacity) and the normal atomic epoch transition.
+	excludedOwner := int64(0)
+	if requestExcluded {
+		excludedOwner = ownerID
+	}
+	pending, failure := h.prepareSessionAccountFailover(request, key, retry.body, policy, excludedOwner)
 	if failure != nil {
 		plan := &sessionAccountFailoverPlan{Request: request, Key: key, Body: retry.body, Failure: failure, Diagnostic: usageRequestDiagnosticState(request).AccountFailover}
 		request.Request = request.Request.WithContext(context.WithValue(request.Request.Context(), sessionAccountFailoverContextKey{}, plan))

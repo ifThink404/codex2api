@@ -686,6 +686,8 @@
     "heroChannelTitle": "{{channel}}: {{available}}/{{total}} accounts available · {{requests}} requests today"
   },
   "accounts": {
+    "rawPassthroughTitle": "Raw API passthrough (HTTP / SSE)",
+    "rawPassthroughHint": "Off by default. Authorized requests matching the model list prefer raw accounts and preserve the endpoint, request body, response status and body. Skips model mapping, identity completion, image uploads and format conversion; failures are not retried automatically. Uses the account credentials, URL, proxy and custom headers. WebSocket is outside this switch’s scope.",
     "usageLimitBypassTitle": "Allow selected models after quota exhaustion",
     "usageLimitBypassHint": "Off by default. Listed models may continue despite local 5h / 7d quota limits or usage auto-pause. Account errors, manual disable/pause, model permissions and concurrency limits still apply. Actual upstream rejections are returned.",
     "usageLimitBypassPlaceholder": "Enter a model ID and press Enter",
@@ -1541,7 +1543,7 @@
     "codexPassthroughAlways": "Always passthrough",
     "codexPassthroughHint": "Passthrough forwards the client identity to the relay for gateways that only allow official Codex clients (e.g. sub2api). Auto passes through only when the downstream is an official Codex client; off keeps the default generated identity.",
     "codexFingerprintModeTitle": "Device fingerprint convergence",
-    "codexFingerprintModeHint": "When several people share one account, rewrite the device and session identifiers on outbound requests to account-level constants so upstream sees fewer devices and sessions. Only turn metadata and client_metadata are touched; upstream session isolation and prompt cache behaviour stay unchanged.",
+    "codexFingerprintModeHint": "Controls outbound device and session metadata. Native Codex session isolation stays unchanged. For BPS, Device + session can derive stable session and cache identifiers for ordinary requests without an explicit session ID.",
     "codexFingerprintModeBatchHint": "Set the convergence level for the selected accounts. Only Codex accounts are affected; relay and Grok accounts ignore it.",
     "codexFingerprintModeOff": "Off (default)",
     "codexFingerprintModeDevice": "Device only",
@@ -1549,7 +1551,7 @@
     "codexFingerprintModeFull": "Converge everything",
     "codexFingerprintModeOffDetail": "Client identifiers pass through untouched; outbound behaviour matches previous versions.",
     "codexFingerprintModeDeviceDetail": "Converge the installation id only: upstream sees one device, while each user keeps a separate session.",
-    "codexFingerprintModeSessionDetail": "Converge the installation and session ids and derive a per-client-session thread: upstream sees one device, one session and several threads, close to a single user with multiple windows.",
+    "codexFingerprintModeSessionDetail": "BPS preserves explicit sessions first. Otherwise it derives a stable identifier from the user, device, UA and conversation opening, with separate turn IDs. Without a device ID, it uses the user and conversation opening. Independent chats with identical openings cannot be distinguished reliably; send a client session ID when possible. Compaction, response continuations and related background requests are excluded.",
     "codexFingerprintModeFullDetail": "The thread id also equals the session id: upstream sees one device, one session and one thread. Most aggressive — every concurrent request lands on the same thread.",
     "sessionCapacityTitle": "Active session capacity",
     "sessionCapacityHint": "Off by default. Limits how many distinct sessions this account retains. Existing sessions refresh their idle timer and may continue at capacity; new sessions try another account.",

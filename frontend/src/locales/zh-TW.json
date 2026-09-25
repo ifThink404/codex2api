@@ -148,6 +148,10 @@
     }
   },
   "accounts": {
+    "rawPassthroughTitle": "原樣 API 透傳（HTTP / SSE）",
+    "rawPassthroughHint": "預設關閉。開啟後，權限範圍內符合模型的請求優先走透傳帳號，保留原介面路徑、請求本文、回應狀態和本文，不做模型映射、身分補齊、圖片上傳或格式轉換；失敗不自動重試。使用帳號設定的金鑰、位址、代理和自訂請求標頭。WebSocket 不在此開關範圍內。",
+    "codexFingerprintModeHint": "控制出站裝置與會話中繼資料。原生 Codex 的會話隔離規則不變；BPS 在「裝置 + 會話」模式下，可為缺少會話 ID 的一般請求推導穩定的會話與快取標識。",
+    "codexFingerprintModeSessionDetail": "BPS 優先保留明確會話；缺少時按使用者、裝置、UA 和對話開頭推導穩定標識，每輪保留獨立 turn_id。裝置缺少時按使用者與對話開頭區分。相同開頭的獨立對話無法準確區分，建議客戶端傳會話 ID。壓縮、續鏈及關聯背景請求不使用此推導。",
     "usageLimitBypassTitle": "額度耗盡後允許指定模型",
     "usageLimitBypassHint": "預設關閉。允許名單內的模型在本機 5h / 7d 額度限制或用量自動暫停後繼續請求。仍受帳號錯誤、手動停用/暫停、模型權限和並行限制；上游實際拒絕仍會傳回錯誤。",
     "usageLimitBypassPlaceholder": "輸入模型 ID，按 Enter 新增",

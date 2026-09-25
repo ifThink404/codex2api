@@ -32,6 +32,7 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 		native, streamFailure, temporary, preserve, visible, compact bool
 		headerQuota, targetQuota, temporaryAlways                    bool
 		budget                                                       int
+		relaxed                                                      bool
 		disabled                                                     bool
 		targetMismatch                                               string
 	}{
@@ -50,6 +51,11 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 		{name: "native_zero_budget", native: true, streamFailure: true, budget: 0},
 		{name: "failover_disabled", budget: 1, disabled: true},
 		{name: "temporary_429_sticky", budget: 1, temporary: true},
+		{name: "relaxed_temporary_429_rotate", budget: 1, temporary: true, relaxed: true},
+		{name: "relaxed_temporary_stream_rotate", budget: 1, temporary: true, streamFailure: true, relaxed: true},
+		{name: "relaxed_compact_temporary_rotate", budget: 1, compact: true, temporary: true, relaxed: true},
+		{name: "relaxed_temporary_zero_budget", budget: 0, temporary: true, relaxed: true},
+		{name: "relaxed_temporary_visible", budget: 1, temporary: true, streamFailure: true, visible: true, relaxed: true},
 		{name: "temporary_stream_sticky", budget: 1, temporary: true, streamFailure: true},
 		{name: "native_temporary_stream_sticky", native: true, budget: 1, temporary: true, streamFailure: true},
 		{name: "temporary_stream_budget_exhausted", budget: 1, temporary: true, streamFailure: true, temporaryAlways: true},
@@ -66,6 +72,10 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 			settings := CurrentRuntimeSettings()
 			settings.CodexPreflightSSEPassthrough = true
 			settings.CodexSessionFailoverPreserveInput = tc.preserve
+			if tc.relaxed {
+				settings.CodexForkAccountFallbackEnabled = true
+				settings.CodexSessionFailoverEnabled = false
+			}
 			settings.CompactViaResponses = tc.compact && tc.streamFailure
 			settings.CodexWSSilentRetry, settings.CodexWSSilentRetries = tc.budget > 0, tc.budget
 			ApplyRuntimeSettings(settings)
@@ -73,6 +83,9 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 			h.store.SetMaxRateLimitRetries(tc.budget)
 			h.store.SetRetryIntervalMS(1)
 			h.store.SetTransportRetryPolicy("sticky")
+			if tc.relaxed {
+				h.store.SetTransportRetryPolicy("rotate")
+			}
 			switch tc.targetMismatch {
 			case "tags":
 				target.Tags = []string{"different"}
@@ -229,7 +242,7 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata.window_id", root+":1")
 			output, status = send(body, tc.compact)
 			blocked := tc.budget == 0 || tc.disabled || tc.targetMismatch == "groups" || tc.targetMismatch == "model" || tc.visible
-			expectSwitch := !blocked && !tc.temporary
+			expectSwitch := !blocked && (!tc.temporary || tc.relaxed)
 			var attempts []capture
 			for len(seen) > 0 {
 				attempts = append(attempts, <-seen)

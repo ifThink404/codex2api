@@ -335,6 +335,7 @@ func (h *Handler) buildAccountResponse(
 		ClaudeAuthKind:                 claudeAuthKindForRow(row, isClaudeAccount),
 		ClaudeBaseURL:                  row.GetCredential(auth.ClaudeBaseURLCredentialKey),
 		CodexPassthroughMode:           codexPassthroughMode,
+		RawPassthroughEnabled:          isOpenAIResponsesAccount && row.GetCredentialBool(auth.OpenAIRawPassthroughCredentialKey),
 		UpstreamRequestIDHeader:        row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
 	}
 	// 凭据里只要存在 usage 窗口键(哪怕是空数组)就代表 OAuth usage 采样跑过。

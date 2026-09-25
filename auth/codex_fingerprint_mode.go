@@ -7,9 +7,10 @@ import "strings"
 // 判定这一个账号背后有多少台设备、多少个会话。收敛模式把这些标识改写成账号级
 // 恒定值，让上游看到的设备/会话数收敛到接近单人使用的形态。
 //
-// 只影响出站请求里的 x-codex-turn-metadata 头和请求体 client_metadata；
-// 出站 Session_id 头由 resolveUpstreamSessionID 独立决定，收敛不参与，
-// 因此 prompt cache 隔离行为和 isolate_requests_by_default 设置不受影响。
+// 对原生 Codex，收敛只影响 x-codex-turn-metadata 和 client_metadata；
+// Session_id 由 resolveUpstreamSessionID 独立决定，其隔离规则不变。
+// BPS 的 session 档额外为无显式会话的普通请求
+// 使用按用户、设备和对话开头隔离的缓存提示；它不参与本地归属和窗口授权。
 const (
 	// CodexFingerprintModeOff 不做任何收敛，客户端标识原样透传（默认）。
 	CodexFingerprintModeOff = "off"

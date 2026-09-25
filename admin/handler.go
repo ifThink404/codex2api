@@ -1742,6 +1742,7 @@ type accountResponse struct {
 	ClaudeAuthKind                 string                      `json:"claude_auth_kind,omitempty"`
 	ClaudeBaseURL                  string                      `json:"claude_base_url,omitempty"`
 	CodexPassthroughMode           string                      `json:"codex_passthrough_mode,omitempty"`
+	RawPassthroughEnabled          bool                        `json:"raw_passthrough_enabled,omitempty"`
 	// 图片配额信息
 	ImageQuotaRemaining *int   `json:"image_quota_remaining,omitempty"`
 	ImageQuotaTotal     *int   `json:"image_quota_total,omitempty"`
@@ -4290,6 +4291,7 @@ type addOpenAIResponsesAccountReq struct {
 	ModelMapping            string            `json:"model_mapping"`
 	CodexClientMetadataMode *string           `json:"codex_client_metadata_mode"`
 	CodexPassthroughMode    *string           `json:"codex_passthrough_mode"`
+	RawPassthroughEnabled   *bool             `json:"raw_passthrough_enabled"`
 	ProxyURL                string            `json:"proxy_url"`
 	CustomHeaders           map[string]string `json:"custom_headers"`
 }
@@ -4403,6 +4405,7 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		"model_mapping":                          modelMapping,
 		"codex_client_metadata_mode":             codexClientMetadataMode,
 		"codex_passthrough_mode":                 codexPassthroughMode,
+		auth.OpenAIRawPassthroughCredentialKey:   req.RawPassthroughEnabled != nil && *req.RawPassthroughEnabled,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 	}
@@ -4427,6 +4430,7 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		ModelMapping:            modelMapping,
 		CodexClientMetadataMode: codexClientMetadataMode,
 		CodexPassthroughMode:    codexPassthroughMode,
+		OpenAIRawPassthrough:    req.RawPassthroughEnabled != nil && *req.RawPassthroughEnabled,
 		CustomHeaders:           customHeaders,
 		Email:                   baseURL,
 		PlanType:                "api",
@@ -4620,6 +4624,11 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 	if req.APIKey != "" {
 		credentials["api_key"] = req.APIKey
 	}
+	rawPassthrough := row.GetCredentialBool(auth.OpenAIRawPassthroughCredentialKey)
+	if req.RawPassthroughEnabled != nil {
+		rawPassthrough = *req.RawPassthroughEnabled
+	}
+	credentials[auth.OpenAIRawPassthroughCredentialKey] = rawPassthrough
 	if req.APIKey == "" && strings.TrimSpace(row.GetCredential("api_key")) == "" {
 		writeError(c, http.StatusBadRequest, "API Key 是必填字段")
 		return
@@ -4635,6 +4644,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 	}
 	if h.store != nil {
 		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, codexClientMetadataMode, codexPassthroughMode, req.ProxyURL)
+		h.store.ApplyOpenAIRawPassthrough(id, rawPassthrough)
 		h.store.ApplyAccountCustomHeaders(id, customHeaders)
 	}
 	h.db.InsertAccountEventAsync(id, "updated", "manual_openai_responses")

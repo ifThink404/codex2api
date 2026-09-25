@@ -4017,6 +4017,9 @@ func firstGJSONInt(body []byte, paths ...string) int64 {
 
 // Responses 处理 /v1/responses 请求（原生透传，增强输入验证）
 func (h *Handler) Responses(c *gin.Context) {
+	if h.tryRawRelay(c) {
+		return
+	}
 	defer h.finishSessionCooldown(c)
 	// 1. 读取请求体
 	handlerStart := time.Now()
@@ -4235,6 +4238,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	accountFilter = h.applyPassiveInternalModelRouting(c, effectiveModel, sessionIdentity, affinityKey, true, accountFilter)
 	accountFilter = h.withRequestModelCooldownFilter(c, effectiveModel, accountFilter)
+	accountFilter = excludeRawRelayAccountsFilter(accountFilter, selectionTraceForRequest(c))
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter, selectionTraceForRequest(c))
 	}
@@ -6278,6 +6282,9 @@ func (h *Handler) Responses(c *gin.Context) {
 
 // ResponsesCompact 处理 /v1/responses/compact 请求（非流式压缩接口，透传到上游 /responses/compact）
 func (h *Handler) ResponsesCompact(c *gin.Context) {
+	if h.tryRawRelay(c) {
+		return
+	}
 	defer h.finishSessionCooldown(c)
 	received := time.Now()
 	// 1. 读取请求体
@@ -6441,6 +6448,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	}
 	accountFilter = h.applyPassiveInternalModelRouting(c, effectiveModel, sessionIdentity, affinityKey, true, accountFilter)
 	accountFilter = h.withRequestModelCooldownFilter(c, effectiveModel, accountFilter)
+	accountFilter = excludeRawRelayAccountsFilter(accountFilter, selectionTraceForRequest(c))
 	accountFilter = excludeClaudeAccountsFilter(accountFilter, selectionTraceForRequest(c))
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter, selectionTraceForRequest(c))
@@ -7274,6 +7282,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 }
 
 func (h *Handler) ChatCompletions(c *gin.Context) {
+	if h.tryRawRelay(c) {
+		return
+	}
 	defer h.finishSessionCooldown(c)
 	// 1. 读取请求体
 	rawBody, err := readRawRequestBody(c)
@@ -7396,6 +7407,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 	accountFilter = h.applyPassiveInternalModelRouting(c, effectiveModel, sessionIdentity, affinityKey, true, accountFilter)
 	accountFilter = h.withRequestModelCooldownFilter(c, effectiveModel, accountFilter)
+	accountFilter = excludeRawRelayAccountsFilter(accountFilter, selectionTraceForRequest(c))
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter, selectionTraceForRequest(c))
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)

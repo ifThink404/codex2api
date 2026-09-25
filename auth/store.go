@@ -169,6 +169,7 @@ type Account struct {
 	// CodexPassthroughMode 是 OpenAI Responses 中转账号的 Codex 身份透传档位
 	// （off / auto / always），见 codex passthrough 常量定义。
 	CodexPassthroughMode string
+	OpenAIRawPassthrough bool
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode         string
@@ -5365,6 +5366,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		SessionCapacityIdleTTLSeconds: normalizeSessionCapacityIdleTTLSeconds(sessionCapacityIdleTTLSeconds),
 		UpstreamRequestIDHeader:       row.GetCredential(UpstreamRequestIDHeaderCredentialKey),
 		CodexPassthroughMode:          codexPassthroughMode,
+		OpenAIRawPassthrough:          row.GetCredentialBool(OpenAIRawPassthroughCredentialKey),
 		ClaudeAuthKind:                claudeAuthKind,
 		ClaudeBaseURL:                 row.GetCredential(ClaudeBaseURLCredentialKey),
 	}
@@ -5714,6 +5716,7 @@ func openAIResponsesRuntimeConfigDiffers(acc *Account, row *database.AccountRow)
 		!stringSliceEqual(acc.Models, normalizeModelList(row.GetCredentialStringSlice("models"))) ||
 		strings.TrimSpace(acc.ModelMapping) != strings.TrimSpace(row.GetCredential("model_mapping")) ||
 		NormalizeCodexClientMetadataMode(acc.CodexClientMetadataMode) != NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode")) ||
+		acc.OpenAIRawPassthrough != row.GetCredentialBool(OpenAIRawPassthroughCredentialKey) ||
 		strings.TrimSpace(acc.ProxyURL) != strings.TrimSpace(row.ProxyURL) ||
 		!stringMapEqual(acc.CustomHeaders, row.GetCredentialStringMap("custom_headers"))
 }
@@ -9986,6 +9989,9 @@ func (s *Store) applyOpenAIResponsesConfig(ctx context.Context, row *database.Ac
 	acc.ModelMapping = strings.TrimSpace(modelMapping)
 	acc.CodexClientMetadataMode = NormalizeCodexClientMetadataMode(codexClientMetadataMode)
 	acc.CodexPassthroughMode = NormalizeCodexPassthroughMode(codexPassthroughMode)
+	if loadedPersistedConfig {
+		acc.OpenAIRawPassthrough = row.GetCredentialBool(OpenAIRawPassthroughCredentialKey)
+	}
 	acc.ProxyURL = strings.TrimSpace(proxyURL)
 	acc.Email = acc.BaseURL
 	acc.PlanType = "api"

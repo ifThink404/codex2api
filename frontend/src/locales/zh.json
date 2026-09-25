@@ -686,6 +686,8 @@
     "heroChannelTitle": "{{channel}}：可用账号 {{available}}/{{total}} · 今日请求 {{requests}}"
   },
   "accounts": {
+    "rawPassthroughTitle": "原样 API 透传（HTTP / SSE）",
+    "rawPassthroughHint": "默认关闭。开启后，权限范围内匹配模型的请求优先走透传账号，保留原接口路径、请求正文、响应状态和正文，不做模型映射、身份补齐、图片上传或格式转换；失败不自动重试。使用账号配置的密钥、地址、代理和自定义请求头。WebSocket 不在此开关范围内。",
     "usageLimitBypassTitle": "额度耗尽后允许指定模型",
     "usageLimitBypassHint": "默认关闭。允许名单内的模型在本地 5h / 7d 额度限流或用量自动暂停后继续请求。仍受账号错误、手动禁用/暂停、模型权限和并发限制；上游实际拒绝仍会返回错误。",
     "usageLimitBypassPlaceholder": "输入模型 ID，按回车添加",
@@ -1541,7 +1543,7 @@
     "codexPassthroughAlways": "始终透传",
     "codexPassthroughHint": "透传模式把客户端身份原样转发给中转，供 sub2api 等仅放行官方 Codex 客户端的中转识别。auto 仅在下游是官方 Codex 客户端时透传，off 保持默认的生成身份。",
     "codexFingerprintModeTitle": "设备指纹收敛",
-    "codexFingerprintModeHint": "多人共享同一账号时，把出站请求里的设备与会话标识改写成账号级恒定值，降低上游看到的设备数和会话数。只影响 turn metadata 与 client_metadata，不改变上游会话隔离与 prompt cache 行为。",
+    "codexFingerprintModeHint": "控制出站设备与会话元数据。原生 Codex 的会话隔离规则不变；BPS 在“设备 + 会话”模式下，可为缺少会话 ID 的普通请求推导稳定的会话与缓存标识。",
     "codexFingerprintModeBatchHint": "批量设置所选账号的设备指纹收敛档位。仅对 Codex 官方账号生效，中转与 Grok 账号会忽略。",
     "codexFingerprintModeOff": "关闭（默认）",
     "codexFingerprintModeDevice": "仅设备",
@@ -1549,7 +1551,7 @@
     "codexFingerprintModeFull": "全部收敛",
     "codexFingerprintModeOffDetail": "客户端标识原样透传，出站行为与升级前一致。",
     "codexFingerprintModeDeviceDetail": "只收敛安装标识：上游看到 1 台设备，各用户的会话保持独立。",
-    "codexFingerprintModeSessionDetail": "收敛安装标识与会话标识，并按客户端会话派生独立线程：上游看到 1 台设备、1 个会话、多个线程，接近单人开多窗口的形态。",
+    "codexFingerprintModeSessionDetail": "BPS 优先保留显式会话；缺失时按用户、设备、UA 和对话开头推导稳定标识，每轮保留独立 turn_id。设备缺失时按用户与对话开头区分。相同开头的独立对话无法准确区分，建议客户端传会话 ID。压缩、续链和关联后台请求不使用此推导。",
     "codexFingerprintModeFullDetail": "线程标识也等于会话标识：上游看到 1 台设备、1 个会话、1 个线程。最激进，并发请求会全部落在同一线程上。",
     "sessionCapacityTitle": "账号活跃会话容量",
     "sessionCapacityHint": "默认关闭。限制该账号同时保留的不同会话数；已有会话每次使用会刷新空闲时间，超过空闲时间后自动释放。满额时已有会话可继续，新会话会尝试其他账号。",

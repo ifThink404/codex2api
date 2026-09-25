@@ -287,6 +287,7 @@ export interface AccountRow {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
+  raw_passthrough_enabled?: boolean
   codex_native_enabled?: boolean
   codex_native_models?: string[]
   codex_bps_models?: string[]
@@ -936,6 +937,7 @@ export interface AgentIdentityBatchImportResponse {
 }
 
 export interface AddOpenAIResponsesAccountRequest {
+  raw_passthrough_enabled?: boolean
   name?: string
   base_url: string
   api_key: string
@@ -949,6 +951,7 @@ export interface AddOpenAIResponsesAccountRequest {
 }
 
 export interface UpdateOpenAIResponsesAccountRequest {
+  raw_passthrough_enabled?: boolean
   name?: string
   base_url: string
   api_key?: string

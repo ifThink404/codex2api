@@ -6016,6 +6016,7 @@ export default function Accounts() {
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
     setEditOpenAIForm({
+      raw_passthrough_enabled: account.raw_passthrough_enabled ?? false,
       name: account.name ?? "",
       base_url: account.base_url || "https://api.openai.com",
       api_key: "",
@@ -8512,6 +8513,7 @@ export default function Accounts() {
                     {t("accounts.codexClientMetadataMode")}
                   </label>
                   <Select
+                    disabled={openAIForm.raw_passthrough_enabled}
                     value={
                       openAIForm.codex_client_metadata_mode ?? "auto"
                     }
@@ -8543,6 +8545,7 @@ export default function Accounts() {
                     {t("accounts.codexPassthroughMode")}
                   </label>
                   <Select
+                    disabled={openAIForm.raw_passthrough_enabled}
                     value={openAIForm.codex_passthrough_mode ?? "off"}
                     onValueChange={(value) =>
                       setOpenAIForm((form) => ({
@@ -8569,6 +8572,17 @@ export default function Accounts() {
                   <p className="mt-1.5 text-xs text-muted-foreground">
                     {t("accounts.codexPassthroughHint")}
                   </p>
+                </div>
+                <div className="rounded-lg border p-3 space-y-2">
+                  <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                    <span>{t("accounts.rawPassthroughTitle")}</span>
+                    <Switch
+                      checked={openAIForm.raw_passthrough_enabled ?? false}
+                      onCheckedChange={(enabled) => setOpenAIForm((form) => ({ ...form, raw_passthrough_enabled: enabled }))}
+                      aria-label={t("accounts.rawPassthroughTitle")}
+                    />
+                  </label>
+                  <p className="text-xs text-muted-foreground">{t("accounts.rawPassthroughHint")}</p>
                 </div>
                 <div>
                   <div className="mb-2 flex items-center justify-between gap-2">
@@ -9676,6 +9690,7 @@ export default function Accounts() {
                           {t("accounts.codexClientMetadataMode")}
                         </label>
                         <Select
+                          disabled={editOpenAIForm.raw_passthrough_enabled}
                           value={
                             editOpenAIForm.codex_client_metadata_mode ?? "auto"
                           }
@@ -9708,6 +9723,7 @@ export default function Accounts() {
                         {t("accounts.codexPassthroughMode")}
                       </label>
                       <Select
+                        disabled={editOpenAIForm.raw_passthrough_enabled}
                         value={editOpenAIForm.codex_passthrough_mode ?? "off"}
                         onValueChange={(value) =>
                           setEditOpenAIForm((form) => ({
@@ -9734,6 +9750,17 @@ export default function Accounts() {
                       <p className="mt-1.5 text-xs text-muted-foreground">
                         {t("accounts.codexPassthroughHint")}
                       </p>
+                    </div>
+                    <div className="rounded-lg border p-3 space-y-2">
+                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                        <span>{t("accounts.rawPassthroughTitle")}</span>
+                        <Switch
+                          checked={editOpenAIForm.raw_passthrough_enabled ?? false}
+                          onCheckedChange={(enabled) => setEditOpenAIForm((form) => ({ ...form, raw_passthrough_enabled: enabled }))}
+                          aria-label={t("accounts.rawPassthroughTitle")}
+                        />
+                      </label>
+                      <p className="text-xs text-muted-foreground">{t("accounts.rawPassthroughHint")}</p>
                     </div>
 
                     <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs space-y-4">

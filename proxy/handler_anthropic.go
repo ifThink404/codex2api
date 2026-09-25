@@ -433,6 +433,9 @@ func (h *Handler) translateAnthropicMessagesToCodexOnce(state *anthropicCodexTra
 
 // Messages 处理 /v1/messages 请求（Anthropic Messages API → Codex Responses）
 func (h *Handler) Messages(c *gin.Context) {
+	if h.tryRawRelay(c) {
+		return
+	}
 	defer h.finishSessionCooldown(c)
 	// 1. 读取请求体
 	rawBody, err := readRawRequestBody(c)
@@ -551,6 +554,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	accountFilter := accountFilterForResponsesModel(effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.applyPassiveInternalModelRouting(c, effectiveModel, sessionIdentity, affinityKey, true, accountFilter)
 	accountFilter = h.withRequestModelCooldownFilter(c, effectiveModel, accountFilter)
+	accountFilter = excludeRawRelayAccountsFilter(accountFilter, selectionTraceForRequest(c))
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。

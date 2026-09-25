@@ -16,6 +16,9 @@ import (
 type retryAccountExclusions struct {
 	sessionQuota  *sessionQuotaRetry
 	quotaFailures map[int64]bool
+	// Retryable failures may exclude a healthy root for this request without
+	// changing its persistent health. They are distinct from arbitrary hard exclusions.
+	retryFailures map[int64]bool
 	hard          map[int64]bool
 	soft          map[int64]bool
 	transient     map[int64]bool
@@ -127,6 +130,7 @@ func (r *retryAccountExclusions) MarkHard(accountID int64) {
 		return
 	}
 	r.hard[accountID] = true
+	delete(r.retryFailures, accountID)
 	delete(r.soft, accountID)
 	delete(r.transient, accountID)
 	delete(r.recoverable, accountID)
@@ -161,8 +165,12 @@ func (r *retryAccountExclusions) MarkRequestFailure(accountID int64, err error, 
 		r.MarkHard(accountID)
 		return
 	}
+	status, payload, statusBearing := continuousRetryHTTPErrorDetails(err)
+	if !TransportReplayBlocked(err) && (!statusBearing && !errors.Is(err, context.Canceled) || statusBearing && isTransientRetryHTTPFailure(status, payload)) {
+		defer r.noteRetryFailure(accountID)
+	}
 	policy := continuousRetryPolicyForCall(policies)
-	if _, _, statusBearing := continuousRetryHTTPErrorDetails(err); statusBearing {
+	if statusBearing {
 		if continuousRetryRequestErrorSelected(policy, err) {
 			r.MarkTransient(accountID)
 			return
@@ -190,6 +198,9 @@ func (r *retryAccountExclusions) MarkHTTPFailure(accountID int64, statusCode int
 		r.MarkHard(accountID)
 		return
 	}
+	if isTransientRetryHTTPFailure(statusCode, body) {
+		defer r.noteRetryFailure(accountID)
+	}
 	policy := continuousRetryPolicyForCall(policies)
 	if continuousRetryHTTPSelected(policy, statusCode, body) {
 		r.MarkTransient(accountID)
@@ -216,6 +227,9 @@ func (r *retryAccountExclusions) MarkStreamFailureForEvent(accountID int64, outc
 	if failureKind == "cyber_policy" || isHardStopUpstreamPolicy(outcome.failurePayload) {
 		r.MarkHard(accountID)
 		return
+	}
+	if isTransientRetryHTTPFailure(outcome.logStatusCode, outcome.failurePayload) || outcome.logStatusCode == logStatusUpstreamStreamBreak || failureKind == "timeout" || failureKind == "transport" || outcome.capacityShed {
+		defer r.noteRetryFailure(accountID)
 	}
 	if continuousRetryStreamSelected(outcome, outcome.failurePayload, eventType, policies...) {
 		r.MarkTransient(accountID)
@@ -293,6 +307,9 @@ func isPermanentQuotaFailure(body []byte) bool {
 
 func (r *retryAccountExclusions) MarkSoftFirstTokenTimeout(accountID int64) {
 	r.MarkSoft(accountID)
+	if r != nil && r.soft[accountID] {
+		r.noteRetryFailure(accountID)
+	}
 }
 
 // MarkSoft 把账号加入本次请求的软排除集：调度选号时跳过它，但账号池试完后由

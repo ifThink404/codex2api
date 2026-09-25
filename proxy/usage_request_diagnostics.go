@@ -69,6 +69,7 @@ type usageRecentAccountDiagnostic struct {
 }
 
 type usageRequestDiagnostics struct {
+	RawPassthrough         *rawRelayDiagnostic     `json:"raw_passthrough,omitempty"`
 	RelaxedFallback        *relaxedAccountFallback `json:"relaxed_account_fallback,omitempty"`
 	UpstreamRoute          *codexRouteDiagnostic   `json:"upstream_route,omitempty"`
 	TurnStart              *usageTurnStart         `json:"turn_start,omitempty"`

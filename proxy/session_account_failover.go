@@ -85,14 +85,15 @@ func sessionFailoverContextError(request *gin.Context, diagnostic *sessionAccoun
 }
 
 type sessionAccountFailoverPlan struct {
-	MissingOwner  *missingSessionOwner
-	Failure       *api.APIError
-	PreserveInput bool
-	Request       *gin.Context
-	Key           string
-	Body          []byte
-	Checked       bool
-	Diagnostic    *sessionAccountFailoverDiagnostic
+	RequestExcluded bool
+	MissingOwner    *missingSessionOwner
+	Failure         *api.APIError
+	PreserveInput   bool
+	Request         *gin.Context
+	Key             string
+	Body            []byte
+	Checked         bool
+	Diagnostic      *sessionAccountFailoverDiagnostic
 }
 
 func (handler *Handler) validateMigratedSessionContext(request *gin.Context, body []byte, record database.SessionContinuityRecord, rootKeys ...string) *api.APIError {
@@ -255,6 +256,12 @@ func sessionFailoverContextBlock(headers http.Header, body []byte) string {
 
 func sessionAccountFailoverEnabledBy(reason string) string {
 	settings := CurrentRuntimeSettings()
+	if reason == "request_excluded" {
+		if settings.CodexForkAccountFallbackEnabled {
+			return "relaxed_mode"
+		}
+		return ""
+	}
 	if settings.CodexSessionFailoverEnabled {
 		return "session_failover"
 	}
@@ -267,7 +274,7 @@ func sessionAccountFailoverEnabledBy(reason string) string {
 	return ""
 }
 
-func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key string, body []byte, policy auth.DispatchPolicy) (bool, *api.APIError) {
+func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key string, body []byte, policy auth.DispatchPolicy, excludedOwners ...int64) (bool, *api.APIError) {
 	state := continuityRequest(request)
 	if state == nil || state.Diagnostic == nil || state.Diagnostic.OwnerAccount <= 0 {
 		return false, nil
@@ -285,6 +292,10 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		}
 	}
 	reason := handler.sessionFailoverReasonForRequest(request, owner, key, policy)
+	requestExcluded := CurrentRuntimeSettings().CodexForkAccountFallbackEnabled && len(excludedOwners) > 0 && excludedOwners[0] > 0 && excludedOwners[0] == state.Diagnostic.OwnerAccount
+	if requestExcluded {
+		reason = "request_excluded"
+	}
 	if missing != nil {
 		reason = "account_missing"
 	}
@@ -352,7 +363,7 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		}
 	}
 	diagnostic.Result = "pending"
-	plan := &sessionAccountFailoverPlan{Request: request, Key: key, Body: body, Diagnostic: diagnostic, PreserveInput: preserveInput, MissingOwner: missing}
+	plan := &sessionAccountFailoverPlan{Request: request, Key: key, Body: body, Diagnostic: diagnostic, PreserveInput: preserveInput, MissingOwner: missing, RequestExcluded: requestExcluded}
 	request.Request = request.Request.WithContext(context.WithValue(request.Request.Context(), sessionAccountFailoverContextKey{}, plan))
 	return true, nil
 }
@@ -383,7 +394,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			return nil, "", true
 		}
 	}
-	if state == nil || old == nil && plan.MissingOwner == nil || old != nil && handler.sessionFailoverReasonForRequest(request, old, key, policy) == "" {
+	if state == nil || old == nil && plan.MissingOwner == nil || old != nil && handler.sessionFailoverReasonForRequest(request, old, key, policy) == "" && !(plan.RequestExcluded && exclude[oldID]) {
 		plan.Diagnostic.Result = "owner_recovered"
 		return nil, "", false
 	}

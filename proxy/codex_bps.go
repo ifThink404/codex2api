@@ -19,6 +19,7 @@ const CodexBPSBaseURL = "https://bps.openai.com/basispoints/api"
 const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
+	InferredSession          *inferredBPSSessionDiagnostic `json:"inferred_session,omitempty"`
 	projection               *bpsResponseProjection
 	ToolNamespaceRepair      *bpsNamespaceRepairDiagnostic   `json:"tool_namespace_repair,omitempty"`
 	Timing                   *bpsTimingDiagnostic            `json:"timing,omitempty"`
@@ -228,6 +229,10 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	if err = ValidateCodexOutboundMetadata(body, profileRequest.Header); err != nil {
 		return nil, err
 	}
+	cacheKey, inferredSession := inferredBPSCacheSeed(ctx, account, cacheKey, compact)
+	if inferredSession != nil && inferredSession.Result == "applied" && fingerprint != nil {
+		cacheKey = fingerprint.ScopeCacheKey(ctx, cacheKey)
+	}
 	if cacheKey == "" {
 		cacheKey = NewUpstreamSessionUUID()
 	}
@@ -239,6 +244,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		}
 		return nil, ErrInternalError("构建 BPS 请求失败", err)
 	}
+	diagnostic.InferredSession = inferredSession
 	ctx = context.WithValue(ctx, codexBPSDiagnosticKey{}, diagnostic)
 	diagnostic.Timing = &bpsTimingDiagnostic{started: started, values: bpsTimingValues{FirstTokenModeAtStart: currentFirstTokenMode()}}
 	ctx = context.WithValue(ctx, bpsTimingContextKey{}, diagnostic.Timing)

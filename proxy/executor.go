@@ -1774,6 +1774,7 @@ func (h *Handler) resolveRequestSessionIdentityWithBase(c *gin.Context, body []b
 	} else {
 		c.Set(apiRelaySessionExemptContextKey, false)
 	}
+	bindInferredBPSSession(c, body, identity, rootIdentity, policyContext, verifiedPolicy)
 	h.captureUsageRequestResolution(c, body, identity, rootIdentity, policyContext, status)
 	h.captureSessionOperationsIdentity(c, body, rootIdentity, policyContext, verifiedPolicy)
 	h.bindTurnStateSession(c, body, identity)
