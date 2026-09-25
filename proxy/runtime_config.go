@@ -64,10 +64,11 @@ const (
 )
 
 type RuntimeSettings struct {
-	ClientCompatMode      string
-	CodexMinCLIVersion    string
-	CodexUserAgentConfig  string
-	CodexTelemetryEnabled bool
+	ClientCompatMode         string
+	CodexMinCLIVersion       string
+	CodexUserAgentConfig     string
+	BPSRoundConvergenceLimit int
+	CodexTelemetryEnabled    bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -211,6 +212,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexOverloadPauseMinutes:         database.NormalizeCodexOverloadPauseMinutes(0),
 		CodexOverloadWindowMinutes:        database.NormalizeCodexOverloadWindowMinutes(0),
 		CodexContinueMaxRounds:            defaultCodexContinueMaxRounds,
+		BPSRoundConvergenceLimit:          database.DefaultBPSRoundConvergenceLimit,
 		RequestIsolationMode:              defaultRequestIsolationMode(),
 		CodexCLIVersionSyncEnabled:        true,
 		CodexCLIVersionSyncIntervalHours:  12,
@@ -342,6 +344,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.CodexOverloadThresholdPercent = database.NormalizeCodexOverloadThresholdPercent(settings.CodexOverloadThresholdPercent)
 	settings.CodexOverloadPauseMinutes = database.NormalizeCodexOverloadPauseMinutes(settings.CodexOverloadPauseMinutes)
 	settings.CodexOverloadWindowMinutes = database.NormalizeCodexOverloadWindowMinutes(settings.CodexOverloadWindowMinutes)
+	settings.BPSRoundConvergenceLimit = database.NormalizeBPSRoundConvergenceLimit(settings.BPSRoundConvergenceLimit)
 	if settings.CodexContinueMaxRounds < minCodexContinueMaxRounds {
 		settings.CodexContinueMaxRounds = defaults.CodexContinueMaxRounds
 	}
@@ -408,6 +411,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.FirstTokenExcludesWsAcquire = settings.FirstTokenExcludesWsAcquire
 		next.CodexContinueThinking = settings.CodexContinueThinkingEnabled
 		next.CodexContinueMaxRounds = settings.CodexContinueMaxRounds
+		next.BPSRoundConvergenceLimit = settings.BPSRoundConvergenceLimit
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
 		next.CodexCLIVersionSyncIntervalHours = settings.CodexCLIVersionSyncIntervalHours

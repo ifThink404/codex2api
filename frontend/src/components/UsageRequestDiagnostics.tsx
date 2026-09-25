@@ -147,7 +147,7 @@ export default function UsageRequestDiagnostics({ log, onClose }: { log: UsageLo
     ['audit', data.audit],
     ['dispatch', data.dispatch],
     ['windows', { user_window: data.user_window, account_window: data.account_window, user_window_key_hash: data.user_window_key_hash }],
-    ['routing', { root_account_lookup: data.root_account_lookup, root_account_id: data.root_account_id, selected_account_id: data.selected_account_id, selection: data.selection, candidate_rejections: data.candidate_rejections, background_account_match: data.background_account_match }],
+    ['routing', { root_account_lookup: data.root_account_lookup, root_account_id: data.root_account_id, selected_account_id: data.selected_account_id, selection: data.selection, candidate_rejections: data.candidate_rejections, background_account_match: data.background_account_match, group_routing: data.group_routing, bps_task_affinity: data.bps_task_affinity }],
     ['recent', data.recent_account],
   ] : []
 

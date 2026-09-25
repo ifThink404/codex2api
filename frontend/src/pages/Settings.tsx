@@ -2038,6 +2038,7 @@ export default function Settings() {
     { label: t('accounts.codexFingerprintModeDevice'), value: 'device' },
     { label: t('accounts.codexFingerprintModeSession'), value: 'session' },
     { label: t('accounts.codexFingerprintModeFull'), value: 'full' },
+    { label: t('accounts.codexFingerprintModeRound'), value: 'round' },
   ]
   const modelCooldownModeOptions = [
     { label: t('settings.modelCooldownModeOff'), value: 'off' },
@@ -2229,6 +2230,7 @@ export default function Settings() {
     continuous_retry_error_codes: [],
     continuous_retry_max_duration_seconds: 600,
     codex_fingerprint_default_mode: 'off',
+    bps_round_convergence_limit: 100,
     allow_remote_migration: false,
     database_driver: 'postgres',
     database_label: 'PostgreSQL',
@@ -4185,6 +4187,15 @@ export default function Settings() {
                         value={settingsForm.codex_fingerprint_default_mode || 'off'}
                         onValueChange={(value) => autoSaveStringField('codex_fingerprint_default_mode', value)}
                         options={codexFingerprintDefaultModeOptions}
+                      />
+                    </SettingField>
+                    <SettingField label={t('settings.bpsRoundConvergenceLimit')} description={t('settings.bpsRoundConvergenceLimitDesc')}>
+                      <DraftNumberInput
+                        min={1}
+                        max={1000000}
+                        value={settingsForm.bps_round_convergence_limit ?? 100}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_round_convergence_limit: value }))}
+                        onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_round_convergence_limit: value }) }}
                       />
                     </SettingField>
                     <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUAMode')} description={t('settings.codexUAModeDesc')}>

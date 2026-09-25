@@ -21,6 +21,7 @@ const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 type CodexBPSDiagnostic struct {
 	WordIdentity             *bpsWordIdentityDiagnostic    `json:"word_identity,omitempty"`
 	FullConvergence          *bpsWordIdentityDiagnostic    `json:"full_convergence,omitempty"`
+	RoundConvergence         *bpsWordIdentityDiagnostic    `json:"round_convergence,omitempty"`
 	InferredSession          *inferredBPSSessionDiagnostic `json:"inferred_session,omitempty"`
 	projection               *bpsResponseProjection
 	ToolNamespaceRepair      *bpsNamespaceRepairDiagnostic   `json:"tool_namespace_repair,omitempty"`
@@ -188,15 +189,19 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		ctx = contexts[0]
 	}
 	if profile.profile == auth.BPSWord || bpsFullConvergenceFrom(ctx) != nil {
-		identity, err := resolveBPSWordIdentity(ctx, body, headers, cacheKey)
+		identity, err := resolveBPSWordIdentity(ctx, body, headers, cacheKey, compact)
 		if err != nil {
 			return nil, nil, err
 		}
 		if profile.profile == auth.BPSWord {
 			d.WordIdentity = identity
 		}
-		if bpsFullConvergenceFrom(ctx) != nil {
-			d.FullConvergence = identity
+		if scope := bpsFullConvergenceFrom(ctx); scope != nil {
+			if scope.roundLimit > 0 {
+				d.RoundConvergence = identity
+			} else {
+				d.FullConvergence = identity
+			}
 		}
 		metadata["task_id"], metadata["turn_id"], metadata["agent_iteration"] = identity.TaskID, identity.TurnID, identity.AgentIteration
 	}

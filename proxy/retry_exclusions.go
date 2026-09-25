@@ -581,7 +581,7 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if preserveBinding {
 			account, stickyProxyURL = h.store.NextForContinuationWithDispatch(affinityKey, apiKeyID, exclude, filter, policy, auth.SelectionTraceFromContext(ctx))
 		} else {
-			account, stickyProxyURL, guard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy, auth.SelectionTraceFromContext(ctx))
+			account, stickyProxyURL, guard = h.nextAccountForBPSTask(ctx, affinityKey, apiKeyID, exclude, filter, policy)
 		}
 		if account != nil {
 			if ctx.Err() != nil {
@@ -599,6 +599,9 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 			if ctx.Err() != nil {
 				h.store.Release(account)
 				return nil, "", auth.SessionAffinityGuard{}
+			}
+			if !preserveBinding {
+				h.rememberBPSTaskAccount(ctx, account, policy)
 			}
 			return account, stickyProxyURL, guard
 		}

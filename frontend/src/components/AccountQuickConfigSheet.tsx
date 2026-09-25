@@ -181,6 +181,7 @@ export default function AccountQuickConfigSheet({
     { value: "device", label: t("accounts.codexFingerprintModeDevice") },
     { value: "session", label: t("accounts.codexFingerprintModeSession") },
     { value: "full", label: t("accounts.codexFingerprintModeFull") },
+    { value: "round", label: t("accounts.codexFingerprintModeRound") },
   ];
 
   const fingerprintDetails: Record<CodexFingerprintMode, string> = {
@@ -188,6 +189,7 @@ export default function AccountQuickConfigSheet({
     device: t("accounts.codexFingerprintModeDeviceDetail"),
     session: t("accounts.codexFingerprintModeSessionDetail"),
     full: t("accounts.codexFingerprintModeFullDetail"),
+    round: t("accounts.codexFingerprintModeRoundDetail"),
   };
 
   const fingerprintMode = form?.fingerprintMode ?? "off";

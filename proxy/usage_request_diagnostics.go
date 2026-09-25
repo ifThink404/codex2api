@@ -69,10 +69,11 @@ type usageRecentAccountDiagnostic struct {
 }
 
 type usageRequestDiagnostics struct {
-	RawPassthrough         *rawRelayDiagnostic     `json:"raw_passthrough,omitempty"`
-	RelaxedFallback        *relaxedAccountFallback `json:"relaxed_account_fallback,omitempty"`
-	UpstreamRoute          *codexRouteDiagnostic   `json:"upstream_route,omitempty"`
-	TurnStart              *usageTurnStart         `json:"turn_start,omitempty"`
+	BPSTaskAffinity        *bpsTaskAffinityDiagnostic `json:"bps_task_affinity,omitempty"`
+	RawPassthrough         *rawRelayDiagnostic        `json:"raw_passthrough,omitempty"`
+	RelaxedFallback        *relaxedAccountFallback    `json:"relaxed_account_fallback,omitempty"`
+	UpstreamRoute          *codexRouteDiagnostic      `json:"upstream_route,omitempty"`
+	TurnStart              *usageTurnStart            `json:"turn_start,omitempty"`
 	turnStartCaptured      bool
 	ResponseMapping        []database.ResponseMappingFailure        `json:"response_mapping,omitempty"`
 	ResponseIdentity       []responseIdentityEvent                  `json:"response_identity,omitempty"`
@@ -457,6 +458,9 @@ func populateUsageRequestDiagnostics(c *gin.Context, input *database.UsageLogInp
 		return
 	}
 	snapshot := *state
+	if inferred, _ := c.Request.Context().Value(inferredBPSSessionKey{}).(*inferredBPSSession); inferred != nil {
+		snapshot.BPSTaskAffinity = inferred.affinity
+	}
 	snapshot.TurnState = turnStateDiagnostic(c.Request.Context())
 	snapshot.ResponseIdentity = responseIdentityDiagnostic(c.Request.Context())
 	snapshot.ResponseMapping = responseMappingDiagnostics(c.Request.Context())

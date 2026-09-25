@@ -148,9 +148,11 @@
     }
   },
   "accounts": {
+    "codexFingerprintModeRound": "輪次收斂",
+    "codexFingerprintModeRoundDetail": "BPS 同一上游帳號按系統設定的輪數共用 task_id，序號連續遞增，滿額後更換 task_id 並從 1 開始。每次新模型呼叫（含工具續接）使用新 turn_id，重試沿用原編號；原生 Codex 僅收斂裝置。",
     "codexFingerprintModeFullDetail": "BPS 同一上游帳號共用一個 task_id，不同使用者、對話和輪次使用獨立 turn_id；同輪工具續接保留 turn_id，迭代計數遞增。原生 Codex 繼續遵循原有出站身分策略。",
     "rawPassthroughTitle": "原樣 API 透傳（HTTP / SSE）",
-    "rawPassthroughHint": "預設關閉。開啟後，權限範圍內符合模型的請求優先走透傳帳號，保留原介面路徑、請求本文、回應狀態和本文，不做模型映射、身分補齊、圖片上傳或格式轉換；失敗不自動重試。使用帳號設定的金鑰、位址、代理和自訂請求標頭。WebSocket 不在此開關範圍內。",
+    "rawPassthroughHint": "預設關閉。開啟後，先依工作階段指紋與 Chat 入口完成分組分流，再於對應組內優先選擇符合模型的透傳帳號；記錄請求分類，保留原介面路徑、請求本文、回應狀態和本文，不做模型映射、身分補齊、圖片上傳或格式轉換；失敗不自動重試。使用帳號設定的金鑰、位址、代理和自訂請求標頭。WebSocket 不在此開關範圍內。",
     "codexFingerprintModeHint": "控制出站裝置與會話中繼資料。原生 Codex 的會話隔離規則不變；BPS 在「裝置 + 會話」模式下，可為缺少會話 ID 的一般請求推導穩定的會話與快取標識。",
     "codexFingerprintModeSessionDetail": "BPS 優先保留明確會話；缺少時按使用者、裝置、UA 和對話開頭推導穩定標識，每輪保留獨立 turn_id。裝置缺少時按使用者與對話開頭區分。相同開頭的獨立對話無法準確區分，建議客戶端傳會話 ID。壓縮、續鏈及關聯背景請求不使用此推導。",
     "usageLimitBypassTitle": "額度耗盡後允許指定模型",
@@ -301,6 +303,8 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "bpsRoundConvergenceLimit": "BPS 輪次收斂：每個任務的輪數",
+    "bpsRoundConvergenceLimitDesc": "僅適用於選擇「輪次收斂」的帳號，預設 100，範圍 1–1000000。每次新模型呼叫計一輪，工具續接計入，重試不重複計數。達上限後更換 task_id，序號從 1 開始；修改輪數從下一批生效。並行請求依資料庫分配編號的順序計數，不等待前次推論完成。",
     "bpsWordUserAgent": "Word BPS User-Agent",
     "bpsWordUserAgentDesc": "用於所有 Word BPS 請求。留空使用已驗證的 Word 網頁版 UA；與其他用戶端形態分別儲存。",
     "sessionBalanceSession": "會話",

@@ -41,6 +41,8 @@ type bpsWordIdentityDiagnostic struct {
 	Persisted      bool   `json:"persisted"`
 	ReusedStep     bool   `json:"reused_step"`
 	Generation     uint64 `json:"generation,omitempty"`
+	TaskGeneration int64  `json:"task_generation,omitempty"`
+	RoundLimit     int    `json:"round_limit,omitempty"`
 }
 
 // Canonicalize JSON without converting integers through float64. Keys and
@@ -111,7 +113,7 @@ func bpsWordInputIdentity(body []byte) (anchor, step string, iteration int) {
 	return
 }
 
-func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Header, cacheKey string) (*bpsWordIdentityDiagnostic, error) {
+func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Header, cacheKey string, compact bool) (*bpsWordIdentityDiagnostic, error) {
 	metadata := CodexRequestMetadataHeaders(headers, body)
 	turnSeed := strings.TrimSpace(gjson.Get(metadata.Get(codexTurnMetadataHeader), "turn_id").String())
 	if turnSeed == "" {
@@ -150,6 +152,10 @@ func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Heade
 		d.TaskScope = "upstream_account"
 	}
 	stepKey := codexIdentityDigest("bps-word-step-v2", step)
+	if full := bpsFullConvergenceFrom(ctx); full != nil && full.roundLimit > 0 {
+		stepKey = codexIdentityDigest("bps-round-operation-v1", stepKey, strconv.FormatBool(compact))
+		return resolveBPSRoundIdentity(ctx, full, turnKey, stepKey, d)
+	}
 	store, ok := ctx.Value(codexIdentityClaimerContextKey{}).(bpsWordIdentityStore)
 	if !ok {
 		// Standalone projections without a database retain deterministic identity;

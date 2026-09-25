@@ -1628,6 +1628,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_activate_5h_window_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(20) DEFAULT 'off';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_round_convergence_limit INT DEFAULT 100;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864;
@@ -2572,6 +2573,7 @@ type SystemSettings struct {
 	// CodexFingerprintDefaultMode 是新导入/新建 Codex 账号默认盖上的指纹收敛档位
 	// （off/device/session/full，默认 off）。只影响导入之后新建的账号，已有账号不变。
 	CodexFingerprintDefaultMode string
+	BPSRoundConvergenceLimit    int
 	AutoPause5hThreshold        float64
 	AutoPause7dThreshold        float64
 	AutoPause5hGuardBandPercent float64
@@ -2853,7 +2855,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       CASE WHEN codex_ws_compression_level BETWEEN 1 AND 9 THEN codex_ws_compression_level ELSE 1 END,
 		       COALESCE(codex_ws_disable_fragmentation, false),
 		       COALESCE(prompt_filter_builtin_overrides, '[]'),
-		       COALESCE(session_balance_mode, '')
+		       COALESCE(session_balance_mode, ''),
+		       COALESCE(bps_round_convergence_limit, 100)
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2952,6 +2955,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.CodexWSDisableFragmentation,
 		&s.PromptFilterBuiltinOverrides,
 		&s.SessionBalanceMode,
+		&s.BPSRoundConvergenceLimit,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -2989,6 +2993,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s.BillingTierPolicy = normalizeBillingTierPolicy(s.BillingTierPolicy)
 	s.AutoResetCreditsBeforeExpiryMin = NormalizeAutoResetCreditsBeforeExpiryMinutes(s.AutoResetCreditsBeforeExpiryMin)
 	s.CodexFingerprintDefaultMode = NormalizeCodexFingerprintDefaultMode(s.CodexFingerprintDefaultMode)
+	s.BPSRoundConvergenceLimit = NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit)
 	s.SessionSlotBufferSeconds = NormalizeSessionSlotBufferSeconds(s.SessionSlotBufferSeconds)
 	s.ModelsListReadMaxBytes = NormalizeModelsListReadMaxBytes(s.ModelsListReadMaxBytes)
 	s.SchedulerEngine = NormalizeSchedulerEngine(s.SchedulerEngine, s.FastSchedulerEnabled)
@@ -3083,7 +3088,7 @@ func continuousRetryPolicySelectQuery(forUpdate bool) string {
 	return query
 }
 
-// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到四个已知
+// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到已知
 // 取值之一；空值和非法值回落 off（与 auth.NormalizeCodexFingerprintMode 语义一致，
 // database 包不能反向依赖 auth，故此处独立实现）。
 func NormalizeCodexFingerprintDefaultMode(mode string) string {
@@ -3092,6 +3097,8 @@ func NormalizeCodexFingerprintDefaultMode(mode string) string {
 		return "device"
 	case "session":
 		return "session"
+	case "round":
+		return "round"
 	case "full":
 		return "full"
 	default:
@@ -3216,9 +3223,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_initial_session_max_age_seconds,
 					codex_fork_account_fallback_enabled,
 					codex_initial_session_age_check_disabled,
-					session_balance_mode
+					session_balance_mode,
+					bps_round_convergence_limit
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3348,6 +3356,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					session_slot_buffer_seconds = EXCLUDED.session_slot_buffer_seconds,
 					session_window_balance_enabled = EXCLUDED.session_window_balance_enabled,
 					session_balance_mode = EXCLUDED.session_balance_mode,
+					bps_round_convergence_limit = EXCLUDED.bps_round_convergence_limit,
 					passive_internal_models_enabled = EXCLUDED.passive_internal_models_enabled,
 					codex_unlinked_account_fallback_enabled = EXCLUDED.codex_unlinked_account_fallback_enabled,
 					codex_unlinked_account_fallback_seconds = EXCLUDED.codex_unlinked_account_fallback_seconds,
@@ -3420,7 +3429,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeCodexInitialSessionMaxAgeSeconds(s.CodexInitialSessionMaxAgeSeconds),
 		s.CodexForkAccountFallbackEnabled,
 		s.CodexInitialSessionAgeCheckDisabled,
-		NormalizeSessionBalanceMode(s.SessionBalanceMode, s.SessionWindowBalanceEnabled))
+		NormalizeSessionBalanceMode(s.SessionBalanceMode, s.SessionWindowBalanceEnabled),
+		NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit))
 	return err
 }
 

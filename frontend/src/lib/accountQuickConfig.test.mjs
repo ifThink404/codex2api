@@ -55,6 +55,14 @@ test("missing fingerprint mode normalizes to off", () => {
   assert.equal(form.customHeadersText, "");
 });
 
+test("round convergence survives account form loading and saving", () => {
+  const form = formStateFromAccount({ ...detailedRow, codex_fingerprint_mode: "round" });
+  assert.equal(form.fingerprintMode, "round");
+  const result = buildQuickConfigSavePayload(form, true);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.payload.codex_fingerprint_mode, "round");
+});
+
 test("save is blocked until the form belongs to the current account", () => {
   const form = formStateFromAccount(detailedRow);
   assert.equal(

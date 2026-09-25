@@ -17,6 +17,8 @@ var (
 
 func (p DispatchPolicy) IsSpark() bool { return p.spark }
 
+func (p DispatchPolicy) Model() string { return p.model }
+
 // The model travels with this request, never as mutable account-global state.
 func (p DispatchPolicy) WithModel(model string) DispatchPolicy {
 	p.model = strings.ToLower(strings.TrimSpace(model))

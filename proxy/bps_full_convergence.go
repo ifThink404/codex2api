@@ -11,8 +11,9 @@ import (
 type bpsFullConvergenceKey struct{}
 
 type bpsFullConvergenceScope struct {
-	taskKey   string
-	turnScope string
+	taskKey    string
+	turnScope  string
+	roundLimit int
 }
 
 func bpsFullConvergenceFrom(ctx context.Context) *bpsFullConvergenceScope {
@@ -26,7 +27,8 @@ func bpsFullConvergenceFrom(ctx context.Context) *bpsFullConvergenceScope {
 // Only the BPS task is shared. Keep the original conversation partition in the
 // turn key and leave routing, attachments, response caches and ownership alone.
 func withBPSFullConvergence(ctx context.Context, account *auth.Account, profile bpsProfileConfig, headers http.Header, fingerprint *CodexFingerprint, cacheKey, apiKey string) (context.Context, error) {
-	if account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeFull {
+	mode := account.EffectiveCodexFingerprintMode()
+	if mode != auth.CodexFingerprintModeFull && mode != auth.CodexFingerprintModeRound {
 		if bpsFullConvergenceFrom(ctx) != nil {
 			ctx = context.WithValue(ctx, bpsFullConvergenceKey{}, (*bpsFullConvergenceScope)(nil))
 		}
@@ -34,7 +36,7 @@ func withBPSFullConvergence(ctx context.Context, account *auth.Account, profile 
 	}
 	upstreamAccount := strings.TrimSpace(account.EffectiveAccountID())
 	if upstreamAccount == "" {
-		return ctx, codexAccountIdentityError("BPS 全部收敛需要有效的上游账号 ID。")
+		return ctx, codexAccountIdentityError("BPS 账号级任务收敛需要有效的上游账号 ID。")
 	}
 	owner := verifiedTransportUser(ctx)
 	if owner == "" {
@@ -53,6 +55,10 @@ func withBPSFullConvergence(ctx context.Context, account *auth.Account, profile 
 		taskKey: codexIdentityDigest("bps-full-account-task-v1", upstreamAccount),
 		turnScope: codexIdentityDigest("bps-full-private-turn-v1", upstreamAccount, owner,
 			string(profile.profile), session, thread, outboundEpochFromContext(ctx).identityKey()),
+	}
+	if mode == auth.CodexFingerprintModeRound {
+		scope.taskKey = codexIdentityDigest("bps-round-account-task-v1", upstreamAccount)
+		scope.roundLimit = CurrentRuntimeSettings().BPSRoundConvergenceLimit
 	}
 	return context.WithValue(ctx, bpsFullConvergenceKey{}, scope), nil
 }

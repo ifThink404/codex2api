@@ -17,10 +17,25 @@
 - 同一实际 `Chatgpt-Account-Id` 固定复用一个持久化 UUIDv7 `task_id`，不随下游用户、对话、模型、窗口、换号代次或 BPS 产品类型变化。重复导入相同上游账号也复用；Word、Excel、Sheets、PowerPoint 共用该账号的 task。缺少上游账号 ID 时明确报错，不把所有未知账号合成一个 task。
 - `turn_id` 继续按调用方、原对话、轮次、BPS 类型、上游账号和换号代次分区。不同用户即使提供相同原始轮次 ID，也获得不同出站 turn。同轮工具续接保持 turn，`agent_iteration` 从字符串 `"1"` 开始递增，重试复用对应计数。未提供轮次 ID 时沿用用户消息边界推导，缺失显式会话时使用已有隔离缓存分区。
 - 切到其他上游账号使用该账号的固定 task，并建立新 turn；切回原账号复用原 task，但换号代次产生新 turn，计数重新开始。SQLite/PostgreSQL 使用既有 UUID 映射和迭代存储，多实例及重启继续复用，不新增存储表。
-- 生成和 `/compact` 使用相同映射。历史 input、工具调用及结果、模型、计费、本地窗口、账号粘性、附件缓存和响应缓存不按共享 task 合并。非 Word 类型原有的 Session-Id / prompt_cache_key 仍按原规则发送。
+- 生成和 `/compact` 使用相同映射。历史 input、工具调用及结果、模型、计费、本地窗口、附件缓存和响应缓存不按共享 task 合并。账号选择使用用户隔离的任务种子做软粘性，不按上游共享 task 合并用户；详见 `bps-inferred-conversation-identity.md`。非 Word 类型原有的 Session-Id / prompt_cache_key 仍按原规则发送。
 - 诊断 `upstream.bps_compat.full_convergence` 展示实际 task、turn、迭代、持久化状态及 `task_scope=upstream_account`；Word 同时保留 `word_identity`。这是网关提供的账号级 task 映射，不新增或声称 BPS 已支持 parent_task_id / 子线程协议。
 
-关闭 `full` 后恢复相应档位原有的任务映射。本文其他段落中按对话分配 task 的规则适用于非 full 档位。
+关闭 `full` 后恢复相应档位的任务映射。本文其他段落中按对话分配 task 的规则适用于 `off`、`device`、`session` 档位。
+
+## BPS 轮次收敛（第五档）
+
+账号设备指纹档位新增 `round`（轮次收敛），可在账号编辑、快速设置、批量编辑及新账号默认档位中选择。现有 `full` 行为不变，已有账号不会自动切换新档位。
+
+系统设置的 **BPS 轮次收敛：每个任务的轮数** 对应 `bps_round_convergence_limit`，默认 100，允许 1–1000000。只影响选中 `round` 的 BPS 请求；原生 Codex 在该档位仅收敛设备，不把多个原生会话合并。
+
+- 同一实际上游账号跨用户、会话和 BPS 产品共用当前批次的 `task_id`。以 100 为例，前 100 次新模型调用使用同一 task，`agent_iteration` 依次为字符串 `"1"` 至 `"100"`；第 101 次换 task 并从 `"1"` 开始。
+- 每次新模型调用使用独立 `turn_id`，工具续接及压缩调用也计入。并行工具结果的一批续接计一轮，不按单个工具结果计数。同一逻辑调用的重试复用原 task、turn、序号，不重复扣轮数；轮换后的旧请求重试也保留旧批次。
+- 计数、分配结果及 UUIDv7 均持久化；重启、重复导入同一个上游账号不会重置。换到其他上游账号时使用该账号自己的批次；切回则继续原账号计数。
+- 修改轮数从下一批生效，当前批次按创建时的上限走完。并发请求按数据库原子分配的顺序编号，不串行等待模型完成，因此上游实际到达或完成顺序不保证与编号一致。
+- 编号在准备请求时分配，后续上传或发送失败不会回收；同一逻辑请求重试仍复用该编号。
+- 请求诊断 `upstream.bps_compat.round_convergence` 展示 task、turn、序号、`task_generation`、`round_limit`、`reused_step` 和 `task_scope=upstream_account_rounds`。Word 同时保留 `word_identity`。缺少持久化身份存储时明确失败，不静默退回每次序号为 1。
+
+轮次收敛不合并提示词、附件、响应缓存或用户归属，也不替代账号软粘性。批次轮换本身不会触发换号；无显式会话的 BPS 请求继续使用调用方隔离的任务提示参与软粘性选号。
 
 ## 格式转换
 

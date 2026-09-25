@@ -10,7 +10,8 @@ import "strings"
 // 对原生 Codex，收敛只影响 x-codex-turn-metadata 和 client_metadata；
 // Session_id 由 resolveUpstreamSessionID 独立决定，其隔离规则不变。
 // BPS 的 session 档额外为无显式会话的普通请求
-// 使用按用户、设备和对话开头隔离的缓存提示；它不参与本地归属和窗口授权。
+// 使用按用户、设备和对话开头隔离的缓存提示；BPS 的 session/full 档还可
+// 将该提示用于软粘性选号，但不将它作为本地根归属或窗口授权。
 const (
 	// CodexFingerprintModeOff 不做任何收敛，客户端标识原样透传（默认）。
 	CodexFingerprintModeOff = "off"
@@ -26,6 +27,9 @@ const (
 	// BPS 单独使用账号级持久化 task_id；不同用户、会话和轮次分配独立
 	// turn_id，同轮工具续接复用轮次。原生 Codex 的出站策略不变。
 	CodexFingerprintModeFull = "full"
+	// CodexFingerprintModeRound rotates BPS account tasks after a configured
+	// number of inference steps. Native Codex only converges the device.
+	CodexFingerprintModeRound = "round"
 )
 
 // CodexFingerprintModeCredentialKey 是该模式在账号 credentials 中的存储键。
@@ -41,15 +45,17 @@ func NormalizeCodexFingerprintMode(value string) string {
 		return CodexFingerprintModeSession
 	case CodexFingerprintModeFull:
 		return CodexFingerprintModeFull
+	case CodexFingerprintModeRound:
+		return CodexFingerprintModeRound
 	default:
 		return CodexFingerprintModeOff
 	}
 }
 
-// IsValidCodexFingerprintMode 报告取值是否为四个已知档位之一。
+// IsValidCodexFingerprintMode 报告取值是否为已知档位之一。
 func IsValidCodexFingerprintMode(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull:
+	case CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull, CodexFingerprintModeRound:
 		return true
 	default:
 		return false

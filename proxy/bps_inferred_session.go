@@ -15,11 +15,12 @@ import (
 
 type inferredBPSSessionKey struct{}
 
-// This is a cache/session hint, never proof of ownership or a client identity.
-// Keep it outside requestSessionIdentity so it cannot grant a root/window lease.
+// This is a cache/session and soft routing hint, never proof of ownership or a
+// client identity. Keep it outside requestSessionIdentity and root/window leases.
 type inferredBPSSession struct {
 	seed       string
 	diagnostic inferredBPSSessionDiagnostic
+	affinity   *bpsTaskAffinityDiagnostic
 }
 
 type inferredBPSSessionDiagnostic struct {
@@ -56,6 +57,11 @@ func bindInferredBPSSession(c *gin.Context, body []byte, identity requestSession
 	}
 	if verifiedTransportUser(c.Request.Context()) == "" && requestAPIKeyID(c) <= 0 {
 		state.diagnostic.Reason = "authenticated_scope_unavailable"
+		return
+	}
+	if taskID := strings.TrimSpace(gjson.GetBytes(body, "metadata.task_id").String()); validSessionGraphUUID(taskID) {
+		state.seed = DeriveStableSessionUUIDv7(codexIdentityDigest("bps-client-task-v1", responseCacheOwnerForRequest(c, requestAPIKeyID(c)), taskID))
+		state.diagnostic = inferredBPSSessionDiagnostic{Result: "derived", Source: "client_task_id"}
 		return
 	}
 	anchor := inferredConversationAnchor(body)

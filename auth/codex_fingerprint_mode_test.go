@@ -10,6 +10,7 @@ func TestNormalizeCodexFingerprintMode(t *testing.T) {
 		"DEVICE":    CodexFingerprintModeDevice,
 		" session ": CodexFingerprintModeSession,
 		"Full":      CodexFingerprintModeFull,
+		" ROUND ":   CodexFingerprintModeRound,
 	}
 	for input, want := range cases {
 		if got := NormalizeCodexFingerprintMode(input); got != want {
@@ -19,7 +20,7 @@ func TestNormalizeCodexFingerprintMode(t *testing.T) {
 }
 
 func TestIsValidCodexFingerprintMode(t *testing.T) {
-	for _, value := range []string{CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull, " FULL "} {
+	for _, value := range []string{CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull, CodexFingerprintModeRound, " FULL "} {
 		if !IsValidCodexFingerprintMode(value) {
 			t.Errorf("IsValidCodexFingerprintMode(%q) = false, want true", value)
 		}
