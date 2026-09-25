@@ -300,6 +300,11 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "sessionBalanceSession": "會話",
+    "sessionBalanceWindow": "視窗",
+    "sessionBalanceDefault": "預設",
+    "sessionWindowBalanceDesc": "僅在新會話選號時生效，已有會話保持原帳號。預設：沿用目前調度策略。視窗：優先占用槽少的帳號（含緩衝槽），再比較處理中的請求及會話數。會話：優先活躍會話少的帳號，再比較占用槽及處理中的請求。均先遵守帳號優先順序、健康等級及可用性限制。",
+    "sessionWindowBalance": "新會話均衡",
     "transfer": {
       "export": "匯出設定",
       "import": "匯入設定",

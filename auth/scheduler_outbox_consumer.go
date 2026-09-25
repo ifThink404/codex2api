@@ -748,7 +748,7 @@ func (s *Store) reloadSchedulerSettings(ctx context.Context) error {
 	if strings.TrimSpace(os.Getenv("CODEX_SCHEDULER_ENGINE")) == "" {
 		s.SetSchedulerEngine(settings.SchedulerEngine)
 	}
-	s.SetSessionWindowBalanceEnabled(settings.SessionWindowBalanceEnabled)
+	s.SetSessionBalanceMode(database.NormalizeSessionBalanceMode(settings.SessionBalanceMode, settings.SessionWindowBalanceEnabled))
 	s.SetPassiveInternalModelsEnabled(settings.PassiveInternalModelsEnabled)
 	s.SetCodexUnlinkedAccountFallbackEnabled(settings.CodexUnlinkedAccountFallbackEnabled)
 	s.SetCodexUnlinkedAccountFallbackSeconds(database.NormalizeCodexUnlinkedAccountFallbackSeconds(settings.CodexUnlinkedAccountFallbackSeconds))

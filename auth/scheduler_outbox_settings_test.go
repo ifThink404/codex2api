@@ -18,6 +18,7 @@ func persistSchedulerOutboxRuntimeSettings(t *testing.T, db *database.DB, engine
 		TestModel:                    "gpt-5.4",
 		SchedulerEngine:              engine,
 		SessionWindowBalanceEnabled:  true,
+		SessionBalanceMode:           database.SessionBalanceWindow,
 		PassiveInternalModelsEnabled: true,
 		ClaudeConfig:                 schedulerOutboxClaudeConfigFixture,
 	}
@@ -33,6 +34,9 @@ func assertSchedulerOutboxRuntimeSettings(t *testing.T, store *Store) {
 	t.Helper()
 	if !store.SessionWindowBalanceEnabled() || !store.PassiveInternalModelsEnabled() {
 		t.Fatalf("runtime flags = balance:%t passive:%t, want true/true", store.SessionWindowBalanceEnabled(), store.PassiveInternalModelsEnabled())
+	}
+	if got := store.GetSessionBalanceMode(); got != database.SessionBalanceWindow {
+		t.Fatalf("balance mode = %q, want window", got)
 	}
 	policy := store.ClaudeClientPolicy()
 	if policy.Platform != ClaudeClientPlatformCLIOnly || policy.VersionPolicy != ClaudeVersionPolicyMinimum || policy.ClientVersion != "2.1.251" {

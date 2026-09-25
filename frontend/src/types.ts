@@ -2127,6 +2127,7 @@ export interface SystemSettings {
   affinity_mode?: string
   session_affinity_spread?: boolean
   session_window_balance_enabled?: boolean
+  session_balance_mode?: 'default' | 'window' | 'session'
   passive_internal_models_enabled?: boolean
   codex_unlinked_account_fallback_enabled?: boolean
   codex_unlinked_account_fallback_seconds?: number

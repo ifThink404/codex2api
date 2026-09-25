@@ -9619,6 +9619,7 @@ type settingsResponse struct {
 	AffinityMode                        string `json:"affinity_mode"`
 	SessionAffinitySpread               bool   `json:"session_affinity_spread"`
 	SessionWindowBalanceEnabled         bool   `json:"session_window_balance_enabled"`
+	SessionBalanceMode                  string `json:"session_balance_mode"`
 	PassiveInternalModelsEnabled        bool   `json:"passive_internal_models_enabled"`
 	CodexUnlinkedAccountFallbackEnabled bool   `json:"codex_unlinked_account_fallback_enabled"`
 	CodexUnlinkedAccountFallbackSeconds int    `json:"codex_unlinked_account_fallback_seconds"`
@@ -9810,6 +9811,7 @@ type updateSettingsReq struct {
 	AffinityMode                        *string                          `json:"affinity_mode"`
 	SessionAffinitySpread               *bool                            `json:"session_affinity_spread"`
 	SessionWindowBalanceEnabled         *bool                            `json:"session_window_balance_enabled"`
+	SessionBalanceMode                  *string                          `json:"session_balance_mode"`
 	PassiveInternalModelsEnabled        *bool                            `json:"passive_internal_models_enabled"`
 	CodexUnlinkedAccountFallbackEnabled *bool                            `json:"codex_unlinked_account_fallback_enabled"`
 	CodexUnlinkedAccountFallbackSeconds *int                             `json:"codex_unlinked_account_fallback_seconds"`
@@ -10664,6 +10666,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		AffinityMode:                        h.store.GetAffinityMode(),
 		SessionAffinitySpread:               h.store.GetSessionAffinitySpread(),
 		SessionWindowBalanceEnabled:         h.store.SessionWindowBalanceEnabled(),
+		SessionBalanceMode:                  h.store.GetSessionBalanceMode(),
 		PassiveInternalModelsEnabled:        h.store.PassiveInternalModelsEnabled(),
 		CodexUnlinkedAccountFallbackEnabled: h.store.CodexUnlinkedAccountFallbackEnabled(),
 		CodexUnlinkedAccountFallbackSeconds: h.store.CodexUnlinkedAccountFallbackSeconds(),
@@ -10868,6 +10871,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "请求格式错误")
 		return
+	}
+	if req.SessionBalanceMode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*req.SessionBalanceMode))
+		if mode != database.SessionBalanceDefault && mode != database.SessionBalanceWindow && mode != database.SessionBalanceSession {
+			writeError(c, http.StatusBadRequest, "session_balance_mode 必须是 default、window 或 session")
+			return
+		}
+		req.SessionBalanceMode = &mode
 	}
 	if req.CodexWSCompressionLevel != nil && (*req.CodexWSCompressionLevel < 1 || *req.CodexWSCompressionLevel > 9) {
 		writeError(c, http.StatusBadRequest, "codex_ws_compression_level must be between 1 and 9")
@@ -11594,7 +11605,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		h.store.SetSessionAffinitySpread(*req.SessionAffinitySpread)
 		log.Printf("设置已更新: session_affinity_spread = %t", *req.SessionAffinitySpread)
 	}
-	if req.SessionWindowBalanceEnabled != nil {
+	if req.SessionBalanceMode != nil {
+		h.store.SetSessionBalanceMode(*req.SessionBalanceMode)
+		log.Printf("设置已更新: session_balance_mode = %s", *req.SessionBalanceMode)
+	} else if req.SessionWindowBalanceEnabled != nil {
 		h.store.SetSessionWindowBalanceEnabled(*req.SessionWindowBalanceEnabled)
 		log.Printf("设置已更新: session_window_balance_enabled = %t", *req.SessionWindowBalanceEnabled)
 	}
@@ -12254,6 +12268,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		AffinityMode:                        h.store.GetAffinityMode(),
 		SessionAffinitySpread:               h.store.GetSessionAffinitySpread(),
 		SessionWindowBalanceEnabled:         h.store.SessionWindowBalanceEnabled(),
+		SessionBalanceMode:                  h.store.GetSessionBalanceMode(),
 		PassiveInternalModelsEnabled:        h.store.PassiveInternalModelsEnabled(),
 		CodexUnlinkedAccountFallbackEnabled: h.store.CodexUnlinkedAccountFallbackEnabled(),
 		CodexUnlinkedAccountFallbackSeconds: h.store.CodexUnlinkedAccountFallbackSeconds(),
@@ -12595,6 +12610,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		AffinityMode:                        h.store.GetAffinityMode(),
 		SessionAffinitySpread:               h.store.GetSessionAffinitySpread(),
 		SessionWindowBalanceEnabled:         h.store.SessionWindowBalanceEnabled(),
+		SessionBalanceMode:                  h.store.GetSessionBalanceMode(),
 		PassiveInternalModelsEnabled:        h.store.PassiveInternalModelsEnabled(),
 		CodexUnlinkedAccountFallbackEnabled: h.store.CodexUnlinkedAccountFallbackEnabled(),
 		CodexUnlinkedAccountFallbackSeconds: h.store.CodexUnlinkedAccountFallbackSeconds(),

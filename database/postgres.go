@@ -1510,6 +1510,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS affinity_mode VARCHAR(16) DEFAULT 'bounded';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS session_affinity_spread BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS session_window_balance_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS session_balance_mode TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS passive_internal_models_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_unlinked_account_fallback_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_unlinked_account_fallback_seconds INT DEFAULT 300;
@@ -2481,7 +2482,8 @@ type SystemSettings struct {
 	SchedulerMode                       string
 	AffinityMode                        string // session 粘性模式: bounded / off / strict
 	SessionAffinitySpread               bool   // 新亲和键按 HRW 哈希散列选号(issue #484)
-	SessionWindowBalanceEnabled         bool   // 新会话优先选择当前活跃窗口较少的同层账号
+	SessionWindowBalanceEnabled         bool   // Compatibility flag for older settings clients
+	SessionBalanceMode                  string // default / window (occupied slots) / session (active conversations)
 	PassiveInternalModelsEnabled        bool   // 可信派生请求允许复用原账号的内部模型
 	CodexUnlinkedAccountFallbackEnabled bool   // 无根关系请求允许按用户/token/设备回溯最近账号
 	CodexUnlinkedAccountFallbackSeconds int    // 无根关系回溯时间窗，默认 300 秒，范围 1..3600
@@ -2850,7 +2852,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(codex_ws_context_takeover, false),
 		       CASE WHEN codex_ws_compression_level BETWEEN 1 AND 9 THEN codex_ws_compression_level ELSE 1 END,
 		       COALESCE(codex_ws_disable_fragmentation, false),
-		       COALESCE(prompt_filter_builtin_overrides, '[]')
+		       COALESCE(prompt_filter_builtin_overrides, '[]'),
+		       COALESCE(session_balance_mode, '')
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2948,6 +2951,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.CodexWSCompressionLevel,
 		&s.CodexWSDisableFragmentation,
 		&s.PromptFilterBuiltinOverrides,
+		&s.SessionBalanceMode,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -2979,6 +2983,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if strings.TrimSpace(s.ContinuousRetryPolicy) == "" {
 		s.ContinuousRetryPolicy = EncodeContinuousRetryPolicy(DefaultContinuousRetryPolicy())
 	}
+	s.SessionBalanceMode = NormalizeSessionBalanceMode(s.SessionBalanceMode, s.SessionWindowBalanceEnabled)
+	s.SessionWindowBalanceEnabled = s.SessionBalanceMode != SessionBalanceDefault
 	s.FirstTokenMode = normalizeFirstTokenMode(s.FirstTokenMode)
 	s.BillingTierPolicy = normalizeBillingTierPolicy(s.BillingTierPolicy)
 	s.AutoResetCreditsBeforeExpiryMin = NormalizeAutoResetCreditsBeforeExpiryMinutes(s.AutoResetCreditsBeforeExpiryMin)
@@ -3209,9 +3215,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_web_search_proxy_location,
 					codex_initial_session_max_age_seconds,
 					codex_fork_account_fallback_enabled,
-					codex_initial_session_age_check_disabled
+					codex_initial_session_age_check_disabled,
+					session_balance_mode
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3340,6 +3347,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					session_slot_buffer_enabled = EXCLUDED.session_slot_buffer_enabled,
 					session_slot_buffer_seconds = EXCLUDED.session_slot_buffer_seconds,
 					session_window_balance_enabled = EXCLUDED.session_window_balance_enabled,
+					session_balance_mode = EXCLUDED.session_balance_mode,
 					passive_internal_models_enabled = EXCLUDED.passive_internal_models_enabled,
 					codex_unlinked_account_fallback_enabled = EXCLUDED.codex_unlinked_account_fallback_enabled,
 					codex_unlinked_account_fallback_seconds = EXCLUDED.codex_unlinked_account_fallback_seconds,
@@ -3391,7 +3399,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeCodexOverloadWindowMinutes(s.CodexOverloadWindowMinutes),
 		s.SessionSlotBufferEnabled,
 		NormalizeSessionSlotBufferSeconds(s.SessionSlotBufferSeconds),
-		s.SessionWindowBalanceEnabled,
+		NormalizeSessionBalanceMode(s.SessionBalanceMode, s.SessionWindowBalanceEnabled) != SessionBalanceDefault,
 		s.PassiveInternalModelsEnabled,
 		NormalizeSchedulerEngine(s.SchedulerEngine, s.FastSchedulerEnabled),
 		s.CodexRequestCompression,
@@ -3411,7 +3419,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.CodexWebSearchProxyLocation,
 		NormalizeCodexInitialSessionMaxAgeSeconds(s.CodexInitialSessionMaxAgeSeconds),
 		s.CodexForkAccountFallbackEnabled,
-		s.CodexInitialSessionAgeCheckDisabled)
+		s.CodexInitialSessionAgeCheckDisabled,
+		NormalizeSessionBalanceMode(s.SessionBalanceMode, s.SessionWindowBalanceEnabled))
 	return err
 }
 

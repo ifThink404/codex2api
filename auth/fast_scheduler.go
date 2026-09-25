@@ -436,7 +436,7 @@ func (s *FastScheduler) AcquireExcludingWithFilter(apiKeyID int64, exclude map[i
 
 // AcquireExcludingWithDispatch 按用量策略选号。spark 请求不看账号级 5h/7d。
 func (s *FastScheduler) AcquireExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) *Account {
-	return s.acquireExcludingWithDispatch(apiKeyID, exclude, filter, policy, nil)
+	return s.acquireExcludingWithDispatch(apiKeyID, exclude, filter, policy, nil, nil)
 }
 
 // AcquireForAffinityWithDispatch chooses a deterministic start offset inside
@@ -444,7 +444,7 @@ func (s *FastScheduler) AcquireExcludingWithDispatch(apiKeyID int64, exclude map
 // allocate and sort an O(N) candidate slice for every new session; normally it
 // inspects one entry and remains O(1) with respect to account-pool size.
 func (s *FastScheduler) AcquireForAffinityWithDispatch(affinityHash uint64, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) *Account {
-	return s.acquireExcludingWithDispatch(apiKeyID, exclude, filter, policy, &affinityHash)
+	return s.acquireExcludingWithDispatch(apiKeyID, exclude, filter, policy, &affinityHash, nil)
 }
 
 // HasAvailableWithDispatch is a read-only shadow check. It deliberately
@@ -478,7 +478,7 @@ func (s *FastScheduler) HasAvailableWithDispatch(apiKeyID int64, exclude map[int
 	return false
 }
 
-func (s *FastScheduler) acquireExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, affinityHash *uint64) *Account {
+func (s *FastScheduler) acquireExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, affinityHash *uint64, balance *freshSessionBalance) *Account {
 	if s == nil {
 		return nil
 	}
@@ -535,7 +535,7 @@ func (s *FastScheduler) acquireExcludingWithDispatch(apiKeyID int64, exclude map
 				if s.schedulerMode == "remaining_quota" || s.schedulerMode == "fill_first" {
 					cursor = &zeroCursor
 				}
-				acc, stale := s.scanRangeLocked(tier, segStart, segEnd, cursor, affinityHash, baseLimit, now, apiKeyID, exclude, filter, policy)
+				acc, stale := s.scanRangeLocked(tier, segStart, segEnd, cursor, affinityHash, baseLimit, now, apiKeyID, exclude, filter, policy, balance)
 				if acc != nil {
 					return acc
 				}
@@ -552,9 +552,10 @@ func (s *FastScheduler) acquireExcludingWithDispatch(apiKeyID int64, exclude map
 	}
 }
 
-// scanRangeLocked 在 bucket[start:end) 范围内 round-robin 扫描可用账号。
+// scanRangeLocked 在 bucket[start:end) 范围内扫描可用账号；新会话均衡时比较
+// 整个优先级/健康层的负载，默认模式沿用首个可用账号。
 // 返回 stale=true 表示桶内缓存已过期，调用方应重新开始扫描。
-func (s *FastScheduler) scanRangeLocked(expectedTier AccountHealthTier, rangeStart, rangeEnd int, cursor *atomic.Uint64, affinityHash *uint64, baseLimit int64, now time.Time, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) (*Account, bool) {
+func (s *FastScheduler) scanRangeLocked(expectedTier AccountHealthTier, rangeStart, rangeEnd int, cursor *atomic.Uint64, affinityHash *uint64, baseLimit int64, now time.Time, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, balance *freshSessionBalance) (*Account, bool) {
 	bucket := s.buckets[expectedTier]
 	rangeLen := rangeEnd - rangeStart
 	if rangeLen <= 0 {
@@ -564,55 +565,86 @@ func (s *FastScheduler) scanRangeLocked(expectedTier AccountHealthTier, rangeSta
 	if affinityHash != nil {
 		start = int(*affinityHash % uint64(rangeLen))
 	}
-	for offset := 0; offset < rangeLen; offset++ {
-		entry := bucket[rangeStart+(start+offset)%rangeLen]
-		if entry.acc == nil {
-			continue
-		}
-		if exclude != nil && exclude[entry.dbID] {
-			continue
-		}
-		authorizationKeyID := apiKeyID
-		if authorizationKeyID < 0 {
-			authorizationKeyID = -authorizationKeyID
-		}
-		if !entry.acc.AllowsAPIKey(authorizationKeyID) {
-			continue
-		}
-		if s.groupCheck != nil && !s.groupCheck(apiKeyID, entry.acc) {
-			continue
-		}
-		if filter != nil && !filter(entry.acc) {
-			continue
-		}
-		tier, dispatchScore, limit, proven, available := entry.acc.fastSchedulerSnapshotForPolicy(baseLimit, now, policy)
-		tier, keepTier := s.normalizeRetainedTier(tier, expectedTier)
-		if !keepTier {
-			s.removeLocked(entry.dbID)
-			return nil, true
-		}
-		if tier != expectedTier {
-			// 健康层级变了，条目要换桶，桶边界随之变化，必须重新开始扫描。
-			s.removeLocked(entry.dbID)
-			if s.retainUnavailable || entry.acc.fastSchedulerKeepInPool(baseLimit, now, tier, limit, available) {
-				s.insertLocked(entry.acc, now)
+	var rejected map[int64]bool
+	for {
+		var best *Account
+		var bestLoad sessionBalanceLoad
+		var bestScore float64
+		var bestLimit int64
+		for offset := 0; offset < rangeLen; offset++ {
+			entry := bucket[rangeStart+(start+offset)%rangeLen]
+			if entry.acc == nil {
+				continue
 			}
-			return nil, true
+			if atomic.LoadInt32(&entry.acc.Disabled) != 0 {
+				continue
+			}
+			if rejected[entry.dbID] || exclude != nil && exclude[entry.dbID] {
+				continue
+			}
+			authorizationKeyID := apiKeyID
+			if authorizationKeyID < 0 {
+				authorizationKeyID = -authorizationKeyID
+			}
+			if !entry.acc.AllowsAPIKey(authorizationKeyID) {
+				continue
+			}
+			if s.groupCheck != nil && !s.groupCheck(apiKeyID, entry.acc) {
+				continue
+			}
+			if filter != nil && !filter(entry.acc) {
+				continue
+			}
+			tier, dispatchScore, limit, proven, available := entry.acc.fastSchedulerSnapshotForPolicy(baseLimit, now, policy)
+			tier, keepTier := s.normalizeRetainedTier(tier, expectedTier)
+			if !keepTier {
+				s.removeLocked(entry.dbID)
+				return nil, true
+			}
+			if tier != expectedTier {
+				// 健康层级变了，条目要换桶，桶边界随之变化，必须重新开始扫描。
+				s.removeLocked(entry.dbID)
+				if s.retainUnavailable || entry.acc.fastSchedulerKeepInPool(baseLimit, now, tier, limit, available) {
+					s.insertLocked(entry.acc, now)
+				}
+				return nil, true
+			}
+			if proven != entry.proven || math.Abs(dispatchScore-entry.dispatchScore) >= 1 {
+				// 同层级内的排序键漂移：就地刷新缓存并标记待重排，继续扫完本轮。
+				// 每次漂移都重启整轮扫描会让大号池下的一次取号反复全量重排。
+				s.refreshEntryLocked(expectedTier, rangeStart+(start+offset)%rangeLen, dispatchScore, proven)
+			}
+			if !available || limit <= 0 {
+				continue
+			}
+			if balance == nil {
+				if s.tryAcquireAccount(entry.acc, limit) {
+					return entry.acc, false
+				}
+				continue
+			}
+			load := balance.load(entry.acc)
+			if load.occupied >= limit {
+				continue
+			}
+			if best == nil || balance.compare(load, bestLoad) < 0 ||
+				balance.compare(load, bestLoad) == 0 && dispatchScore > bestScore {
+				best, bestLoad, bestScore, bestLimit = entry.acc, load, dispatchScore, limit
+			}
 		}
-		if proven != entry.proven || math.Abs(dispatchScore-entry.dispatchScore) >= 1 {
-			// 同层级内的排序键漂移：就地刷新缓存并标记待重排，继续扫完本轮。
-			// 每次漂移都重启整轮扫描会让大号池下的一次取号反复全量重排。
-			s.refreshEntryLocked(expectedTier, rangeStart+(start+offset)%rangeLen, dispatchScore, proven)
+		if best == nil {
+			return nil, false
 		}
-		if !available || limit <= 0 {
-			continue
+		if s.tryAcquireAccount(best, bestLimit) {
+			return best, false
 		}
-		if !s.tryAcquireAccount(entry.acc, limit) {
-			continue
+		// Another reservation or a dispatch-count fence won the race. Recompare
+		// remaining candidates instead of falling through to a less healthy tier.
+		if rejected == nil {
+			rejected = make(map[int64]bool)
 		}
-		return entry.acc, false
+		rejected[best.DBID] = true
 	}
-	return nil, false
 }
 
 // refreshEntryLocked 就地刷新桶内某个下标的排序键缓存，顺序被破坏时打上待重排标记。

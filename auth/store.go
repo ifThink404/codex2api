@@ -3422,7 +3422,8 @@ type Store struct {
 	schedulerMode                 atomic.Value // string: "round_robin" / "remaining_quota" / "fill_first"
 	affinityMode                  atomic.Value // string: "bounded" / "off" / "strict"
 	affinitySpreadEnabled         atomic.Bool  // 新亲和键按 HRW 哈希散列选号(issue #484)
-	sessionWindowBalance          atomic.Bool  // 新会话在同优先级/健康层内优先落到低窗口账号
+	sessionBalanceMode            atomic.Value // default / window / session
+	freshSessionBalanceMu         sync.Mutex   // Serialize fresh comparison, slot acquisition and session admission
 	passiveInternalModels         atomic.Bool  // 可信派生内部模型仅复用原根会话账号
 	codexUnlinkedFallback         atomic.Bool  // 无根请求按用户/token/设备回溯最近账号
 	codexUnlinkedFallbackSec      atomic.Int64 // 回溯时间窗秒数，默认 300
@@ -4004,7 +4005,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.schedulerMode.Store(settings.SchedulerMode)
 	s.SetAffinityMode(settings.AffinityMode)
 	s.SetSessionAffinitySpread(settings.SessionAffinitySpread)
-	s.SetSessionWindowBalanceEnabled(settings.SessionWindowBalanceEnabled)
+	s.SetSessionBalanceMode(database.NormalizeSessionBalanceMode(settings.SessionBalanceMode, settings.SessionWindowBalanceEnabled))
 	s.SetPassiveInternalModelsEnabled(settings.PassiveInternalModelsEnabled)
 	s.SetCodexUnlinkedAccountFallbackEnabled(settings.CodexUnlinkedAccountFallbackEnabled)
 	s.SetCodexUnlinkedAccountFallbackSeconds(database.NormalizeCodexUnlinkedAccountFallbackSeconds(settings.CodexUnlinkedAccountFallbackSeconds))
@@ -6877,6 +6878,12 @@ func (s *Store) nextCapacityAdmittedFreshAccount(key string, apiKeyID int64, exc
 // The extra exclusion prevents a scheduler snapshot race from immediately
 // selecting the same owner again before its stale affinity is removed.
 func (s *Store) nextCapacityAdmittedFreshAccountExcluding(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, now time.Time, excludedAccountID int64, traces ...*SelectionTrace) *Account {
+	if s != nil && s.GetSessionBalanceMode() != database.SessionBalanceDefault {
+		// Admission must be visible before another fresh session compares loads,
+		// including requests using different per-key scheduler indexes.
+		s.freshSessionBalanceMu.Lock()
+		defer s.freshSessionBalanceMu.Unlock()
+	}
 	if excludedAccountID > 0 && !selectionTrace(traces).CheckSessionModel(s.FindByID(excludedAccountID)) {
 		return nil
 	}
@@ -6970,6 +6977,9 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
+		if s.GetSessionBalanceMode() != database.SessionBalanceDefault {
+			return s.nextCapacityAdmittedFreshAccount(key, apiKeyID, exclude, filter, policy, time.Now(), traces...), "", SessionAffinityGuard{}
+		}
 		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, traces...), "", SessionAffinityGuard{}
 	}
 	if accountID := selectionTrace(traces).PinnedAccount(); accountID > 0 {
@@ -7336,15 +7346,10 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 	return s.nextCapacityAdmittedFreshAccount(key, apiKeyID, exclude, filter, policy, now, traces...), "", SessionAffinityGuard{}
 }
 
-// nextAccountForFreshAffinity 为"新亲和键首次绑定"选号(issue #484)。
-//
-// 关闭散列开关时沿用调度器"最高分优先"语义——但那正是聚集根因:新键到来时
-// 号池大多空闲,dispatchScore 的细微差异让每个新键都独立选中同一个第一名。
-// 开启后改为 rendezvous(HRW)哈希:在最高调度优先级+健康档位的候选层内,对
-// 每个账号计算 hash(亲和键, 账号ID) 取最大——同一亲和键在号池不变时恒命中
-// 同一账号(幂等一一绑定),不同键均匀摊开,首选不可用时确定性顺延到哈希序
-// 下一名,账号增删只迁移受影响的键。层间仍严格尊重运营者设置的调度优先级
-// 与健康档位,层内才忽略分数差异。
+// nextAccountForFreshAffinity only chooses accounts for fresh bindings. Default
+// mode preserves the scheduler/affinity-spread policy. Explicit balancing first
+// compares slots or sessions within the same operator priority and health tier;
+// existing bindings are resolved by the caller before reaching this function.
 func (s *Store) nextAccountForFreshAffinity(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter) *Account {
 	return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, DispatchPolicyStandard)
 }
@@ -7353,20 +7358,36 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 	if s == nil {
 		return nil
 	}
-	balanceWindows := s.SessionWindowBalanceEnabled()
+	balanceMode := s.GetSessionBalanceMode()
 	spreadAffinity := s.GetSessionAffinitySpread()
-	if (!balanceWindows && !spreadAffinity) || strings.TrimSpace(key) == "" {
+	if balanceMode == database.SessionBalanceDefault && (!spreadAffinity || strings.TrimSpace(key) == "") {
 		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, traces...)
 	}
 	filter = s.withUsableEgressFilter(filter, traces...)
+	var balance *freshSessionBalance
+	if balanceMode != database.SessionBalanceDefault {
+		balance = &freshSessionBalance{mode: balanceMode, sessionCount: s.accountWindowCountsForScheduling(s.Accounts(), time.Now())}
+	}
 	if s.SchedulerEngine() == "indexed" {
 		if scheduler := s.routingFastScheduler(apiKeyID); scheduler != nil {
 			started := time.Now()
-			acc := scheduler.AcquireForAffinityWithDispatch(affinityKeyHash(key), apiKeyID, exclude, filter, policy)
-			if acc != nil && s.accountHasBlockingCachedCooldown(acc, policy) {
+			hash := affinityKeyHash(key)
+			var hashStart *uint64
+			if strings.TrimSpace(key) != "" {
+				hashStart = &hash
+			}
+			localExclude := exclude
+			acc := scheduler.acquireExcludingWithDispatch(apiKeyID, localExclude, filter, policy, hashStart, balance)
+			for acc != nil && s.accountHasBlockingCachedCooldown(acc, policy) {
 				selectionTrace(traces).Reject("account_cooldown")
 				s.Release(acc)
-				acc = nil
+				if balance == nil {
+					acc = nil
+					break
+				}
+				localExclude = cloneAccountExclusions(localExclude)
+				localExclude[acc.DBID] = true
+				acc = scheduler.acquireExcludingWithDispatch(apiKeyID, localExclude, filter, policy, hashStart, balance)
 			}
 			s.recordSchedulerSelection(started, true, false, acc != nil, 0)
 			if acc != nil {
@@ -7374,7 +7395,12 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 			}
 			// 亲和起点不可用时退化为普通选号(含冷却重试与慢路兜底),
 			// 而不是直接放弃让请求掉进 30 秒等待。
-			return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, traces...)
+			if balance == nil {
+				return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, traces...)
+			}
+			// A stale or incomplete index must not drop the requested balancing
+			// policy. Continue through the legacy comparison with the same loads.
+			exclude = localExclude
 		}
 	}
 
@@ -7383,18 +7409,13 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		schedulerPriority int64
 		tierPriority      int
 		dispatchScore     float64
-		load              int64
-		windowCount       int64
+		balanceLoad       sessionBalanceLoad
 		limit             int64
 		weight            uint64
 	}
 	maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
 
 	accounts := s.Accounts()
-	windowCounts := map[int64]int64(nil)
-	if balanceWindows {
-		windowCounts = s.accountWindowCountsForScheduling(accounts, time.Now())
-	}
 	candidates := make([]affinityCandidate, 0, len(accounts))
 	for _, acc := range accounts {
 		if acc == nil {
@@ -7427,13 +7448,16 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		_, _ = hasher.Write([]byte(key))
 		_, _ = hasher.Write([]byte{':'})
 		_, _ = hasher.Write([]byte(strconv.FormatInt(acc.DBID, 10)))
+		var balanceLoad sessionBalanceLoad
+		if balance != nil {
+			balanceLoad = balance.load(acc)
+		}
 		candidates = append(candidates, affinityCandidate{
 			acc:               acc,
 			schedulerPriority: acc.schedulerPriority(),
 			tierPriority:      tierPriority(tier),
 			dispatchScore:     dispatchScore,
-			load:              load,
-			windowCount:       windowCounts[acc.DBID],
+			balanceLoad:       balanceLoad,
 			limit:             limit,
 			weight:            hasher.Sum64(),
 		})
@@ -7442,7 +7466,8 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		return nil
 	}
 
-	// 只保留最高的 (调度优先级, 健康档位) 层。
+	// 默认散列只保留最高层；负载均衡保留后续层以在整层冷却/抢槽失败时
+	// 继续使用相同的负载规则，而不是回退到不均衡的普通选号。
 	bestSchedPrio, bestTier := candidates[0].schedulerPriority, candidates[0].tierPriority
 	for _, c := range candidates[1:] {
 		if c.schedulerPriority > bestSchedPrio ||
@@ -7450,25 +7475,31 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 			bestSchedPrio, bestTier = c.schedulerPriority, c.tierPriority
 		}
 	}
-	layer := candidates[:0]
-	for _, c := range candidates {
-		if c.schedulerPriority == bestSchedPrio && c.tierPriority == bestTier {
-			layer = append(layer, c)
+	layer := candidates
+	if balance == nil {
+		layer = candidates[:0]
+		for _, c := range candidates {
+			if c.schedulerPriority == bestSchedPrio && c.tierPriority == bestTier {
+				layer = append(layer, c)
+			}
 		}
 	}
 	sort.Slice(layer, func(i, j int) bool {
-		if balanceWindows {
-			if layer[i].windowCount != layer[j].windowCount {
-				return layer[i].windowCount < layer[j].windowCount
+		if balance != nil {
+			if layer[i].schedulerPriority != layer[j].schedulerPriority {
+				return layer[i].schedulerPriority > layer[j].schedulerPriority
+			}
+			if layer[i].tierPriority != layer[j].tierPriority {
+				return layer[i].tierPriority > layer[j].tierPriority
+			}
+			if order := balance.compare(layer[i].balanceLoad, layer[j].balanceLoad); order != 0 {
+				return order < 0
 			}
 			if layer[i].dispatchScore != layer[j].dispatchScore {
 				return layer[i].dispatchScore > layer[j].dispatchScore
 			}
-			if layer[i].load != layer[j].load {
-				return layer[i].load < layer[j].load
-			}
 		}
-		if spreadAffinity || balanceWindows {
+		if spreadAffinity || balance != nil {
 			return layer[i].weight > layer[j].weight
 		}
 		return layer[i].acc.DBID < layer[j].acc.DBID
@@ -7481,6 +7512,9 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		if s.tryAcquireAccount(c.acc, c.limit, true) {
 			return c.acc
 		}
+	}
+	if balance != nil {
+		return nil
 	}
 	// 整层都拿不下(并发/冷却)时回退到常规调度,宁可暂时聚集也不拒绝请求。
 	return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, traces...)
@@ -8622,14 +8656,13 @@ func (s *Store) SetSessionAffinitySpread(enabled bool) {
 	s.affinitySpreadEnabled.Store(enabled)
 }
 
-// SessionWindowBalanceEnabled reports whether fresh sessions should prefer
-// accounts with fewer active conversation windows. Existing bindings never
-// enter this selection path.
+// SessionWindowBalanceEnabled is the compatibility view for older clients.
+// New clients use GetSessionBalanceMode to distinguish slots from sessions.
 func (s *Store) SessionWindowBalanceEnabled() bool {
 	if s == nil {
 		return false
 	}
-	return s.sessionWindowBalance.Load()
+	return s.GetSessionBalanceMode() != database.SessionBalanceDefault
 }
 
 // SetSessionWindowBalanceEnabled hot-reloads fresh-session balancing.
@@ -8637,7 +8670,7 @@ func (s *Store) SetSessionWindowBalanceEnabled(enabled bool) {
 	if s == nil {
 		return
 	}
-	s.sessionWindowBalance.Store(enabled)
+	s.SetSessionBalanceMode(database.NormalizeSessionBalanceMode("", enabled))
 }
 
 // PassiveInternalModelsEnabled reports whether verified internal requests,

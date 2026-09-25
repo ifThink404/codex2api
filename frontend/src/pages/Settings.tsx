@@ -1990,6 +1990,11 @@ export default function Settings() {
     { label: t('settings.schedulerModeRemainingQuota'), value: 'remaining_quota' },
     { label: t('settings.schedulerModeFillFirst'), value: 'fill_first' },
   ]
+  const sessionBalanceOptions = [
+    { label: t('settings.sessionBalanceDefault'), value: 'default' },
+    { label: t('settings.sessionBalanceWindow'), value: 'window' },
+    { label: t('settings.sessionBalanceSession'), value: 'session' },
+  ]
   const schedulerEngineOptions = [
     { label: t('settings.schedulerEngineLegacy'), value: 'legacy' },
     { label: t('settings.schedulerEngineShadow'), value: 'shadow' },
@@ -2090,6 +2095,7 @@ export default function Settings() {
     const cacheNormalized = normalizeResponseCacheSettings(settings)
     const normalized = {
       ...cacheNormalized,
+      session_balance_mode: cacheNormalized.session_balance_mode ?? (cacheNormalized.session_window_balance_enabled ? 'session' as const : 'default' as const),
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
       codex_session_failover_enabled: cacheNormalized.codex_session_failover_enabled ?? false,
@@ -2190,6 +2196,7 @@ export default function Settings() {
     affinity_mode: 'bounded',
     session_affinity_spread: false,
     session_window_balance_enabled: false,
+    session_balance_mode: 'default',
     passive_internal_models_enabled: false,
     codex_unlinked_account_fallback_enabled: false,
     codex_unlinked_account_fallback_seconds: 300,
@@ -5493,10 +5500,11 @@ export default function Settings() {
                         options={schedulerModeOptions}
                       />
                     </SettingField>
-                    <SettingField label={t('settings.sessionWindowBalance')} description={t('settings.sessionWindowBalanceDesc')} layout="switch">
-                      <Switch
-                        checked={settingsForm.session_window_balance_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('session_window_balance_enabled', checked)}
+                    <SettingField label={t('settings.sessionWindowBalance')} description={t('settings.sessionWindowBalanceDesc')}>
+                      <SegmentedPillGroup
+                        value={settingsForm.session_balance_mode ?? 'default'}
+                        onChange={(value) => autoSaveStringField('session_balance_mode', value)}
+                        options={sessionBalanceOptions}
                       />
                     </SettingField>
                     <SettingField label={t('settings.passiveInternalModels')} description={t('settings.passiveInternalModelsDesc')} layout="switch">

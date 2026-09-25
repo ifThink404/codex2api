@@ -4153,6 +4153,9 @@
     }
   },
   "settings": {
+    "sessionBalanceSession": "会话",
+    "sessionBalanceWindow": "窗口",
+    "sessionBalanceDefault": "默认",
     "transfer": {
       "export": "导出设置",
       "import": "导入设置",
@@ -4406,8 +4409,8 @@
     "schedulerModeRoundRobin": "轮询",
     "schedulerModeRemainingQuota": "剩余配额",
     "schedulerModeFillFirst": "顺序耗尽",
-    "sessionWindowBalance": "新窗口均衡",
-    "sessionWindowBalanceDesc": "仅在创建新会话时生效：先遵守账号调度优先级和健康档位，再优先选择当前活跃窗口更少的账号；窗口数相同时按调度分和当前并发择优。已有会话仍复用原账号。默认关闭。",
+    "sessionWindowBalance": "新会话均衡",
+    "sessionWindowBalanceDesc": "仅在新会话选号时生效，已有会话保持原账号。默认：沿用当前调度策略。窗口：优先占用槽少的账号（含缓冲槽），再比较在途请求和会话数。会话：优先活跃会话少的账号，再比较占用槽和在途请求。均先遵守账号优先级、健康档位及可用性限制。",
     "passiveInternalModels": "允许被动内部模型",
     "passiveInternalModelsDesc": "开启后，已验证的被动内部请求可豁免账号模型白名单，不限定模型名称。有根且原账号绑定仍在时复用原账号；无根或原根账号绑定缺失时临时选号，开启无根账号回溯后优先尝试同用户、令牌和设备范围内的最近账号，不覆盖正式根绑定。直连请求须有可验证的原生内部会话结构。普通用户请求仍受模型权限限制，风控冷却、会话锁、账号权限和上游能力限制不变；原账号绑定仍在但账号不可用时不会换号。默认关闭。",
     "codexUnlinkedAccountFallback": "允许无根请求回溯账号",
