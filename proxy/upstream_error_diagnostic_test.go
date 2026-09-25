@@ -2,16 +2,20 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codex2api/security/promptfilter"
 	"github.com/stretchr/testify/require"
@@ -164,4 +168,135 @@ func TestUpstreamErrorDiagnosticDoesNotInventHTTPStatusFromWSAdapter(t *testing.
 	d := currentUpstreamErrorDiagnostic(c).diagnostic
 	require.Zero(t, d.HTTPStatus)
 	require.Equal(t, 101, d.HandshakeStatus)
+}
+
+func TestUpstreamErrorDiagnosticPersistsBeforeRetryAndPublicResponse(t *testing.T) {
+	t.Setenv("LOG_DISABLED", "true")
+	c, recorder, h := upstreamErrorDiagnosticTestContext(t)
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "errors.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	h.db = db
+	accountID, err := db.InsertOpenAIResponsesAccount(t.Context(), "diagnostic-test", map[string]any{"base_url": "https://example.test", "api_key": "upstream-secret"}, "")
+	require.NoError(t, err)
+	account := &auth.Account{DBID: accountID, AccessToken: "upstream-secret"}
+	h.store.AddAccount(account)
+	attachUpstreamTrace(c, h.store)
+
+	bodies := []string{
+		`{"error":{"code":"rate_limit_exceeded","type":"rate_limit_error","message":"Token rate exceeded upstream-secret"}}`,
+		`{"detail":[{"loc":["body","max_tokens"],"msg":"Input should be at most 65536","type":"less_than_equal","input":"private-prompt","ctx":{"secret":"private-context"}}]}`,
+		`{}`,
+	}
+	for i, status := range []int{429, 422, 200} {
+		beginUpstreamTrace(c.Request.Context(), account, "", false)
+		headers := http.Header{}
+		headers.Set("X-Request-Id", []string{"attempt-429", "attempt-422", "attempt-ok"}[i])
+		if status == 429 {
+			headers.Set("Retry-After", "7")
+			headers.Set("X-Ratelimit-Remaining-Tokens", "0")
+		}
+		UpstreamTransportObserver(c.Request.Context()).ResponseHeaders(status, headers, false)
+		body := []byte(bodies[i])
+		if status >= 400 {
+			logUpstreamErrorForRequest(c, "/v1/responses", status, "gpt-6-astra", accountID, body)
+		}
+		h.logUsageForRequest(c, &database.UsageLogInput{AccountID: accountID, Endpoint: "/v1/responses", Model: "gpt-6-astra", StatusCode: status, AttemptIndex: i + 1, IsRetryAttempt: status >= 400, ErrorMessage: usageLogErrorMessage(status, body)})
+		require.Empty(t, recorder.Header().Get(upstreamErrorDiagnosticHeader), "a failed attempt must not commit headers before retry selection")
+		if status == 422 {
+			state := currentUpstreamErrorDiagnostic(c)
+			require.NotNil(t, state)
+			require.NotEmpty(t, state.envelope, "the final original cause must remain available to NewAPI")
+			require.Contains(t, state.diagnostic.Message, "max_tokens")
+			require.NotContains(t, state.diagnostic.Message, "private-")
+		}
+	}
+	db.FlushUsageLogs()
+	logs, err := db.ListRecentUsageLogs(t.Context(), 10)
+	require.NoError(t, err)
+	require.Len(t, logs, 3)
+	for _, row := range logs {
+		detail, err := db.GetUsageRequestDiagnostics(t.Context(), row.ID)
+		require.NoError(t, err)
+		d := gjson.GetBytes(detail.Diagnostics, "upstream")
+		switch row.StatusCode {
+		case 429:
+			require.Contains(t, d.Get("error_detail.message").String(), "Token rate exceeded")
+			require.Equal(t, "attempt-429", d.Get("error_detail.upstream_request_id").String())
+			require.Equal(t, "7", d.Get("rate_limit_headers.retry-after").String())
+			require.Equal(t, "rate_limit_exceeded", d.Get("error_detail.code").String())
+			require.NotContains(t, d.Raw, "upstream-secret")
+		case 422:
+			require.Contains(t, d.Get("error_detail.message").String(), "max_tokens")
+			require.Equal(t, "validation_error", d.Get("error_detail.type").String())
+			require.Contains(t, row.ErrorMessage, "Input should be at most 65536")
+			require.False(t, d.Get("rate_limit_headers").Exists())
+			require.NotContains(t, string(detail.Diagnostics), "private-")
+		case 200:
+			require.False(t, d.Get("error_detail").Exists(), "success must not inherit either failed attempt")
+			require.False(t, d.Get("error_response").Exists())
+			require.False(t, d.Get("rate_limit_headers").Exists())
+		}
+	}
+}
+
+func TestUpstreamErrorDiagnosticRecordsMissingExplanation(t *testing.T) {
+	for _, body := range []string{"", `{"unexpected":"private-prompt"}`} {
+		c := transportTestContext()
+		beginUpstreamTrace(c.Request.Context(), &auth.Account{DBID: 1}, "", false)
+		UpstreamTransportObserver(c.Request.Context()).ResponseHeaders(429, http.Header{}, false)
+		captureUpstreamErrorDiagnostic(c, []byte(body), 429, "upstream_http", "http_response")
+		d := snapshotUpstreamTrace(c.Request.Context()).Transport
+		require.NotNil(t, d.ErrorResponse)
+		require.Equal(t, len(body), d.ErrorResponse.BodyBytes)
+		require.False(t, d.ErrorResponse.MessageFound)
+		require.Nil(t, d.ErrorDetail)
+		encoded, err := json.Marshal(d)
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded), "private-prompt")
+	}
+}
+
+func TestUpstreamErrorDiagnosticStreamRetryWithoutPolicyIncident(t *testing.T) {
+	t.Setenv("LOG_DISABLED", "true")
+	enableLooseResponseFailedContinuousRetry(t)
+	attempts := looseTTFTFailureThenSuccessEvents("recovered-with-logs")
+	attempts[0][2] = `{"type":"response.failed","response":{"status":"failed","status_code":429,"error":{"code":"rate_limit_exceeded","type":"rate_limit_error","message":"Token rate exceeded"}}}`
+	upstream, calls := newAttemptSequenceSSEServer(t, attempts)
+	store := newOpenAIResponsesRelayStore(upstream.URL)
+	t.Cleanup(store.Stop)
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "stream-errors.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	_, err = db.InsertOpenAIResponsesAccount(t.Context(), "diagnostic-test", map[string]any{"base_url": upstream.URL, "api_key": "test-key"}, "")
+	require.NoError(t, err)
+	h := NewHandler(store, db, nil, nil)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4.1-direct","input":"hello","stream":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	attachUpstreamTrace(c, store)
+	h.Responses(c)
+	require.EqualValues(t, 2, calls.Load())
+	require.Equal(t, 200, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "recovered-with-logs")
+	require.NotContains(t, recorder.Body.String(), "Token rate exceeded")
+	db.FlushUsageLogs()
+	logs, err := db.ListRecentUsageLogs(t.Context(), 10)
+	require.NoError(t, err)
+	require.Len(t, logs, 2, "the unsuccessful retry must be retained without a policy incident")
+	for _, row := range logs {
+		detail, err := db.GetUsageRequestDiagnostics(t.Context(), row.ID)
+		require.NoError(t, err)
+		if row.StatusCode == 429 {
+			require.True(t, row.IsRetryAttempt)
+			require.Contains(t, string(detail.Diagnostics), "Token rate exceeded")
+			require.EqualValues(t, 200, gjson.GetBytes(detail.Diagnostics, "upstream.error_detail.http_status").Int(), "SSE failure must retain the actual HTTP status")
+		} else {
+			require.Equal(t, 200, row.StatusCode)
+			require.NotContains(t, string(detail.Diagnostics), "Token rate exceeded")
+		}
+	}
 }

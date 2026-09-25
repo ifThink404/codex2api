@@ -625,7 +625,7 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			logUpstreamError(inboundEndpoint, resp.StatusCode, logModel, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, inboundEndpoint, resp.StatusCode, logModel, account.ID(), errBody)
 			decision := applyGrokMediaCooldown(h.store, account, resp.StatusCode, errBody, resp, result.Model)
 			effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, h.getMaxRateLimitRetries())
 			continuousSelected := continuousRetryHTTPSelected(continuousRetryPolicy, resp.StatusCode, errBody)
@@ -993,7 +993,7 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			logUpstreamError(inboundEndpoint, resp.StatusCode, model, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, inboundEndpoint, resp.StatusCode, model, account.ID(), errBody)
 			decision := applyGrokMediaCooldown(h.store, account, resp.StatusCode, errBody, resp, result.Model)
 			effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, h.getMaxRateLimitRetries())
 			continuousSelected := continuousRetryHTTPSelected(continuousRetryPolicy, resp.StatusCode, errBody)

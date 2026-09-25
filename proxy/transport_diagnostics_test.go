@@ -25,6 +25,21 @@ func transportTestContext() *gin.Context {
 	return request
 }
 
+func TestTransportDiagnosticRateLimitHeaderAllowlist(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Retry-After", "Fri, 25 Sep 2026 14:30:00 GMT")
+	headers.Set("X-Ratelimit-Limit-Tokens", "100000")
+	headers.Set("X-Ratelimit-Remaining-Tokens", "0")
+	headers.Set("X-Ratelimit-Reset-Tokens", "1m2.5s")
+	headers.Set("X-Ratelimit-Remaining-Requests", "Bearer private-secret")
+	headers.Set("Set-Cookie", "private-cookie")
+	require.Equal(t, map[string]string{
+		"retry-after": "Fri, 25 Sep 2026 14:30:00 GMT", "x-ratelimit-limit-tokens": "100000",
+		"x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "1m2.5s",
+	}, upstreamRateLimitHeaders(headers))
+	require.Nil(t, upstreamRateLimitHeaders(http.Header{"Retry-After": {"private-secret"}}))
+}
+
 func TestTransportDiagnosticWebSocketSeparatesHandshakeAndTurn(test *testing.T) {
 	request := transportTestContext()
 	beginUpstreamTrace(request.Request.Context(), &auth.Account{DBID: 17}, "http://name:password@proxy.invalid:3128/private?token=secret", true)

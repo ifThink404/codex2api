@@ -1003,6 +1003,10 @@ func usageLogErrorMessageImpl(statusCode int, body []byte, trustedText bool) str
 		}
 	}
 
+	if message == "" && gjson.ValidBytes(body) {
+		message, _, _ = upstreamErrorFields(body)
+	}
+
 	if message == "" {
 		// HTML and plain-text provider pages routinely contain request IDs,
 		// internal routing details or echoed credentials. They are not an API
@@ -4680,7 +4684,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 
 				log.Printf("OpenAI Responses 上游返回错误 (attempt %d, status %d): %s", attempt+1, resp.StatusCode, upstreamErrorConsoleBody(errBody))
-				logUpstreamError("/v1/responses", resp.StatusCode, logModel, account.ID(), errBody)
+				logUpstreamErrorForRequest(c, "/v1/responses", resp.StatusCode, logModel, account.ID(), errBody)
 				promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses", logModel, errBody, upstreamCyberPolicyAttempt{
 					Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
 					AccountID: account.ID(), AttemptIndex: attempt + 1,
@@ -5093,6 +5097,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			var responseFailedDecision codex429Decision
 			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 				outcome = classifyResponseFailedOutcome(terminalFailurePayload)
+				captureUpstreamErrorDiagnostic(c, terminalFailurePayload, 0, "upstream_event", "response_error")
 				if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 					if !h.pendingStickyStream429Retry(account, outcome, terminalFailurePayload, attemptEffectiveModel, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, streamAttempt.downstreamWrote(wroteAnyBody), c.Request.Context().Err(), writeErr, continuousRetryPolicy) {
 						responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)
@@ -5127,7 +5132,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				_ = streamAttempt.Close()
 				clearNewAPIUpstreamCyberPolicyDecision(c)
 				disposition := h.streamSessionFailureDispositionForPolicy(outcome, terminalFailurePayload, true, continuousRetryPolicy)
-				h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+				h.logUpstreamRetryUsage(c, database.UsageLogInput{
 					AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
 					StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
 					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
@@ -5489,7 +5494,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 			SyncCodexUsageState(h.store, account, resp)
 			log.Printf("上游返回错误 (attempt %d, status %d): %s", attempt+1, resp.StatusCode, upstreamErrorConsoleBody(errBody))
-			logUpstreamError("/v1/responses", resp.StatusCode, logModel, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, "/v1/responses", resp.StatusCode, logModel, account.ID(), errBody)
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses", logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
@@ -6043,6 +6048,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		var responseFailedDecision codex429Decision
 		if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 			outcome = classifyResponseFailedOutcome(terminalFailurePayload)
+			captureUpstreamErrorDiagnostic(c, terminalFailurePayload, 0, "upstream_event", "response_error")
 			if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 				if !h.pendingStickyStream429Retry(account, outcome, terminalFailurePayload, effectiveModel, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, streamAttempt.downstreamWrote(wroteAnyBody), c.Request.Context().Err(), writeErr, continuousRetryPolicy) {
 					responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, effectiveModel)
@@ -6086,7 +6092,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			_ = streamAttempt.Close()
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			disposition := h.streamSessionFailureDispositionForPolicy(outcome, terminalFailurePayload, true, continuousRetryPolicy)
-			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+			h.logUpstreamRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: logEffectiveModel,
 				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
 				InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: isStream, ViaWebsocket: useWebsocket,
@@ -6745,7 +6751,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					}
 				}
 
-				logUpstreamError("/v1/responses/compact", resp.StatusCode, logModel, account.ID(), errBody)
+				logUpstreamErrorForRequest(c, "/v1/responses/compact", resp.StatusCode, logModel, account.ID(), errBody)
 				promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses/compact", logModel, errBody, upstreamCyberPolicyAttempt{
 					Transport: "http", StatusCode: resp.StatusCode, AccountID: account.ID(), AttemptIndex: attempt + 1,
 				}))
@@ -7016,7 +7022,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 
 			SyncCodexUsageState(h.store, account, resp)
-			logUpstreamError("/v1/responses/compact", resp.StatusCode, logModel, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, "/v1/responses/compact", resp.StatusCode, logModel, account.ID(), errBody)
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses/compact", logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: "http", StatusCode: resp.StatusCode, AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
@@ -7223,7 +7229,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 			}
 
-			logUpstreamError("/v1/responses/compact", failStatus, logModel, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, "/v1/responses/compact", failStatus, logModel, account.ID(), errBody)
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses/compact", logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: "http", StatusCode: failStatus, AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
@@ -7776,7 +7782,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			log.Printf("上游返回错误 (attempt %d, status %d): %s", attempt+1, resp.StatusCode, upstreamErrorConsoleBody(errBody))
-			logUpstreamError("/v1/chat/completions", resp.StatusCode, logModel, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, "/v1/chat/completions", resp.StatusCode, logModel, account.ID(), errBody)
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/chat/completions", logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
@@ -8300,6 +8306,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		var responseFailedDecision codex429Decision
 		if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 			outcome = classifyResponseFailedOutcome(terminalFailurePayload)
+			captureUpstreamErrorDiagnostic(c, terminalFailurePayload, 0, "upstream_event", "response_error")
 			if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 				if !h.pendingStickyStream429Retry(account, outcome, terminalFailurePayload, attemptEffectiveModel, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, streamAttempt.downstreamWrote(wroteAnyBody), c.Request.Context().Err(), writeErr, continuousRetryPolicy) {
 					responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)
@@ -8343,7 +8350,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			_ = streamAttempt.Close()
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			disposition := h.streamSessionFailureDispositionForPolicy(outcome, terminalFailurePayload, true, continuousRetryPolicy)
-			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+			h.logUpstreamRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
 				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
 				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,

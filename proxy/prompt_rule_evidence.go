@@ -556,10 +556,8 @@ func upstreamPromptPolicyTransport(stream, viaWebsocket bool) string {
 	return "http"
 }
 
-func (h *Handler) logPromptPolicyRetryUsage(c *gin.Context, input database.UsageLogInput, incidentID string) {
-	if strings.TrimSpace(incidentID) == "" {
-		return
-	}
+// Failed stream attempts need usage diagnostics even without a policy incident.
+func (h *Handler) logUpstreamRetryUsage(c *gin.Context, input database.UsageLogInput, incidentID string) {
 	input.PromptPolicyIncidentID = incidentID
 	input.IsRetryAttempt = true
 	h.logUsageForRequest(c, &input)

@@ -8,6 +8,12 @@ NewAPI 管理员日志的「详情」列显示具体原因，详情窗口补充�
 
 HTTP 原因提取兼容 `error.message`、顶层 `message`、字符串形式的 `error` / `detail`、JSON 字符串及纯文本。此前字符串形式的 `detail` / `error` 会漏采集，导致管理员也只看到 `upstream_500` 通用提示；修复仅影响新请求，无法恢复历史未保存的内容。任意 JSON 对象或数组不会作为整段响应正文传出。
 
+422 的 `detail` 校验数组只提取最多 8 项的 `loc` 和 `msg`，不保存可能包含请求内容的 `input`、`ctx`。HTTP 失败在写入用量日志及重试之前捕获，codex2api 请求诊断的 `upstream.error_detail` 保存脱敏原因、错误码和关联 ID，`upstream.error_response` 保存响应字节数、JSON／非 JSON／空响应分类及是否提取到消息。最终重试成功时仍可查询之前失败尝试的记录，成功尝试不会继承失败原因。
+
+首包前 SSE／WebSocket 失败的透明重试也逐次写入用量日志，不再要求存在策略事件编号。失败尝试标记 `is_retry_attempt`，不会把尚未成功的输出估算成计费 Token；流内 429 和实际 HTTP 200 分别记录，避免混淆。
+
+`upstream.rate_limit_headers` 保存有效的 `Retry-After` 和白名单内的请求／Token 限额、剩余量、重置延迟。缺少这些头时不猜测限流原因。文件日志增加 `upstream_client_error.log` 收录 401、403、422、429 等其余 4xx；400 和 5xx 继续使用原文件。新文件只保存提取后的诊断，不保存校验错误回显的输入。文件日志仍受 `LOG_DISABLED` 控制，用量入库仍受日志模式控制；上游账号错误主要在用量日志中查询，不能仅凭服务错误页为空判定没有记录。
+
 ## 部署
 
 先更新 NewAPI 接收端，再更新 codex2api。继续使用现有 NewAPI 签名绑定和共享密钥，要求请求身份与渠道元数据都已验证；无需新增密钥或数据库迁移。只更新 NewAPI 无法恢复被旧 codex2api 隐藏的原因。已存在的历史日志也不会被补写。

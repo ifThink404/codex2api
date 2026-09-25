@@ -151,29 +151,16 @@ func captureUpstreamErrorDiagnostic(c *gin.Context, body []byte, status int, sou
 	if c == nil {
 		return
 	}
-	parsed := gjson.ParseBytes(body)
-	var message, code, kind string
-	for _, path := range []string{"error", "response.error", "response.status_details.error", "detail", ""} {
-		value := parsed
-		if path != "" {
-			value = parsed.Get(path)
-		}
-		if value.Get("message").Type == gjson.String {
-			message, code, kind = value.Get("message").String(), value.Get("code").String(), value.Get("type").String()
-			break
-		}
-		// Several HTTP backends (including their edge proxies) return a
-		// string-valued error/detail instead of the OpenAI error object. Do not
-		// discard their only explanation before generating the public 500.
-		if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
-			message, code, kind = value.String(), parsed.Get("code").String(), parsed.Get("type").String()
-			break
-		}
-	}
+	message, code, kind := upstreamErrorFields(body)
 	if message == "" && !gjson.ValidBytes(body) {
 		message = string(body)
 	}
 	if strings.TrimSpace(message) == "" {
+		if c.Request != nil && currentUpstreamErrorDiagnostic(c) == nil {
+			UpstreamTransportObserver(c.Request.Context()).update(func(d *UpstreamTransportDiagnostic) {
+				d.ErrorResponse = upstreamErrorResponseInfo(body, false)
+			})
+		}
 		return
 	}
 	safeMessage := upstreamErrorSafeMessage(c, message)
@@ -218,6 +205,13 @@ func captureUpstreamErrorDiagnostic(c *gin.Context, body []byte, status int, sou
 		state.envelope, _ = sealUpstreamErrorDiagnostic(verified.VerificationSecret, verified.Identity.UserID, verified.Platform, state.diagnostic, rand.Reader)
 	}
 	c.Set(upstreamErrorDiagnosticKey, state)
+	if c.Request != nil {
+		UpstreamTransportObserver(c.Request.Context()).update(func(d *UpstreamTransportDiagnostic) {
+			detail := state.diagnostic
+			d.ErrorDetail = &detail
+			d.ErrorResponse = upstreamErrorResponseInfo(body, true)
+		})
+	}
 	// Also retain a bounded, redacted cause in local server logs for unbound clients.
 	encoded, _ := json.Marshal(state.diagnostic)
 	log.Printf("upstream_error_diagnostic %s", encoded)

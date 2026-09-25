@@ -472,7 +472,7 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 			retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 
 			log.Printf("Gemini native upstream error (attempt %d, status %d, %s): %s", attempt+1, resp.StatusCode, inboundEndpoint, upstreamErrorConsoleBody(errBody))
-			logUpstreamError(inboundEndpoint, resp.StatusCode, model, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, inboundEndpoint, resp.StatusCode, model, account.ID(), errBody)
 			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, model)
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			h.logUsageForRequest(c, &database.UsageLogInput{

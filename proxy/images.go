@@ -1732,7 +1732,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
-			logUpstreamError(inboundEndpoint, resp.StatusCode, logModel, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, inboundEndpoint, resp.StatusCode, logModel, account.ID(), errBody)
 			if resp.StatusCode == http.StatusBadRequest {
 				// 400 拒绝的是驱动主模型而非生图模型:不能按 (账号, 生图模型) 冷却——那会把
 				// 唯一能生图的账号整体拉黑 30 分钟;换下一个候选驱动在同一账号上重试。

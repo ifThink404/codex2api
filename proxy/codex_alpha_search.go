@@ -96,7 +96,7 @@ func (h *Handler) CodexAlphaSearchHandler(c *gin.Context) {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		logUpstreamError("/v1/alpha/search", resp.StatusCode, "", account.ID(), resp.Body)
+		logUpstreamErrorForRequest(c, "/v1/alpha/search", resp.StatusCode, "", account.ID(), resp.Body)
 	}
 	contentType := resp.ContentType
 	if contentType == "" {

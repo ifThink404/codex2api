@@ -993,7 +993,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 
 			log.Printf("Responses WebSocket upstream returned error (attempt %d, status %d): %s", attempt+1, resp.StatusCode, upstreamErrorConsoleBody(errBody))
-			logUpstreamError("/v1/responses", resp.StatusCode, logModel, account.ID(), errBody)
+			logUpstreamErrorForRequest(c, "/v1/responses", resp.StatusCode, logModel, account.ID(), errBody)
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses", logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: upstreamPromptPolicyTransport(true, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
@@ -1506,6 +1506,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	promptPolicyIncidentID := ""
 	if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 		outcome = classifyResponseFailedOutcome(terminalFailurePayload)
+		captureUpstreamErrorDiagnostic(c, terminalFailurePayload, 0, "upstream_event", "response_error")
 		if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 			retryPossible := retryEnabled && continuousRetryStreamFailureSelected(outcome, terminalFailurePayload, terminalFailureEventType, continuousRetryPolicy) && !(wroteAnyBody && wsReplay == nil) && c.Request.Context().Err() == nil && writeErr == nil
 			if !h.deferStickyStream429Cooldown(account, outcome, terminalFailurePayload, effectiveModel, retryPossible, continuousRetryPolicy) {
@@ -1560,7 +1561,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if preserveAffinity {
 			disposition.retainAffinity = true
 		}
-		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+		h.logUpstreamRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
 			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
 			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,

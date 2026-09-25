@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codex2api/security"
+	"github.com/gin-gonic/gin"
 )
 
 // fileLogger 单个日志文件实例
@@ -22,8 +23,9 @@ type fileLogger struct {
 }
 
 var (
-	badRequestLogger  = &fileLogger{path: "bad_request.log"}  // 400 错误
-	serverErrorLogger = &fileLogger{path: "server_error.log"} // 5xx 错误
+	badRequestLogger          = &fileLogger{path: "bad_request.log"}           // 400 错误
+	serverErrorLogger         = &fileLogger{path: "server_error.log"}          // 5xx 错误
+	upstreamClientErrorLogger = &fileLogger{path: "upstream_client_error.log"} // 其余 4xx，包括 422/429
 )
 
 const defaultLogDir = "logs"
@@ -106,11 +108,41 @@ func logUpstreamError(endpoint string, statusCode int, model string, accountID i
 		badRequestLogger.writeEntry(endpoint, statusCode, model, accountID, body)
 	case statusCode >= 500:
 		serverErrorLogger.writeEntry(endpoint, statusCode, model, accountID, body)
+	case statusCode >= 400:
+		upstreamClientErrorLogger.writeEntry(endpoint, statusCode, model, accountID, upstreamClientErrorLogRecord(nil, body))
 	}
+}
+
+// Capture every failed attempt before its usage row is written or a retry starts.
+// The public response may be emitted much later (or never, if a retry succeeds).
+func logUpstreamErrorForRequest(c *gin.Context, endpoint string, statusCode int, model string, accountID int64, body []byte) {
+	if statusCode >= 400 {
+		captureUpstreamErrorDiagnostic(c, body, statusCode, "upstream_http", "http_response")
+	}
+	if statusCode > 400 && statusCode < 500 {
+		upstreamClientErrorLogger.writeEntry(endpoint, statusCode, model, accountID, upstreamClientErrorLogRecord(c, body))
+		return
+	}
+	logUpstreamError(endpoint, statusCode, model, accountID, body)
+}
+
+func upstreamClientErrorLogRecord(c *gin.Context, body []byte) []byte {
+	var detail *upstreamErrorDiagnostic
+	if state := currentUpstreamErrorDiagnostic(c); state != nil {
+		detail = &state.diagnostic
+	} else if message, code, kind := upstreamErrorFields(body); message != "" {
+		detail = &upstreamErrorDiagnostic{Message: upstreamErrorSafeMessage(c, message), Code: safeDiagnosticToken(code), Type: safeDiagnosticToken(kind)}
+	}
+	encoded, _ := json.Marshal(struct {
+		Error    *upstreamErrorDiagnostic         `json:"error,omitempty"`
+		Response *upstreamErrorResponseDiagnostic `json:"response"`
+	}{detail, upstreamErrorResponseInfo(body, detail != nil)})
+	return encoded
 }
 
 // CloseErrorLogger 关闭所有错误日志文件（程序退出时调用）
 func CloseErrorLogger() {
 	badRequestLogger.close()
 	serverErrorLogger.close()
+	upstreamClientErrorLogger.close()
 }

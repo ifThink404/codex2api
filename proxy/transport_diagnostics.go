@@ -54,6 +54,9 @@ type UpstreamTransportDiagnostic struct {
 	ErrorStage             string                             `json:"error_stage,omitempty"`
 	ErrorCode              string                             `json:"error_code,omitempty"`
 	ErrorType              string                             `json:"error_type,omitempty"`
+	ErrorDetail            *upstreamErrorDiagnostic           `json:"error_detail,omitempty"`
+	ErrorResponse          *upstreamErrorResponseDiagnostic   `json:"error_response,omitempty"`
+	RateLimitHeaders       map[string]string                  `json:"rate_limit_headers,omitempty"`
 	EventStatus            int                                `json:"event_status,omitempty"`
 	HTTPStatus             int                                `json:"http_status,omitempty"`
 	HandshakeStatus        int                                `json:"handshake_status,omitempty"`
@@ -154,6 +157,7 @@ func (observer *TransportObserver) ResponseHeaders(status int, headers http.Head
 			}
 		}
 		diagnostic.CFRay = safeDiagnosticToken(headers.Get("Cf-Ray"))
+		diagnostic.RateLimitHeaders = upstreamRateLimitHeaders(headers)
 		diagnostic.AuthorizationError = safeDiagnosticToken(headers.Get("X-OpenAI-Authorization-Error"))
 		diagnostic.IdentityErrorCode = ""
 		if encoded := headers.Get("X-Error-Json"); len(encoded) <= 8192 {
