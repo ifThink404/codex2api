@@ -102,15 +102,18 @@ func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload fun
 	e := &bpsAttachmentEntry{ready: make(chan struct{})}
 	c.entries[key] = e
 	c.mu.Unlock()
-	id, err := upload()
+	id, expires, shared, err := resolveSharedBPSAttachment(ctx, key, upload)
 	c.mu.Lock()
-	e.id, e.err, e.expires = id, err, time.Now().Add(bpsAttachmentCacheTTL)
+	e.id, e.err, e.expires = id, err, expires
+	if shared {
+		timing.update(func(v *bpsTimingValues) { v.CacheMisses--; v.CacheHits++ })
+	}
 	if err != nil {
 		delete(c.entries, key)
 	}
 	close(e.ready)
 	c.mu.Unlock()
-	return id, false, err
+	return id, shared, err
 }
 
 func (c *bpsAttachmentCache) forget(key, id string) {
@@ -338,7 +341,17 @@ func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.
 	// No redirects: account credentials are valid only for this fixed endpoint.
 	localClient := *client
 	localClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := localClient.Do(req)
+	traced, network := traceBPSHTTP(req)
+	resp, err := localClient.Do(traced)
+	phases := network.finish(err)
+	if phases != nil {
+		bpsTimingFromContext(ctx).update(func(v *bpsTimingValues) {
+			v.UploadHTTPObservations++
+			if v.SlowestUploadHTTP == nil || phases.RoundTripMS > v.SlowestUploadHTTP.RoundTripMS {
+				v.SlowestUploadHTTP = phases
+			}
+		})
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -360,7 +373,7 @@ func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.
 		return "", ErrUpstream(http.StatusBadGateway, "读取附件上传结果失败。", nil)
 	}
 	id := gjson.GetBytes(raw, "openai_file_id").String()
-	if !strings.HasPrefix(id, "file-") || len(id) > 256 || strings.ContainsAny(id, " \t\r\n/\\") {
+	if !validBPSAttachmentID(id) {
 		return "", ErrUpstream(http.StatusBadGateway, "附件上传结果缺少有效的文件引用。", nil)
 	}
 	return id, nil
@@ -389,13 +402,44 @@ func invalidateMissingBPSAttachments(resp *http.Response, used map[string]string
 		return false
 	}
 	invalidated := false
+	identified := make(map[string]bool)
+	for _, id := range used {
+		if bpsErrorNamesAttachment(message, strings.ToLower(id)) {
+			identified[id] = true
+		}
+	}
 	for key, id := range used {
-		if strings.Contains(strings.ToLower(message), strings.ToLower(id)) || code == "file_not_found" || code == "file_expired" {
+		if identified[id] || len(identified) == 0 && (code == "file_not_found" || code == "file_expired") {
 			bpsImages.forget(key, id)
+			if resp.Request != nil {
+				forgetSharedBPSAttachment(resp.Request.Context(), key, id)
+			}
 			invalidated = true
 		}
 	}
 	return invalidated
+}
+
+func bpsErrorNamesAttachment(message, id string) bool {
+	if id == "" {
+		return false
+	}
+	for offset := 0; offset < len(message); {
+		index := strings.Index(message[offset:], id)
+		if index < 0 {
+			return false
+		}
+		end := offset + index + len(id)
+		if end == len(message) {
+			return true
+		}
+		c := message[end]
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return true
+		}
+		offset = end
+	}
+	return false
 }
 
 type bpsPrefixReadCloser struct {

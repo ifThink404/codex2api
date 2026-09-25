@@ -215,7 +215,10 @@ func doTracedUpstreamRequest(client *http.Client, req *http.Request, account *au
 	})
 	timing := bpsTimingFromContext(req.Context())
 	timing.startInference(time.Now())
-	resp, err := client.Do(traceHTTPTransport(req, observer))
+	traced, network := traceBPSHTTP(traceHTTPTransport(req, observer))
+	resp, err := client.Do(traced)
+	phases := network.finish(err)
+	timing.update(func(v *bpsTimingValues) { v.LastInferenceHTTP = phases })
 	if resp != nil {
 		timing.receivedHeaders(time.Now())
 	}

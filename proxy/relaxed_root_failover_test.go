@@ -15,7 +15,7 @@ import (
 
 func TestRelaxedRootFailoverWithKnownBPSCompaction(t *testing.T) {
 	for _, preserve := range []bool{false, true} {
-		for _, reason := range []string{"disabled", "paused", "quota_5h", "quota_7d", "capacity"} {
+		for _, reason := range []string{"disabled", "paused", "quota_5h", "quota_7d", "capacity", "payment_required"} {
 			t.Run(fmt.Sprintf("%s/preserve_%v", reason, preserve), func(t *testing.T) {
 				h, owner, target, key := failoverTestSetup(t, false)
 				t.Setenv("CODEX_OUTBOUND_SESSION_MODE", "preserve")
@@ -39,6 +39,8 @@ func TestRelaxedRootFailoverWithKnownBPSCompaction(t *testing.T) {
 					atomic.StoreInt32(&owner.Disabled, 1)
 				case "paused":
 					atomic.StoreInt32(&owner.DispatchPaused, 1)
+				case "payment_required":
+					owner.Status, owner.CooldownReason, owner.CooldownUtil = auth.StatusCooldown, "payment_required", time.Now().Add(time.Hour)
 				case "quota_5h":
 					owner.PlanType = "pro"
 					owner.UsagePercent5h, owner.UsagePercent5hValid, owner.Reset5hAt = 100, true, time.Now().Add(time.Hour)

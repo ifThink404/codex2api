@@ -107,6 +107,7 @@ func (claims *localCodexIdentityClaims) ClaimCodexIdentities(ctx context.Context
 }
 
 func (handler *Handler) bindCodexIdentityClaims(ctx *gin.Context) {
+	ctx.Request = ctx.Request.WithContext(WithBPSAttachmentCache(ctx.Request.Context(), handler.cache))
 	var claimer codexIdentityClaimer = &handler.codexIdentityClaims
 	if handler.db != nil {
 		claimer = handler.db

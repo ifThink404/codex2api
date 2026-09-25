@@ -240,7 +240,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		return nil, ErrInternalError("构建 BPS 请求失败", err)
 	}
 	ctx = context.WithValue(ctx, codexBPSDiagnosticKey{}, diagnostic)
-	diagnostic.Timing = &bpsTimingDiagnostic{started: started}
+	diagnostic.Timing = &bpsTimingDiagnostic{started: started, values: bpsTimingValues{FirstTokenModeAtStart: currentFirstTokenMode()}}
 	ctx = context.WithValue(ctx, bpsTimingContextKey{}, diagnostic.Timing)
 	ctx = ensureTransportTrace(ctx)
 	// Preparation errors happen before the inference transport is created. Keep

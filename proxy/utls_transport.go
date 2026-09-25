@@ -245,13 +245,19 @@ func buildSOCKS5Dialer(u *url.URL) (xproxy.Dialer, error) {
 //
 // 返回前会 touch() 命中的连接：该时间戳是 CloseIdleConnections 的保护窗口依据，
 // 防止连接在“已取出、尚未发 stream”的窗口里被当成空闲连接关掉。
-func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*utlsConn, error) {
+func (t *utlsRoundTripper) getOrCreateConnection(host, addr string, contexts ...context.Context) (*utlsConn, error) {
+	var timing *bpsHTTPTrace
+	if len(contexts) > 0 {
+		timing = bpsHTTPTraceFromContext(contexts[0])
+	}
+	timing.change(func() { timing.values.Source = "utls" })
 	t.mu.Lock()
 
 	// 检查是否已有可用连接
 	if entry, ok := t.connections[host]; ok && entry.conn.CanTakeNewRequest() {
 		entry.touch()
 		t.mu.Unlock()
+		timing.gotConnection(true)
 		return entry, nil
 	}
 
@@ -264,6 +270,7 @@ func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*utlsConn, 
 			if entry, ok := t.connections[host]; ok && entry.conn.CanTakeNewRequest() {
 				entry.touch()
 				t.mu.Unlock()
+				timing.gotConnection(true)
 				return entry, nil
 			}
 			// 如果 pending 已移除，说明创建完成（可能失败），跳出循环自己创建
@@ -279,7 +286,7 @@ func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*utlsConn, 
 	t.mu.Unlock()
 
 	// 在锁外创建连接
-	h2Conn, err := t.createConnection(host, addr)
+	h2Conn, err := t.createConnection(host, addr, contexts...)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -303,6 +310,7 @@ func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*utlsConn, 
 	entry := &utlsConn{conn: h2Conn}
 	entry.touch()
 	t.connections[host] = entry
+	timing.gotConnection(false)
 	return entry, nil
 }
 
@@ -326,9 +334,15 @@ func shutdownUTLSConn(conn *http2.ClientConn) {
 
 // createConnection 创建新的 HTTP/2 连接
 // 使用 utls 的 HelloChrome_Auto 模拟 Chrome 浏览器的 TLS 指纹
-func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientConn, error) {
+func (t *utlsRoundTripper) createConnection(host, addr string, contexts ...context.Context) (*http2.ClientConn, error) {
+	var timing *bpsHTTPTrace
+	if len(contexts) > 0 {
+		timing = bpsHTTPTraceFromContext(contexts[0])
+	}
 	// 1. 建立 TCP 连接（通过代理或直连）
+	timing.phase("dial", true)
 	conn, err := t.dialer.Dial("tcp", addr)
+	timing.phase("dial", false)
 	if err != nil {
 		return nil, fmt.Errorf("TCP 连接失败: %w", err)
 	}
@@ -346,7 +360,10 @@ func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientCon
 	handshakeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+	timing.phase("tls", true)
+	err = tlsConn.HandshakeContext(handshakeCtx)
+	timing.phase("tls", false)
+	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("TLS 握手失败: %w", err)
 	}
@@ -392,7 +409,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	// 获取主机名（不含端口）用于 TLS ServerName
 	hostname := req.URL.Hostname()
 
-	entry, err := t.getOrCreateConnection(hostname, addr)
+	entry, err := t.getOrCreateConnection(hostname, addr, req.Context())
 	if err != nil {
 		return nil, err
 	}

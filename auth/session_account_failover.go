@@ -34,6 +34,9 @@ func (account *Account) SessionAccountFailoverReason() string {
 		if account.CooldownReason == "unauthorized" {
 			return "account_unauthorized"
 		}
+		if account.CooldownReason == "payment_required" {
+			return "account_payment_required"
+		}
 	}
 	return ""
 }

@@ -255,7 +255,7 @@ func sessionAccountFailoverEnabledBy(reason string) string {
 	}
 	if settings.CodexForkAccountFallbackEnabled {
 		switch reason {
-		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full":
+		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full", "account_payment_required":
 			return "relaxed_mode"
 		}
 	}
