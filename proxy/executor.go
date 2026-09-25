@@ -564,6 +564,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		// requested tier 归因走 EffectiveRequestedServiceTier（净化前取值），不受影响。
 		requestBody = sanitizeServiceTierForUpstream(requestBody)
 	}
+	if !useBPS {
+		requestBody = defaultCodexReasoning(requestBody)
+	}
 	requestBody, headers, upstreamErr = PrepareSessionRestartOutbound(ctx, account, requestBody, headers)
 	if upstreamErr != nil {
 		return nil, upstreamErr

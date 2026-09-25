@@ -388,7 +388,7 @@ func TestTranslateAnthropicToCodex_OutputConfigHighIsExplicit(t *testing.T) {
 	}
 }
 
-func TestTranslateAnthropicToCodex_DefaultsReasoningHighWithSummary(t *testing.T) {
+func TestTranslateAnthropicToCodex_DefaultsReasoningLowWithSummary(t *testing.T) {
 	raw := []byte(`{
 		"model":"claude-sonnet-4-5",
 		"messages":[{"role":"user","content":"hello"}]
@@ -399,8 +399,8 @@ func TestTranslateAnthropicToCodex_DefaultsReasoningHighWithSummary(t *testing.T
 		t.Fatalf("TranslateAnthropicToCodexWithModels returned error: %v", err)
 	}
 
-	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "high" {
-		t.Fatalf("reasoning.effort = %q, want high; body=%s", effort, got)
+	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "low" {
+		t.Fatalf("reasoning.effort = %q, want low; body=%s", effort, got)
 	}
 	if summary := gjson.GetBytes(got, "reasoning.summary").String(); summary != "auto" {
 		t.Fatalf("reasoning.summary = %q, want auto; body=%s", summary, got)
@@ -422,8 +422,8 @@ func TestTranslateAnthropicToCodex_ThinkingBudgetDoesNotControlEffort(t *testing
 		t.Fatalf("TranslateAnthropicToCodexWithModels returned error: %v", err)
 	}
 
-	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "high" {
-		t.Fatalf("reasoning.effort = %q, want high; body=%s", effort, got)
+	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "low" {
+		t.Fatalf("reasoning.effort = %q, want low; body=%s", effort, got)
 	}
 }
 

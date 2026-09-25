@@ -61,6 +61,9 @@ func (s upstreamTraceSnapshot) apply(input *database.UsageLogInput) {
 		input.UpstreamDiagnostics = transportDiagnosticJSON(s.Transport)
 		if s.Transport != nil {
 			input.UpstreamResponseModel = s.Transport.ResponseModel
+			if s.Transport.ReasoningEffort != "" {
+				input.ReasoningEffort = s.Transport.ReasoningEffort
+			}
 		}
 	}
 }
@@ -257,5 +260,8 @@ func populateUpstreamTrace(c *gin.Context, input *database.UsageLogInput) {
 		transport.IdentityClaim = a.identityClaim
 		input.UpstreamDiagnostics = transportDiagnosticJSON(&transport)
 		input.UpstreamResponseModel = current.transport.ResponseModel
+		if current.transport.ReasoningEffort != "" {
+			input.ReasoningEffort = current.transport.ReasoningEffort
+		}
 	}
 }

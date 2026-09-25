@@ -166,10 +166,11 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 	result := map[string]any{"model": d.SentModel, "input": items, "metadata": metadata}
 	if !compact {
 		effort := extractReasoningEffort(body)
-		if effort == "" {
-			effort = "low"
-		}
 		d.RequestedReasoningEffort = effort
+		if strings.TrimSpace(effort) == "" {
+			effort = defaultCodexReasoningEffort
+			d.AdaptedFields = append(d.AdaptedFields, "reasoning_effort: absent → low")
+		}
 		if strings.EqualFold(strings.TrimSpace(effort), "max") {
 			effort = "xhigh"
 			d.AdaptedFields = append(d.AdaptedFields, "reasoning_effort: max → xhigh")

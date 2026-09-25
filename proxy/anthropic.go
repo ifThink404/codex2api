@@ -393,6 +393,9 @@ func translateAnthropicToResponses(rawJSON []byte, modelMappingJSON string, supp
 	// reasoning: Codex 固定 summary=auto。Grok 首轮保持 high+detailed，
 	// 工具续轮和无工具小请求降一档，避免每轮都付满思考。
 	effort := resolveReasoningEffort(req.OutputConfig, codexModel)
+	if !preserveControls && (req.OutputConfig == nil || strings.TrimSpace(req.OutputConfig.Effort) == "") {
+		effort = defaultCodexReasoningEffort
+	}
 	summary := "auto"
 	if preserveControls {
 		effort, summary = resolveGrokReasoningControls(req, rawJSON, codexModel)

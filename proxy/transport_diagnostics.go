@@ -24,6 +24,7 @@ type UpstreamTransportDiagnostic struct {
 	ResponseTurnState      *usageTurnStateValue               `json:"response_turn_state,omitempty"`
 	AccessPrograms         *accessProgramsValueDiagnostic     `json:"access_programs,omitempty"`
 	ResponseModel          string                             `json:"response_model,omitempty"`
+	ReasoningEffort        string                             `json:"reasoning_effort,omitempty"`
 	ResponseModelConflict  bool                               `json:"response_model_conflict,omitempty"`
 	StreamDelivery         *ResponsesStreamDeliveryDiagnostic `json:"stream_delivery,omitempty"`
 	OutboundIdentity       *outboundIdentityDiagnostic        `json:"outbound_identity,omitempty"`
