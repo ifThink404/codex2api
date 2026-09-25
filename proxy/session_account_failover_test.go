@@ -216,6 +216,12 @@ func runSessionAccountFailoverIngress(test *testing.T, compact bool, preserve ..
 	var rejected atomic.Int32
 	handler, owner, target, _ := failoverTestSetup(test, true)
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexSessionFailoverPreserveInput = keepInput; return s })
+	if len(preserve) > 2 && preserve[2] {
+		UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
+			s.CodexSessionFailoverEnabled, s.CodexForkAccountFallbackEnabled = false, true
+			return s
+		})
+	}
 	previousResin := GetResinConfig()
 	test.Cleanup(func() { SetResinConfig(previousResin) })
 	test.Setenv("CODEX_REQUEST_COMPRESSION", "off")

@@ -74,6 +74,7 @@ type PromptSafetyDiagnostic struct {
 }
 
 type SessionAccountFailoverDiagnostic struct {
+	EnabledBy                   string                    `json:"enabled_by,omitempty"`
 	PreviousUpstreamMode        string                    `json:"previous_upstream_mode,omitempty"`
 	UpstreamMode                string                    `json:"upstream_mode,omitempty"`
 	OriginalAccountBPSAttempted bool                      `json:"original_account_bps_attempted,omitempty"`
@@ -359,7 +360,7 @@ func normalizeServiceError(event ServiceErrorEvent) ServiceErrorEvent {
 	if event.AccountFailover != nil {
 		failover := *event.AccountFailover
 		failover.Selection = normalizeSessionFailoverSelection(failover.Selection)
-		for _, field := range []*string{&failover.Result, &failover.Reason, &failover.TriggerReason, &failover.BlockReason, &failover.Phase} {
+		for _, field := range []*string{&failover.EnabledBy, &failover.Result, &failover.Reason, &failover.TriggerReason, &failover.BlockReason, &failover.Phase} {
 			*field = serviceErrorString(*field, 160)
 		}
 		failover.ContextBlockers = append([]SessionContextBlocker(nil), failover.ContextBlockers[:min(len(failover.ContextBlockers), 8)]...)

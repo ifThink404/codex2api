@@ -248,10 +248,21 @@ func sessionFailoverContextBlock(headers http.Header, body []byte) string {
 	return sessionFailoverContextBlockWithVerifier(headers, body, nil)
 }
 
-func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key string, body []byte, policy auth.DispatchPolicy) (bool, *api.APIError) {
-	if !CurrentRuntimeSettings().CodexSessionFailoverEnabled {
-		return false, nil
+func sessionAccountFailoverEnabledBy(reason string) string {
+	settings := CurrentRuntimeSettings()
+	if settings.CodexSessionFailoverEnabled {
+		return "session_failover"
 	}
+	if settings.CodexForkAccountFallbackEnabled {
+		switch reason {
+		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full":
+			return "relaxed_mode"
+		}
+	}
+	return ""
+}
+
+func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key string, body []byte, policy auth.DispatchPolicy) (bool, *api.APIError) {
 	state := continuityRequest(request)
 	if state == nil || state.Diagnostic == nil || state.Diagnostic.OwnerAccount <= 0 {
 		return false, nil
@@ -264,6 +275,11 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 	diagnostic := &sessionAccountFailoverDiagnostic{PreviousUpstreamMode: normalizedCodexRoute(state.Record.UpstreamMode), Result: "blocked", Reason: reason, TriggerReason: reason, Phase: "before_switch", PreviousAccountID: owner.ID(), Generation: state.Record.FailoverCount}
 	state.Diagnostic.AccountFailover = diagnostic
 	usageRequestDiagnosticState(request).AccountFailover = diagnostic
+	diagnostic.EnabledBy = sessionAccountFailoverEnabledBy(reason)
+	if diagnostic.EnabledBy == "" {
+		diagnostic.Result, diagnostic.BlockReason = "disabled", "failover_disabled"
+		return false, nil
+	}
 	preserveInput := CurrentRuntimeSettings().CodexSessionFailoverPreserveInput || state.Record.PreserveRestartInput
 	cleaned, cleanedHeaders, cleanup, cleanupError := cleanSessionRestartContext(sessionFailoverRequestHeaders(request), body, nil, preserveInput)
 	diagnostic.ContextCleanup = cleanup
@@ -319,8 +335,9 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		return nil, "", false
 	}
 	plan.Checked = true
-	if !CurrentRuntimeSettings().CodexSessionFailoverEnabled {
+	if sessionAccountFailoverEnabledBy(plan.Diagnostic.TriggerReason) == "" {
 		plan.Diagnostic.Result = "disabled"
+		plan.Diagnostic.BlockReason = "failover_disabled"
 		return nil, "", false
 	}
 	request := plan.Request
@@ -446,7 +463,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		preview.OutboundWindowReset = true
 		preview.OutboundWindowBases = map[string]uint64{state.ThreadID: state.Number}
 		previewContext := context.WithValue(ctx, sessionOutboundEpochContextKey{}, &sessionOutboundEpoch{handler: handler, key: state.Key, record: preview, preview: true})
-		fingerprint := NewCodexTransportFingerprint(candidate, sessionFailoverRequestHeaders(request), plan.Body, "")
+		fingerprint := NewCodexTransportFingerprint(candidate, sessionFailoverRequestHeaders(request), plan.Body, "", previewContext)
 		apiKey := strings.TrimSpace(strings.TrimPrefix(request.GetHeader("Authorization"), "Bearer "))
 		if err := fingerprint.ClaimSessionIdentity(previewContext, candidate, apiKey); err != nil || fingerprint.accountIdentity == nil {
 			trace.RejectAccount(candidate.ID(), "outbound_identity_unavailable")

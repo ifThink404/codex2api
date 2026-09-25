@@ -284,7 +284,7 @@ func (handler *Handler) ControlNewAPIUserWindows(request *gin.Context) {
 	// The user's expansion quota is checked under the grant transaction below.
 	canDeferCapacityFailover := false
 	ownerCanExpand := false
-	if !background && input.Operation == "quote" && CurrentRuntimeSettings().CodexSessionFailoverEnabled && diagnostic.OwnerSource == "continuity" && diagnostic.Account != nil && diagnostic.Account.Reason == "session_capacity_full" {
+	if !background && input.Operation == "quote" && sessionAccountFailoverEnabledBy("account_session_capacity_full") != "" && diagnostic.OwnerSource == "continuity" && diagnostic.Account != nil && diagnostic.Account.Reason == "session_capacity_full" {
 		if owner := handler.store.FindByID(ownerAccountID); owner != nil && !owner.IsRelayStyle() {
 			canDeferCapacityFailover = true
 			expansionTrace := &auth.SelectionTrace{}

@@ -18,9 +18,15 @@ import (
 )
 
 func TestWindowCapacityQuoteReachesAccountFailover(test *testing.T) {
-	for _, scenario := range []string{"success", "disabled", "different_tags", "different_groups", "no_capacity", "wrong_model", "opaque_only", "user_limit", "expansion_priority", "expansion_no_reserved", "expansion_quota_exhausted"} {
+	for _, scenario := range []string{"success", "relaxed", "disabled", "different_tags", "different_groups", "no_capacity", "wrong_model", "opaque_only", "user_limit", "expansion_priority", "expansion_no_reserved", "expansion_quota_exhausted"} {
 		test.Run(scenario, func(test *testing.T) {
 			handler, owner, target, _ := failoverTestSetup(test, scenario != "disabled")
+			if scenario == "relaxed" {
+				UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
+					s.CodexSessionFailoverEnabled, s.CodexForkAccountFallbackEnabled = false, true
+					return s
+				})
+			}
 			config := handler.store.GetPromptFilterConfig()
 			config.Advanced.Risk.SessionCreationLimit = 5
 			config.Advanced.Risk.SessionCreationLimitWindowSeconds = 10800
@@ -159,7 +165,7 @@ func TestWindowCapacityQuoteReachesAccountFailover(test *testing.T) {
 				return
 			}
 			require.True(test, handled)
-			if scenario != "success" && scenario != "different_tags" && scenario != "expansion_no_reserved" && scenario != "expansion_quota_exhausted" {
+			if scenario != "success" && scenario != "relaxed" && scenario != "different_tags" && scenario != "expansion_no_reserved" && scenario != "expansion_quota_exhausted" {
 				require.Nil(test, selected)
 				require.Equal(test, "no_safe_candidate", usageRequestDiagnosticState(request).AccountFailover.Result)
 				stored, _, err := handler.db.ReadSessionContinuity(test.Context(), hashRiskIdentity(key))

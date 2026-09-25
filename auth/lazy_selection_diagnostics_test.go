@@ -36,7 +36,7 @@ func TestLazySelectionRecordsConcreteRejectionWithoutChangingAvailability(t *tes
 			trace.EnableCandidateDetails()
 			trace.Reset()
 			require.Nil(t, store.TakePreferredAccountWithDispatch(account.ID(), 0, nil, nil, DispatchPolicyStandard, trace))
-			require.Contains(t, trace.Snapshot().Reasons, "lazy_account_unavailable")
+			require.NotContains(t, trace.Snapshot().Reasons, "lazy_account_unavailable")
 			require.Contains(t, trace.Snapshot().Reasons, scenario.reason)
 			details := trace.CandidateDetails()
 			require.NotEmpty(t, details.Samples)
@@ -48,6 +48,38 @@ func TestLazySelectionRecordsConcreteRejectionWithoutChangingAvailability(t *tes
 			if scenario.name == "cooldown" {
 				require.Equal(t, "unauthorized", details.Samples[0].State.CooldownReason)
 			}
+		})
+	}
+}
+
+func TestLazyPinnedRejectionKeepsSpecificReason(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		configure func(*Account)
+		reason    string
+		retry     string
+	}{
+		{"disabled", func(a *Account) { a.Disabled = 1 }, "account_disabled", "stop"},
+		{"paused", func(a *Account) { a.DispatchPaused = 1 }, "account_paused", "stop"},
+		{"cooldown", func(a *Account) { a.Status = StatusCooldown; a.CooldownUtil = time.Now().Add(time.Hour) }, "account_cooldown", "backoff_same_route"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			store, owner := newSessionCapacityTestStore(1)
+			store.SetLazyMode(true)
+			store.BindSessionAffinity("root", owner, "")
+			scenario.configure(owner)
+			trace := &SelectionTrace{}
+			trace.EnableCandidateDetails()
+			trace.PinAccount(owner.ID())
+			trace.Bind(owner.ID())
+			selected := store.TakePreferredAccountWithDispatch(owner.ID(), 0, nil, nil, DispatchPolicyStandard, trace)
+			require.Nil(t, selected)
+			diagnostic := trace.Snapshot()
+			require.Equal(t, "root_owner_unavailable", diagnostic.Reason)
+			require.Equal(t, []string{scenario.reason}, diagnostic.Reasons)
+			require.Equal(t, scenario.retry, diagnostic.Retry)
+			require.False(t, diagnostic.Incomplete)
+			require.Equal(t, map[string]int{scenario.reason: 1}, trace.CandidateDetails().RejectionCounts)
 		})
 	}
 }

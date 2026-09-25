@@ -6607,7 +6607,6 @@ func (s *Store) nextExcludingWithFilterLazy(apiKeyID int64, exclude map[int64]bo
 				continue
 			}
 			if !policy.IsSpark() && !acc.UsageLimitBypassEligible(policy) && !s.accountLazySelectable(acc, traces...) {
-				selectionTrace(traces).RejectAccount(acc.DBID, "lazy_account_unavailable")
 				continue
 			}
 			if !s.accountAllowedForAPIKey(acc, apiKeyID) {
@@ -7403,7 +7402,6 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 			continue
 		}
 		if !policy.IsSpark() && !acc.UsageLimitBypassEligible(policy) && s.GetLazyMode() && !s.accountLazySelectable(acc, traces...) {
-			selectionTrace(traces).Reject("lazy_account_unavailable")
 			continue
 		}
 		if !s.accountAllowedForAPIKey(acc, apiKeyID) {
@@ -7791,7 +7789,6 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 	usageOverrideEligible := target.dispatchUsageOverrideEligible(policy)
 	if s.GetLazyMode() {
 		if !continuationEligible && !usageOverrideEligible && !s.accountLazySelectable(target, traces...) {
-			selectionTrace(traces).Reject("lazy_account_unavailable")
 			return nil, false
 		}
 	} else if !continuationEligible && !usageOverrideEligible && !target.IsAvailable(traces...) {

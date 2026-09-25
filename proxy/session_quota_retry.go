@@ -34,7 +34,7 @@ func (r *retryAccountExclusions) noteQuotaFailure(accountID int64, status int, p
 }
 
 func (h *Handler) prepareSessionQuotaRetry(ctx context.Context, key string, exclusions *retryAccountExclusions, policy auth.DispatchPolicy) (context.Context, bool) {
-	if exclusions == nil || exclusions.sessionQuota == nil || ctx.Err() != nil || !CurrentRuntimeSettings().CodexSessionFailoverEnabled {
+	if exclusions == nil || exclusions.sessionQuota == nil || ctx.Err() != nil || sessionAccountFailoverEnabledBy("account_usage_exhausted") == "" {
 		return ctx, false
 	}
 	retry := exclusions.sessionQuota
