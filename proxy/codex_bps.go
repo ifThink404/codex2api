@@ -103,18 +103,36 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 	// A configuration_update can change effort after the request baseline. Only
 	// rewrite protocol items, never messages, tool data, or JSON inside strings.
 	configurationMapped := false
+	configurationTierRemoved := false
 	for i, item := range items {
-		if gjson.GetBytes(item, "type").String() == "configuration_update" && strings.EqualFold(strings.TrimSpace(gjson.GetBytes(item, "reasoning.effort").String()), "max") {
+		if gjson.GetBytes(item, "type").String() != "configuration_update" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(item, "reasoning.effort").String()), "max") {
 			updated, err := sjson.SetBytes(item, "reasoning.effort", "xhigh")
 			if err != nil {
 				return nil, nil, err
 			}
-			items[i] = updated
+			item = updated
 			configurationMapped = true
 		}
+		// BPS omits top-level service_tier below. A continuation must not
+		// reintroduce fast/flex through a protocol configuration update.
+		if gjson.GetBytes(item, "service_tier").Exists() {
+			updated, err := sjson.DeleteBytes(item, "service_tier")
+			if err != nil {
+				return nil, nil, err
+			}
+			item = updated
+			configurationTierRemoved = true
+		}
+		items[i] = item
 	}
 	if configurationMapped {
 		d.AdaptedFields = append(d.AdaptedFields, "input.configuration_update.reasoning.effort: max → xhigh")
+	}
+	if configurationTierRemoved {
+		d.RemovedFields = append(d.RemovedFields, "input.configuration_update.service_tier")
 	}
 	var prefix []json.RawMessage
 	runtimeMessage, _ := json.Marshal(map[string]any{"type": "message", "role": "developer", "content": []map[string]string{{"type": "input_text", "text": profile.runtimeInstructions()}}})
@@ -309,6 +327,9 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		}
 	}
 	applyCodexBPSHeadersForProfile(req.Header, account, accessToken, cacheKey, compact, profile)
+	// The shared Codex profile was audited before the BPS headers replaced it.
+	// Persist the final UA used by both attachment uploads and inference.
+	RecordUpstreamUserAgent(ctx, req.Header.Get("User-Agent"))
 	if IsResinEnabled() {
 		req.Header.Set("X-Resin-Account", ResinAccountID(account))
 	}

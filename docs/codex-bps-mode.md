@@ -23,6 +23,7 @@
 | `client_metadata` / 顶层 `metadata` | 转为 BPS task_id、turn_id、工具版本与 agent_iteration；原身份元数据不透传 |
 | 生成 | model、input、metadata、model_selection=explicit、stream=true、store=false、reasoning_effort；Word 不发送 prompt_cache_key，其他形态保留 |
 | Word context_management | 用户传入值原样保留；未传不补默认阈值 |
+| service_tier（含 priority / flex） | 生成与压缩均不发送顶层字段；续接 input 内 configuration_update 的同名控制字段也移除。原入站值保留在请求诊断中，移除位置记入 removed_fields；消息文字、工具参数及工具结果内的业务数据保持原样 |
 | 压缩 | 只发送 model、input、metadata；不发送 prompt_cache_key 等生成参数 |
 
 ## Word 网页请求对齐（全局）
@@ -35,6 +36,7 @@ Word BPS 使用官方 Word 网页加载项实测字段；所有 Word BPS 请求�
 - 同一会话的上下文窗口/缓存提示变化不更换明确会话的 task。无会话 ID 的“设备＋会话”启发式仍有原限制：同设备相同开头无法可靠区分独立对话。
 - 使用 Agent-Profile=`word`、Host=`office`、Runtime=`web`、Platform-Class/Office-Platform=`OfficeOnline`。不再生成 `Mac / 16.113`、Version、Originator、Session-Id、Codex Responses Lite、BPS Client-Device-Id 或 Tools-Version 请求头。工具版本仍发送在 metadata 中。
 - 设置 → 客户端形态 → **Word BPS** 可编辑 UA，使用原有“保存身份配置”保存；池模式也提供独立 Word UA 输入框。配置键为 `codex_user_agent_config.bps_word_user_agent`。留空默认为实测 Windows Chrome 150 UA，独立于其他客户端形态与其版本同步。
+- 用量日志的上游 UA 摘要取 BPS 最终请求头，与 `upstream.outbound_identity.http.headers.User-Agent` 一致。此前摘要误取了准备阶段的 Codex UA；实际发送的 Word UA 已正确，历史日志不会回填。
 - 仅移除对外发送的 prompt_cache_key；内部图片/文件缓存与账号隔离仍存在。context_management 依用户原值发送，不自动填入 200000。不改变用户工具 namespace、参数、call_id、推理强度及 service_tier 计费规则。
 - `word_identity` 诊断记录明文 task_id、turn_id、agent_iteration、turn_source、persisted、reused_step、generation。出站请求体 metadata 中的这些 ID 也显示原值，不做哈希或 UUID 隐藏；认证凭据仍不记录。
 

@@ -35,7 +35,7 @@ func TestBPSProfilesExecuteBodyHeadersCompactAndCache(t *testing.T) {
 		var session string
 		for _, compact := range []bool{false, true} {
 			h, body := accountIdentityFixture(t, false, true)
-			ctx := WithCodexIdentityStore(t.Context(), db)
+			ctx := withUserAgentAudit(WithCodexIdentityStore(t.Context(), db))
 			var resp *http.Response
 			if compact {
 				resp, err = ExecuteCompactRequest(ctx, a, body, "same-session", "", "test-key", nil, h)
@@ -44,6 +44,9 @@ func TestBPSProfilesExecuteBodyHeadersCompactAndCache(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NoError(t, resp.Body.Close())
+			auditedUA, known := upstreamUserAgentAudit(ctx)
+			require.True(t, known)
+			require.Equal(t, headers.Get("User-Agent"), auditedUA, "all BPS profiles must log the UA sent on the wire")
 			require.Equal(t, string(profile), headers.Get("X-Openai-Internal-Basispoints-Client-Editor"))
 			if profile == auth.BPSWord {
 				require.Empty(t, headers.Get("X-Openai-Internal-Basispoints-Tools-Version-Id"))
@@ -94,6 +97,36 @@ func TestBPSProfilesPreserveCallerToolsAndContinuation(t *testing.T) {
 				projected, err := projectBPSResponse(ctx, []byte(event))
 				require.NoError(t, err)
 				require.JSONEq(t, event, string(projected))
+			}
+		}
+	}
+}
+
+func TestBPSOmitsServiceTierFromRequestsAndConfigurationUpdates(t *testing.T) {
+	for _, profile := range []auth.CodexBPSProfile{auth.BPSWord, auth.BPSExcel, auth.BPSSheets, auth.BPSPowerPoint} {
+		for _, tier := range []string{"priority", "flex"} {
+			body := []byte(`{"model":"gpt-6-astra","service_tier":"` + tier + `","input":[{"type":"configuration_update","service_tier":"` + tier + `","reasoning":{"effort":"max"}},{"role":"user","content":"keep service_tier=priority in this message"},{"type":"function_call_output","call_id":"call-1","output":"{\"service_tier\":\"priority\"}"}]}`)
+			original := string(body)
+			for _, compact := range []bool{false, true} {
+				wire, d, err := prepareCodexBPSBodyForProfile(body, "test-cache", compact, false, http.Header{}, bpsProfile(profile))
+				require.NoError(t, err)
+				require.False(t, gjson.GetBytes(wire, "service_tier").Exists())
+				var updates int
+				for _, item := range gjson.GetBytes(wire, "input").Array() {
+					if item.Get("type").String() == "configuration_update" {
+						updates++
+						require.False(t, item.Get("service_tier").Exists())
+						require.Equal(t, "xhigh", item.Get("reasoning.effort").String())
+					}
+					if item.Get("type").String() == "function_call_output" {
+						require.JSONEq(t, `{"service_tier":"priority"}`, item.Get("output").String())
+					}
+				}
+				require.Equal(t, 1, updates)
+				require.Contains(t, string(wire), "keep service_tier=priority in this message")
+				require.Contains(t, d.RemovedFields, "service_tier")
+				require.Contains(t, d.RemovedFields, "input.configuration_update.service_tier")
+				require.Equal(t, original, string(body), "client's original tier remains available for diagnostics")
 			}
 		}
 	}

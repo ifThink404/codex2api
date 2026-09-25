@@ -47,9 +47,14 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		for _, field := range []string{"service_tier", "include", "text", "tool_choice", "parallel_tool_calls"} {
 			body, _ = sjson.SetBytes(body, field, "unsupported-fixture")
 		}
+		body, _ = sjson.SetBytes(body, "service_tier", "priority")
+		if compact {
+			body, _ = sjson.SetBytes(body, "service_tier", "flex")
+		}
 		body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-state", "old-native-state")
 		headers.Set("X-Codex-Turn-State", "old-native-state")
 		c := transportTestContext()
+		attachUserAgentAudit(c)
 		c.Request = c.Request.WithContext(WithCodexIdentityStore(c.Request.Context(), db))
 		var resp *http.Response
 		if compact {
@@ -63,6 +68,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.True(t, strings.HasPrefix(endpoint, CodexBPSBaseURL+"/responses"))
 		require.Equal(t, "gpt-5.6-luna", gjson.GetBytes(sentBody, "model").String())
 		require.Equal(t, "codex-auto-review", gjson.GetBytes(body, "model").String())
+		require.False(t, gjson.GetBytes(sentBody, "service_tier").Exists(), "BPS must not send the caller's priority/flex tier")
 		require.Equal(t, "Bearer test-access", sentHeaders.Get("Authorization"))
 		require.Equal(t, a.AccountID, sentHeaders.Get("Chatgpt-Account-Id"))
 		require.Equal(t, a.AccountID, sentHeaders.Get("X-Openai-Account-Id"))
@@ -101,6 +107,11 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		}
 		d := snapshotUpstreamTrace(c.Request.Context()).Transport
 		require.NotNil(t, d)
+		var usage database.UsageLogInput
+		populateUserAgentMetaFromRequest(c, &usage)
+		require.Equal(t, defaultBPSWordUserAgent, sentHeaders.Get("User-Agent"))
+		require.Equal(t, sentHeaders.Get("User-Agent"), usage.UpstreamUserAgent, "usage summary must match the final Word request, not its temporary Codex profile")
+		require.Equal(t, usage.UpstreamUserAgent, gjson.Get(transportDiagnosticJSON(d), "outbound_identity.http.headers.User-Agent").String())
 		require.Equal(t, "http", d.Transport)
 		require.Equal(t, "not_applicable", d.OutboundIdentity.SessionConsistency)
 		require.Equal(t, "codex-auto-review", d.BPS.RequestedModel)
@@ -108,6 +119,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.Equal(t, "gpt-5.6-luna", d.BPS.SentModel)
 		require.Contains(t, d.BPS.AdaptedFields, "model: codex-auto-review → gpt-5.6-luna")
 		require.Contains(t, d.BPS.RemovedFields, "tool_choice")
+		require.Contains(t, d.BPS.RemovedFields, "service_tier")
 		require.Contains(t, transportDiagnosticJSON(d), task)
 		require.Contains(t, transportDiagnosticJSON(d), turn)
 		require.NotContains(t, string(sentBody), "bps_compat")
