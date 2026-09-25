@@ -41,13 +41,14 @@ const (
 )
 
 type CodexUserAgentConfig struct {
-	RawUserAgent  string `json:"raw_user_agent,omitempty"`
-	ClientName    string `json:"client_name,omitempty"`
-	ClientVersion string `json:"client_version,omitempty"`
-	OSName        string `json:"os_name,omitempty"`
-	OSVersion     string `json:"os_version,omitempty"`
-	Arch          string `json:"arch,omitempty"`
-	Terminal      string `json:"terminal,omitempty"`
+	BPSWordUserAgent string `json:"bps_word_user_agent,omitempty"`
+	RawUserAgent     string `json:"raw_user_agent,omitempty"`
+	ClientName       string `json:"client_name,omitempty"`
+	ClientVersion    string `json:"client_version,omitempty"`
+	OSName           string `json:"os_name,omitempty"`
+	OSVersion        string `json:"os_version,omitempty"`
+	Arch             string `json:"arch,omitempty"`
+	Terminal         string `json:"terminal,omitempty"`
 	// ClientKind 是客户端形态预设(见 codex_ua_catalog.go);空则按 client_name 推断。
 	ClientKind string `json:"client_kind,omitempty"`
 	// AppName / AppVersion 是末尾标记 "(app名; app版本)";留空按形态自动推导,
@@ -208,23 +209,27 @@ func normalizeCodexUserAgentConfig(cfg CodexUserAgentConfig) CodexUserAgentConfi
 		profiles[kind] = codexUserAgentProfile(normalizeCodexUserAgentConfig(profile.config(kind)))
 	}
 	return CodexUserAgentConfig{
-		RawUserAgent:  strings.TrimSpace(cfg.RawUserAgent),
-		ClientName:    normalizeCodexUserAgentClientName(cfg.ClientName),
-		ClientVersion: normalizeCodexClientVersionText(cfg.ClientVersion),
-		OSName:        strings.TrimSpace(cfg.OSName),
-		OSVersion:     strings.TrimSpace(cfg.OSVersion),
-		Arch:          strings.TrimSpace(cfg.Arch),
-		Terminal:      strings.TrimSpace(cfg.Terminal),
-		ClientKind:    strings.ToLower(strings.TrimSpace(cfg.ClientKind)),
-		AppName:       normalizeCodexUserAgentClientName(cfg.AppName),
-		AppVersion:    strings.TrimSpace(cfg.AppVersion),
-		Mode:          mode,
-		PoolMix:       poolMix,
-		Profiles:      profiles,
+		BPSWordUserAgent: strings.TrimSpace(cfg.BPSWordUserAgent),
+		RawUserAgent:     strings.TrimSpace(cfg.RawUserAgent),
+		ClientName:       normalizeCodexUserAgentClientName(cfg.ClientName),
+		ClientVersion:    normalizeCodexClientVersionText(cfg.ClientVersion),
+		OSName:           strings.TrimSpace(cfg.OSName),
+		OSVersion:        strings.TrimSpace(cfg.OSVersion),
+		Arch:             strings.TrimSpace(cfg.Arch),
+		Terminal:         strings.TrimSpace(cfg.Terminal),
+		ClientKind:       strings.ToLower(strings.TrimSpace(cfg.ClientKind)),
+		AppName:          normalizeCodexUserAgentClientName(cfg.AppName),
+		AppVersion:       strings.TrimSpace(cfg.AppVersion),
+		Mode:             mode,
+		PoolMix:          poolMix,
+		Profiles:         profiles,
 	}
 }
 
 func validateCodexUserAgentConfig(cfg CodexUserAgentConfig) error {
+	if !validHTTPHeaderValue(cfg.BPSWordUserAgent) || len(cfg.BPSWordUserAgent) > 2048 {
+		return errors.New("Word BPS User-Agent must be a valid HTTP header of at most 2048 bytes")
+	}
 	if cfg.RawUserAgent != "" {
 		if !validHTTPHeaderValue(cfg.RawUserAgent) {
 			return errors.New("codex raw User-Agent contains invalid HTTP header characters")
@@ -355,7 +360,7 @@ func codexUserAgentClientName(userAgent string) string {
 }
 
 func isEmptyCodexUserAgentConfig(cfg CodexUserAgentConfig) bool {
-	return cfg.RawUserAgent == "" &&
+	return cfg.BPSWordUserAgent == "" && cfg.RawUserAgent == "" &&
 		cfg.ClientName == "" &&
 		cfg.ClientVersion == "" &&
 		cfg.OSName == "" &&
@@ -394,6 +399,7 @@ func validCodexClientVersionString(value string) bool {
 // 画像抽取(同一账号恒得同一画像)。
 func codexUserAgentFromConfig(raw string, accountID int64, versionFloor string) (userAgent, version string, ok bool) {
 	cfg := codexUserAgentConfigFromJSON(raw)
+	cfg.BPSWordUserAgent = "" // Word's independent setting cannot enable a native override.
 	if isEmptyCodexUserAgentConfig(cfg) {
 		return "", "", false
 	}

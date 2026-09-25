@@ -4661,6 +4661,8 @@
     "codexUAKindVscode": "VS Code extension",
     "codexUAKindExec": "codex exec",
     "codexUAKindCustom": "Custom",
+    "bpsWordUserAgent": "Word BPS User-Agent",
+    "bpsWordUserAgentDesc": "Used for all Word BPS requests. Leave empty for the verified Word web UA. Saved independently of other client profiles.",
     "codexUAPoolMix": "Pool mix",
     "codexUAPoolMixDesc": "Relative weight per kind (integer, 0 excludes it). Leave blank for the real-traffic share: desktop 50, VS Code 30, CLI 20.",
     "codexUAPoolPreview": "Sampled account personas",

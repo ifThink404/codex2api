@@ -45,14 +45,22 @@ func TestBPSProfilesExecuteBodyHeadersCompactAndCache(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, resp.Body.Close())
 			require.Equal(t, string(profile), headers.Get("X-Openai-Internal-Basispoints-Client-Editor"))
-			require.Equal(t, bpsProfile(profile).toolsVersion, headers.Get("X-Openai-Internal-Basispoints-Tools-Version-Id"))
+			if profile == auth.BPSWord {
+				require.Empty(t, headers.Get("X-Openai-Internal-Basispoints-Tools-Version-Id"))
+			} else {
+				require.Equal(t, bpsProfile(profile).toolsVersion, headers.Get("X-Openai-Internal-Basispoints-Tools-Version-Id"))
+			}
 			require.Equal(t, bpsProfile(profile).toolsVersion, gjson.GetBytes(wire, "metadata.bps_tools_version_id").String())
 			require.Equal(t, bpsProfile(profile).runtimeInstructions(), gjson.GetBytes(wire, "input.0.content.0.text").String())
 			require.Equal(t, profile, CodexBPSResponseDiagnostic(resp).Profile)
 			if profile == auth.BPSSheets {
 				require.Empty(t, headers.Get("X-Openai-Internal-Basispoints-Office-Host"))
 			}
-			if !compact {
+			if profile == auth.BPSWord {
+				require.Empty(t, headers.Get("Session-Id"))
+				require.False(t, gjson.GetBytes(wire, "prompt_cache_key").Exists())
+				session = gjson.GetBytes(wire, "metadata.task_id").String()
+			} else if !compact {
 				session = headers.Get("Session-Id")
 				require.Equal(t, session, gjson.GetBytes(wire, "prompt_cache_key").String())
 			} else {

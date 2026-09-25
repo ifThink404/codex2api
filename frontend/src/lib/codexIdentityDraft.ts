@@ -4,6 +4,7 @@ export const CODEX_UA_KINDS: CodexUAKind[] = ['codex-tui', 'codex-desktop', 'cod
 const PROFILE_KEYS = ['raw_user_agent', 'client_name', 'client_version', 'os_name', 'os_version', 'arch', 'terminal', 'app_name', 'app_version'] as const
 export type CodexUserAgentProfile = Partial<Record<typeof PROFILE_KEYS[number], string>>
 export type CodexUserAgentConfig = CodexUserAgentProfile & {
+  bps_word_user_agent?: string
   client_kind?: string
   mode?: string
   pool_mix?: Record<string, number>
@@ -35,7 +36,7 @@ export const parseCodexUserAgentConfig = (value?: string): CodexUserAgentConfig 
     const parsed: unknown = JSON.parse(value || '{}')
     if (!isObject(parsed)) return {}
     const config: CodexUserAgentConfig = profileOf(parsed)
-    for (const key of ['client_kind', 'mode'] as const) {
+    for (const key of ['client_kind', 'mode', 'bps_word_user_agent'] as const) {
       if (typeof parsed[key] === 'string') config[key] = parsed[key]
     }
     if (isObject(parsed.pool_mix)) {

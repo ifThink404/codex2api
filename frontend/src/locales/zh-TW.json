@@ -300,6 +300,8 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "bpsWordUserAgent": "Word BPS User-Agent",
+    "bpsWordUserAgentDesc": "用於所有 Word BPS 請求。留空使用已驗證的 Word 網頁版 UA；與其他用戶端形態分別儲存。",
     "sessionBalanceSession": "會話",
     "sessionBalanceWindow": "視窗",
     "sessionBalanceDefault": "預設",

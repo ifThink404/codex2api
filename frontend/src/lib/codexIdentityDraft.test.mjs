@@ -5,6 +5,16 @@ import {
   switchCodexIdentityDraft, updateCodexIdentityDraft, reconcileCodexIdentitySave,
 } from './codexIdentityDraft.ts'
 
+test('Word BPS UA survives native profile switches and saving without changing native UA', () => {
+  let draft = parseCodexUserAgentConfig('{"client_kind":"codex-desktop","raw_user_agent":"Native/1","bps_word_user_agent":"Word/1"}')
+  draft = switchCodexIdentityDraft(draft, 'codex-tui')
+  draft = updateCodexIdentityDraft(draft, { bps_word_user_agent: 'Word/2' })
+  const saved = parseCodexUserAgentConfig(serializeCodexUserAgentConfig(draft))
+  assert.equal(saved.bps_word_user_agent, 'Word/2')
+  assert.equal(switchCodexIdentityDraft(saved, 'codex-desktop').raw_user_agent, 'Native/1')
+  assert.equal(saved.raw_user_agent, undefined)
+})
+
 test('switching away and back restores all fields, including raw overrides, before saving', () => {
   const original = { client_kind: 'codex-tui', client_version: '0.155.0', raw_user_agent: 'CLI/custom', os_name: 'Windows', terminal: 'WindowsTerminal' }
   let draft = switchCodexIdentityDraft(original, 'codex-desktop')

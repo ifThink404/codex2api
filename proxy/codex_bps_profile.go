@@ -7,6 +7,15 @@ import (
 	"github.com/codex2api/auth"
 )
 
+const defaultBPSWordUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+
+func bpsWordUserAgent() string {
+	if configured := codexUserAgentConfigFromJSON(CurrentRuntimeSettings().CodexUserAgentConfig).BPSWordUserAgent; configured != "" {
+		return configured
+	}
+	return defaultBPSWordUserAgent
+}
+
 // Selected once at the request boundary and shared by body, headers and uploads.
 type bpsProfileConfig struct {
 	profile      auth.CodexBPSProfile
@@ -28,6 +37,16 @@ func bpsProfile(profile auth.CodexBPSProfile) bpsProfileConfig {
 }
 
 func (p bpsProfileConfig) applyHeaders(headers http.Header) {
+	if p.profile == auth.BPSWord {
+		for name, value := range map[string]string{
+			"Client-Agent-Profile": "word", "Client-Editor": "word", "Client-Host": "office",
+			"Client-Platform": "word", "Client-Platform-Class": "OfficeOnline", "Client-Product": "basispoints-word-plugin",
+			"Client-Runtime": "web", "Office-Host": "Word", "Office-Platform": "OfficeOnline",
+		} {
+			headers.Set("X-Openai-Internal-Basispoints-"+name, value)
+		}
+		return
+	}
 	values := map[string]string{
 		"Client-Agent-Profile": "document", "Client-Editor": "word", "Client-Host": "Word",
 		"Client-Platform": "word", "Client-Platform-Class": "desktop", "Client-Product": "basispoints-word-plugin",

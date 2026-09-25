@@ -8,7 +8,7 @@
 - 切号仍使用既有找号、容量和上下文规则，并排除另一种模式的候选账号。
 - BPS 使用账号自己的 Access Token、官方 Account ID 和代理，HTTP/SSE 生成地址为 `https://bps.openai.com/basispoints/api/responses`；压缩地址追加 `/compact`。即使全局强制 WS，BPS 仍走 HTTP。不会在失败时自动回落到原生 Codex 路径。
 - 单独测连和批量测连均先选择“按账号配置 / Codex / BPS”，再开始测试。选择仅作用于本次测试，不写账号配置，不改变业务会话绑定。显式选择不支持的路径会报错；不会自动换路。BPS 批量测连跳过原生 WHAM 预检，直接验证所选路径。
-- 现有账号隐私处理先执行，再做 BPS 投影。BPS 设备头使用账号设备 ID；任务、轮次和缓存标识从处理后的标识派生，并使用独立命名空间。原生 Turn-State、客户端自定义握手头不转发到 BPS。
+- 现有账号隐私处理先执行，再做 BPS 投影。Word 网页形态不发送 BPS 设备头；其他形态保留账号设备 ID。任务、轮次和内部缓存按调用方、账号隔离。原生 Turn-State、客户端自定义握手头不转发到 BPS。
 
 ## 格式转换
 
@@ -21,8 +21,24 @@
 | 通用助手身份 | input 最前面追加固定 developer 兼容消息，抑制 Office 身份与内置工具使用；调用方提示词、工具、历史仍保留 |
 | `reasoning.effort` | 生成请求使用顶层 `reasoning_effort` |
 | `client_metadata` / 顶层 `metadata` | 转为 BPS task_id、turn_id、工具版本与 agent_iteration；原身份元数据不透传 |
-| 生成 | model、input、metadata、model_selection=explicit、stream=true、store=false、reasoning_effort、prompt_cache_key |
+| 生成 | model、input、metadata、model_selection=explicit、stream=true、store=false、reasoning_effort；Word 不发送 prompt_cache_key，其他形态保留 |
+| Word context_management | 用户传入值原样保留；未传不补默认阈值 |
 | 压缩 | 只发送 model、input、metadata；不发送 prompt_cache_key 等生成参数 |
+
+## Word 网页请求对齐（全局）
+
+Word BPS 使用官方 Word 网页加载项实测字段；所有 Word BPS 请求直接生效，无单账号灰度或 legacy 开关。Excel、PowerPoint、Sheets 维持原规则。已在运行的请求保持构造时的快照；更新后的下一次 Word 请求使用新的持久化 UUIDv7 映射。
+
+- `metadata.task_id`、`turn_id` 为独立 UUIDv7。同逻辑会话保持 task，新用户轮次更换 turn，同轮工具续接保持 turn。明确客户端标识优先；无轮次 ID 时通过最近用户消息边界推断并记录来源。
+- 内部账号、调用方和换号代次参与分区。更换账号或建立新的换号代次后，新 turn 的字符串 `agent_iteration` 从 `"1"` 开始，不累计上一账号的历史工具次数。
+- 每批工具结果引发一次新的推理时迭代递增；同一批并行工具结果改变顺序、网络重试和附件重试不重复增加。SQLite/PostgreSQL 持久化保证多实例竞争及重启后复用。无数据库的独立投影使用确定性 ID 和历史工具批次数，并标记 persisted=false，不承诺缺失历史的完整续接恢复。
+- 同一会话的上下文窗口/缓存提示变化不更换明确会话的 task。无会话 ID 的“设备＋会话”启发式仍有原限制：同设备相同开头无法可靠区分独立对话。
+- 使用 Agent-Profile=`word`、Host=`office`、Runtime=`web`、Platform-Class/Office-Platform=`OfficeOnline`。不再生成 `Mac / 16.113`、Version、Originator、Session-Id、Codex Responses Lite、BPS Client-Device-Id 或 Tools-Version 请求头。工具版本仍发送在 metadata 中。
+- 设置 → 客户端形态 → **Word BPS** 可编辑 UA，使用原有“保存身份配置”保存；池模式也提供独立 Word UA 输入框。配置键为 `codex_user_agent_config.bps_word_user_agent`。留空默认为实测 Windows Chrome 150 UA，独立于其他客户端形态与其版本同步。
+- 仅移除对外发送的 prompt_cache_key；内部图片/文件缓存与账号隔离仍存在。context_management 依用户原值发送，不自动填入 200000。不改变用户工具 namespace、参数、call_id、推理强度及 service_tier 计费规则。
+- `word_identity` 诊断记录明文 task_id、turn_id、agent_iteration、turn_source、persisted、reused_step、generation。出站请求体 metadata 中的这些 ID 也显示原值，不做哈希或 UUID 隐藏；认证凭据仍不记录。
+
+此对齐不构成“旧请求字段导致 403 或慢首字”的根因结论；也不模拟不存在的 Word 子智能体能力。
 
 图片适配仅访问消息 content 和 function/custom 工具结果 output 数组中的 input_image。对内嵌 Base64 图片按真实 PNG/JPEG/GIF/WebP 字节修正 MIME，保留图片 detail、消息顺序及工具 call_id；默认不把图片当文本、不丢弃图片，不改工具参数或字符串中的业务 JSON，也不主动下载远程 URL。显式开启下文的历史图片精简后，符合条件的旧图会被文字占位替代。
 
@@ -117,7 +133,7 @@ NewAPI 管理员和 Root 的已验签请求可自动豁免回答及工具参数�
 
 一次请求开始时读取类型快照，正文、请求头、压缩和附件请求使用同一套配置。Word 保留原请求头、developer 适配指令和缓存标识规则；其他类型采用对应产品请求头、工具版本及补充的 developer 宿主适配说明。Sheets 不发送 Office-* 宿主头。所有类型仍走 `https://bps.openai.com/basispoints/api`，并不据此假定独立额度或容量池。
 
-保存后下一次 BPS 请求使用新类型，正在进行的请求保持原快照。不同类型的缓存、Session-Id、task_id 分开生成；仍保留调用方历史、加密压缩项和工具输出，不清空用户会话，也不将 BPS 会话迁移到原生 Codex。跨类型切换已有加密上下文的兼容性不能仅靠缓存隔离保证。
+保存后下一次 BPS 请求使用新类型，正在进行的请求保持原快照。不同类型的内部缓存和 task_id 分开生成；Word 不发送 Session-Id，其他类型仍有各自的 Session-Id。仍保留调用方历史、加密压缩项和工具输出，不清空用户会话，也不将 BPS 会话迁移到原生 Codex。跨类型切换已有加密上下文的兼容性不能仅靠缓存隔离保证。
 
 developer 适配只引导模型避免依赖客户端没有提供的 Office/Sheets 环境。调用方声明的工具仍通过 additional_tools 提交，响应投影保留其 schema、call_id、参数及结果；此功能没有删除上游内置提示词/工具，也不减少它们的输入 token。提示词引导不能保证永远不会误调用内置工具或透露宿主信息。模型自述必须与上游结构化响应分开解释。
 

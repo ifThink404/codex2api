@@ -31,6 +31,8 @@ func (db *DB) ensureCodexIdentityMappingTables(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS codex_identity_epochs (identity_key TEXT PRIMARY KEY, state TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS codex_identity_references (reference_key TEXT PRIMARY KEY, state TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS codex_identity_uuid7_values (identity_key TEXT PRIMARY KEY, value TEXT NOT NULL UNIQUE)`,
+		`CREATE TABLE IF NOT EXISTS bps_word_turns (turn_key TEXT PRIMARY KEY, iteration BIGINT NOT NULL DEFAULT 0)`,
+		`CREATE TABLE IF NOT EXISTS bps_word_steps (turn_key TEXT NOT NULL, step_key TEXT NOT NULL, iteration BIGINT NOT NULL, PRIMARY KEY(turn_key,step_key))`,
 		`CREATE TABLE IF NOT EXISTS codex_session_context_tokens (token_key TEXT PRIMARY KEY, expires_at BIGINT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_codex_session_context_tokens_expiry ON codex_session_context_tokens(expires_at)`,
 	} {

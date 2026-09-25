@@ -4663,6 +4663,8 @@
     "codexUAKindVscode": "VS Code 插件",
     "codexUAKindExec": "codex exec",
     "codexUAKindCustom": "自定义",
+    "bpsWordUserAgent": "Word BPS User-Agent",
+    "bpsWordUserAgentDesc": "用于所有 Word BPS 请求。留空使用已验证的 Word 网页版 UA；与其他客户端形态分别保存。",
     "codexUAPoolMix": "号池配比",
     "codexUAPoolMixDesc": "各形态的相对权重（整数，0 表示不抽取）。留空按真实流量占比：桌面端 50、VS Code 30、CLI 20。",
     "codexUAPoolPreview": "账号画像抽样",

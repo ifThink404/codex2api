@@ -191,13 +191,20 @@ func TestBPSInferredSessionWire(t *testing.T) {
 			require.Equal(t, "applied", snapshotUpstreamTrace(resp.Request.Context()).Transport.BPS.InferredSession.Result)
 		}
 		left, right := sent[len(sent)-2], sent[len(sent)-1]
-		require.NotEmpty(t, left.session)
-		require.Equal(t, left.session, left.cache)
-		require.Equal(t, left.session, right.session)
+		if profile == auth.BPSWord {
+			require.Empty(t, left.session)
+			require.Empty(t, left.cache)
+			require.Empty(t, right.session)
+			require.Empty(t, right.cache)
+		} else {
+			require.NotEmpty(t, left.session)
+			require.Equal(t, left.session, left.cache)
+			require.Equal(t, left.session, right.session)
+		}
 		require.Equal(t, left.task, right.task)
 		require.NotEqual(t, left.turn, right.turn)
-		require.False(t, seenProfiles[left.session])
-		seenProfiles[left.session] = true
+		require.False(t, seenProfiles[left.task])
+		seenProfiles[left.task] = true
 	}
 	// Account separation is applied after the inferred seed.
 	seed, _ := inferredBPSCacheSeed(inferredSessionFixture(t, inferredOpening, "user-a", "client-device", "client/1", 8).Request.Context(), a, "unused", false)

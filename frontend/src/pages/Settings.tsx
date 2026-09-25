@@ -148,6 +148,7 @@ const RESPONSE_CACHE_BUDGET_KEYS = [
   'response_cache_write_policy',
 ] as const satisfies ReadonlyArray<keyof SystemSettings>
 const DEFAULT_CODEX_UA_CONFIG: Required<CodexUserAgentConfig> = {
+  bps_word_user_agent: '',
   raw_user_agent: '',
   client_name: 'codex-tui',
   client_version: '0.153.3',
@@ -162,6 +163,8 @@ const DEFAULT_CODEX_UA_CONFIG: Required<CodexUserAgentConfig> = {
   pool_mix: {},
   profiles: {},
 }
+
+const DEFAULT_BPS_WORD_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
 
 type SettingsTabKey = 'codex' | 'claude' | 'antigravity' | 'grok' | 'appearance' | 'general'
 // 设置项适用渠道（按后端消费点核对）：
@@ -2966,6 +2969,7 @@ export default function Settings() {
     }
   }, [settingsForm.codex_user_agent_config, settingsForm.client_compat_mode, settingsForm.codex_min_cli_version])
   const codexUAMode = codexUserAgentConfig.mode === 'multi' ? 'multi' : codexUserAgentConfig.mode === 'pool' ? 'pool' : 'single'
+  const [editingWordBPSUA, setEditingWordBPSUA] = useState(false)
   const codexUAKind = selectedCodexUAKind(codexUserAgentConfig)
   const codexUAKindSpec = codexUACatalog?.kinds.find((kind) => kind.kind === codexUAKind) ?? null
   const codexUAAppFollowsCLI = codexUAKindSpec ? codexUAKindSpec.app_follows_cli : codexUAKind === 'codex-tui' || codexUAKind === 'codex-exec'
@@ -2979,7 +2983,7 @@ export default function Settings() {
       default: return t('settings.codexUAKindTui')
     }
   }, [t])
-  const codexUAKindOptions = useMemo(() => CODEX_UA_KINDS.map((kind) => ({ label: codexUAKindLabel(kind), value: kind })), [codexUAKindLabel])
+  const codexUAKindOptions = useMemo(() => [...CODEX_UA_KINDS.map((kind) => ({ label: codexUAKindLabel(kind), value: kind as string })), { label: 'Word BPS', value: 'bps-word' }], [codexUAKindLabel])
   const codexUAModeOptions = useMemo(() => [
     { label: t('settings.codexUAModeSingle'), value: 'single' as const },
     { label: t('settings.codexUAModePool'), value: 'pool' as const },
@@ -4217,11 +4221,20 @@ export default function Settings() {
                         <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUAKind')} description={t('settings.codexUAKindDesc')}>
                           <SegmentedPillGroup
                             className="max-w-3xl"
-                            value={codexUAKind}
-                            onChange={selectCodexUAKind}
+                            value={editingWordBPSUA ? 'bps-word' : codexUAKind}
+                            onChange={(value) => {
+                              setEditingWordBPSUA(value === 'bps-word')
+                              if (value !== 'bps-word') selectCodexUAKind(value as CodexUAKind)
+                            }}
                             options={codexUAKindOptions}
                           />
                         </SettingField>
+                        {editingWordBPSUA ? (
+                          <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.bpsWordUserAgent')} description={t('settings.bpsWordUserAgentDesc')}>
+                            <Input className="font-mono text-xs" value={codexUserAgentConfig.bps_word_user_agent ?? ''} placeholder={DEFAULT_BPS_WORD_UA}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ bps_word_user_agent: e.target.value })} />
+                          </SettingField>
+                        ) : <>
                         <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUserAgentRaw')} description={t('settings.codexUserAgentRawDesc')}>
                           <Input
                             className="font-mono text-xs"
@@ -4312,13 +4325,22 @@ export default function Settings() {
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ app_version: e.target.value })}
                           />
                         </SettingField>
+                        </>}
                       </>
                     )}
+                    {codexUAMode === 'pool' ? (
+                      <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.bpsWordUserAgent')} description={t('settings.bpsWordUserAgentDesc')}>
+                        <Input className="font-mono text-xs" value={codexUserAgentConfig.bps_word_user_agent ?? ''} placeholder={DEFAULT_BPS_WORD_UA}
+                          onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ bps_word_user_agent: e.target.value })} />
+                      </SettingField>
+                    ) : null}
                     <div className="min-w-0 rounded-lg border border-border/70 bg-muted/25 p-3 sm:col-span-2 xl:col-span-3">
                       <div className="mb-1.5 text-[13px] font-medium text-foreground">
                         {codexUAMode === 'pool' ? t('settings.codexUAPoolPreview') : t('settings.codexUAPreview')}
                       </div>
-                      {codexUAPreviewError ? (
+                      {editingWordBPSUA && codexUAMode !== 'pool' ? (
+                        <div className="break-all font-mono text-[11px] leading-5 text-muted-foreground">{codexUserAgentConfig.bps_word_user_agent?.trim() || DEFAULT_BPS_WORD_UA}</div>
+                      ) : codexUAPreviewError ? (
                         <div className="break-all text-[11px] leading-5 text-destructive">{codexUAPreviewError}</div>
                       ) : !codexUAPreview ? (
                         <div className="text-[11px] leading-5 text-muted-foreground">{t('settings.codexUAPreviewLoading')}</div>

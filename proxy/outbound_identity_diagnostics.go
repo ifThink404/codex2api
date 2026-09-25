@@ -128,6 +128,7 @@ func outboundMetadataJSON(raw gjson.Result) map[string]any {
 
 func CaptureOutboundIdentityHeaders(headers http.Header) *OutboundHeaderDiagnostic {
 	diagnostic := &OutboundHeaderDiagnostic{Headers: make(map[string]string)}
+	word := headers.Get("X-Openai-Internal-Basispoints-Client-Agent-Profile") == "word"
 	for _, name := range []string{
 		"User-Agent", "Originator", "Version", "OpenAI-Beta", "X-Codex-Beta-Features",
 		"X-Codex-Installation-Id", "X-Installation-Id", "X-Device-Id", "Oai-Device-Id",
@@ -137,6 +138,8 @@ func CaptureOutboundIdentityHeaders(headers http.Header) *OutboundHeaderDiagnost
 		"X-Codex-Turn-State", "X-Codex-Project-Id", "X-Codex-Workspace-Id",
 		"X-Basispoints-Auth-Mode", "X-Openai-Account-Id", "X-Openai-Internal-Basispoints-Client-Device-Id",
 		"X-Openai-Internal-Basispoints-Client-Product", "X-Openai-Internal-Basispoints-Client-Platform", "X-Openai-Internal-Basispoints-Tools-Version-Id",
+		"X-Openai-Internal-Basispoints-Client-Agent-Profile", "X-Openai-Internal-Basispoints-Client-Editor", "X-Openai-Internal-Basispoints-Client-Host",
+		"X-Openai-Internal-Basispoints-Client-Runtime", "X-Openai-Internal-Basispoints-Client-Platform-Class", "X-Openai-Internal-Basispoints-Office-Host", "X-Openai-Internal-Basispoints-Office-Platform",
 	} {
 		values := headers.Values(name)
 		if len(values) == 0 {
@@ -150,7 +153,11 @@ func CaptureOutboundIdentityHeaders(headers http.Header) *OutboundHeaderDiagnost
 		case "X-Codex-Turn-State":
 			diagnostic.Headers[name] = turnStateDiagnosticValue(values[0], nil)
 		default:
-			diagnostic.Headers[name] = diagnosticIdentifier(values[0])
+			if word && (strings.HasPrefix(name, "X-Openai-Internal-Basispoints-") && !strings.HasSuffix(name, "Device-Id") || name == "X-Basispoints-Auth-Mode") {
+				diagnostic.Headers[name] = diagnosticClientText(values[0])
+			} else {
+				diagnostic.Headers[name] = diagnosticIdentifier(values[0])
+			}
 		}
 		if len(values) > 1 {
 			diagnostic.Headers[name+"_multiple"] = "true"
@@ -212,13 +219,16 @@ func captureOutboundIdentityBody(body []byte) *outboundBodyDiagnostic {
 		for _, key := range []string{"task_id", "turn_id", "bps_tools_version_id", "agent_iteration"} {
 			if value := metadata.Get(key); value.Type == gjson.String {
 				if key == "task_id" || key == "turn_id" {
-					values[key] = diagnosticIdentifier(value.String())
+					values[key] = bpsWordDiagnosticIdentifier(value.String())
 				} else {
 					values[key] = diagnosticLabel(value.String())
 				}
 			}
 		}
 		diagnostic.wire["metadata"] = values
+		if value := root.Get("context_management"); value.Exists() && len(value.Raw) <= 4096 {
+			diagnostic.wire["context_management"] = json.RawMessage(strings.Clone(value.Raw))
+		}
 	}
 	for _, field := range []string{"prompt_cache_key", "previous_response_id"} {
 		if value := root.Get(field); value.Exists() {

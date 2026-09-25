@@ -39,6 +39,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		headers, body := accountIdentityFixture(t, false, true)
 		imageData := bpsTestPNG(t)
 		body, _ = sjson.SetBytes(body, "model", "codex-auto-review")
+		body, _ = sjson.SetRawBytes(body, "context_management", []byte(`[{"type":"compaction","compact_threshold":98765}]`))
 		body, _ = sjson.SetBytes(body, "instructions", "Keep the original instructions.")
 		body, _ = sjson.SetRawBytes(body, "tools", []byte(`[{"type":"function","name":"echo","parameters":{"type":"object","properties":{"n":{"type":"integer","maximum":9007199254740993}}}}]`))
 		body, _ = sjson.SetRawBytes(body, "input", []byte(`[{"type":"additional_tools","tools":[{"type":"custom","name":"note"}]},{"type":"function_call","id":"fc_history","call_id":"call_history","name":"echo","arguments":"{\"n\":1}"},{"type":"function_call_output","call_id":"call_history","output":"1"},{"type":"reasoning","encrypted_content":"opaque-history"}]`))
@@ -65,7 +66,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.Equal(t, "Bearer test-access", sentHeaders.Get("Authorization"))
 		require.Equal(t, a.AccountID, sentHeaders.Get("Chatgpt-Account-Id"))
 		require.Equal(t, a.AccountID, sentHeaders.Get("X-Openai-Account-Id"))
-		require.Equal(t, "account-device", sentHeaders.Get("X-Openai-Internal-Basispoints-Client-Device-Id"))
+		require.Empty(t, sentHeaders.Get("X-Openai-Internal-Basispoints-Client-Device-Id"))
 		require.Empty(t, sentHeaders.Get(codexTurnStateHeader))
 		require.Empty(t, sentHeaders.Get(codexTurnMetadataHeader))
 		for _, raw := range []string{accountIdentitySampleRoot, "bad-custom", "bad-device", "old-native-state", "9dcfc09b-4e8b-4e25-9052-fefb87224807"} {
@@ -82,7 +83,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.Equal(t, "original", gjson.GetBytes(sentBody, "input.6.content.1.detail").String())
 		require.Equal(t, "opaque-history", gjson.GetBytes(sentBody, "input.7.encrypted_content").String())
 		require.NotContains(t, string(sentBody), imageData)
-		if session == "" {
+		if task == "" {
 			session = sentHeaders.Get("Session-Id")
 			task = gjson.GetBytes(sentBody, "metadata.task_id").String()
 			turn = gjson.GetBytes(sentBody, "metadata.turn_id").String()
@@ -94,22 +95,21 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 			require.Equal(t, CodexBPSBaseURL+"/responses/compact", endpoint)
 			require.Len(t, gjson.ParseBytes(sentBody).Map(), 3)
 		} else {
-			require.Equal(t, session, gjson.GetBytes(sentBody, "prompt_cache_key").String())
+			require.False(t, gjson.GetBytes(sentBody, "prompt_cache_key").Exists())
+			require.EqualValues(t, 98765, gjson.GetBytes(sentBody, "context_management.0.compact_threshold").Int())
 			require.True(t, gjson.GetBytes(sentBody, "stream").Bool())
 		}
 		d := snapshotUpstreamTrace(c.Request.Context()).Transport
 		require.NotNil(t, d)
 		require.Equal(t, "http", d.Transport)
-		if compact {
-			require.Equal(t, "not_applicable", d.OutboundIdentity.SessionConsistency)
-		} else {
-			require.Equal(t, "matched", d.OutboundIdentity.SessionConsistency)
-		}
+		require.Equal(t, "not_applicable", d.OutboundIdentity.SessionConsistency)
 		require.Equal(t, "codex-auto-review", d.BPS.RequestedModel)
 		require.Equal(t, 1, d.BPS.Images.MIMENormalized)
 		require.Equal(t, "gpt-5.6-luna", d.BPS.SentModel)
 		require.Contains(t, d.BPS.AdaptedFields, "model: codex-auto-review → gpt-5.6-luna")
 		require.Contains(t, d.BPS.RemovedFields, "tool_choice")
+		require.Contains(t, transportDiagnosticJSON(d), task)
+		require.Contains(t, transportDiagnosticJSON(d), turn)
 		require.NotContains(t, string(sentBody), "bps_compat")
 	}
 }

@@ -19,6 +19,7 @@ const CodexBPSBaseURL = "https://bps.openai.com/basispoints/api"
 const bpsToolsVersion = "tools-word-core-2026-08-17-5b142653"
 
 type CodexBPSDiagnostic struct {
+	WordIdentity             *bpsWordIdentityDiagnostic    `json:"word_identity,omitempty"`
 	InferredSession          *inferredBPSSessionDiagnostic `json:"inferred_session,omitempty"`
 	projection               *bpsResponseProjection
 	ToolNamespaceRepair      *bpsNamespaceRepairDiagnostic   `json:"tool_namespace_repair,omitempty"`
@@ -64,7 +65,7 @@ func prepareCodexBPSBodyWithImageTrim(body []byte, cacheKey string, compact, tri
 	return prepareCodexBPSBodyForProfile(body, cacheKey, compact, trimImages, headers, bpsProfile(auth.BPSWord))
 }
 
-func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimImages bool, headers http.Header, profile bpsProfileConfig) ([]byte, *CodexBPSDiagnostic, error) {
+func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimImages bool, headers http.Header, profile bpsProfileConfig, contexts ...context.Context) ([]byte, *CodexBPSDiagnostic, error) {
 	var source map[string]json.RawMessage
 	if err := json.Unmarshal(body, &source); err != nil {
 		return nil, nil, err
@@ -163,6 +164,18 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		"turn_id":              "turn_" + codexIdentityDigest("bps-turn-v1", cacheKey, turnSeed),
 		"bps_tools_version_id": profile.toolsVersion, "agent_iteration": "1",
 	}
+	if profile.profile == auth.BPSWord {
+		ctx := context.Background()
+		if len(contexts) > 0 && contexts[0] != nil {
+			ctx = contexts[0]
+		}
+		identity, err := resolveBPSWordIdentity(ctx, body, headers, cacheKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		d.WordIdentity = identity
+		metadata["task_id"], metadata["turn_id"], metadata["agent_iteration"] = identity.TaskID, identity.TurnID, identity.AgentIteration
+	}
 	result := map[string]any{"model": d.SentModel, "input": items, "metadata": metadata}
 	if !compact {
 		effort := extractReasoningEffort(body)
@@ -177,7 +190,14 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		}
 		d.SentReasoningEffort = effort
 		result["model_selection"], result["stream"], result["store"] = "explicit", true, false
-		result["reasoning_effort"], result["prompt_cache_key"] = effort, cacheKey
+		result["reasoning_effort"] = effort
+		if profile.profile == auth.BPSWord {
+			if value, present := source["context_management"]; present {
+				result["context_management"] = value
+			}
+		} else {
+			result["prompt_cache_key"] = cacheKey
+		}
 		if _, found := source["reasoning"]; found {
 			d.AdaptedFields = append(d.AdaptedFields, "reasoning.effort → reasoning_effort")
 		}
@@ -238,7 +258,14 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		cacheKey = NewUpstreamSessionUUID()
 	}
 	cacheKey = bpsProfileCacheKey(account.EffectiveAccountID(), cacheKey, profile)
-	projected, diagnostic, err := prepareCodexBPSBodyForProfile(body, cacheKey, compact, trimImages, headers, profile)
+	if profile.profile == auth.BPSWord {
+		owner := verifiedTransportUser(ctx)
+		if owner == "" {
+			owner = codexIdentityDigest("bps-word-api-key", apiKey)
+		}
+		ctx = context.WithValue(ctx, bpsWordAccountScopeKey{}, codexIdentityDigest("bps-word-owner-account", owner, account.EffectiveAccountID()))
+	}
+	projected, diagnostic, err := prepareCodexBPSBodyForProfile(body, cacheKey, compact, trimImages, headers, profile, ctx)
 	if err != nil {
 		if _, ok := err.(*Error); ok {
 			return nil, err
@@ -359,6 +386,14 @@ func applyCodexBPSHeadersForProfile(headers http.Header, account *auth.Account, 
 	headers.Set("Referer", "https://bps.openai.com/")
 	headers.Set("Session-Id", cacheKey)
 	headers.Set("X-Basispoints-Auth-Mode", "chatgpt")
+	if profile.profile == auth.BPSWord {
+		for _, name := range []string{"Version", "Originator", "Session-Id", "X-Openai-Internal-Basispoints-Client-Device-Id", "X-Openai-Internal-Basispoints-Tools-Version-Id", "X-Openai-Internal-Codex-Responses-Lite", "X-Openai-Internal-Basispoints-Office-Host-Version"} {
+			headers.Del(name)
+		}
+		headers.Set("User-Agent", bpsWordUserAgent())
+		profile.applyHeaders(headers)
+		return
+	}
 	deviceID := account.EffectiveCodexInstallationID()
 	if deviceID == "" {
 		deviceID = codexIdentityDigest("bps-device-v1", account.EffectiveAccountID())
