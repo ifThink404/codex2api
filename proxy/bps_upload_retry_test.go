@@ -33,7 +33,8 @@ func TestBackgroundUploadRetryDetachesWithoutMovingParent(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			h, parent, target, _ := failoverTestSetup(t, false)
 			UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = true; return s })
-			h.store.SetMaxRetries(3)
+			h.store.SetMaxRetries(0)
+			h.store.SetMaxRateLimitRetries(10)
 			h.store.SetRetryIntervalMS(1)
 			h.store.SetTransportRetryPolicy("rotate")
 			off := false
@@ -94,6 +95,20 @@ func TestBackgroundUploadRetryDetachesWithoutMovingParent(t *testing.T) {
 			require.EqualValues(t, 1, parentUploads.Load(), recorder.Body.String())
 			require.EqualValues(t, 1, targetUploads.Load())
 			require.EqualValues(t, 1, inferences.Load())
+			h.db.FlushUsageLogs()
+			logs, err := h.db.ListRecentUsageLogs(t.Context(), 10)
+			require.NoError(t, err)
+			require.Len(t, logs, 2)
+			for _, entry := range logs {
+				require.Equal(t, path, entry.Endpoint)
+				if entry.StatusCode == http.StatusTooManyRequests {
+					require.Equal(t, parent.ID(), entry.AccountID)
+					require.Equal(t, "bps_attachment_upload", entry.UpstreamErrorKind)
+					require.True(t, entry.IsRetryAttempt)
+					require.Equal(t, 1, entry.AttemptIndex)
+					require.Zero(t, entry.TotalTokens)
+				}
+			}
 			fallback := usageRequestDiagnosticState(c).RelaxedFallback
 			require.NotNil(t, fallback)
 			require.Equal(t, "passive_retry_parent_excluded", fallback.Reason)
@@ -114,7 +129,8 @@ func TestBackgroundUploadRetryDetachesWithoutMovingParent(t *testing.T) {
 func TestBPSUploadPoolExhaustionReturnsUploadError(t *testing.T) {
 	h, owner, target, _ := failoverTestSetup(t, false)
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = true; return s })
-	h.store.SetMaxRetries(4)
+	h.store.SetMaxRetries(0)
+	h.store.SetMaxRateLimitRetries(10)
 	h.store.SetRetryIntervalMS(1)
 	h.store.SetTransportRetryPolicy("rotate")
 	off := false

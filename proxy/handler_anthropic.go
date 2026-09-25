@@ -881,10 +881,16 @@ func (h *Handler) Messages(c *gin.Context) {
 				continue
 			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
+			retryCount, requestRetryLimit := requestErrorRetryBudget(reqErr, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries)
 			shouldRetry := false
 			if retryable {
-				shouldRetry = shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
+				shouldRetry = shouldRetryRequestError(reqErr, retryCount, requestRetryLimit, continuousRetryPolicy)
 			}
+			h.logBPSPreparationFailure(c, reqErr, &database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model, EffectiveModel: attemptEffectiveModel,
+				DurationMs: durationMs, ReasoningEffort: reasoningEffort, Stream: isStream,
+				IsRetryAttempt: shouldRetry, AttemptIndex: attempt + 1,
+			}, serviceTier)
 			// Buffered transport retries stay on the same account without penalizing,
 			// unbinding, or excluding it (issue #331). Busy-acquire timeouts rotate
 			// because waiting again on the same key would repeat the queue (issue #413).
@@ -909,7 +915,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				continue
 			}
 			if retryable && !timedOut && !stickyRetry {
-				retryExclusions.MarkRequestFailure(account.ID(), reqErr, maxRetries, continuousRetryPolicy)
+				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 
 			if !retryable {
@@ -945,7 +951,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			log.Printf("上游请求失败 (attempt %d, /v1/messages): %v", attempt+1, reqErr)
 			if shouldRetry {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
-				if !h.waitBeforeRetryWithBudget(c.Request.Context(), generalRetries, continuousRetryLimitForRequestError(reqErr, maxRetries, continuousRetryPolicy)) {
+				if !h.waitBeforeRetryWithBudget(c.Request.Context(), *retryCount, continuousRetryLimitForRequestError(reqErr, requestRetryLimit, continuousRetryPolicy)) {
 					return
 				}
 				if !h.bindBufferedStickyRetryAffinity(c.Request.Context(), affinityKey, account, proxyURL, stickyRetry, continuousRetryPolicy) {

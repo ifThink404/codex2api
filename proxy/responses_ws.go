@@ -868,7 +868,13 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				continue
 			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
-			shouldRetry := retryEnabled && retryable && shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
+			retryCount, requestRetryLimit := requestErrorRetryBudget(reqErr, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries)
+			shouldRetry := retryEnabled && retryable && shouldRetryRequestError(reqErr, retryCount, requestRetryLimit, continuousRetryPolicy)
+			h.logBPSPreparationFailure(c, reqErr, &database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: logEffectiveModel,
+				DurationMs: durationMs, ReasoningEffort: reasoningEffort, Stream: true,
+				IsRetryAttempt: shouldRetry, AttemptIndex: attempt + 1,
+			}, serviceTier)
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
 			if retryable && kind != "" && !(timedOut && shouldRetry) && !stickyRetry {
@@ -889,7 +895,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				continue
 			}
 			if retryable && !timedOut && !stickyRetry {
-				retryExclusions.MarkRequestFailure(account.ID(), reqErr, maxRetries, continuousRetryPolicy)
+				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 
 			if !retryable {
@@ -921,7 +927,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 			if shouldRetry {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
-				if !h.waitBeforeRetryWithBudget(c.Request.Context(), generalRetries, continuousRetryLimitForRequestError(reqErr, maxRetries, continuousRetryPolicy)) {
+				if !h.waitBeforeRetryWithBudget(c.Request.Context(), *retryCount, continuousRetryLimitForRequestError(reqErr, requestRetryLimit, continuousRetryPolicy)) {
 					return errResponsesWSClientGone
 				}
 				if !h.bindBufferedStickyRetryAffinity(c.Request.Context(), affinityKey, account, proxyURL, stickyRetry, continuousRetryPolicy) {

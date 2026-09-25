@@ -5391,10 +5391,13 @@ func (h *Handler) Responses(c *gin.Context) {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
 			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
-			shouldRetry := false
-			if retryable {
-				shouldRetry = shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
-			}
+			retryCount, requestRetryLimit := requestErrorRetryBudget(reqErr, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries)
+			shouldRetry := retryable && shouldRetryRequestError(reqErr, retryCount, requestRetryLimit, continuousRetryPolicy)
+			h.logBPSPreparationFailure(c, reqErr, &database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: logEffectiveModel,
+				DurationMs: durationMs, ReasoningEffort: reasoningEffort, Stream: isStream,
+				IsRetryAttempt: shouldRetry, AttemptIndex: attempt + 1,
+			}, serviceTier)
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
@@ -5416,7 +5419,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				continue
 			}
 			if retryable && !timedOut && !stickyRetry {
-				retryExclusions.MarkRequestFailure(account.ID(), reqErr, maxRetries, continuousRetryPolicy)
+				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 
 			// 不可重试的结构化错误直接返回
@@ -5434,7 +5437,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			log.Printf("上游请求失败 (attempt %d): %v", attempt+1, reqErr)
 			if shouldRetry {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
-				if !h.waitBeforeRetryWithBudget(c.Request.Context(), generalRetries, continuousRetryLimitForRequestError(reqErr, maxRetries, continuousRetryPolicy)) {
+				if !h.waitBeforeRetryWithBudget(c.Request.Context(), *retryCount, continuousRetryLimitForRequestError(reqErr, requestRetryLimit, continuousRetryPolicy)) {
 					return
 				}
 				if !h.bindBufferedStickyRetryAffinity(c.Request.Context(), affinityKey, account, proxyURL, stickyRetry, continuousRetryPolicy) {
@@ -6971,7 +6974,13 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
 			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
-			shouldRetry := retryable && shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
+			retryCount, requestRetryLimit := requestErrorRetryBudget(reqErr, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries)
+			shouldRetry := retryable && shouldRetryRequestError(reqErr, retryCount, requestRetryLimit, continuousRetryPolicy)
+			h.logBPSPreparationFailure(c, reqErr, &database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/responses/compact", Model: logModel, EffectiveModel: logEffectiveModel,
+				DurationMs: durationMs, ReasoningEffort: reasoningEffort, Stream: false,
+				IsRetryAttempt: shouldRetry, AttemptIndex: attempt + 1,
+			}, serviceTier)
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, false, shouldRetry, continuousRetryPolicy)
 			if retryable && shouldPenalizeTransportKind(kind) && !stickyRetry {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
@@ -6979,7 +6988,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			h.store.Release(account)
 			if retryable && !stickyRetry {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
-				retryExclusions.MarkRequestFailure(account.ID(), reqErr, maxRetries, continuousRetryPolicy)
+				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 
 			if !retryable {
@@ -6993,7 +7002,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			log.Printf("compact 上游请求失败 (attempt %d): %v", attempt+1, reqErr)
 			if shouldRetry {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
-				if !h.waitBeforeRetryWithBudget(c.Request.Context(), generalRetries, continuousRetryLimitForRequestError(reqErr, maxRetries, continuousRetryPolicy)) {
+				if !h.waitBeforeRetryWithBudget(c.Request.Context(), *retryCount, continuousRetryLimitForRequestError(reqErr, requestRetryLimit, continuousRetryPolicy)) {
 					return
 				}
 				if stickyRetry {
@@ -7705,10 +7714,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
 			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
+			retryCount, requestRetryLimit := requestErrorRetryBudget(reqErr, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries)
 			shouldRetry := false
 			if retryable {
-				shouldRetry = shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
+				shouldRetry = shouldRetryRequestError(reqErr, retryCount, requestRetryLimit, continuousRetryPolicy)
 			}
+			h.logBPSPreparationFailure(c, reqErr, &database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel, EffectiveModel: logEffectiveModel,
+				DurationMs: durationMs, ReasoningEffort: reasoningEffort, Stream: isStream,
+				IsRetryAttempt: shouldRetry, AttemptIndex: attempt + 1,
+			}, serviceTier)
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
@@ -7730,7 +7745,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				continue
 			}
 			if retryable && !timedOut && !stickyRetry {
-				retryExclusions.MarkRequestFailure(account.ID(), reqErr, maxRetries, continuousRetryPolicy)
+				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 
 			// 不可重试的结构化错误直接返回
@@ -7748,7 +7763,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			log.Printf("上游请求失败 (attempt %d): %v", attempt+1, reqErr)
 			if shouldRetry {
 				rememberContinuousRetryRequestFailure(c.Request.Context(), reqErr)
-				if !h.waitBeforeRetryWithBudget(c.Request.Context(), generalRetries, continuousRetryLimitForRequestError(reqErr, maxRetries, continuousRetryPolicy)) {
+				if !h.waitBeforeRetryWithBudget(c.Request.Context(), *retryCount, continuousRetryLimitForRequestError(reqErr, requestRetryLimit, continuousRetryPolicy)) {
 					return
 				}
 				if !h.bindBufferedStickyRetryAffinity(c.Request.Context(), affinityKey, account, proxyURL, stickyRetry, continuousRetryPolicy) {

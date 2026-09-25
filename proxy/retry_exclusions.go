@@ -166,6 +166,13 @@ func (r *retryAccountExclusions) MarkRequestFailure(accountID int64, err error, 
 		return
 	}
 	status, payload, statusBearing := continuousRetryHTTPErrorDetails(err)
+	var upload *bpsAttachmentUploadError
+	if !TransportReplayBlocked(err) && errors.As(err, &upload) && status == http.StatusTooManyRequests {
+		// The caller supplies the upload's rate-limit budget. Use the same
+		// quota evidence and pool-cycle rules as an inference HTTP 429.
+		r.MarkHTTPFailure(accountID, status, payload, retryLimit, retryLimit, policies...)
+		return
+	}
 	if !TransportReplayBlocked(err) && (!statusBearing && !errors.Is(err, context.Canceled) || statusBearing && isTransientRetryHTTPFailure(status, payload)) {
 		defer r.noteRetryFailure(accountID)
 	}

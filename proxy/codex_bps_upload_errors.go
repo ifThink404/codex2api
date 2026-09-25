@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -55,6 +56,39 @@ func (e *bpsAttachmentUploadError) UpstreamErrorBody() []byte {
 	}
 	body, _ := json.Marshal(gin.H{"error": gin.H{"message": e.detail.Message, "code": code, "type": kind}})
 	return body
+}
+
+// Uploads fail before an inference response exists, but their HTTP 429 still
+// belongs to the independent rate-limit budget. Other request errors retain
+// the general budget and the existing replay, policy and cancellation checks.
+func requestErrorRetryBudget(err error, generalRetries, rateLimitRetries *int, generalLimit, rateLimit int) (*int, int) {
+	var upload *bpsAttachmentUploadError
+	if errors.As(err, &upload) && upload.UpstreamStatusCode() == http.StatusTooManyRequests {
+		return rateLimitRetries, rateLimit
+	}
+	return generalRetries, generalLimit
+}
+
+// Preparation failures never reach the inference response logging branches.
+// Record exactly one zero-token attempt while its account/transport trace is
+// still current, including failures that will be retried on another account.
+func (h *Handler) logBPSPreparationFailure(c *gin.Context, err error, input *database.UsageLogInput, serviceTier string) {
+	var upload *bpsAttachmentUploadError
+	if !errors.As(err, &upload) {
+		return
+	}
+	body := upload.UpstreamErrorBody()
+	captureUpstreamErrorDiagnostic(c, body, upload.detail.HTTPStatus, "upstream_http", "bps_attachment_upload")
+	input.StatusCode = upload.UpstreamStatusCode()
+	input.UpstreamErrorKind = "bps_attachment_upload"
+	input.ErrorMessage = usageLogErrorMessage(input.StatusCode, body)
+	input.InboundEndpoint = input.Endpoint
+	usageTiers := resolveUsageServiceTiers("", serviceTier)
+	input.ServiceTier = usageTiers.ServiceTier
+	input.RequestedServiceTier = usageTiers.RequestedServiceTier
+	input.ActualServiceTier = usageTiers.ActualServiceTier
+	input.BillingServiceTier = usageTiers.BillingServiceTier
+	h.logUsageForRequest(c, input)
 }
 
 func bpsAttachmentFailure(ctx context.Context, headers http.Header, filename, stage string, status int, responseHeaders http.Header, raw []byte, cause error) error {

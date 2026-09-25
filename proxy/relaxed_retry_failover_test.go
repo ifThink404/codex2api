@@ -117,8 +117,8 @@ func TestRelaxedRetryFailureEvidenceClearedByTerminalFailure(t *testing.T) {
 func TestRelaxedRetryBPSImageUpload429SwitchesBeforeInference(t *testing.T) {
 	h, owner, target, _ := failoverTestSetup(t, false)
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = true; return s })
-	h.store.SetMaxRetries(1)
-	h.store.SetMaxRateLimitRetries(1)
+	h.store.SetMaxRetries(0)
+	h.store.SetMaxRateLimitRetries(10)
 	h.store.SetRetryIntervalMS(1)
 	h.store.SetTransportRetryPolicy("rotate")
 	off := false
