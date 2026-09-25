@@ -253,7 +253,13 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	// their upload/wait measurements available to the normal error log as well.
 	preparationFailed := func(stage string) {
 		beginUpstreamTrace(ctx, account, proxyURL, false)
-		UpstreamTransportObserver(ctx).Failure("gateway", stage, 0)
+		status, source := 0, "gateway"
+		if failure := diagnostic.Timing.uploadFailure(); failure != nil && failure.HTTPStatus != 0 {
+			status, source = failure.HTTPStatus, "upstream_http"
+		}
+		observer := UpstreamTransportObserver(ctx)
+		observer.Failure(source, stage, 0)
+		observer.update(func(d *UpstreamTransportDiagnostic) { d.HTTPStatus = status })
 	}
 	diagnostic.projection = newBPSResponseProjection(body)
 	endpoint := CodexBPSBaseURL + "/responses"

@@ -643,6 +643,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
 	for attempt := 0; ; attempt++ {
+		if changed, failure := h.prepareBackgroundRetryFallback(c, &sessionIdentity, &affinityKey, rawBody, retryExclusions); failure != nil {
+			_ = writeAuditedResponsesWSError(c, conn, failure)
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
+		} else if changed {
+			priorSessionAccountID, boundAccountID, turnHasBinding = 0, 0, false
+			continuationPinned, previousResponseAffinityFound = false, false
+			hasPreviousResponse, continuationDegraded = false, true
+		}
 		selectionTraceForRequest(c).Reset()
 		beginUsageSelectionAttempt(c, attempt+1)
 		if c.Request.Context().Err() != nil {
@@ -694,7 +702,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if c.Request.Context().Err() != nil {
 				return errResponsesWSClientGone
 			}
-			if sessionFailoverDispatchBlocked(c) {
+			if failure := bpsPreparationFailureForRequest(c); failure != nil && sessionModelErrorForRequest(c) == nil && (!sessionFailoverDispatchBlocked(c) || sessionFailoverNoCandidate(c)) {
+				apiErr = publicUpstreamAPIError(c, failure.UpstreamErrorBody(), failure.failure.HTTPStatus, failure.failure.Code)
+			} else if sessionFailoverDispatchBlocked(c) {
 				apiErr = sessionFailoverUnavailableAPIError(c)
 			} else if modelError := sessionModelErrorForRequest(c); modelError != nil {
 				apiErr = modelError

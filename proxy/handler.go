@@ -612,6 +612,16 @@ func (h *Handler) applyPassiveInternalModelRouting(c *gin.Context, effectiveMode
 	}
 	recordUsageRootAccount(c, rootAccountID, found)
 	return func(account *auth.Account) bool {
+		if fallback := relaxedAccountFallbackFromContext(c.Request.Context()); fallback != nil && fallback.Reason == "passive_retry_parent_excluded" {
+			if filter == nil || filter(account) {
+				return true
+			}
+			if allowModelBypass && passiveInternalAccountEligible(account, effectiveModel, allowRelay) {
+				return true
+			}
+			selectionTraceForRequest(c).Reject("model_or_provider_mismatch")
+			return false
+		}
 		if !found {
 			selectionTraceForRequest(c).Reject("root_unresolved")
 			return false
@@ -4326,6 +4336,13 @@ func (h *Handler) Responses(c *gin.Context) {
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
+		if changed, failure := h.prepareBackgroundRetryFallback(c, &sessionIdentity, &affinityKey, rawBody, retryExclusions); failure != nil {
+			api.SendError(c, failure)
+			return
+		} else if changed {
+			priorSessionAccountID, boundAccountID, turnHasBinding = 0, 0, false
+			turnContinuationPinned, previousResponseAffinityFound = false, false
+		}
 		selectionTraceForRequest(c).Reset()
 		beginUsageSelectionAttempt(c, attempt+1)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
@@ -6510,6 +6527,13 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		var account *auth.Account
 		var stickyProxyURL string
 		var affinityGuard auth.SessionAffinityGuard
+		if changed, failure := h.prepareBackgroundRetryFallback(c, &sessionIdentity, &affinityKey, rawBody, retryExclusions); failure != nil {
+			api.SendError(c, failure)
+			return
+		} else if changed {
+			priorSessionAccountID, boundAccountID, compactHasBinding = 0, 0, false
+			compactContinuationPinned, previousResponseAffinityFound = false, false
+		}
 		if attempt > 0 {
 			if _, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), affinityKey, retryExclusions, dispatchPolicy); blocked {
 				h.sendDispatchUnavailable(c, false, false)
@@ -7468,6 +7492,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
+		if changed, failure := h.prepareBackgroundRetryFallback(c, &sessionIdentity, &affinityKey, rawBody, retryExclusions); failure != nil {
+			api.SendError(c, failure)
+			return
+		} else if changed {
+			priorSessionAccountID = 0
+		}
 		selectionTraceForRequest(c).Reset()
 		beginUsageSelectionAttempt(c, attempt+1)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()

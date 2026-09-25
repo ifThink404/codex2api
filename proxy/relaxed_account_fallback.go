@@ -112,6 +112,12 @@ func (h *Handler) configureRelaxedAccountFallback(c *gin.Context, body []byte, i
 func (h *Handler) cleanupRelaxedAccountFallback(c *gin.Context) {
 	state := relaxedAccountFallbackFromContext(c.Request.Context())
 	if state == nil {
+		// Keepalive/deadline defers restore their ingress context before this
+		// cleanup. A fallback created during a retry only exists in the newer
+		// context, but its request-owned diagnostic still holds the lease keys.
+		state = usageRequestDiagnosticState(c).RelaxedFallback
+	}
+	if state == nil {
 		return
 	}
 	for id := range state.accounts {

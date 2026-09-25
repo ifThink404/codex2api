@@ -603,6 +603,12 @@ func (h *Handler) Messages(c *gin.Context) {
 	grokQualityAttempts := 0
 	var lastClaudePolicyErr *Error
 	for attempt := 0; ; attempt++ {
+		if changed, failure := h.prepareBackgroundRetryFallback(c, &sessionIdentity, &affinityKey, rawBody, retryExclusions); failure != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": failure})
+			return
+		} else if changed {
+			priorSessionAccountID = 0
+		}
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
@@ -621,6 +627,14 @@ func (h *Handler) Messages(c *gin.Context) {
 					return
 				}
 				sendAnthropicError(c, lastClaudePolicyErr.HTTPStatus, ErrorTypeInvalidRequest, lastClaudePolicyErr.Message)
+				return
+			}
+			if failure := bpsPreparationFailureForRequest(c); failure != nil {
+				public := publicUpstreamAPIError(c, failure.UpstreamErrorBody(), failure.failure.HTTPStatus, failure.failure.Code)
+				if isStream && writeCommittedAnthropicRetryError(c, string(public.Type), public.Message) {
+					return
+				}
+				sendAnthropicError(c, failure.failure.HTTPStatus, string(public.Type), public.Message)
 				return
 			}
 			if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {

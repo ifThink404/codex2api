@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"time"
 
 	"github.com/codex2api/api"
+	"github.com/codex2api/auth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -36,10 +38,52 @@ func (h *Handler) waitForBackgroundRootWithFallback(c *gin.Context, identity *re
 	if reason == "" {
 		return failure
 	}
+	changed, fallbackError := h.detachBackgroundRequest(c, identity, body, reason)
+	if !changed {
+		return failure
+	}
+	return fallbackError
+}
+
+// Only an observed retryable failure may detach a live parent's child. Bare
+// exclusions, policy refusals, explicit tickets and unverified labels retain
+// their normal handling. The caller keeps its existing attempt/deadline budget.
+func (h *Handler) prepareBackgroundRetryFallback(c *gin.Context, identity *requestSessionIdentity, key *string, body []byte, exclusions *retryAccountExclusions) (bool, *api.APIError) {
+	if !CurrentRuntimeSettings().CodexForkAccountFallbackEnabled || !identity.requiresRootAccount ||
+		relaxedAccountFallbackFromContext(c.Request.Context()) != nil || exclusions == nil || c.Request.Context().Err() != nil {
+		return false, nil
+	}
+	rootKey, related := auth.RelatedSessionRootKey(*key)
+	if !related {
+		return false, nil
+	}
+	owner := int64(0)
+	if match := backgroundAccountMatchFromContext(c.Request.Context()); match != nil {
+		owner = match.accountID
+	}
+	if owner == 0 {
+		owner, _ = h.store.LiveSessionAccountID(rootKey, time.Now())
+	}
+	if owner <= 0 || !exclusions.retryFailures[owner] || !exclusions.ForSelection()[owner] {
+		return false, nil
+	}
+	changed, failure := h.detachBackgroundRequest(c, identity, body, "passive_retry_parent_excluded")
+	if changed {
+		*key = capacityAwareSessionAffinityKey(*identity, requestAPIKeyID(c))
+		if exclusions.sessionQuota != nil {
+			exclusions.sessionQuota.key = *key
+		}
+		c.Set(sessionContinuityContextKey, nil)
+		selectionTraceForRequest(c).DetachSessionBinding()
+	}
+	return changed, failure
+}
+
+func (h *Handler) detachBackgroundRequest(c *gin.Context, identity *requestSessionIdentity, body []byte, reason string) (bool, *api.APIError) {
 	root := h.resolveRequestRootSessionIdentityForContext(c, body)
 	next := h.configureRelaxedAccountFallback(c, body, *identity, root, reason)
 	if relaxedAccountFallbackFromContext(c.Request.Context()) == nil {
-		return failure
+		return false, nil
 	}
 	// These snapshots refer to the old root. The temporary request gets its own
 	// epoch at admission, after normal account/model/capacity checks succeed.
@@ -52,9 +96,10 @@ func (h *Handler) waitForBackgroundRootWithFallback(c *gin.Context, identity *re
 	h.bindResponseIdentity(c, next)
 	status, policy := h.cachedNewAPIPolicyAuditState(c)
 	h.captureUsageRequestResolution(c, body, next, root, policy, status)
+	state := usageRequestDiagnosticState(c)
 	state.RootAccountWait = "relaxed_fallback"
 	if d := state.BackgroundWindowWait; d != nil {
 		d.Result, d.Reason = "relaxed_fallback", reason
 	}
-	return prepareRelaxedAccountContext(c, body)
+	return true, prepareRelaxedAccountContext(c, body)
 }

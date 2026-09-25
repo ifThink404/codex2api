@@ -339,6 +339,14 @@ func ErrorToGinResponse(c *gin.Context, err error) {
 	if !claimContinuousRetryTerminal(c, continuousRetryProtocolOpenAI) {
 		return
 	}
+	var upload *bpsAttachmentUploadError
+	if errors.As(err, &upload) {
+		body := upload.UpstreamErrorBody()
+		captureUpstreamErrorDiagnostic(c, body, upload.detail.HTTPStatus, "upstream_http", "bps_attachment_upload")
+		publishUpstreamErrorHeader(c)
+		c.JSON(upload.failure.HTTPStatus, gin.H{"error": normalizePublicUpstreamAPIError(c, body, upload.failure.HTTPStatus, upload.failure.Code)})
+		return
+	}
 
 	var e *Error
 	if errors.As(err, &e) {

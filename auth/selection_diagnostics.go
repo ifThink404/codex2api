@@ -46,6 +46,19 @@ func (trace *SelectionTrace) PinnedAccount() int64 {
 	return trace.pinnedAccount
 }
 
+// DetachSessionBinding is used only after an authorized background request has
+// been converted into an independent temporary request. Account/key filters
+// remain with the caller; the old parent's pin is no longer applicable.
+func (trace *SelectionTrace) DetachSessionBinding() {
+	if trace == nil {
+		return
+	}
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	trace.pinnedAccount, trace.rootAccount = 0, 0
+	trace.sessionModelFilter, trace.sessionModelDenied = nil, false
+}
+
 func (trace *SelectionTrace) SetExpandedWindow(allowed bool) {
 	if trace == nil {
 		return

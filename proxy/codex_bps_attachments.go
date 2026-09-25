@@ -354,27 +354,25 @@ func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.
 	}
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return "", bpsAttachmentFailure(ctx, headers, file.Name, "canceled", 0, nil, nil, ctx.Err())
 		}
-		return "", ErrUpstream(http.StatusBadGateway, "附件上传失败，请稍后重试。", nil)
+		return "", bpsAttachmentFailure(ctx, headers, file.Name, "transport", 0, nil, nil, err)
 	}
 	defer resp.Body.Close()
 	status = resp.StatusCode
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		status := resp.StatusCode
-		if status < 400 {
-			status = http.StatusBadGateway
-		}
-		// Raw errors can echo paths, credentials or attachment identifiers.
-		return "", ErrUpstream(status, "附件上传失败，请确认文件可由当前上游处理后重试。", nil)
+		return "", bpsAttachmentFailure(ctx, headers, file.Name, "http", status, resp.Header, raw, err)
 	}
 	if err != nil {
-		return "", ErrUpstream(http.StatusBadGateway, "读取附件上传结果失败。", nil)
+		if ctx.Err() != nil {
+			return "", bpsAttachmentFailure(ctx, headers, file.Name, "canceled", status, resp.Header, nil, ctx.Err())
+		}
+		return "", bpsAttachmentFailure(ctx, headers, file.Name, "response_read", status, resp.Header, nil, err)
 	}
 	id := gjson.GetBytes(raw, "openai_file_id").String()
 	if !validBPSAttachmentID(id) {
-		return "", ErrUpstream(http.StatusBadGateway, "附件上传结果缺少有效的文件引用。", nil)
+		return "", bpsAttachmentFailure(ctx, headers, file.Name, "response_shape", status, resp.Header, nil, nil)
 	}
 	return id, nil
 }

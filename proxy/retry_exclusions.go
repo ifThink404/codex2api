@@ -448,6 +448,18 @@ func (h *Handler) waitForRetryAccountAvailable(ctx context.Context, affinityKey 
 }
 
 func (h *Handler) waitForRetryAccountAvailableWithGuard(ctx context.Context, affinityKey string, apiKeyID int64, exclude map[int64]bool, filter auth.AccountFilter, preserveBinding bool, policy auth.DispatchPolicy) (*auth.Account, string, auth.SessionAffinityGuard) {
+	// Waiting cannot make a request-local exclusion disappear. Relaxed children
+	// detach before this point; strict children still keep their parent, but
+	// return to the existing retry/reset policy without a futile 30-second wait.
+	if rootKey, related := auth.RelatedSessionRootKey(affinityKey); related {
+		owner, _ := h.store.LiveSessionAccountID(rootKey, time.Now())
+		if match := backgroundAccountMatchFromContext(ctx); match != nil {
+			owner = match.accountID
+		}
+		if owner > 0 && exclude[owner] {
+			return nil, "", auth.SessionAffinityGuard{}
+		}
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
