@@ -7,6 +7,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -14,6 +15,40 @@ import (
 
 const turnIdentitySample = "01a095b5-86a3-7ec2-af42-0bb1111ef330"
 const turnIdentityChildSample = "01a095b6-86a3-7ec2-af42-0bb1111ef331"
+
+func TestCodexTurnUUIDv4MapsToStableIsolatedUUIDv7(t *testing.T) {
+	t.Setenv("CODEX_OUTBOUND_SESSION_MODE", "account")
+	previous := CurrentRuntimeSettings()
+	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = true; return s })
+	h := newWindowAuthorizationHandler(t)
+	ctx := WithCodexIdentityStore(t.Context(), h.db)
+	a := &auth.Account{DBID: 1695, AccountID: accountIdentitySampleAccount}
+	turn := "02d449b7-2ab2-452c-9f29-ad58c579901f"
+	var first string
+	for _, asString := range []bool{false, true} {
+		headers, body := accountIdentityFixture(t, false, true)
+		headers, body = setTurnIdentityTestFields(t, headers, body, turn, turn, asString)
+		original := bytes.Clone(body)
+		fp := NewCodexTransportFingerprint(a, headers, body, "cache")
+		require.NoError(t, fp.ClaimSessionIdentity(ctx, a, "owner-one"))
+		mapped, root := requireTurnIdentityOutput(t, fp, body)
+		parsed, err := uuid.Parse(mapped)
+		require.NoError(t, err)
+		require.EqualValues(t, 7, parsed.Version())
+		require.Equal(t, mapped, root)
+		require.NotEqual(t, turn, mapped)
+		if first != "" {
+			require.Equal(t, first, mapped)
+		}
+		first = mapped
+		require.Equal(t, original, body)
+		other := NewCodexTransportFingerprint(a, headers, body, "cache")
+		require.NoError(t, other.ClaimSessionIdentity(ctx, a, "owner-two"))
+		otherTurn, _ := requireTurnIdentityOutput(t, other, body)
+		require.NotEqual(t, first, otherTurn)
+	}
+}
 
 func setTurnIdentityTestFields(test *testing.T, headers http.Header, body []byte, turn, rootTurn string, asString bool) (http.Header, []byte) {
 	test.Helper()
@@ -92,6 +127,12 @@ func TestCodexTurnIdentityRewritesOnlyOutboundMetadata(test *testing.T) {
 }
 
 func TestCodexTurnIdentityRotatesWithAccountEpoch(test *testing.T) {
+	for _, turn := range []string{turnIdentitySample, "02d449b7-2ab2-452c-9f29-ad58c579901f"} {
+		test.Run(turn, func(test *testing.T) { testCodexTurnIdentityRotatesWithAccountEpoch(test, turn) })
+	}
+}
+
+func testCodexTurnIdentityRotatesWithAccountEpoch(test *testing.T, turnID string) {
 	handler, owner, target := legacyParentTestSetup(test)
 	var turns []string
 	current := owner
@@ -102,11 +143,11 @@ func TestCodexTurnIdentityRotatesWithAccountEpoch(test *testing.T) {
 		}
 		for repeat := 0; repeat < 2; repeat++ {
 			request, body := legacyParentTestRequest(test, handler, accountIdentitySampleRoot, "", "turn", uint64(54+index), false)
-			headers, body := setTurnIdentityTestFields(test, request.Request.Header, body, turnIdentitySample, turnIdentitySample, repeat == 1)
+			headers, body := setTurnIdentityTestFields(test, request.Request.Header, body, turnID, turnID, repeat == 1)
 			fingerprint := NewCodexTransportFingerprint(account, headers, body, "cache")
 			require.NoError(test, fingerprint.ClaimSessionIdentity(request.Request.Context(), account, "test-user-key"))
 			turn, rootTurn := requireTurnIdentityOutput(test, fingerprint, body)
-			require.NotEqual(test, turnIdentitySample, turn)
+			require.NotEqual(test, turnID, turn)
 			require.Equal(test, turn, rootTurn)
 			if repeat == 0 {
 				turns = append(turns, turn)

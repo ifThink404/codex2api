@@ -73,7 +73,7 @@ func TestCodexInvalidTurnIdentityDiagnosticsRedactValues(t *testing.T) {
 		value, reason string
 		version       int
 	}{
-		{"ffffffff-ffff-4fff-8fff-ffffffffffff", "unsupported_uuid_version", 4},
+		{"ffffffff-ffff-5fff-8fff-ffffffffffff", "unsupported_uuid_version", 5},
 		{"private-access-token-do-not-log", "invalid_uuid", 0},
 		{"ffffffff-ffff-7fff-ffff-ffffffffffff", "unsupported_uuid_variant", 7},
 	} {

@@ -90,7 +90,8 @@ func (fingerprint *CodexFingerprint) prepareAccountTurnIdentity(ctx context.Cont
 			continue
 		}
 		parsed, err := uuid.Parse(original)
-		if err != nil || parsed.Version() != 7 || parsed.Variant() != uuid.RFC4122 {
+		historyOnlyV4 := err == nil && parsed.Version() == 4 && input.History && !input.Turn && !input.Root && !input.Parent
+		if err != nil || (parsed.Version() != 7 && parsed.Version() != 4) || parsed.Variant() != uuid.RFC4122 || historyOnlyV4 {
 			// Older item history can use a local counter/string rather than the
 			// current transport UUID. Keep that optional historical grouping
 			// usable without weakening the transport metadata validation.
@@ -105,7 +106,7 @@ func (fingerprint *CodexFingerprint) prepareAccountTurnIdentity(ctx context.Cont
 				plan.claims = append(plan.claims, database.CodexIdentityAliasClaim{AliasKey: codexIdentityDigest("codex-account-alias-v1", outbound), SourceKey: key})
 				continue
 			}
-			failure := &codexInvalidTurnIdentityDiagnostic{Stage: "normalized_pre_mapping", Sources: append([]string(nil), input.Sources...), Reason: "invalid_uuid", Expected: "UUIDv7/RFC4122", ValueHash: hashRiskIdentity(original), ValueLength: len(original)}
+			failure := &codexInvalidTurnIdentityDiagnostic{Stage: "normalized_pre_mapping", Sources: append([]string(nil), input.Sources...), Reason: "invalid_uuid", Expected: "UUIDv4 or UUIDv7/RFC4122", ValueHash: hashRiskIdentity(original), ValueLength: len(original)}
 			description := "不是有效 UUID"
 			if err == nil {
 				failure.UUIDVersion, failure.UUIDVariant = int(parsed.Version()), parsed.Variant().String()
@@ -119,7 +120,7 @@ func (fingerprint *CodexFingerprint) prepareAccountTurnIdentity(ctx context.Cont
 			if source == "" {
 				source = "turn_id/root_turn_id"
 			}
-			return nil, codexAccountIdentityError(fmt.Sprintf("账号级出站轮次映射仅支持 UUIDv7；%s %s，请检查轮次元数据。", source, description))
+			return nil, codexAccountIdentityError(fmt.Sprintf("账号级出站轮次映射需要有效的 UUIDv4 或 UUIDv7；%s %s，请检查轮次元数据。", source, description))
 		}
 		if len(mapping.secret) != 32 {
 			return nil, codexAccountIdentityError("出站轮次映射密钥不可用，请核实会话身份策略。")
@@ -137,8 +138,10 @@ func (fingerprint *CodexFingerprint) prepareAccountTurnIdentity(ctx context.Cont
 		turnMapping := *mapping
 		turnMapping.epoch = turnEpoch.Segment
 		turnMapping.mode = "account-suffix-v1"
-		if turnEpoch.MappingVersion == database.CodexIdentityMappingUUIDv7 {
-			turnMapping.mode = turnEpoch.MappingVersion
+		if turnEpoch.MappingVersion == database.CodexIdentityMappingUUIDv7 || parsed.Version() == 4 {
+			// sever accepts SDK UUIDv4 turns, but always sends a persistent,
+			// owner/account/epoch-scoped UUIDv7, including on legacy policies.
+			turnMapping.mode = database.CodexIdentityMappingUUIDv7
 		}
 		outbound, err := turnMapping.mapUUID(ctx, store, "turn", original)
 		if err != nil {
