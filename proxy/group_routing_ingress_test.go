@@ -8,6 +8,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +44,9 @@ func TestGroupRoutingActualIngressDefaultLowStillUsesSplit(t *testing.T) {
 			headers := http.Header{}
 			headers.Set("X-Codex2API-Affinity-Key", "original-client-affinity")
 			if tc.session {
-				headers = nativeSessionHeaders(testRootSessionA, testRootSessionA, 0)
+				session, err := uuid.NewV7()
+				require.NoError(t, err)
+				headers = nativeSessionHeaders(session.String(), session.String(), 0)
 			}
 			body := []byte(`{"model":"gpt-6-astra","stream":true,"input":"hello"` + tc.effort + `}`)
 			c, w := rawRoutingTestContext(row, "/v1/responses", body, headers)
