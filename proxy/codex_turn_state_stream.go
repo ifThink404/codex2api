@@ -35,7 +35,7 @@ func finishTurnStateResponse(ctx context.Context, account *auth.Account, respons
 			_ = (*response).Body.Close()
 		}
 		*response = nil
-		*requestErr = ErrInternalError("会话状态暂时无法处理，请稍后重试。", errTurnStateMapping)
+		*requestErr = ErrInternalError("会话状态暂时无法处理，请稍后重试。", err)
 	}
 }
 

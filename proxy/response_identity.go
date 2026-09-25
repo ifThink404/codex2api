@@ -27,6 +27,9 @@ type responseIdentitySession struct {
 	parent                      *database.CodexResponseIDRecord
 	issued                      map[string]database.CodexResponseIDRecord
 	events                      []responseIdentityEvent
+	mappingMu                   sync.Mutex
+	mappingFailures             []database.ResponseMappingFailure
+	protocolPairs               map[string]database.CodexProtocolPair
 }
 
 func responseIdentityFrom(ctx context.Context) *responseIdentitySession {
@@ -350,28 +353,34 @@ func (s *responseIdentitySession) issue(ctx context.Context, account *auth.Accou
 	if real == "" {
 		return "", nil
 	}
-	if s == nil || s.handler.db == nil || account == nil || account.IsRelayStyle() {
-		return "", errTurnStateMapping
+	if s == nil || s.handler == nil || s.handler.db == nil || account == nil || account.IsRelayStyle() {
+		return "", responseMappingFailure(ctx, "response_id_context", nil, time.Time{})
 	}
 	generation := uint64(0)
 	if epoch := outboundEpochFromContext(ctx); epoch != nil {
 		generation = epoch.record.FailoverCount
 	}
 	binding := database.CodexTurnStateBinding{Scope: s.scope, RootKey: s.rootKey, AccountID: account.ID(), AccountHash: turnStateAccountHash(account), Generation: generation}
-	key := codexIdentityDigest(binding.AccountHash, real, strconv.FormatUint(generation, 10))
+	key := codexIdentityDigest(binding.Scope, binding.RootKey, strconv.FormatInt(binding.AccountID, 10), binding.AccountHash, real, strconv.FormatUint(generation, 10))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if record, ok := s.issued[key]; ok {
 		return record.Alias, nil
 	}
-	if len(s.issued) >= 4096 {
-		return "", errTurnStateMapping
+	for _, record := range s.issued {
+		if record.Alias == real && record.CodexTurnStateBinding == binding {
+			return real, nil
+		}
 	}
-	lookup, cancel := context.WithTimeout(ctx, time.Second)
+	if len(s.issued) >= 4096 {
+		return "", responseMappingFailure(ctx, "response_id_capacity", nil, time.Time{})
+	}
+	started := time.Now()
+	lookup, cancel := context.WithTimeout(ctx, responseMappingTimeout)
 	defer cancel()
 	record, err := s.handler.db.IssueCodexResponseID(lookup, binding, real)
 	if err != nil {
-		return "", errTurnStateMapping
+		return "", responseMappingFailure(ctx, "response_id_write", err, started)
 	}
 	s.issued[key] = record
 	s.events = append(s.events, responseIdentityEvent{Action: "issued", Alias: record.Alias, Original: real, AccountID: account.ID(), Generation: generation})

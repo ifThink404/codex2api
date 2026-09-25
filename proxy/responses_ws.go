@@ -488,9 +488,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(closeCode, apiErr.Message, apiErr)
 	}
-	if waitError := h.waitForBackgroundRootAccount(c, sessionIdentity); waitError != nil {
+	if waitError := h.waitForBackgroundRootWithFallback(c, &sessionIdentity, ingressRequestBody(c, nil)); waitError != nil {
 		_ = writeAuditedResponsesWSError(c, conn, waitError)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, waitError.Message, waitError)
+	}
+
+	if relaxedAccountFallbackFromContext(c.Request.Context()) != nil {
+		affinityKey = capacityAwareSessionAffinityKey(sessionIdentity, apiKeyID)
+		priorSessionAccountID, boundAccountID, turnHasBinding = 0, 0, false
 	}
 	// Only a request that passed payload, prompt-policy and API-key admission may
 	// replace the active owner. Claim before concurrency/account acquisition so
@@ -1701,7 +1706,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		h.store.Release(account)
 	}
 	if outcome.terminalLocal {
-		apiErr := api.NewAPIError(api.ErrCodeServerError, continuousRetryLocalFailureMessage, api.ErrorTypeServer)
+		apiErr := api.NewAPIError(api.ErrCodeServerError, outcome.failureMessage, api.ErrorTypeServer)
 		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.CloseInternalServerErr, apiErr.Message, apiErr)
 	}

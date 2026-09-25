@@ -181,6 +181,10 @@ export default function UsageRequestDiagnostics({ log, onClose }: { log: UsageLo
       {(detail?.request_type === 'compaction' || Boolean(diagnosticRecord(data.responses_input).compaction_metadata || diagnosticRecord(upstream.responses_input).compaction_metadata)) && <CompactionDiagnostics inbound={data.responses_input} outbound={upstream.responses_input} />}
       {upstream.client_turn_state != null && <section className="rounded-lg border p-3"><h3 className="mb-2 text-sm font-semibold">客户端 Turn-State（模拟）</h3><DiagnosticFields value={{ upstream: upstream.response_turn_state, client: upstream.client_turn_state }} /><p className="mt-2 text-xs text-muted-foreground">本地生成，仅回传客户端，不发送上游。</p></section>}
       <TurnStateDiagnostics value={data.turn_state} outbound={outboundIdentity} />
+      {Array.isArray(data.response_mapping) && data.response_mapping.length > 0 && <section className="rounded-lg border p-3">
+        <h3 className="mb-3 text-sm font-semibold">Response mapping</h3>
+        <DiagnosticFields value={data.response_mapping} />
+      </section>}
       {Array.isArray(data.response_identity) && data.response_identity.length > 0 && <section className="rounded-lg border p-3">
         <h3 className="mb-3 text-sm font-semibold">Response ID</h3>
         <pre className="max-h-80 overflow-auto rounded-md bg-muted/40 p-2 text-xs select-text" tabIndex={0}>{JSON.stringify(data.response_identity, null, 2)}</pre>

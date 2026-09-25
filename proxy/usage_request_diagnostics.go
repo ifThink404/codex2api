@@ -74,6 +74,7 @@ type usageRequestDiagnostics struct {
 	UpstreamRoute          *codexRouteDiagnostic   `json:"upstream_route,omitempty"`
 	TurnStart              *usageTurnStart         `json:"turn_start,omitempty"`
 	turnStartCaptured      bool
+	ResponseMapping        []database.ResponseMappingFailure        `json:"response_mapping,omitempty"`
 	ResponseIdentity       []responseIdentityEvent                  `json:"response_identity,omitempty"`
 	AccessPrograms         *accessProgramsDiagnostic                `json:"access_programs,omitempty"`
 	TurnState              *database.TurnStateDiagnostic            `json:"turn_state,omitempty"`
@@ -458,6 +459,7 @@ func populateUsageRequestDiagnostics(c *gin.Context, input *database.UsageLogInp
 	snapshot := *state
 	snapshot.TurnState = turnStateDiagnostic(c.Request.Context())
 	snapshot.ResponseIdentity = responseIdentityDiagnostic(c.Request.Context())
+	snapshot.ResponseMapping = responseMappingDiagnostics(c.Request.Context())
 	input.SessionIDPrefix = snapshot.SessionIDPrefix
 	snapshot.Request = usageRequestInfoSnapshot(c, input)
 	if input.UpstreamDiagnostics != "" {
@@ -468,6 +470,9 @@ func populateUsageRequestDiagnostics(c *gin.Context, input *database.UsageLogInp
 				if upstream.Transport == "http" && upstream.HTTPStatus >= 200 && upstream.HTTPStatus < 300 {
 					upstream.ErrorSource, upstream.ErrorStage = "upstream_stream_or_transport", "after_headers"
 				}
+			}
+			if len(snapshot.ResponseMapping) > 0 && input.StatusCode >= 400 {
+				upstream.ErrorSource, upstream.ErrorStage = "gateway", "response_mapping"
 			}
 			snapshot.Upstream = &upstream
 		}

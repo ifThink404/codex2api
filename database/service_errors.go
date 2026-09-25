@@ -159,6 +159,7 @@ type SessionToolSummary struct {
 }
 
 type ServiceErrorEvent struct {
+	ResponseMapping        []ResponseMappingFailure          `json:"response_mapping,omitempty"`
 	ResponseIdentity       []ResponseIdentityEvent           `json:"response_identity,omitempty"`
 	TurnState              *TurnStateDiagnostic              `json:"turn_state,omitempty"`
 	ID                     string                            `json:"id"`

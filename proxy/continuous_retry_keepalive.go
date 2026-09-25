@@ -641,7 +641,7 @@ func writeContinuousRetryLocalResponsesError(c *gin.Context) bool {
 			"created_at": time.Now().Unix(),
 			"status":     "failed",
 			"error": gin.H{
-				"message": continuousRetryLocalFailureMessage,
+				"message": localResponseFailureMessage(c),
 				"type":    "server_error",
 				"code":    ErrorCodeInternalError,
 			},
@@ -666,7 +666,7 @@ func writeContinuousRetryLocalChatError(c *gin.Context) bool {
 	}
 	payload, _ := json.Marshal(gin.H{
 		"error": gin.H{
-			"message": continuousRetryLocalFailureMessage,
+			"message": localResponseFailureMessage(c),
 			"type":    "server_error",
 			"code":    ErrorCodeInternalError,
 		},
@@ -692,7 +692,7 @@ func writeContinuousRetryLocalAnthropicError(c *gin.Context) bool {
 		"type": "error",
 		"error": gin.H{
 			"type":    "api_error",
-			"message": continuousRetryLocalFailureMessage,
+			"message": localResponseFailureMessage(c),
 		},
 	})
 	_, _ = c.Writer.WriteString("event: error\ndata: " + string(payload) + "\n\n")
@@ -725,4 +725,11 @@ func continuousRetryRequestErrorMessage(err error) string {
 		return structured.Message
 	}
 	return "Upstream request failed"
+}
+
+func localResponseFailureMessage(c *gin.Context) string {
+	if c != nil && c.Request != nil && len(responseMappingDiagnostics(c.Request.Context())) > 0 {
+		return responseMappingFailureMessage
+	}
+	return continuousRetryLocalFailureMessage
 }

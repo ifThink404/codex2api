@@ -2288,7 +2288,7 @@ func shouldFallbackWebsocketMessageTooBigToHTTP(outcome streamOutcome, useWebsoc
 }
 
 func classifyTransportFailure(err error) string {
-	if err == nil {
+	if err == nil || errors.Is(err, errTurnStateMapping) {
 		return ""
 	}
 
@@ -2404,6 +2404,14 @@ func overlayContinuousRetryLocalFailure(outcome streamOutcome, errs ...error) st
 		return outcome
 	}
 	for _, err := range errs {
+		if errors.Is(err, errTurnStateMapping) {
+			return streamOutcome{
+				logStatusCode:  http.StatusInternalServerError,
+				failureKind:    "response_mapping",
+				failureMessage: responseMappingFailureMessage,
+				terminalLocal:  true,
+			}
+		}
 		if !isContinuousRetryLocalFailure(err) {
 			continue
 		}
@@ -3650,7 +3658,7 @@ func shouldRetryRequestError(err error, generalRetries *int, maxGeneralRetries i
 // ErrUpstream(0, ..., cause) for failures from http.Client.Do; those remain
 // retryable even though a status-less Error cannot set Retryable by status.
 func isRetryableRequestError(err error) bool {
-	if TransportReplayBlocked(err) {
+	if errors.Is(err, errTurnStateMapping) || TransportReplayBlocked(err) {
 		return false
 	}
 	if codexCapacityRequestRetryDisabled(err) {
@@ -4204,9 +4212,15 @@ func (h *Handler) Responses(c *gin.Context) {
 	if h.enforceAPIKeyLimitsAndReply(c, effectiveModel) {
 		return
 	}
-	if waitError := h.waitForBackgroundRootAccount(c, sessionIdentity); waitError != nil {
+	if waitError := h.waitForBackgroundRootWithFallback(c, &sessionIdentity, ingressRequestBody(c, nil)); waitError != nil {
 		api.SendError(c, waitError)
 		return
+	}
+
+	if relaxedAccountFallbackFromContext(c.Request.Context()) != nil {
+		affinityKey = capacityAwareSessionAffinityKey(sessionIdentity, apiKeyID)
+		priorSessionAccountID, boundAccountID, turnHasBinding = 0, 0, false
+		turnContinuationPinned = false
 	}
 	releaseAPIKeyConcurrency, ok := h.acquireAPIKeyConcurrency(c)
 	if !ok {
@@ -6422,9 +6436,15 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	if h.enforceAPIKeyLimitsAndReply(c, effectiveModel) {
 		return
 	}
-	if waitError := h.waitForBackgroundRootAccount(c, sessionIdentity); waitError != nil {
+	if waitError := h.waitForBackgroundRootWithFallback(c, &sessionIdentity, ingressRequestBody(c, nil)); waitError != nil {
 		api.SendError(c, waitError)
 		return
+	}
+
+	if relaxedAccountFallbackFromContext(c.Request.Context()) != nil {
+		affinityKey = capacityAwareSessionAffinityKey(sessionIdentity, apiKeyID)
+		priorSessionAccountID, boundAccountID, compactHasBinding = 0, 0, false
+		compactContinuationPinned = false
 	}
 	releaseAPIKeyConcurrency, ok := h.acquireAPIKeyConcurrency(c)
 	if !ok {
@@ -7382,7 +7402,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return
 	}
 	toolNameRestore := ChatToolNameRestoreMap(rawBody)
-	if waitError := h.waitForBackgroundRootAccount(c, sessionIdentity); waitError != nil {
+	if waitError := h.waitForBackgroundRootWithFallback(c, &sessionIdentity, ingressRequestBody(c, nil)); waitError != nil {
 		api.SendError(c, waitError)
 		return
 	}

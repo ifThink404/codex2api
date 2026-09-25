@@ -281,7 +281,7 @@ func (s *turnStateSession) issueKind(ctx context.Context, account *auth.Account,
 		generation = epoch.record.FailoverCount
 	}
 	binding := database.CodexTurnStateBinding{Kind: kind, Scope: s.scope, RootKey: s.rootKey, AccountID: account.ID(), AccountHash: turnStateAccountHash(account), Generation: generation}
-	key := codexIdentityDigest(kind, binding.Scope, binding.AccountHash, strconv.FormatUint(generation, 10), real)
+	key := codexIdentityDigest(kind, binding.Scope, binding.RootKey, strconv.FormatInt(binding.AccountID, 10), binding.AccountHash, strconv.FormatUint(generation, 10), real)
 	s.mu.Lock()
 	record, found := s.issued[key]
 	s.mu.Unlock()
@@ -294,13 +294,14 @@ func (s *turnStateSession) issueKind(ctx context.Context, account *auth.Account,
 		}
 	}
 	if !found {
-		saving, cancel := context.WithTimeout(ctx, time.Second)
+		started := time.Now()
+		saving, cancel := context.WithTimeout(ctx, responseMappingTimeout)
 		var err error
 		record, err = s.handler.db.IssueCodexTurnState(saving, binding, real)
 		cancel()
 		if err != nil {
 			s.log("issue_failed", carrier, "", real, account.ID(), generation, nil)
-			return "", errTurnStateMapping
+			return "", responseMappingFailure(ctx, "turn_state_write", err, started)
 		}
 		s.mu.Lock()
 		if len(s.issued) < 32 {

@@ -138,9 +138,9 @@ func mapCodexExtraValue(ctx context.Context, account *auth.Account, key, origina
 	}
 	if db != nil {
 		for _, public := range []bool{false, true} {
-			pair, found, err := db.ReadCodexProtocolPair(ctx, binding, "metadata", original, public)
+			pair, found, err := readResponseProtocolPair(ctx, db, binding, "metadata", original, public)
 			if err != nil {
-				return "", errTurnStateMapping
+				return "", err
 			}
 			if found {
 				return pair.Upstream, nil
@@ -186,8 +186,8 @@ func mapCodexExtraValue(ctx context.Context, account *auth.Account, key, origina
 		mapped = "meta_" + strings.TrimPrefix(derive("metadata", original), "out_")
 	}
 	if mapped != original && db != nil {
-		if err := db.PutCodexProtocolPair(ctx, binding, "metadata", database.CodexProtocolPair{Public: original, Upstream: mapped}); err != nil {
-			return "", errTurnStateMapping
+		if err := putResponseProtocolPair(ctx, db, binding, "metadata", database.CodexProtocolPair{Public: original, Upstream: mapped}); err != nil {
+			return "", err
 		}
 	}
 	return mapped, nil
@@ -335,9 +335,9 @@ func prepareCodexAuxiliaryMetadata(ctx context.Context, account *auth.Account, b
 		}
 		db, binding := protocolIdentityBinding(ctx, account)
 		if db != nil {
-			pair, found, err := db.ReadCodexProtocolPair(ctx, binding, "metadata", value, false)
+			pair, found, err := readResponseProtocolPair(ctx, db, binding, "metadata", value, false)
 			if err != nil {
-				return nil, errTurnStateMapping
+				return nil, err
 			}
 			if found {
 				if headers != nil {
@@ -381,8 +381,8 @@ func prepareCodexAuxiliaryMetadata(ctx context.Context, account *auth.Account, b
 			mapped = strings.Join(members, ",")
 		}
 		if mapped != "" && mapped != value && db != nil {
-			if err := db.PutCodexProtocolPair(ctx, binding, "metadata", database.CodexProtocolPair{Public: value, Upstream: mapped}); err != nil {
-				return nil, errTurnStateMapping
+			if err := putResponseProtocolPair(ctx, db, binding, "metadata", database.CodexProtocolPair{Public: value, Upstream: mapped}); err != nil {
+				return nil, err
 			}
 		}
 		if headers != nil {

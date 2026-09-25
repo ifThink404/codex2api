@@ -37,6 +37,15 @@ type ResponseIdentityEvent struct {
 	Generation    uint64 `json:"generation"`
 }
 
+// Safe local mapping diagnostics; raw driver messages and handle values are
+// deliberately excluded from both usage logs and service-error exports.
+type ResponseMappingFailure struct {
+	Operation  string `json:"operation"`
+	Reason     string `json:"reason"`
+	SQLState   string `json:"sql_state,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
 func (db *DB) responseIDMAC(domain string, value []byte) []byte {
 	mac := hmac.New(sha256.New, db.turnStateKey)
 	mac.Write([]byte("codex-response-id-" + domain + "-v1\x00"))

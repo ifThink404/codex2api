@@ -277,10 +277,14 @@ func (handler *Handler) recordServiceError(ctx *gin.Context, status int, apiErro
 	if upstream.ErrorSource == "" {
 		upstream.ErrorSource, upstream.ErrorStage = "gateway", event.Stage
 	}
+	if len(responseMappingDiagnostics(ctx.Request.Context())) > 0 {
+		upstream.ErrorSource, upstream.ErrorStage = "gateway", "response_mapping"
+	}
 	upstream.IdentityClaim = trace.IdentityClaim
 	event.UpstreamInfo = []byte(transportDiagnosticJSON(upstream))
 	event.TurnState = turnStateDiagnostic(ctx.Request.Context())
 	event.ResponseIdentity = responseIdentityDiagnostic(ctx.Request.Context())
+	event.ResponseMapping = responseMappingDiagnostics(ctx.Request.Context())
 	if value, exists := ctx.Get(usageRequestDiagnosticsContextKey); exists {
 		if diagnostics, ok := value.(*usageRequestDiagnostics); ok && diagnostics != nil {
 			incoming = diagnostics.Incoming

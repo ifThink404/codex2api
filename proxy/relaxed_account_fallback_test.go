@@ -19,7 +19,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func relaxedTestRequest(t *testing.T, h *Handler, source, state string, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
+func relaxedTestRequest(t *testing.T, h *Handler, source, state string, body []byte, paths ...string) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	remaining := int64(0)
 	meta := newAPIPolicyMeta{RootSessionVersion: 1, RootSessionState: state, RootSessionRelation: newAPIPolicyRootSessionRelationRelated,
@@ -29,7 +29,11 @@ func relaxedTestRequest(t *testing.T, h *Handler, source, state string, body []b
 		meta.PassiveFeature = ""
 		meta.RootSessionRelation = ""
 	}
-	c, recorder := signedRootlessPassiveModelContext(t, "POST", "/v1/responses", body, meta)
+	path := "/v1/responses"
+	if len(paths) > 0 {
+		path = paths[0]
+	}
+	c, recorder := signedRootlessPassiveModelContext(t, "POST", path, body, meta)
 	setSignedNewAPIRequestHeaders(t, c.Request, body, NewUpstreamSessionUUID(), newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, "test-platform", "integration-secret", promptSessionTestFingerprint(t.Name()))
 	meta.PlatformID, meta.Profile, meta.Mode = "test-platform", "balanced", "enforce"
 	meta.Provider, meta.Protocol = "openai", "responses"

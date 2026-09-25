@@ -101,7 +101,7 @@ func continuousRetryLimitForRequestError(err error, generalLimit int, policies .
 	if err == nil || errors.Is(err, context.Canceled) {
 		return generalLimit
 	}
-	if isContinuousRetryLocalFailure(err) {
+	if isContinuousRetryLocalFailure(err) || errors.Is(err, errTurnStateMapping) {
 		return generalLimit
 	}
 	if isHardStopUpstreamPolicyError(err) {
@@ -164,7 +164,7 @@ func continuousRetryRequestErrorSelected(policy database.ContinuousRetryPolicy, 
 	if !policy.Enabled || err == nil {
 		return false
 	}
-	if errors.Is(err, errContinuousRetryDeadlineExceeded) || isContinuousRetryLocalFailure(err) {
+	if errors.Is(err, errContinuousRetryDeadlineExceeded) || isContinuousRetryLocalFailure(err) || errors.Is(err, errTurnStateMapping) {
 		return false
 	}
 	if isHardStopUpstreamPolicyError(err) {

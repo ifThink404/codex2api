@@ -124,9 +124,9 @@ func (w responsePrivacyWalker) rewrite(raw json.RawMessage, responseObject, cont
 		}
 		if control {
 			if db, binding := protocolIdentityBinding(w.ctx, w.account); db != nil {
-				pair, found, err := db.ReadCodexProtocolPair(w.ctx, binding, "metadata", value, false)
+				pair, found, err := readResponseProtocolPair(w.ctx, db, binding, "metadata", value, false)
 				if err != nil {
-					return nil, errTurnStateMapping
+					return nil, err
 				}
 				if found {
 					return json.Marshal(pair.Public)

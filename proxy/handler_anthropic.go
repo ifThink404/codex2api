@@ -529,7 +529,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	if h.enforceAPIKeyLimitsAndReply(c, effectiveModel) {
 		return
 	}
-	if waitError := h.waitForBackgroundRootAccount(c, sessionIdentity); waitError != nil {
+	if waitError := h.waitForBackgroundRootWithFallback(c, &sessionIdentity, ingressRequestBody(c, nil)); waitError != nil {
 		sendAnthropicError(c, http.StatusBadRequest, string(waitError.Type), waitError.Message, waitError.Code)
 		return
 	}

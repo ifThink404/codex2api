@@ -82,16 +82,16 @@ func (w responsePrivacyWalker) itemMetadata(raw json.RawMessage) (json.RawMessag
 		var original string
 		db, binding := protocolIdentityBinding(w.ctx, w.account)
 		if db != nil {
-			pair, found, err := db.ReadCodexProtocolPair(w.ctx, binding, "turn", v.String(), false)
+			pair, found, err := readResponseProtocolPair(w.ctx, db, binding, "turn", v.String(), false)
 			if err != nil {
-				return nil, errTurnStateMapping
+				return nil, err
 			}
 			if found {
 				original = pair.Public
 			} else {
-				pair, found, err = db.ReadCodexProtocolPair(w.ctx, binding, "turn", v.String(), true)
+				pair, found, err = readResponseProtocolPair(w.ctx, db, binding, "turn", v.String(), true)
 				if err != nil {
-					return nil, errTurnStateMapping
+					return nil, err
 				}
 				if found {
 					original = pair.Public
@@ -133,15 +133,18 @@ func (w responsePrivacyWalker) conversation(raw json.RawMessage) (json.RawMessag
 	public := id.String()
 	if db, binding := protocolIdentityBinding(w.ctx, w.account); db != nil {
 		if db.IsManagedCodexConversationAlias(id.String()) {
-			pair, found, err := db.ReadCodexProtocolPair(w.ctx, binding, "conversation", id.String(), true)
-			if err != nil || !found {
-				return nil, errTurnStateMapping
+			pair, found, err := readResponseProtocolPair(w.ctx, db, binding, "conversation", id.String(), true)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				return nil, responseMappingFailure(w.ctx, "conversation_lookup", nil, time.Time{})
 			}
 			return json.Marshal(map[string]string{"id": pair.Public})
 		}
 		public = db.CodexConversationAlias(binding, id.String())
-		if err := db.PutCodexProtocolPair(w.ctx, binding, "conversation", database.CodexProtocolPair{Public: public, Upstream: id.String()}); err != nil {
-			return nil, errTurnStateMapping
+		if err := putResponseProtocolPair(w.ctx, db, binding, "conversation", database.CodexProtocolPair{Public: public, Upstream: id.String()}); err != nil {
+			return nil, err
 		}
 	} else if w.account == nil || !w.account.IsRelayStyle() {
 		return nil, nil
@@ -184,9 +187,9 @@ func prepareConversationOutbound(ctx context.Context, account *auth.Account, bod
 	if db == nil {
 		return body, nil
 	}
-	pair, found, err := db.ReadCodexProtocolPair(ctx, binding, "conversation", id, true)
+	pair, found, err := readResponseProtocolPair(ctx, db, binding, "conversation", id, true)
 	if err != nil {
-		return nil, errTurnStateMapping
+		return nil, err
 	}
 	if found {
 		return sjson.SetBytes(body, path, pair.Upstream)
