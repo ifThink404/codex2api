@@ -347,6 +347,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
 	}
+	setGroupRoutingIngress(c, rawBody)
 	h.bindCodexEnvironment(c, rawBody, time.Now())
 	captureUsageRequestIngress(c, rawBody)
 	if h != nil && h.store != nil {

@@ -205,7 +205,7 @@ func TestChatGroupRoutingActualIngressKeepsNewAndExistingSessions(test *testing.
 				request, _, _ := chatGroupTestRequest(test, handler, "/v1/chat/completions")
 				request.Set(contextAPIKeyID, keyID)
 				apiKeyRowFromContext(request).ID = keyID
-				body := []byte(`{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+				body := []byte(`{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"hi"}],"stream":true,"reasoning_effort":"low"}`)
 				request.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 				request.Request.Header.Set("Authorization", "Bearer test-key")
 				request.Request.Header.Set("Content-Type", "application/json")

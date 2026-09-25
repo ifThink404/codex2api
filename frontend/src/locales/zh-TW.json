@@ -122,8 +122,8 @@
     "notProbed": "未驗證"
   },
   "apiKeys": {
-    "noAffinityGroupsLabel": "無指紋 / Chat 請求分流組",
-    "noAffinityGroupsHint": "新會話的 /v1/chat/completions 請求無論是否攜帶指紋，都只從這些分組選號；已有綁定的 Chat 會話保留原帳號分組。其他路徑：無 Codex 引擎指紋且無 X-Codex2API-Affinity-Key 時走分流組，帶指紋時走上面的原分組；上面留空則排除分流組。這裡留空不啟用分流。所有請求仍檢查帳號權限、模型和容量，指紋本身不是認證依據。",
+    "noAffinityGroupsLabel": "帳號分流組",
+    "noAffinityGroupsHint": "使用者原始請求的會話 ID 或思考等級任一缺失時，走這些分組；自動補全的 low 和會話 ID 不算使用者已提供。兩項齊全時：新 Chat 請求走分流組，已有綁定的 Chat 會話保留原帳號分組；其他請求無指紋走分流組，有指紋走上面的原分組（上面留空則排除分流組）。這裡留空不啟用分流。仍檢查帳號權限、模型、容量和會話歸屬；分流組不可用時不回落到原分組。",
     "promptFilterScopeGlobal": "Prompt：沿用全域檢查",
     "promptFilterScopeLocal": "Prompt：僅本地規則",
     "promptFilterScopeOff": "Prompt：已關閉",
@@ -149,7 +149,7 @@
   },
   "accounts": {
     "codexFingerprintModeRound": "輪次收斂",
-    "codexFingerprintModeRoundDetail": "BPS 同一上游帳號按系統設定的輪數共用 task_id，序號連續遞增，滿額後更換 task_id 並從 1 開始。每次新模型呼叫（含工具續接）使用新 turn_id，重試沿用原編號；原生 Codex 僅收斂裝置。",
+    "codexFingerprintModeRoundDetail": "BPS 同一上游帳號按實際模型和思考等級分別維護 task_id 和輪數。各組合序號獨立遞增，滿額後各自更換 task_id 並從 1 開始，切回繼續原批次。未傳等級按 low，max 按 xhigh。每批按最後一次上游傳送續期，連續閒置 24 小時後的新呼叫換新 ID；達到輪數上限仍換批，重啟保留計時。每次新呼叫（含工具續接）使用新 turn_id，重試沿用原編號；原生 Codex 僅收斂裝置。",
     "codexFingerprintModeFullDetail": "BPS 同一上游帳號共用一個 task_id，不同使用者、對話和輪次使用獨立 turn_id；同輪工具續接保留 turn_id，迭代計數遞增。原生 Codex 繼續遵循原有出站身分策略。",
     "rawPassthroughTitle": "原樣 API 透傳（HTTP / SSE）",
     "rawPassthroughHint": "預設關閉。開啟後，先依工作階段指紋與 Chat 入口完成分組分流，再於對應組內優先選擇符合模型的透傳帳號；記錄請求分類，保留原介面路徑、請求本文、回應狀態和本文，不做模型映射、身分補齊、圖片上傳或格式轉換；失敗不自動重試。使用帳號設定的金鑰、位址、代理和自訂請求標頭。WebSocket 不在此開關範圍內。",
@@ -304,7 +304,7 @@
   },
   "settings": {
     "bpsRoundConvergenceLimit": "BPS 輪次收斂：每個任務的輪數",
-    "bpsRoundConvergenceLimitDesc": "僅適用於選擇「輪次收斂」的帳號，預設 100，範圍 1–1000000。每次新模型呼叫計一輪，工具續接計入，重試不重複計數。達上限後更換 task_id，序號從 1 開始；修改輪數從下一批生效。並行請求依資料庫分配編號的順序計數，不等待前次推論完成。",
+    "bpsRoundConvergenceLimitDesc": "僅適用於選擇「輪次收斂」的帳號，預設 100，範圍 1–1000000。同一上游帳號按實際模型＋思考等級獨立計數，未傳等級按 low，max 按 xhigh。每批按最後一次上游傳送續期，連續閒置 24 小時後的新呼叫換新 ID；達到輪數上限仍換批，重啟保留計時。每次新呼叫計一輪，工具續接計入，重試不重複計數。各組合達上限後分別更換 task_id 並從 1 開始；修改輪數從各組合的下一批生效。並行依資料庫分配編號的順序計數，不等待前次推論完成。",
     "bpsWordUserAgent": "Word BPS User-Agent",
     "bpsWordUserAgentDesc": "用於所有 Word BPS 請求。留空使用已驗證的 Word 網頁版 UA；與其他用戶端形態分別儲存。",
     "sessionBalanceSession": "會話",

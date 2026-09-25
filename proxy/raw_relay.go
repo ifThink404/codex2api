@@ -125,6 +125,7 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	}
 	// Verify signatures against the original bytes, then inspect the decoded
 	// copy for routing only. No Codex normalization or identity rewriting runs.
+	captureGroupRoutingIngress(c, routingBody)
 	h.primeNewAPIPolicyContext(c, body)
 	identity, root, signed, status := h.resolveRequestSessionRoutingIdentity(c, routingBody, resolveRequestSessionIdentity(c.Request.Header, routingBody))
 	h.prepareChatGroupRouting(c, identity)

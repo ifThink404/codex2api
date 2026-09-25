@@ -448,9 +448,8 @@ func codexContinuationPinned(turnContinuation, hasPreviousResponse, hasBinding b
 	return hasPreviousResponse && hardOwnerAccountID > 0
 }
 
-// applyAffinityGroupRouting keeps fingerprinted requests on the API key's original groups
-// and routes new Chat Completions requests, or requests without either a Codex
-// engine fingerprint or the dedicated local affinity header, to split groups.
+// applyAffinityGroupRouting routes requests with missing original session/effort
+// fields to split groups before applying the existing Chat/fingerprint policy.
 //
 // 当 Key 没配「允许账号分组」（= 不限分组）时，带指纹的请求改为「除分流组以外的全部账号」：
 // 否则分流组既服务无指纹请求、又照常接真 Codex 流量，隔离等于没做——而不限分组恰恰是
@@ -470,6 +469,16 @@ func applyAffinityGroupRouting(c *gin.Context, identity requestSessionIdentity, 
 	splitGroups := int64GroupSet(row.Limits.NoAffinityGroupIDs)
 	if len(splitGroups) == 0 {
 		return filter
+	}
+	if reason := missingGroupRoutingInputReason(c); reason != "" {
+		state := usageRequestDiagnosticState(c)
+		// A failed owner lookup remains fail-closed. Missing fields do not grant
+		// permission to escape a protected or unavailable conversation owner.
+		if chatCompletionsGroupRouting(c) && state.GroupRouting != nil && state.GroupRouting.blocked {
+			return applyChatGroupRouting(c, filter, splitGroups)
+		}
+		state.GroupRouting = &groupRoutingDiagnostic{Reason: reason}
+		return groupMembershipFilter(splitGroups, true, filter, selectionTraceForRequest(c))
 	}
 	if chatCompletionsGroupRouting(c) {
 		return applyChatGroupRouting(c, filter, splitGroups)
@@ -1944,6 +1953,7 @@ func readRawRequestBody(c *gin.Context) ([]byte, error) {
 			return nil, err
 		}
 		c.Set(preservedInputSnapshotKey, body)
+		captureGroupRoutingIngress(c, body)
 		return body, nil
 	}
 	body, err := io.ReadAll(c.Request.Body)
@@ -1955,6 +1965,7 @@ func readRawRequestBody(c *gin.Context) ([]byte, error) {
 	}
 	setRawRequestBody(c, body)
 	c.Set(preservedInputSnapshotKey, body)
+	captureGroupRoutingIngress(c, body)
 	return body, nil
 }
 

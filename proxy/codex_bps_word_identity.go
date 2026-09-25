@@ -33,16 +33,22 @@ func bpsWordDiagnosticIdentifier(value string) string {
 }
 
 type bpsWordIdentityDiagnostic struct {
-	TaskID         string `json:"task_id"`
-	TaskScope      string `json:"task_scope,omitempty"`
-	TurnID         string `json:"turn_id"`
-	AgentIteration string `json:"agent_iteration"`
-	TurnSource     string `json:"turn_source"`
-	Persisted      bool   `json:"persisted"`
-	ReusedStep     bool   `json:"reused_step"`
-	Generation     uint64 `json:"generation,omitempty"`
-	TaskGeneration int64  `json:"task_generation,omitempty"`
-	RoundLimit     int    `json:"round_limit,omitempty"`
+	TaskID              string `json:"task_id"`
+	TaskScope           string `json:"task_scope,omitempty"`
+	TaskModel           string `json:"task_model,omitempty"`
+	TaskReasoningEffort string `json:"task_reasoning_effort,omitempty"`
+	TurnID              string `json:"turn_id"`
+	AgentIteration      string `json:"agent_iteration"`
+	TurnSource          string `json:"turn_source"`
+	Persisted           bool   `json:"persisted"`
+	ReusedStep          bool   `json:"reused_step"`
+	Generation          uint64 `json:"generation,omitempty"`
+	TaskGeneration      int64  `json:"task_generation,omitempty"`
+	RoundLimit          int    `json:"round_limit,omitempty"`
+	TaskStartedAtMS     int64  `json:"task_started_at_unix_ms,omitempty"`
+	TaskLastSentAtMS    int64  `json:"task_last_sent_at_unix_ms,omitempty"`
+	TaskExpiresAtMS     int64  `json:"task_expires_at_unix_ms,omitempty"`
+	roundPartitionKey   string
 }
 
 // Canonicalize JSON without converting integers through float64. Keys and
@@ -113,7 +119,7 @@ func bpsWordInputIdentity(body []byte) (anchor, step string, iteration int) {
 	return
 }
 
-func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Header, cacheKey string, compact bool) (*bpsWordIdentityDiagnostic, error) {
+func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Header, cacheKey, model string, compact bool) (*bpsWordIdentityDiagnostic, error) {
 	metadata := CodexRequestMetadataHeaders(headers, body)
 	turnSeed := strings.TrimSpace(gjson.Get(metadata.Get(codexTurnMetadataHeader), "turn_id").String())
 	if turnSeed == "" {
@@ -154,7 +160,7 @@ func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Heade
 	stepKey := codexIdentityDigest("bps-word-step-v2", step)
 	if full := bpsFullConvergenceFrom(ctx); full != nil && full.roundLimit > 0 {
 		stepKey = codexIdentityDigest("bps-round-operation-v1", stepKey, strconv.FormatBool(compact))
-		return resolveBPSRoundIdentity(ctx, full, turnKey, stepKey, d)
+		return resolveBPSRoundIdentity(ctx, full, model, bpsRoundReasoningEffort(body), turnKey, stepKey, d)
 	}
 	store, ok := ctx.Value(codexIdentityClaimerContextKey{}).(bpsWordIdentityStore)
 	if !ok {

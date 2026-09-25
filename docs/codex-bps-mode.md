@@ -28,12 +28,20 @@
 
 系统设置的 **BPS 轮次收敛：每个任务的轮数** 对应 `bps_round_convergence_limit`，默认 100，允许 1–1000000。只影响选中 `round` 的 BPS 请求；原生 Codex 在该档位仅收敛设备，不把多个原生会话合并。
 
-- 同一实际上游账号跨用户、会话和 BPS 产品共用当前批次的 `task_id`。以 100 为例，前 100 次新模型调用使用同一 task，`agent_iteration` 依次为字符串 `"1"` 至 `"100"`；第 101 次换 task 并从 `"1"` 开始。
+- 同一实际上游账号按最终模型＋思考等级分别维护批次；同一账号、同一模型、同一有效思考等级跨用户、会话和 BPS 产品共用当前批次的 `task_id`。以 100 为例，每个组合自己的前 100 次新调用使用同一 task，`agent_iteration` 依次为字符串 `"1"` 至 `"100"`；该组合第 101 次调用换 task 并从 `"1"` 开始，不影响其他组合。切回某个组合时继续它自己的批次；映射到相同出站模型的别名共用批次，例如 `codex-auto-review` 与 `gpt-5.6-luna`。
+- 思考等级按 BPS 实际映射分组：未提供默认 `low`，`max` 归入 `xhigh`；历史顶层协议 `configuration_update.reasoning.effort` 存在时，以最后一个非空更新为准，不读取消息或工具结果内的同名业务字段。两个模型分别使用 `low / medium / high / xhigh` 时，是 8 组当前 task，按需创建，未使用的组合不预建。压缩调用按其携带的等级分组，未携带仍归入默认 `low`，不会因此向压缩接口增加思考字段。
 - 每次新模型调用使用独立 `turn_id`，工具续接及压缩调用也计入。并行工具结果的一批续接计一轮，不按单个工具结果计数。同一逻辑调用的重试复用原 task、turn、序号，不重复扣轮数；轮换后的旧请求重试也保留旧批次。
-- 计数、分配结果及 UUIDv7 均持久化；重启、重复导入同一个上游账号不会重置。换到其他上游账号时使用该账号自己的批次；切回则继续原账号计数。
+- 每批 task 按最后一次上游推理发送续期 24 小时，包含该批次重试的实际发送；图片和文件准备、只分配编号但未发送均不续期。达到轮数上限或连续空闲 24 小时后，下一次新调用才建立新 task 并从 1 开始，没有新请求就不自动创建。首次及最后发送时间按账号、模型、思考等级和批次持久化，重启保留计时；重试复用原编号，不重复计数，旧批次重试不能延长新批次的有效期。
+- 计数、分配结果及 UUIDv7 均按上游账号、模型和思考等级持久化；重启、重复导入同一个上游账号不会重置。换到其他上游账号时使用该账号对应组合的批次；切回则继续原账号对应组合的计数。
 - 修改轮数从下一批生效，当前批次按创建时的上限走完。并发请求按数据库原子分配的顺序编号，不串行等待模型完成，因此上游实际到达或完成顺序不保证与编号一致。
 - 编号在准备请求时分配，后续上传或发送失败不会回收；同一逻辑请求重试仍复用该编号。
-- 请求诊断 `upstream.bps_compat.round_convergence` 展示 task、turn、序号、`task_generation`、`round_limit`、`reused_step` 和 `task_scope=upstream_account_rounds`。Word 同时保留 `word_identity`。缺少持久化身份存储时明确失败，不静默退回每次序号为 1。
+- 请求诊断 `upstream.bps_compat.round_convergence` 展示 task、turn、序号、`task_model`、`task_reasoning_effort`、`task_generation`、`round_limit`、`reused_step` 和 `task_scope=upstream_account_model_effort_rounds`。发送时还记录 `task_started_at_unix_ms` 和 `task_expires_at_unix_ms`。Word 同时保留 `word_identity`。缺少持久化身份存储时明确失败，不静默退回每次序号为 1。
+
+从旧版未区分模型或思考等级的轮次收敛升级时，首次按新规则请求会为各组合新建批次并从 1 开始；不继续使用旧的混合批次。启动时自动新增 `bps_round_batches` 表记录批次首次及最后发送时间，兼容 SQLite/PostgreSQL，既有计数表和记录保留。到期表示不再为新调用复用旧批次，不物理删除历史映射或日志；同一新版分配的重试、轮换及重启继续遵循上述持久化规则。
+
+新用量日志中，BPS 请求在思考等级旁显示实际出站的 `metadata.agent_iteration`，悬停可看到字段名。该值独立保存为 `bps_agent_iteration`，不依赖用户窗口序号；重试显示原编号，新批次从 1 开始。非 BPS 请求继续显示窗口序号。历史日志不批量回填。
+
+Word BPS 出站只以 `metadata.task_id / turn_id / agent_iteration` 表达任务和轮次，不发送 `Session-Id`、`prompt_cache_key` 或原生 `client_metadata.session_id / thread_id`。因此 8 组 task 对应 8 组 BPS 任务身份，每次新调用另有独立 turn。入站客户端会话、线程、账号软粘性和本地上下文隔离仍按原规则管理；其他 BPS 产品的 Session-Id / prompt_cache_key 也保留既有隔离规则，不用共享 task 覆盖。
 
 轮次收敛不合并提示词、附件、响应缓存或用户归属，也不替代账号软粘性。批次轮换本身不会触发换号；无显式会话的 BPS 请求继续使用调用方隔离的任务提示参与软粘性选号。
 

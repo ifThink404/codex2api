@@ -8,6 +8,7 @@ import (
 
 	"github.com/codex2api/database"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/sjson"
 )
 
 func TestUsageWindowNumbersCaptureActualBody(t *testing.T) {
@@ -48,4 +49,29 @@ func TestUsageWindowNumbersMissingConflictAndBlocked(t *testing.T) {
 	request.Request.Header.Set("X-Codex-Window-Id", continuityTestThread+":99")
 	captureUsageRequestIngress(request, []byte(`{"input":"current frame without window"}`))
 	require.Empty(t, usageRequestDiagnosticState(request).WindowNumberOriginal)
+}
+
+func TestUsageBPSBadgeUsesActualOutboundIterationWithoutClientWindow(t *testing.T) {
+	for _, tc := range []struct{ policy, metadata, want string }{
+		{"bps", `{"agent_iteration":"25","task_id":"task","turn_id":"turn"}`, "25"},
+		{"bps", `{"agent_iteration":"1"}`, "1"},
+		{"bps", `{"agent_iteration":""}`, ""},
+		{"bps", `{"agent_iteration":"-1"}`, ""},
+		{"bps", `{"agent_iteration":"0"}`, ""},
+		{"bps", `{}`, ""},
+		{"", `{"agent_iteration":"25"}`, ""},
+	} {
+		request := transportTestContext()
+		captureUsageRequestIngress(request, []byte(`{"input":"hello","metadata":{"agent_iteration":"999"}}`))
+		body, err := sjson.SetBytes([]byte(`{"metadata":`+tc.metadata+`}`), "metadata.bps_tools_version_id", bpsToolsVersion)
+		require.NoError(t, err)
+		identity := &outboundIdentityDiagnostic{SessionHeaderPolicy: tc.policy, Body: captureOutboundIdentityBody(body)}
+		upstream, err := json.Marshal(UpstreamTransportDiagnostic{Transport: "http", OutboundIdentity: identity})
+		require.NoError(t, err)
+		input := &database.UsageLogInput{UpstreamDiagnostics: string(upstream), BPSAgentIteration: "stale"}
+		populateUsageRequestDiagnostics(request, input)
+		require.Equal(t, tc.want, input.BPSAgentIteration)
+		require.Empty(t, input.WindowNumberOriginal)
+		require.Empty(t, input.WindowNumberOutbound)
+	}
 }

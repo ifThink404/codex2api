@@ -45,12 +45,13 @@ func configureRawRoutingTestGroups(h *Handler, row *database.APIKeyRow, unrestri
 
 func TestRawRelayGroupRoutingBeforeTransport(t *testing.T) {
 	for _, tc := range []struct {
-		name, path                  string
-		fingerprint, rawPrimary     bool
-		bound, missingOwner, paused bool
-		unrestricted                bool
-		want                        string
-		status                      int
+		name, path                          string
+		fingerprint, rawPrimary             bool
+		bound, missingOwner, paused         bool
+		unrestricted                        bool
+		missingEffort, missingSession, gzip bool
+		want                                string
+		status                              int
 	}{
 		{name: "codex_returns_to_ordinary_pool", path: "/v1/responses", fingerprint: true, want: "ordinary", status: 200},
 		{name: "unrestricted_excludes_split", path: "/v1/responses", fingerprint: true, unrestricted: true, want: "ordinary", status: 200},
@@ -61,9 +62,25 @@ func TestRawRelayGroupRoutingBeforeTransport(t *testing.T) {
 		{name: "bound_chat_ordinary_not_preempted", path: "/v1/chat/completions", fingerprint: true, bound: true, want: "ordinary", status: 200},
 		{name: "missing_chat_owner_does_not_escape", path: "/v1/chat/completions", fingerprint: true, rawPrimary: true, bound: true, missingOwner: true, status: 503},
 		{name: "unavailable_split_does_not_fall_back", path: "/v1/responses", rawPrimary: true, paused: true, status: 503},
+		{name: "missing_original_effort_overrides_fingerprint", path: "/v1/responses", fingerprint: true, missingEffort: true, rawPrimary: true, want: "split", status: 200},
+		{name: "missing_original_session_overrides_local_affinity", path: "/v1/responses", fingerprint: true, missingSession: true, rawPrimary: true, want: "split", status: 200},
+		{name: "gzip_missing_original_effort", path: "/v1/responses", fingerprint: true, missingEffort: true, gzip: true, rawPrimary: true, want: "split", status: 200},
+		{name: "gzip_explicit_low_keeps_primary", path: "/v1/responses", fingerprint: true, gzip: true, rawPrimary: true, want: "primary", status: 200},
+		{name: "missing_effort_unavailable_split", path: "/v1/responses", fingerprint: true, missingEffort: true, rawPrimary: true, paused: true, status: 503},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(" {\n\"model\":\"gpt-6-astra\",\"stream\":true,\"input\":\"hello\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"vendor\":9007199254740993}\n")
+			if !tc.missingEffort {
+				body = bytes.Replace(body, []byte(`"stream":true`), []byte(`"stream":true,"reasoning_effort":"low"`), 1)
+			}
+			if tc.gzip {
+				var compressed bytes.Buffer
+				z := gzip.NewWriter(&compressed)
+				_, err := z.Write(body)
+				require.NoError(t, err)
+				require.NoError(t, z.Close())
+				body = compressed.Bytes()
+			}
 			var seen []string
 			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				kind := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -74,7 +91,7 @@ func TestRawRelayGroupRoutingBeforeTransport(t *testing.T) {
 					if !bytes.Equal(got, body) {
 						t.Error("raw request bytes changed during routing")
 					}
-					if tc.fingerprint && r.Header.Get("Session-Id") != testRootSessionA {
+					if tc.fingerprint && !tc.missingSession && r.Header.Get("Session-Id") != testRootSessionA {
 						t.Error("raw session header changed")
 					}
 				}
@@ -105,6 +122,13 @@ func TestRawRelayGroupRoutingBeforeTransport(t *testing.T) {
 			headers := http.Header{}
 			if tc.fingerprint {
 				headers = nativeSessionHeaders(testRootSessionA, testRootSessionA, 0)
+			}
+			if tc.missingSession {
+				headers = http.Header{}
+				headers.Set("X-Codex2API-Affinity-Key", "local-affinity-without-session")
+			}
+			if tc.gzip {
+				headers.Set("Content-Encoding", "gzip")
 			}
 			c, w := rawRoutingTestContext(row, tc.path, body, headers)
 			if tc.path == "/v1/chat/completions" {
@@ -204,8 +228,8 @@ func TestRawRelaySignedNewAPIRoutingAndClassification(t *testing.T) {
 		name, rootState, source, relation, wantType, wantAccount string
 		invalid, native                                          bool
 	}{
-		{name: "signed_user_without_native_headers", rootState: "resolved", source: "user", relation: "root", wantType: "user", wantAccount: "primary"},
-		{name: "signed_background", rootState: "resolved", source: "subagent", relation: "related", wantType: "related_internal", wantAccount: "primary"},
+		{name: "signed_user_without_native_headers", rootState: "resolved", source: "user", relation: "root", wantType: "user", wantAccount: "split"},
+		{name: "signed_background", rootState: "resolved", source: "subagent", relation: "related", wantType: "related_internal", wantAccount: "split"},
 		{name: "signed_unavailable_remains_authoritative", rootState: "unavailable", source: "user", native: true, wantType: "unknown", wantAccount: "split"},
 		{name: "invalid_signature_cannot_select_primary", rootState: "resolved", source: "user", relation: "root", invalid: true, wantType: "unknown", wantAccount: "split"},
 	} {

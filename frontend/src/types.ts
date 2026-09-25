@@ -3563,6 +3563,7 @@ export interface UsageLog {
   upstream_response_model?: string
 	window_number_original?: string
 	window_number_outbound?: string
+  bps_agent_iteration?: string
   session_id_prefix?: string
 	request_type?: string
   request_id?: string

@@ -20,7 +20,7 @@ func TestUsageRequestDiagnosticsPersistenceAndLightweightLists(test *testing.T) 
 	}
 	test.Cleanup(func() { _ = db.Close() })
 	payload := fmt.Sprintf(`{"version":1,"selected_account_id":17,"incoming":{"client_metadata":{"thread_source":"guardian_review","captured_value":%q}}}`, strings.Repeat("诊断值", 16*1024))
-	if err := db.InsertUsageLog(test.Context(), &UsageLogInput{Endpoint: "/v1/responses", Model: "gpt-5.6-sol", StatusCode: 200, RequestType: "related_internal", RequestDiagnostics: payload, UpstreamResponseModel: "gpt-5.6-luna", SessionIDPrefix: "01a09012", WindowNumberOriginal: "47", WindowNumberOutbound: "0"}); err != nil {
+	if err := db.InsertUsageLog(test.Context(), &UsageLogInput{Endpoint: "/v1/responses", Model: "gpt-5.6-sol", StatusCode: 200, RequestType: "related_internal", RequestDiagnostics: payload, UpstreamResponseModel: "gpt-5.6-luna", SessionIDPrefix: "01a09012", WindowNumberOriginal: "47", WindowNumberOutbound: "0", BPSAgentIteration: "25"}); err != nil {
 		test.Fatal(err)
 	}
 	db.FlushUsageLogs()
@@ -57,6 +57,9 @@ func TestUsageRequestDiagnosticsPersistenceAndLightweightLists(test *testing.T) 
 			encoded, err := json.Marshal(logs)
 			if logs[0].WindowNumberOriginal != "47" || logs[0].WindowNumberOutbound != "0" {
 				test.Fatalf("window numbers missing from list: %+v", logs[0])
+			}
+			if logs[0].BPSAgentIteration != "25" {
+				test.Fatalf("BPS iteration missing from list: %+v", logs[0])
 			}
 			if err != nil {
 				test.Fatal(err)
@@ -175,6 +178,7 @@ func TestUsageRequestDiagnosticsPostgresBatchShape(test *testing.T) {
 	batch[0].TurnStateLength, batch[0].TurnStateDecodedBytes = &length, &decoded
 	first := true
 	batch[0].TurnID, batch[0].IsTurnFirstRequest, batch[0].TurnPromptPreview = "turn-a", &first, "请检查接口"
+	batch[0].BPSAgentIteration = "25"
 	if err := db.batchInsertLogsChunk(test.Context(), capture, batch); err != nil {
 		test.Fatal(err)
 	}
@@ -190,7 +194,8 @@ func TestUsageRequestDiagnosticsPostgresBatchShape(test *testing.T) {
 	}
 	for index, entry := range batch {
 		for name, expected := range map[string]interface{}{
-			"turn_id": entry.TurnID, "is_turn_first_request": entry.IsTurnFirstRequest, "turn_prompt_preview": entry.TurnPromptPreview,
+			"bps_agent_iteration": entry.BPSAgentIteration,
+			"turn_id":             entry.TurnID, "is_turn_first_request": entry.IsTurnFirstRequest, "turn_prompt_preview": entry.TurnPromptPreview,
 			"turn_state_length": entry.TurnStateLength, "turn_state_decoded_bytes": entry.TurnStateDecodedBytes,
 			"session_id_prefix":      entry.SessionIDPrefix,
 			"window_number_original": entry.WindowNumberOriginal, "window_number_outbound": entry.WindowNumberOutbound,

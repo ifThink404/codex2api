@@ -38,7 +38,9 @@ func TestBPSRoundConvergenceIdentityLifecycle(t *testing.T) {
 		require.Nil(t, diag.FullConvergence)
 		require.NotNil(t, diag.RoundConvergence)
 		d := diag.RoundConvergence
-		require.Equal(t, "upstream_account_rounds", d.TaskScope)
+		require.Equal(t, "upstream_account_model_effort_rounds", d.TaskScope)
+		require.Equal(t, "gpt-6-astra", d.TaskModel)
+		require.Equal(t, "low", d.TaskReasoningEffort)
 		require.Equal(t, d.AgentIteration, gjson.GetBytes(wire, "metadata.agent_iteration").String())
 		require.Equal(t, d.TaskID, gjson.GetBytes(wire, "metadata.task_id").String())
 		require.Equal(t, d.TurnID, gjson.GetBytes(wire, "metadata.turn_id").String())
@@ -89,7 +91,7 @@ func TestBPSRoundConvergenceNeedsDurableStore(t *testing.T) {
 	a := &auth.Account{AccountID: accountIdentitySampleAccount, CodexFingerprintMode: auth.CodexFingerprintModeRound}
 	ctx, err := withBPSFullConvergence(t.Context(), a, bpsProfile(auth.BPSWord), nil, nil, "cache", "key")
 	require.NoError(t, err)
-	_, err = resolveBPSWordIdentity(ctx, []byte(`{"input":"hello"}`), nil, "cache", false)
+	_, err = resolveBPSWordIdentity(ctx, []byte(`{"input":"hello"}`), nil, "cache", "gpt-6-astra", false)
 	require.ErrorContains(t, err, "持久化")
 }
 
@@ -110,14 +112,14 @@ func TestBPSRoundConvergenceCompactionHasOwnStep(t *testing.T) {
 	ctx, err := withBPSFullConvergence(WithCodexIdentityStore(t.Context(), db), a, bpsProfile(auth.BPSWord), nil, nil, "cache", "key")
 	require.NoError(t, err)
 	body := []byte(`{"input":"hello"}`)
-	first, err := resolveBPSWordIdentity(ctx, body, nil, "cache", false)
+	first, err := resolveBPSWordIdentity(ctx, body, nil, "cache", "gpt-6-astra", false)
 	require.NoError(t, err)
-	compact, err := resolveBPSWordIdentity(ctx, body, nil, "cache", true)
+	compact, err := resolveBPSWordIdentity(ctx, body, nil, "cache", "gpt-6-astra", true)
 	require.NoError(t, err)
 	require.Equal(t, first.TaskID, compact.TaskID)
 	require.NotEqual(t, first.TurnID, compact.TurnID)
 	require.Equal(t, "2", compact.AgentIteration)
-	retry, err := resolveBPSWordIdentity(ctx, body, nil, "cache", true)
+	retry, err := resolveBPSWordIdentity(ctx, body, nil, "cache", "gpt-6-astra", true)
 	require.NoError(t, err)
 	require.Equal(t, compact.TurnID, retry.TurnID)
 	require.True(t, retry.ReusedStep)
@@ -135,12 +137,15 @@ func TestBPSRoundConvergenceExecutor(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	a := &auth.Account{DBID: 1699, AccountID: accountIdentitySampleAccount, AccessToken: "test-access", CodexBPS: true, CodexFingerprintMode: auth.CodexFingerprintModeRound, CodexInstallationID: "account-device"}
 	var wire []byte
+	var outboundHeaders http.Header
 	installClaudeBoundaryTransport(t, a, func(r *http.Request) (*http.Response, error) {
+		outboundHeaders = r.Header.Clone()
 		wire, err = io.ReadAll(r.Body)
 		require.NoError(t, err)
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"output":[]}`)), Request: r}, nil
 	})
 	var firstTask string
+	var firstStartedAtMS int64
 	for i := range 3 {
 		headers, body := accountIdentityFixture(t, false, true)
 		oldTurn := gjson.Get(headers.Get(codexTurnMetadataHeader), "turn_id").String()
@@ -154,12 +159,23 @@ func TestBPSRoundConvergenceExecutor(t *testing.T) {
 		resp, err := ExecuteRequest(ctx, a, body, "cache", "", "test-key", nil, headers, true)
 		require.NoError(t, err)
 		require.NoError(t, resp.Body.Close())
+		require.Empty(t, outboundHeaders.Get("Session-Id"), "Word BPS uses task_id, not a native session header")
+		require.Empty(t, outboundHeaders.Get("Session_id"))
+		require.Empty(t, outboundHeaders.Get(codexTurnMetadataHeader))
+		require.False(t, gjson.GetBytes(wire, "prompt_cache_key").Exists())
+		require.False(t, gjson.GetBytes(wire, "client_metadata").Exists())
 		task := gjson.GetBytes(wire, "metadata.task_id").String()
+		d := CodexBPSResponseDiagnostic(resp).RoundConvergence
+		require.Positive(t, d.TaskStartedAtMS)
+		require.GreaterOrEqual(t, d.TaskLastSentAtMS, d.TaskStartedAtMS)
+		require.Equal(t, database.BPSRoundTaskIdleTimeout.Milliseconds(), d.TaskExpiresAtMS-d.TaskLastSentAtMS)
 		if i == 0 {
 			firstTask = task
+			firstStartedAtMS = d.TaskStartedAtMS
 		}
 		if i < 2 {
 			require.Equal(t, firstTask, task)
+			require.Equal(t, firstStartedAtMS, d.TaskStartedAtMS, "renewal preserves the initial send time")
 		} else {
 			require.NotEqual(t, firstTask, task)
 		}

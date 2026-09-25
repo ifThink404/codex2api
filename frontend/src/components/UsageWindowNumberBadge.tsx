@@ -3,6 +3,25 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import type { UsageLog } from '@/types'
 
 export function UsageWindowNumberBadge({ log }: { log: UsageLog }) {
+  const bpsIteration = log.bps_agent_iteration
+  if (bpsIteration && /^[1-9]\d*$/.test(bpsIteration)) {
+    const label = `BPS agent_iteration: ${bpsIteration}`
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge
+            variant="outline"
+            tabIndex={0}
+            aria-label={label}
+            className="cursor-default border-transparent bg-amber-500/12 px-1.5 py-0 font-mono text-[11px] tabular-nums text-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-amber-500/20 dark:text-amber-300"
+          >
+            {bpsIteration}
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent><span className="font-mono tabular-nums">{label}</span></TooltipContent>
+      </Tooltip>
+    )
+  }
   const original = log.window_number_original
   if (original === undefined || !/^\d+$/.test(original)) return null
   const outbound = log.window_number_outbound

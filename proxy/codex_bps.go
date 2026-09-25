@@ -189,7 +189,7 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		ctx = contexts[0]
 	}
 	if profile.profile == auth.BPSWord || bpsFullConvergenceFrom(ctx) != nil {
-		identity, err := resolveBPSWordIdentity(ctx, body, headers, cacheKey, compact)
+		identity, err := resolveBPSWordIdentity(ctx, body, headers, cacheKey, d.SentModel, compact)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -389,6 +389,10 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 			return nil, ErrInternalError("创建上游请求失败", err)
 		}
 		req.Header = requestHeaders.Clone()
+		if err := touchBPSRoundIdentity(ctx, diagnostic.RoundConvergence); err != nil {
+			preparationFailed("bps_round_activity")
+			return nil, ErrInternalError("记录 BPS 会话首次发送时间失败", err)
+		}
 		resp, sendErr := doTracedUpstreamRequest(client, req, account, proxyURL, projected)
 		if sendErr != nil {
 			if shouldRecyclePooledClient(sendErr) {

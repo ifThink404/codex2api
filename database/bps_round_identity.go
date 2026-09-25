@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"time"
 )
 
 const DefaultBPSRoundConvergenceLimit = 100
 const MaxBPSRoundConvergenceLimit = 1000000
+const BPSRoundTaskIdleTimeout = 24 * time.Hour
 
 func NormalizeBPSRoundConvergenceLimit(value int) int {
 	if value < 1 || value > MaxBPSRoundConvergenceLimit {
@@ -23,9 +25,19 @@ type BPSRoundIdentity struct {
 	RoundLimit int
 }
 
-// ResolveBPSRoundIdentity assigns a durable position in an account's task batch.
+type BPSRoundBatchActivity struct {
+	StartedAtMS  int64
+	LastSentAtMS int64
+}
+
+// ResolveBPSRoundIdentity assigns a durable position in an account/model/effort batch.
+// accountKey is the caller's opaque account, model and reasoning partition key.
 // A retry keeps its assignment even after rotation, settings changes or restart.
 func (db *DB) ResolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey string, limit int) (identity BPSRoundIdentity, reused bool, err error) {
+	return db.resolveBPSRoundIdentity(ctx, accountKey, stepKey, limit, time.Now)
+}
+
+func (db *DB) resolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey string, limit int, now func() time.Time) (identity BPSRoundIdentity, reused bool, err error) {
 	if !ValidSessionOperationKey(accountKey) || !ValidSessionOperationKey(stepKey) || limit < 1 || limit > MaxBPSRoundConvergenceLimit {
 		return identity, false, errors.New("invalid BPS round convergence scope or limit")
 	}
@@ -55,7 +67,15 @@ func (db *DB) ResolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey s
 		if err := tx.QueryRowContext(ctx, `SELECT generation,iteration,round_limit FROM bps_round_tasks WHERE account_key=$1`, accountKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit); err != nil {
 			return err
 		}
-		if identity.Iteration >= int64(identity.RoundLimit) {
+		var lastSentAtMS int64
+		err = tx.QueryRowContext(ctx, `SELECT CASE WHEN last_sent_at_unix_ms > 0 THEN last_sent_at_unix_ms ELSE started_at_unix_ms END FROM bps_round_batches WHERE account_key=$1 AND generation=$2`, accountKey, identity.Generation).Scan(&lastSentAtMS)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		// No start record means the batch was only allocated, not sent yet.
+		// Actual inference sends renew activity; allocation and restart do not.
+		expired := err == nil && now().Sub(time.UnixMilli(lastSentAtMS)) >= BPSRoundTaskIdleTimeout
+		if identity.Iteration >= int64(identity.RoundLimit) || expired {
 			if identity.Generation == math.MaxInt64 {
 				return errors.New("BPS round generation exhausted")
 			}
@@ -73,4 +93,27 @@ func (db *DB) ResolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey s
 		return err
 	})
 	return
+}
+
+// TouchBPSRoundIdentity renews the batch immediately before each inference send.
+// Retries update only their assigned generation, never a newer batch's timer.
+func (db *DB) TouchBPSRoundIdentity(ctx context.Context, accountKey string, generation int64) (BPSRoundBatchActivity, error) {
+	return db.touchBPSRoundIdentity(ctx, accountKey, generation, time.Now())
+}
+
+func (db *DB) touchBPSRoundIdentity(ctx context.Context, accountKey string, generation int64, now time.Time) (activity BPSRoundBatchActivity, err error) {
+	if !ValidSessionOperationKey(accountKey) || generation < 0 {
+		return activity, errors.New("invalid BPS round batch")
+	}
+	err = db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		// Use the same cross-process lock as allocation so expiry decisions see
+		// preceding renewals. Older concurrent sends cannot move activity back.
+		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET iteration=iteration WHERE account_key=$1`, accountKey); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `INSERT INTO bps_round_batches(account_key,generation,started_at_unix_ms,last_sent_at_unix_ms) VALUES($1,$2,$3,$3)
+			ON CONFLICT(account_key,generation) DO UPDATE SET last_sent_at_unix_ms=CASE WHEN EXCLUDED.last_sent_at_unix_ms > bps_round_batches.last_sent_at_unix_ms THEN EXCLUDED.last_sent_at_unix_ms ELSE bps_round_batches.last_sent_at_unix_ms END
+			RETURNING started_at_unix_ms,last_sent_at_unix_ms`, accountKey, generation, now.UnixMilli()).Scan(&activity.StartedAtMS, &activity.LastSentAtMS)
+	})
+	return activity, err
 }

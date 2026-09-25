@@ -115,7 +115,7 @@ func TestBPSFullConvergenceConcurrentTaskCreation(t *testing.T) {
 				results <- result{err: err}
 				return
 			}
-			d, err := resolveBPSWordIdentity(ctx, []byte(`{"input":"hello"}`), http.Header{}, "cache", false)
+			d, err := resolveBPSWordIdentity(ctx, []byte(`{"input":"hello"}`), http.Header{}, "cache", "", false)
 			results <- result{d, err}
 		}()
 	}
