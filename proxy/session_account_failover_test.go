@@ -280,13 +280,16 @@ func runSessionAccountFailoverIngress(test *testing.T, compact bool, preserve ..
 		if expected == target {
 			atomic.StoreInt32(&owner.Disabled, 1)
 			atomic.StoreInt32(&target.Disabled, 0)
+			if len(preserve) > 4 && preserve[4] {
+				handler.store.RemoveAccount(owner.ID())
+			}
 		}
 		_, body := failoverTestRequest(test, handler)
 		body = bytes.ReplaceAll(body, []byte(continuityTestThread), []byte(threadID.String()))
 		body, _ = sjson.SetBytes(body, "stream", true)
 		if expected == target {
 			body, _ = sjson.SetRawBytes(body, "input", []byte(`[{"type":"reasoning","encrypted_content":"gAAAAold-restart-reasoning"},{"type":"compaction","encrypted_content":"gAAAAold-restart-compaction"},{"role":"user","content":[{"type":"input_file","file_id":"old-restart-file"},{"type":"input_text","text":"current plaintext"}]}]`))
-			if !keepInput {
+			if !keepInput && !(len(preserve) > 4 && preserve[4]) {
 				body, _ = sjson.SetBytes(body, "previous_response_id", previousAlias)
 			}
 			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-state", "old-restart-turn-state")

@@ -5666,6 +5666,9 @@ func (s *Store) LoadAccountByID(ctx context.Context, dbID int64) error {
 	if s.FindByID(dbID) != nil {
 		return nil
 	}
+	if s.db == nil {
+		return errors.New("account database unavailable")
+	}
 	row, err := s.db.GetAccountByID(ctx, dbID)
 	if err != nil {
 		return err

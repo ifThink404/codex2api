@@ -74,6 +74,7 @@ type PromptSafetyDiagnostic struct {
 }
 
 type SessionAccountFailoverDiagnostic struct {
+	OwnerLookup                 string                     `json:"owner_lookup,omitempty"`
 	Continuity                  *SessionFailoverContinuity `json:"continuity,omitempty"`
 	EnabledBy                   string                     `json:"enabled_by,omitempty"`
 	PreviousUpstreamMode        string                     `json:"previous_upstream_mode,omitempty"`
@@ -381,7 +382,7 @@ func normalizeServiceError(event ServiceErrorEvent) ServiceErrorEvent {
 			}
 			failover.Continuity = &continuity
 		}
-		for _, field := range []*string{&failover.EnabledBy, &failover.Result, &failover.Reason, &failover.TriggerReason, &failover.BlockReason, &failover.Phase} {
+		for _, field := range []*string{&failover.OwnerLookup, &failover.EnabledBy, &failover.Result, &failover.Reason, &failover.TriggerReason, &failover.BlockReason, &failover.Phase} {
 			*field = serviceErrorString(*field, 160)
 		}
 		failover.ContextBlockers = append([]SessionContextBlocker(nil), failover.ContextBlockers[:min(len(failover.ContextBlockers), 8)]...)

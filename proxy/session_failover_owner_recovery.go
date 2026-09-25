@@ -55,12 +55,13 @@ func (handler *Handler) recoverRelaxedFailoverOwner(request *gin.Context, key st
 		return "ownership_changed"
 	}
 	live, liveFound := handler.store.LiveSessionAccountID(key, time.Now())
-	if liveFound && live != owner.ID() {
+	if liveFound && live != state.Diagnostic.OwnerAccount {
 		diagnostic.Continuity.OwnerRecovery = "binding_changed"
 		return "ownership_changed"
 	}
 	grant := windowGrantForRequest(request)
-	grantMatches := grant != nil && grant.Grant.OwnerKey == key && grant.Grant.OwnerAccountID == owner.ID() &&
+	ownerID := state.Diagnostic.OwnerAccount
+	grantMatches := grant != nil && grant.Grant.OwnerKey == key && grant.Grant.OwnerAccountID == ownerID &&
 		grant.Grant.ExpiresAt.After(time.Now()) && (grant.Grant.Confirmed || grant.Grant.PendingUntil.After(time.Now()))
 	if !liveFound && !grantMatches || grant != nil && !grantMatches {
 		diagnostic.Continuity.OwnerRecovery = "binding_unavailable"
@@ -69,10 +70,10 @@ func (handler *Handler) recoverRelaxedFailoverOwner(request *gin.Context, key st
 	// If the historical route is missing, use a conservative BPS floor whenever
 	// that account permits BPS. This avoids silently moving BPS history to native.
 	mode := "native"
-	if owner.CodexRouteAllows("bps", "", true) {
+	if owner == nil || owner.CodexRouteAllows("bps", "", true) {
 		mode = "bps"
 	}
-	record := database.SessionContinuityRecord{AccountID: owner.ID(), UpstreamMode: mode, LastSeen: state.StartedAt}
+	record := database.SessionContinuityRecord{AccountID: ownerID, UpstreamMode: mode, LastSeen: state.StartedAt}
 	if state.Known {
 		record.ThreadID, record.Number, record.NumberKnown = state.ThreadID, state.Number, true
 	}

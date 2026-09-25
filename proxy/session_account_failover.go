@@ -85,6 +85,7 @@ func sessionFailoverContextError(request *gin.Context, diagnostic *sessionAccoun
 }
 
 type sessionAccountFailoverPlan struct {
+	MissingOwner  *missingSessionOwner
 	Failure       *api.APIError
 	PreserveInput bool
 	Request       *gin.Context
@@ -259,7 +260,7 @@ func sessionAccountFailoverEnabledBy(reason string) string {
 	}
 	if settings.CodexForkAccountFallbackEnabled {
 		switch reason {
-		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full", "account_payment_required":
+		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full", "account_payment_required", "account_missing":
 			return "relaxed_mode"
 		}
 	}
@@ -272,11 +273,28 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		return false, nil
 	}
 	owner := handler.store.FindByID(state.Diagnostic.OwnerAccount)
+	var missing *missingSessionOwner
+	lookup := ""
+	if owner == nil && CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
+		var err error
+		owner, missing, lookup, err = handler.resolveMissingSessionOwner(request.Request.Context(), state.Diagnostic.OwnerAccount)
+		if err != nil {
+			diagnostic := &sessionAccountFailoverDiagnostic{PreviousAccountID: state.Diagnostic.OwnerAccount, TriggerReason: "account_missing", EnabledBy: "relaxed_mode", Phase: "before_switch", OwnerLookup: lookup}
+			recordFailoverContinuity(request, body, state, diagnostic)
+			return false, sessionFailoverContextError(request, diagnostic, "ownership_unavailable")
+		}
+	}
 	reason := handler.sessionFailoverReasonForRequest(request, owner, key, policy)
+	if missing != nil {
+		reason = "account_missing"
+	}
 	if reason == "" {
+		if lookup == "reloaded" {
+			usageRequestDiagnosticState(request).AccountFailover = &sessionAccountFailoverDiagnostic{Result: "owner_reloaded", AccountID: owner.ID(), OwnerLookup: lookup, Generation: state.Record.FailoverCount}
+		}
 		return false, nil
 	}
-	diagnostic := &sessionAccountFailoverDiagnostic{PreviousUpstreamMode: normalizedCodexRoute(state.Record.UpstreamMode), Result: "blocked", Reason: reason, TriggerReason: reason, Phase: "before_switch", PreviousAccountID: owner.ID(), Generation: state.Record.FailoverCount}
+	diagnostic := &sessionAccountFailoverDiagnostic{PreviousUpstreamMode: normalizedCodexRoute(state.Record.UpstreamMode), Result: "blocked", Reason: reason, TriggerReason: reason, Phase: "before_switch", PreviousAccountID: state.Diagnostic.OwnerAccount, Generation: state.Record.FailoverCount, OwnerLookup: lookup}
 	windowMissing := recordFailoverContinuity(request, body, state, diagnostic)
 	if state.Record.AccountID == 0 {
 		diagnostic.PreviousUpstreamMode = "" // Missing persistence is not evidence of a native route.
@@ -304,7 +322,7 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		block, blockers = "missing_request_context", nil
 	}
 	diagnostic.ContextBlockers = blockers
-	if handler.db == nil || state.Record.AccountID != 0 && state.Record.AccountID != owner.ID() {
+	if handler.db == nil || state.Record.AccountID != 0 && state.Record.AccountID != diagnostic.PreviousAccountID {
 		block = "persistent_owner_required"
 		diagnostic.ContextBlockers = nil
 	} else if state.Diagnostic.WouldBlock && !windowMissing {
@@ -334,7 +352,7 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		}
 	}
 	diagnostic.Result = "pending"
-	plan := &sessionAccountFailoverPlan{Request: request, Key: key, Body: body, Diagnostic: diagnostic, PreserveInput: preserveInput}
+	plan := &sessionAccountFailoverPlan{Request: request, Key: key, Body: body, Diagnostic: diagnostic, PreserveInput: preserveInput, MissingOwner: missing}
 	request.Request = request.Request.WithContext(context.WithValue(request.Request.Context(), sessionAccountFailoverContextKey{}, plan))
 	return true, nil
 }
@@ -348,15 +366,24 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		return nil, "", false
 	}
 	plan.Checked = true
-	if sessionAccountFailoverEnabledBy(plan.Diagnostic.TriggerReason) == "" {
+	if sessionAccountFailoverEnabledBy(plan.Diagnostic.TriggerReason) == "" || plan.Diagnostic.TriggerReason == "account_missing" && !CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
 		plan.Diagnostic.Result = "disabled"
 		plan.Diagnostic.BlockReason = "failover_disabled"
 		return nil, "", false
 	}
 	request := plan.Request
 	state := continuityRequest(request)
-	old := handler.store.FindByID(plan.Diagnostic.PreviousAccountID)
-	if state == nil || old == nil || handler.sessionFailoverReasonForRequest(request, old, key, policy) == "" {
+	oldID := plan.Diagnostic.PreviousAccountID
+	old := handler.store.FindByID(oldID)
+	if old == nil && CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
+		var err error
+		old, plan.MissingOwner, plan.Diagnostic.OwnerLookup, err = handler.resolveMissingSessionOwner(ctx, oldID)
+		if err != nil {
+			plan.Failure = sessionFailoverContextError(request, plan.Diagnostic, "ownership_unavailable")
+			return nil, "", true
+		}
+	}
+	if state == nil || old == nil && plan.MissingOwner == nil || old != nil && handler.sessionFailoverReasonForRequest(request, old, key, policy) == "" {
 		plan.Diagnostic.Result = "owner_recovered"
 		return nil, "", false
 	}
@@ -369,7 +396,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 	lock.Lock()
 	defer lock.Unlock()
 	entry, found, err := handler.readSessionContinuity(ctx, state.Key)
-	if err != nil || !found || entry.Record.AccountID != old.ID() || entry.Record.FailoverCount != state.Record.FailoverCount {
+	if err != nil || !found || entry.Record.AccountID != oldID || entry.Record.FailoverCount != state.Record.FailoverCount {
 		plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "ownership_changed"
 		return nil, "", true
 	}
@@ -377,7 +404,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 	for accountID, value := range exclude {
 		excluded[accountID] = value
 	}
-	excluded[old.ID()] = true
+	excluded[oldID] = true
 	trace := &auth.SelectionTrace{}
 	trace.EnableCandidateDetails()
 	trace.SetExpandedWindow(selectionTraceForRequest(request).ExpandedWindow())
@@ -386,8 +413,18 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			selectionTraceForRequest(request).Reject(reason)
 		}
 	}()
-	ownerGroups := old.GroupIDSnapshot()
+	var ownerGroups []int64
+	var oldUpstreamID string
+	groupsKnown := true
+	if old != nil {
+		ownerGroups, oldUpstreamID = old.GroupIDSnapshot(), old.EffectiveAccountID()
+	} else {
+		ownerGroups, oldUpstreamID, groupsKnown = plan.MissingOwner.Groups, plan.MissingOwner.UpstreamID, plan.MissingOwner.GroupsKnown
+	}
 	selection := &database.SessionFailoverSelection{MatchMode: "exact_groups"}
+	if !groupsKnown {
+		selection.MatchMode = "request_scope_missing_owner"
+	}
 	selection.RequiredGroupIDs, _, selection.Truncated = failoverSelectionLabels(request, ownerGroups, nil)
 	plan.Diagnostic.Selection = selection
 	defer func() {
@@ -411,14 +448,14 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			prior = "bps"
 		}
 		mode := selectCodexRoute(account, info.Model, prior, info.Auxiliary)
-		if account.ID() == old.ID() && mode != "bps" {
+		if account.ID() == oldID && mode != "bps" {
 			return false
 		}
 		if mode == "" {
 			trace.RejectAccount(account.ID(), "upstream_mode_mismatch")
 			return false
 		}
-		if !account.HasExactGroupIDs(ownerGroups) {
+		if groupsKnown && !account.HasExactGroupIDs(ownerGroups) {
 			trace.RejectAccount(account.ID(), "account_groups_mismatch")
 			return false
 		}
@@ -428,7 +465,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			trace.RejectAccount(account.ID(), "window_grant_capacity_mismatch")
 			return false
 		}
-		if account.IsRelayStyle() || account.EffectiveAccountID() == "" || account.ID() != old.ID() && account.EffectiveAccountID() == old.EffectiveAccountID() {
+		if account.IsRelayStyle() || account.EffectiveAccountID() == "" || account.ID() != oldID && account.EffectiveAccountID() == oldUpstreamID {
 			trace.RejectAccount(account.ID(), "account_identity_ineligible")
 			return false
 		}
@@ -442,15 +479,15 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		return true
 	}
-	tryOriginalBPS := normalizedCodexRoute(entry.Record.UpstreamMode) == "native" && codexRouteFailureForRequest(ctx, old) != "" && sessionAccountFailoverReason(old, policy) == ""
+	tryOriginalBPS := old != nil && normalizedCodexRoute(entry.Record.UpstreamMode) == "native" && codexRouteFailureForRequest(ctx, old) != "" && sessionAccountFailoverReason(old, policy) == ""
 	for range 16 {
 		selection.Attempts++
 		var candidate *auth.Account
 		if tryOriginalBPS {
 			tryOriginalBPS = false
 			plan.Diagnostic.OriginalAccountBPSAttempted = true
-			if !exclude[old.ID()] {
-				candidate = handler.store.NextExcludingWithDispatch(apiKeyID, exclude, func(a *auth.Account) bool { return a.ID() == old.ID() && eligible(a) }, policy, trace)
+			if !exclude[oldID] {
+				candidate = handler.store.NextExcludingWithDispatch(apiKeyID, exclude, func(a *auth.Account) bool { return a.ID() == oldID && eligible(a) }, policy, trace)
 			}
 		}
 		if candidate == nil {
@@ -491,15 +528,26 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			handler.store.Release(candidate)
 			continue
 		}
-		if !old.HasExactGroupIDs(ownerGroups) || !candidate.HasExactGroupIDs(ownerGroups) {
-			if candidate.ID() != old.ID() {
+		ownerChanged := old != nil && !old.HasExactGroupIDs(ownerGroups)
+		if old == nil {
+			change := handler.missingSessionOwnerChange(ctx, oldID, plan.MissingOwner)
+			ownerChanged = change != ""
+			if ownerChanged {
+				plan.Diagnostic.OwnerLookup = "recheck_" + change
+			}
+		}
+		if ownerChanged || groupsKnown && !candidate.HasExactGroupIDs(ownerGroups) {
+			if candidate.ID() != oldID {
 				handler.store.RemoveAccountSession(candidate.ID(), key)
 			}
 			handler.store.Release(candidate)
 			plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "account_groups_changed"
+			if old == nil {
+				plan.Diagnostic.Reason = "missing_owner_changed"
+			}
 			return nil, "", true
 		}
-		input := database.SessionAccountFailover{RootKey: state.Key, AffinityKey: key, ExpectedAccountID: old.ID(), AccountID: candidate.ID(), ExpectedGeneration: entry.Record.FailoverCount, UpstreamMode: targetMode, Reason: plan.Diagnostic.Reason, At: time.Now().UTC(), ResetOutboundWindow: true, WindowThreadID: state.ThreadID, WindowNumber: state.Number}
+		input := database.SessionAccountFailover{RootKey: state.Key, AffinityKey: key, ExpectedAccountID: oldID, AccountID: candidate.ID(), ExpectedGeneration: entry.Record.FailoverCount, UpstreamMode: targetMode, Reason: plan.Diagnostic.Reason, At: time.Now().UTC(), ResetOutboundWindow: true, WindowThreadID: state.ThreadID, WindowNumber: state.Number}
 		input.WindowContextID = fingerprint.accountWindowInputs[state.ThreadID].ContextID
 		if !state.Known {
 			input.DeferOutboundWindow = true
@@ -515,15 +563,15 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		committed, updatedGrant, commitErr := handler.db.SwitchSessionContinuityAccount(ctx, input)
 		if commitErr != nil {
-			if candidate.ID() != old.ID() {
+			if candidate.ID() != oldID {
 				handler.store.RemoveAccountSession(candidate.ID(), key)
 			}
 			handler.store.Release(candidate)
 			plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "ownership_commit_failed"
 			return nil, "", true
 		}
-		if candidate.ID() != old.ID() {
-			handler.store.UnbindSessionAffinity(key, old.ID())
+		if candidate.ID() != oldID {
+			handler.store.UnbindSessionAffinity(key, oldID)
 		}
 		handler.store.BindSessionAffinity(key, candidate, candidate.GetProxyURL())
 		handler.cacheSessionContinuity(state.Key, sessionContinuityCacheEntry{Record: committed, CheckedAt: time.Now(), WrittenAt: time.Now()})
