@@ -34,6 +34,7 @@ func bpsWordDiagnosticIdentifier(value string) string {
 
 type bpsWordIdentityDiagnostic struct {
 	TaskID         string `json:"task_id"`
+	TaskScope      string `json:"task_scope,omitempty"`
 	TurnID         string `json:"turn_id"`
 	AgentIteration string `json:"agent_iteration"`
 	TurnSource     string `json:"turn_source"`
@@ -143,6 +144,11 @@ func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Heade
 		}
 	}
 	turnKey := codexIdentityDigest("bps-word-turn-v2", taskKey, turnSeed)
+	if full := bpsFullConvergenceFrom(ctx); full != nil {
+		taskKey = full.taskKey
+		turnKey = codexIdentityDigest("bps-full-turn-v1", full.turnScope, turnSeed)
+		d.TaskScope = "upstream_account"
+	}
 	stepKey := codexIdentityDigest("bps-word-step-v2", step)
 	store, ok := ctx.Value(codexIdentityClaimerContextKey{}).(bpsWordIdentityStore)
 	if !ok {

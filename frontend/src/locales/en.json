@@ -1552,7 +1552,7 @@
     "codexFingerprintModeOffDetail": "Client identifiers pass through untouched; outbound behaviour matches previous versions.",
     "codexFingerprintModeDeviceDetail": "Converge the installation id only: upstream sees one device, while each user keeps a separate session.",
     "codexFingerprintModeSessionDetail": "BPS preserves explicit sessions first. Otherwise it derives a stable identifier from the user, device, UA and conversation opening, with separate turn IDs. Without a device ID, it uses the user and conversation opening. Independent chats with identical openings cannot be distinguished reliably; send a client session ID when possible. Compaction, response continuations and related background requests are excluded.",
-    "codexFingerprintModeFullDetail": "The thread id also equals the session id: upstream sees one device, one session and one thread. Most aggressive — every concurrent request lands on the same thread.",
+    "codexFingerprintModeFullDetail": "BPS requests on the same upstream account share one task_id. Users, conversations and turns retain separate turn_ids; tool continuations reuse the turn_id and advance its iteration. Native Codex keeps its existing outbound identity policy.",
     "sessionCapacityTitle": "Active session capacity",
     "sessionCapacityHint": "Off by default. Limits how many distinct sessions this account retains. Existing sessions refresh their idle timer and may continue at capacity; new sessions try another account.",
     "sessionCapacityMaxLabel": "Maximum active sessions",

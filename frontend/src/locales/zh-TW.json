@@ -148,6 +148,7 @@
     }
   },
   "accounts": {
+    "codexFingerprintModeFullDetail": "BPS 同一上游帳號共用一個 task_id，不同使用者、對話和輪次使用獨立 turn_id；同輪工具續接保留 turn_id，迭代計數遞增。原生 Codex 繼續遵循原有出站身分策略。",
     "rawPassthroughTitle": "原樣 API 透傳（HTTP / SSE）",
     "rawPassthroughHint": "預設關閉。開啟後，權限範圍內符合模型的請求優先走透傳帳號，保留原介面路徑、請求本文、回應狀態和本文，不做模型映射、身分補齊、圖片上傳或格式轉換；失敗不自動重試。使用帳號設定的金鑰、位址、代理和自訂請求標頭。WebSocket 不在此開關範圍內。",
     "codexFingerprintModeHint": "控制出站裝置與會話中繼資料。原生 Codex 的會話隔離規則不變；BPS 在「裝置 + 會話」模式下，可為缺少會話 ID 的一般請求推導穩定的會話與快取標識。",

@@ -8,7 +8,19 @@
 - 切号仍使用既有找号、容量和上下文规则，并排除另一种模式的候选账号。
 - BPS 使用账号自己的 Access Token、官方 Account ID 和代理，HTTP/SSE 生成地址为 `https://bps.openai.com/basispoints/api/responses`；压缩地址追加 `/compact`。即使全局强制 WS，BPS 仍走 HTTP。不会在失败时自动回落到原生 Codex 路径。
 - 单独测连和批量测连均先选择“按账号配置 / Codex / BPS”，再开始测试。选择仅作用于本次测试，不写账号配置，不改变业务会话绑定。显式选择不支持的路径会报错；不会自动换路。BPS 批量测连跳过原生 WHAM 预检，直接验证所选路径。
-- 现有账号隐私处理先执行，再做 BPS 投影。Word 网页形态不发送 BPS 设备头；其他形态保留账号设备 ID。任务、轮次和内部缓存按调用方、账号隔离。原生 Turn-State、客户端自定义握手头不转发到 BPS。
+- 现有账号隐私处理先执行，再做 BPS 投影。Word 网页形态不发送 BPS 设备头；其他形态保留账号设备 ID。普通模式下任务、轮次和内部缓存按调用方、账号隔离；“全部收敛”只将 BPS task 改为上游账号级共用，轮次和内部缓存继续分别管理。原生 Turn-State、客户端自定义握手头不转发到 BPS。
+
+## BPS 全部收敛
+
+账号的设备指纹档位选择 `full`（全部收敛）后，仅 BPS 路径采用以下规则；不修改默认档位、原生 Codex、API 中转或其会话身份策略。
+
+- 同一实际 `Chatgpt-Account-Id` 固定复用一个持久化 UUIDv7 `task_id`，不随下游用户、对话、模型、窗口、换号代次或 BPS 产品类型变化。重复导入相同上游账号也复用；Word、Excel、Sheets、PowerPoint 共用该账号的 task。缺少上游账号 ID 时明确报错，不把所有未知账号合成一个 task。
+- `turn_id` 继续按调用方、原对话、轮次、BPS 类型、上游账号和换号代次分区。不同用户即使提供相同原始轮次 ID，也获得不同出站 turn。同轮工具续接保持 turn，`agent_iteration` 从字符串 `"1"` 开始递增，重试复用对应计数。未提供轮次 ID 时沿用用户消息边界推导，缺失显式会话时使用已有隔离缓存分区。
+- 切到其他上游账号使用该账号的固定 task，并建立新 turn；切回原账号复用原 task，但换号代次产生新 turn，计数重新开始。SQLite/PostgreSQL 使用既有 UUID 映射和迭代存储，多实例及重启继续复用，不新增存储表。
+- 生成和 `/compact` 使用相同映射。历史 input、工具调用及结果、模型、计费、本地窗口、账号粘性、附件缓存和响应缓存不按共享 task 合并。非 Word 类型原有的 Session-Id / prompt_cache_key 仍按原规则发送。
+- 诊断 `upstream.bps_compat.full_convergence` 展示实际 task、turn、迭代、持久化状态及 `task_scope=upstream_account`；Word 同时保留 `word_identity`。这是网关提供的账号级 task 映射，不新增或声称 BPS 已支持 parent_task_id / 子线程协议。
+
+关闭 `full` 后恢复相应档位原有的任务映射。本文其他段落中按对话分配 task 的规则适用于非 full 档位。
 
 ## 格式转换
 

@@ -23,6 +23,8 @@ const (
 	CodexFingerprintModeSession = "session"
 	// CodexFingerprintModeFull 令 thread_id 等于 session_id，上游看到
 	// 1 台设备 + 1 会话 + 1 线程。最激进，也最不像真实客户端的并发形态。
+	// BPS 单独使用账号级持久化 task_id；不同用户、会话和轮次分配独立
+	// turn_id，同轮工具续接复用轮次。原生 Codex 的出站策略不变。
 	CodexFingerprintModeFull = "full"
 )
 

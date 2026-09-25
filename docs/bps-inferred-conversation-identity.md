@@ -1,6 +1,6 @@
 # BPS conversation hints without client session IDs
 
-The account's `codex_fingerprint_mode=session` (Device + session) now opts ordinary BPS requests into a stable outbound session hint when the client has no explicit session identity. Native Codex, relay accounts, and the off/device/full modes retain their existing behavior. No default setting changes.
+The account's `codex_fingerprint_mode=session` (Device + session) now opts ordinary BPS requests into a stable outbound session hint when the client has no explicit session identity. Native Codex, relay accounts, and the off/device modes retain their existing behavior. The full mode uses the separate account-wide BPS task policy documented in `codex-bps-mode.md`, not this opening heuristic. No default setting changes.
 
 The hint is scoped to the authenticated caller, optional installation/device ID, inbound UA, leading instructions/system messages and first user message. Verified NewAPI user identity is included; direct callers are separated by their Codex2API key. A signed installation ID takes precedence over client hints. A generic relay UA does not count as a device ID. Device IDs may be absent: in that case the caller and opening still partition the hint, with the weaker source recorded in diagnostics.
 
