@@ -19,11 +19,21 @@ import (
 )
 
 type rawRelayDiagnostic struct {
-	Enabled       bool   `json:"enabled"`
-	RequestBytes  int    `json:"request_bytes"`
-	ResponseBytes int64  `json:"response_bytes"`
-	UsageSource   string `json:"usage_source"`
-	ResponseError string `json:"response_error,omitempty"`
+	Enabled             bool             `json:"enabled"`
+	RequestBytes        int              `json:"request_bytes"`
+	ResponseBytes       int64            `json:"response_bytes"`
+	UsageSource         string           `json:"usage_source"`
+	ResponseError       string           `json:"response_error,omitempty"`
+	StreamOutcome       string           `json:"stream_outcome,omitempty"`
+	StreamEnd           string           `json:"stream_end,omitempty"`
+	TerminalEvent       string           `json:"terminal_event,omitempty"`
+	ResponseStatus      string           `json:"response_status,omitempty"`
+	IncompleteReason    string           `json:"incomplete_reason,omitempty"`
+	TerminalError       string           `json:"terminal_error,omitempty"`
+	ReadError           *rawRelayIOError `json:"read_error,omitempty"`
+	WriteError          *rawRelayIOError `json:"write_error,omitempty"`
+	RequestContextError string           `json:"request_context_error,omitempty"`
+	ClientCanceled      bool             `json:"client_canceled"`
 }
 
 // The HTTP handlers call this only after tryRawRelay declined the original
@@ -45,8 +55,9 @@ func excludeRawRelayAccountsFilter(filter auth.AccountFilter, trace *auth.Select
 }
 
 // An explicitly configured raw API route is selected before Codex validation or
-// translation. Only models and caller/account permissions determine eligibility.
-// Matching raw routes take precedence; failures never fall back to a transformer.
+// translation, but only within the request's fingerprint/Chat routing group.
+// Matching raw routes in that group take precedence; failures never fall back
+// to a transformer or a different group.
 func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	if h.store == nil || c.Request.Method != http.MethodPost {
 		return false
@@ -61,6 +72,7 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	if len(rawAccounts) == 0 {
 		return false
 	}
+	started := time.Now()
 	body, ok := rawRequestBodyFromContext(c)
 	if !ok {
 		var err error
@@ -111,15 +123,34 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Exactly one model field is required for routing", api.ErrorTypeInvalidRequest))
 		return true
 	}
-	started := time.Now()
+	// Verify signatures against the original bytes, then inspect the decoded
+	// copy for routing only. No Codex normalization or identity rewriting runs.
+	h.primeNewAPIPolicyContext(c, body)
+	identity, root, signed, status := h.resolveRequestSessionRoutingIdentity(c, routingBody, resolveRequestSessionIdentity(c.Request.Header, routingBody))
+	h.prepareChatGroupRouting(c, identity)
+	beginDispatchSelection(c)
+	groupFilter := applyAffinityGroupRouting(c, identity, nil)
+	matchedGroup := false
+	for _, account := range rawAccounts {
+		if eligible[account.ID()] && (groupFilter == nil || groupFilter(account)) {
+			matchedGroup = true
+			break
+		}
+	}
+	// An unrelated group's raw account must not preempt the ordinary handler.
+	// A failed bound-owner lookup is different: keep the route fail-closed.
+	groupRouting := usageRequestDiagnosticState(c).GroupRouting
+	if !matchedGroup && (groupRouting == nil || !groupRouting.blocked) {
+		return false
+	}
 	diagnostic := &rawRelayDiagnostic{Enabled: true, RequestBytes: len(body), UsageSource: "not_observed"}
-	usageRequestDiagnosticState(c).RawPassthrough = diagnostic
+	state := usageRequestDiagnosticState(c)
+	state.StartedAt, state.RawPassthrough = started, diagnostic
 	setIngressRequestBodyIfAbsent(c, body)
 	cacheTrustedRequestedModel(c, model)
 	c.Set("x-model", model)
-	h.primeNewAPIPolicyContext(c, body)
-	status, signed := h.cachedNewAPIPolicyAuditState(c)
-	bindTransportOwner(c, signed, (status == "verified" || status == "signed_response") && signed.MetaVerified)
+	h.captureUsageRequestResolution(c, routingBody, identity, root, signed, status)
+	h.recordUsageAuthorization(c, "dispatch")
 	if h.enforceAPIKeyLimitsAndReply(c, model) {
 		return true
 	}
@@ -132,12 +163,11 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	}
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	filter := auth.AccountFilter(func(account *auth.Account) bool {
-		return eligible[account.ID()] && account.OpenAIRawPassthroughEnabled()
+		return eligible[account.ID()] && account.OpenAIRawPassthroughEnabled() && (groupFilter == nil || groupFilter(account))
 	})
 	filter = h.applyUpstreamChannelFilter(c, model, filter)
 	filter = h.withRequestModelCooldownFilter(c, model, filter)
 	filter = h.applyScopeBudgetFilter(c, filter)
-	beginDispatchSelection(c)
 	account := h.store.NextExcludingWithDispatch(keyID, nil, filter, auth.DispatchPolicyStandard.WithModel(model), selectionTraceForRequest(c))
 	if account == nil {
 		if msg := scopeBudgetExhaustedMessage(c); msg != "" {
@@ -204,31 +234,35 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	c.Writer.WriteHeaderNow()
 	observer := &rawRelayUsageObserver{stream: strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream"), encoding: strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))}
 	buffer := make([]byte, 32*1024)
+	var bodyReadErr, bodyWriteErr error
 	for {
 		n, readErr := resp.Body.Read(buffer)
+		bodyReadErr = readErr
 		if n > 0 {
 			if diagnostic.ResponseBytes == 0 {
 				input.FirstTokenMs = int(time.Since(started).Milliseconds())
 			}
 			written, writeErr := c.Writer.Write(buffer[:n])
+			if writeErr == nil && written < n {
+				writeErr = io.ErrShortWrite
+			}
 			diagnostic.ResponseBytes += int64(written)
 			observer.Write(buffer[:written])
 			if observer.stream {
 				c.Writer.Flush()
 			}
 			if writeErr != nil {
-				diagnostic.ResponseError = "downstream_write_failed"
+				bodyWriteErr = writeErr
 				break
 			}
 		}
 		if readErr != nil {
-			if readErr != io.EOF {
-				diagnostic.ResponseError = "upstream_read_failed"
-			}
 			break
 		}
 	}
+	requestContextErr := c.Request.Context().Err()
 	observer.finish()
+	diagnostic.finishStream(c, observer, bodyReadErr, bodyWriteErr, requestContextErr)
 	for name, values := range resp.Trailer {
 		c.Writer.Header()[http.TrailerPrefix+name] = append([]string(nil), values...)
 	}
@@ -321,12 +355,17 @@ func rawRelayRequestHeaders(source http.Header, account *auth.Account, credentia
 
 // Observe a bounded copy; never reconstruct, suppress or inject response bytes.
 type rawRelayUsageObserver struct {
-	stream, disabled, discardLine bool
-	pending                       []byte
-	usage                         *UsageInfo
-	encoding                      string
-	compressed                    []byte
-	model, tier, errorMessage     string
+	stream, disabled, discardLine                   bool
+	pending                                         []byte
+	usage                                           *UsageInfo
+	encoding                                        string
+	compressed                                      []byte
+	model, tier, errorMessage                       string
+	eventName                                       string
+	eventData                                       []byte
+	discardEvent                                    bool
+	sawResponses                                    bool
+	terminalEvent, responseStatus, incompleteReason string
 }
 
 func (o *rawRelayUsageObserver) Write(data []byte) {
@@ -361,6 +400,8 @@ func (o *rawRelayUsageObserver) Write(data []byte) {
 			if len(o.pending)+len(chunk) > 4<<20 {
 				o.pending = nil
 				o.discardLine = true
+				o.discardEvent = true
+				o.eventData = nil
 			} else {
 				o.pending = append(o.pending, chunk...)
 			}
@@ -369,10 +410,7 @@ func (o *rawRelayUsageObserver) Write(data []byte) {
 			return
 		}
 		if !o.discardLine {
-			line := bytes.TrimSpace(o.pending)
-			if bytes.HasPrefix(line, []byte("data:")) {
-				o.observe(bytes.TrimSpace(line[5:]))
-			}
+			o.observeSSELine(bytes.TrimSuffix(o.pending, []byte{'\r'}))
 		}
 		o.pending = nil
 		o.discardLine = false
@@ -404,9 +442,13 @@ func (o *rawRelayUsageObserver) finish() {
 		o.observe(o.pending)
 		return
 	}
-	line := bytes.TrimSpace(o.pending)
-	if bytes.HasPrefix(line, []byte("data:")) {
-		o.observe(bytes.TrimSpace(line[5:]))
+	// EOF does not dispatch an unterminated SSE event. Usage can still be
+	// observed, but an incomplete frame must never prove successful delivery.
+	if len(o.pending) > 0 {
+		o.observeSSELine(bytes.TrimSuffix(o.pending, []byte{'\r'}))
+	}
+	if !o.discardEvent && gjson.ValidBytes(o.eventData) {
+		o.observe(o.eventData)
 	}
 }
 

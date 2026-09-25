@@ -1688,14 +1688,16 @@ func (h *Handler) resolveRequestSessionIdentityForContext(c *gin.Context, body [
 	return h.resolveRequestSessionIdentityWithBase(c, body, resolveRequestSessionIdentity(c.Request.Header, body))
 }
 
-func (h *Handler) resolveRequestSessionIdentityWithBase(c *gin.Context, body []byte, identity requestSessionIdentity) requestSessionIdentity {
+// resolveRequestSessionRoutingIdentity reads native or verified NewAPI identity
+// for routing and diagnostics without binding outbound mappings, claiming an
+// account, or configuring failover. Raw relay uses the same classification as
+// ordinary requests while keeping the original wire payload untouched.
+func (h *Handler) resolveRequestSessionRoutingIdentity(c *gin.Context, body []byte, identity requestSessionIdentity) (requestSessionIdentity, requestRootSessionIdentity, verifiedNewAPIPolicyContext, string) {
 	c.Set(relatedSessionObservationContextKey, nil)
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), relaxedAccountFallbackKey{}, (*relaxedAccountFallback)(nil)))
 	status, policyContext := h.cachedNewAPIPolicyAuditState(c)
 	verifiedPolicy := (status == "verified" || status == "signed_response") && policyContext.MetaVerified
 	bindTransportOwner(c, policyContext, verifiedPolicy)
 	bindUpstreamSourceVisibility(c, policyContext, verifiedPolicy)
-	h.bindCodexIdentityClaims(c)
 	accountingBypass := h.verifiedNewAPISessionAccountingBypass(c)
 	rootIdentity := h.resolveRequestRootSessionIdentityForContext(c, body)
 	identity.requiresRootAccount = requiresBackgroundRootAccount(rootIdentity.threadSource)
@@ -1771,6 +1773,14 @@ func (h *Handler) resolveRequestSessionIdentityWithBase(c *gin.Context, body []b
 	if identity.unlinkedFallbackOnly {
 		identity.affinityID = ""
 	}
+	return identity, rootIdentity, policyContext, status
+}
+
+func (h *Handler) resolveRequestSessionIdentityWithBase(c *gin.Context, body []byte, identity requestSessionIdentity) requestSessionIdentity {
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), relaxedAccountFallbackKey{}, (*relaxedAccountFallback)(nil)))
+	h.bindCodexIdentityClaims(c)
+	identity, rootIdentity, policyContext, status := h.resolveRequestSessionRoutingIdentity(c, body, identity)
+	verifiedPolicy := (status == "verified" || status == "signed_response") && policyContext.MetaVerified
 	identity = h.configureRelaxedAccountFallback(c, body, identity, rootIdentity)
 	if relaxedAccountFallbackFromContext(c.Request.Context()) == nil {
 		identity = h.configureAPIRelaySessionPolicy(c, body, identity)
