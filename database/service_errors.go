@@ -74,21 +74,35 @@ type PromptSafetyDiagnostic struct {
 }
 
 type SessionAccountFailoverDiagnostic struct {
-	EnabledBy                   string                    `json:"enabled_by,omitempty"`
-	PreviousUpstreamMode        string                    `json:"previous_upstream_mode,omitempty"`
-	UpstreamMode                string                    `json:"upstream_mode,omitempty"`
-	OriginalAccountBPSAttempted bool                      `json:"original_account_bps_attempted,omitempty"`
-	Result                      string                    `json:"result"`
-	Reason                      string                    `json:"reason,omitempty"`
-	TriggerReason               string                    `json:"trigger_reason,omitempty"`
-	BlockReason                 string                    `json:"block_reason,omitempty"`
-	Phase                       string                    `json:"phase,omitempty"`
-	PreviousAccountID           int64                     `json:"previous_account_id,omitempty"`
-	AccountID                   int64                     `json:"account_id,omitempty"`
-	Generation                  uint64                    `json:"generation"`
-	ContextBlockers             []SessionContextBlocker   `json:"context_blockers,omitempty"`
-	ContextCleanup              *SessionContextCleanup    `json:"context_cleanup,omitempty"`
-	Selection                   *SessionFailoverSelection `json:"selection,omitempty"`
+	Continuity                  *SessionFailoverContinuity `json:"continuity,omitempty"`
+	EnabledBy                   string                     `json:"enabled_by,omitempty"`
+	PreviousUpstreamMode        string                     `json:"previous_upstream_mode,omitempty"`
+	UpstreamMode                string                     `json:"upstream_mode,omitempty"`
+	OriginalAccountBPSAttempted bool                       `json:"original_account_bps_attempted,omitempty"`
+	Result                      string                     `json:"result"`
+	Reason                      string                     `json:"reason,omitempty"`
+	TriggerReason               string                     `json:"trigger_reason,omitempty"`
+	BlockReason                 string                     `json:"block_reason,omitempty"`
+	Phase                       string                     `json:"phase,omitempty"`
+	PreviousAccountID           int64                      `json:"previous_account_id,omitempty"`
+	AccountID                   int64                      `json:"account_id,omitempty"`
+	Generation                  uint64                     `json:"generation"`
+	ContextBlockers             []SessionContextBlocker    `json:"context_blockers,omitempty"`
+	ContextCleanup              *SessionContextCleanup     `json:"context_cleanup,omitempty"`
+	Selection                   *SessionFailoverSelection  `json:"selection,omitempty"`
+}
+
+// Bounded state labels only. Do not include raw session IDs, tokens or context.
+type SessionFailoverContinuity struct {
+	Mode                string `json:"mode"`
+	Result              string `json:"result"`
+	WouldBlock          bool   `json:"would_block"`
+	WindowState         string `json:"window_state"`
+	WindowKnown         bool   `json:"window_known"`
+	OwnerSource         string `json:"owner_source"`
+	PersistentAccountID int64  `json:"persistent_account_id"`
+	OwnerRecovery       string `json:"owner_recovery,omitempty"`
+	DeferredWindow      bool   `json:"deferred_window,omitempty"`
 }
 
 type SessionFailoverSelection struct {
@@ -360,6 +374,13 @@ func normalizeServiceError(event ServiceErrorEvent) ServiceErrorEvent {
 	if event.AccountFailover != nil {
 		failover := *event.AccountFailover
 		failover.Selection = normalizeSessionFailoverSelection(failover.Selection)
+		if failover.Continuity != nil {
+			continuity := *failover.Continuity
+			for _, field := range []*string{&continuity.Mode, &continuity.Result, &continuity.WindowState, &continuity.OwnerSource, &continuity.OwnerRecovery} {
+				*field = serviceErrorString(*field, 160)
+			}
+			failover.Continuity = &continuity
+		}
 		for _, field := range []*string{&failover.EnabledBy, &failover.Result, &failover.Reason, &failover.TriggerReason, &failover.BlockReason, &failover.Phase} {
 			*field = serviceErrorString(*field, 160)
 		}

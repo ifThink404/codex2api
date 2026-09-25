@@ -191,6 +191,11 @@ func TestSwitchSessionContinuityAccountRejectsInvalidState(test *testing.T) {
 		change   func(*sessionAccountFailoverFixture)
 		conflict bool
 	}{
+		{name: "deferred_without_reset", change: func(fixture *sessionAccountFailoverFixture) { fixture.input.DeferOutboundWindow = true }},
+		{name: "deferred_with_fabricated_window", change: func(fixture *sessionAccountFailoverFixture) {
+			fixture.input.ResetOutboundWindow, fixture.input.DeferOutboundWindow = true, true
+			fixture.input.WindowThreadID = "thread"
+		}},
 		{name: "empty_root", change: func(fixture *sessionAccountFailoverFixture) { fixture.input.RootKey = "" }},
 		{name: "missing_root", change: func(fixture *sessionAccountFailoverFixture) { fixture.input.RootKey = "missing" }},
 		{name: "zero_expected_account", change: func(fixture *sessionAccountFailoverFixture) { fixture.input.ExpectedAccountID = 0 }},

@@ -213,6 +213,7 @@ func TestSessionAccountFailoverCompactIngress(test *testing.T) {
 func runSessionAccountFailoverIngress(test *testing.T, compact bool, preserve ...bool) {
 	keepInput := len(preserve) > 0 && preserve[0]
 	rejectCipher := len(preserve) > 1 && preserve[1]
+	headerOnly := len(preserve) > 3 && preserve[3]
 	var rejected atomic.Int32
 	handler, owner, target, _ := failoverTestSetup(test, true)
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexSessionFailoverPreserveInput = keepInput; return s })
@@ -245,6 +246,8 @@ func runSessionAccountFailoverIngress(test *testing.T, compact bool, preserve ..
 		if strings.HasSuffix(request.URL.Path, "/responses/compact") {
 			require.False(test, gjson.GetBytes(body, "client_metadata").Exists())
 			headers.Set("test-body-session", gjson.Get(request.Header.Get("X-Codex-Turn-Metadata"), "session_id").String())
+		} else if headerOnly {
+			headers.Set("test-body-session", request.Header.Get("Session-Id"))
 		} else {
 			metadata := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata")
 			require.Equal(test, gjson.String, metadata.Type)
@@ -294,11 +297,17 @@ func runSessionAccountFailoverIngress(test *testing.T, compact bool, preserve ..
 			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata.request_kind", "compaction")
 			body, _ = sjson.SetBytes(body, "stream", false)
 		}
+		if headerOnly {
+			body, _ = sjson.DeleteBytes(body, "client_metadata")
+		}
 		recorder := httptest.NewRecorder()
 		request, _ := gin.CreateTestContext(recorder)
 		request.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 		request.Request.Header.Set("Authorization", "Bearer test-user-key")
 		request.Request.Header.Set("Content-Type", "application/json")
+		if headerOnly {
+			request.Request.Header.Set("Session-Id", threadID.String())
+		}
 		ctx, cancel := context.WithTimeout(request.Request.Context(), 5*time.Second)
 		request.Request = request.Request.WithContext(ctx)
 		if expected == target && compact {

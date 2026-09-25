@@ -24,6 +24,7 @@ type SessionAccountFailover struct {
 	Reason                  string
 	At                      time.Time
 	ResetOutboundWindow     bool
+	DeferOutboundWindow     bool // No window was supplied; allocate on the first real window instead of inventing :0.
 	WindowThreadID          string
 	WindowNumber            uint64
 	WindowContextID         string
@@ -47,7 +48,10 @@ func (db *DB) SwitchSessionContinuityAccount(ctx context.Context, input SessionA
 	if input.At.IsZero() {
 		input.At = time.Now().UTC()
 	}
-	if input.ResetOutboundWindow && strings.TrimSpace(input.WindowThreadID) == "" {
+	if input.DeferOutboundWindow && (!input.ResetOutboundWindow || input.WindowThreadID != "" || input.WindowNumber != 0 || input.WindowContextID != "") {
+		return record, nil, errors.New("invalid deferred session account failover window")
+	}
+	if input.ResetOutboundWindow && !input.DeferOutboundWindow && strings.TrimSpace(input.WindowThreadID) == "" {
 		return record, nil, errors.New("session account failover window identity is required")
 	}
 	err := db.withWriteTx(ctx, func(transaction *sql.Tx) error {
@@ -120,8 +124,10 @@ func (db *DB) SwitchSessionContinuityAccount(ctx context.Context, input SessionA
 		record.LossyContextRestart = input.LossyContextRestart
 		record.PreserveRestartInput = input.PreserveRestartInput
 		if input.ResetOutboundWindow {
-			record.OutboundWindowBases = map[string]uint64{input.WindowThreadID: input.WindowNumber}
 			record.OutboundWindowMode = "context-v1"
+		}
+		if input.ResetOutboundWindow && !input.DeferOutboundWindow {
+			record.OutboundWindowBases = map[string]uint64{input.WindowThreadID: input.WindowNumber}
 			window := SessionOutboundWindowInput{Number: input.WindowNumber, ContextID: input.WindowContextID}
 			record.OutboundWindows = map[string]*SessionOutboundWindowState{input.WindowThreadID: {Next: 1, Entries: map[string]SessionOutboundWindowEntry{window.key(): {Original: input.WindowNumber, Number: 0}}}}
 		}

@@ -47,6 +47,10 @@ func sessionFailoverContextError(request *gin.Context, diagnostic *sessionAccoun
 		reason = "工具结果缺少对应的工具调用"
 	case "persistent_owner_required":
 		reason = "缺少一致的持久化账号归属"
+	case "ownership_changed":
+		reason = "账号归属已变化，请重新发起请求"
+	case "ownership_unavailable":
+		reason = "暂时无法读取或保存账号归属"
 	case "invalid_session_continuity":
 		reason = "会话窗口连续性校验未通过"
 	case "window_identity_required":
@@ -273,6 +277,10 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		return false, nil
 	}
 	diagnostic := &sessionAccountFailoverDiagnostic{PreviousUpstreamMode: normalizedCodexRoute(state.Record.UpstreamMode), Result: "blocked", Reason: reason, TriggerReason: reason, Phase: "before_switch", PreviousAccountID: owner.ID(), Generation: state.Record.FailoverCount}
+	windowMissing := recordFailoverContinuity(request, body, state, diagnostic)
+	if state.Record.AccountID == 0 {
+		diagnostic.PreviousUpstreamMode = "" // Missing persistence is not evidence of a native route.
+	}
 	state.Diagnostic.AccountFailover = diagnostic
 	usageRequestDiagnosticState(request).AccountFailover = diagnostic
 	diagnostic.EnabledBy = sessionAccountFailoverEnabledBy(reason)
@@ -296,13 +304,13 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		block, blockers = "missing_request_context", nil
 	}
 	diagnostic.ContextBlockers = blockers
-	if handler.db == nil || state.Record.AccountID != owner.ID() {
+	if handler.db == nil || state.Record.AccountID != 0 && state.Record.AccountID != owner.ID() {
 		block = "persistent_owner_required"
 		diagnostic.ContextBlockers = nil
-	} else if state.Diagnostic.WouldBlock {
+	} else if state.Diagnostic.WouldBlock && !windowMissing {
 		block = "invalid_session_continuity"
 		diagnostic.ContextBlockers = nil
-	} else if !state.Known || state.ThreadID == "" {
+	} else if (!state.Known || state.ThreadID == "") && !windowMissing {
 		block = "window_identity_required"
 		diagnostic.ContextBlockers = nil
 	}
@@ -319,6 +327,11 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 	if err := handler.recoverSessionFailoverGrant(request, key); err != nil {
 		diagnostic.Reason = "window_grant_unavailable"
 		return false, requestWindowGrantAPIError(err)
+	}
+	if state.Record.AccountID == 0 {
+		if recoveryBlock := handler.recoverRelaxedFailoverOwner(request, key, state, owner, diagnostic); recoveryBlock != "" {
+			return false, sessionFailoverContextError(request, diagnostic, recoveryBlock)
+		}
 	}
 	diagnostic.Result = "pending"
 	plan := &sessionAccountFailoverPlan{Request: request, Key: key, Body: body, Diagnostic: diagnostic, PreserveInput: preserveInput}
@@ -461,7 +474,10 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		preview.UpstreamMode = targetMode
 		preview.AccountID, preview.FailoverCount = candidate.ID(), entry.Record.FailoverCount+1
 		preview.OutboundWindowReset = true
-		preview.OutboundWindowBases = map[string]uint64{state.ThreadID: state.Number}
+		preview.OutboundWindowBases = nil
+		if state.Known {
+			preview.OutboundWindowBases = map[string]uint64{state.ThreadID: state.Number}
+		}
 		previewContext := context.WithValue(ctx, sessionOutboundEpochContextKey{}, &sessionOutboundEpoch{handler: handler, key: state.Key, record: preview, preview: true})
 		fingerprint := NewCodexTransportFingerprint(candidate, sessionFailoverRequestHeaders(request), plan.Body, "", previewContext)
 		apiKey := strings.TrimSpace(strings.TrimPrefix(request.GetHeader("Authorization"), "Bearer "))
@@ -485,6 +501,10 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		input := database.SessionAccountFailover{RootKey: state.Key, AffinityKey: key, ExpectedAccountID: old.ID(), AccountID: candidate.ID(), ExpectedGeneration: entry.Record.FailoverCount, UpstreamMode: targetMode, Reason: plan.Diagnostic.Reason, At: time.Now().UTC(), ResetOutboundWindow: true, WindowThreadID: state.ThreadID, WindowNumber: state.Number}
 		input.WindowContextID = fingerprint.accountWindowInputs[state.ThreadID].ContextID
+		if !state.Known {
+			input.DeferOutboundWindow = true
+			input.WindowThreadID, input.WindowNumber, input.WindowContextID = "", 0, ""
+		}
 		input.LossyContextRestart = true
 		input.PreserveRestartInput = plan.PreserveInput
 		grant := windowGrantForRequest(request)
