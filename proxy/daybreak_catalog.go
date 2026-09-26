@@ -18,8 +18,10 @@ const daybreakManifestLimit = 8 << 20
 func ParseDaybreakManifest(body []byte) (map[string][]string, error) {
 	var catalog struct {
 		Models []struct {
-			Slug   string `json:"slug"`
-			Access *struct {
+			Slug       string `json:"slug"`
+			Visibility string `json:"visibility"`
+			Specialty  string `json:"model_specialty"`
+			Access     *struct {
 				Cyber []string `json:"cyber"`
 			} `json:"available_access_programs"`
 		} `json:"models"`
@@ -36,7 +38,9 @@ func ParseDaybreakManifest(body []byte) (map[string][]string, error) {
 	models := make(map[string][]string)
 	for _, item := range catalog.Models {
 		model := strings.ToLower(strings.TrimSpace(item.Slug))
-		if model == "" || item.Access == nil {
+		// 仅给选单中的普通模型派生切换别名；Auto Review 是内部审查模型。
+		if model == "" || item.Visibility != "list" || model == "codex-auto-review" ||
+			strings.EqualFold(item.Specialty, "cyber") || item.Access == nil {
 			continue
 		}
 		programs := knownDaybreakPrograms(item.Access.Cyber)

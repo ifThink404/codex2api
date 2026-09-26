@@ -1,5 +1,19 @@
 # Changelog
 
+## v3.0.3 - 2026-09-27
+
+### Features
+
+- **The usage page shows Daybreak access badges (#732, @bxb1337).** Usage logs gain a `daybreak_program` column (`daybreak_blue` / `daybreak_red`), and the "type" column shows a blue Daybreak Blue or red Daybreak Red badge for requests that used one. Requests without a program show nothing.
+
+### Fixes
+
+- **Daybreak usage logs record the requested alias and the real model in the right fields (#732, @bxb1337).** v3.0.2 had the two swapped: it overwrote the requested model with the base model and wrote the alias suffix into `effective_model`. A Daybreak request now logs `model=gpt-6-sol-daybreak-blue`, `effective_model=gpt-6-sol` and `daybreak_program=daybreak_blue`. Billing still selects the Daybreak-specific price without writing the price alias into a model field. A one-time data migration moves the `-daybreak-blue` / `-daybreak-red` suffix out of existing `effective_model` values into `daybreak_program`. The original requested `model` of those older rows cannot be recovered and is left unchanged.
+
+- **Daybreak aliases are no longer generated for Cyber specialty or internal models (#731, @bxb1337).** Aliases could be stacked onto Cyber-only models, producing names like `gpt-daybreak-blue-latest-daybreak-blue`, and `codex-auto-review` could show Daybreak options that do not apply to it. Suffixes are now generated only for `visibility=list` models whose `available_access_programs.cyber` explicitly lists Blue or Red, and `model_specialty=cyber` models and `codex-auto-review` are excluded. An upstream `access_program_not_enabled` error no longer revokes the saved capability snapshot automatically: the snapshot is refreshed on the next account sync, probe or login. While permissions are changing, a stale alias may stay listed, and the upstream decides the actual request.
+
+- **Excel Basispoints accounts accept structured-output requests (#729, @Fleey).** The Basispoints wire body has no structured-output field, so any request carrying `text.format` was rejected with "basispoints does not support structured output formats", and clients that always send a response format could not use BPS accounts at all. `json_schema` (with its name, description and schema) and `json_object` are now translated into a developer instruction appended to the protocol prompt, asking for exactly one JSON value with no code fences or extra text. Conformance is enforced by the prompt alone, so `strict: true` is best-effort and callers needing a hard guarantee should validate the JSON themselves. `text.format` is still not sent upstream, and `json_schema` without a schema or unknown format types such as `grammar` are still rejected.
+
 ## v3.0.2 - 2026-09-26
 
 ### Features

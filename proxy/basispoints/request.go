@@ -70,6 +70,38 @@ func message(role, content string) object {
 	return object{"type": "message", "role": role, "content": []any{object{"type": "input_text", "text": content}}}
 }
 
+// describeOutputFormat turns Responses text.format into a prompt contract
+// because the Excel wire body has no structured output field.
+func describeOutputFormat(format object) (string, error) {
+	switch kind := text(format["type"]); kind {
+	case "", "text":
+		return "", nil
+	case "json_object":
+		return "Final answer format: return exactly one valid JSON object and nothing else. " +
+			"Do not wrap it in Markdown code fences or add text before or after it.", nil
+	case "json_schema":
+		schema, ok := format["schema"].(object)
+		if !ok {
+			return "", fmt.Errorf("basispoints json_schema format requires a schema object")
+		}
+		raw, err := json.Marshal(schema)
+		if err != nil {
+			return "", fmt.Errorf("basispoints json_schema format has an invalid schema")
+		}
+		contract := "Final answer format: return exactly one valid JSON value that conforms to the JSON Schema below and nothing else. " +
+			"Do not wrap it in Markdown code fences or add text before or after it. Include every required property and no properties the schema does not allow."
+		if name := text(format["name"]); name != "" {
+			contract += "\nSchema name: " + name
+		}
+		if description := text(format["description"]); description != "" {
+			contract += "\nSchema description: " + description
+		}
+		return contract + "\nJSON Schema:\n" + string(raw), nil
+	default:
+		return "", fmt.Errorf("basispoints does not support text format %q", kind)
+	}
+}
+
 // Prepare preserves the requested model and uses a whitelist for the Excel wire body.
 func Prepare(raw []byte, scope string, replay *ReplayCache) ([]byte, *Bridge, error) {
 	var source object
@@ -118,9 +150,13 @@ func Prepare(raw []byte, scope string, replay *ReplayCache) ([]byte, *Bridge, er
 			}
 		}
 	}
-	if format, ok := source["text"].(object); ok {
-		if f, ok := format["format"].(object); ok && text(f["type"]) != "" && text(f["type"]) != "text" {
-			return nil, nil, fmt.Errorf("basispoints does not support structured output formats")
+	var outputContract string
+	if config, ok := source["text"].(object); ok {
+		if f, ok := config["format"].(object); ok {
+			outputContract, err = describeOutputFormat(f)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 	var input []any
@@ -149,6 +185,9 @@ func Prepare(raw []byte, scope string, replay *ReplayCache) ([]byte, *Bridge, er
 			"Call one client tool at a time and continue after its result. Never call an undeclared native tool or invent a tool result. " +
 			"Client tool catalog:\n" + describeCatalog(catalog) +
 			"\nEnd of catalog. The gateway handles run_officejs transport and does not execute Office code."
+	}
+	if outputContract != "" {
+		protocol += "\n" + outputContract
 	}
 
 	if len(b.unsupportedTools) > 0 {

@@ -103,3 +103,29 @@ func TestStreamSanitizesProviderTerminalError(t *testing.T) {
 		t.Fatalf("provider error was not sanitized: %s", out)
 	}
 }
+
+func TestPrepareTranslatesStructuredOutputToPromptContract(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.5","input":"hi","text":{"format":{"type":"json_schema","name":"answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}}}}`)
+	body, _, err := Prepare(raw, "account:1", &ReplayCache{})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if strings.Contains(string(body), `"text":{`) {
+		t.Fatalf("prepared body forwarded text.format to the Excel wire: %s", body)
+	}
+	if !strings.Contains(string(body), "Schema name: answer") || !strings.Contains(string(body), `\"required\":[\"answer\"]`) {
+		t.Fatalf("prepared body is missing the structured output contract: %s", body)
+	}
+
+	jsonObject := []byte(`{"model":"gpt-5.5","input":"hi","text":{"format":{"type":"json_object"}}}`)
+	if body, _, err := Prepare(jsonObject, "account:1", &ReplayCache{}); err != nil || !strings.Contains(string(body), "one valid JSON object") {
+		t.Fatalf("Prepare(json_object) = %s, %v", body, err)
+	}
+
+	if _, _, err := Prepare([]byte(`{"model":"gpt-5.5","input":"hi","text":{"format":{"type":"json_schema"}}}`), "account:1", &ReplayCache{}); err == nil {
+		t.Fatal("Prepare accepted json_schema without a schema")
+	}
+	if _, _, err := Prepare([]byte(`{"model":"gpt-5.5","input":"hi","text":{"format":{"type":"grammar"}}}`), "account:1", &ReplayCache{}); err == nil {
+		t.Fatal("Prepare accepted an unknown text format")
+	}
+}

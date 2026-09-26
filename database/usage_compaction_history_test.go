@@ -153,8 +153,8 @@ func TestUsageLogCompactionStatesRoundTripAndFilter(t *testing.T) {
 }
 
 func TestUsageLogInsertColumnCountIncludesCompactionHistory(t *testing.T) {
-	// 68 fork columns plus the upstream model-mismatch audit field.
-	const want = 69
+	// 74 columns retain local turn-state audit fields and add upstream Daybreak attribution fields.
+	const want = 74
 	if usageLogInsertColumnCount != want {
 		t.Fatalf("usageLogInsertColumnCount = %d, want %d", usageLogInsertColumnCount, want)
 	}

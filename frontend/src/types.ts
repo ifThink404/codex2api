@@ -3633,6 +3633,7 @@ export interface UsageLog {
   endpoint: string
   model: string
   effective_model: string
+  daybreak_program?: string
   /** 三态：undefined/null=上游未自报无法比对；true/false=自报与实发是否一致。 */
   upstream_model_mismatch?: boolean | null
   prompt_tokens: number
@@ -4107,6 +4108,7 @@ export interface PublicAPIKeyUsageLog {
   endpoint: string
   model: string
   effective_model: string
+  daybreak_program?: string
   status_code: number
   duration_ms: number
   first_token_ms: number

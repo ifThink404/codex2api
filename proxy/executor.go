@@ -550,8 +550,6 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if daybreakErr != nil {
 		return nil, daybreakErr
 	}
-	daybreakObservation := daybreakAttempt{ctx: ctx, account: account, body: daybreakRoutingMetadata(requestBody), identity: account.DaybreakIdentity()}
-	defer func() { daybreakObservation.observe(upstreamResponse) }()
 	// 指纹收敛在 WS/HTTP 分叉前统一改写请求体，两条上游路径共享结果；请求头侧的
 	// 收敛（ApplyCodexFingerprintHeaders）从同一份「账号 + 下游头」推导，取值一致。
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
