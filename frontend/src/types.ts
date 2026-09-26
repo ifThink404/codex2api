@@ -2,6 +2,95 @@ export type ToastType = 'success' | 'error' | 'warning' | 'info'
 export type ISODateString = string
 export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
 
+export type ChannelMonitorStatus = 'unknown' | 'operational' | 'degraded' | 'failed'
+export type ChannelMonitorBillingStatus = 'unknown' | 'ok' | 'unsupported' | 'failed'
+
+export interface ChannelMonitorConfig {
+  account_id: number
+  enabled: boolean
+  interval_minutes: number
+  model: string
+  available_models: string[]
+  last_checked_at?: ISODateString
+  next_check_at?: ISODateString
+}
+
+export interface ChannelMonitorBillingData {
+  object?: string
+  schema_version?: number
+  billing_scope?: string
+  group_rate_multiplier?: number
+  user_rate_multiplier?: number
+  resolved_rate_multiplier?: number
+  peak_rate_enabled?: boolean
+  peak_start?: string
+  peak_end?: string
+  peak_rate_multiplier?: number
+  applied_peak_multiplier?: number
+  effective_rate_multiplier?: number
+  timezone?: string
+  observed_at?: ISODateString
+}
+
+export interface ChannelMonitorBillingSnapshot {
+  status: ChannelMonitorBillingStatus
+  data?: ChannelMonitorBillingData
+  message?: string
+  http_status?: number
+  checked_at?: ISODateString
+  success_at?: ISODateString
+  next_check_at?: ISODateString
+  failure_count?: number
+}
+
+export interface ChannelMonitorCheck {
+  status: ChannelMonitorStatus
+  http_status?: number
+  latency_ms: number
+  first_token_ms: number
+  checked_at: ISODateString
+}
+
+export interface ChannelMonitorCard {
+  account_id: number
+  name: string
+  base_url: string
+  model: string
+  interval_minutes: number
+  status: ChannelMonitorStatus
+  http_status?: number
+  latency_ms: number
+  first_token_ms: number
+  message?: string
+  last_checked_at?: ISODateString
+  next_check_at?: ISODateString
+  availability_7d?: number
+  checks_7d: number
+  billing: ChannelMonitorBillingSnapshot
+  recent_checks: ChannelMonitorCheck[]
+}
+
+export interface ChannelMonitorListResponse {
+  items: ChannelMonitorCard[]
+  generated_at: ISODateString
+}
+
+export interface ChannelMonitorBillingRateItem {
+  account_id: number
+  billing: ChannelMonitorBillingSnapshot
+}
+
+export interface ChannelMonitorBillingRatesResponse {
+  items: ChannelMonitorBillingRateItem[]
+  generated_at: ISODateString
+}
+
+export interface UpdateChannelMonitorConfigRequest {
+  enabled: boolean
+  interval_minutes: number
+  model: string
+}
+
 // 管理台可见渠道设置（GET/PUT /settings/visible-channels）
 export interface ChannelTestSettings {
   test_model: string
@@ -403,6 +492,9 @@ export interface AccountRow {
   usage_percent_5h?: number | null
   usage_percent_spark?: number | null
   rate_limit_reset_credits?: number | null
+  daybreak_supported?: boolean
+  daybreak_models?: Record<string, string[]>
+  daybreak_checked_at?: number
   applicable_reset_credits?: number | null
   credits_valid?: boolean
   credits_balance?: string | null
@@ -2130,6 +2222,7 @@ export interface SystemSettings {
   auto_clean_full_usage: boolean
   auto_clean_error: boolean
   auto_clean_expired: boolean
+  auto_reset_credits_on_exhaustion_enabled: boolean
   auto_reset_credits_enabled: boolean
   auto_reset_credits_before_expiry_min: number
   auto_activate_5h_window_enabled: boolean
@@ -2275,6 +2368,9 @@ export interface SystemSettings {
   codex_cli_version_sync_enabled: boolean
   codex_cli_version_sync_interval_hours: number
   codex_synced_cli_version?: string
+  codex_synced_desktop_mac_build?: string
+  codex_synced_desktop_windows_build?: string
+  codex_synced_vscode_build?: string
   codex_effective_cli_version?: string
   codex_user_agent_config: string
   usage_log_mode: 'full' | 'errors' | 'off' | string

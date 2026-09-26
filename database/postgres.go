@@ -233,6 +233,9 @@ type DB struct {
 	backgroundTaskCtx     context.Context
 	backgroundTaskCancel  context.CancelFunc
 
+	channelMonitorOnce    sync.Once
+	channelMonitorInitErr error
+
 	// 使用日志批量写入缓冲
 	logBuf  []usageLogEntry
 	logMu   sync.Mutex
@@ -2521,12 +2524,16 @@ type SystemSettings struct {
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本缓存，
 	// 用于抬升出站 UA / manifest 的模拟版本（绝不低于内置常量），空表示尚未同步。
 	CodexSyncedCLIVersion string
+	CodexSyncedDesktopMacBuild string
+	CodexSyncedDesktopWindowsBuild string
+	CodexSyncedVSCodeBuild string
 	// CodexCLIVersionSyncEnabled 控制是否后台定时自动同步 Codex CLI 版本（默认 true）。
 	CodexCLIVersionSyncEnabled bool
 	// CodexCLIVersionSyncIntervalHours 是定时同步间隔（小时，默认 12，范围 1-720）。
 	CodexCLIVersionSyncIntervalHours int
 	// AutoResetCreditsEnabled 控制 Plus/Pro 主动重置次数的临期自动消费（默认关闭）。
 	AutoResetCreditsEnabled bool
+	AutoResetCreditsOnExhaustionEnabled bool
 	// AutoResetCreditsBeforeExpiryMin 是进入临期窗口的提前分钟数（默认 60，范围 10-10080）。
 	AutoResetCreditsBeforeExpiryMin int
 	// AutoActivate5hWindowEnabled 控制 5h 窗口重置后是否发送一次最小真实 /responses 以启动下一轮窗口（默认关闭，issue #581）。
@@ -3364,6 +3371,15 @@ func (db *DB) UpdateCodexSyncedCLIVersion(ctx context.Context, version string) e
 		ON CONFLICT (id) DO UPDATE SET
 			codex_synced_cli_version = EXCLUDED.codex_synced_cli_version
 	`, strings.TrimSpace(version))
+	return err
+}
+
+func (db *DB) UpdateCodexSyncedAppBuild(ctx context.Context, kind, version string) error {
+	columns := map[string]string{"desktop-mac": "codex_synced_desktop_mac_build", "desktop-windows": "codex_synced_desktop_windows_build", "vscode": "codex_synced_vscode_build"}
+	column, ok := columns[kind]
+	if !ok { return fmt.Errorf("unknown Codex app build kind %q", kind) }
+	query := fmt.Sprintf(`INSERT INTO system_settings (id, %s) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET %s = EXCLUDED.%s`, column, column, column)
+	_, err := db.conn.ExecContext(ctx, query, strings.TrimSpace(version))
 	return err
 }
 

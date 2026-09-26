@@ -73,6 +73,7 @@ type Handler struct {
 	activate5hWindow             func(context.Context, *auth.Account) error
 	executeUsageProbe            usageProbeRequestFunc
 	syncAccountPlanOnReset       func(context.Context, *auth.Account) error
+	queryResetUsage              func(context.Context, *auth.Account, string) (*proxy.WhamUsage, *http.Response, error)
 	queryResetCredits            func(context.Context, *auth.Account, string) (*proxy.WhamResetCreditsList, *http.Response, error)
 	consumeResetCredit           func(context.Context, *auth.Account, string, string) (*proxy.WhamResetResult, *http.Response, error)
 	queryWhamDailyUsage          func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyUsageResponse, *http.Response, error)
@@ -110,6 +111,10 @@ type Handler struct {
 	antigravityCapabilityProbe antigravityCapabilityExecutor
 	// Claude / Antigravity 渠道连通性测试配置的进程内缓存（首次读库，PUT 刷新）。
 	channelTestCfg atomic.Pointer[database.ChannelTestConfig]
+	channelMonitorWake chan struct{}
+	channelMonitorSlots chan struct{}
+	channelMonitorRunning sync.Map
+	channelMonitorID string
 
 	// 导入触发的用量采样队列。固定数量 worker 消费任务，避免“一账号一 goroutine”
 	// 在大文件导入时堆出成千上万个阻塞协程。
@@ -1034,6 +1039,9 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 		chartCacheData:       make(map[string]*chartCacheEntry),
 		accountListCache:     make(map[string]*accountListSnapshot),
 		accountAnalysisCache: make(map[string]*accountAnalysisCacheEntry),
+		channelMonitorWake: make(chan struct{}, 1),
+		channelMonitorSlots: make(chan struct{}, 4),
+		channelMonitorID: fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()),
 	}
 	if handler.imageProxy != nil {
 		handler.imageProxy.SetRuntimeCache(tc)
@@ -1666,15 +1674,16 @@ type accountResponse struct {
 	SkipWarmTier bool `json:"skip_warm_tier"`
 	// 账号级策略（auth/account_policies.go）；三列都以 inherit 为默认，
 	// 不加 omitempty——前端下拉要能区分"继承"和"字段缺失"。
-	PromptFilterPolicy            string                      `json:"prompt_filter_policy"`
-	EgressPolicy                  string                      `json:"egress_policy"`
-	SessionGuardsPolicy           string                      `json:"session_guards_policy"`
 	AccountType                   string                      `json:"account_type,omitempty"`
 	AccessTokenType               string                      `json:"access_token_type,omitempty"`
 	OpenAIResponsesAPI            bool                        `json:"openai_responses_api,omitempty"`
 	GrokAPI                       bool                        `json:"grok_api,omitempty"`
 	AntigravityAPI                bool                        `json:"antigravity_api,omitempty"`
 	ClaudeAPI                     bool                        `json:"claude_api,omitempty"`
+	ExcelBPSEnabled               bool                        `json:"openai_excel_bps,omitempty"`
+	PromptFilterPolicy            string                      `json:"prompt_filter_policy"`
+	EgressPolicy                  string                      `json:"egress_policy"`
+	SessionGuardsPolicy           string                      `json:"session_guards_policy"`
 	ClaudeAuthKind                string                      `json:"claude_auth_kind,omitempty"`
 	ClaudeBaseURL                 string                      `json:"claude_base_url,omitempty"`
 	AntigravityAuthKind           string                      `json:"antigravity_auth_kind,omitempty"`
@@ -1710,6 +1719,9 @@ type accountResponse struct {
 	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
 	Timezone                      string                      `json:"timezone,omitempty"`
 	CodexBPS                      bool                        `json:"codex_bps_enabled"`
+	DaybreakSupported             bool                        `json:"daybreak_supported"`
+	DaybreakModels                map[string][]string         `json:"daybreak_models,omitempty"`
+	DaybreakCheckedAt             int64                       `json:"daybreak_checked_at,omitempty"`
 	CustomHeaders                 map[string]string           `json:"custom_headers,omitempty"`
 	HealthTier                    string                      `json:"health_tier"`
 	SchedulerScore                float64                     `json:"scheduler_score"`
@@ -2206,6 +2218,7 @@ type updateAccountSchedulerReq struct {
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
 	CodexBPS                json.RawMessage `json:"codex_bps_enabled"`
+	ExcelBPSEnabled         json.RawMessage `json:"openai_excel_bps"`
 }
 
 type accountSchedulerUpdate struct {
@@ -2231,6 +2244,7 @@ type accountSchedulerUpdate struct {
 	ClaudeFingerprintMode   database.OptionalString
 	ClaudeClientPlatform    database.OptionalString
 	ClaudeVersionPolicy     database.OptionalString
+	ExcelBPSEnabled         database.OptionalBool
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
 	CodexBPS                database.OptionalBool
@@ -9295,6 +9309,7 @@ type settingsResponse struct {
 	AutoCleanError                      bool   `json:"auto_clean_error"`
 	AutoCleanExpired                    bool   `json:"auto_clean_expired"`
 	AutoResetCreditsEnabled             bool   `json:"auto_reset_credits_enabled"`
+	AutoResetCreditsOnExhaustionEnabled bool   `json:"auto_reset_credits_on_exhaustion_enabled"`
 	AutoResetCreditsBeforeExpiryMin     int    `json:"auto_reset_credits_before_expiry_min"`
 	AutoActivate5hWindowEnabled         bool   `json:"auto_activate_5h_window_enabled"`
 	ProxyPoolEnabled                    bool   `json:"proxy_pool_enabled"`

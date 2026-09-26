@@ -407,6 +407,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 				);`,
 		modelCapabilitiesSchema,
 		accountModelObservationsSchema,
+		daybreakSchema,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
 			enabled INTEGER DEFAULT 1,
