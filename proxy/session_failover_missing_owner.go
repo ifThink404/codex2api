@@ -72,7 +72,7 @@ func (handler *Handler) resolveMissingSessionOwner(ctx context.Context, id int64
 	return account, nil, "reloaded", nil
 }
 
-func (handler *Handler) missingSessionOwnerChange(ctx context.Context, id int64, expected *missingSessionOwner) string {
+func (handler *Handler) missingSessionOwnerChange(ctx context.Context, id int64, expected *missingSessionOwner, matchGroups bool) string {
 	if expected == nil || handler.store.FindByID(id) != nil {
 		return "owner_reappeared"
 	}
@@ -82,7 +82,7 @@ func (handler *Handler) missingSessionOwnerChange(ctx context.Context, id int64,
 	if err != nil {
 		return "lookup_failed"
 	}
-	if current.State != expected.State || current.Generation != expected.Generation || current.UpstreamID != expected.UpstreamID || current.GroupsKnown != expected.GroupsKnown || !slices.Equal(current.Groups, expected.Groups) {
+	if current.State != expected.State || current.Generation != expected.Generation || current.UpstreamID != expected.UpstreamID || matchGroups && (current.GroupsKnown != expected.GroupsKnown || !slices.Equal(current.Groups, expected.Groups)) {
 		return "metadata_changed"
 	}
 	return ""

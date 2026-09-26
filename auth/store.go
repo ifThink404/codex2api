@@ -3426,6 +3426,7 @@ type Store struct {
 	freshSessionBalanceMu         sync.Mutex   // Serialize fresh comparison, slot acquisition and session admission
 	passiveInternalModels         atomic.Bool  // 可信派生内部模型仅复用原根会话账号
 	codexUnlinkedFallback         atomic.Bool  // 无根请求按用户/token/设备回溯最近账号
+	relaxedAccountGroups          atomic.Bool  // 宽松模式不按分组筛选账号
 	codexUnlinkedFallbackSec      atomic.Int64 // 回溯时间窗秒数，默认 300
 	claudeClientPolicy            atomic.Value // ClaudeClientPolicy: 全局 Claude Code 平台/版本策略快照
 	grokAffinityMode              atomic.Value // string: "follow" / "bounded" / "off" / "strict"（"follow"=跟随全局）
@@ -4008,6 +4009,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.SetSessionBalanceMode(database.NormalizeSessionBalanceMode(settings.SessionBalanceMode, settings.SessionWindowBalanceEnabled))
 	s.SetPassiveInternalModelsEnabled(settings.PassiveInternalModelsEnabled)
 	s.SetCodexUnlinkedAccountFallbackEnabled(settings.CodexUnlinkedAccountFallbackEnabled)
+	s.SetRelaxedAccountGroups(settings.CodexForkAccountFallbackEnabled)
 	s.SetCodexUnlinkedAccountFallbackSeconds(database.NormalizeCodexUnlinkedAccountFallbackSeconds(settings.CodexUnlinkedAccountFallbackSeconds))
 	s.SetGrokAffinityMode(grokAffinityModeFromConfig(settings.GrokConfig))
 	applyClaudeConfigToStore(s, settings.ClaudeConfig)
@@ -9809,7 +9811,7 @@ func (s *Store) LoadAPIKeyAllowedGroups(ctx context.Context) error {
 }
 
 // APIKeyAllowsAccount 判断某 API Key 是否允许调度到该账号。分组白名单与套餐白名单
-// 各自非空时都必须命中(AND 语义);任一为空表示该维度不限。
+// 各自非空时都必须命中(AND 语义);任一为空表示该维度不限。宽松模式仅跳过分组维度。
 func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 	if s == nil || apiKeyID == 0 || acc == nil {
 		return true
@@ -9820,6 +9822,9 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 	allowedPlans := s.apiKeyAllowedPlanSets[apiKeyID]
 	channel := s.apiKeyUpstreamChannels[apiKeyID]
 	s.apiKeyGroupsMu.RUnlock()
+	if s.relaxedAccountGroups.Load() {
+		allowedGroups = nil
+	}
 	// 渠道限定是硬门：grok 渠道只允许 Grok 账号，codex 渠道排除 Grok 账号。
 	switch channel {
 	case database.UpstreamChannelGrok:

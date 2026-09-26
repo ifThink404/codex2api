@@ -13,6 +13,6 @@
 
 宽松模式将此情况纳入 `account_missing` 换号。数据库仍有正常账号时先重新加载；不会重新激活回收站账号。已删除、已彻底移除、或明确缺失 Codex 凭据时，以原账号 ID 和当前持久化代次执行同一换号事务，不再依赖原运行时对象存在。
 
-回收站和缺失凭据账号继续按数据库中保留的完整分组匹配。账号记录及分组均已不存在时，日志标记 `selection.match_mode=request_scope_missing_owner`，通过当前 API Key 的分组、账号许可和请求模型过滤选择替代账号。已知的 BPS 路径下限、上下文清理/完整保留、窗口授权、容量及账号代次校验保持不变。提交前再次检查原账号状态和分组；查询失败不视为账号已删除。
+宽松模式下，无论原账号是否仍有分组记录，均不要求候选分组匹配，也不执行 API Key 分组筛选。日志标记 `selection.match_mode=relaxed_no_groups`。显式账号许可、模型、套餐、渠道、已知的 BPS 路径下限、上下文清理/完整保留、窗口授权、容量及账号代次校验保持不变。提交前再次检查原账号状态、凭据代次和上游身份；仅分组变化不阻止迁移，查询失败仍不视为账号已删除。
 
 `account_failover.owner_lookup` 区分 `not_found`、`deleted`、`credentials_missing`、`reloaded`、`lookup_failed`、`reload_failed` 以及提交前的 `recheck_*`。恢复账号后不换号时，结果为 `owner_reloaded`；没有合格替代账号时仍记录 `no_safe_candidate` 和候选淘汰原因。

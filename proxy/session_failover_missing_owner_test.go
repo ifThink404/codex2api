@@ -30,7 +30,7 @@ func missingOwnerSetup(t *testing.T, state string) (*Handler, int64, *auth.Accou
 	settings.CodexForkAccountFallbackEnabled = true
 	ApplyRuntimeSettings(settings)
 	h := newWindowAuthorizationHandler(t)
-	h.store = auth.NewStore(h.db, nil, &database.SystemSettings{MaxConcurrency: 5})
+	h.store = auth.NewStore(h.db, nil, &database.SystemSettings{MaxConcurrency: 5, CodexForkAccountFallbackEnabled: true})
 	t.Cleanup(h.store.Stop)
 	config := h.store.GetPromptFilterConfig()
 	config.Advanced.Risk.SessionContinuityMode = "off"
@@ -89,11 +89,8 @@ func TestRelaxedMissingOwnerSwitchesAndPersists(t *testing.T) {
 				require.EqualValues(t, 1, record.FailoverCount)
 				require.Equal(t, "bps", record.UpstreamMode)
 				require.Equal(t, preserve, record.PreserveRestartInput)
-				if state == "not_found" {
-					require.Equal(t, "request_scope_missing_owner", diagnostic.Selection.MatchMode)
-				} else {
-					require.Equal(t, "exact_groups", diagnostic.Selection.MatchMode)
-				}
+				require.Equal(t, "relaxed_no_groups", diagnostic.Selection.MatchMode)
+				require.Empty(t, diagnostic.Selection.RequiredGroupIDs)
 				require.Nil(t, h.store.FindByID(ownerID), "deleted owner must never be reactivated")
 				cleaned, _, err := PrepareSessionRestartOutbound(c.Request.Context(), target, body, c.Request.Header)
 				require.NoError(t, err)
@@ -154,6 +151,15 @@ func TestRelaxedMissingOwnerKeepsCandidateGuards(t *testing.T) {
 			require.Nil(t, h.configureSessionModelAffinity(c, requestSessionIdentity{stableIdentity: true}, key, "gpt-5.6-sol", "gpt-5.6-sol", false, body))
 			selected, _, handled := h.takeSessionAccountFailover(c.Request.Context(), key, 101, nil, sessionModelSupportFilter("gpt-5.6-sol", "gpt-5.6-sol", false), auth.DispatchPolicyStandard)
 			require.True(t, handled)
+			if scenario == "groups" || scenario == "scope_group" {
+				require.Same(t, target, selected)
+				h.store.Release(selected)
+				record, _, err := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))
+				require.NoError(t, err)
+				require.Equal(t, target.ID(), record.AccountID)
+				require.EqualValues(t, 1, record.FailoverCount)
+				return
+			}
 			require.Nil(t, selected)
 			record, _, err := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))
 			require.NoError(t, err)

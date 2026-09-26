@@ -129,6 +129,15 @@ func TestRelaxedRootFailoverKeepsCandidateRestrictions(t *testing.T) {
 			filter := compactionDomainFilter(bpsCodexCompactionDomain, sessionModelSupportFilter("gpt-5.6-sol", "gpt-5.6-sol", false), selectionTraceForRequest(c))
 			selected, _, handled := h.takeSessionAccountFailover(c.Request.Context(), key, 0, nil, filter, auth.DispatchPolicyStandard)
 			require.True(t, handled)
+			if scenario == "groups" {
+				require.Same(t, target, selected)
+				h.store.Release(selected)
+				record, _, err := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))
+				require.NoError(t, err)
+				require.Equal(t, target.ID(), record.AccountID)
+				require.Equal(t, "relaxed_no_groups", usageRequestDiagnosticState(c).AccountFailover.Selection.MatchMode)
+				return
+			}
 			require.Nil(t, selected)
 			diagnostic := usageRequestDiagnosticState(c).AccountFailover
 			require.Equal(t, "no_safe_candidate", diagnostic.Result)

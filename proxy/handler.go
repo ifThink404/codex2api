@@ -458,6 +458,10 @@ func applyAffinityGroupRouting(c *gin.Context, identity requestSessionIdentity, 
 	if apiRelaySessionExempt(c) {
 		filter = apiRelaySessionAccountFilter(filter)
 	}
+	if CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
+		usageRequestDiagnosticState(c).GroupRouting = &groupRoutingDiagnostic{Reason: "relaxed_no_groups"}
+		return filter
+	}
 	row := apiKeyRowFromContext(c)
 	if row == nil {
 		return filter

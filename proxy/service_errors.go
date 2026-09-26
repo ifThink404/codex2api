@@ -206,6 +206,8 @@ func serviceErrorIsUpstream(apiError *api.APIError) bool {
 
 func serviceErrorStage(state *serviceErrorAudit, status int, code string) string {
 	switch {
+	case code == "codex_dispatch_bps_upload_retry_unavailable":
+		return "dispatch"
 	case status == http.StatusTooManyRequests:
 		return "rate_limit"
 	case !state.authenticated && (status == http.StatusUnauthorized || status == http.StatusForbidden || code == "service_unavailable"):

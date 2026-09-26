@@ -30,6 +30,8 @@ func TestCodexForkAccountFallbackSettingsRoundTrip(test *testing.T) {
 	proxy.ApplyRuntimeSettingsFromSystem(settings)
 	store := auth.NewStore(db, memoryCache, settings)
 	test.Cleanup(store.Stop)
+	store.SetAPIKeyAllowedGroups(42, []int64{9})
+	outsideGroup := &auth.Account{DBID: 123, GroupIDs: []int64{30}}
 	handler := NewHandler(store, db, memoryCache, proxy.NewRateLimiter(settings.GlobalRPM), "admin-secret")
 	for _, step := range []struct {
 		name   string
@@ -80,6 +82,9 @@ func TestCodexForkAccountFallbackSettingsRoundTrip(test *testing.T) {
 			}
 			if proxy.CurrentRuntimeSettings().CodexForkAccountFallbackEnabled != step.want {
 				test.Fatal("runtime toggle does not match response")
+			}
+			if store.APIKeyAllowsAccount(42, outsideGroup) != step.want {
+				test.Fatal("account group selection must follow the saved relaxed toggle")
 			}
 			persisted, err := db.GetSystemSettings(context.Background())
 			if err != nil || persisted == nil {

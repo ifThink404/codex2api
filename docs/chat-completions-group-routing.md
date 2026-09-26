@@ -2,6 +2,8 @@
 
 API Key 的“账号分流组”继续使用 `limits.no_affinity_group_ids` 保存，不增加配置字段或数据表。留空时不启用分流。
 
+以下分组规则仅在宽松模式关闭时执行。宽松模式开启时，Chat、Responses、Compact、Messages 及原样透传均忽略主组／分流组和 API Key 允许分组，不为保留旧分组而查询或锁定旧账号；实际会话归属与迁移校验仍由会话流程负责。诊断标记 `group_routing.reason=relaxed_no_groups`，非分组的账号资格限制保持生效。
+
 先检查用户原始请求：会话 ID 或思考等级任一缺失时，只使用分流组，即使带有 Codex 指纹或本地 affinity 标识。思考等级读取原始 `reasoning.effort` / `reasoning_effort`，未传、`null`、空字符串和纯空白均视为缺失；显式 `low` 算已提供。模型映射、默认补 `low`、历史消息中的配置和后续生成的身份都不能覆盖这个判断。会话识别支持原始会话/线程请求头及 `client_metadata`、turn metadata；单独的 `prompt_cache_key`、请求 ID、BPS `task_id` 不算会话 ID。
 
 HTTP 入站记录一次，重试复用原始判断；WebSocket 每个 `response.create` 重新记录，不沿用上一帧的思考等级或会话元数据。两项均已提供时，继续使用以下规则：

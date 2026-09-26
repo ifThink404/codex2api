@@ -11518,6 +11518,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	if req.CodexForkAccountFallbackEnabled != nil {
 		runtimeCfg.CodexForkAccountFallbackEnabled = *req.CodexForkAccountFallbackEnabled
+		h.store.SetRelaxedAccountGroups(*req.CodexForkAccountFallbackEnabled)
 		log.Printf("设置已更新: codex_fork_account_fallback_enabled = %t", runtimeCfg.CodexForkAccountFallbackEnabled)
 	}
 	if req.CodexSessionFailoverEnabled != nil {

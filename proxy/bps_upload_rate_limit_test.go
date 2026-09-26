@@ -191,7 +191,13 @@ func TestBPSUploadRetryBudgetAndLogs(t *testing.T) {
 				}
 			}
 			require.Equal(t, failedAttempts, failures)
-			require.Empty(t, serviceErrorTestPage(t, h).Items, "upstream attempts belong to usage logs, without duplicate service errors")
+			events := serviceErrorTestPage(t, h).Items
+			if tc.allFail {
+				require.Len(t, events, 1, "record the final failed selection separately from upstream attempts")
+				require.Equal(t, "codex_dispatch_bps_upload_retry_unavailable", events[0].Code)
+			} else {
+				require.Empty(t, events, "upstream attempts belong to usage logs, without duplicate service errors")
+			}
 		})
 	}
 }

@@ -10,6 +10,8 @@ Responses、Compact、Chat Completions、Messages 和 Responses WebSocket 入口
 
 未启用宽松模式时保留父账号归属，但不再为本轮已排除的父账号额外空等 30 秒；后续仍由原有重试/终止策略决定。候选池耗尽且最后一个实际错误是附件上传失败时，HTTP/SSE/WebSocket 保留该失败及对应状态，不再统一改成 400“无可用账号”。
 
+宽松模式下上传重试可以跨任意账号分组，忽略 Key 允许分组和主组／分流组路由；其他账号资格及 BPS 路径限制仍生效。若仍无候选，服务错误日志保存最终选号结果（`codex_dispatch_bps_upload_retry_unavailable`），与每次实际上传失败的使用日志分开记录，便于判断是目标不可用还是换号后再次限流。
+
 诊断位于 `upstream.bps_compat.timing`：
 
 - `upload_primary_error`：首个有效上传错误，含阶段、实际 HTTP 状态、错误码/类型、脱敏说明、上游请求 ID 和 CF-Ray；同批上传取消不能覆盖它。

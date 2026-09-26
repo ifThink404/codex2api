@@ -433,10 +433,15 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		ownerGroups, oldUpstreamID, groupsKnown = plan.MissingOwner.Groups, plan.MissingOwner.UpstreamID, plan.MissingOwner.GroupsKnown
 	}
 	selection := &database.SessionFailoverSelection{MatchMode: "exact_groups"}
+	matchGroups := !CurrentRuntimeSettings().CodexForkAccountFallbackEnabled
 	if !groupsKnown {
 		selection.MatchMode = "request_scope_missing_owner"
 	}
-	selection.RequiredGroupIDs, _, selection.Truncated = failoverSelectionLabels(request, ownerGroups, nil)
+	if matchGroups {
+		selection.RequiredGroupIDs, _, selection.Truncated = failoverSelectionLabels(request, ownerGroups, nil)
+	} else {
+		selection.MatchMode = "relaxed_no_groups"
+	}
 	plan.Diagnostic.Selection = selection
 	defer func() {
 		details := trace.CandidateDetails()
@@ -466,7 +471,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			trace.RejectAccount(account.ID(), "upstream_mode_mismatch")
 			return false
 		}
-		if groupsKnown && !account.HasExactGroupIDs(ownerGroups) {
+		if matchGroups && groupsKnown && !account.HasExactGroupIDs(ownerGroups) {
 			trace.RejectAccount(account.ID(), "account_groups_mismatch")
 			return false
 		}
@@ -539,15 +544,15 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			handler.store.Release(candidate)
 			continue
 		}
-		ownerChanged := old != nil && !old.HasExactGroupIDs(ownerGroups)
+		ownerChanged := matchGroups && old != nil && !old.HasExactGroupIDs(ownerGroups)
 		if old == nil {
-			change := handler.missingSessionOwnerChange(ctx, oldID, plan.MissingOwner)
+			change := handler.missingSessionOwnerChange(ctx, oldID, plan.MissingOwner, matchGroups)
 			ownerChanged = change != ""
 			if ownerChanged {
 				plan.Diagnostic.OwnerLookup = "recheck_" + change
 			}
 		}
-		if ownerChanged || groupsKnown && !candidate.HasExactGroupIDs(ownerGroups) {
+		if ownerChanged || matchGroups && groupsKnown && !candidate.HasExactGroupIDs(ownerGroups) {
 			if candidate.ID() != oldID {
 				handler.store.RemoveAccountSession(candidate.ID(), key)
 			}

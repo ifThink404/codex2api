@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/codex2api/api"
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -162,7 +163,7 @@ func bpsPreparationFailureForRequest(c *gin.Context) *bpsAttachmentUploadError {
 	return &bpsAttachmentUploadError{failure: ErrUpstream(status, "附件上传失败。", errors.New(d.Message)), detail: *d}
 }
 
-func sendBPSPreparationFailure(c *gin.Context, stream, chat bool) bool {
+func (handler *Handler) sendBPSPreparationFailure(c *gin.Context, stream, chat bool) bool {
 	if sessionModelErrorForRequest(c) != nil {
 		return false
 	}
@@ -174,6 +175,9 @@ func sendBPSPreparationFailure(c *gin.Context, stream, chat bool) bool {
 		return false
 	}
 	captureUpstreamErrorDiagnostic(c, failure.UpstreamErrorBody(), failure.detail.HTTPStatus, "upstream_http", "bps_attachment_upload")
+	handler.recordServiceError(c, failure.UpstreamStatusCode(), api.NewAPIError(
+		api.ErrorCode("codex_dispatch_bps_upload_retry_unavailable"),
+		"BPS 附件上传失败后没有可用的重试账号。", api.ErrorTypeServer))
 	if stream && c.Writer.Written() {
 		if chat {
 			return writeCommittedChatRetryError(c, failure.detail.Message)

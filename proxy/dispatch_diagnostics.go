@@ -138,7 +138,7 @@ func (handler *Handler) dispatchFailureForRequest(ctx *gin.Context) dispatchFail
 }
 
 func (handler *Handler) sendDispatchUnavailable(ctx *gin.Context, stream bool, chat bool) {
-	if sendBPSPreparationFailure(ctx, stream, chat) {
+	if handler.sendBPSPreparationFailure(ctx, stream, chat) {
 		return
 	}
 	if sessionFailoverDispatchBlocked(ctx) {
