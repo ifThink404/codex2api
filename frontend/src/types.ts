@@ -2178,6 +2178,7 @@ export interface SystemSettings {
   codex_fingerprint_default_mode: string
   bps_round_convergence_limit: number
   bps_turn_task_lifetime_hours: number
+  bps_turn_round_limit: number
   allow_remote_migration: boolean
   database_driver: string
   database_label: string

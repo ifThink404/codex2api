@@ -54,11 +54,13 @@ Word BPS 出站只以 `metadata.task_id / turn_id / agent_iteration` 表达任�
 账号选择 `turn_round`（turn_id 轮次）后采用独立的策略，不自动迁移现有账号，也不使用 task_id 轮次的调用次数上限。
 
 - task 按实际上游账号＋最终模型＋有效思考等级分组，与 task_id 轮次使用相同的模型别名、low 默认值和 max→xhigh 规则；不同账号、模型或等级的 task 相互独立。
-- `turn_id` 按真实用户提问变化。相同用户、对话和提问的工具续接保持 turn，`agent_iteration` 从 `"1"` 递增；新提问使用新的 turn 并从 `"1"` 开始。不同用户或对话即使传相同客户端 turn 也相互隔离。没有客户端 turn 时按最后用户消息边界推导，截断输入且缺少边界时诊断标记 `missing_user_boundary`。
+- `bps_turn_round_limit` 控制每个 turn 批次的**用户提问次数**，默认 100，范围 1–1000000。当前 task 内按已验证用户分别计数，同一用户不同窗口累计；未提供已验证用户时使用调用方 API Key 分区。填 100 时前 100 次新提问共用 turn_id，第 101 次新提问更换 turn。工具续接、压缩和同账号重试不增加提问次数；即使新提问已经换批，旧提问的后续工具结果仍使用其原批次。不同用户不能共享 turn；会话只参与提问去重，不再单独划分 turn 批次。
+- `agent_iteration` 与提问次数分开：每次新的模型调用递增，同一逻辑调用的重试复用编号；新出站 turn 从 `"1"` 开始。每个提问使用原始会话和客户端 turn ID 去重；没有客户端 turn 时按最后用户消息边界推导，截断输入且缺少边界时诊断标记 `missing_user_boundary`。并发提问按数据库分配顺序计数，计数及去重结果跨实例和重启保留。上限修改从下一个 turn 批次生效，不改写已分配的提问。
 - 系统设置 `bps_turn_task_lifetime_hours` 控制 task 固定有效期，默认 24 小时，范围 1–8760。每个分组从 task **首次上游推理发送**起计时；工具续接、重试及持续使用都不延长截止时间。到期后的第一次新调用建立新 task、turn 并从 1 开始，即使它是上一用户提问的续接。没有新请求不预建 task。只准备或分配但尚未发送不启动计时。
 - 同一账号迁移段内，同一逻辑请求的重试保留它原来的 task、turn 和序号，即使 task 已过期或设置已修改。旧 task 重试不影响新 task 的截止时间。更新有效期从下一个 task 生效，当前 task 使用创建时的配置。
 - SQLite/PostgreSQL 持久化 task 代次、分配结果及发送时间；进程重启保留状态，多实例通过数据库事务协调轮换。同轮步骤继续使用既有原子迭代计数。切号使用目标账号对应模型＋思考等级的当前 task，并建立新 turn、序号从 1 开始；切回原账号也不能复用上次驻留的 turn。切号本身不刷新目标 task 的有效期。
-- 诊断 `upstream.bps_compat.turn_convergence` 展示 task、turn、`agent_iteration`、实际模型和思考等级、代次、`task_lifetime_hours`、首次/最后发送及过期时间。`task_scope=upstream_account_model_effort_timed_turns`，Word 同时记录 `word_identity`，日志序号徽标继续显示实际出站 `agent_iteration`。
+- 诊断 `upstream.bps_compat.turn_convergence` 展示 task、turn、`agent_iteration`、实际模型和思考等级、代次、`task_lifetime_hours`、首次/最后发送及过期时间；`turn_question_limit`、`turn_question_number` 和 `turn_generation` 分别表示本批提问上限、该提问在批次中的序号和 turn 批次代次。`task_scope=upstream_account_model_effort_timed_turns`，Word 同时记录 `word_identity`，日志序号徽标继续显示实际出站 `agent_iteration`。
+- 设置页将 task_id 轮次与 turn_id 轮次分开显示。前者的模型调用次数不影响后者；后者分别填写用户提问次数和 task 有效小时数。升级到按用户提问分批的实现后，首次调用建立新的 turn 批次，task 计时不重置；旧的逐提问 turn 映射保留，之后的重试按新批次分配稳定复用。
 - task 收敛不合并本地提示词、附件缓存、响应缓存或用户归属；原生 Codex 仅收敛设备。账号编辑、快速设置、批量编辑和新账号默认档位均可选择新模式。
 
 两种轮次模式的 turn 隔离优先使用持久化会话迁移代次；没有显式会话、使用任务软粘性选号时，使用绑定账号的切换版本。软粘性只在换账号时递增 `binding_revision`，同账号续接和重试保持版本；写入失败或并发竞争未获绑定的请求使用独立的临时 turn 范围，不复用胜出账号的 turn。临时后台请求在每次实际换号时递增自己的迁移代次，不写入主会话归属。

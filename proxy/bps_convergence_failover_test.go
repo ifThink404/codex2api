@@ -95,6 +95,9 @@ func TestBPSConvergenceFailoverKeepsAccountTaskAndRotatesTurn(t *testing.T) {
 			require.NotEqual(t, b1.TurnID, back.TurnID)
 			require.EqualValues(t, 2, back.Generation)
 			if mode == auth.CodexFingerprintModeTurnRound {
+				require.EqualValues(t, 1, a1.TurnQuestionNumber)
+				require.EqualValues(t, 1, b1.TurnQuestionNumber)
+				require.EqualValues(t, 1, back.TurnQuestionNumber, "account identity rewrites cannot make an existing question count again")
 				require.Equal(t, "1", b1.AgentIteration)
 				require.Equal(t, "2", b2.AgentIteration)
 				require.Equal(t, "1", back.AgentIteration)

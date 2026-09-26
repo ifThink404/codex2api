@@ -69,6 +69,7 @@ type RuntimeSettings struct {
 	CodexUserAgentConfig     string
 	BPSRoundConvergenceLimit int
 	BPSTurnTaskLifetimeHours int
+	BPSTurnRoundLimit        int
 	CodexTelemetryEnabled    bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
@@ -215,6 +216,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexContinueMaxRounds:            defaultCodexContinueMaxRounds,
 		BPSRoundConvergenceLimit:          database.DefaultBPSRoundConvergenceLimit,
 		BPSTurnTaskLifetimeHours:          database.DefaultBPSTurnTaskLifetimeHours,
+		BPSTurnRoundLimit:                 database.DefaultBPSTurnRoundLimit,
 		RequestIsolationMode:              defaultRequestIsolationMode(),
 		CodexCLIVersionSyncEnabled:        true,
 		CodexCLIVersionSyncIntervalHours:  12,
@@ -348,6 +350,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.CodexOverloadWindowMinutes = database.NormalizeCodexOverloadWindowMinutes(settings.CodexOverloadWindowMinutes)
 	settings.BPSRoundConvergenceLimit = database.NormalizeBPSRoundConvergenceLimit(settings.BPSRoundConvergenceLimit)
 	settings.BPSTurnTaskLifetimeHours = database.NormalizeBPSTurnTaskLifetimeHours(settings.BPSTurnTaskLifetimeHours)
+	settings.BPSTurnRoundLimit = database.NormalizeBPSTurnRoundLimit(settings.BPSTurnRoundLimit)
 	if settings.CodexContinueMaxRounds < minCodexContinueMaxRounds {
 		settings.CodexContinueMaxRounds = defaults.CodexContinueMaxRounds
 	}
@@ -416,6 +419,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexContinueMaxRounds = settings.CodexContinueMaxRounds
 		next.BPSRoundConvergenceLimit = settings.BPSRoundConvergenceLimit
 		next.BPSTurnTaskLifetimeHours = settings.BPSTurnTaskLifetimeHours
+		next.BPSTurnRoundLimit = settings.BPSTurnRoundLimit
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
 		next.CodexCLIVersionSyncIntervalHours = settings.CodexCLIVersionSyncIntervalHours

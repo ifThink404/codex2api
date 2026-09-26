@@ -531,6 +531,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = withBPSTurnQuestionInput(ctx, account, headers, requestBody)
 	useBPS, modeErr := codexRequestUsesBPS(ctx, account, gjson.GetBytes(requestBody, "model").String())
 	if modeErr != nil {
 		return nil, modeErr
@@ -1113,6 +1114,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = withBPSTurnQuestionInput(ctx, account, headers, requestBody)
 	ctx = context.WithValue(ctx, billingTierRequestKey{}, knownBillingTier(extractServiceTier(requestBody)))
 	resetUpstreamUserAgentAudit(ctx)
 	resetWsAcquireAudit(ctx)

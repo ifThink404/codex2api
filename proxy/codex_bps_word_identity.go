@@ -49,6 +49,9 @@ type bpsWordIdentityDiagnostic struct {
 	TaskLastSentAtMS    int64  `json:"task_last_sent_at_unix_ms,omitempty"`
 	TaskExpiresAtMS     int64  `json:"task_expires_at_unix_ms,omitempty"`
 	TaskLifetimeHours   int    `json:"task_lifetime_hours,omitempty"`
+	TurnQuestionLimit   int    `json:"turn_question_limit,omitempty"`
+	TurnQuestionNumber  int64  `json:"turn_question_number,omitempty"`
+	TurnGeneration      int64  `json:"turn_generation,omitempty"`
 	roundPartitionKey   string
 }
 
@@ -161,7 +164,12 @@ func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Heade
 	stepKey := codexIdentityDigest("bps-word-step-v2", step)
 	if full := bpsFullConvergenceFrom(ctx); full != nil && full.taskLifetimeHours > 0 {
 		stepKey = codexIdentityDigest("bps-turn-operation-v1", stepKey, strconv.FormatBool(compact))
-		return resolveBPSTurnIdentity(ctx, full, model, bpsRoundReasoningEffort(body), turnKey, stepKey, d)
+		questionSeed := full.questionTurnSeed
+		if questionSeed == "" {
+			questionSeed = turnSeed
+		}
+		questionKey := codexIdentityDigest("bps-turn-question-v1", full.questionScope, questionSeed)
+		return resolveBPSTurnIdentity(ctx, full, model, bpsRoundReasoningEffort(body), turnKey, stepKey, questionKey, d)
 	}
 	if full := bpsFullConvergenceFrom(ctx); full != nil && full.roundLimit > 0 {
 		stepKey = codexIdentityDigest("bps-round-operation-v1", stepKey, strconv.FormatBool(compact))

@@ -38,6 +38,17 @@ func (db *DB) ResolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey s
 }
 
 func (db *DB) resolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey string, limit int, now func() time.Time) (identity BPSRoundIdentity, reused bool, err error) {
+	return db.resolveBPSRoundCounter(ctx, accountKey, stepKey, limit, now, BPSRoundTaskIdleTimeout)
+}
+
+// ResolveBPSTurnQuestionIdentity counts distinct user questions, not inference
+// steps. Callers scope it by task and verified user; tool continuations reuse
+// the question key. Task expiry is handled by the outer timed-task allocator.
+func (db *DB) ResolveBPSTurnQuestionIdentity(ctx context.Context, userKey, questionKey string, limit int) (BPSRoundIdentity, bool, error) {
+	return db.resolveBPSRoundCounter(ctx, userKey, questionKey, limit, time.Now, 0)
+}
+
+func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey string, limit int, now func() time.Time, idleTimeout time.Duration) (identity BPSRoundIdentity, reused bool, err error) {
 	if !ValidSessionOperationKey(accountKey) || !ValidSessionOperationKey(stepKey) || limit < 1 || limit > MaxBPSRoundConvergenceLimit {
 		return identity, false, errors.New("invalid BPS round convergence scope or limit")
 	}
@@ -67,14 +78,17 @@ func (db *DB) resolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey s
 		if err := tx.QueryRowContext(ctx, `SELECT generation,iteration,round_limit FROM bps_round_tasks WHERE account_key=$1`, accountKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit); err != nil {
 			return err
 		}
-		var lastSentAtMS int64
-		err = tx.QueryRowContext(ctx, `SELECT CASE WHEN last_sent_at_unix_ms > 0 THEN last_sent_at_unix_ms ELSE started_at_unix_ms END FROM bps_round_batches WHERE account_key=$1 AND generation=$2`, accountKey, identity.Generation).Scan(&lastSentAtMS)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
 		// No start record means the batch was only allocated, not sent yet.
 		// Actual inference sends renew activity; allocation and restart do not.
-		expired := err == nil && now().Sub(time.UnixMilli(lastSentAtMS)) >= BPSRoundTaskIdleTimeout
+		expired := false
+		if idleTimeout > 0 {
+			var lastSentAtMS int64
+			err = tx.QueryRowContext(ctx, `SELECT CASE WHEN last_sent_at_unix_ms > 0 THEN last_sent_at_unix_ms ELSE started_at_unix_ms END FROM bps_round_batches WHERE account_key=$1 AND generation=$2`, accountKey, identity.Generation).Scan(&lastSentAtMS)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			expired = err == nil && now().Sub(time.UnixMilli(lastSentAtMS)) >= idleTimeout
+		}
 		if identity.Iteration >= int64(identity.RoundLimit) || expired {
 			if identity.Generation == math.MaxInt64 {
 				return errors.New("BPS round generation exhausted")

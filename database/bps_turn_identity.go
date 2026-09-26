@@ -11,6 +11,16 @@ import (
 const DefaultBPSTurnTaskLifetimeHours = 24
 const MaxBPSTurnTaskLifetimeHours = 8760
 
+const DefaultBPSTurnRoundLimit = 100
+const MaxBPSTurnRoundLimit = 1000000
+
+func NormalizeBPSTurnRoundLimit(value int) int {
+	if value < 1 || value > MaxBPSTurnRoundLimit {
+		return DefaultBPSTurnRoundLimit
+	}
+	return value
+}
+
 func NormalizeBPSTurnTaskLifetimeHours(value int) int {
 	if value < 1 || value > MaxBPSTurnTaskLifetimeHours {
 		return DefaultBPSTurnTaskLifetimeHours

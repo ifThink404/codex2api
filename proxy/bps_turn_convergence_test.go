@@ -23,6 +23,7 @@ func TestBPSTurnConvergenceUserTurnsAndPartitions(t *testing.T) {
 	settings := DefaultRuntimeSettings()
 	settings.BPSRoundConvergenceLimit = 1 // The old mode's limit must not affect this mode.
 	settings.BPSTurnTaskLifetimeHours = 36
+	settings.BPSTurnRoundLimit = 100
 	ApplyRuntimeSettings(settings)
 	path := filepath.Join(t.TempDir(), "turns.db")
 	db, err := database.New("sqlite", path)
@@ -49,6 +50,7 @@ func TestBPSTurnConvergenceUserTurnsAndPartitions(t *testing.T) {
 		require.Equal(t, "upstream_account_model_effort_timed_turns", d.TaskScope)
 		require.Equal(t, 36, d.TaskLifetimeHours)
 		require.Zero(t, d.RoundLimit)
+		require.Equal(t, 100, d.TurnQuestionLimit)
 		require.Equal(t, d.TaskID, gjson.GetBytes(wire, "metadata.task_id").String())
 		require.Equal(t, d.TurnID, gjson.GetBytes(wire, "metadata.turn_id").String())
 		require.Equal(t, d.AgentIteration, gjson.GetBytes(wire, "metadata.agent_iteration").String())
@@ -73,13 +75,21 @@ func TestBPSTurnConvergenceUserTurnsAndPartitions(t *testing.T) {
 	require.Equal(t, "3", compact.AgentIteration)
 	next := project("alice", "session-a", "turn-b", "gpt-6-astra", "low", initial, false)
 	require.Equal(t, first.TaskID, next.TaskID)
-	require.NotEqual(t, first.TurnID, next.TurnID)
-	require.Equal(t, "1", next.AgentIteration)
+	require.Equal(t, first.TurnID, next.TurnID)
+	require.Equal(t, "4", next.AgentIteration)
+	require.EqualValues(t, 2, next.TurnQuestionNumber)
 	for _, user := range [][2]string{{"bob", "session-a"}, {"alice", "session-b"}} {
 		d := project(user[0], user[1], "turn-a", "gpt-6-astra", "low", initial, false)
 		require.Equal(t, first.TaskID, d.TaskID)
-		require.NotEqual(t, first.TurnID, d.TurnID, "shared task must not collapse different users or conversations into one turn")
-		require.Equal(t, "1", d.AgentIteration)
+		if user[0] == "bob" {
+			require.NotEqual(t, first.TurnID, d.TurnID, "different users must keep independent turns and counters")
+			require.Equal(t, "1", d.AgentIteration)
+			require.EqualValues(t, 1, d.TurnQuestionNumber)
+		} else {
+			require.Equal(t, first.TurnID, d.TurnID, "one user's questions count across windows")
+			require.Equal(t, "5", d.AgentIteration, "identical client turn IDs in different windows are distinct questions")
+			require.EqualValues(t, 3, d.TurnQuestionNumber)
+		}
 	}
 	tasks := map[string]bool{}
 	for _, model := range []string{"gpt-6-astra", "gpt-5.6-sol"} {
@@ -116,9 +126,11 @@ func TestBPSTurnConvergenceUserTurnsAndPartitions(t *testing.T) {
 	fallbackNext := project("alice", "fallback", "", "gpt-6-astra", "low", `[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"hello again"}]`, false)
 	require.Equal(t, "user_boundary", fallback.TurnSource)
 	require.Equal(t, fallback.TurnID, fallbackTool.TurnID)
-	require.Equal(t, "2", fallbackTool.AgentIteration)
-	require.NotEqual(t, fallback.TurnID, fallbackNext.TurnID)
-	require.Equal(t, "1", fallbackNext.AgentIteration)
+	require.Equal(t, fallback.TurnQuestionNumber, fallbackTool.TurnQuestionNumber)
+	require.Equal(t, "7", fallbackTool.AgentIteration)
+	require.Equal(t, fallback.TurnID, fallbackNext.TurnID)
+	require.Equal(t, fallback.TurnQuestionNumber+1, fallbackNext.TurnQuestionNumber)
+	require.Equal(t, "8", fallbackNext.AgentIteration)
 }
 
 // Simulate a task generation change at the durable assignment boundary; the
@@ -147,7 +159,7 @@ func TestBPSTurnConvergenceRotationAndReplay(t *testing.T) {
 	ctx := WithCodexIdentityStore(t.Context(), store)
 	scope := &bpsFullConvergenceScope{taskKey: "account", taskLifetimeHours: 24}
 	resolve := func(step string) *bpsWordIdentityDiagnostic {
-		d, err := resolveBPSTurnIdentity(ctx, scope, "gpt-6-astra", "low", "same-user-turn", codexIdentityDigest(step), &bpsWordIdentityDiagnostic{})
+		d, err := resolveBPSTurnIdentity(ctx, scope, "gpt-6-astra", "low", "same-user-turn", codexIdentityDigest(step), codexIdentityDigest("same-question"), &bpsWordIdentityDiagnostic{})
 		require.NoError(t, err)
 		return d
 	}
@@ -201,14 +213,14 @@ func TestBPSTurnConvergenceExecutor(t *testing.T) {
 		require.NotNil(t, d)
 		require.Positive(t, d.TaskStartedAtMS)
 		require.Equal(t, (2 * time.Hour).Milliseconds(), d.TaskExpiresAtMS-d.TaskStartedAtMS)
-		require.Equal(t, "1", gjson.GetBytes(wire, "metadata.agent_iteration").String())
+		require.Equal(t, fmt.Sprint(i+1), gjson.GetBytes(wire, "metadata.agent_iteration").String())
 		require.Equal(t, d.TurnID, gjson.GetBytes(wire, "metadata.turn_id").String())
 		require.False(t, gjson.GetBytes(wire, "prompt_cache_key").Exists())
 		require.False(t, gjson.GetBytes(wire, "client_metadata").Exists())
 		require.NotNil(t, snapshotUpstreamTrace(ctx).Transport.BPS.TurnConvergence)
 		if first != nil {
 			require.Equal(t, first.TaskID, d.TaskID)
-			require.NotEqual(t, first.TurnID, d.TurnID)
+			require.Equal(t, first.TurnID, d.TurnID)
 			require.Equal(t, first.TaskExpiresAtMS, d.TaskExpiresAtMS)
 		}
 		first = d
