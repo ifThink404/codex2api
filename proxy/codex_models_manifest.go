@@ -153,7 +153,8 @@ func (h *Handler) extraRelayManifestModels(ctx context.Context, row *database.AP
 		if record == nil {
 			continue
 		}
-		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 && !observed[strings.ToLower(record.id)] {
+		_, daybreak := auth.ParseDaybreakAlias(record.id)
+		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 && !observed[strings.ToLower(record.id)] && daybreak == "" {
 			continue
 		}
 		extras = append(extras, api.Model{ID: record.id, Object: "model", OwnedBy: scopedModelOwner(record)})

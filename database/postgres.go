@@ -233,9 +233,6 @@ type DB struct {
 	backgroundTaskCtx     context.Context
 	backgroundTaskCancel  context.CancelFunc
 
-	channelMonitorOnce    sync.Once
-	channelMonitorInitErr error
-
 	// 使用日志批量写入缓冲
 	logBuf  []usageLogEntry
 	logMu   sync.Mutex
@@ -253,6 +250,8 @@ type DB struct {
 	accountInsertMu       sync.Mutex
 	sqliteWriteSem        chan struct{}
 	sqliteSingleConn      bool
+	channelMonitorOnce    sync.Once
+	channelMonitorInitErr error
 
 	// 配了 scope 累计额度的 API Key 集合（issue #439 v2）。落库热路径靠它跳过
 	// 绝大多数 Key，60s 刷新一次；管理端保存后会主动失效。
@@ -500,6 +499,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		ctx = postGrokCtx
 		if err := db.ensureCodexRefreshSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化 Codex 刷新保护表失败: %w", err)
+		}
+		if err := db.ensureChannelMonitorSchema(ctx); err != nil {
+			return nil, fmt.Errorf("初始化渠道监控表失败: %w", err)
 		}
 		if err := db.ensurePromptFilterNewAPIBindingsTable(ctx); err != nil {
 			return nil, fmt.Errorf("创建 NewAPI 平台绑定表失败: %w", err)
@@ -1556,6 +1558,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_continue_thinking_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_continue_max_rounds INT DEFAULT 8;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_cli_version TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_desktop_mac_build TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_desktop_windows_build TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_vscode_build TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_cli_version_sync_enabled BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_cli_version_sync_interval_hours INT DEFAULT 12;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS claude_synced_cli_version TEXT DEFAULT '';
@@ -1573,6 +1578,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS continuous_retry_policy TEXT DEFAULT '{"enabled":false,"catch_all":false,"categories":["transport","http_429","http_5xx","stream_error"],"status_codes":[],"error_codes":[],"max_duration_seconds":600}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS ignore_usage_limit_status BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_on_exhaustion_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_before_expiry_min INT DEFAULT 60;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_activate_5h_window_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
@@ -1670,6 +1676,10 @@ func (db *DB) migrate(ctx context.Context) error {
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_source_id ON prompt_filter_logs(source, id DESC);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_reviewed_id ON prompt_filter_logs(reviewed, id DESC);
 			DROP TABLE IF EXISTS prompt_filter_secrets;
+			CREATE TABLE IF NOT EXISTS daybreak_snapshots (
+ account_id BIGINT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+ identity TEXT NOT NULL, observed_at BIGINT NOT NULL, checked_at BIGINT NOT NULL, models_json TEXT NOT NULL
+ );
 			CREATE TABLE IF NOT EXISTS model_capability_snapshots (
  account_id BIGINT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
  credential_generation BIGINT NOT NULL,
@@ -2523,16 +2533,17 @@ type SystemSettings struct {
 	TransportRetryPolicy        string // 传输错误重试策略: rotate（换号，旧行为）/ sticky（同号延迟重试）
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本缓存，
 	// 用于抬升出站 UA / manifest 的模拟版本（绝不低于内置常量），空表示尚未同步。
-	CodexSyncedCLIVersion string
-	CodexSyncedDesktopMacBuild string
+	CodexSyncedCLIVersion          string
+	CodexSyncedDesktopMacBuild     string
 	CodexSyncedDesktopWindowsBuild string
-	CodexSyncedVSCodeBuild string
+	CodexSyncedVSCodeBuild         string
 	// CodexCLIVersionSyncEnabled 控制是否后台定时自动同步 Codex CLI 版本（默认 true）。
 	CodexCLIVersionSyncEnabled bool
 	// CodexCLIVersionSyncIntervalHours 是定时同步间隔（小时，默认 12，范围 1-720）。
 	CodexCLIVersionSyncIntervalHours int
 	// AutoResetCreditsEnabled 控制 Plus/Pro 主动重置次数的临期自动消费（默认关闭）。
 	AutoResetCreditsEnabled bool
+	// AutoResetCreditsOnExhaustionEnabled consumes a credit after a live window reaches 100%.
 	AutoResetCreditsOnExhaustionEnabled bool
 	// AutoResetCreditsBeforeExpiryMin 是进入临期窗口的提前分钟数（默认 60，范围 10-10080）。
 	AutoResetCreditsBeforeExpiryMin int
@@ -2806,7 +2817,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(codex_initial_session_max_age_seconds, 180),
 		       COALESCE(codex_session_auto_lock_enabled, false),
 		       COALESCE(codex_session_auto_lock_threshold, 3),
-		       COALESCE(codex_turn_state_vault_enabled, true)
+		       COALESCE(codex_turn_state_vault_enabled, true),
+		       COALESCE(auto_reset_credits_on_exhaustion_enabled, false)
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2899,9 +2911,19 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.CodexSessionAutoLockEnabled,
 		&s.CodexSessionAutoLockThreshold,
 		&s.CodexTurnStateVaultEnabled,
+		&s.AutoResetCreditsOnExhaustionEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := db.conn.QueryRowContext(ctx, `SELECT COALESCE(codex_synced_desktop_mac_build, ''),
+		COALESCE(codex_synced_desktop_windows_build, ''), COALESCE(codex_synced_vscode_build, '')
+		FROM system_settings WHERE id = 1`).Scan(&s.CodexSyncedDesktopMacBuild,
+		&s.CodexSyncedDesktopWindowsBuild, &s.CodexSyncedVSCodeBuild); err != nil {
+		return nil, err
 	}
 	s.SiteName = NormalizeSiteName(s.SiteName)
 	s.SiteLogo = strings.TrimSpace(s.SiteLogo)
@@ -3161,9 +3183,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_initial_session_max_age_seconds,
 					codex_session_auto_lock_enabled,
 					codex_session_auto_lock_threshold,
-					codex_turn_state_vault_enabled
+					codex_turn_state_vault_enabled,
+					auto_reset_credits_on_exhaustion_enabled
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $131)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $131, $132)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3203,10 +3226,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				prompt_filter_log_matches = EXCLUDED.prompt_filter_log_matches,
 				prompt_filter_max_text_length = EXCLUDED.prompt_filter_max_text_length,
 				prompt_filter_sensitive_words = EXCLUDED.prompt_filter_sensitive_words,
-				prompt_filter_custom_patterns = CASE WHEN $132 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
+				prompt_filter_custom_patterns = CASE WHEN $133 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
 				prompt_filter_disabled_patterns = EXCLUDED.prompt_filter_disabled_patterns,
 				prompt_filter_review_enabled = EXCLUDED.prompt_filter_review_enabled,
-				prompt_filter_review_api_key = CASE WHEN $133 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
+				prompt_filter_review_api_key = CASE WHEN $134 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
 				prompt_filter_review_base_url = EXCLUDED.prompt_filter_review_base_url,
 				prompt_filter_review_model = EXCLUDED.prompt_filter_review_model,
 				prompt_filter_review_timeout_seconds = EXCLUDED.prompt_filter_review_timeout_seconds,
@@ -3292,7 +3315,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_initial_session_max_age_seconds = EXCLUDED.codex_initial_session_max_age_seconds,
 					codex_session_auto_lock_enabled = EXCLUDED.codex_session_auto_lock_enabled,
 					codex_session_auto_lock_threshold = EXCLUDED.codex_session_auto_lock_threshold,
-					codex_turn_state_vault_enabled = EXCLUDED.codex_turn_state_vault_enabled
+					codex_turn_state_vault_enabled = EXCLUDED.codex_turn_state_vault_enabled,
+					auto_reset_credits_on_exhaustion_enabled = EXCLUDED.auto_reset_credits_on_exhaustion_enabled
 			`, NormalizeSiteName(s.SiteName), strings.TrimSpace(s.SiteLogo),
 		s.MaxConcurrency, s.GlobalRPM, s.TestModel, testContent, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
 		s.AutoCleanUnauthorized, s.AutoCleanRateLimited, s.AdminSecret, s.AutoCleanFullUsage, s.ProxyPoolEnabled,
@@ -3354,6 +3378,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.CodexSessionAutoLockEnabled,
 		NormalizeSessionAutoLockThreshold(s.CodexSessionAutoLockThreshold),
 		s.CodexTurnStateVaultEnabled,
+		s.AutoResetCreditsOnExhaustionEnabled,
 		s.PreservePromptFilterCustomPatterns,
 		s.PreservePromptFilterReviewAPIKey)
 	if err != nil {
@@ -3374,11 +3399,19 @@ func (db *DB) UpdateCodexSyncedCLIVersion(ctx context.Context, version string) e
 	return err
 }
 
+// UpdateCodexSyncedAppBuild 只更新一个已知客户端的构建号，不回写整个设置快照。
 func (db *DB) UpdateCodexSyncedAppBuild(ctx context.Context, kind, version string) error {
-	columns := map[string]string{"desktop-mac": "codex_synced_desktop_mac_build", "desktop-windows": "codex_synced_desktop_windows_build", "vscode": "codex_synced_vscode_build"}
+	columns := map[string]string{
+		"desktop-mac":     "codex_synced_desktop_mac_build",
+		"desktop-windows": "codex_synced_desktop_windows_build",
+		"vscode":          "codex_synced_vscode_build",
+	}
 	column, ok := columns[kind]
-	if !ok { return fmt.Errorf("unknown Codex app build kind %q", kind) }
-	query := fmt.Sprintf(`INSERT INTO system_settings (id, %s) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET %s = EXCLUDED.%s`, column, column, column)
+	if !ok {
+		return fmt.Errorf("unknown Codex app build kind %q", kind)
+	}
+	query := fmt.Sprintf(`INSERT INTO system_settings (id, %s) VALUES (1, $1)
+		ON CONFLICT (id) DO UPDATE SET %s = EXCLUDED.%s`, column, column, column)
 	_, err := db.conn.ExecContext(ctx, query, strings.TrimSpace(version))
 	return err
 }
@@ -6436,6 +6469,11 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 	}
 	if f.Query != "" {
 		p := addArg("%" + f.Query + "%")
+		// 注意:这里只匹配账号 name,不匹配 accounts.credentials。
+		// credentials 是不透明 JSON(含模型目录、URL、token 等结构化数据),把它纳入
+		// LIKE 会让搜索词(如 "5.6")命中凭据里的模型目录,从而把该账号全部日志(含
+		// gpt-6-* 等不含搜索词的记录)带入结果;同时对用户输入的 LIKE 模式扫描凭据
+		// 内容本身也不安全。按账号名/邮箱仍可通过 name 命中。
 		parts = append(parts, fmt.Sprintf(`(
 			LOWER(COALESCE(u.error_message, '')) LIKE LOWER(%[1]s)
  OR LOWER(COALESCE(u.request_id, '')) LIKE LOWER(%[1]s)
@@ -6453,7 +6491,6 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 					SELECT search_accounts.id
 					FROM accounts search_accounts
 					WHERE LOWER(COALESCE(search_accounts.name, '')) LIKE LOWER(%[1]s)
-						OR LOWER(COALESCE(CAST(search_accounts.credentials AS TEXT), '')) LIKE LOWER(%[1]s)
 				)
 		)`, p))
 	}
@@ -7523,6 +7560,9 @@ func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scor
 			if _, err := tx.ExecContext(ctx, "UPDATE accounts SET "+strings.Join(sets, ", ")+" WHERE id = "+ph, args...); err != nil {
 				return err
 			}
+			if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
+				return err
+			}
 		}
 		if groupIDs.Set {
 			ph := "$1"
@@ -7735,6 +7775,9 @@ func (db *DB) batchUpdateAccountCredentials(ctx context.Context, tx *sql.Tx, cur
 		if _, err := tx.ExecContext(ctx, updateQuery, credJSON, id); err != nil {
 			return err
 		}
+		if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -7924,6 +7967,9 @@ func (db *DB) updateCredentialsReadMerge(ctx context.Context, id int64, credenti
 	if _, err := tx.ExecContext(ctx, updateQuery, credJSON, id); err != nil {
 		return err
 	}
+	if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -7932,7 +7978,9 @@ func (db *DB) updateCredentialsSQLite(ctx context.Context, id int64, credentials
 		if len(credentials) == 0 {
 			return nil
 		}
-		if grokIdentityUpdateKeysPresent(credentials) {
+		_, hasEmail := credentials["email"]
+		_, hasHeaders := credentials["custom_headers"]
+		if grokIdentityUpdateKeysPresent(credentials) || hasEmail || hasHeaders {
 			return db.updateCredentialsReadMergeSQLiteUnlocked(ctx, id, credentials)
 		}
 
@@ -8008,6 +8056,9 @@ func (db *DB) updateCredentialsReadMergeSQLiteUnlocked(ctx context.Context, id i
 		generationUpdate = ", credential_generation = credential_generation + 1"
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET credentials = $1`+generationUpdate+`, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, credJSON, id); err != nil {
+		return err
+	}
+	if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -8102,6 +8153,9 @@ func (db *DB) UpdateOpenAIResponsesAccount(ctx context.Context, id int64, name s
 	}
 	res, err := tx.ExecContext(ctx, updateQuery, name, credJSON, proxyURL, id)
 	if err != nil {
+		return err
+	}
+	if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
 		return err
 	}
 	affected, err := res.RowsAffected()

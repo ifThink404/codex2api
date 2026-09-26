@@ -37,13 +37,24 @@ func TestUsageLogTurnStateColumnsRoundTrip(t *testing.T) {
 	}
 	db.FlushUsageLogs()
 
-	logs, err := db.ListRecentUsageLogs(ctx, 10)
-	if err != nil {
-		t.Fatalf("ListRecentUsageLogs: %v", err)
-	}
-	byRequest := make(map[string]*UsageLog, len(logs))
-	for _, entry := range logs {
-		byRequest[entry.RequestID] = entry
+	// The background flusher may already own a batch when FlushUsageLogs
+	// drains the buffer. Wait for that in-flight transaction before asserting
+	// the round trip; a missing row still fails after the bounded deadline.
+	var byRequest map[string]*UsageLog
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		logs, err := db.ListRecentUsageLogs(ctx, 10)
+		if err != nil {
+			t.Fatalf("ListRecentUsageLogs: %v", err)
+		}
+		byRequest = make(map[string]*UsageLog, len(logs))
+		for _, entry := range logs {
+			byRequest[entry.RequestID] = entry
+		}
+		if len(byRequest) == len(rows) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if len(byRequest) != 3 {
 		t.Fatalf("persisted %d rows, want 3", len(byRequest))
