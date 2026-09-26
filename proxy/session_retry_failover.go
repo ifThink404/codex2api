@@ -9,10 +9,10 @@ import (
 )
 
 // The endpoint still owns its retry budget and the no-visible-output check.
-// This state only prepares a migration when that endpoint selects another
-// attempt after an observed quota failure, or after a retryable request-local
-// exclusion in relaxed mode; it never initiates a retry itself.
-type sessionQuotaRetry struct {
+// This state prepares a migration when that endpoint selects another
+// attempt after an observed quota failure or a retryable request-local
+// exclusion. Both failover modes share this path; it never initiates a retry.
+type sessionRetryFailover struct {
 	request *gin.Context
 	key     string
 	body    []byte
@@ -20,7 +20,7 @@ type sessionQuotaRetry struct {
 
 func newSessionRetryAccountExclusions(request *gin.Context, key string, body []byte) *retryAccountExclusions {
 	exclusions := newRetryAccountExclusions()
-	exclusions.sessionQuota = &sessionQuotaRetry{request: request, key: key, body: body}
+	exclusions.sessionFailover = &sessionRetryFailover{request: request, key: key, body: body}
 	return exclusions
 }
 
@@ -44,11 +44,11 @@ func (r *retryAccountExclusions) noteRetryFailure(accountID int64) {
 	r.retryFailures[accountID] = true
 }
 
-func (h *Handler) prepareSessionQuotaRetry(ctx context.Context, key string, exclusions *retryAccountExclusions, policy auth.DispatchPolicy) (context.Context, bool) {
-	if exclusions == nil || exclusions.sessionQuota == nil || ctx.Err() != nil || sessionAccountFailoverEnabledBy("account_usage_exhausted") == "" {
+func (h *Handler) prepareSessionRetryFailover(ctx context.Context, key string, exclusions *retryAccountExclusions, policy auth.DispatchPolicy) (context.Context, bool) {
+	if exclusions == nil || exclusions.sessionFailover == nil || ctx.Err() != nil || sessionAccountFailoverEnabledBy("account_usage_exhausted") == "" {
 		return ctx, false
 	}
-	retry := exclusions.sessionQuota
+	retry := exclusions.sessionFailover
 	request := retry.request
 	if retry.key != key || request == nil || apiRelaySessionExempt(request) {
 		return ctx, false
@@ -58,13 +58,15 @@ func (h *Handler) prepareSessionQuotaRetry(ctx context.Context, key string, excl
 		return ctx, false
 	}
 	ownerID := state.Record.AccountID
-	requestExcluded := CurrentRuntimeSettings().CodexForkAccountFallbackEnabled && exclusions.retryFailures[ownerID] && exclusions.ForSelection()[ownerID]
+	requestExcluded := sessionAccountFailoverEnabledBy("request_excluded") != "" && exclusions.retryFailures[ownerID] && exclusions.ForSelection()[ownerID]
 	if !exclusions.quotaFailures[ownerID] && !requestExcluded {
 		return ctx, false
 	}
 	delete(exclusions.quotaFailures, ownerID)
 	owner := h.store.FindByID(ownerID)
-	reason := sessionAccountFailoverReason(owner, policy)
+	reason := h.sessionFailoverReasonForRequest(request, owner, key, policy)
+	// A configured sticky retry still retries the same owner. A true quota
+	// exhaustion or an observed exclusion under rotate policy allows migration.
 	if reason != "account_usage_exhausted" && reason != "account_spark_usage_exhausted" && !requestExcluded {
 		return ctx, false
 	}
@@ -90,4 +92,29 @@ func (h *Handler) prepareSessionQuotaRetry(ctx context.Context, key string, excl
 		return context.WithValue(ctx, sessionAccountFailoverContextKey{}, plan), false
 	}
 	return ctx, false
+}
+
+// Availability can change after ingress prepared the owner (admin changes,
+// shared cooldowns, model-list refresh). Re-evaluate after a failed selection
+// before a stale model-denial flag or a wait can strand the request on it.
+func (h *Handler) retryUnavailableSessionOwner(ctx context.Context, key string, apiKeyID int64, exclusions *retryAccountExclusions, filter auth.AccountFilter, policy auth.DispatchPolicy) (*auth.Account, string, bool) {
+	if exclusions == nil || exclusions.sessionFailover == nil || ctx.Err() != nil {
+		return nil, "", false
+	}
+	retry := exclusions.sessionFailover
+	if retry.key != key || retry.request == nil || apiRelaySessionExempt(retry.request) {
+		return nil, "", false
+	}
+	request := retry.request
+	pending, failure := h.prepareSessionAccountFailover(request, key, retry.body, policy)
+	if failure != nil {
+		plan := &sessionAccountFailoverPlan{Request: request, Key: key, Failure: failure, Diagnostic: usageRequestDiagnosticState(request).AccountFailover}
+		request.Request = request.Request.WithContext(context.WithValue(request.Request.Context(), sessionAccountFailoverContextKey{}, plan))
+		return nil, "", true
+	}
+	if !pending {
+		return nil, "", false
+	}
+	plan := request.Request.Context().Value(sessionAccountFailoverContextKey{})
+	return h.takeSessionAccountFailover(context.WithValue(ctx, sessionAccountFailoverContextKey{}, plan), key, apiKeyID, exclusions.ForSelection(), filter, policy)
 }

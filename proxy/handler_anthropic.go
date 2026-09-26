@@ -548,7 +548,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	priorSessionAccountID, _ := h.store.AccountSessionAccountID(affinityKey, time.Now())
 	beginDispatchSelection(c)
 	if modelError := h.configureSessionModelAffinity(c, sessionIdentity, affinityKey, effectiveModel, effectiveModel, false, ingressRequestBody(c, nil)); modelError != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": modelError})
+		c.JSON(api.HTTPStatusCode(modelError.Code), gin.H{"type": "error", "error": modelError})
 		return
 	}
 	accountFilter := accountFilterForResponsesModel(effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
@@ -586,7 +586,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	rateLimitRetries := 0
 	var lastStatusCode int
 	var lastBody []byte
-	retryExclusions := newRetryAccountExclusions()
+	retryExclusions := newSessionRetryAccountExclusions(c, affinityKey, ingressRequestBody(c, rawBody))
 	var wsHTTPFallback websocketHTTPFallbackState
 	antigravityRefreshRetried := map[int64]bool{}
 
@@ -615,6 +615,20 @@ func (h *Handler) Messages(c *gin.Context) {
 			account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter)
 		}
 		if account == nil {
+			if sessionFailoverDispatchBlocked(c) {
+				failure := sessionFailoverUnavailableAPIError(c)
+				if !claimContinuousRetryTerminal(c, continuousRetryProtocolAnthropic) {
+					return
+				}
+				if isStream && writeCommittedAnthropicRetryError(c, string(failure.Type), failure.Message) {
+					return
+				}
+				if details, ok := failure.Details.(gin.H); ok && details["retryable"] == true {
+					c.Header("X-Should-Retry", "true")
+				}
+				sendAnthropicError(c, api.HTTPStatusCode(failure.Code), string(failure.Type), failure.Message, failure.Code)
+				return
+			}
 			if modelError := sessionModelErrorForRequest(c); modelError != nil {
 				sendSessionModelError(c, modelError, continuousRetryProtocolAnthropic)
 				return

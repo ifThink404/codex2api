@@ -6560,7 +6560,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			compactContinuationPinned, previousResponseAffinityFound = false, false
 		}
 		if attempt > 0 {
-			if _, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), affinityKey, retryExclusions, dispatchPolicy); blocked {
+			if _, blocked := h.prepareSessionRetryFailover(c.Request.Context(), affinityKey, retryExclusions, dispatchPolicy); blocked {
 				h.sendDispatchUnavailable(c, false, false)
 				return
 			}

@@ -20,14 +20,20 @@ func (trace *SelectionTrace) SetSessionModelFilter(filter AccountFilter) {
 	trace.mu.Unlock()
 }
 
-func (trace *SelectionTrace) CheckSessionModel(account *Account) bool {
+// SessionModelSupported inspects the constraint without marking a sticky
+// denial. Failover must get a chance to replace an incompatible owner first.
+func (trace *SelectionTrace) SessionModelSupported(account *Account) bool {
 	if trace == nil || account == nil {
 		return true
 	}
 	trace.mu.Lock()
 	filter := trace.sessionModelFilter
 	trace.mu.Unlock()
-	if filter == nil || filter(account) {
+	return filter == nil || filter(account)
+}
+
+func (trace *SelectionTrace) CheckSessionModel(account *Account) bool {
+	if trace.SessionModelSupported(account) {
 		return true
 	}
 	trace.mu.Lock()

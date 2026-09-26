@@ -46,6 +46,19 @@ func (trace *SelectionTrace) PinnedAccount() int64 {
 	return trace.pinnedAccount
 }
 
+// CommitSessionOwner is only for a completed ownership transaction. Preserve
+// candidate constraints, but discard a denial belonging to the previous owner.
+func (trace *SelectionTrace) CommitSessionOwner(accountID int64) {
+	if trace == nil || accountID <= 0 {
+		return
+	}
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	trace.pinnedAccount, trace.rootAccount = accountID, accountID
+	trace.sessionModelDenied = false
+	delete(trace.reasons, "session_model_unavailable")
+}
+
 // DetachSessionBinding is used only after an authorized background request has
 // been converted into an independent temporary request. Account/key filters
 // remain with the caller; the old parent's pin is no longer applicable.

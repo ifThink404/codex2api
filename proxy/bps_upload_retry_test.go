@@ -202,6 +202,7 @@ func TestBackgroundRetryFallbackRequiresAuthorizationAndRetryEvidence(t *testing
 	for _, scenario := range []string{"retry", "strict", "bare_exclusion", "invalid_request", "usage_policy", "prompt_safety", "ticket", "canceled", "websocket"} {
 		t.Run(scenario, func(t *testing.T) {
 			h, owner, _, _ := failoverTestSetup(t, false)
+			owner.CodexBPS = true // Match the healthy parent's persisted route.
 			UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
 				s.CodexForkAccountFallbackEnabled = scenario != "strict"
 				return s

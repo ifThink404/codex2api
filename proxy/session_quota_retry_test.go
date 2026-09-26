@@ -256,7 +256,8 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 				require.Len(t, attempts, 1, output)
 				require.NotContains(t, output, "response.completed")
 				if tc.targetMismatch != "" {
-					require.Contains(t, output, "no_available_account")
+					require.Contains(t, output, "service_unavailable")
+					require.Contains(t, output, `"retryable":true`)
 				}
 			} else if tc.targetQuota || tc.temporaryAlways {
 				require.Len(t, attempts, 2, output)
@@ -329,7 +330,7 @@ func TestSessionQuotaRetryOnlyObservedQuotaCanMigrate(t *testing.T) {
 			if observed {
 				exclusions.MarkHTTPFailure(owner.ID(), 429, []byte(`{"error":{"type":"usage_limit_reached"}}`), 0, 1)
 			}
-			ctx, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
+			ctx, blocked := h.prepareSessionRetryFailover(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
 			require.False(t, blocked)
 			selected, _, handled := h.takeSessionAccountFailover(ctx, key, 0, exclusions.ForSelection(), nil, auth.DispatchPolicyStandard)
 			require.Equal(t, observed, handled)
@@ -356,7 +357,7 @@ func TestSessionQuotaRetryRejectsUnsafeContextAndSkipsRelay(t *testing.T) {
 			exclusions := newSessionRetryAccountExclusions(c, key, body)
 			exclusions.MarkHTTPFailure(owner.ID(), 429, []byte(`{"error":{"type":"usage_limit_reached"}}`), 0, 1)
 			owner.UsagePercent7d, owner.UsagePercent7dValid, owner.PlanType, owner.Reset7dAt = 100, true, "free", time.Now().Add(time.Hour)
-			_, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
+			_, blocked := h.prepareSessionRetryFailover(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
 			require.Equal(t, !relay, blocked)
 			require.Equal(t, !relay, sessionFailoverDispatchBlocked(c))
 			if blocked {
@@ -386,7 +387,7 @@ func TestSessionQuotaRetryCanPrepareAnotherGeneration(t *testing.T) {
 		}
 		account.UsagePercent7d, account.UsagePercent7dValid, account.PlanType, account.Reset7dAt = 100, true, "free", time.Now().Add(time.Hour)
 		exclusions.MarkHTTPFailure(account.ID(), 429, []byte(`{"error":{"type":"usage_limit_reached"}}`), 0, 2)
-		ctx, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
+		ctx, blocked := h.prepareSessionRetryFailover(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
 		require.False(t, blocked)
 		selected, _, handled := h.takeSessionAccountFailover(ctx, key, 0, exclusions.ForSelection(), nil, auth.DispatchPolicyStandard)
 		require.True(t, handled)
@@ -409,7 +410,7 @@ func TestSessionQuotaRetryFirstRequestCommittedOwner(t *testing.T) {
 	exclusions := newSessionRetryAccountExclusions(c, key, body)
 	exclusions.MarkHTTPFailure(owner.ID(), 429, []byte(`{"error":{"type":"usage_limit_reached"}}`), 0, 1)
 	owner.UsagePercent7d, owner.UsagePercent7dValid, owner.PlanType, owner.Reset7dAt = 100, true, "free", time.Now().Add(time.Hour)
-	ctx, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
+	ctx, blocked := h.prepareSessionRetryFailover(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
 	require.False(t, blocked)
 	selected, _, handled := h.takeSessionAccountFailover(ctx, key, 0, exclusions.ForSelection(), nil, auth.DispatchPolicyStandard)
 	require.True(t, handled)

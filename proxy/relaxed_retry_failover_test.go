@@ -56,7 +56,7 @@ func TestRelaxedRetryFailoverExcludedHealthyRoot(t *testing.T) {
 					migratable = false
 				}
 				require.Empty(t, sessionAccountFailoverReason(owner, auth.DispatchPolicyStandard), "request-local failure must not mark account exhausted")
-				ctx, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
+				ctx, blocked := h.prepareSessionRetryFailover(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
 				require.False(t, blocked)
 				selected, _, handled := h.takeSessionAccountFailover(ctx, key, 0, exclusions.ForSelection(), nil, auth.DispatchPolicyStandard)
 				wantSwitch := relaxed && migratable

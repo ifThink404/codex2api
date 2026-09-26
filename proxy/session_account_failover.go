@@ -33,6 +33,11 @@ func sessionFailoverContextError(request *gin.Context, diagnostic *sessionAccoun
 	if state.Continuity != nil {
 		state.Continuity.AccountFailover = diagnostic
 	}
+	if block == "ownership_unavailable" || block == "ownership_changed" {
+		request.Header("X-Should-Retry", "true")
+		return api.NewAPIErrorWithDetails(api.ErrCodeServiceUnavailable, "会话归属暂时无法确认或已更新，请稍后重新发起请求。", api.ErrorTypeServer,
+			gin.H{"reason": block, "trigger_reason": diagnostic.TriggerReason, "phase": diagnostic.Phase, "retry": "backoff", "retryable": true})
+	}
 	reason := "会话归属无法核实"
 	switch block {
 	case "upstream_continuation":
@@ -97,6 +102,11 @@ type sessionAccountFailoverPlan struct {
 }
 
 func (handler *Handler) validateMigratedSessionContext(request *gin.Context, body []byte, record database.SessionContinuityRecord, rootKeys ...string) *api.APIError {
+	var failure *api.APIError
+	body, failure = sessionReplayBody(request, body)
+	if failure != nil {
+		return failure
+	}
 	if record.LossyContextRestart {
 		epoch := outboundEpochFromContext(request.Request.Context())
 		if epoch == nil || epoch.record.AccountID != record.AccountID || epoch.record.FailoverCount != record.FailoverCount {
@@ -237,47 +247,8 @@ func sessionAccountFailoverReason(account *auth.Account, policy auth.DispatchPol
 	return account.SessionAccountFailoverReason()
 }
 
-func (handler *Handler) sessionFailoverReasonForRequest(request *gin.Context, account *auth.Account, key string, policy auth.DispatchPolicy) string {
-	if reason := sessionAccountFailoverReason(account, policy); reason != "" {
-		return reason
-	}
-	if reason := codexRouteFailureForRequest(request.Request.Context(), account); reason != "" {
-		return reason
-	}
-	if account != nil {
-		ctx := request.Request.Context()
-		if epoch := outboundEpochFromContext(ctx); epoch != nil && epoch.record.AccountID == account.ID() && bpsUploadCooldownForRequest(ctx, account, normalizedCodexRoute(epoch.record.UpstreamMode)) {
-			return bpsUploadCooldownReason
-		}
-	}
-	if account != nil && account.SessionCapacityLimits().Enabled && !handler.store.CanAdmitAccountSession(account, key, time.Now(), selectionTraceForRequest(request)) {
-		return "account_session_capacity_full"
-	}
-	return ""
-}
-
 func sessionFailoverContextBlock(headers http.Header, body []byte) string {
 	return sessionFailoverContextBlockWithVerifier(headers, body, nil)
-}
-
-func sessionAccountFailoverEnabledBy(reason string) string {
-	settings := CurrentRuntimeSettings()
-	if reason == "request_excluded" {
-		if settings.CodexForkAccountFallbackEnabled {
-			return "relaxed_mode"
-		}
-		return ""
-	}
-	if settings.CodexSessionFailoverEnabled {
-		return "session_failover"
-	}
-	if settings.CodexForkAccountFallbackEnabled {
-		switch reason {
-		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full", "account_payment_required", "account_missing", bpsUploadCooldownReason:
-			return "relaxed_mode"
-		}
-	}
-	return ""
 }
 
 func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key string, body []byte, policy auth.DispatchPolicy, excludedOwners ...int64) (bool, *api.APIError) {
@@ -298,7 +269,7 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		}
 	}
 	reason := handler.sessionFailoverReasonForRequest(request, owner, key, policy)
-	requestExcluded := CurrentRuntimeSettings().CodexForkAccountFallbackEnabled && len(excludedOwners) > 0 && excludedOwners[0] > 0 && excludedOwners[0] == state.Diagnostic.OwnerAccount
+	requestExcluded := sessionAccountFailoverEnabledBy("request_excluded") != "" && len(excludedOwners) > 0 && excludedOwners[0] > 0 && excludedOwners[0] == state.Diagnostic.OwnerAccount
 	if requestExcluded {
 		reason = "request_excluded"
 	}
@@ -322,6 +293,11 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 	if diagnostic.EnabledBy == "" {
 		diagnostic.Result, diagnostic.BlockReason = "disabled", "failover_disabled"
 		return false, nil
+	}
+	var replayError *api.APIError
+	body, replayError = sessionReplayBody(request, body)
+	if replayError != nil {
+		return false, replayError
 	}
 	preserveInput := CurrentRuntimeSettings().CodexSessionFailoverPreserveInput || state.Record.PreserveRestartInput
 	cleaned, cleanedHeaders, cleanup, cleanupError := cleanSessionRestartContext(sessionFailoverRequestHeaders(request), body, nil, preserveInput)
@@ -379,8 +355,11 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 	if plan != nil && plan.Key == key && plan.Failure != nil {
 		return nil, "", true
 	}
-	if plan == nil || plan.Checked || plan.Key != key {
+	if plan == nil || plan.Key != key {
 		return nil, "", false
+	}
+	if plan.Checked {
+		return nil, "", plan.Diagnostic != nil && (plan.Diagnostic.Result == "blocked" || plan.Diagnostic.Result == "no_safe_candidate")
 	}
 	plan.Checked = true
 	if sessionAccountFailoverEnabledBy(plan.Diagnostic.TriggerReason) == "" || plan.Diagnostic.TriggerReason == "account_missing" && !CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
@@ -413,8 +392,12 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 	lock.Lock()
 	defer lock.Unlock()
 	entry, found, err := handler.readSessionContinuity(ctx, state.Key)
-	if err != nil || !found || entry.Record.AccountID != oldID || entry.Record.FailoverCount != state.Record.FailoverCount {
-		plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "ownership_changed"
+	if err != nil {
+		plan.Failure = sessionFailoverContextError(request, plan.Diagnostic, "ownership_unavailable")
+		return nil, "", true
+	}
+	if !found || entry.Record.AccountID != oldID || entry.Record.FailoverCount != state.Record.FailoverCount {
+		plan.Failure = sessionFailoverContextError(request, plan.Diagnostic, "ownership_changed")
 		return nil, "", true
 	}
 	excluded := make(map[int64]bool, len(exclude)+1)
@@ -499,6 +482,10 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			trace.RejectAccount(account.ID(), "request_filter_mismatch")
 			return false
 		}
+		if !selectionTraceForRequest(request).SessionModelSupported(account) {
+			trace.RejectAccount(account.ID(), "account_model_unavailable")
+			return false
+		}
 		if !handler.store.CanAdmitAccountSession(account, key, time.Now(), trace) {
 			trace.RejectAccount(account.ID(), "session_capacity_exhausted")
 			return false
@@ -506,7 +493,13 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		return true
 	}
 	tryOriginalBPS := old != nil && normalizedCodexRoute(entry.Record.UpstreamMode) == "native" && codexRouteFailureForRequest(ctx, old) != "" && sessionAccountFailoverReason(old, policy) == ""
-	for range 16 {
+	// Every attempt excludes its candidate. Bound by the pool snapshot, not an
+	// arbitrary sixteen-account cutoff; cancellation still stops long searches.
+	for range handler.store.AccountCount() + 1 {
+		if ctx.Err() != nil {
+			plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "request_canceled"
+			return nil, "", true
+		}
 		selection.Attempts++
 		var candidate *auth.Account
 		if tryOriginalBPS {
@@ -604,7 +597,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 				handler.store.RemoveAccountSession(candidate.ID(), key)
 			}
 			handler.store.Release(candidate)
-			plan.Diagnostic.Result, plan.Diagnostic.Reason = "blocked", "ownership_commit_failed"
+			plan.Failure = sessionFailoverContextError(request, plan.Diagnostic, "ownership_unavailable")
 			return nil, "", true
 		}
 		if candidate.ID() != oldID {
@@ -616,7 +609,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		state.RestartReason = ""
 		handler.attachSessionOutboundEpoch(request, state.Key, committed)
 		state.Diagnostic.OwnerAccount, state.Diagnostic.OwnerSource = candidate.ID(), "account_failover"
-		selectionTraceForRequest(request).PinAccount(candidate.ID())
+		selectionTraceForRequest(request).CommitSessionOwner(candidate.ID())
 		plan.Diagnostic.Result, plan.Diagnostic.AccountID, plan.Diagnostic.Generation = "switched", candidate.ID(), committed.FailoverCount
 		plan.Diagnostic.Phase = "after_switch"
 		plan.Diagnostic.UpstreamMode = committed.UpstreamMode

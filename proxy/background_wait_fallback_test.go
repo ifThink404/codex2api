@@ -27,7 +27,7 @@ func TestBackgroundWaitRelaxedFallbackAfterOwnerChange(t *testing.T) {
 				t.Cleanup(func() { ApplyRuntimeSettings(previous) })
 				UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = enabled; return s })
 				synctest.Test(t, func(t *testing.T) {
-					parent := &auth.Account{DBID: 17, AccessToken: "root", Status: auth.StatusReady, SessionCapacityEnabled: true, SessionCapacityMax: 2}
+					parent := &auth.Account{DBID: 17, AccessToken: "root", Status: auth.StatusReady, CodexBPS: true, SessionCapacityEnabled: true, SessionCapacityMax: 2}
 					target := &auth.Account{DBID: 18, AccessToken: "target", Status: auth.StatusReady, SessionCapacityEnabled: true, SessionCapacityMax: 2}
 					h.store.AddAccount(parent)
 					h.store.AddAccount(target)

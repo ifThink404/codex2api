@@ -4,7 +4,7 @@
 
 端点先按已有重试预算及输出状态判断能否重试；允许重试时，若当前会话账号已被确认额度耗尽，再复用正常切号流程。额度耗尽切号可由 `codex_session_failover_enabled` 或宽松模式 `codex_fork_account_fallback_enabled` 启用。API 中转豁免请求和没有独立会话归属的后台被动请求不走这条持久化迁移流程。
 
-宽松模式还识别本次请求中的临时排除：例如 BPS 图片上传返回 429，账号本身仍健康，但重试排除集合已经包含该账号。以前这种情况继续固定原账号，产生 `root_owner_unavailable / request_excluded / retry=stop`。现在，对已观察到的可重试 429、5xx、传输故障或首字超时，在端点决定继续重试时走正常迁移，选择另一符合条件的账号。无需把原账号标记为额度耗尽；裸排除标记、参数错误或策略拒绝不能单独触发这条逻辑。
+普通自动换号与宽松模式均识别本次请求中的临时排除：例如 BPS 图片上传返回 429，账号本身仍健康，但重试排除集合已经包含该账号。以前这种情况继续固定原账号，产生 `root_owner_unavailable / request_excluded / retry=stop`。现在，对已观察到的可重试 429、5xx、传输故障或首字超时，在端点决定继续重试时走正常迁移，选择另一符合条件的账号。无需把原账号标记为额度耗尽；裸排除标记、参数错误或策略拒绝不能单独触发这条逻辑。实际入口为 `session_retry_failover.go`，Messages 也接入同一状态。
 
 - HTTP 请求使用 `max_rate_limit_retries`，与 `max_retries` 独立。例如普通重试 0、429 重试 1，允许 429 后再尝试一次。
 - 原生 WebSocket 入站仍使用 `codex_ws_silent_retry_enabled` / `codex_ws_silent_max_retries`；不将 HTTP 的次数强加到原生 WebSocket。现有持续重试策略的选择和预算保持有效。

@@ -11,7 +11,7 @@ import (
 )
 
 const sessionFailoverUnavailableMessage = "当前对话暂时无法继续处理请求，请稍后手动重试；若持续失败，请联系服务提供方。"
-const sessionFailoverCapacityMessage = "当前对话的账号模型容量暂时不足，切号未能找到可用账号，请新建窗口"
+const sessionFailoverCapacityMessage = "当前可用账号容量暂时不足，请稍后重试当前对话。"
 
 func failoverSelectionLabels(ctx *gin.Context, groups []int64, tags []string) ([]int64, []string, bool) {
 	groups = slices.Clone(groups)
@@ -44,21 +44,26 @@ func sessionFailoverNoCandidate(ctx *gin.Context) bool {
 
 func sessionFailoverUnavailableAPIError(ctx *gin.Context) *api.APIError {
 	message := sessionFailoverUnavailableMessage
+	reason := "no_safe_candidate"
 	if plan, _ := ctx.Request.Context().Value(sessionAccountFailoverContextKey{}).(*sessionAccountFailoverPlan); plan != nil {
 		if plan.Failure != nil {
 			return plan.Failure
 		}
-		if plan.Diagnostic != nil && plan.Diagnostic.Result == "no_safe_candidate" && plan.Diagnostic.TriggerReason == bpsUploadCooldownReason {
-			return api.NewAPIErrorWithDetails(api.ErrCodeServiceUnavailable, "附件上传暂时受限，当前没有可用的替代账号，请稍后重试。", api.ErrorTypeServer,
-				gin.H{"request_id": diagnosticRequestID(snapshotUpstreamTrace(ctx.Request.Context()).RequestID), "retryable": true})
+		if plan.Diagnostic != nil {
+			if plan.Diagnostic.Reason != "" {
+				reason = plan.Diagnostic.Reason
+			}
+			if plan.Diagnostic.TriggerReason == bpsUploadCooldownReason {
+				message = "附件上传暂时受限，当前没有可用的替代账号，请稍后重试。"
+			}
 		}
 		if plan.Diagnostic != nil && plan.Diagnostic.Result == "no_safe_candidate" &&
 			(plan.Diagnostic.TriggerReason == "account_session_capacity_full" || plan.Diagnostic.Reason == "account_session_capacity_full") {
 			message = sessionFailoverCapacityMessage
 		}
 	}
-	return api.NewAPIErrorWithDetails(api.ErrCodeNoAvailableAccount, message, api.ErrorTypeInvalidRequest,
-		gin.H{"request_id": diagnosticRequestID(snapshotUpstreamTrace(ctx.Request.Context()).RequestID), "retryable": false})
+	return api.NewAPIErrorWithDetails(api.ErrCodeServiceUnavailable, message, api.ErrorTypeServer,
+		gin.H{"request_id": diagnosticRequestID(snapshotUpstreamTrace(ctx.Request.Context()).RequestID), "reason": reason, "retryable": true})
 }
 
 func sessionFailoverDispatchBlocked(ctx *gin.Context) bool {
@@ -66,7 +71,7 @@ func sessionFailoverDispatchBlocked(ctx *gin.Context) bool {
 		return false
 	}
 	plan, _ := ctx.Request.Context().Value(sessionAccountFailoverContextKey{}).(*sessionAccountFailoverPlan)
-	return plan != nil && plan.Failure != nil || sessionFailoverNoCandidate(ctx)
+	return plan != nil && (plan.Failure != nil || plan.Diagnostic != nil && (plan.Diagnostic.Result == "blocked" || plan.Diagnostic.Result == "no_safe_candidate"))
 }
 
 func sendSessionFailoverUnavailable(ctx *gin.Context, stream, chat bool) {

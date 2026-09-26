@@ -46,8 +46,13 @@ func (handler *Handler) forkAccountFallbackReason(request *gin.Context, parentID
 	if parentID == 0 || parent == nil {
 		return "fork_parent_missing"
 	}
-	if !parent.IsRelayStyle() && parent.SessionCapacityLimits().Enabled && !handler.store.CanAdmitAccountSession(parent, childKey, time.Now(), selectionTraceForRequest(request)) {
-		return "fork_parent_capacity_full"
+	info := codexRouteRequestInfo(request.Request.Context())
+	prior, _ := request.Request.Context().Value(codexRouteFloorKey{}).(string)
+	if reason := handler.sessionOwnerFailure(request, parent, childKey, dispatchPolicyForModel(info.Model), info, prior); reason != "" {
+		if reason == "account_session_capacity_full" {
+			return "fork_parent_capacity_full"
+		}
+		return "fork_parent_" + strings.TrimPrefix(reason, "account_")
 	}
 	return ""
 }

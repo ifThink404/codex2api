@@ -364,6 +364,10 @@ func (handler *Handler) prepareSessionContinuity(request *gin.Context, identity 
 }
 
 func sessionContinuityError(reason string) *api.APIError {
+	if reason == "ownership_unavailable" || reason == "storage_unavailable" {
+		return api.NewAPIErrorWithDetails(api.ErrorCode("codex_session_continuity_"+reason), "会话账号归属暂时无法确认，请稍后重试。", api.ErrorTypeServer,
+			gin.H{"reason": reason, "retry": "backoff", "retryable": true})
+	}
 	message := "会话上下文序号不连续，请恢复正确的对话后重试。"
 	if reason == "unbound_nonzero" {
 		message = "当前请求来自已有上下文窗口，请新开对话后重试。"

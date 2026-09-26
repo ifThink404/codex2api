@@ -525,7 +525,11 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	beginDispatchSelection(c)
 	if modelError := h.configureSessionModelAffinity(c, sessionIdentity, affinityKey, logModel, effectiveModel, false, rawBody); modelError != nil {
 		_ = writeAuditedResponsesWSError(c, conn, modelError)
-		return newResponsesWSCloseError(websocket.ClosePolicyViolation, modelError.Message, modelError)
+		closeCode := websocket.ClosePolicyViolation
+		if api.HTTPStatusCode(modelError.Code) >= http.StatusInternalServerError {
+			closeCode = websocket.CloseTryAgainLater
+		}
+		return newResponsesWSCloseError(closeCode, modelError.Message, modelError)
 	}
 	routingBody, _ := sessionRestartRoutingContext(c, rawBody)
 	turnContinuation = codexWSTurnContinuationToken(routingBody) != ""

@@ -63,6 +63,8 @@ func TestRelaxedFallbackPassiveParentAvailability(t *testing.T) {
 					id := parent.ID()
 					if scenario == "removed" {
 						id = 99999
+					} else {
+						parent.CodexBPS = true // The persisted healthy parent uses BPS.
 					}
 					_, err := h.db.CommitSessionContinuity(t.Context(), hashRiskIdentity(rootKey), database.SessionContinuityRecord{AccountID: id, UpstreamMode: "bps", LastSeen: time.Now()})
 					require.NoError(t, err)
@@ -107,7 +109,7 @@ func TestRelaxedFallbackPassiveParentAvailability(t *testing.T) {
 				}
 				identity := h.resolveRequestSessionIdentityForContext(c, body)
 				fallback := relaxedAccountFallbackFromContext(c.Request.Context())
-				want := enabled && (scenario == "unresolved" || scenario == "missing" || scenario == "removed" || scenario == "full" || scenario == "disabled" || scenario == "paused" || scenario == "quota_5h" || scenario == "quota_7d" || scenario == "auto_paused")
+				want := enabled && (scenario == "unresolved" || scenario == "missing" || scenario == "removed" || scenario == "full" || scenario == "disabled" || scenario == "paused" || scenario == "quota_5h" || scenario == "quota_7d" || scenario == "auto_paused" || scenario == "transient")
 				require.Equal(t, want, fallback != nil)
 				if want {
 					require.False(t, identity.requiresRootAccount)

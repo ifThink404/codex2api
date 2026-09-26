@@ -76,7 +76,7 @@ func TestSessionAccountFailoverDisabledAndUnavailableReasons(test *testing.T) {
 				body = addSessionTools(test, body)
 				require.Nil(test, handler.configureSessionModelAffinity(request, requestSessionIdentity{stableIdentity: true}, key, "gpt-5.6-sol", "gpt-5.6-sol", false, body))
 				selected, _, handled := handler.takeSessionAccountFailover(request.Request.Context(), key, 0, nil, nil, auth.DispatchPolicyStandard)
-				expectSwitch := enabled && reason != "healthy" && reason != "server_cooldown"
+				expectSwitch := enabled && reason != "healthy"
 				require.Equal(test, expectSwitch, handled)
 				if expectSwitch {
 					require.Same(test, target, selected)

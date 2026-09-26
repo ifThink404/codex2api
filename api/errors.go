@@ -139,7 +139,7 @@ func HTTPStatusCode(code ErrorCode) int {
 	case ErrCodeInvalidRequest, ErrCodeInvalidParameter, ErrCodeMissingField, ErrCodeInvalidFieldType,
 		ErrCodeInvalidFieldFormat, ErrCodeContextLengthExceeded, ErrCodeUnsupportedModel,
 		ErrCodeAccountSessionCapacity, ErrCodeRootAccountWaitTimeout, ErrCodeBackgroundRootUnavailable, ErrCodeSessionModelUnavailable,
-		"codex_session_continuity_storage_unavailable", "codex_session_continuity_ownership_unavailable", "codex_session_continuity_owner_conflict",
+		"codex_session_continuity_owner_conflict",
 		"codex_session_continuity_unbound_nonzero", "codex_session_continuity_unbound_compaction", "codex_session_continuity_window_missing", "codex_session_continuity_window_invalid",
 		"codex_session_continuity_fork_owner_unavailable", "codex_session_failover_context_required", "codex_session_restart_context_required",
 		"codex_session_continuity_number_conflict", "codex_session_continuity_thread_conflict", "codex_session_continuity_window_regressed", "codex_session_continuity_window_gap",
@@ -150,7 +150,7 @@ func HTTPStatusCode(code ErrorCode) int {
 		return http.StatusBadRequest
 	case ErrCodeNoAvailableAccount:
 		return http.StatusBadRequest
-	case ErrCodeServiceUnavailable:
+	case ErrCodeServiceUnavailable, "codex_session_continuity_storage_unavailable", "codex_session_continuity_ownership_unavailable":
 		return http.StatusServiceUnavailable
 	case ErrCodeServerError, ErrCodeUpstreamError, ErrCodeUpstreamTimeout:
 		return http.StatusInternalServerError

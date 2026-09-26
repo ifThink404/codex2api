@@ -15,6 +15,11 @@ func (handler *Handler) prepareContinuityRestart(request *gin.Context, body []by
 	if handler.db == nil {
 		return sessionContinuityError("ownership_unavailable")
 	}
+	var replayError *api.APIError
+	body, replayError = sessionReplayBody(request, body)
+	if replayError != nil {
+		return replayError
+	}
 	_, _, cleanup, err := cleanSessionRestartContext(sessionFailoverRequestHeaders(request), body, nil, PreserveSessionInput(request.Request.Context()))
 	if err != nil {
 		if failure := sessionToolPreservationAPIError(err, cleanup); failure != nil {

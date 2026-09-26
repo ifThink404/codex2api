@@ -47,10 +47,10 @@ func TestSessionFailoverCandidateDetailsAndTerminalTransports(t *testing.T) {
 			require.True(t, found)
 			if protocol == "ws" {
 				failure := h.dispatchUnavailableAPIError(ctx)
-				require.Equal(t, api.ErrCodeNoAvailableAccount, failure.Code)
+				require.Equal(t, api.ErrCodeServiceUnavailable, failure.Code)
 				require.Equal(t, sessionFailoverCapacityMessage, failure.Message)
-				require.Equal(t, 400, api.HTTPStatusCode(failure.Code))
-				require.Equal(t, websocket.ClosePolicyViolation, responsesWSTerminalCloseCode(failure, websocket.CloseTryAgainLater))
+				require.Equal(t, 503, api.HTTPStatusCode(failure.Code))
+				require.Equal(t, websocket.CloseTryAgainLater, responsesWSTerminalCloseCode(failure, websocket.CloseTryAgainLater))
 				encoded, err := json.Marshal(failure)
 				require.NoError(t, err)
 				require.NotContains(t, string(encoded), "private-pool")
@@ -60,20 +60,21 @@ func TestSessionFailoverCandidateDetailsAndTerminalTransports(t *testing.T) {
 			output, _ := gin.CreateTestContext(recorder)
 			ctx.Writer = output.Writer
 			finishAudit := h.beginServiceErrorAudit(ctx)
+			serviceErrorAuditForRequest(ctx).authenticated = true
 			stream := protocol != "http"
 			if stream {
 				ctx.Writer.Header().Set("Content-Type", "text/event-stream")
 				_, _ = ctx.Writer.WriteString(": ping\n\n")
 			}
 			h.sendDispatchUnavailable(ctx, stream, protocol == "chat_sse")
-			require.Contains(t, recorder.Body.String(), "no_available_account")
+			require.Contains(t, recorder.Body.String(), "service_unavailable")
 			require.Contains(t, recorder.Body.String(), sessionFailoverCapacityMessage)
-			require.Contains(t, recorder.Body.String(), `"retryable":false`)
+			require.Contains(t, recorder.Body.String(), `"retryable":true`)
 			require.NotContains(t, recorder.Body.String(), "private-pool")
 			require.NotContains(t, recorder.Body.String(), "account_groups_mismatch")
 			if !stream {
-				require.Equal(t, http.StatusBadRequest, ctx.Writer.Status())
-				require.Equal(t, "false", ctx.Writer.Header().Get("X-Should-Retry"))
+				require.Equal(t, http.StatusServiceUnavailable, ctx.Writer.Status())
+				require.Equal(t, "true", ctx.Writer.Header().Get("X-Should-Retry"))
 			} else {
 				require.Equal(t, http.StatusOK, ctx.Writer.Status())
 				if protocol == "responses_sse" {
@@ -83,9 +84,9 @@ func TestSessionFailoverCandidateDetailsAndTerminalTransports(t *testing.T) {
 			finishAudit()
 			page := serviceErrorTestPage(t, h)
 			require.Len(t, page.Items, 1)
-			require.Equal(t, "no_available_account", page.Items[0].Code)
+			require.Equal(t, "service_unavailable", page.Items[0].Code)
 			require.Equal(t, sessionFailoverCapacityMessage, page.Items[0].Message)
-			require.Equal(t, 400, page.Items[0].StatusCode)
+			require.Equal(t, 503, page.Items[0].StatusCode)
 			require.Equal(t, "dispatch", page.Items[0].Stage)
 			require.NotNil(t, page.Items[0].AccountFailover.Selection)
 			require.Empty(t, page.Items[0].AccountFailover.Selection.RequiredTags)

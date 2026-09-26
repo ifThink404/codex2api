@@ -179,7 +179,7 @@ func TestRelaxedRootFailoverAfterObservedQuota(t *testing.T) {
 	exclusions := newSessionRetryAccountExclusions(c, key, body)
 	owner.UsagePercent7d, owner.UsagePercent7dValid, owner.Reset7dAt = 100, true, time.Now().Add(time.Hour)
 	exclusions.MarkHTTPFailure(owner.ID(), 429, []byte(`{"error":{"type":"usage_limit_reached"}}`), 0, 1)
-	ctx, blocked := h.prepareSessionQuotaRetry(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
+	ctx, blocked := h.prepareSessionRetryFailover(c.Request.Context(), key, exclusions, auth.DispatchPolicyStandard)
 	require.False(t, blocked)
 	selected, _, handled := h.takeSessionAccountFailover(ctx, key, 0, exclusions.ForSelection(), nil, auth.DispatchPolicyStandard)
 	require.True(t, handled)

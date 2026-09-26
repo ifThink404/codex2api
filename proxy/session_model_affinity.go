@@ -90,8 +90,13 @@ func (handler *Handler) configureSessionModelAffinity(requestContext *gin.Contex
 		return nil
 	}
 	defer func() {
+		if apiError != nil && !requestContext.Writer.Written() {
+			if details, ok := apiError.Details.(gin.H); ok && details["retryable"] == true {
+				requestContext.Header("X-Should-Retry", "true")
+			}
+		}
 		if apiError != nil && handler.db != nil && len(bodies) > 0 && (usageRequestDiagnosticState(requestContext).Continuity != nil || usageRequestDiagnosticState(requestContext).BackgroundAccountMatch != nil || usageRequestDiagnosticState(requestContext).AccountFailover != nil) {
-			handler.logUsageForRequest(requestContext, &database.UsageLogInput{Endpoint: requestContext.Request.URL.Path, Model: originalModel, EffectiveModel: effectiveModel, StatusCode: 400, ErrorMessage: apiError.Message, Stream: gjson.GetBytes(bodies[0], "stream").Bool(), Compact: compact})
+			handler.logUsageForRequest(requestContext, &database.UsageLogInput{Endpoint: requestContext.Request.URL.Path, Model: originalModel, EffectiveModel: effectiveModel, StatusCode: api.HTTPStatusCode(apiError.Code), ErrorMessage: apiError.Message, Stream: gjson.GetBytes(bodies[0], "stream").Bool(), Compact: compact})
 		}
 	}()
 	if len(bodies) > 0 {

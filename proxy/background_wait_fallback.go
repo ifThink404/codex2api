@@ -70,8 +70,8 @@ func (h *Handler) prepareBackgroundRetryFallback(c *gin.Context, identity *reque
 	changed, failure := h.detachBackgroundRequest(c, identity, body, "passive_retry_parent_excluded")
 	if changed {
 		*key = capacityAwareSessionAffinityKey(*identity, requestAPIKeyID(c))
-		if exclusions.sessionQuota != nil {
-			exclusions.sessionQuota.key = *key
+		if exclusions.sessionFailover != nil {
+			exclusions.sessionFailover.key = *key
 		}
 		c.Set(sessionContinuityContextKey, nil)
 		selectionTraceForRequest(c).DetachSessionBinding()

@@ -125,7 +125,7 @@ func TestSessionFailoverCapacityGuidanceIsDistinctFromModelUnavailable(t *testin
 		plan := &sessionAccountFailoverPlan{Diagnostic: &sessionAccountFailoverDiagnostic{Result: "no_safe_candidate", TriggerReason: reason}}
 		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), sessionAccountFailoverContextKey{}, plan))
 		failure := sessionFailoverUnavailableAPIError(c)
-		require.Equal(t, api.ErrCodeNoAvailableAccount, failure.Code)
+		require.Equal(t, api.ErrCodeServiceUnavailable, failure.Code)
 		if reason == "account_session_capacity_full" {
 			require.Equal(t, sessionFailoverCapacityMessage, failure.Message)
 		} else {
@@ -146,7 +146,8 @@ func TestSessionModelGuidanceWebsocketClosePreservesUTF8(t *testing.T) {
 func TestSessionModelGuidanceAfterFailoverAndWhitelistChange(t *testing.T) {
 	for _, switched := range []bool{false, true} {
 		t.Run(map[bool]string{false: "whitelist_removed", true: "restored_owner"}[switched], func(t *testing.T) {
-			h, old, current, key := failoverTestSetup(t, true)
+			// Guidance remains for administrators who intentionally disable failover.
+			h, old, current, key := failoverTestSetup(t, false)
 			old.Models = []string{"gpt-6-astra", "gpt-5.6-sol"}
 			if switched {
 				_, _, err := h.db.SwitchSessionContinuityAccount(t.Context(), database.SessionAccountFailover{RootKey: hashRiskIdentity(key), ExpectedAccountID: old.ID(), AccountID: current.ID(), Reason: "account_session_capacity_full"})

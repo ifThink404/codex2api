@@ -14,8 +14,8 @@ import (
 )
 
 type retryAccountExclusions struct {
-	sessionQuota  *sessionQuotaRetry
-	quotaFailures map[int64]bool
+	sessionFailover *sessionRetryFailover
+	quotaFailures   map[int64]bool
 	// Retryable failures may exclude a healthy root for this request without
 	// changing its persistent health. They are distinct from arbitrary hard exclusions.
 	retryFailures map[int64]bool
@@ -572,7 +572,7 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		return nil, "", auth.SessionAffinityGuard{}
 	}
 	var blocked bool
-	ctx, blocked = h.prepareSessionQuotaRetry(ctx, affinityKey, exclusions, policy)
+	ctx, blocked = h.prepareSessionRetryFailover(ctx, affinityKey, exclusions, policy)
 	if blocked {
 		return nil, "", auth.SessionAffinityGuard{}
 	}
@@ -596,6 +596,9 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 				return nil, "", auth.SessionAffinityGuard{}
 			}
 			return account, stickyProxyURL, guard
+		}
+		if replacement, proxyURL, handled := h.retryUnavailableSessionOwner(ctx, affinityKey, apiKeyID, exclusions, filter, policy); handled {
+			return replacement, proxyURL, auth.SessionAffinityGuard{}
 		}
 		if auth.SelectionTraceFromContext(ctx).SessionModelDenied() {
 			return nil, "", auth.SessionAffinityGuard{}

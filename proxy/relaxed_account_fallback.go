@@ -75,24 +75,14 @@ func (h *Handler) configureRelaxedAccountFallback(c *gin.Context, body []byte, i
 			parentID, _ = h.store.LiveSessionAccountID(key, time.Now())
 		}
 		if parent := h.store.FindByID(parentID); parent != nil && !afterWait {
-			failure := sessionAccountFailoverReason(parent, dispatchPolicyForModel(gjson.GetBytes(body, "model").String()))
+			h.bindBPSUploadRequest(c, body, strings.HasSuffix(path, "/compact"))
+			model := gjson.GetBytes(body, "model").String()
+			failure := h.sessionOwnerFailure(c, parent, key, dispatchPolicyForModel(model), codexRouteRequest{Model: model, Auxiliary: true}, mode)
 			if failure == "" {
-				h.bindBPSUploadRequest(c, body, strings.HasSuffix(path, "/compact"))
-				parentMode := mode
-				if parentMode == "" {
-					parentMode = selectCodexRoute(parent, gjson.GetBytes(body, "model").String(), "", true)
-				}
-				if bpsUploadCooldownForRequest(c.Request.Context(), parent, parentMode) {
-					failure = bpsUploadCooldownReason
-				}
+				return identity
 			}
-			switch failure {
-			case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", bpsUploadCooldownReason:
-				reason = "passive_parent_" + strings.TrimPrefix(failure, "account_")
-			default:
-				if parent.IsRelayStyle() || !parent.SessionCapacityLimits().Enabled || h.store.CanAdmitAccountSession(parent, key, time.Now()) {
-					return identity
-				}
+			reason = "passive_parent_" + strings.TrimPrefix(failure, "account_")
+			if failure == "account_session_capacity_full" {
 				reason = "passive_parent_capacity_full"
 			}
 		}
@@ -141,20 +131,10 @@ func prepareRelaxedAccountContext(c *gin.Context, body []byte) *api.APIError {
 	if state == nil {
 		return nil
 	}
-	// Admission sees the original Chat/Messages envelope, while cleanup and
-	// the executor operate on Responses input. Validate the translated copy;
-	// never mistake a valid messages array for an empty conversation.
-	if !gjson.GetBytes(body, "input").Exists() && gjson.GetBytes(body, "messages").IsArray() {
-		var err error
-		switch {
-		case strings.HasSuffix(c.Request.URL.Path, "/chat/completions"):
-			body, err = TranslateRequest(body)
-		case strings.HasSuffix(c.Request.URL.Path, "/messages"):
-			body, _, err = TranslateAnthropicToCodex(body, "")
-		}
-		if err != nil {
-			return api.NewAPIError(api.ErrCodeInvalidParameter, "后台请求上下文转换失败，请检查消息和工具格式。", api.ErrorTypeInvalidRequest)
-		}
+	var failure *api.APIError
+	body, failure = sessionReplayBody(c, body)
+	if failure != nil {
+		return failure
 	}
 	_, _, report, err := cleanSessionRestartContext(sessionFailoverRequestHeaders(c), body, nil, state.preserveInput)
 	state.Cleanup = report
