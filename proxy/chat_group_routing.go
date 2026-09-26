@@ -27,7 +27,7 @@ func (handler *Handler) prepareChatGroupRouting(request *gin.Context, identity r
 	state := usageRequestDiagnosticState(request)
 	state.GroupRouting = nil
 	if CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
-		state.GroupRouting = &groupRoutingDiagnostic{Reason: "relaxed_no_groups"}
+		state.GroupRouting = &groupRoutingDiagnostic{Reason: "relaxed_key_scope"}
 		return
 	}
 	row := apiKeyRowFromContext(request)

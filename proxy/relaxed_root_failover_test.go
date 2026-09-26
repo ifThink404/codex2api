@@ -135,7 +135,7 @@ func TestRelaxedRootFailoverKeepsCandidateRestrictions(t *testing.T) {
 				record, _, err := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))
 				require.NoError(t, err)
 				require.Equal(t, target.ID(), record.AccountID)
-				require.Equal(t, "relaxed_no_groups", usageRequestDiagnosticState(c).AccountFailover.Selection.MatchMode)
+				require.Equal(t, "relaxed_key_scope", usageRequestDiagnosticState(c).AccountFailover.Selection.MatchMode)
 				return
 			}
 			require.Nil(t, selected)

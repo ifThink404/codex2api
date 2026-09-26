@@ -30,6 +30,9 @@ const (
 	// CodexFingerprintModeRound rotates BPS account tasks after a configured
 	// number of inference steps. Native Codex only converges the device.
 	CodexFingerprintModeRound = "round"
+	// CodexFingerprintModeTurnRound keeps user turns separate within timed,
+	// account/model/effort tasks. Native Codex only converges the device.
+	CodexFingerprintModeTurnRound = "turn_round"
 )
 
 // CodexFingerprintModeCredentialKey 是该模式在账号 credentials 中的存储键。
@@ -47,6 +50,8 @@ func NormalizeCodexFingerprintMode(value string) string {
 		return CodexFingerprintModeFull
 	case CodexFingerprintModeRound:
 		return CodexFingerprintModeRound
+	case CodexFingerprintModeTurnRound:
+		return CodexFingerprintModeTurnRound
 	default:
 		return CodexFingerprintModeOff
 	}
@@ -55,7 +60,7 @@ func NormalizeCodexFingerprintMode(value string) string {
 // IsValidCodexFingerprintMode 报告取值是否为已知档位之一。
 func IsValidCodexFingerprintMode(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull, CodexFingerprintModeRound:
+	case CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull, CodexFingerprintModeRound, CodexFingerprintModeTurnRound:
 		return true
 	default:
 		return false

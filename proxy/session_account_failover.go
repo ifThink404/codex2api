@@ -244,6 +244,12 @@ func (handler *Handler) sessionFailoverReasonForRequest(request *gin.Context, ac
 	if reason := codexRouteFailureForRequest(request.Request.Context(), account); reason != "" {
 		return reason
 	}
+	if account != nil {
+		ctx := request.Request.Context()
+		if epoch := outboundEpochFromContext(ctx); epoch != nil && epoch.record.AccountID == account.ID() && bpsUploadCooldownForRequest(ctx, account, normalizedCodexRoute(epoch.record.UpstreamMode)) {
+			return bpsUploadCooldownReason
+		}
+	}
 	if account != nil && account.SessionCapacityLimits().Enabled && !handler.store.CanAdmitAccountSession(account, key, time.Now(), selectionTraceForRequest(request)) {
 		return "account_session_capacity_full"
 	}
@@ -267,7 +273,7 @@ func sessionAccountFailoverEnabledBy(reason string) string {
 	}
 	if settings.CodexForkAccountFallbackEnabled {
 		switch reason {
-		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full", "account_payment_required", "account_missing":
+		case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", "account_session_capacity_full", "account_payment_required", "account_missing", bpsUploadCooldownReason:
 			return "relaxed_mode"
 		}
 	}
@@ -440,7 +446,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 	if matchGroups {
 		selection.RequiredGroupIDs, _, selection.Truncated = failoverSelectionLabels(request, ownerGroups, nil)
 	} else {
-		selection.MatchMode = "relaxed_no_groups"
+		selection.MatchMode = "relaxed_key_scope"
 	}
 	plan.Diagnostic.Selection = selection
 	defer func() {
@@ -469,6 +475,10 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		if mode == "" {
 			trace.RejectAccount(account.ID(), "upstream_mode_mismatch")
+			return false
+		}
+		if bpsUploadCooldownForRequest(ctx, account, mode) {
+			trace.RejectAccount(account.ID(), bpsUploadCooldownReason)
 			return false
 		}
 		if matchGroups && groupsKnown && !account.HasExactGroupIDs(ownerGroups) {
@@ -562,6 +572,17 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 				plan.Diagnostic.Reason = "missing_owner_changed"
 			}
 			return nil, "", true
+		}
+		// Relaxed mode removes the old owner's group-cohort requirement, not
+		// the key's authorization. Recheck after preparation in case membership
+		// or the key's allowed groups changed while claiming the new identity.
+		if !handler.store.APIKeyAllowsAccount(apiKeyID, candidate) {
+			trace.RejectAccount(candidate.ID(), "api_key_scope_mismatch")
+			if candidate.ID() != oldID {
+				handler.store.RemoveAccountSession(candidate.ID(), key)
+			}
+			handler.store.Release(candidate)
+			continue
 		}
 		input := database.SessionAccountFailover{RootKey: state.Key, AffinityKey: key, ExpectedAccountID: oldID, AccountID: candidate.ID(), ExpectedGeneration: entry.Record.FailoverCount, UpstreamMode: targetMode, Reason: plan.Diagnostic.Reason, At: time.Now().UTC(), ResetOutboundWindow: true, WindowThreadID: state.ThreadID, WindowNumber: state.Number}
 		input.WindowContextID = fingerprint.accountWindowInputs[state.ThreadID].ContextID

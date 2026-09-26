@@ -28,6 +28,7 @@ type relaxedAccountFallback struct {
 	preserveInput   bool
 	references      []string
 	accounts        map[int64]bool
+	generation      uint64
 }
 
 func relaxedAccountFallbackFromContext(ctx context.Context) *relaxedAccountFallback {
@@ -75,8 +76,18 @@ func (h *Handler) configureRelaxedAccountFallback(c *gin.Context, body []byte, i
 		}
 		if parent := h.store.FindByID(parentID); parent != nil && !afterWait {
 			failure := sessionAccountFailoverReason(parent, dispatchPolicyForModel(gjson.GetBytes(body, "model").String()))
+			if failure == "" {
+				h.bindBPSUploadRequest(c, body, strings.HasSuffix(path, "/compact"))
+				parentMode := mode
+				if parentMode == "" {
+					parentMode = selectCodexRoute(parent, gjson.GetBytes(body, "model").String(), "", true)
+				}
+				if bpsUploadCooldownForRequest(c.Request.Context(), parent, parentMode) {
+					failure = bpsUploadCooldownReason
+				}
+			}
 			switch failure {
-			case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted":
+			case "account_disabled", "account_paused", "account_usage_exhausted", "account_spark_usage_exhausted", bpsUploadCooldownReason:
 				reason = "passive_parent_" + strings.TrimPrefix(failure, "account_")
 			default:
 				if parent.IsRelayStyle() || !parent.SessionCapacityLimits().Enabled || h.store.CanAdmitAccountSession(parent, key, time.Now()) {
@@ -160,20 +171,23 @@ func (h *Handler) commitRelaxedAccountFallback(c *gin.Context, account *auth.Acc
 	if account == nil || account.IsRelayStyle() {
 		return sessionContinuityError("ownership_unavailable")
 	}
-	state.AccountID = account.ID()
-	state.accounts[account.ID()] = true
 	info := codexRouteRequestInfo(c.Request.Context())
 	floor, _ := c.Request.Context().Value(codexRouteFloorKey{}).(string)
 	mode := selectCodexRoute(account, info.Model, floor, info.Auxiliary)
 	if mode == "" {
 		return sessionModelUnavailableError(c)
 	}
+	if state.AccountID != account.ID() || state.generation == 0 {
+		state.generation++
+	}
+	state.AccountID = account.ID()
+	state.accounts[account.ID()] = true
 	// This executable segment is request-local: protocol aliases can round-trip,
 	// but no persistent root ownership or window-number record may be written.
-	record := database.SessionContinuityRecord{AccountID: account.ID(), UpstreamMode: mode, FailoverCount: 1, OutboundWindowReset: true}
+	record := database.SessionContinuityRecord{AccountID: account.ID(), UpstreamMode: mode, FailoverCount: state.generation, OutboundWindowReset: true}
 	epoch := &sessionOutboundEpoch{handler: h, key: hashRiskIdentity(state.key), record: record, temporary: true, owner: responseCacheOwnerForRequest(c, requestAPIKeyID(c)), upstreamAccount: account.EffectiveAccountID()}
 	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), sessionOutboundEpochContextKey{}, epoch))
-	usageRequestDiagnosticState(c).UpstreamRoute = &codexRouteDiagnostic{Mode: mode, AccountID: account.ID(), Generation: 1}
+	usageRequestDiagnosticState(c).UpstreamRoute = &codexRouteDiagnostic{Mode: mode, AccountID: account.ID(), Generation: state.generation}
 	return nil
 }
 

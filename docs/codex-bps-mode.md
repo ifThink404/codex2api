@@ -22,15 +22,15 @@
 
 关闭 `full` 后恢复相应档位的任务映射。本文其他段落中按对话分配 task 的规则适用于 `off`、`device`、`session` 档位。
 
-## BPS 轮次收敛（第五档）
+## BPS task_id 轮次（第五档）
 
-账号设备指纹档位新增 `round`（轮次收敛），可在账号编辑、快速设置、批量编辑及新账号默认档位中选择。现有 `full` 行为不变，已有账号不会自动切换新档位。
+账号设备指纹档位新增 `round`（task_id 轮次，保留原配置值），可在账号编辑、快速设置、批量编辑及新账号默认档位中选择。现有 `full` 行为不变，已有账号不会自动切换新档位。
 
-系统设置的 **BPS 轮次收敛：每个任务的轮数** 对应 `bps_round_convergence_limit`，默认 100，允许 1–1000000。只影响选中 `round` 的 BPS 请求；原生 Codex 在该档位仅收敛设备，不把多个原生会话合并。
+系统设置的 **BPS task_id 轮次：每批调用次数** 对应 `bps_round_convergence_limit`，默认 100，允许 1–1000000。只影响选中 `round` 的 BPS 请求；原生 Codex 在该档位仅收敛设备，不把多个原生会话合并。
 
 - 同一实际上游账号按最终模型＋思考等级分别维护批次；同一账号、同一模型、同一有效思考等级跨用户、会话和 BPS 产品共用当前批次的 `task_id`。以 100 为例，每个组合自己的前 100 次新调用使用同一 task，`agent_iteration` 依次为字符串 `"1"` 至 `"100"`；该组合第 101 次调用换 task 并从 `"1"` 开始，不影响其他组合。切回某个组合时继续它自己的批次；映射到相同出站模型的别名共用批次，例如 `codex-auto-review` 与 `gpt-5.6-luna`。
 - 思考等级按 BPS 实际映射分组：未提供默认 `low`，`max` 归入 `xhigh`；历史顶层协议 `configuration_update.reasoning.effort` 存在时，以最后一个非空更新为准，不读取消息或工具结果内的同名业务字段。两个模型分别使用 `low / medium / high / xhigh` 时，是 8 组当前 task，按需创建，未使用的组合不预建。压缩调用按其携带的等级分组，未携带仍归入默认 `low`，不会因此向压缩接口增加思考字段。
-- 每次新模型调用使用独立 `turn_id`，工具续接及压缩调用也计入。并行工具结果的一批续接计一轮，不按单个工具结果计数。同一逻辑调用的重试复用原 task、turn、序号，不重复扣轮数；轮换后的旧请求重试也保留旧批次。
+- 每批 task 在未切号时共用固定 `turn_id`，仅 `agent_iteration` 随新模型调用递增；换批时 task 和 turn 同时更换。切号（包括切回原账号）使用目标账号当前批次的 task，但建立新的 turn；之后在同一迁移段内保持 turn，批次计数继续递增。工具续接及压缩调用也计入。并行工具结果的一批续接计一轮，不按单个工具结果计数。同一账号迁移段内，同一逻辑调用的重试复用原 task、turn、序号，不重复扣轮数；轮换后的旧请求重试也保留旧批次。
 - 每批 task 按最后一次上游推理发送续期 24 小时，包含该批次重试的实际发送；图片和文件准备、只分配编号但未发送均不续期。达到轮数上限或连续空闲 24 小时后，下一次新调用才建立新 task 并从 1 开始，没有新请求就不自动创建。首次及最后发送时间按账号、模型、思考等级和批次持久化，重启保留计时；重试复用原编号，不重复计数，旧批次重试不能延长新批次的有效期。
 - 计数、分配结果及 UUIDv7 均按上游账号、模型和思考等级持久化；重启、重复导入同一个上游账号不会重置。换到其他上游账号时使用该账号对应组合的批次；切回则继续原账号对应组合的计数。
 - 修改轮数从下一批生效，当前批次按创建时的上限走完。并发请求按数据库原子分配的顺序编号，不串行等待模型完成，因此上游实际到达或完成顺序不保证与编号一致。
@@ -41,9 +41,27 @@
 
 新用量日志中，BPS 请求在思考等级旁显示实际出站的 `metadata.agent_iteration`，悬停可看到字段名。该值独立保存为 `bps_agent_iteration`，不依赖用户窗口序号；重试显示原编号，新批次从 1 开始。非 BPS 请求继续显示窗口序号。历史日志不批量回填。
 
-Word BPS 出站只以 `metadata.task_id / turn_id / agent_iteration` 表达任务和轮次，不发送 `Session-Id`、`prompt_cache_key` 或原生 `client_metadata.session_id / thread_id`。因此 8 组 task 对应 8 组 BPS 任务身份，每次新调用另有独立 turn。入站客户端会话、线程、账号软粘性和本地上下文隔离仍按原规则管理；其他 BPS 产品的 Session-Id / prompt_cache_key 也保留既有隔离规则，不用共享 task 覆盖。
+Word BPS 出站只以 `metadata.task_id / turn_id / agent_iteration` 表达任务和轮次，不发送 `Session-Id`、`prompt_cache_key` 或原生 `client_metadata.session_id / thread_id`。因此在 task_id 轮次下，8 组 task 对应 8 组 BPS 任务身份；未切号时每批 turn 固定，切号后按迁移段隔离。入站客户端会话、线程、账号软粘性和本地上下文隔离仍按原规则管理；其他 BPS 产品的 Session-Id / prompt_cache_key 也保留既有隔离规则，不用共享 task 覆盖。
 
 轮次收敛不合并提示词、附件、响应缓存或用户归属，也不替代账号软粘性。批次轮换本身不会触发换号；无显式会话的 BPS 请求继续使用调用方隔离的任务提示参与软粘性选号。
+
+### 从旧版 task_id 轮次升级
+
+修正前的 `round` 每个调用分配独立 turn。升级后使用新批次命名空间，第一次调用建立新的 task 和固定 turn，序号从 1 开始，避免旧批次中途更换 turn 却沿用较大的序号。旧数据库映射保留；升级前请求若再次提交，将按新策略重新分配。之后同一逻辑请求的重试稳定复用编号。
+
+## BPS turn_id 轮次（第六档）
+
+账号选择 `turn_round`（turn_id 轮次）后采用独立的策略，不自动迁移现有账号，也不使用 task_id 轮次的调用次数上限。
+
+- task 按实际上游账号＋最终模型＋有效思考等级分组，与 task_id 轮次使用相同的模型别名、low 默认值和 max→xhigh 规则；不同账号、模型或等级的 task 相互独立。
+- `turn_id` 按真实用户提问变化。相同用户、对话和提问的工具续接保持 turn，`agent_iteration` 从 `"1"` 递增；新提问使用新的 turn 并从 `"1"` 开始。不同用户或对话即使传相同客户端 turn 也相互隔离。没有客户端 turn 时按最后用户消息边界推导，截断输入且缺少边界时诊断标记 `missing_user_boundary`。
+- 系统设置 `bps_turn_task_lifetime_hours` 控制 task 固定有效期，默认 24 小时，范围 1–8760。每个分组从 task **首次上游推理发送**起计时；工具续接、重试及持续使用都不延长截止时间。到期后的第一次新调用建立新 task、turn 并从 1 开始，即使它是上一用户提问的续接。没有新请求不预建 task。只准备或分配但尚未发送不启动计时。
+- 同一账号迁移段内，同一逻辑请求的重试保留它原来的 task、turn 和序号，即使 task 已过期或设置已修改。旧 task 重试不影响新 task 的截止时间。更新有效期从下一个 task 生效，当前 task 使用创建时的配置。
+- SQLite/PostgreSQL 持久化 task 代次、分配结果及发送时间；进程重启保留状态，多实例通过数据库事务协调轮换。同轮步骤继续使用既有原子迭代计数。切号使用目标账号对应模型＋思考等级的当前 task，并建立新 turn、序号从 1 开始；切回原账号也不能复用上次驻留的 turn。切号本身不刷新目标 task 的有效期。
+- 诊断 `upstream.bps_compat.turn_convergence` 展示 task、turn、`agent_iteration`、实际模型和思考等级、代次、`task_lifetime_hours`、首次/最后发送及过期时间。`task_scope=upstream_account_model_effort_timed_turns`，Word 同时记录 `word_identity`，日志序号徽标继续显示实际出站 `agent_iteration`。
+- task 收敛不合并本地提示词、附件缓存、响应缓存或用户归属；原生 Codex 仅收敛设备。账号编辑、快速设置、批量编辑和新账号默认档位均可选择新模式。
+
+两种轮次模式的 turn 隔离优先使用持久化会话迁移代次；没有显式会话、使用任务软粘性选号时，使用绑定账号的切换版本。软粘性只在换账号时递增 `binding_revision`，同账号续接和重试保持版本；写入失败或并发竞争未获绑定的请求使用独立的临时 turn 范围，不复用胜出账号的 turn。临时后台请求在每次实际换号时递增自己的迁移代次，不写入主会话归属。
 
 ## 格式转换
 
@@ -66,7 +84,7 @@ Word BPS 出站只以 `metadata.task_id / turn_id / agent_iteration` 表达任�
 Word BPS 使用官方 Word 网页加载项实测字段；所有 Word BPS 请求直接生效，无单账号灰度或 legacy 开关。Excel、PowerPoint、Sheets 维持原规则。已在运行的请求保持构造时的快照；更新后的下一次 Word 请求使用新的持久化 UUIDv7 映射。
 
 - `metadata.task_id`、`turn_id` 为独立 UUIDv7。同逻辑会话保持 task，新用户轮次更换 turn，同轮工具续接保持 turn。明确客户端标识优先；无轮次 ID 时通过最近用户消息边界推断并记录来源。
-- 内部账号、调用方和换号代次参与分区。更换账号或建立新的换号代次后，新 turn 的字符串 `agent_iteration` 从 `"1"` 开始，不累计上一账号的历史工具次数。
+- 内部账号、调用方和换号代次参与分区。更换账号或建立新的换号代次后，新 turn 的字符串 `agent_iteration` 从 `"1"` 开始，不累计上一账号的历史工具次数；`task_id` 轮次模式例外，继续目标账号当前 task 批次的计数。
 - 每批工具结果引发一次新的推理时迭代递增；同一批并行工具结果改变顺序、网络重试和附件重试不重复增加。SQLite/PostgreSQL 持久化保证多实例竞争及重启后复用。无数据库的独立投影使用确定性 ID 和历史工具批次数，并标记 persisted=false，不承诺缺失历史的完整续接恢复。
 - 同一会话的上下文窗口/缓存提示变化不更换明确会话的 task。无会话 ID 的“设备＋会话”启发式仍有原限制：同设备相同开头无法可靠区分独立对话。
 - 使用 Agent-Profile=`word`、Host=`office`、Runtime=`web`、Platform-Class/Office-Platform=`OfficeOnline`。不再生成 `Mac / 16.113`、Version、Originator、Session-Id、Codex Responses Lite、BPS Client-Device-Id 或 Tools-Version 请求头。工具版本仍发送在 metadata 中。

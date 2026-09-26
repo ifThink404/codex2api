@@ -39,7 +39,6 @@ func TestBPSUploadRetryFinalSelectionDiagnostics(t *testing.T) {
 			h.store.SetMaxRateLimitRetries(10)
 			h.store.SetRetryIntervalMS(1)
 			h.store.SetTransportRetryPolicy("sticky")
-			h.store.SetRelaxedAccountGroups(true)
 			off := false
 			owner.CodexNative, owner.CodexBPS = &off, true
 			target.CodexNative, target.CodexBPS = &off, true
@@ -49,8 +48,13 @@ func TestBPSUploadRetryFinalSelectionDiagnostics(t *testing.T) {
 				owner.GroupIDs = []int64{1}
 				target.GroupIDs = []int64{999}
 			}
-			if reason == "outside_key_groups" {
-				h.store.SetAPIKeyAllowedGroups(keyID, []int64{1})
+			var allowedGroups []int64
+			if reason == "different_groups" || reason == "outside_key_groups" {
+				allowedGroups = []int64{1}
+				if reason == "different_groups" {
+					allowedGroups = append(allowedGroups, 999)
+				}
+				h.store.SetAPIKeyAllowedGroups(keyID, allowedGroups)
 				h.store.SetAPIKeyNoAffinityGroups(keyID, []int64{2})
 			}
 
@@ -88,8 +92,8 @@ func TestBPSUploadRetryFinalSelectionDiagnostics(t *testing.T) {
 			router.Use(h.ServiceErrorMiddleware())
 			router.POST("/v1/responses", func(c *gin.Context) {
 				c.Set(contextAPIKeyID, keyID)
-				if reason == "outside_key_groups" {
-					c.Set(contextAPIKeyRow, &database.APIKeyRow{ID: keyID, AllowedGroupIDs: []int64{1}, Limits: database.APIKeyLimits{NoAffinityGroupIDs: []int64{2}}})
+				if len(allowedGroups) > 0 {
+					c.Set(contextAPIKeyRow, &database.APIKeyRow{ID: keyID, AllowedGroupIDs: allowedGroups, Limits: database.APIKeyLimits{NoAffinityGroupIDs: []int64{2}}})
 				}
 				c.Set(ingressRequestBodyContextKey, body)
 				identity := h.resolveRequestSessionIdentityForContext(c, body)
@@ -114,7 +118,7 @@ func TestBPSUploadRetryFinalSelectionDiagnostics(t *testing.T) {
 			logs, err := h.db.ListRecentUsageLogs(t.Context(), 10)
 			require.NoError(t, err)
 			page := serviceErrorTestPage(t, h)
-			if reason == "healthy" || reason == "different_groups" || reason == "outside_key_groups" {
+			if reason == "healthy" || reason == "different_groups" {
 				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 				require.Len(t, logs, 2)
 				require.Empty(t, page.Items)
@@ -124,7 +128,7 @@ func TestBPSUploadRetryFinalSelectionDiagnostics(t *testing.T) {
 					if entry.StatusCode == http.StatusOK {
 						detail, err := h.db.GetUsageRequestDiagnostics(t.Context(), entry.ID)
 						require.NoError(t, err)
-						require.Equal(t, "relaxed_no_groups", gjson.GetBytes(detail.Diagnostics, "account_failover.selection.match_mode").String())
+						require.Equal(t, "relaxed_key_scope", gjson.GetBytes(detail.Diagnostics, "account_failover.selection.match_mode").String())
 					}
 				}
 				return
@@ -153,7 +157,9 @@ func TestBPSUploadRetryFinalSelectionDiagnostics(t *testing.T) {
 			require.NotNil(t, event.AccountFailover)
 			require.Equal(t, "no_safe_candidate", event.AccountFailover.Result)
 			require.NotNil(t, event.AccountFailover.Selection)
-			if reason != "all_uploads_limited" {
+			if reason == "outside_key_groups" {
+				require.Positive(t, event.AccountFailover.Selection.RejectionCounts["api_key_scope_mismatch"])
+			} else if reason != "all_uploads_limited" {
 				require.Positive(t, event.AccountFailover.Selection.RejectionCounts[reason])
 			}
 			require.Equal(t, "bps_image_preparation", gjson.GetBytes(event.UpstreamInfo, "error_stage").String())

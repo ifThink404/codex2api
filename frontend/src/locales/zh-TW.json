@@ -148,8 +148,10 @@
     }
   },
   "accounts": {
-    "codexFingerprintModeRound": "輪次收斂",
-    "codexFingerprintModeRoundDetail": "BPS 同一上游帳號按實際模型和思考等級分別維護 task_id 和輪數。各組合序號獨立遞增，滿額後各自更換 task_id 並從 1 開始，切回繼續原批次。未傳等級按 low，max 按 xhigh。每批按最後一次上游傳送續期，連續閒置 24 小時後的新呼叫換新 ID；達到輪數上限仍換批，重啟保留計時。每次新呼叫（含工具續接）使用新 turn_id，重試沿用原編號；原生 Codex 僅收斂裝置。",
+    "codexFingerprintModeRound": "task_id 輪次",
+    "codexFingerprintModeRoundDetail": "同一上游帳號依實際模型＋思考等級分組。每批 task_id 固定，未切換帳號時 turn_id 固定；切換或切回使用目標帳號目前的 task_id，建立新 turn_id 並繼續該批計數。agent_iteration 依新模型呼叫遞增，工具續接計入，同帳號重試沿用編號。達到次數上限或連續閒置 24 小時後，新呼叫換批並從 1 開始。原生 Codex 僅收斂裝置。",
+    "codexFingerprintModeTurnRound": "turn_id 輪次",
+    "codexFingerprintModeTurnRoundDetail": "同一上游帳號依實際模型＋思考等級共用 task_id；不同使用者、對話及提問採獨立 turn_id，同輪工具續接保持 turn_id，agent_iteration 從 1 遞增。新提問或切換帳號（包括切回）建立新 turn_id 並從 1 開始；切換使用目標帳號目前的 task_id。task_id 從首次上游傳送起依固定期間更新，預設 24 小時，請求不續期；到期後的新呼叫更換 task_id 和 turn_id。同帳號重試沿用編號，重啟保留狀態。原生 Codex 僅收斂裝置。",
     "codexFingerprintModeFullDetail": "BPS 同一上游帳號共用一個 task_id，不同使用者、對話和輪次使用獨立 turn_id；同輪工具續接保留 turn_id，迭代計數遞增。原生 Codex 繼續遵循原有出站身分策略。",
     "rawPassthroughTitle": "原樣 API 透傳（HTTP / SSE）",
     "rawPassthroughHint": "預設關閉。開啟後，先依工作階段指紋與 Chat 入口完成分組分流，再於對應組內優先選擇符合模型的透傳帳號；記錄請求分類，保留原介面路徑、請求本文、回應狀態和本文，不做模型映射、身分補齊、圖片上傳或格式轉換；失敗不自動重試。使用帳號設定的金鑰、位址、代理和自訂請求標頭。WebSocket 不在此開關範圍內。",
@@ -303,8 +305,10 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
-    "bpsRoundConvergenceLimit": "BPS 輪次收斂：每個任務的輪數",
-    "bpsRoundConvergenceLimitDesc": "僅適用於選擇「輪次收斂」的帳號，預設 100，範圍 1–1000000。同一上游帳號按實際模型＋思考等級獨立計數，未傳等級按 low，max 按 xhigh。每批按最後一次上游傳送續期，連續閒置 24 小時後的新呼叫換新 ID；達到輪數上限仍換批，重啟保留計時。每次新呼叫計一輪，工具續接計入，重試不重複計數。各組合達上限後分別更換 task_id 並從 1 開始；修改輪數從各組合的下一批生效。並行依資料庫分配編號的順序計數，不等待前次推論完成。",
+    "bpsRoundConvergenceLimit": "BPS task_id 輪次：每批呼叫次數",
+    "bpsRoundConvergenceLimitDesc": "僅適用於「task_id 輪次」，預設 100，範圍 1–1000000。依實際上游帳號、模型與思考等級獨立計數；每批 task_id 固定，未切換帳號時 turn_id 固定，agent_iteration 遞增。切換使用目標帳號目前批次、建立新 turn_id 並繼續計數。工具續接計入，同帳號重試不重複計數。達到上限或連續閒置 24 小時後換批，序號歸 1。修改上限從下一批生效，並行依資料庫分配順序編號。",
+    "bpsTurnTaskLifetimeHours": "BPS turn_id 輪次：task_id 更新週期（小時）",
+    "bpsTurnTaskLifetimeHoursDesc": "僅適用於「turn_id 輪次」，預設 24，範圍 1–8760 小時。各帳號＋實際模型＋思考等級從該 task_id 首次上游傳送起固定計時，持續請求不續期；到期後的第一次新呼叫產生新 task_id 和 turn_id。重試沿用原分配，重啟保留計時。修改週期從下一個 task_id 生效，不使用 task_id 輪次的呼叫次數上限。",
     "bpsWordUserAgent": "Word BPS User-Agent",
     "bpsWordUserAgentDesc": "用於所有 Word BPS 請求。留空使用已驗證的 Word 網頁版 UA；與其他用戶端形態分別儲存。",
     "sessionBalanceSession": "會話",
@@ -354,7 +358,7 @@
     "codexSessionFailoverPreserveInput": "切號時完整保留 input（實驗）",
     "codexSessionFailoverPreserveInputHint": "預設關閉，僅在允許換號時生效。保留整個 input，包括加密推理、壓縮項、輸入項 ID 與動態工具；仍更換帳號身分並清理舊 turn-state。未知續寫引用或缺少工具呼叫時停止發送，需客戶端提供完整歷史。上游拒絕時不會自動刪除加密內容重試，也不改寫 input 的環境日期與時區。模式隨新出站段保存，關閉開關不會將既有會話降為有損清理。不保證跨帳號相容性。",
     "codexForkAccountFallbackEnabled": "寬鬆模式",
-    "codexForkAccountFallbackEnabledHint": "預設關閉。開啟後，首次選號、重試和換號均不看群組：忽略 Key 允許群組、主群組／分流群組和新舊帳號群組一致性要求。既有父帳號可用時仍優先跟隨；父帳號缺失或不可用時，普通 fork 可獨立選號，被動請求可暫時換號並於請求結束後釋放。已綁定主工作階段在額度耗盡、暫停、停用、付費受限、容量不足或可重試故障時可持久換號，無需另開自動換號開關。缺失執行期帳號先嘗試載入；已刪除或缺少憑證時可換號。原始工作階段 ID 歸屬衝突時，帳號級出站模式為目前使用者建立獨立映射。明確帳號許可、方案、渠道、模型、容量、預算、視窗授權及黑名單仍生效，BPS 不回流 Codex。依完整保留 input 設定處理上下文；預設清理可能遺失部分歷史。關閉後恢復原群組規則，已儲存群組設定不變。",
+    "codexForkAccountFallbackEnabledHint": "預設關閉。開啟後，首次選號、重試和換號可在 Key 授權群組範圍內跨群組選擇：保留 Key 群組權限，僅放開主群組／分流群組路由和新舊帳號群組一致性要求。既有父帳號可用時仍優先跟隨；父帳號缺失或不可用時，普通 fork 可獨立選號，被動請求可暫時換號並於請求結束後釋放。已綁定主工作階段在額度耗盡、暫停、停用、付費受限、容量不足或可重試故障時可持久換號，無需另開自動換號開關。缺失執行期帳號先嘗試載入；已刪除或缺少憑證時可換號。原始工作階段 ID 歸屬衝突時，帳號級出站模式為目前使用者建立獨立映射。明確帳號許可、方案、渠道、模型、容量、預算、視窗授權及黑名單仍生效，BPS 不回流 Codex。依完整保留 input 設定處理上下文；預設清理可能遺失部分歷史。關閉後恢復原路由及同群組規則，Key 群組權限始終生效。",
     "codexSessionFailoverEnabled": "帳號不可用或會話容量不足時允許換號",
     "codexSessionFailoverEnabledHint": "預設關閉。帳號額度耗盡、自動/手動暫停、停用或無法接納目前窗口時，允許後續請求重開，預設使用有損清理；目標帳號分組集合必須完全一致，不得增加或減少分組。每次換號建立新的出站身分段及握手，窗口從 0 開始（47→0、48→1）；相同上下文保持編號，回退或恢復的上下文獨立持久化映射，不產生負數，切回舊帳號也建立新段。只在出站副本清理舊加密上下文（加密推理、加密壓縮）、檔案/輸入項引用、未知的 previous_response_id 及舊 turn-state；會遺失對應歷史或資料，請優先提供完整明文上下文。清理後沒有可用輸入時需補充資料或建立新會話。目前帳號本段已核實的新內容保留。原始尋根、入站編號、使用者額度及窗口授權到期時間不變。不會僅因 500、busy、黑名單或綁定到期而換號，不繞過使用者併發、擴容確認或黑名單限制。",
     "codexTelemetry": "用戶端遙測（實驗性）",

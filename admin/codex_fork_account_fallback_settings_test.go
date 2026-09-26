@@ -83,8 +83,8 @@ func TestCodexForkAccountFallbackSettingsRoundTrip(test *testing.T) {
 			if proxy.CurrentRuntimeSettings().CodexForkAccountFallbackEnabled != step.want {
 				test.Fatal("runtime toggle does not match response")
 			}
-			if store.APIKeyAllowsAccount(42, outsideGroup) != step.want {
-				test.Fatal("account group selection must follow the saved relaxed toggle")
+			if store.APIKeyAllowsAccount(42, outsideGroup) {
+				test.Fatal("relaxed mode must never bypass the API key's group permissions")
 			}
 			persisted, err := db.GetSystemSettings(context.Background())
 			if err != nil || persisted == nil {

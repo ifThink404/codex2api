@@ -149,7 +149,7 @@ export type CodexClientMetadataMode = 'auto' | 'always' | 'off'
 /** OpenAI Responses 中转账号的 Codex 身份透传档位，默认 off（不透传）。 */
 export type CodexPassthroughMode = 'off' | 'auto' | 'always'
 /** Codex 官方出站请求的设备指纹收敛档位，默认 off（不收敛）。 */
-export type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full' | 'round'
+export type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full' | 'round' | 'turn_round'
 export type ModelCooldownMode = 'off' | 'fixed' | 'adaptive'
 
 export type ResponseCacheWritePolicy = 'always' | 'on_demand'
@@ -2174,9 +2174,10 @@ export interface SystemSettings {
   continuous_retry_status_codes: number[]
   continuous_retry_error_codes: string[]
   continuous_retry_max_duration_seconds: number
-  /** 新导入/新建 Codex 账号默认盖上的设备指纹收敛档位（off/device/session/full）。 */
+  /** 新导入/新建 Codex 账号默认盖上的设备指纹收敛档位（off/device/session/full/round/turn_round）。 */
   codex_fingerprint_default_mode: string
   bps_round_convergence_limit: number
+  bps_turn_task_lifetime_hours: number
   allow_remote_migration: boolean
   database_driver: string
   database_label: string

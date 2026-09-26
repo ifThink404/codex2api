@@ -2039,6 +2039,7 @@ export default function Settings() {
     { label: t('accounts.codexFingerprintModeSession'), value: 'session' },
     { label: t('accounts.codexFingerprintModeFull'), value: 'full' },
     { label: t('accounts.codexFingerprintModeRound'), value: 'round' },
+    { label: t('accounts.codexFingerprintModeTurnRound'), value: 'turn_round' },
   ]
   const modelCooldownModeOptions = [
     { label: t('settings.modelCooldownModeOff'), value: 'off' },
@@ -2231,6 +2232,7 @@ export default function Settings() {
     continuous_retry_max_duration_seconds: 600,
     codex_fingerprint_default_mode: 'off',
     bps_round_convergence_limit: 100,
+    bps_turn_task_lifetime_hours: 24,
     allow_remote_migration: false,
     database_driver: 'postgres',
     database_label: 'PostgreSQL',
@@ -4196,6 +4198,15 @@ export default function Settings() {
                         value={settingsForm.bps_round_convergence_limit ?? 100}
                         onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_round_convergence_limit: value }))}
                         onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_round_convergence_limit: value }) }}
+                      />
+                    </SettingField>
+                    <SettingField label={t('settings.bpsTurnTaskLifetimeHours')} description={t('settings.bpsTurnTaskLifetimeHoursDesc')}>
+                      <DraftNumberInput
+                        min={1}
+                        max={8760}
+                        value={settingsForm.bps_turn_task_lifetime_hours ?? 24}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_turn_task_lifetime_hours: value }))}
+                        onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_turn_task_lifetime_hours: value }) }}
                       />
                     </SettingField>
                     <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUAMode')} description={t('settings.codexUAModeDesc')}>

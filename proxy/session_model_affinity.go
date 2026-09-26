@@ -36,6 +36,9 @@ func sessionModelErrorForRequest(requestContext *gin.Context) *api.APIError {
 }
 
 func (handler *Handler) configureSessionModelAffinity(requestContext *gin.Context, identity requestSessionIdentity, key, originalModel, effectiveModel string, compact bool, bodies ...[]byte) (apiError *api.APIError) {
+	if len(bodies) > 0 {
+		handler.bindBPSUploadRequest(requestContext, bodies[0], compact)
+	}
 	// Forks copy history into a new root. Preserve a known BPS origin even when
 	// both paths on the inherited account support the fork's requested model.
 	if identity.forkSourceAffinityID != "" {

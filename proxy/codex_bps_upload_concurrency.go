@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-const bpsAttachmentUploadConcurrency = 100
+const bpsAttachmentUploadConcurrency = 15
 
 // Workers produce independent results; JSON rewriting stays on the caller
 // goroutine in source order. A failure cancels and joins all in-flight workers.

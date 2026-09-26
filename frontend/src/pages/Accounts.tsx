@@ -835,6 +835,7 @@ function codexFingerprintModeOptions(
     { value: "session", label: t("accounts.codexFingerprintModeSession") },
     { value: "full", label: t("accounts.codexFingerprintModeFull") },
     { value: "round", label: t("accounts.codexFingerprintModeRound") },
+    { value: "turn_round", label: t("accounts.codexFingerprintModeTurnRound") },
   ];
 }
 
@@ -847,6 +848,8 @@ function codexFingerprintModeDetail(
       return t("accounts.codexFingerprintModeDeviceDetail");
     case "session":
       return t("accounts.codexFingerprintModeSessionDetail");
+    case "turn_round":
+      return t("accounts.codexFingerprintModeTurnRoundDetail");
     case "round":
       return t("accounts.codexFingerprintModeRoundDetail");
     case "full":

@@ -67,8 +67,13 @@ func codexRouteAccountFilter(c *gin.Context, next auth.AccountFilter) auth.Accou
 		if account.IsRelayStyle() {
 			return prior != "bps" && (next == nil || next(account))
 		}
-		if selectCodexRoute(account, info.Model, prior, info.Auxiliary) == "" {
+		mode := selectCodexRoute(account, info.Model, prior, info.Auxiliary)
+		if mode == "" {
 			selectionTraceForRequest(c).Reject("upstream_route_unavailable")
+			return false
+		}
+		if bpsUploadCooldownForRequest(ctx, account, mode) {
+			selectionTraceForRequest(c).RejectAccount(account.ID(), bpsUploadCooldownReason)
 			return false
 		}
 		return next == nil || next(account)

@@ -37,6 +37,9 @@ func (db *DB) ensureCodexIdentityMappingTables(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS bps_round_tasks (account_key TEXT PRIMARY KEY, generation BIGINT NOT NULL, iteration BIGINT NOT NULL, round_limit INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS bps_round_steps (account_key TEXT NOT NULL, step_key TEXT NOT NULL, generation BIGINT NOT NULL, iteration BIGINT NOT NULL, round_limit INTEGER NOT NULL, PRIMARY KEY(account_key,step_key))`,
 		`CREATE TABLE IF NOT EXISTS bps_round_batches (account_key TEXT NOT NULL, generation BIGINT NOT NULL, started_at_unix_ms BIGINT NOT NULL, last_sent_at_unix_ms BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(account_key,generation))`,
+		`CREATE TABLE IF NOT EXISTS bps_turn_tasks (account_key TEXT PRIMARY KEY, generation BIGINT NOT NULL, lifetime_hours INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS bps_turn_steps (account_key TEXT NOT NULL, step_key TEXT NOT NULL, generation BIGINT NOT NULL, lifetime_hours INTEGER NOT NULL, PRIMARY KEY(account_key,step_key))`,
+		`CREATE TABLE IF NOT EXISTS bps_turn_batches (account_key TEXT NOT NULL, generation BIGINT NOT NULL, started_at_unix_ms BIGINT NOT NULL, last_sent_at_unix_ms BIGINT NOT NULL, PRIMARY KEY(account_key,generation))`,
 		`CREATE TABLE IF NOT EXISTS codex_session_context_tokens (token_key TEXT PRIMARY KEY, expires_at BIGINT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_codex_session_context_tokens_expiry ON codex_session_context_tokens(expires_at)`,
 	} {

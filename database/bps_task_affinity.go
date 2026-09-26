@@ -32,7 +32,8 @@ func (db *DB) UpdateBPSTaskAffinity(ctx context.Context, key string, revision, a
 		return record, errors.New("invalid BPS task affinity")
 	}
 	err := db.conn.QueryRowContext(ctx, `INSERT INTO bps_task_affinities(task_key,account_id,revision) VALUES($1,$2,1)
-		ON CONFLICT(task_key) DO UPDATE SET account_id=excluded.account_id, revision=bps_task_affinities.revision+1
+		ON CONFLICT(task_key) DO UPDATE SET account_id=excluded.account_id,
+			revision=CASE WHEN bps_task_affinities.account_id=excluded.account_id THEN bps_task_affinities.revision ELSE bps_task_affinities.revision+1 END
 		WHERE bps_task_affinities.revision=$3 RETURNING account_id,revision`, key, accountID, revision).Scan(&record.AccountID, &record.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return db.ReadBPSTaskAffinity(ctx, key)

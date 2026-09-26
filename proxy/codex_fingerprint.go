@@ -171,7 +171,7 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 		return nil
 	}
 	mode := account.EffectiveCodexFingerprintMode()
-	if mode == auth.CodexFingerprintModeRound {
+	if mode == auth.CodexFingerprintModeRound || mode == auth.CodexFingerprintModeTurnRound {
 		// Round convergence is a BPS task policy, not a native session policy.
 		mode = auth.CodexFingerprintModeDevice
 	}

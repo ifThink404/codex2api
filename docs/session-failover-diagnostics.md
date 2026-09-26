@@ -10,7 +10,7 @@
 管理日志新增 `account_failover.selection`：
 
 - `required_group_ids`：原账号的分组匹配要求，`match_mode=exact_groups` 表示账号分组集合必须完全一致。标签不参与筛选或提交前复查，新日志不再生成 `required_tags`；旧日志中的该字段保留原始历史含义。
-- 宽松模式使用 `match_mode=relaxed_no_groups`，不设置 `required_group_ids`；候选的分组仅供识别，不参与淘汰。
+- 宽松模式使用 `match_mode=relaxed_key_scope`，不设置旧账号的 `required_group_ids`；不要求新旧账号同组，但 Key 分组权限始终参与筛选。授权范围外的候选记录为 `api_key_scope_mismatch`。
 - `attempts`：本轮调用选择器的次数。
 - `rejection_counts`：实际选择过程观察到的排除次数，同一个账号可被重复检查，因此不是独立账号数。
 - `candidates`：最多 20 条不同“账号 ID + 排除原因”样本；附带诊断收尾时读取的候选分组与标签。标签仅供识别账号，不是切号条件。只展示实际检查到的失败条件，不推测未执行的筛选结果。

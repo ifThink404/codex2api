@@ -68,7 +68,8 @@ export function normalizeCodexFingerprintMode(
     value === "device" ||
     value === "session" ||
     value === "full" ||
-    value === "round"
+    value === "round" ||
+    value === "turn_round"
   ) {
     return value;
   }

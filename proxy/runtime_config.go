@@ -68,6 +68,7 @@ type RuntimeSettings struct {
 	CodexMinCLIVersion       string
 	CodexUserAgentConfig     string
 	BPSRoundConvergenceLimit int
+	BPSTurnTaskLifetimeHours int
 	CodexTelemetryEnabled    bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
@@ -213,6 +214,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexOverloadWindowMinutes:        database.NormalizeCodexOverloadWindowMinutes(0),
 		CodexContinueMaxRounds:            defaultCodexContinueMaxRounds,
 		BPSRoundConvergenceLimit:          database.DefaultBPSRoundConvergenceLimit,
+		BPSTurnTaskLifetimeHours:          database.DefaultBPSTurnTaskLifetimeHours,
 		RequestIsolationMode:              defaultRequestIsolationMode(),
 		CodexCLIVersionSyncEnabled:        true,
 		CodexCLIVersionSyncIntervalHours:  12,
@@ -345,6 +347,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.CodexOverloadPauseMinutes = database.NormalizeCodexOverloadPauseMinutes(settings.CodexOverloadPauseMinutes)
 	settings.CodexOverloadWindowMinutes = database.NormalizeCodexOverloadWindowMinutes(settings.CodexOverloadWindowMinutes)
 	settings.BPSRoundConvergenceLimit = database.NormalizeBPSRoundConvergenceLimit(settings.BPSRoundConvergenceLimit)
+	settings.BPSTurnTaskLifetimeHours = database.NormalizeBPSTurnTaskLifetimeHours(settings.BPSTurnTaskLifetimeHours)
 	if settings.CodexContinueMaxRounds < minCodexContinueMaxRounds {
 		settings.CodexContinueMaxRounds = defaults.CodexContinueMaxRounds
 	}
@@ -412,6 +415,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexContinueThinking = settings.CodexContinueThinkingEnabled
 		next.CodexContinueMaxRounds = settings.CodexContinueMaxRounds
 		next.BPSRoundConvergenceLimit = settings.BPSRoundConvergenceLimit
+		next.BPSTurnTaskLifetimeHours = settings.BPSTurnTaskLifetimeHours
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
 		next.CodexCLIVersionSyncIntervalHours = settings.CodexCLIVersionSyncIntervalHours

@@ -58,9 +58,13 @@ func resolveBPSRoundIdentity(ctx context.Context, scope *bpsFullConvergenceScope
 	if err != nil {
 		return nil, err
 	}
-	// A new inference step, including a tool continuation, gets a separate
-	// turn ID. The persisted step mapping keeps retries on that same ID.
-	turnKey = codexIdentityDigest("bps-round-turn-v1", taskKey, step)
+	// Keep a fixed turn while the task and account residency are unchanged.
+	// A failover (including a return to this account) starts a new turn without
+	// rotating the destination account's task or resetting its batch counter.
+	turnKey = codexIdentityDigest("bps-round-fixed-turn-v1", taskKey)
+	if scope.turnEpoch != "" {
+		turnKey = codexIdentityDigest("bps-round-segment-turn-v1", taskKey, scope.turnEpoch)
+	}
 	d.TurnID, err = store.ResolveCodexIdentityUUIDv7(ctx, turnKey, codexIdentityDigest("bps-round-turn-entropy-v1", turnKey))
 	if err != nil {
 		return nil, err

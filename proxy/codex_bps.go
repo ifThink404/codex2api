@@ -22,6 +22,7 @@ type CodexBPSDiagnostic struct {
 	WordIdentity             *bpsWordIdentityDiagnostic    `json:"word_identity,omitempty"`
 	FullConvergence          *bpsWordIdentityDiagnostic    `json:"full_convergence,omitempty"`
 	RoundConvergence         *bpsWordIdentityDiagnostic    `json:"round_convergence,omitempty"`
+	TurnConvergence          *bpsWordIdentityDiagnostic    `json:"turn_convergence,omitempty"`
 	InferredSession          *inferredBPSSessionDiagnostic `json:"inferred_session,omitempty"`
 	projection               *bpsResponseProjection
 	ToolNamespaceRepair      *bpsNamespaceRepairDiagnostic   `json:"tool_namespace_repair,omitempty"`
@@ -197,7 +198,9 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 			d.WordIdentity = identity
 		}
 		if scope := bpsFullConvergenceFrom(ctx); scope != nil {
-			if scope.roundLimit > 0 {
+			if scope.taskLifetimeHours > 0 {
+				d.TurnConvergence = identity
+			} else if scope.roundLimit > 0 {
 				d.RoundConvergence = identity
 			} else {
 				d.FullConvergence = identity
@@ -392,6 +395,10 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		if err := touchBPSRoundIdentity(ctx, diagnostic.RoundConvergence); err != nil {
 			preparationFailed("bps_round_activity")
 			return nil, ErrInternalError("记录 BPS 会话首次发送时间失败", err)
+		}
+		if err := touchBPSTurnIdentity(ctx, diagnostic.TurnConvergence); err != nil {
+			preparationFailed("bps_turn_activity")
+			return nil, ErrInternalError("记录 BPS 任务发送时间失败", err)
 		}
 		resp, sendErr := doTracedUpstreamRequest(client, req, account, proxyURL, projected)
 		if sendErr != nil {

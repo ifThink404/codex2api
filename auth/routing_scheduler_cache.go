@@ -126,7 +126,7 @@ func (s *Store) apiKeyHasConfiguredRoutingRestriction(apiKeyID int64) bool {
 	}
 	s.apiKeyGroupsMu.RLock()
 	defer s.apiKeyGroupsMu.RUnlock()
-	return !s.relaxedAccountGroups.Load() && len(s.apiKeyAllowedGroupSets[apiKeyID]) > 0 ||
+	return len(s.apiKeyAllowedGroupSets[apiKeyID]) > 0 ||
 		len(s.apiKeyAllowedPlanSets[apiKeyID]) > 0 ||
 		s.apiKeyUpstreamChannels[apiKeyID] != ""
 }

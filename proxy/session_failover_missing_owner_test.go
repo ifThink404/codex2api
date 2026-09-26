@@ -89,7 +89,7 @@ func TestRelaxedMissingOwnerSwitchesAndPersists(t *testing.T) {
 				require.EqualValues(t, 1, record.FailoverCount)
 				require.Equal(t, "bps", record.UpstreamMode)
 				require.Equal(t, preserve, record.PreserveRestartInput)
-				require.Equal(t, "relaxed_no_groups", diagnostic.Selection.MatchMode)
+				require.Equal(t, "relaxed_key_scope", diagnostic.Selection.MatchMode)
 				require.Empty(t, diagnostic.Selection.RequiredGroupIDs)
 				require.Nil(t, h.store.FindByID(ownerID), "deleted owner must never be reactivated")
 				cleaned, _, err := PrepareSessionRestartOutbound(c.Request.Context(), target, body, c.Request.Header)
@@ -151,7 +151,7 @@ func TestRelaxedMissingOwnerKeepsCandidateGuards(t *testing.T) {
 			require.Nil(t, h.configureSessionModelAffinity(c, requestSessionIdentity{stableIdentity: true}, key, "gpt-5.6-sol", "gpt-5.6-sol", false, body))
 			selected, _, handled := h.takeSessionAccountFailover(c.Request.Context(), key, 101, nil, sessionModelSupportFilter("gpt-5.6-sol", "gpt-5.6-sol", false), auth.DispatchPolicyStandard)
 			require.True(t, handled)
-			if scenario == "groups" || scenario == "scope_group" {
+			if scenario == "groups" {
 				require.Same(t, target, selected)
 				h.store.Release(selected)
 				record, _, err := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))

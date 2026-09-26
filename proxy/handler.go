@@ -63,6 +63,7 @@ type Handler struct {
 	cfg                         *config.Config       // 全局配置
 	deviceCfg                   *DeviceProfileConfig // 设备指纹配置
 	cache                       cache.TokenCache     // Redis/Memory 运行态缓存
+	bpsUploadCooldowns          bpsUploadCooldowns
 	apiKeyGateMu                sync.Mutex
 	promptRiskMu                sync.Mutex
 	promptSessionLimitMu        sync.Mutex
@@ -459,7 +460,7 @@ func applyAffinityGroupRouting(c *gin.Context, identity requestSessionIdentity, 
 		filter = apiRelaySessionAccountFilter(filter)
 	}
 	if CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
-		usageRequestDiagnosticState(c).GroupRouting = &groupRoutingDiagnostic{Reason: "relaxed_no_groups"}
+		usageRequestDiagnosticState(c).GroupRouting = &groupRoutingDiagnostic{Reason: "relaxed_key_scope"}
 		return filter
 	}
 	row := apiKeyRowFromContext(c)

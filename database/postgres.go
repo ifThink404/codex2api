@@ -1631,6 +1631,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(20) DEFAULT 'off';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_round_convergence_limit INT DEFAULT 100;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_turn_task_lifetime_hours INT DEFAULT 24;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864;
@@ -2573,9 +2574,10 @@ type SystemSettings struct {
 	CodexContinueMaxRounds              int  // 单次请求最大续想轮数（含首轮），默认 8
 	UTLSShutdownTimeoutMinutes          int  // uTLS 连接被摘出池后等待在途 stream 收尾的上限（分钟，默认 30，范围 1-240，issue #446）
 	// CodexFingerprintDefaultMode 是新导入/新建 Codex 账号默认盖上的指纹收敛档位
-	// （off/device/session/full，默认 off）。只影响导入之后新建的账号，已有账号不变。
+	// （off/device/session/full/round/turn_round，默认 off）。只影响导入之后新建的账号，已有账号不变。
 	CodexFingerprintDefaultMode string
 	BPSRoundConvergenceLimit    int
+	BPSTurnTaskLifetimeHours    int
 	AutoPause5hThreshold        float64
 	AutoPause7dThreshold        float64
 	AutoPause5hGuardBandPercent float64
@@ -2858,7 +2860,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(codex_ws_disable_fragmentation, false),
 		       COALESCE(prompt_filter_builtin_overrides, '[]'),
 		       COALESCE(session_balance_mode, ''),
-		       COALESCE(bps_round_convergence_limit, 100)
+		       COALESCE(bps_round_convergence_limit, 100),
+		       COALESCE(bps_turn_task_lifetime_hours, 24)
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2958,6 +2961,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.PromptFilterBuiltinOverrides,
 		&s.SessionBalanceMode,
 		&s.BPSRoundConvergenceLimit,
+		&s.BPSTurnTaskLifetimeHours,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -2996,6 +3000,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s.AutoResetCreditsBeforeExpiryMin = NormalizeAutoResetCreditsBeforeExpiryMinutes(s.AutoResetCreditsBeforeExpiryMin)
 	s.CodexFingerprintDefaultMode = NormalizeCodexFingerprintDefaultMode(s.CodexFingerprintDefaultMode)
 	s.BPSRoundConvergenceLimit = NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit)
+	s.BPSTurnTaskLifetimeHours = NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours)
 	s.SessionSlotBufferSeconds = NormalizeSessionSlotBufferSeconds(s.SessionSlotBufferSeconds)
 	s.ModelsListReadMaxBytes = NormalizeModelsListReadMaxBytes(s.ModelsListReadMaxBytes)
 	s.SchedulerEngine = NormalizeSchedulerEngine(s.SchedulerEngine, s.FastSchedulerEnabled)
@@ -3101,6 +3106,8 @@ func NormalizeCodexFingerprintDefaultMode(mode string) string {
 		return "session"
 	case "round":
 		return "round"
+	case "turn_round":
+		return "turn_round"
 	case "full":
 		return "full"
 	default:
@@ -3226,9 +3233,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_fork_account_fallback_enabled,
 					codex_initial_session_age_check_disabled,
 					session_balance_mode,
-					bps_round_convergence_limit
+					bps_round_convergence_limit,
+					bps_turn_task_lifetime_hours
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3359,6 +3367,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					session_window_balance_enabled = EXCLUDED.session_window_balance_enabled,
 					session_balance_mode = EXCLUDED.session_balance_mode,
 					bps_round_convergence_limit = EXCLUDED.bps_round_convergence_limit,
+					bps_turn_task_lifetime_hours = EXCLUDED.bps_turn_task_lifetime_hours,
 					passive_internal_models_enabled = EXCLUDED.passive_internal_models_enabled,
 					codex_unlinked_account_fallback_enabled = EXCLUDED.codex_unlinked_account_fallback_enabled,
 					codex_unlinked_account_fallback_seconds = EXCLUDED.codex_unlinked_account_fallback_seconds,
@@ -3432,7 +3441,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.CodexForkAccountFallbackEnabled,
 		s.CodexInitialSessionAgeCheckDisabled,
 		NormalizeSessionBalanceMode(s.SessionBalanceMode, s.SessionWindowBalanceEnabled),
-		NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit))
+		NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit),
+		NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours))
 	return err
 }
 

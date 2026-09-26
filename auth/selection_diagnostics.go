@@ -247,7 +247,7 @@ func (trace *SelectionTrace) Snapshot() SelectionDiagnostic {
 		if reason == "indexed_candidates_unavailable" || reason == "diagnosis_incomplete" || reason == "dispatch_state_changed" || reason == "lazy_account_unavailable" || reason == "lazy_refresh_failed" || reason == "lazy_refresh_pending" || reason == "account_unavailable" {
 			result.Incomplete = true
 		}
-		if reason != "account_cooldown" && reason != "model_cooldown" && reason != "concurrency_exhausted" && reason != "scope_concurrency_exhausted" && reason != "session_capacity_exhausted" {
+		if reason != "account_cooldown" && reason != "model_cooldown" && reason != "bps_upload_cooldown" && reason != "concurrency_exhausted" && reason != "scope_concurrency_exhausted" && reason != "session_capacity_exhausted" {
 			result.Retry = "stop"
 		}
 	}

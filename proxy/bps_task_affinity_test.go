@@ -88,7 +88,7 @@ func TestBPSTaskAffinityExplicitTaskAndIdentityBoundaries(t *testing.T) {
 }
 
 func TestBPSTaskAffinityHonorsDisabledModesAndExclusions(t *testing.T) {
-	for _, mode := range []string{"session", "full", "round", "device", "off"} {
+	for _, mode := range []string{"session", "full", "round", "turn_round", "device", "off"} {
 		t.Run(mode, func(t *testing.T) {
 			db, err := database.New("sqlite", filepath.Join(t.TempDir(), "task.db"))
 			require.NoError(t, err)
@@ -111,7 +111,7 @@ func TestBPSTaskAffinityHonorsDisabledModesAndExclusions(t *testing.T) {
 			store.Release(a)
 			stored, err := db.ReadBPSTaskAffinity(t.Context(), key)
 			require.NoError(t, err)
-			if mode == "session" || mode == "full" || mode == "round" {
+			if mode == "session" || mode == "full" || mode == "round" || mode == "turn_round" {
 				require.Equal(t, int64(2), stored.AccountID)
 			} else {
 				require.Equal(t, int64(1), stored.AccountID, "disabled convergence must not update the preference")

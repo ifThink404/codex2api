@@ -11,9 +11,11 @@ import (
 type bpsFullConvergenceKey struct{}
 
 type bpsFullConvergenceScope struct {
-	taskKey    string
-	turnScope  string
-	roundLimit int
+	taskKey           string
+	turnScope         string
+	turnEpoch         string
+	roundLimit        int
+	taskLifetimeHours int
 }
 
 func bpsFullConvergenceFrom(ctx context.Context) *bpsFullConvergenceScope {
@@ -28,7 +30,7 @@ func bpsFullConvergenceFrom(ctx context.Context) *bpsFullConvergenceScope {
 // turn key and leave routing, attachments, response caches and ownership alone.
 func withBPSFullConvergence(ctx context.Context, account *auth.Account, profile bpsProfileConfig, headers http.Header, fingerprint *CodexFingerprint, cacheKey, apiKey string) (context.Context, error) {
 	mode := account.EffectiveCodexFingerprintMode()
-	if mode != auth.CodexFingerprintModeFull && mode != auth.CodexFingerprintModeRound {
+	if mode != auth.CodexFingerprintModeFull && mode != auth.CodexFingerprintModeRound && mode != auth.CodexFingerprintModeTurnRound {
 		if bpsFullConvergenceFrom(ctx) != nil {
 			ctx = context.WithValue(ctx, bpsFullConvergenceKey{}, (*bpsFullConvergenceScope)(nil))
 		}
@@ -51,14 +53,25 @@ func withBPSFullConvergence(ctx context.Context, account *auth.Account, profile 
 	if session == "" && thread == "" {
 		session = cacheKey
 	}
+	turnEpoch := outboundEpochFromContext(ctx).identityKey()
+	if mode == auth.CodexFingerprintModeRound || mode == auth.CodexFingerprintModeTurnRound {
+		turnEpoch = bpsConvergenceTurnEpoch(ctx, account)
+	}
 	scope := &bpsFullConvergenceScope{
-		taskKey: codexIdentityDigest("bps-full-account-task-v1", upstreamAccount),
+		taskKey:   codexIdentityDigest("bps-full-account-task-v1", upstreamAccount),
+		turnEpoch: turnEpoch,
 		turnScope: codexIdentityDigest("bps-full-private-turn-v1", upstreamAccount, owner,
-			string(profile.profile), session, thread, outboundEpochFromContext(ctx).identityKey()),
+			string(profile.profile), session, thread, turnEpoch),
 	}
 	if mode == auth.CodexFingerprintModeRound {
-		scope.taskKey = codexIdentityDigest("bps-round-account-task-v1", upstreamAccount)
+		// Start a fresh batch once when upgrading from per-step turns, so the
+		// first fixed turn starts at iteration 1 rather than a partial counter.
+		scope.taskKey = codexIdentityDigest("bps-round-account-task-v2", upstreamAccount)
 		scope.roundLimit = CurrentRuntimeSettings().BPSRoundConvergenceLimit
+	}
+	if mode == auth.CodexFingerprintModeTurnRound {
+		scope.taskKey = codexIdentityDigest("bps-turn-account-task-v1", upstreamAccount)
+		scope.taskLifetimeHours = CurrentRuntimeSettings().BPSTurnTaskLifetimeHours
 	}
 	return context.WithValue(ctx, bpsFullConvergenceKey{}, scope), nil
 }

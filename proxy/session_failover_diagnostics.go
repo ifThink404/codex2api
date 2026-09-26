@@ -48,6 +48,10 @@ func sessionFailoverUnavailableAPIError(ctx *gin.Context) *api.APIError {
 		if plan.Failure != nil {
 			return plan.Failure
 		}
+		if plan.Diagnostic != nil && plan.Diagnostic.Result == "no_safe_candidate" && plan.Diagnostic.TriggerReason == bpsUploadCooldownReason {
+			return api.NewAPIErrorWithDetails(api.ErrCodeServiceUnavailable, "附件上传暂时受限，当前没有可用的替代账号，请稍后重试。", api.ErrorTypeServer,
+				gin.H{"request_id": diagnosticRequestID(snapshotUpstreamTrace(ctx.Request.Context()).RequestID), "retryable": true})
+		}
 		if plan.Diagnostic != nil && plan.Diagnostic.Result == "no_safe_candidate" &&
 			(plan.Diagnostic.TriggerReason == "account_session_capacity_full" || plan.Diagnostic.Reason == "account_session_capacity_full") {
 			message = sessionFailoverCapacityMessage
@@ -75,12 +79,16 @@ func sendSessionFailoverUnavailable(ctx *gin.Context, stream, chat bool) {
 	}
 	failure := sessionFailoverUnavailableAPIError(ctx)
 	status := http.StatusBadRequest
-	if plan, _ := ctx.Request.Context().Value(sessionAccountFailoverContextKey{}).(*sessionAccountFailoverPlan); plan != nil && plan.Failure != nil {
+	if plan, _ := ctx.Request.Context().Value(sessionAccountFailoverContextKey{}).(*sessionAccountFailoverPlan); plan != nil && (plan.Failure != nil || failure.Code == api.ErrCodeServiceUnavailable) {
 		status = api.HTTPStatusCode(failure.Code)
 	}
 	api.ObserveError(ctx, status, failure)
 	if !ctx.Writer.Written() {
-		ctx.Header("X-Should-Retry", "false")
+		retryHeader := "false"
+		if details, ok := failure.Details.(gin.H); ok && details["retryable"] == true {
+			retryHeader = "true"
+		}
+		ctx.Header("X-Should-Retry", retryHeader)
 		ctx.JSON(status, api.ErrorResponse{Error: *failure})
 		return
 	}

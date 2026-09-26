@@ -63,6 +63,14 @@ test("round convergence survives account form loading and saving", () => {
   if (result.ok) assert.equal(result.payload.codex_fingerprint_mode, "round");
 });
 
+test("turn_id rounds survive account form loading and saving", () => {
+  const form = formStateFromAccount({ ...detailedRow, codex_fingerprint_mode: "turn_round" });
+  assert.equal(form.fingerprintMode, "turn_round");
+  const result = buildQuickConfigSavePayload(form, true);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.payload.codex_fingerprint_mode, "turn_round");
+});
+
 test("save is blocked until the form belongs to the current account", () => {
   const form = formStateFromAccount(detailedRow);
   assert.equal(

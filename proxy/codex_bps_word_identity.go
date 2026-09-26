@@ -48,6 +48,7 @@ type bpsWordIdentityDiagnostic struct {
 	TaskStartedAtMS     int64  `json:"task_started_at_unix_ms,omitempty"`
 	TaskLastSentAtMS    int64  `json:"task_last_sent_at_unix_ms,omitempty"`
 	TaskExpiresAtMS     int64  `json:"task_expires_at_unix_ms,omitempty"`
+	TaskLifetimeHours   int    `json:"task_lifetime_hours,omitempty"`
 	roundPartitionKey   string
 }
 
@@ -158,6 +159,10 @@ func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Heade
 		d.TaskScope = "upstream_account"
 	}
 	stepKey := codexIdentityDigest("bps-word-step-v2", step)
+	if full := bpsFullConvergenceFrom(ctx); full != nil && full.taskLifetimeHours > 0 {
+		stepKey = codexIdentityDigest("bps-turn-operation-v1", stepKey, strconv.FormatBool(compact))
+		return resolveBPSTurnIdentity(ctx, full, model, bpsRoundReasoningEffort(body), turnKey, stepKey, d)
+	}
 	if full := bpsFullConvergenceFrom(ctx); full != nil && full.roundLimit > 0 {
 		stepKey = codexIdentityDigest("bps-round-operation-v1", stepKey, strconv.FormatBool(compact))
 		return resolveBPSRoundIdentity(ctx, full, model, bpsRoundReasoningEffort(body), turnKey, stepKey, d)

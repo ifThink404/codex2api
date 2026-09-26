@@ -4,13 +4,14 @@ import "testing"
 
 func TestNormalizeCodexFingerprintMode(t *testing.T) {
 	cases := map[string]string{
-		"":          CodexFingerprintModeOff,
-		"off":       CodexFingerprintModeOff,
-		"unknown":   CodexFingerprintModeOff,
-		"DEVICE":    CodexFingerprintModeDevice,
-		" session ": CodexFingerprintModeSession,
-		"Full":      CodexFingerprintModeFull,
-		" ROUND ":   CodexFingerprintModeRound,
+		"":             CodexFingerprintModeOff,
+		"off":          CodexFingerprintModeOff,
+		"unknown":      CodexFingerprintModeOff,
+		"DEVICE":       CodexFingerprintModeDevice,
+		" session ":    CodexFingerprintModeSession,
+		"Full":         CodexFingerprintModeFull,
+		" ROUND ":      CodexFingerprintModeRound,
+		" TURN_ROUND ": CodexFingerprintModeTurnRound,
 	}
 	for input, want := range cases {
 		if got := NormalizeCodexFingerprintMode(input); got != want {
@@ -20,7 +21,7 @@ func TestNormalizeCodexFingerprintMode(t *testing.T) {
 }
 
 func TestIsValidCodexFingerprintMode(t *testing.T) {
-	for _, value := range []string{CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull, CodexFingerprintModeRound, " FULL "} {
+	for _, value := range []string{CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull, CodexFingerprintModeRound, CodexFingerprintModeTurnRound, " FULL "} {
 		if !IsValidCodexFingerprintMode(value) {
 			t.Errorf("IsValidCodexFingerprintMode(%q) = false, want true", value)
 		}

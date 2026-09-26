@@ -22,6 +22,7 @@ type bpsUploadFailureDiagnostic struct {
 	Message    string `json:"message,omitempty"`
 	RequestID  string `json:"request_id,omitempty"`
 	CFRay      string `json:"cf_ray,omitempty"`
+	RetryAfter string `json:"retry_after,omitempty"`
 }
 
 var bpsDiagnosticFileID = regexp.MustCompile(`\bfile-[A-Za-z0-9_-]+`)
@@ -78,6 +79,9 @@ func (h *Handler) logBPSPreparationFailure(c *gin.Context, err error, input *dat
 	if !errors.As(err, &upload) {
 		return
 	}
+	if h.store != nil {
+		h.rememberBPSUploadFailure(c.Request.Context(), h.store.FindByID(input.AccountID), err)
+	}
 	body := upload.UpstreamErrorBody()
 	captureUpstreamErrorDiagnostic(c, body, upload.detail.HTTPStatus, "upstream_http", "bps_attachment_upload")
 	input.StatusCode = upload.UpstreamStatusCode()
@@ -95,6 +99,7 @@ func (h *Handler) logBPSPreparationFailure(c *gin.Context, err error, input *dat
 func bpsAttachmentFailure(ctx context.Context, headers http.Header, filename, stage string, status int, responseHeaders http.Header, raw []byte, cause error) error {
 	d := bpsUploadFailureDiagnostic{Stage: stage, HTTPStatus: status,
 		RequestID: safeDiagnosticToken(responseHeaders.Get("X-Request-Id")), CFRay: safeDiagnosticToken(responseHeaders.Get("CF-Ray"))}
+	d.RetryAfter = normalizedRetryAfter(responseHeaders.Get("Retry-After"))
 	for _, path := range []string{"error", "detail.error.error", "detail.error", "detail", ""} {
 		value := gjson.ParseBytes(raw)
 		if path != "" {
