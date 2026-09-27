@@ -40,7 +40,17 @@ func parseServiceErrorFilter(ctx *gin.Context, now time.Time) (database.ServiceE
 		return filter, fmt.Errorf("request_id 过长")
 	}
 	filter.Cursor = ctx.Query("cursor")
-	if !database.ValidateServiceErrorCursor(filter.Cursor) {
+	if value := ctx.Query("grouped"); value != "" {
+		if value != "true" && value != "false" {
+			return filter, fmt.Errorf("grouped 必须为 true 或 false")
+		}
+		filter.Grouped = value == "true"
+	}
+	filter.GroupKey = ctx.Query("group_key")
+	if !database.ValidateServiceErrorGroupKey(filter.GroupKey) || filter.Grouped && filter.GroupKey != "" {
+		return filter, fmt.Errorf("group_key 参数无效；组内明细需要 grouped=false")
+	}
+	if !database.ValidateServiceErrorViewCursor(filter.Cursor, filter.Grouped) {
 		return filter, fmt.Errorf("cursor 参数无效")
 	}
 	if value := ctx.Query("limit"); value != "" {

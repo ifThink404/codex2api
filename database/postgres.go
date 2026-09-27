@@ -597,6 +597,11 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	db.promptFilterAudit.start()
 	db.serviceErrors = newServiceErrorQueue(db)
 	go db.serviceErrors.run()
+	db.RunBackgroundTask(func(taskCtx context.Context) {
+		if err := db.backfillServiceErrorGroups(taskCtx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("回填服务错误分组失败，将在下次启动继续: %v", err)
+		}
+	})
 	db.sessionErrors = newSessionErrorQueue(db)
 	go db.sessionErrors.run()
 	db.sessionActivity = newSessionActivityTracker(sessionActivityCapacity)

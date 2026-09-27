@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -59,6 +60,67 @@ func TestGroupRoutingActualIngressDefaultLowStillUsesSplit(t *testing.T) {
 	}
 }
 
+func TestMissingGroupRoutingFieldsPreserveOnlyScopedOwners(t *testing.T) {
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact", "/v1/chat/completions", "/v1/messages"} {
+		for _, scenario := range []string{"persistent", "live", "other_key", "other_root", "revoked", "deleted"} {
+			t.Run(path+"/"+scenario, func(t *testing.T) {
+				h := newWindowAuthorizationHandler(t)
+				c, body, identity := chatGroupTestRequest(t, h, path)
+				captureGroupRoutingIngress(c, body)
+				primary := &auth.Account{DBID: 1, GroupIDs: []int64{10}}
+				split := &auth.Account{DBID: 2, GroupIDs: []int64{20}}
+				h.store.AddAccount(primary)
+				h.store.AddAccount(split)
+				keyID, root, ownerID := int64(7), identity.affinityID, int64(1)
+				if scenario == "other_key" {
+					keyID = 8
+				}
+				if scenario == "other_root" {
+					root = "another-conversation"
+				}
+				if scenario == "deleted" {
+					ownerID = 999
+				}
+				key := sessionAffinityKey(root, keyID)
+				if scenario == "live" {
+					h.store.BindSessionAffinity(key, primary, "")
+				} else {
+					_, err := h.db.CommitSessionContinuity(t.Context(), hashRiskIdentity(key), database.SessionContinuityRecord{AccountID: ownerID, LastSeen: time.Now()})
+					require.NoError(t, err)
+				}
+				if scenario == "revoked" {
+					h.store.SetAPIKeyAllowedGroups(7, []int64{30})
+				}
+				h.prepareSessionGroupRouting(c, identity)
+				filter := applyAffinityGroupRouting(c, identity, func(a *auth.Account) bool { return a.AllowsAPIKey(7) && h.store.APIKeyAllowsAccount(7, a) })
+				require.Equal(t, scenario == "persistent" || scenario == "live", filter(primary))
+				require.Equal(t, scenario == "other_key" || scenario == "other_root", filter(split))
+			})
+		}
+	}
+}
+
+func TestGroupRoutingDoesNotKeepPreviousFrameOwner(t *testing.T) {
+	h := newWindowAuthorizationHandler(t)
+	c, body, identity := chatGroupTestRequest(t, h, "/v1/responses")
+	primary := &auth.Account{DBID: 1, GroupIDs: []int64{10}}
+	split := &auth.Account{DBID: 2, GroupIDs: []int64{20}}
+	h.store.AddAccount(primary)
+	h.store.AddAccount(split)
+	_, err := h.db.CommitSessionContinuity(t.Context(), hashRiskIdentity(sessionAffinityKey(identity.affinityID, 7)), database.SessionContinuityRecord{AccountID: 2, LastSeen: time.Now()})
+	require.NoError(t, err)
+	setGroupRoutingIngress(c, body)
+	h.prepareSessionGroupRouting(c, identity)
+	require.True(t, applyAffinityGroupRouting(c, identity, nil)(split))
+	c.Request.Header = http.Header{"Session-Id": {"new-session"}}
+	setGroupRoutingIngress(c, []byte(`{"model":"gpt-6-astra","reasoning":{"effort":"high"}}`))
+	identity = requestSessionIdentity{affinityID: "new-session", stableIdentity: true, hasRequestFingerprint: true}
+	h.prepareSessionGroupRouting(c, identity)
+	filter := applyAffinityGroupRouting(c, identity, nil)
+	require.True(t, filter(primary))
+	require.False(t, filter(split))
+}
+
 func TestGroupRoutingUsesOriginalFieldsBeforeDefaults(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, reason string
@@ -107,7 +169,9 @@ func TestGroupRoutingUsesOriginalFieldsBeforeDefaults(t *testing.T) {
 			require.Equal(t, tc.reason, usageRequestDiagnosticState(c).GroupRouting.Reason)
 			// Splitting remains opt-in, including after an absent-input snapshot.
 			row.Limits.NoAffinityGroupIDs = nil
-			require.Nil(t, applyAffinityGroupRouting(c, identity, nil))
+			unsplit := applyAffinityGroupRouting(c, identity, nil)
+			require.True(t, unsplit(&auth.Account{DBID: 1, GroupIDs: []int64{10}}))
+			require.True(t, unsplit(&auth.Account{DBID: 2, GroupIDs: []int64{20}}), "without splitting, no initial route is excluded")
 		})
 	}
 }
@@ -139,7 +203,7 @@ func TestGroupRoutingReadsSessionFromOriginalTurnMetadataHeader(t *testing.T) {
 	require.Empty(t, missingGroupRoutingInputReason(c))
 }
 
-func TestMissingGroupRoutingFieldsOverrideChatCohortButKeepOwnerErrors(t *testing.T) {
+func TestMissingGroupRoutingFieldsKeepChatCohortAndOwnerErrors(t *testing.T) {
 	for _, unavailable := range []bool{false, true} {
 		h := newWindowAuthorizationHandler(t)
 		c, body, identity := chatGroupTestRequest(t, h, "/v1/chat/completions")
@@ -152,14 +216,14 @@ func TestMissingGroupRoutingFieldsOverrideChatCohortButKeepOwnerErrors(t *testin
 		}
 		_, err := h.db.CommitSessionContinuity(t.Context(), hashRiskIdentity(sessionAffinityKey(identity.affinityID, 7)), database.SessionContinuityRecord{AccountID: 1})
 		require.NoError(t, err)
-		h.prepareChatGroupRouting(c, identity)
+		h.prepareSessionGroupRouting(c, identity)
 		filter := applyAffinityGroupRouting(c, identity, nil)
-		require.False(t, filter(primary))
-		require.Equal(t, !unavailable, filter(split))
+		require.Equal(t, !unavailable, filter(primary))
+		require.False(t, filter(split))
 		if unavailable {
 			require.Equal(t, "group_routing_owner_unavailable", usageRequestDiagnosticState(c).GroupRouting.Reason)
 		} else {
-			require.Equal(t, "missing_reasoning_effort", usageRequestDiagnosticState(c).GroupRouting.Reason)
+			require.Equal(t, "existing_session_binding", usageRequestDiagnosticState(c).GroupRouting.Reason)
 		}
 	}
 }

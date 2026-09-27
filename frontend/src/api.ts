@@ -560,7 +560,8 @@ export function sessionErrorSearchParams(query: SessionErrorQuery): string {
 
 export function serviceErrorSearchParams(query: ServiceErrorQuery): string {
   const search = new URLSearchParams({ start: query.start, end: query.end, limit: '20' })
-  for (const key of ['status', 'stage', 'request_id', 'cursor'] as const) {
+  if (query.grouped !== undefined) search.set('grouped', String(query.grouped))
+  for (const key of ['status', 'stage', 'request_id', 'cursor', 'group_key'] as const) {
     const value = query[key]?.trim()
     if (value) search.set(key, value)
   }

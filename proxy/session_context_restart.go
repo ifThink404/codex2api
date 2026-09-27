@@ -291,7 +291,13 @@ func sessionRestartRoutingContext(request *gin.Context, body []byte) ([]byte, ht
 		known, cancel = epoch.restartContextVerifier(request.Request.Context())
 		defer cancel()
 	}
-	cleaned, headers, _, err := cleanSessionRestartContext(sessionFailoverRequestHeaders(request), body, known, PreserveSessionInput(request.Request.Context()))
+	preserve := PreserveSessionInput(request.Request.Context())
+	if plan != nil && epoch != nil && epoch.record.UpstreamMode == "bps" {
+		// Route selection may choose native Codex. Evaluate a clean routing
+		// copy; the committed target determines final outbound preservation.
+		preserve = false
+	}
+	cleaned, headers, _, err := cleanSessionRestartContext(sessionFailoverRequestHeaders(request), body, known, preserve)
 	if err != nil {
 		return body, sessionFailoverRequestHeaders(request)
 	}

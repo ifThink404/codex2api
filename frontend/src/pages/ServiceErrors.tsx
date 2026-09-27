@@ -10,7 +10,7 @@ import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
 import { writeClipboardText } from '../lib/clipboard'
 import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
-import { SERVICE_ERROR_STAGES, serviceErrorCollectorHasLoss, serviceErrorNewAPIUserLabel, type ServiceErrorEvent, type ServiceErrorPage } from '../lib/serviceErrors'
+import { SERVICE_ERROR_STAGES, serviceErrorCollectorHasLoss, serviceErrorNewAPIUserLabel, type ServiceErrorEvent, type ServiceErrorPage, type ServiceErrorQuery } from '../lib/serviceErrors'
 import { formatBeijingTime } from '../utils/time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,7 +20,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
-const emptyPage: ServiceErrorPage = {
+const emptyPage: ServiceErrorPage & { query?: ServiceErrorQuery } = {
   items: [],
   summary: { total: 0, status_429: 0, status_4xx: 0, status_5xx: 0 },
   collector: { pending: 0, written: 0, dropped: 0, write_failures: 0, capacity: 512, retention_days: 7, max_rows: 100000 },
@@ -28,7 +28,8 @@ const emptyPage: ServiceErrorPage = {
 
 export default function ServiceErrors() {
   const { t } = useTranslation()
-  const [filters, setFilters] = useState({ timeRange: '1h' as TimeRangeKey, status: '', stage: '', requestID: '', cursors: [''] })
+  const [filters, setFilters] = useState({ timeRange: '1h' as TimeRangeKey, status: '', stage: '', requestID: '', grouped: true, cursors: [''] })
+  const [groupSelection, setGroupSelection] = useState<{ event: ServiceErrorEvent; query: ServiceErrorQuery } | null>(null)
   const [search, setSearch] = useState('')
   const range = useRef(getTimeRangeISO('1h'))
   const pending = useRef<AbortController | null>(null)
@@ -38,8 +39,10 @@ export default function ServiceErrors() {
     const controller = new AbortController()
     pending.current = controller
     if (!cursor) range.current = getTimeRangeISO(filters.timeRange)
-    return api.getServiceErrors({ ...range.current, status: filters.status, stage: filters.stage, request_id: filters.requestID, cursor }, controller.signal)
-  }, [cursor, filters.requestID, filters.stage, filters.status, filters.timeRange])
+    const query = { ...range.current, status: filters.status, stage: filters.stage, request_id: filters.requestID, grouped: filters.grouped, cursor }
+    const page = await api.getServiceErrors(query, controller.signal)
+    return { ...page, query }
+  }, [cursor, filters.requestID, filters.stage, filters.status, filters.timeRange, filters.grouped])
   const { data, loading, error, reload, reloadSilently } = useDataLoader({ initialData: emptyPage, load })
 
   useEffect(() => () => pending.current?.abort(), [])
@@ -84,11 +87,16 @@ export default function ServiceErrors() {
               { value: '', label: t('serviceErrors.allStages') },
               ...SERVICE_ERROR_STAGES.map(value => ({ value, label: t(`serviceErrors.stages.${value}`) })),
             ]} className="w-40" />
+            <div className="flex items-center gap-1 rounded-lg border p-1" role="group" aria-label={t('serviceErrors.view')}>
+              {[true, false].map(grouped => <Button key={String(grouped)} type="button" size="sm" variant={filters.grouped === grouped ? 'secondary' : 'ghost'} aria-pressed={filters.grouped === grouped} onClick={() => updateFilters({ grouped })}>{t(grouped ? 'serviceErrors.grouped' : 'serviceErrors.individual')}</Button>)}
+            </div>
             <form className="flex min-w-0 flex-1 gap-2 max-sm:basis-full" onSubmit={event => { event.preventDefault(); updateFilters({ requestID: search.trim() }) }}>
               <Input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('serviceErrors.searchPlaceholder')} aria-label={t('serviceErrors.searchPlaceholder')} maxLength={160} className="min-w-0" />
               <Button type="submit" variant="outline" aria-label={t('serviceErrors.search')}><Search className="size-4" /></Button>
             </form>
           </div>
+          {filters.grouped && <p className="text-xs leading-relaxed text-muted-foreground">{t('serviceErrors.groupHint')}</p>}
+          {filters.grouped && (data.summary.grouping_pending ?? 0) > 0 && <p className="text-xs text-amber-600 dark:text-amber-400" role="status">{t('serviceErrors.groupingPending', { count: data.summary.grouping_pending })}</p>}
           <p className="text-xs leading-relaxed text-muted-foreground">{t('serviceErrors.retention', { days: data.collector.retention_days, rows: data.collector.max_rows.toLocaleString() })}</p>
           <p className={`text-xs ${serviceErrorCollectorHasLoss(data.collector) ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`} role={serviceErrorCollectorHasLoss(data.collector) ? 'status' : undefined}>
             {t('serviceErrors.collector', { pending: data.collector.pending, dropped: data.collector.dropped, failed: data.collector.write_failures })}
@@ -97,10 +105,12 @@ export default function ServiceErrors() {
         </CardContent>
       </Card>
       <StateShell loading={loading} error={error} onRetry={() => void reload()}>
-        <ServiceErrorResults items={data.items} />
+        <ServiceErrorResults items={data.items} grouped={data.grouped} onGroup={event => {
+          if (event.group && data.query) setGroupSelection({ event, query: { ...data.query, grouped: false, group_key: event.group.key, cursor: '' } })
+        }} />
       </StateShell>
       <div className="mt-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
-        <span>{t('serviceErrors.page', { page: filters.cursors.length })}</span>
+        <span>{t('serviceErrors.page', { page: filters.cursors.length })}{data.grouped ? ` · ${t('serviceErrors.groupSummary', { groups: data.summary.groups ?? 0, total: data.summary.total })}` : ''}</span>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={!cursor || loading} onClick={() => setFilters(current => ({ ...current, cursors: current.cursors.slice(0, -1) }))}><ChevronLeft className="size-4" />{t('common.prev')}</Button>
           <Button variant="outline" size="sm" disabled={!data.next_cursor || loading || !!error} onClick={() => {
@@ -108,11 +118,12 @@ export default function ServiceErrors() {
           }}>{t('common.next')}<ChevronRight className="size-4" /></Button>
         </div>
       </div>
+      {groupSelection && <ServiceErrorGroupDialog event={groupSelection.event} query={groupSelection.query} onClose={() => setGroupSelection(null)} />}
     </>
   )
 }
 
-export function ServiceErrorResults({ items }: { items: ServiceErrorEvent[] }) {
+export function ServiceErrorResults({ items, grouped = false, onGroup }: { items: ServiceErrorEvent[]; grouped?: boolean; onGroup?: (event: ServiceErrorEvent) => void }) {
   const { t } = useTranslation()
   const { showToast } = useToast()
   const [selected, setSelected] = useState<ServiceErrorEvent | null>(null)
@@ -139,14 +150,18 @@ export function ServiceErrorResults({ items }: { items: ServiceErrorEvent[] }) {
         ) : (
           <Table className="min-w-[900px]">
             <TableHeader><TableRow>
-              {['time', 'status', 'stage', 'request', 'identity', 'error'].map(key => <TableHead key={key}>{t(`serviceErrors.columns.${key}`)}</TableHead>)}
+              {['time', ...(grouped ? ['count'] : []), 'status', 'stage', 'request', 'identity', 'error'].map(key => <TableHead key={key}>{t(`serviceErrors.columns.${key}`)}</TableHead>)}
               <TableHead className="w-20"><span className="sr-only">{t('opsErrors.details')}</span></TableHead>
             </TableRow></TableHeader>
             <TableBody>{items.map(item => {
               const newAPIUser = serviceErrorNewAPIUserLabel(item)
               return (
                 <TableRow key={item.id}>
-                  <TableCell className="whitespace-nowrap font-geist-mono text-xs">{formatBeijingTime(item.created_at)}<div className="mt-1 text-muted-foreground">{item.duration_ms.toLocaleString()} ms</div></TableCell>
+                  <TableCell className="whitespace-nowrap text-xs">
+                    <div>{item.group ? `${t('serviceErrors.lastSeen')} · ` : ''}<span className="font-geist-mono">{formatBeijingTime(item.group?.last_seen || item.created_at)}</span></div>
+                    <div className="mt-1 text-muted-foreground">{item.group ? `${t('serviceErrors.firstSeen')} · ${formatBeijingTime(item.group.first_seen)}` : `${item.duration_ms.toLocaleString()} ms`}</div>
+                  </TableCell>
+                  {grouped && <TableCell><Button type="button" size="sm" variant="outline" disabled={!item.group || !onGroup} onClick={() => onGroup?.(item)} aria-label={t('serviceErrors.viewOccurrences', { count: item.group?.count ?? 1 })}>{t('serviceErrors.occurrences', { count: item.group?.count ?? 1 })}</Button></TableCell>}
                   <TableCell><Badge variant={item.status_code >= 500 ? 'destructive' : 'outline'}>{item.status_code}</Badge><div className="mt-1 text-xs text-muted-foreground">{item.transport.toUpperCase()}</div></TableCell>
                   <TableCell className="whitespace-nowrap text-sm">{t(`serviceErrors.stages.${item.stage}`, { defaultValue: item.stage })}</TableCell>
                   <TableCell className="max-w-52 text-xs"><div className="truncate font-medium" title={item.model}>{item.model || '—'}</div><div className="mt-1 truncate text-muted-foreground" title={item.endpoint}>{item.method} {item.endpoint}</div><div className="mt-1 truncate text-muted-foreground" title={item.thread_source || item.request_type}>{item.thread_source || item.request_type}</div></TableCell>
@@ -156,7 +171,7 @@ export function ServiceErrorResults({ items }: { items: ServiceErrorEvent[] }) {
                     <div className="mt-1 truncate font-geist-mono text-muted-foreground" title={item.request_id}>{item.request_id}</div>
                   </TableCell>
                   <TableCell className="max-w-80"><div className="truncate font-geist-mono text-xs" title={item.code}>{item.code}</div><p className="mt-1 line-clamp-2 whitespace-normal break-words text-sm text-muted-foreground">{item.message}</p></TableCell>
-                  <TableCell><Button type="button" size="sm" variant="ghost" onClick={() => setSelected(item)}>{t('opsErrors.details')}</Button></TableCell>
+                  <TableCell><Button type="button" size="sm" variant="ghost" onClick={() => setSelected(item)}>{t(grouped ? 'serviceErrors.latestDetails' : 'opsErrors.details')}</Button></TableCell>
                 </TableRow>
               )
             })}</TableBody>
@@ -171,5 +186,39 @@ export function ServiceErrorResults({ items }: { items: ServiceErrorEvent[] }) {
         </DialogContent>
       </Dialog>
     </>
+  )
+}
+
+function ServiceErrorGroupDialog({ event, query, onClose }: { event: ServiceErrorEvent; query: ServiceErrorQuery; onClose: () => void }) {
+  const { t } = useTranslation()
+  const [cursors, setCursors] = useState([''])
+  const pending = useRef<AbortController | null>(null)
+  const cursor = cursors[cursors.length - 1]
+  const load = useCallback(() => {
+    pending.current?.abort()
+    const controller = new AbortController()
+    pending.current = controller
+    return api.getServiceErrors({ ...query, cursor }, controller.signal)
+  }, [query, cursor])
+  const { data, loading, error, reload } = useDataLoader<ServiceErrorPage>({ initialData: emptyPage, load })
+  useEffect(() => () => pending.current?.abort(), [])
+  return (
+    <Dialog open onOpenChange={open => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-6xl">
+        <DialogHeader>
+          <DialogTitle>{t('serviceErrors.groupDetails')}</DialogTitle>
+          <DialogDescription>{t('serviceErrors.groupDetailsDescription')}</DialogDescription>
+        </DialogHeader>
+        <p className="break-words text-sm">{event.model} · {event.endpoint} · {event.code}</p>
+        <div className="max-h-[55vh] overflow-auto"><StateShell loading={loading} error={error} onRetry={() => void reload()}><ServiceErrorResults items={data.items} /></StateShell></div>
+        <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+          <span>{t('serviceErrors.occurrences', { count: data.summary.total })} · {t('serviceErrors.page', { page: cursors.length })}</span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={!cursor || loading} onClick={() => setCursors(value => value.slice(0, -1))}><ChevronLeft className="size-4" />{t('common.prev')}</Button>
+            <Button variant="outline" size="sm" disabled={!data.next_cursor || loading || !!error} onClick={() => { if (data.next_cursor) setCursors(value => [...value, data.next_cursor!]) }}>{t('common.next')}<ChevronRight className="size-4" /></Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

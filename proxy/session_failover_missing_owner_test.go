@@ -140,6 +140,8 @@ func TestRelaxedMissingOwnerKeepsCandidateGuards(t *testing.T) {
 				target.Models = []string{"another-model"}
 			case "route":
 				target.CodexBPS = false
+				off := false
+				target.CodexNative = &off
 			case "cooldown":
 				target.Status, target.CooldownReason, target.CooldownUtil = auth.StatusCooldown, "payment_required", time.Now().Add(time.Hour)
 			case "capacity":

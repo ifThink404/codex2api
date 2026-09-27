@@ -40,7 +40,8 @@ func sessionAccountFailoverEnabledBy(reason string) string {
 }
 
 // Shared by bound roots, forks and temporary background fallback. A nonempty
-// prior route is authoritative; BPS history never falls back to native.
+// prior route is checked first; changing routes requires the normal identity
+// migration transaction and cannot happen through ordinary dispatch.
 func (h *Handler) sessionOwnerFailure(c *gin.Context, account *auth.Account, key string, policy auth.DispatchPolicy, info codexRouteRequest, prior string) string {
 	if account == nil || account.IsRelayStyle() {
 		return ""

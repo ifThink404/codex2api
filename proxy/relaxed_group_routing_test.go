@@ -33,11 +33,11 @@ func TestRelaxedGroupRoutingInitialSelectionAndHotToggle(t *testing.T) {
 					filter := applyAffinityGroupRouting(request, identity, func(a *auth.Account) bool { return h.store.APIKeyAllowsAccount(7, a) })
 					selected := h.store.NextExcludingWithDispatch(7, nil, filter, auth.DispatchPolicyStandard)
 					if relaxed {
-						require.Same(t, account, selected)
+						require.Same(t, account, selected, "relaxed selection must consider both Key-authorized routes")
 						h.store.Release(selected)
 						require.Equal(t, "relaxed_key_scope", usageRequestDiagnosticState(request).GroupRouting.Reason)
 					} else {
-						require.Nil(t, selected)
+						require.Nil(t, selected, "strict selection retains the main/split route")
 					}
 					require.Nil(t, h.store.NextExcludingWithDispatch(7, map[int64]bool{account.ID(): true}, filter, auth.DispatchPolicyStandard), "exhausting authorized accounts must never widen key scope")
 					require.False(t, applyAffinityGroupRouting(request, identity, func(*auth.Account) bool { return false })(account), "inner account eligibility must remain enforced")
@@ -47,7 +47,7 @@ func TestRelaxedGroupRoutingInitialSelectionAndHotToggle(t *testing.T) {
 	}
 }
 
-func TestRelaxedChatGroupRoutingDoesNotPinOldCohort(t *testing.T) {
+func TestRelaxedChatGroupRoutingIgnoresOldCohort(t *testing.T) {
 	previous := CurrentRuntimeSettings()
 	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
 	for _, missing := range []bool{false, true} {
@@ -66,7 +66,7 @@ func TestRelaxedChatGroupRoutingDoesNotPinOldCohort(t *testing.T) {
 				UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = relaxed; return s })
 				h.prepareChatGroupRouting(request, identity)
 				filter := applyAffinityGroupRouting(request, identity, func(a *auth.Account) bool { return h.store.APIKeyAllowsAccount(7, a) })
-				require.Equal(t, relaxed, filter(target))
+				require.Equal(t, relaxed, filter(target), "relaxed Chat routing uses Key scope even when the old owner is missing")
 				require.False(t, filter(outside), "dropping the old cohort must not grant access to another key group")
 			}
 		})

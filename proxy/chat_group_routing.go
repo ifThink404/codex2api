@@ -19,9 +19,10 @@ func chatCompletionsGroupRouting(request *gin.Context) bool {
 }
 
 // Resolve the route before API-relay exemption and dispatch inspect the account
-// pool. Looking up the scoped owner never grants access or changes its binding.
-func (handler *Handler) prepareChatGroupRouting(request *gin.Context, identity requestSessionIdentity) {
-	if !chatCompletionsGroupRouting(request) {
+// pool. Missing client fields only split new requests, not existing owners.
+// Looking up the scoped owner never grants access or changes its binding.
+func (handler *Handler) prepareSessionGroupRouting(request *gin.Context, identity requestSessionIdentity) {
+	if request == nil {
 		return
 	}
 	state := usageRequestDiagnosticState(request)
@@ -30,11 +31,16 @@ func (handler *Handler) prepareChatGroupRouting(request *gin.Context, identity r
 		state.GroupRouting = &groupRoutingDiagnostic{Reason: "relaxed_key_scope"}
 		return
 	}
+	chat := chatCompletionsGroupRouting(request)
+	missing := missingGroupRoutingInputReason(request)
 	row := apiKeyRowFromContext(request)
 	if row == nil || len(int64GroupSet(row.Limits.NoAffinityGroupIDs)) == 0 {
 		return
 	}
 	decision := &groupRoutingDiagnostic{Reason: "chat_completions_path"}
+	if !chat {
+		decision.Reason = missing
+	}
 	state.GroupRouting = decision
 	if !identity.stableIdentity || identity.unlinkedFallbackOnly {
 		return
@@ -75,7 +81,7 @@ func (handler *Handler) prepareChatGroupRouting(request *gin.Context, identity r
 	}
 }
 
-func applyChatGroupRouting(request *gin.Context, filter auth.AccountFilter, splitGroups map[int64]struct{}) auth.AccountFilter {
+func applySessionGroupRouting(request *gin.Context, filter auth.AccountFilter, splitGroups map[int64]struct{}) auth.AccountFilter {
 	state := usageRequestDiagnosticState(request)
 	if state.GroupRouting == nil {
 		state.GroupRouting = &groupRoutingDiagnostic{Reason: "chat_completions_path"}
@@ -97,4 +103,14 @@ func applyChatGroupRouting(request *gin.Context, filter auth.AccountFilter, spli
 		}
 	}
 	return groupMembershipFilter(splitGroups, true, filter, selectionTraceForRequest(request))
+}
+
+// Compatibility entry points for existing Chat callers share the same session
+// routing logic; the owner lookup now also protects Responses continuations.
+func (handler *Handler) prepareChatGroupRouting(request *gin.Context, identity requestSessionIdentity) {
+	handler.prepareSessionGroupRouting(request, identity)
+}
+
+func applyChatGroupRouting(request *gin.Context, filter auth.AccountFilter, splitGroups map[int64]struct{}) auth.AccountFilter {
+	return applySessionGroupRouting(request, filter, splitGroups)
 }

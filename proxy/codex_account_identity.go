@@ -59,8 +59,10 @@ type codexAccountReferenceDiagnostic struct {
 }
 
 type codexAccountIdentityDiagnostic struct {
+	FailureStage        string                              `json:"failure_stage,omitempty"`
 	Version             string                              `json:"version,omitempty"`
 	Status              string                              `json:"status"`
+	FallbackSource      string                              `json:"fallback_source,omitempty"`
 	ScopeHash           string                              `json:"scope_hash,omitempty"`
 	UpstreamAccount     string                              `json:"chatgpt_account_id,omitempty"`
 	CachePartitioned    bool                                `json:"cache_partitioned,omitempty"`
@@ -126,9 +128,16 @@ func codexAccountIdentityInputs(headers http.Header, body []byte) []string {
 	return values
 }
 
-func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context, account *auth.Account, owner string, accountScopes []string) error {
+func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context, account *auth.Account, owner string, accountScopes []string) (requestErr error) {
+	stage := "root_identity"
 	diagnostic := codexAccountIdentityDiagnostic{Status: "not_applicable"}
+	if fallback := fingerprint.sessionIdentityFallback; fallback != nil {
+		diagnostic.FallbackSource = fallback.source
+	}
 	defer func() {
+		if requestErr != nil {
+			diagnostic.FailureStage = stage
+		}
 		fingerprint.accountIdentityDiagnostic = &diagnostic
 		UpstreamTransportObserver(ctx).updateOutboundIdentity(func(identity *outboundIdentityDiagnostic) {
 			identity.AccountMapping = &diagnostic
@@ -145,6 +154,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		}
 		return nil
 	}
+	stage = "identity_store"
 	store, available := ctx.Value(codexIdentityClaimerContextKey{}).(CodexIdentityStore)
 	if !available {
 		if fingerprint.accountIdentityRequested {
@@ -154,6 +164,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		return nil
 	}
 	diagnostic.Status = "failed"
+	stage = "upstream_account"
 	upstreamAccount := strings.TrimSpace(account.EffectiveAccountID())
 	if upstreamAccount == "" {
 		if fingerprint.accountIdentityRequested {
@@ -174,6 +185,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		legacyKeys = nil
 		diagnostic.Generation, diagnostic.SegmentHash = epoch.record.FailoverCount, epochKey[:24]
 	}
+	stage = "parent_reference"
 	mappedReference := false
 	for original := range fingerprint.accountIdentityReferences {
 		_, found, _, err := store.ReadCodexIdentityReference(ctx, codexIdentityDigest("codex-account-reference-v1", rootKey, original), codexIdentityDigest("codex-account-root-v1", owner, upstreamAccount, original))
@@ -189,6 +201,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 			mappedReference = mappedReference || exists && record.AccountID == account.ID() && record.OutboundWindowReset
 		}
 	}
+	stage = "mapping_policy"
 	policy, err := store.ResolveCodexIdentityMapping(ctx, rootKey, legacyKeys, fingerprint.accountIdentityRequested || epochKey != "" || mappedReference)
 	if err == nil && policy.Mode == "preserve" && fingerprint.isolateConflictingIdentity {
 		// Leave the legacy owner's policy intact. Reuse the global mapping
@@ -218,6 +231,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 	}
 	mapping := &codexAccountIdentity{mode: policy.Mode, secret: secret, owner: owner, account: upstreamAccount, epoch: epochKey, preserveRoot: preserveRoot, aliases: make(map[string]string)}
 	mapping.protocolDB, mapping.protocolBinding = protocolIdentityBinding(ctx, account)
+	stage = "window_mapping"
 	if err := fingerprint.prepareAccountWindows(ctx, mapping, epoch); err != nil {
 		return err
 	}
@@ -225,6 +239,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 	sort.Slice(diagnostic.Windows, func(left, right int) bool {
 		return diagnostic.Windows[left].ThreadID < diagnostic.Windows[right].ThreadID
 	})
+	stage = "identity_input"
 	values := make(map[string]bool)
 	for _, original := range fingerprint.accountIdentityInputs {
 		if original = strings.TrimSpace(original); original == "" {
@@ -253,6 +268,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 	if epoch != nil {
 		currentEpoch.RootKey, currentEpoch.Generation = epoch.key, epoch.record.FailoverCount
 	}
+	stage = "identity_mapping"
 	for _, original := range ordered {
 		if preserveRoot && !fingerprint.accountIdentityReferences[original] {
 			diagnostic.PreservedIDs = append(diagnostic.PreservedIDs, original)
@@ -365,11 +381,13 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 			SourceKey: sourceKey,
 		})
 	}
+	stage = "turn_mapping"
 	turnPlan, err := fingerprint.prepareAccountTurnIdentity(ctx, store, mapping, rootKey, currentEpoch, &diagnostic)
 	if err != nil {
 		return err
 	}
 	claims = append(claims, turnPlan.claims...)
+	stage = "alias_registration"
 	for start := 0; start < len(claims); start += 32 {
 		if err := store.ClaimCodexIdentityAliases(ctx, claims[start:min(start+32, len(claims))]); err != nil {
 			if errors.Is(err, database.ErrCodexIdentityAliasCollision) {
@@ -378,6 +396,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 			return codexAccountIdentityError("暂时无法登记出站身份映射，请稍后重试。")
 		}
 	}
+	stage = "epoch_registration"
 	if epoch == nil || !epoch.preview {
 		if err := ValidateBackgroundAccountMatch(ctx, account); err != nil {
 			return err

@@ -1775,6 +1775,7 @@ func (h *Handler) resolveRequestSessionRoutingIdentity(c *gin.Context, body []by
 	if identity.unlinkedFallbackOnly {
 		identity.affinityID = ""
 	}
+	bindCodexSessionIdentityFallback(c, identity, rootIdentity, policyContext, verifiedPolicy)
 	return identity, rootIdentity, policyContext, status
 }
 

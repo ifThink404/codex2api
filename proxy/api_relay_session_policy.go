@@ -122,6 +122,7 @@ func (handler *Handler) configureAPIRelaySessionPolicy(request *gin.Context, bod
 		if account == nil || !account.IsOpenAIResponsesAPI() {
 			return identity
 		}
+		rememberAPIRelayDispatchScope(request, account)
 		filter := applyAffinityGroupRouting(request, identity, nil)
 		if !account.AllowsAPIKey(requestAPIKeyID(request)) || !handler.store.APIKeyAllowsAccount(requestAPIKeyID(request), account) || filter != nil && !filter(account) {
 			return identity

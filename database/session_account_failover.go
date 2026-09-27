@@ -35,7 +35,7 @@ type SessionAccountFailover struct {
 func (db *DB) SwitchSessionContinuityAccount(ctx context.Context, input SessionAccountFailover) (SessionContinuityRecord, *UserWindowGrant, error) {
 	var record SessionContinuityRecord
 	var grant *UserWindowGrant
-	if strings.TrimSpace(input.RootKey) == "" || input.ExpectedAccountID <= 0 || input.AccountID <= 0 || input.ExpectedAccountID == input.AccountID && input.UpstreamMode != "bps" {
+	if strings.TrimSpace(input.RootKey) == "" || input.ExpectedAccountID <= 0 || input.AccountID <= 0 {
 		return record, nil, errors.New("invalid session account failover")
 	}
 	if input.WindowSubject != "" {
@@ -103,8 +103,11 @@ func (db *DB) SwitchSessionContinuityAccount(ctx context.Context, input SessionA
 		if nextMode == "" {
 			nextMode = priorMode
 		}
-		if (nextMode != "native" && nextMode != "bps") || priorMode == "bps" && nextMode != "bps" || input.AccountID == input.ExpectedAccountID && (priorMode != "native" || nextMode != "bps") {
+		if (priorMode != "native" && priorMode != "bps") || (nextMode != "native" && nextMode != "bps") || input.AccountID == input.ExpectedAccountID && priorMode == nextMode {
 			return errors.New("invalid upstream route transition")
+		}
+		if priorMode == "bps" && nextMode == "native" && (!input.ResetOutboundWindow || !input.LossyContextRestart || input.PreserveRestartInput) {
+			return errors.New("BPS to Codex migration requires a clean outbound identity epoch")
 		}
 		if input.UpstreamMode != "" {
 			record.UpstreamMode = nextMode

@@ -21,6 +21,20 @@ test('service error empty filters are omitted and collector loss is visible', ()
   assert.equal(serviceErrorCollectorHasLoss({ dropped: 0, write_failures: 1 }), true)
 })
 
+test('grouped service errors and original group requests use separate queries', () => {
+  const grouped = new URLSearchParams(serviceErrorSearchParams({ start: 'start', end: 'end', grouped: true }))
+  assert.equal(grouped.get('grouped'), 'true')
+  assert.equal(grouped.has('group_key'), false)
+  const details = new URLSearchParams(serviceErrorSearchParams({ start: 'start', end: 'end', grouped: false, group_key: 'a'.repeat(64), cursor: 'group-cursor/+=', status: '5xx', request_id: 'newapi+id' }))
+  assert.equal(details.get('grouped'), 'false')
+  assert.equal(details.get('group_key'), 'a'.repeat(64))
+  assert.equal(details.get('cursor'), 'group-cursor/+=')
+  assert.equal(details.get('status'), '5xx')
+  assert.equal(details.get('request_id'), 'newapi+id')
+  assert.equal(details.get('start'), 'start')
+  assert.equal(details.get('end'), 'end')
+})
+
 test('service error NewAPI caller labels display only verified names and IDs', () => {
   const verified = { newapi_identity_verified: true, newapi_user_name: ' 示例用户 ', newapi_user_id: ' 1881 ' }
   assert.equal(serviceErrorNewAPIUserLabel(verified), '示例用户 #1881')

@@ -140,6 +140,7 @@ func scopeMatchesAccount(scope database.APIKeyScopeLimit, account *auth.Account)
 // AcquireAPIKeyScopeConcurrency 为选中的账号占位。同一请求换号重试时先释放上一轮的位，
 // 因为一个请求同时只会占用一个账号。
 func (h *Handler) AcquireAPIKeyScopeConcurrency(c *gin.Context, account *auth.Account) {
+	rememberAPIRelayDispatchScope(c, account)
 	gate := scopeBudgetGateFromContext(c)
 	if gate == nil || account == nil || len(gate.concurrencyScopes) == 0 {
 		return

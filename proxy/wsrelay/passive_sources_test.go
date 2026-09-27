@@ -59,6 +59,8 @@ func TestPassiveSourcesOfficialWire(t *testing.T) {
 					}
 					received <- capture{r.Header.Clone(), b}
 					_ = c.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"audit_response","status":"completed","output":[]}}`))
+					// This fixture checks metadata, not abrupt transport loss.
+					_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "complete"), time.Now().Add(time.Second))
 				}))
 				t.Cleanup(server.Close)
 				proxy.SetResinConfig(&proxy.ResinConfig{BaseURL: server.URL, PlatformName: "passive-source-audit"})

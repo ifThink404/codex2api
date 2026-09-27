@@ -44,8 +44,12 @@ func NewCodexTransportFingerprint(account *auth.Account, headers http.Header, bo
 		return fingerprint
 	}
 	fingerprint.preserveSessionIDs = true
-	fingerprint.identityValues = codexTransportIdentityValues(fingerprint.headers, NormalizeCodexRequestMetadata(body))
 	fingerprint.accountIdentityRequested = mode == "account"
+	if len(contexts) > 0 {
+		fingerprint.completeRelaxedSessionIdentity(contexts[0])
+	}
+	body = fingerprint.sessionIdentityFallback.completeBody(NormalizeCodexRequestMetadata(body))
+	fingerprint.identityValues = codexTransportIdentityValues(fingerprint.headers, body)
 	fingerprint.accountIdentityInputs = codexAccountIdentityInputs(fingerprint.headers, NormalizeCodexRequestMetadata(body))
 	fingerprint.accountRequestIdentityInputs = codexAccountRequestIdentityInputs(fingerprint.headers, NormalizeCodexRequestMetadata(body))
 	fingerprint.accountTurnIdentityInputs = codexAccountTurnIdentityInputs(fingerprint.headers, NormalizeCodexRequestMetadata(body))

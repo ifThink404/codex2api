@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServiceErrorFilterValidation(test *testing.T) {
@@ -49,5 +51,52 @@ func TestServiceErrorAdminRouteRequiresAuthentication(test *testing.T) {
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/ops/service-errors", nil))
 	if recorder.Code != http.StatusUnauthorized && recorder.Code != http.StatusServiceUnavailable {
 		test.Fatalf("unauthenticated access status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServiceErrorGroupedAdminListAndDetails(t *testing.T) {
+	db := newTestAdminDB(t)
+	for i, id := range []string{"one", "two", "other"} {
+		event := database.ServiceErrorEvent{ID: id, RequestID: id, NewAPIIdentityVerified: true, NewAPIUserID: "user-1", StatusCode: 503, Stage: "dispatch", Message: "unavailable"}
+		if i == 2 {
+			event.NewAPIUserID = "user-2"
+		}
+		require.True(t, db.EnqueueServiceError(event))
+	}
+	require.Eventually(t, func() bool { return db.ServiceErrorCollectorStats().Pending == 0 }, 5*time.Second, 10*time.Millisecond)
+	handler := &Handler{db: db}
+	router := gin.New()
+	router.GET("/service-errors", handler.GetServiceErrorLogs)
+	get := func(query string, status int) database.ServiceErrorPage {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/service-errors?"+query, nil))
+		require.Equal(t, status, recorder.Code, recorder.Body.String())
+		var page database.ServiceErrorPage
+		if status == 200 {
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &page))
+		}
+		return page
+	}
+	page := get("grouped=true", 200)
+	require.True(t, page.Grouped)
+	require.EqualValues(t, 3, page.Summary.Total)
+	require.EqualValues(t, 2, page.Summary.Groups)
+	require.Len(t, page.Items, 2)
+	for _, event := range page.Items {
+		if event.NewAPIUserID == "user-1" {
+			details := get("grouped=false&group_key="+event.Group.Key, 200)
+			require.Len(t, details.Items, 2)
+			require.Nil(t, details.Items[0].Group)
+			details = get("group_key="+event.Group.Key+"&request_id=one", 200)
+			require.Len(t, details.Items, 1)
+		}
+	}
+	page = get("grouped=true&limit=1", 200)
+	require.NotEmpty(t, page.NextCursor)
+	get("grouped=false&cursor="+url.QueryEscape(page.NextCursor), 400)
+	get("grouped=true&cursor="+url.QueryEscape(page.NextCursor), 200)
+	for _, query := range []string{"grouped=maybe", "group_key=invalid", "group_key=%27%20OR%201=1", "grouped=true&group_key=" + strings.Repeat("a", 64)} {
+		get(query, 400)
 	}
 }

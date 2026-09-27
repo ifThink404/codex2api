@@ -449,16 +449,29 @@ func codexContinuationPinned(turnContinuation, hasPreviousResponse, hasBinding b
 	return hasPreviousResponse && hardOwnerAccountID > 0
 }
 
-// applyAffinityGroupRouting routes requests with missing original session/effort
-// fields to split groups before applying the existing Chat/fingerprint policy.
+// applyAffinityGroupRouting retains transport eligibility in both modes. Strict
+// mode additionally routes original session/effort fields and Chat fingerprints.
 //
 // 当 Key 没配「允许账号分组」（= 不限分组）时，带指纹的请求改为「除分流组以外的全部账号」：
 // 否则分流组既服务无指纹请求、又照常接真 Codex 流量，隔离等于没做——而不限分组恰恰是
 // 绝大多数 Key 的默认配置。
 func applyAffinityGroupRouting(c *gin.Context, identity requestSessionIdentity, filter auth.AccountFilter) auth.AccountFilter {
+	if c == nil {
+		return filter
+	}
+	filter = applyAPIRelayDispatchScope(c, filter)
 	if apiRelaySessionExempt(c) {
 		filter = apiRelaySessionAccountFilter(filter)
 	}
+	initial := applyInitialAffinityGroupRouting(c, identity, filter)
+	return func(account *auth.Account) bool {
+		return account != nil && (initial == nil || initial(account))
+	}
+}
+
+func applyInitialAffinityGroupRouting(c *gin.Context, identity requestSessionIdentity, filter auth.AccountFilter) auth.AccountFilter {
+	// Key authorization is enforced by the scheduler. In relaxed mode the
+	// main/split route and an old owner's group are not additional permissions.
 	if CurrentRuntimeSettings().CodexForkAccountFallbackEnabled {
 		usageRequestDiagnosticState(c).GroupRouting = &groupRoutingDiagnostic{Reason: "relaxed_key_scope"}
 		return filter
@@ -475,18 +488,16 @@ func applyAffinityGroupRouting(c *gin.Context, identity requestSessionIdentity, 
 	if len(splitGroups) == 0 {
 		return filter
 	}
+	state := usageRequestDiagnosticState(c)
+	if decision := state.GroupRouting; decision != nil && (decision.blocked || decision.AccountID > 0) {
+		return applySessionGroupRouting(c, filter, splitGroups)
+	}
 	if reason := missingGroupRoutingInputReason(c); reason != "" {
-		state := usageRequestDiagnosticState(c)
-		// A failed owner lookup remains fail-closed. Missing fields do not grant
-		// permission to escape a protected or unavailable conversation owner.
-		if chatCompletionsGroupRouting(c) && state.GroupRouting != nil && state.GroupRouting.blocked {
-			return applyChatGroupRouting(c, filter, splitGroups)
-		}
 		state.GroupRouting = &groupRoutingDiagnostic{Reason: reason}
 		return groupMembershipFilter(splitGroups, true, filter, selectionTraceForRequest(c))
 	}
 	if chatCompletionsGroupRouting(c) {
-		return applyChatGroupRouting(c, filter, splitGroups)
+		return applySessionGroupRouting(c, filter, splitGroups)
 	}
 
 	if !identity.hasRequestFingerprint {

@@ -26,6 +26,7 @@ type CodexFingerprint struct {
 	accountIdentity              *codexAccountIdentity
 	accountIdentityDiagnostic    *codexAccountIdentityDiagnostic
 	privateRequestIdentity       *codexAccountIdentity
+	sessionIdentityFallback      *codexSessionIdentityFallback
 }
 
 func NewCodexFingerprint(account *auth.Account, headers http.Header, body []byte) *CodexFingerprint {
@@ -56,6 +57,7 @@ func (fingerprint *CodexFingerprint) ApplyHeaders(outbound http.Header) {
 }
 
 func (fingerprint *CodexFingerprint) ApplyBody(body []byte) []byte {
+	body = fingerprint.sessionIdentityFallback.completeBody(body)
 	body = applyCodexFingerprintToBody(NormalizeCodexRequestMetadata(body), fingerprint.ids)
 	if fingerprint.accountIdentity != nil {
 		body = fingerprint.accountIdentity.rewriteBody(body)

@@ -17,6 +17,21 @@ type codexRouteRequest struct {
 }
 type codexRouteFloorKey struct{}
 
+// A restarted segment authenticates opaque references against its new epoch
+// before sending. Old BPS provenance no longer pins that cleaned segment.
+func codexRouteFloor(ctx context.Context) string {
+	if epoch := outboundEpochFromContext(ctx); epoch != nil && epoch.record.OutboundWindowReset && epoch.record.LossyContextRestart && !epoch.record.PreserveRestartInput {
+		return ""
+	}
+	floor, _ := ctx.Value(codexRouteFloorKey{}).(string)
+	return floor
+}
+
+func codexRouteMigrationPending(ctx context.Context) bool {
+	plan, _ := ctx.Value(sessionAccountFailoverContextKey{}).(*sessionAccountFailoverPlan)
+	return plan != nil && plan.Diagnostic != nil && plan.Diagnostic.Result == "pending" && plan.Diagnostic.Phase == "before_switch"
+}
+
 // Local diagnostics only; never embedded in the request body or headers.
 type codexRouteDiagnostic struct {
 	Mode       string `json:"mode"`
@@ -49,7 +64,7 @@ func codexRouteAccountFilter(c *gin.Context, next auth.AccountFilter) auth.Accou
 	return func(account *auth.Account) bool {
 		ctx := c.Request.Context()
 		info := codexRouteRequestInfo(ctx)
-		prior, _ := ctx.Value(codexRouteFloorKey{}).(string)
+		prior := codexRouteFloor(ctx)
 		if epoch := outboundEpochFromContext(ctx); epoch != nil && epoch.record.UpstreamMode == "bps" {
 			prior = "bps"
 		}
@@ -68,6 +83,9 @@ func codexRouteAccountFilter(c *gin.Context, next auth.AccountFilter) auth.Accou
 			return prior != "bps" && (next == nil || next(account))
 		}
 		mode := selectCodexRoute(account, info.Model, prior, info.Auxiliary)
+		if codexRouteMigrationPending(ctx) {
+			mode = selectCodexFailoverRoute(account, info.Model, prior, info.Auxiliary)
+		}
 		if mode == "" {
 			selectionTraceForRequest(c).Reject("upstream_route_unavailable")
 			return false
@@ -112,10 +130,20 @@ func selectCodexRoute(account *auth.Account, model, prior string, auxiliary bool
 	return ""
 }
 
+// Only candidate selection inside a serialized migration may cross back from
+// BPS. Execution still requires a committed epoch and never silently reroutes.
+func selectCodexFailoverRoute(account *auth.Account, model, prior string, auxiliary bool) string {
+	mode := selectCodexRoute(account, model, prior, auxiliary)
+	if mode == "" && prior == "bps" && account.CodexRouteAllows("native", model, auxiliary) {
+		return "native"
+	}
+	return mode
+}
+
 func codexRouteUnavailable(mode string) error {
 	message := "当前账号的请求路径已关闭或不支持所选模型，请启用禁用换号功能并配置可用路径，或新开对话。"
 	if mode == "bps" {
-		message = "当前会话已使用 BPS，不能转回 Codex；没有可用的 BPS 路径或所选模型未配置，请恢复 BPS、配置其他 BPS 账号或新开对话。"
+		message = "当前会话没有可用的 BPS 路径或所选模型未配置；请开启换号或宽松模式，并配置可用的 BPS 或 Codex 路径。路径切换会重建出站身份并清理旧路径状态。"
 	}
 	return &Error{Code: "codex_upstream_route_unavailable", Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest, Message: message}
 }
@@ -149,7 +177,7 @@ func codexRequestRouteMode(ctx context.Context, account *auth.Account, models ..
 			prior = normalizedCodexRoute(entry.Record.UpstreamMode)
 		}
 	}
-	floor, _ := ctx.Value(codexRouteFloorKey{}).(string)
+	floor := codexRouteFloor(ctx)
 	if floor == "bps" && prior == "native" {
 		return "", codexRouteUnavailable("bps")
 	}
@@ -177,7 +205,7 @@ func codexRouteFailureForRequest(ctx context.Context, account *auth.Account) str
 	}
 	info := codexRouteRequestInfo(ctx)
 	mode := normalizedCodexRoute(epoch.record.UpstreamMode)
-	if floor, _ := ctx.Value(codexRouteFloorKey{}).(string); floor == "bps" && mode != "bps" {
+	if codexRouteFloor(ctx) == "bps" && mode != "bps" {
 		return "upstream_route_requires_bps"
 	}
 	if !account.CodexRouteAllows(mode, "", true) {

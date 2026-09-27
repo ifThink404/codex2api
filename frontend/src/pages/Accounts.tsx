@@ -11233,7 +11233,7 @@ export default function Accounts() {
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 兼容模式</span><Switch checked={batchUpdateCodexBPSEnabled} onCheckedChange={setBatchUpdateCodexBPSEnabled} aria-label="修改 BPS 兼容模式" /></div>
                     <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>开启 BPS 兼容模式</span><Switch checked={batchCodexBPSEnabled} onCheckedChange={setBatchCodexBPSEnabled} disabled={!batchUpdateCodexBPSEnabled} aria-label="开启 BPS 兼容模式" /></label>
-                    <p className="mt-2 text-xs text-muted-foreground">保存后生效，与 Codex 开关独立；仅支持普通 Codex OAuth / AT 账号。BPS 会话不能返回 Codex，max 自动调整为 xhigh。</p>
+                    <p className="mt-2 text-xs text-muted-foreground">保存后生效，与 Codex 开关独立；仅支持普通 Codex OAuth / AT 账号。启用换号或宽松模式后可切回 Codex，重建出站身份并清理旧路径状态。BPS 的 max 自动调整为 xhigh。</p>
                   </div>
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
                     <div className="mb-3 flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 类型</span><Switch checked={batchUpdateCodexBPSProfile} onCheckedChange={setBatchUpdateCodexBPSProfile} aria-label="修改 BPS 类型" /></div>

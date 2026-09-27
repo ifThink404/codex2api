@@ -28,6 +28,16 @@ func normalizeSessionFailoverSelection(input *SessionFailoverSelection) *Session
 		candidate.Reason = serviceErrorString(candidate.Reason, 64)
 		candidate.GroupIDs = append([]int64{}, candidate.GroupIDs[:min(len(candidate.GroupIDs), 32)]...)
 		candidate.Tags = labels(candidate.Tags)
+		if candidate.IdentityFailure != nil {
+			detail := *candidate.IdentityFailure
+			detail.Stage = serviceErrorString(detail.Stage, 64)
+			detail.Status = serviceErrorString(detail.Status, 64)
+			detail.Code = serviceErrorString(detail.Code, 96)
+			if detail.HTTPStatus < 400 || detail.HTTPStatus > 599 {
+				detail.HTTPStatus = 0
+			}
+			candidate.IdentityFailure = &detail
+		}
 	}
 	return &result
 }

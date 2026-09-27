@@ -521,6 +521,7 @@ func TestResponsesContinuousRetryCatchAllRotatesAndRepeatsPool(t *testing.T) {
 			APIKey:       account.key,
 			Models:       []string{"gpt-5.5"},
 			PlanType:     "api",
+			GroupIDs:     []int64{20},
 		})
 	}
 	handler := NewHandler(store, nil, nil, nil)
@@ -531,6 +532,10 @@ func TestResponsesContinuousRetryCatchAllRotatesAndRepeatsPool(t *testing.T) {
 	defer cancel()
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.5","input":"hello","stream":true}`)).WithContext(requestCtx)
 	ctx.Request.Header.Set("Content-Type", "application/json")
+	// Cross-account retries require an explicitly configured API group.
+	store.SetAPIKeyAllowedGroups(7, []int64{20})
+	ctx.Set(contextAPIKeyID, int64(7))
+	ctx.Set(contextAPIKeyRow, &database.APIKeyRow{ID: 7, AllowedGroupIDs: []int64{20}})
 	handler.Responses(ctx)
 
 	requestMu.Lock()
@@ -792,6 +797,7 @@ func TestResponsesContinuousRetrySelectedDeterministicStatuses(t *testing.T) {
 					APIKey:       fmt.Sprintf("test-relay-key-%d", id),
 					Models:       []string{"gpt-5.5"},
 					PlanType:     "api",
+					GroupIDs:     []int64{20},
 				})
 			}
 			handler := NewHandler(store, nil, nil, nil)
@@ -802,6 +808,10 @@ func TestResponsesContinuousRetrySelectedDeterministicStatuses(t *testing.T) {
 			defer cancel()
 			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.5","input":"hello","stream":true}`)).WithContext(requestCtx)
 			ctx.Request.Header.Set("Content-Type", "application/json")
+			// Cross-account retries require an explicitly configured API group.
+			store.SetAPIKeyAllowedGroups(7, []int64{20})
+			ctx.Set(contextAPIKeyID, int64(7))
+			ctx.Set(contextAPIKeyRow, &database.APIKeyRow{ID: 7, AllowedGroupIDs: []int64{20}})
 			handler.Responses(ctx)
 
 			if got := calls.Load(); got != 2 {

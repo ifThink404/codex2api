@@ -74,23 +74,24 @@ type PromptSafetyDiagnostic struct {
 }
 
 type SessionAccountFailoverDiagnostic struct {
-	OwnerLookup                 string                     `json:"owner_lookup,omitempty"`
-	Continuity                  *SessionFailoverContinuity `json:"continuity,omitempty"`
-	EnabledBy                   string                     `json:"enabled_by,omitempty"`
-	PreviousUpstreamMode        string                     `json:"previous_upstream_mode,omitempty"`
-	UpstreamMode                string                     `json:"upstream_mode,omitempty"`
-	OriginalAccountBPSAttempted bool                       `json:"original_account_bps_attempted,omitempty"`
-	Result                      string                     `json:"result"`
-	Reason                      string                     `json:"reason,omitempty"`
-	TriggerReason               string                     `json:"trigger_reason,omitempty"`
-	BlockReason                 string                     `json:"block_reason,omitempty"`
-	Phase                       string                     `json:"phase,omitempty"`
-	PreviousAccountID           int64                      `json:"previous_account_id,omitempty"`
-	AccountID                   int64                      `json:"account_id,omitempty"`
-	Generation                  uint64                     `json:"generation"`
-	ContextBlockers             []SessionContextBlocker    `json:"context_blockers,omitempty"`
-	ContextCleanup              *SessionContextCleanup     `json:"context_cleanup,omitempty"`
-	Selection                   *SessionFailoverSelection  `json:"selection,omitempty"`
+	OwnerLookup                    string                     `json:"owner_lookup,omitempty"`
+	Continuity                     *SessionFailoverContinuity `json:"continuity,omitempty"`
+	EnabledBy                      string                     `json:"enabled_by,omitempty"`
+	PreviousUpstreamMode           string                     `json:"previous_upstream_mode,omitempty"`
+	UpstreamMode                   string                     `json:"upstream_mode,omitempty"`
+	OriginalAccountBPSAttempted    bool                       `json:"original_account_bps_attempted,omitempty"`
+	OriginalAccountNativeAttempted bool                       `json:"original_account_native_attempted,omitempty"`
+	Result                         string                     `json:"result"`
+	Reason                         string                     `json:"reason,omitempty"`
+	TriggerReason                  string                     `json:"trigger_reason,omitempty"`
+	BlockReason                    string                     `json:"block_reason,omitempty"`
+	Phase                          string                     `json:"phase,omitempty"`
+	PreviousAccountID              int64                      `json:"previous_account_id,omitempty"`
+	AccountID                      int64                      `json:"account_id,omitempty"`
+	Generation                     uint64                     `json:"generation"`
+	ContextBlockers                []SessionContextBlocker    `json:"context_blockers,omitempty"`
+	ContextCleanup                 *SessionContextCleanup     `json:"context_cleanup,omitempty"`
+	Selection                      *SessionFailoverSelection  `json:"selection,omitempty"`
 }
 
 // Bounded state labels only. Do not include raw session IDs, tokens or context.
@@ -118,11 +119,21 @@ type SessionFailoverSelection struct {
 	SchedulerIncomplete bool                       `json:"scheduler_incomplete,omitempty"`
 }
 
+// Identity failures contain only bounded internal enums and status codes.
+// Never include upstream identifiers, credentials or storage error messages.
+type SessionFailoverIdentityFailure struct {
+	Stage      string `json:"stage"`
+	Status     string `json:"status"`
+	Code       string `json:"code"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+}
+
 type SessionFailoverCandidate struct {
-	AccountID int64    `json:"account_id"`
-	Reason    string   `json:"reason"`
-	GroupIDs  []int64  `json:"group_ids"`
-	Tags      []string `json:"tags"`
+	IdentityFailure *SessionFailoverIdentityFailure `json:"identity_failure,omitempty"`
+	AccountID       int64                           `json:"account_id"`
+	Reason          string                          `json:"reason"`
+	GroupIDs        []int64                         `json:"group_ids"`
+	Tags            []string                        `json:"tags"`
 }
 
 type SessionContextCleanup struct {
@@ -159,6 +170,7 @@ type SessionToolSummary struct {
 }
 
 type ServiceErrorEvent struct {
+	Group                  *ServiceErrorGroup                `json:"group,omitempty"`
 	ResponseMapping        []ResponseMappingFailure          `json:"response_mapping,omitempty"`
 	ResponseIdentity       []ResponseIdentityEvent           `json:"response_identity,omitempty"`
 	TurnState              *TurnStateDiagnostic              `json:"turn_state,omitempty"`
@@ -205,6 +217,8 @@ type ServiceErrorEvent struct {
 }
 
 type ServiceErrorFilter struct {
+	Grouped   bool
+	GroupKey  string
 	Start     time.Time
 	End       time.Time
 	Status    string
@@ -215,10 +229,12 @@ type ServiceErrorFilter struct {
 }
 
 type ServiceErrorSummary struct {
-	Total     int64 `json:"total"`
-	Status429 int64 `json:"status_429"`
-	Status4xx int64 `json:"status_4xx"`
-	Status5xx int64 `json:"status_5xx"`
+	Groups          int64 `json:"groups"`
+	GroupingPending int64 `json:"grouping_pending,omitempty"`
+	Total           int64 `json:"total"`
+	Status429       int64 `json:"status_429"`
+	Status4xx       int64 `json:"status_4xx"`
+	Status5xx       int64 `json:"status_5xx"`
 }
 
 type ServiceErrorCollectorStats struct {
@@ -232,6 +248,7 @@ type ServiceErrorCollectorStats struct {
 }
 
 type ServiceErrorPage struct {
+	Grouped    bool                       `json:"grouped"`
 	Items      []ServiceErrorEvent        `json:"items"`
 	NextCursor string                     `json:"next_cursor,omitempty"`
 	Summary    ServiceErrorSummary        `json:"summary"`
@@ -276,7 +293,7 @@ func (db *DB) ensureServiceErrorSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return db.ensureServiceErrorGroupingSchema(ctx)
 }
 
 func newServiceErrorQueue(db *DB) *serviceErrorQueue {
@@ -296,6 +313,8 @@ func serviceErrorString(value string, limit int) string {
 }
 
 func normalizeServiceError(event ServiceErrorEvent) ServiceErrorEvent {
+	// Group metadata is computed for a query window, never persisted as an event.
+	event.Group = nil
 	for _, field := range []*string{
 		&event.ID, &event.RequestID, &event.NewAPIRequestID, &event.Code, &event.ErrorType,
 		&event.Stage, &event.Method, &event.Transport, &event.Model, &event.APIKeyName,
@@ -531,15 +550,15 @@ func (queue *serviceErrorQueue) close() {
 func (db *DB) insertServiceErrors(ctx context.Context, jobs []serviceErrorJob) error {
 	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
 		statement, err := tx.PrepareContext(ctx, `INSERT INTO service_error_events
-			(id, created_at, status_code, stage, request_id, newapi_request_id, payload)
-			VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING`)
+			(id, created_at, status_code, stage, request_id, newapi_request_id, payload, group_key)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING`)
 		if err != nil {
 			return err
 		}
 		defer statement.Close()
 		for _, job := range jobs {
 			event := job.event
-			if _, err := statement.ExecContext(ctx, event.ID, event.CreatedAt.UnixMilli(), event.StatusCode, event.Stage, event.RequestID, event.NewAPIRequestID, job.payload); err != nil {
+			if _, err := statement.ExecContext(ctx, event.ID, event.CreatedAt.UnixMilli(), event.StatusCode, event.Stage, event.RequestID, event.NewAPIRequestID, job.payload, serviceErrorGroupKey(event)); err != nil {
 				return err
 			}
 		}
@@ -572,6 +591,7 @@ func (db *DB) ServiceErrorCollectorStats() ServiceErrorCollectorStats {
 type serviceErrorCursor struct {
 	CreatedAt int64  `json:"time"`
 	ID        string `json:"id"`
+	Grouped   bool   `json:"grouped,omitempty"`
 }
 
 func ValidateServiceErrorCursor(value string) bool {
@@ -595,10 +615,16 @@ func decodeServiceErrorCursor(value string) (serviceErrorCursor, error) {
 }
 
 func (db *DB) ListServiceErrors(ctx context.Context, filter ServiceErrorFilter) (ServiceErrorPage, error) {
-	page := ServiceErrorPage{Items: []ServiceErrorEvent{}, Collector: db.ServiceErrorCollectorStats()}
+	page := ServiceErrorPage{Items: []ServiceErrorEvent{}, Collector: db.ServiceErrorCollectorStats(), Grouped: filter.Grouped}
 	cursor, err := decodeServiceErrorCursor(filter.Cursor)
 	if err != nil {
 		return page, err
+	}
+	if filter.Cursor != "" && cursor.Grouped != filter.Grouped {
+		return page, fmt.Errorf("cursor belongs to another view")
+	}
+	if !ValidateServiceErrorGroupKey(filter.GroupKey) || filter.Grouped && filter.GroupKey != "" {
+		return page, fmt.Errorf("invalid group filter")
 	}
 	if filter.Start.IsZero() || !filter.End.After(filter.Start) || filter.End.Sub(filter.Start) > serviceErrorRetention {
 		return page, fmt.Errorf("invalid time range")
@@ -626,14 +652,22 @@ func (db *DB) ListServiceErrors(ctx context.Context, filter ServiceErrorFilter) 
 	if filter.RequestID != "" {
 		add("(request_id = ? OR newapi_request_id = ?)", filter.RequestID)
 	}
+	if filter.GroupKey != "" {
+		add("group_key = ?", filter.GroupKey)
+	}
 	where := strings.Join(conditions, " AND ")
 	err = db.conn.QueryRowContext(ctx, `SELECT COUNT(*),
 		COALESCE(SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0)
-		FROM service_error_events WHERE `+where, args...).Scan(&page.Summary.Total, &page.Summary.Status429, &page.Summary.Status4xx, &page.Summary.Status5xx)
+		COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0),
+		COUNT(DISTINCT COALESCE(NULLIF(group_key, ''), id)),
+		COALESCE(SUM(CASE WHEN group_key = '' THEN 1 ELSE 0 END), 0)
+		FROM service_error_events WHERE `+where, args...).Scan(&page.Summary.Total, &page.Summary.Status429, &page.Summary.Status4xx, &page.Summary.Status5xx, &page.Summary.Groups, &page.Summary.GroupingPending)
 	if err != nil {
 		return page, err
+	}
+	if filter.Grouped {
+		return db.listServiceErrorGroups(ctx, filter, cursor, page, where, args)
 	}
 	if filter.Cursor != "" {
 		args = append(args, cursor.CreatedAt, cursor.ID)

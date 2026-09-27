@@ -1,6 +1,7 @@
 export const SERVICE_ERROR_STAGES = ['authentication', 'rate_limit', 'root_binding', 'window', 'policy', 'dispatch', 'validation', 'internal'] as const
 
 export interface ServiceErrorEvent {
+  group?: { key: string; count: number; first_seen: string; last_seen: string }
   id: string
   created_at: string
   request_id: string
@@ -36,13 +37,16 @@ export interface ServiceErrorEvent {
 }
 
 export interface ServiceErrorPage {
+  grouped?: boolean
   items: ServiceErrorEvent[]
   next_cursor?: string
-  summary: { total: number; status_429: number; status_4xx: number; status_5xx: number }
+  summary: { total: number; status_429: number; status_4xx: number; status_5xx: number; groups?: number; grouping_pending?: number }
   collector: { pending: number; written: number; dropped: number; write_failures: number; capacity: number; retention_days: number; max_rows: number }
 }
 
 export interface ServiceErrorQuery {
+  grouped?: boolean
+  group_key?: string
   start: string
   end: string
   status?: string

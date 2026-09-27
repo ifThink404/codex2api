@@ -57,6 +57,9 @@ func TestURLPrivacyAtActualTransportBoundary(t *testing.T) {
 						}
 						seen <- capture{body, r.Header.Clone(), r.URL.Path}
 						_ = connection.WriteJSON(map[string]any{"type": "response.completed", "response": reply})
+						// Complete the mock exchange with a protocol close, not a
+						// TCP reset racing the client's provisional write commit.
+						_ = connection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "complete"), time.Now().Add(time.Second))
 						return
 					}
 					body, _ := io.ReadAll(r.Body)

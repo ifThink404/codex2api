@@ -74,7 +74,7 @@ func (store *Store) SessionDispatchFailure(account *Account, apiKeyID int64, mod
 	if reason := localFailure(); reason != "" {
 		return reason
 	}
-	if !store.APIKeyAllowsAccount(apiKeyID, account) {
+	if !account.AllowsAPIKey(apiKeyID) || !store.APIKeyAllowsAccount(apiKeyID, account) {
 		return "api_key_scope_mismatch"
 	}
 	if store.accountHasCachedModelCooldown(account, model) {

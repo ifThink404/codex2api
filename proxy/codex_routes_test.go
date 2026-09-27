@@ -37,10 +37,10 @@ func TestCodexDualRouteSelectionAndInheritance(t *testing.T) {
 	require.Error(t, ValidateCodexNativeRoute(ctx, a, []byte(`{"model":"gpt-6-astra"}`)))
 	a.CodexBPS = false
 	_, err = codexRequestRouteMode(ctx, a, "gpt-6-astra")
-	require.Error(t, err) // Disabling BPS cannot return the pinned root to native.
+	require.Error(t, err) // A route change requires a committed migration first.
 }
 
-func TestCodexRouteFailoverOriginalBPSAndNoReverse(t *testing.T) {
+func TestCodexRouteFailoverBothDirections(t *testing.T) {
 	for _, scenario := range []string{"original_bps", "other_bps", "entire_account_disabled", "bps_no_native", "bps_other_bps", "failover_disabled", "model_switch"} {
 		t.Run(scenario, func(t *testing.T) {
 			h, owner, target, key := failoverTestSetup(t, scenario != "failover_disabled")
@@ -48,6 +48,7 @@ func TestCodexRouteFailoverOriginalBPSAndNoReverse(t *testing.T) {
 			owner.CodexNative, owner.CodexBPS = &off, true
 			target.CodexNative, target.CodexBPS = &off, true
 			want := owner
+			wantMode := "bps"
 			model := "gpt-5.6-sol"
 			switch scenario {
 			case "other_bps":
@@ -57,6 +58,7 @@ func TestCodexRouteFailoverOriginalBPSAndNoReverse(t *testing.T) {
 				atomic.StoreInt32(&owner.Disabled, 1)
 				want = target
 			case "bps_no_native", "bps_other_bps":
+				wantMode = "native"
 				owner.CodexNative, owner.CodexBPS = &on, false
 				record, _, err := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))
 				require.NoError(t, err)
@@ -67,9 +69,6 @@ func TestCodexRouteFailoverOriginalBPSAndNoReverse(t *testing.T) {
 				require.NoError(t, err)
 				if scenario == "bps_no_native" {
 					target.CodexNative, target.CodexBPS = &on, false
-					want = nil
-				} else {
-					want = target
 				}
 			case "failover_disabled":
 				want = nil
@@ -95,12 +94,12 @@ func TestCodexRouteFailoverOriginalBPSAndNoReverse(t *testing.T) {
 			require.True(t, handled)
 			record, _, readErr := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))
 			require.NoError(t, readErr)
-			require.Equal(t, "bps", record.UpstreamMode)
+			require.Equal(t, wantMode, record.UpstreamMode)
 			require.Equal(t, uint64(1), record.FailoverCount)
 			require.Equal(t, selected.ID(), record.AccountID)
 			require.Error(t, validateSessionOutboundEpoch(oldEpoch, owner))
 			require.NoError(t, validateSessionOutboundEpoch(c.Request.Context(), selected))
-			if scenario == "bps_other_bps" {
+			if scenario == "bps_other_bps" || scenario == "bps_no_native" {
 				require.Equal(t, bpsCodexCompactionDomain, requestCompactionDomain(oldEpoch, owner))
 			} else {
 				require.Equal(t, nativeCodexCompactionDomain, requestCompactionDomain(oldEpoch, owner))

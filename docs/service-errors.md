@@ -36,3 +36,15 @@ HTTP 响应中的 `X-Codex2API-Request-ID` 可用于定位。`newapi_request_id`
 `GET /api/admin/ops/service-errors`，使用既有管理员鉴权。
 
 参数：成对 RFC3339 `start/end`（默认最近一小时）、`status`（`429`/`4xx`/`5xx`）、`stage`、`request_id`（匹配 Codex2API 或 NewAPI 请求 ID）、`cursor`、`limit`（默认 20，上限 100）。返回 `items`、`next_cursor`、当前筛选的 `summary` 和本实例的 `collector`。
+
+### 重复错误收敛
+
+页面默认「收敛显示」，可切换「逐条显示」。API 使用 `grouped=true` 开启分组，省略时保持原有逐条返回。分组依据调用方（优先已验证 NewAPI 用户，否则使用已有作用域／会话标识）、API Key、接口、传输方式、模型、状态码、错误码、阶段及错误原因；不同已知调用方和候选拒绝原因不会混在一起。请求 ID、时间、窗口号、耗时和用户名变化不拆组，错误说明中当前请求 ID 会归一化，其他说明保持精确比较。
+
+分组先应用时间、状态、阶段和请求 ID 筛选，再统计并分页，次数不局限于当前 20 条。每组用最近一条原始请求代表，`group` 包含 `key`、`count`、`first_seen`、`last_seen`；按最近发生时间及代表记录 ID 倒序。顶部总数和状态统计仍是原始错误次数，`summary.groups` 是当前筛选下的组数。分组与逐条视图的游标不能混用。
+
+点击次数后，以 `grouped=false&group_key=<key>` 查看该组原始请求；保留打开分组时的筛选时间范围，可逐条分页查看并复制诊断，也可继续精确查询 NewAPI 请求 ID。原始记录不会被删除或合并写入。
+
+新增索引化 `group_key` 列；现有日志在启动后的后台任务中按 128 条一批补齐，不阻塞启动或扫描整份 JSON 来完成每次列表查询。尚未补齐的记录暂时逐条显示，`summary.grouping_pending` 显示当前筛选范围内的待整理数量。原有 7 天／10 万条保留策略不变，分组次数随筛选范围及清理结果计算。
+
+换号候选的 `outbound_identity_unavailable` 诊断增加 `account_failover.selection.candidates[].identity_failure`：包含 `stage`、`status`、`code` 和可选 `http_status`，区分根身份、身份存储、映射策略、窗口／轮次映射、别名登记与归属登记失败。只记录内部阶段枚举和状态，不保存底层错误正文、数据库凭据或原始会话 ID。

@@ -34,6 +34,7 @@ type rawRelayDiagnostic struct {
 	WriteError          *rawRelayIOError `json:"write_error,omitempty"`
 	RequestContextError string           `json:"request_context_error,omitempty"`
 	ClientCanceled      bool             `json:"client_canceled"`
+	RetryAccountID      int64            `json:"retry_account_id,omitempty"`
 }
 
 // The HTTP handlers call this only after tryRawRelay declined the original
@@ -55,9 +56,9 @@ func excludeRawRelayAccountsFilter(filter auth.AccountFilter, trace *auth.Select
 }
 
 // An explicitly configured raw API route is selected before Codex validation or
-// translation, but only within the request's fingerprint/Chat routing group.
-// Matching raw routes in that group take precedence; failures never fall back
-// to a transformer or a different group.
+// translation within Key scope and, in strict mode, fingerprint/Chat groups.
+// Existing native owners and native pools take precedence. API failover retains
+// protocol compatibility and preserves raw bytes.
 func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	if h.store == nil || c.Request.Method != http.MethodPost {
 		return false
@@ -108,9 +109,6 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 			eligible[account.ID()] = true
 		}
 	}
-	if len(eligible) == 0 {
-		return false
-	}
 	// A unique routing model is necessary to enforce the caller's model policy.
 	modelFields := 0
 	gjson.ParseBytes(routingBody).ForEach(func(key, value gjson.Result) bool {
@@ -120,6 +118,9 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 		return true
 	})
 	if !gjson.ValidBytes(routingBody) || !gjson.ParseBytes(routingBody).IsObject() || modelFields != 1 || gjson.GetBytes(routingBody, "model").Type != gjson.String {
+		if len(eligible) == 0 {
+			return false
+		}
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Exactly one model field is required for routing", api.ErrorTypeInvalidRequest))
 		return true
 	}
@@ -131,6 +132,7 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	h.prepareChatGroupRouting(c, identity)
 	beginDispatchSelection(c)
 	groupFilter := applyAffinityGroupRouting(c, identity, nil)
+	owner, affinityKey, ownsRoute, blocked := h.rawRelayRouteOwner(c, identity, model, groupFilter)
 	matchedGroup := false
 	for _, account := range rawAccounts {
 		if eligible[account.ID()] && (groupFilter == nil || groupFilter(account)) {
@@ -141,8 +143,19 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	// An unrelated group's raw account must not preempt the ordinary handler.
 	// A failed bound-owner lookup is different: keep the route fail-closed.
 	groupRouting := usageRequestDiagnosticState(c).GroupRouting
-	if !matchedGroup && (groupRouting == nil || !groupRouting.blocked) {
+	if !matchedGroup && owner == nil && !blocked && (groupRouting == nil || !groupRouting.blocked) {
 		return false
+	}
+	if groupRouting != nil && groupRouting.blocked {
+		api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "Raw API route owner is unavailable", api.ErrorTypeServer), http.StatusServiceUnavailable)
+		return true
+	}
+	if !ownsRoute {
+		return false
+	}
+	if blocked {
+		api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "Raw API route owner is unavailable", api.ErrorTypeServer), http.StatusServiceUnavailable)
+		return true
 	}
 	diagnostic := &rawRelayDiagnostic{Enabled: true, RequestBytes: len(body), UsageSource: "not_observed"}
 	state := usageRequestDiagnosticState(c)
@@ -164,67 +177,16 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	}
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	filter := auth.AccountFilter(func(account *auth.Account) bool {
-		return eligible[account.ID()] && account.OpenAIRawPassthroughEnabled() && (groupFilter == nil || groupFilter(account))
+		return account != nil && account.SupportsOpenAIResponsesModel(model) && account.OpenAIRawPassthroughEnabled() && (groupFilter == nil || groupFilter(account))
 	})
 	filter = h.applyUpstreamChannelFilter(c, model, filter)
 	filter = h.withRequestModelCooldownFilter(c, model, filter)
 	filter = h.applyScopeBudgetFilter(c, filter)
-	account := h.store.NextExcludingWithDispatch(keyID, nil, filter, auth.DispatchPolicyStandard.WithModel(model), selectionTraceForRequest(c))
-	if account == nil {
-		if msg := scopeBudgetExhaustedMessage(c); msg != "" {
-			SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
-		} else {
-			api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "No eligible raw API account is available", api.ErrorTypeServer), http.StatusServiceUnavailable)
-		}
-		return true
-	}
-	defer h.store.Release(account)
-	h.AcquireAPIKeyScopeConcurrency(c, account)
-	if err := ConsumeAPIKeyModelRequestQuota(c.Request.Context(), model); err != nil {
-		ErrorToGinResponse(c, err)
-		return true
-	}
-	proxyURL, usable := h.store.ResolveUsableProxyForAccount(account)
-	if !usable {
-		api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "Raw API egress is unavailable", api.ErrorTypeServer), http.StatusServiceUnavailable)
-		return true
-	}
-	baseURL, credential := account.OpenAIResponsesCredentials()
-	endpoint := auth.OpenAIResponsesEndpoint(baseURL, c.Request.URL.EscapedPath())
-	if c.Request.URL.RawQuery != "" {
-		endpoint += "?" + c.Request.URL.RawQuery
-	}
-	client, err := rawRelayClient(account, proxyURL)
-	if err != nil {
-		api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "Raw API transport configuration is invalid", api.ErrorTypeServer), http.StatusServiceUnavailable)
-		return true
-	}
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, endpoint, bytes.NewReader(body))
-	if err != nil {
-		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Invalid upstream endpoint", api.ErrorTypeInvalidRequest))
-		return true
-	}
-	req.Header = rawRelayRequestHeaders(c.Request.Header, account, credential)
-	recordTrace := beginUpstreamTrace(req.Context(), account, proxyURL, false)
-	UpstreamTransportObserver(req.Context()).Endpoint(endpoint)
-	resp, err := client.Do(req)
-	recordTrace(resp)
-	input := &database.UsageLogInput{AccountID: account.ID(), Endpoint: c.Request.URL.Path, InboundEndpoint: c.Request.URL.Path, UpstreamEndpoint: c.Request.URL.Path, Model: model, EffectiveModel: model, Stream: gjson.GetBytes(routingBody, "stream").Bool(), AttemptIndex: 1, ReasoningEffort: extractReasoningEffort(routingBody)}
-	defer func() {
-		input.DurationMs = int(time.Since(started).Milliseconds())
-		if h.db != nil {
-			h.logUsageForRequest(c, input)
-		}
-	}()
-	if err != nil {
-		input.StatusCode = http.StatusBadGateway
-		input.ErrorMessage = "Raw API transport failed"
-		UpstreamTransportObserver(req.Context()).Failure("upstream_transport", "request", 0)
-		api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, input.ErrorMessage, api.ErrorTypeServer), http.StatusBadGateway)
-		return true
-	}
-	defer resp.Body.Close()
-	input.StatusCode = resp.StatusCode
+	h.dispatchRawRelay(c, body, routingBody, model, owner, affinityKey, filter)
+	return true
+}
+
+func (h *Handler) writeRawRelayResponse(c *gin.Context, resp *http.Response, routingBody []byte, input *database.UsageLogInput, diagnostic *rawRelayDiagnostic, started time.Time) {
 	for name, values := range rawRelayResponseHeaders(resp.Header) {
 		c.Writer.Header()[name] = append([]string(nil), values...)
 	}
@@ -267,6 +229,10 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	for name, values := range resp.Trailer {
 		c.Writer.Header()[http.TrailerPrefix+name] = append([]string(nil), values...)
 	}
+	applyRawRelayObservation(input, diagnostic, observer, routingBody)
+}
+
+func applyRawRelayObservation(input *database.UsageLogInput, diagnostic *rawRelayDiagnostic, observer *rawRelayUsageObserver, routingBody []byte) {
 	if observer.usage != nil {
 		u := observer.usage
 		input.InputTokens, input.OutputTokens, input.CachedTokens = u.InputTokens, u.OutputTokens, u.CachedTokens
@@ -280,16 +246,15 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	input.UpstreamResponseModel = observer.model
 	tiers := resolveUsageServiceTiers(observer.tier, gjson.GetBytes(routingBody, "service_tier").String())
 	input.ServiceTier, input.RequestedServiceTier, input.ActualServiceTier, input.BillingServiceTier = tiers.ServiceTier, tiers.RequestedServiceTier, tiers.ActualServiceTier, tiers.BillingServiceTier
-	if resp.StatusCode >= 400 {
+	if input.StatusCode >= 400 {
 		input.ErrorMessage = observer.errorMessage
 		if input.ErrorMessage == "" {
-			input.ErrorMessage = fmt.Sprintf("Upstream HTTP %d", resp.StatusCode)
+			input.ErrorMessage = fmt.Sprintf("Upstream HTTP %d", input.StatusCode)
 		}
 	}
 	if diagnostic.ResponseError != "" {
 		input.ErrorMessage = diagnostic.ResponseError
 	}
-	return true
 }
 
 func rawRelayClient(account *auth.Account, proxyURL string) (*http.Client, error) {

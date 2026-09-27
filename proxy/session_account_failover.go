@@ -300,6 +300,12 @@ func (handler *Handler) prepareSessionAccountFailover(request *gin.Context, key 
 		return false, replayError
 	}
 	preserveInput := CurrentRuntimeSettings().CodexSessionFailoverPreserveInput || state.Record.PreserveRestartInput
+	// A BPS route change can require native Codex even on this same account.
+	// Never preserve BPS ciphertext/handles across that boundary.
+	info := codexRouteRequestInfo(request.Request.Context())
+	if state.Record.UpstreamMode == "bps" && strings.HasPrefix(reason, "upstream_route_") && owner != nil && owner.CodexRouteAllows("native", info.Model, info.Auxiliary) {
+		preserveInput = false
+	}
 	cleaned, cleanedHeaders, cleanup, cleanupError := cleanSessionRestartContext(sessionFailoverRequestHeaders(request), body, nil, preserveInput)
 	diagnostic.ContextCleanup = cleanup
 	if failure := sessionToolPreservationAPIError(cleanupError, cleanup); failure != nil {
@@ -431,6 +437,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 	} else {
 		selection.MatchMode = "relaxed_key_scope"
 	}
+	identityFailures := make(map[int64]*database.SessionFailoverIdentityFailure)
 	plan.Diagnostic.Selection = selection
 	defer func() {
 		details := trace.CandidateDetails()
@@ -438,6 +445,9 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		selection.SchedulerIncomplete = trace.Snapshot().Incomplete
 		for _, sample := range details.Samples {
 			item := database.SessionFailoverCandidate{AccountID: sample.AccountID, Reason: sample.Reason}
+			if sample.Reason == "outbound_identity_unavailable" {
+				item.IdentityFailure = identityFailures[sample.AccountID]
+			}
 			if account := handler.store.FindByID(sample.AccountID); account != nil {
 				var truncated bool
 				item.GroupIDs, item.Tags, truncated = failoverSelectionLabels(request, account.GroupIDSnapshot(), account.TagSnapshot())
@@ -449,11 +459,11 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 	eligible := func(account *auth.Account) bool {
 		info := codexRouteRequestInfo(ctx)
 		prior := entry.Record.UpstreamMode
-		if floor, _ := ctx.Value(codexRouteFloorKey{}).(string); floor == "bps" {
+		if codexRouteFloor(ctx) == "bps" {
 			prior = "bps"
 		}
-		mode := selectCodexRoute(account, info.Model, prior, info.Auxiliary)
-		if account.ID() == oldID && mode != "bps" {
+		mode := selectCodexFailoverRoute(account, info.Model, prior, info.Auxiliary)
+		if account.ID() == oldID && mode == normalizedCodexRoute(entry.Record.UpstreamMode) {
 			return false
 		}
 		if mode == "" {
@@ -492,7 +502,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		return true
 	}
-	tryOriginalBPS := old != nil && normalizedCodexRoute(entry.Record.UpstreamMode) == "native" && codexRouteFailureForRequest(ctx, old) != "" && sessionAccountFailoverReason(old, policy) == ""
+	tryOriginalRoute := old != nil && codexRouteFailureForRequest(ctx, old) != "" && sessionAccountFailoverReason(old, policy) == ""
 	// Every attempt excludes its candidate. Bound by the pool snapshot, not an
 	// arbitrary sixteen-account cutoff; cancellation still stops long searches.
 	for range handler.store.AccountCount() + 1 {
@@ -502,9 +512,10 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		}
 		selection.Attempts++
 		var candidate *auth.Account
-		if tryOriginalBPS {
-			tryOriginalBPS = false
-			plan.Diagnostic.OriginalAccountBPSAttempted = true
+		if tryOriginalRoute {
+			tryOriginalRoute = false
+			plan.Diagnostic.OriginalAccountBPSAttempted = normalizedCodexRoute(entry.Record.UpstreamMode) == "native"
+			plan.Diagnostic.OriginalAccountNativeAttempted = entry.Record.UpstreamMode == "bps"
 			if !exclude[oldID] {
 				candidate = handler.store.NextExcludingWithDispatch(apiKeyID, exclude, func(a *auth.Account) bool { return a.ID() == oldID && eligible(a) }, policy, trace)
 			}
@@ -518,16 +529,29 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		excluded[candidate.ID()] = true
 		info := codexRouteRequestInfo(ctx)
 		prior := entry.Record.UpstreamMode
-		if floor, _ := ctx.Value(codexRouteFloorKey{}).(string); floor == "bps" {
+		if codexRouteFloor(ctx) == "bps" {
 			prior = "bps"
 		}
-		targetMode := selectCodexRoute(candidate, info.Model, prior, info.Auxiliary)
+		targetMode := selectCodexFailoverRoute(candidate, info.Model, prior, info.Auxiliary)
 		if targetMode == "" {
 			handler.store.Release(candidate)
 			continue
 		}
 		preview := entry.Record
+		preserveInput := plan.PreserveInput
+		if entry.Record.UpstreamMode == "bps" && targetMode == "native" {
+			_, _, cleanup, cleanupErr := cleanSessionRestartContext(sessionFailoverRequestHeaders(request), plan.Body, nil, false)
+			if cleanupErr != nil {
+				handler.store.Release(candidate)
+				plan.Diagnostic.ContextCleanup = cleanup
+				plan.Failure = sessionFailoverContextError(request, plan.Diagnostic, "missing_request_context")
+				return nil, "", true
+			}
+			preserveInput = false
+			plan.Diagnostic.ContextCleanup = cleanup
+		}
 		preview.UpstreamMode = targetMode
+		preview.LossyContextRestart, preview.PreserveRestartInput = true, preserveInput
 		preview.AccountID, preview.FailoverCount = candidate.ID(), entry.Record.FailoverCount+1
 		preview.OutboundWindowReset = true
 		preview.OutboundWindowBases = nil
@@ -538,6 +562,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		fingerprint := NewCodexTransportFingerprint(candidate, sessionFailoverRequestHeaders(request), plan.Body, "", previewContext)
 		apiKey := strings.TrimSpace(strings.TrimPrefix(request.GetHeader("Authorization"), "Bearer "))
 		if err := fingerprint.ClaimSessionIdentity(previewContext, candidate, apiKey); err != nil || fingerprint.accountIdentity == nil {
+			identityFailures[candidate.ID()] = sessionFailoverIdentityFailure(fingerprint, err)
 			trace.RejectAccount(candidate.ID(), "outbound_identity_unavailable")
 			handler.store.Release(candidate)
 			continue
@@ -569,7 +594,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		// Relaxed mode removes the old owner's group-cohort requirement, not
 		// the key's authorization. Recheck after preparation in case membership
 		// or the key's allowed groups changed while claiming the new identity.
-		if !handler.store.APIKeyAllowsAccount(apiKeyID, candidate) {
+		if !candidate.AllowsAPIKey(apiKeyID) || !handler.store.APIKeyAllowsAccount(apiKeyID, candidate) {
 			trace.RejectAccount(candidate.ID(), "api_key_scope_mismatch")
 			if candidate.ID() != oldID {
 				handler.store.RemoveAccountSession(candidate.ID(), key)
@@ -584,7 +609,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			input.WindowThreadID, input.WindowNumber, input.WindowContextID = "", 0, ""
 		}
 		input.LossyContextRestart = true
-		input.PreserveRestartInput = plan.PreserveInput
+		input.PreserveRestartInput = preserveInput
 		grant := windowGrantForRequest(request)
 		if grant != nil {
 			input.WindowSubject = cache.PromptSessionLimitSubject(grant.Platform, grant.UserID)
@@ -606,6 +631,7 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		handler.store.BindSessionAffinity(key, candidate, candidate.GetProxyURL())
 		handler.cacheSessionContinuity(state.Key, sessionContinuityCacheEntry{Record: committed, CheckedAt: time.Now(), WrittenAt: time.Now()})
 		state.Record = committed
+		plan.PreserveInput = committed.PreserveRestartInput
 		state.RestartReason = ""
 		handler.attachSessionOutboundEpoch(request, state.Key, committed)
 		state.Diagnostic.OwnerAccount, state.Diagnostic.OwnerSource = candidate.ID(), "account_failover"
