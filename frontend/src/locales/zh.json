@@ -688,8 +688,10 @@
   "accounts": {
     "rawPassthroughTitle": "原样 API 透传（HTTP / SSE）",
     "rawPassthroughHint": "默认关闭。开启后，先按会话指纹和 Chat 入口完成分组分流，再在对应组内优先选择匹配模型的透传账号；记录请求分类，保留原接口路径、请求正文、响应状态和正文，不做模型映射、身份补齐、图片上传或格式转换；失败不自动重试。使用账号配置的密钥、地址、代理和自定义请求头。WebSocket 不在此开关范围内。",
+    "batchCodexSettingsTitle": "修改 Codex / BPS 调度设置",
+    "batchCodexSettingsHint": "开启后，将下方全部设置统一应用到所选账号；关闭则保留原配置。默认开启 Codex、BPS、历史图片精简，并允许 gpt-5.6-sol 在额度耗尽后继续使用。",
     "usageLimitBypassTitle": "额度耗尽后允许指定模型",
-    "usageLimitBypassHint": "默认关闭。允许名单内的模型在本地 5h / 7d 额度限流或用量自动暂停后继续请求。仍受账号错误、手动禁用/暂停、模型权限和并发限制；上游实际拒绝仍会返回错误。",
+    "usageLimitBypassHint": "新账号默认开启，允许 gpt-5.6-sol。允许名单内的模型在本地 5h / 7d 额度限流或用量自动暂停后继续请求。仍受账号错误、手动禁用/暂停、模型权限和并发限制；上游实际拒绝仍会返回错误。",
     "usageLimitBypassPlaceholder": "输入模型 ID，按回车添加",
     "usageLimitBypassModelsHint": "仅匹配完整模型 ID，不支持通配符；名单为空时不放行任何模型。Codex / BPS 的原有模型配置仍需允许该模型。",
     "usageLimitBypassBatchTitle": "修改指定模型额度放行",

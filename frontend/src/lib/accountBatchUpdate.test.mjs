@@ -3,6 +3,24 @@ import test from "node:test";
 
 import { buildBatchMetadataUpdate } from "./accountBatchUpdate.ts";
 
+test("one Codex settings switch applies all values and omits them when off", () => {
+  const base = { ids: [1, 2], updateTags: true, tags: ["keep"], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
+  const settings = { codexNativeEnabled: true, codexBPSEnabled: true, usageLimitBypassEnabled: true, usageLimitBypassModels: ["gpt-5.6-sol"], codexBPSProfile: "word", codexBPSImageTrimEnabled: true, codexNativeCompactionOnly: false, codexFingerprintMode: "off" };
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, ...settings, updateCodexSettings: false }), { ids: [1, 2], tags: ["keep"] });
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, ...settings, updateCodexSettings: true }), {
+    ids: [1, 2], tags: ["keep"], codex_native_enabled: true, codex_bps_enabled: true,
+    codex_usage_limit_bypass_enabled: true, codex_usage_limit_bypass_models: ["gpt-5.6-sol"],
+    codex_bps_profile: "word", codex_bps_image_trim_enabled: true,
+    codex_native_compaction_only: false, codex_fingerprint_mode: "off",
+  });
+  const disabled = buildBatchMetadataUpdate({ ...base, ...settings, updateCodexSettings: true, codexBPSEnabled: false, codexBPSImageTrimEnabled: false, usageLimitBypassEnabled: false, usageLimitBypassModels: [] });
+  assert.equal(disabled.codex_bps_enabled, false);
+  assert.equal(disabled.codex_bps_image_trim_enabled, false);
+  assert.equal(disabled.codex_usage_limit_bypass_enabled, false);
+  assert.deepEqual(disabled.codex_usage_limit_bypass_models, []);
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, ...settings, updateCodexSettings: false, updateCodexBPSEnabled: true }), { ids: [1, 2], tags: ["keep"] });
+});
+
 test("BPS profile batch edit preserves mixed values unless explicitly selected", () => {
   const base = { ids: [1, 2], updateTags: false, tags: [], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
   assert.deepEqual(buildBatchMetadataUpdate({ ...base, codexBPSProfile: "excel" }), { ids: [1, 2] });

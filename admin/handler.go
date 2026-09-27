@@ -4909,31 +4909,34 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 
 // importToken 导入时的统一 token 载体
 type importToken struct {
-	codexBPSEnabled              bool
-	codexNativeEnabled           *bool
-	codexNativeModels            []string
-	codexBPSModels               []string
-	codexBPSImageTrim            bool
-	codexBPSProfile              auth.CodexBPSProfile
-	codexUsageLimitBypassEnabled bool
-	codexUsageLimitBypassModels  []string
-	codexNativeCompactionOnly    bool
-	refreshToken                 string
-	sessionToken                 string
-	accessToken                  string // AT-only 兼容路径
-	name                         string
-	email                        string
-	idToken                      string
-	accountID                    string
-	chatgptAccountID             string // sub2api 等导出格式中的 ChatGPT 账号唯一标识，用于精确去重
-	planType                     string
-	expiresAt                    string
-	codex7DUsedPercent           string
-	codex7DResetAt               string
-	codex5HUsedPercent           string
-	codex5HResetAt               string
-	codex5HUsageUpdatedAt        string
-	codexUsageUpdatedAt          string
+	codexBPSEnabled                 bool
+	codexBPSEnabledSet              bool
+	codexNativeEnabled              *bool
+	codexNativeModels               []string
+	codexBPSModels                  []string
+	codexBPSImageTrim               bool
+	codexBPSImageTrimSet            bool
+	codexBPSProfile                 auth.CodexBPSProfile
+	codexUsageLimitBypassEnabled    bool
+	codexUsageLimitBypassEnabledSet bool
+	codexUsageLimitBypassModels     []string
+	codexNativeCompactionOnly       bool
+	refreshToken                    string
+	sessionToken                    string
+	accessToken                     string // AT-only 兼容路径
+	name                            string
+	email                           string
+	idToken                         string
+	accountID                       string
+	chatgptAccountID                string // sub2api 等导出格式中的 ChatGPT 账号唯一标识，用于精确去重
+	planType                        string
+	expiresAt                       string
+	codex7DUsedPercent              string
+	codex7DResetAt                  string
+	codex5HUsedPercent              string
+	codex5HResetAt                  string
+	codex5HUsageUpdatedAt           string
+	codexUsageUpdatedAt             string
 	// Agent Identity（auth_mode=agentIdentity）：无 RT/ST/AT，凭私钥动态签名。
 	agentRuntimeID  string
 	agentPrivateKey string
@@ -5078,13 +5081,13 @@ type jsonAccountEntry struct {
 	Codex5HResetAt               string                 `json:"codex_5h_reset_at"`
 	Codex5HUsageUpdatedAt        string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt          string                 `json:"codex_usage_updated_at"`
-	CodexBPSEnabled              bool                   `json:"codex_bps_enabled"`
+	CodexBPSEnabled              *bool                  `json:"codex_bps_enabled"`
 	CodexNativeEnabled           *bool                  `json:"codex_native_enabled,omitempty"`
 	CodexNativeModels            []string               `json:"codex_native_models,omitempty"`
 	CodexBPSModels               []string               `json:"codex_bps_models,omitempty"`
-	CodexBPSImageTrim            bool                   `json:"codex_bps_image_trim_enabled"`
+	CodexBPSImageTrim            *bool                  `json:"codex_bps_image_trim_enabled"`
 	CodexBPSProfile              auth.CodexBPSProfile   `json:"codex_bps_profile"`
-	CodexUsageLimitBypassEnabled bool                   `json:"codex_usage_limit_bypass_enabled"`
+	CodexUsageLimitBypassEnabled *bool                  `json:"codex_usage_limit_bypass_enabled"`
 	CodexUsageLimitBypassModels  []string               `json:"codex_usage_limit_bypass_models"`
 	CodexNativeCompactionOnly    bool                   `json:"codex_native_compaction_only"`
 	ProxyURL                     string                 `json:"proxy_url"`
@@ -5158,13 +5161,13 @@ type sub2apiAccountCredentials struct {
 	Codex5HResetAt               string                 `json:"codex_5h_reset_at"`
 	Codex5HUsageUpdatedAt        string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt          string                 `json:"codex_usage_updated_at"`
-	CodexBPSEnabled              bool                   `json:"codex_bps_enabled"`
+	CodexBPSEnabled              *bool                  `json:"codex_bps_enabled"`
 	CodexNativeEnabled           *bool                  `json:"codex_native_enabled,omitempty"`
 	CodexNativeModels            []string               `json:"codex_native_models,omitempty"`
 	CodexBPSModels               []string               `json:"codex_bps_models,omitempty"`
-	CodexBPSImageTrim            bool                   `json:"codex_bps_image_trim_enabled"`
+	CodexBPSImageTrim            *bool                  `json:"codex_bps_image_trim_enabled"`
 	CodexBPSProfile              auth.CodexBPSProfile   `json:"codex_bps_profile"`
-	CodexUsageLimitBypassEnabled bool                   `json:"codex_usage_limit_bypass_enabled"`
+	CodexUsageLimitBypassEnabled *bool                  `json:"codex_usage_limit_bypass_enabled"`
 	CodexUsageLimitBypassModels  []string               `json:"codex_usage_limit_bypass_models"`
 	CodexNativeCompactionOnly    bool                   `json:"codex_native_compaction_only"`
 	ProxyURL                     string                 `json:"proxy_url"`
@@ -5369,34 +5372,37 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 
 		if rt != "" || st != "" || at != "" {
 			tokens = append(tokens, importToken{
-				refreshToken:                 rt,
-				sessionToken:                 st,
-				accessToken:                  at,
-				name:                         name,
-				email:                        email,
-				idToken:                      idTok,
-				accountID:                    strings.TrimSpace(entry.AccountID),
-				chatgptAccountID:             firstNonEmpty(entry.ChatGPTAccountID, accID),
-				planType:                     planType,
-				expiresAt:                    expiresAt,
-				codex7DUsedPercent:           strings.TrimSpace(entry.Codex7DUsedPercent.String()),
-				codex7DResetAt:               strings.TrimSpace(entry.Codex7DResetAt),
-				codex5HUsedPercent:           strings.TrimSpace(entry.Codex5HUsedPercent.String()),
-				codex5HResetAt:               strings.TrimSpace(entry.Codex5HResetAt),
-				codex5HUsageUpdatedAt:        strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
-				codexBPSEnabled:              entry.CodexBPSEnabled,
-				codexNativeEnabled:           entry.CodexNativeEnabled,
-				codexNativeModels:            entry.CodexNativeModels,
-				codexBPSModels:               entry.CodexBPSModels,
-				codexBPSImageTrim:            entry.CodexBPSImageTrim,
-				codexBPSProfile:              entry.CodexBPSProfile,
-				codexUsageLimitBypassEnabled: entry.CodexUsageLimitBypassEnabled,
-				codexUsageLimitBypassModels:  entry.CodexUsageLimitBypassModels,
-				codexNativeCompactionOnly:    entry.CodexNativeCompactionOnly,
-				codexUsageUpdatedAt:          strings.TrimSpace(entry.CodexUsageUpdatedAt),
-				proxyURL:                     strings.TrimSpace(entry.ProxyURL),
-				proxyLabel:                   strings.TrimSpace(entry.ProxyLabel),
-				proxyEnabled:                 entry.ProxyEnabled,
+				refreshToken:                    rt,
+				sessionToken:                    st,
+				accessToken:                     at,
+				name:                            name,
+				email:                           email,
+				idToken:                         idTok,
+				accountID:                       strings.TrimSpace(entry.AccountID),
+				chatgptAccountID:                firstNonEmpty(entry.ChatGPTAccountID, accID),
+				planType:                        planType,
+				expiresAt:                       expiresAt,
+				codex7DUsedPercent:              strings.TrimSpace(entry.Codex7DUsedPercent.String()),
+				codex7DResetAt:                  strings.TrimSpace(entry.Codex7DResetAt),
+				codex5HUsedPercent:              strings.TrimSpace(entry.Codex5HUsedPercent.String()),
+				codex5HResetAt:                  strings.TrimSpace(entry.Codex5HResetAt),
+				codex5HUsageUpdatedAt:           strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
+				codexBPSEnabled:                 entry.CodexBPSEnabled != nil && *entry.CodexBPSEnabled,
+				codexBPSEnabledSet:              entry.CodexBPSEnabled != nil,
+				codexNativeEnabled:              entry.CodexNativeEnabled,
+				codexNativeModels:               entry.CodexNativeModels,
+				codexBPSModels:                  entry.CodexBPSModels,
+				codexBPSImageTrim:               entry.CodexBPSImageTrim != nil && *entry.CodexBPSImageTrim,
+				codexBPSImageTrimSet:            entry.CodexBPSImageTrim != nil,
+				codexBPSProfile:                 entry.CodexBPSProfile,
+				codexUsageLimitBypassEnabled:    entry.CodexUsageLimitBypassEnabled != nil && *entry.CodexUsageLimitBypassEnabled,
+				codexUsageLimitBypassEnabledSet: entry.CodexUsageLimitBypassEnabled != nil,
+				codexUsageLimitBypassModels:     entry.CodexUsageLimitBypassModels,
+				codexNativeCompactionOnly:       entry.CodexNativeCompactionOnly,
+				codexUsageUpdatedAt:             strings.TrimSpace(entry.CodexUsageUpdatedAt),
+				proxyURL:                        strings.TrimSpace(entry.ProxyURL),
+				proxyLabel:                      strings.TrimSpace(entry.ProxyLabel),
+				proxyEnabled:                    entry.ProxyEnabled,
 			})
 		}
 	}
@@ -5452,34 +5458,37 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 
 		if rt != "" || st != "" || at != "" {
 			tokens = append(tokens, importToken{
-				refreshToken:                 rt,
-				sessionToken:                 st,
-				accessToken:                  at,
-				name:                         name,
-				email:                        email,
-				idToken:                      idTok,
-				accountID:                    strings.TrimSpace(c.AccountID),
-				chatgptAccountID:             firstNonEmpty(c.ChatGPTAccountID, accID),
-				planType:                     planType,
-				expiresAt:                    expiresAt,
-				codex7DUsedPercent:           strings.TrimSpace(c.Codex7DUsedPercent.String()),
-				codex7DResetAt:               strings.TrimSpace(c.Codex7DResetAt),
-				codex5HUsedPercent:           strings.TrimSpace(c.Codex5HUsedPercent.String()),
-				codex5HResetAt:               strings.TrimSpace(c.Codex5HResetAt),
-				codex5HUsageUpdatedAt:        strings.TrimSpace(c.Codex5HUsageUpdatedAt),
-				codexBPSEnabled:              c.CodexBPSEnabled,
-				codexNativeEnabled:           c.CodexNativeEnabled,
-				codexNativeModels:            c.CodexNativeModels,
-				codexBPSModels:               c.CodexBPSModels,
-				codexBPSImageTrim:            c.CodexBPSImageTrim,
-				codexBPSProfile:              c.CodexBPSProfile,
-				codexUsageLimitBypassEnabled: c.CodexUsageLimitBypassEnabled,
-				codexUsageLimitBypassModels:  c.CodexUsageLimitBypassModels,
-				codexNativeCompactionOnly:    c.CodexNativeCompactionOnly,
-				codexUsageUpdatedAt:          strings.TrimSpace(c.CodexUsageUpdatedAt),
-				proxyURL:                     proxyURL,
-				proxyLabel:                   proxyLabel,
-				proxyEnabled:                 proxyEnabled,
+				refreshToken:                    rt,
+				sessionToken:                    st,
+				accessToken:                     at,
+				name:                            name,
+				email:                           email,
+				idToken:                         idTok,
+				accountID:                       strings.TrimSpace(c.AccountID),
+				chatgptAccountID:                firstNonEmpty(c.ChatGPTAccountID, accID),
+				planType:                        planType,
+				expiresAt:                       expiresAt,
+				codex7DUsedPercent:              strings.TrimSpace(c.Codex7DUsedPercent.String()),
+				codex7DResetAt:                  strings.TrimSpace(c.Codex7DResetAt),
+				codex5HUsedPercent:              strings.TrimSpace(c.Codex5HUsedPercent.String()),
+				codex5HResetAt:                  strings.TrimSpace(c.Codex5HResetAt),
+				codex5HUsageUpdatedAt:           strings.TrimSpace(c.Codex5HUsageUpdatedAt),
+				codexBPSEnabled:                 c.CodexBPSEnabled != nil && *c.CodexBPSEnabled,
+				codexBPSEnabledSet:              c.CodexBPSEnabled != nil,
+				codexNativeEnabled:              c.CodexNativeEnabled,
+				codexNativeModels:               c.CodexNativeModels,
+				codexBPSModels:                  c.CodexBPSModels,
+				codexBPSImageTrim:               c.CodexBPSImageTrim != nil && *c.CodexBPSImageTrim,
+				codexBPSImageTrimSet:            c.CodexBPSImageTrim != nil,
+				codexBPSProfile:                 c.CodexBPSProfile,
+				codexUsageLimitBypassEnabled:    c.CodexUsageLimitBypassEnabled != nil && *c.CodexUsageLimitBypassEnabled,
+				codexUsageLimitBypassEnabledSet: c.CodexUsageLimitBypassEnabled != nil,
+				codexUsageLimitBypassModels:     c.CodexUsageLimitBypassModels,
+				codexNativeCompactionOnly:       c.CodexNativeCompactionOnly,
+				codexUsageUpdatedAt:             strings.TrimSpace(c.CodexUsageUpdatedAt),
+				proxyURL:                        proxyURL,
+				proxyLabel:                      proxyLabel,
+				proxyEnabled:                    proxyEnabled,
 			})
 		}
 	}
@@ -5571,29 +5580,32 @@ func importStoredAccountID(t importToken, conflicts map[string]bool) string {
 
 func importTokenSeed(t importToken, conflicts map[string]bool) tokenCredentialSeed {
 	return normalizeTokenCredentialSeed(tokenCredentialSeed{
-		refreshToken:                 t.refreshToken,
-		sessionToken:                 t.sessionToken,
-		accessToken:                  t.accessToken,
-		idToken:                      t.idToken,
-		accountID:                    importStoredAccountID(t, conflicts),
-		email:                        t.email,
-		planType:                     t.planType,
-		expiresAtRaw:                 t.expiresAt,
-		codex7DUsedPercent:           t.codex7DUsedPercent,
-		codex7DResetAt:               t.codex7DResetAt,
-		codex5HUsedPercent:           t.codex5HUsedPercent,
-		codex5HResetAt:               t.codex5HResetAt,
-		codex5HUsageUpdatedAt:        t.codex5HUsageUpdatedAt,
-		codexBPSEnabled:              t.codexBPSEnabled,
-		codexNativeEnabled:           t.codexNativeEnabled,
-		codexNativeModels:            t.codexNativeModels,
-		codexBPSModels:               t.codexBPSModels,
-		codexBPSImageTrim:            t.codexBPSImageTrim,
-		codexBPSProfile:              t.codexBPSProfile,
-		codexUsageLimitBypassEnabled: t.codexUsageLimitBypassEnabled,
-		codexUsageLimitBypassModels:  t.codexUsageLimitBypassModels,
-		codexNativeCompactionOnly:    t.codexNativeCompactionOnly,
-		codexUsageUpdatedAt:          t.codexUsageUpdatedAt,
+		refreshToken:                    t.refreshToken,
+		sessionToken:                    t.sessionToken,
+		accessToken:                     t.accessToken,
+		idToken:                         t.idToken,
+		accountID:                       importStoredAccountID(t, conflicts),
+		email:                           t.email,
+		planType:                        t.planType,
+		expiresAtRaw:                    t.expiresAt,
+		codex7DUsedPercent:              t.codex7DUsedPercent,
+		codex7DResetAt:                  t.codex7DResetAt,
+		codex5HUsedPercent:              t.codex5HUsedPercent,
+		codex5HResetAt:                  t.codex5HResetAt,
+		codex5HUsageUpdatedAt:           t.codex5HUsageUpdatedAt,
+		codexBPSEnabled:                 t.codexBPSEnabled,
+		codexBPSEnabledSet:              t.codexBPSEnabledSet,
+		codexNativeEnabled:              t.codexNativeEnabled,
+		codexNativeModels:               t.codexNativeModels,
+		codexBPSModels:                  t.codexBPSModels,
+		codexBPSImageTrim:               t.codexBPSImageTrim,
+		codexBPSImageTrimSet:            t.codexBPSImageTrimSet,
+		codexBPSProfile:                 t.codexBPSProfile,
+		codexUsageLimitBypassEnabled:    t.codexUsageLimitBypassEnabled,
+		codexUsageLimitBypassEnabledSet: t.codexUsageLimitBypassEnabledSet,
+		codexUsageLimitBypassModels:     t.codexUsageLimitBypassModels,
+		codexNativeCompactionOnly:       t.codexNativeCompactionOnly,
+		codexUsageUpdatedAt:             t.codexUsageUpdatedAt,
 	})
 }
 
@@ -12805,11 +12817,11 @@ func (h *Handler) TestImageStorageConnection(c *gin.Context) {
 // ==================== 导出 & 迁移 ====================
 
 type cpaExportEntry struct {
-	CodexBPSEnabled              bool                 `json:"codex_bps_enabled,omitempty"`
+	CodexBPSEnabled              bool                 `json:"codex_bps_enabled"`
 	CodexNativeEnabled           *bool                `json:"codex_native_enabled,omitempty"`
 	CodexNativeModels            []string             `json:"codex_native_models,omitempty"`
 	CodexBPSModels               []string             `json:"codex_bps_models,omitempty"`
-	CodexBPSImageTrim            bool                 `json:"codex_bps_image_trim_enabled,omitempty"`
+	CodexBPSImageTrim            bool                 `json:"codex_bps_image_trim_enabled"`
 	CodexBPSProfile              auth.CodexBPSProfile `json:"codex_bps_profile,omitempty"`
 	CodexUsageLimitBypassEnabled bool                 `json:"codex_usage_limit_bypass_enabled"`
 	CodexUsageLimitBypassModels  []string             `json:"codex_usage_limit_bypass_models"`
@@ -13210,29 +13222,32 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 			name = "migrate"
 		}
 		tokens = append(tokens, importToken{
-			refreshToken:                 rt,
-			accessToken:                  at,
-			name:                         name,
-			email:                        strings.TrimSpace(entry.Email),
-			idToken:                      strings.TrimSpace(entry.IDToken),
-			accountID:                    strings.TrimSpace(entry.AccountID),
-			planType:                     strings.TrimSpace(entry.PlanType),
-			expiresAt:                    strings.TrimSpace(entry.Expired),
-			codex7DUsedPercent:           strings.TrimSpace(entry.Codex7DUsedPercent),
-			codex7DResetAt:               strings.TrimSpace(entry.Codex7DResetAt),
-			codex5HUsedPercent:           strings.TrimSpace(entry.Codex5HUsedPercent),
-			codex5HResetAt:               strings.TrimSpace(entry.Codex5HResetAt),
-			codex5HUsageUpdatedAt:        strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
-			codexBPSEnabled:              entry.CodexBPSEnabled,
-			codexNativeEnabled:           entry.CodexNativeEnabled,
-			codexNativeModels:            entry.CodexNativeModels,
-			codexBPSModels:               entry.CodexBPSModels,
-			codexBPSImageTrim:            entry.CodexBPSImageTrim,
-			codexBPSProfile:              entry.CodexBPSProfile,
-			codexUsageLimitBypassEnabled: entry.CodexUsageLimitBypassEnabled,
-			codexUsageLimitBypassModels:  entry.CodexUsageLimitBypassModels,
-			codexNativeCompactionOnly:    entry.CodexNativeCompactionOnly,
-			codexUsageUpdatedAt:          strings.TrimSpace(entry.CodexUsageUpdatedAt),
+			refreshToken:                    rt,
+			accessToken:                     at,
+			name:                            name,
+			email:                           strings.TrimSpace(entry.Email),
+			idToken:                         strings.TrimSpace(entry.IDToken),
+			accountID:                       strings.TrimSpace(entry.AccountID),
+			planType:                        strings.TrimSpace(entry.PlanType),
+			expiresAt:                       strings.TrimSpace(entry.Expired),
+			codex7DUsedPercent:              strings.TrimSpace(entry.Codex7DUsedPercent),
+			codex7DResetAt:                  strings.TrimSpace(entry.Codex7DResetAt),
+			codex5HUsedPercent:              strings.TrimSpace(entry.Codex5HUsedPercent),
+			codex5HResetAt:                  strings.TrimSpace(entry.Codex5HResetAt),
+			codex5HUsageUpdatedAt:           strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
+			codexBPSEnabled:                 entry.CodexBPSEnabled,
+			codexBPSEnabledSet:              true,
+			codexNativeEnabled:              entry.CodexNativeEnabled,
+			codexNativeModels:               entry.CodexNativeModels,
+			codexBPSModels:                  entry.CodexBPSModels,
+			codexBPSImageTrim:               entry.CodexBPSImageTrim,
+			codexBPSImageTrimSet:            true,
+			codexBPSProfile:                 entry.CodexBPSProfile,
+			codexUsageLimitBypassEnabled:    entry.CodexUsageLimitBypassEnabled,
+			codexUsageLimitBypassEnabledSet: true,
+			codexUsageLimitBypassModels:     entry.CodexUsageLimitBypassModels,
+			codexNativeCompactionOnly:       entry.CodexNativeCompactionOnly,
+			codexUsageUpdatedAt:             strings.TrimSpace(entry.CodexUsageUpdatedAt),
 		})
 	}
 

@@ -2369,22 +2369,13 @@ export default function Accounts() {
     useState(false);
   const [batchSchedulerPriorityInput, setBatchSchedulerPriorityInput] =
     useState("");
-  const [
-    batchUpdateCodexFingerprintMode,
-    setBatchUpdateCodexFingerprintMode,
-  ] = useState(false);
-  const [batchUpdateCodexBPSEnabled, setBatchUpdateCodexBPSEnabled] = useState(false);
-  const [batchUpdateCodexNativeEnabled, setBatchUpdateCodexNativeEnabled] = useState(false);
+  const [batchUpdateCodexSettings, setBatchUpdateCodexSettings] = useState(false);
   const [batchCodexNativeEnabled, setBatchCodexNativeEnabled] = useState(true);
-  const [batchUpdateUsageLimitBypass, setBatchUpdateUsageLimitBypass] = useState(false);
-  const [batchUsageLimitBypassEnabled, setBatchUsageLimitBypassEnabled] = useState(false);
-  const [batchUsageLimitBypassModels, setBatchUsageLimitBypassModels] = useState<string[]>([]);
-  const [batchUpdateCodexBPSProfile, setBatchUpdateCodexBPSProfile] = useState(false);
+  const [batchUsageLimitBypassEnabled, setBatchUsageLimitBypassEnabled] = useState(true);
+  const [batchUsageLimitBypassModels, setBatchUsageLimitBypassModels] = useState<string[]>(["gpt-5.6-sol"]);
   const [batchCodexBPSProfile, setBatchCodexBPSProfile] = useState<CodexBPSProfile>("word");
-  const [batchUpdateCodexBPSImageTrimEnabled, setBatchUpdateCodexBPSImageTrimEnabled] = useState(false);
-  const [batchUpdateCodexNativeCompactionOnly, setBatchUpdateCodexNativeCompactionOnly] = useState(false);
-  const [batchCodexBPSEnabled, setBatchCodexBPSEnabled] = useState(false);
-  const [batchCodexBPSImageTrimEnabled, setBatchCodexBPSImageTrimEnabled] = useState(false);
+  const [batchCodexBPSEnabled, setBatchCodexBPSEnabled] = useState(true);
+  const [batchCodexBPSImageTrimEnabled, setBatchCodexBPSImageTrimEnabled] = useState(true);
   const [batchCodexNativeCompactionOnly, setBatchCodexNativeCompactionOnly] = useState(false);
   const [batchCodexFingerprintMode, setBatchCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
@@ -5244,20 +5235,14 @@ export default function Accounts() {
     setBatchSkipWarmTier(false);
     setBatchUpdateSchedulerPriority(false);
     setBatchSchedulerPriorityInput("");
-    setBatchUpdateCodexBPSEnabled(false);
-    setBatchUpdateCodexNativeEnabled(false);
+    setBatchUpdateCodexSettings(false);
     setBatchCodexNativeEnabled(true);
-    setBatchUpdateUsageLimitBypass(false);
-    setBatchUsageLimitBypassEnabled(false);
-    setBatchUsageLimitBypassModels([]);
-    setBatchUpdateCodexBPSProfile(false);
+    setBatchUsageLimitBypassEnabled(true);
+    setBatchUsageLimitBypassModels(["gpt-5.6-sol"]);
     setBatchCodexBPSProfile("word");
-    setBatchUpdateCodexBPSImageTrimEnabled(false);
-    setBatchUpdateCodexNativeCompactionOnly(false);
-    setBatchCodexBPSEnabled(false);
-    setBatchCodexBPSImageTrimEnabled(false);
+    setBatchCodexBPSEnabled(true);
+    setBatchCodexBPSImageTrimEnabled(true);
     setBatchCodexNativeCompactionOnly(false);
-    setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
     setBatchUpdateSessionCapacity(false);
     setBatchSessionCapacityEnabled(false);
@@ -5281,20 +5266,14 @@ export default function Accounts() {
     setBatchSkipWarmTier(false);
     setBatchUpdateSchedulerPriority(false);
     setBatchSchedulerPriorityInput("");
-    setBatchUpdateCodexBPSEnabled(false);
-    setBatchUpdateCodexNativeEnabled(false);
+    setBatchUpdateCodexSettings(false);
     setBatchCodexNativeEnabled(true);
-    setBatchUpdateUsageLimitBypass(false);
-    setBatchUsageLimitBypassEnabled(false);
-    setBatchUsageLimitBypassModels([]);
-    setBatchUpdateCodexBPSProfile(false);
+    setBatchUsageLimitBypassEnabled(true);
+    setBatchUsageLimitBypassModels(["gpt-5.6-sol"]);
     setBatchCodexBPSProfile("word");
-    setBatchUpdateCodexBPSImageTrimEnabled(false);
-    setBatchUpdateCodexNativeCompactionOnly(false);
-    setBatchCodexBPSEnabled(false);
-    setBatchCodexBPSImageTrimEnabled(false);
+    setBatchCodexBPSEnabled(true);
+    setBatchCodexBPSImageTrimEnabled(true);
     setBatchCodexNativeCompactionOnly(false);
-    setBatchUpdateCodexFingerprintMode(false);
     setBatchCodexFingerprintMode("off");
     setBatchUpdateSessionCapacity(false);
     setBatchSessionCapacityEnabled(false);
@@ -5701,10 +5680,7 @@ export default function Accounts() {
     batchUpdateBaseConcurrency ||
     batchUpdateSkipWarmTier ||
     batchUpdateSchedulerPriority ||
-    batchUpdateCodexBPSEnabled || batchUpdateCodexNativeEnabled || batchUpdateUsageLimitBypass ||
-    batchUpdateCodexBPSProfile || batchUpdateCodexBPSImageTrimEnabled ||
-    batchUpdateCodexNativeCompactionOnly ||
-    batchUpdateCodexFingerprintMode ||
+    batchUpdateCodexSettings ||
     batchUpdateSessionCapacity;
   const batchMetaInvalid =
     batchScoreBiasInvalid ||
@@ -5740,20 +5716,14 @@ export default function Accounts() {
           schedulerPriority: schedulerPriorityInputToValue(
             batchSchedulerPriorityInput,
           ),
-          updateCodexBPSEnabled: batchUpdateCodexBPSEnabled,
-          updateCodexNativeEnabled: batchUpdateCodexNativeEnabled,
+          updateCodexSettings: batchUpdateCodexSettings,
           codexNativeEnabled: batchCodexNativeEnabled,
-          updateUsageLimitBypass: batchUpdateUsageLimitBypass,
           usageLimitBypassEnabled: batchUsageLimitBypassEnabled,
           usageLimitBypassModels: batchUsageLimitBypassModels,
-          updateCodexBPSProfile: batchUpdateCodexBPSProfile,
           codexBPSProfile: batchCodexBPSProfile,
-          updateCodexBPSImageTrimEnabled: batchUpdateCodexBPSImageTrimEnabled,
-          updateCodexNativeCompactionOnly: batchUpdateCodexNativeCompactionOnly,
           codexBPSEnabled: batchCodexBPSEnabled,
           codexBPSImageTrimEnabled: batchCodexBPSImageTrimEnabled,
           codexNativeCompactionOnly: batchCodexNativeCompactionOnly,
-          updateCodexFingerprintMode: batchUpdateCodexFingerprintMode,
           codexFingerprintMode: batchCodexFingerprintMode,
           updateSessionCapacity: batchUpdateSessionCapacity,
           sessionCapacityEnabled: batchSessionCapacityEnabled,
@@ -11219,67 +11189,38 @@ export default function Accounts() {
                   </div>
 
                   <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 Codex 开关</span><Switch checked={batchUpdateCodexNativeEnabled} onCheckedChange={setBatchUpdateCodexNativeEnabled} aria-label="修改 Codex 开关" /></div>
-                    <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>启用 Codex</span><Switch checked={batchCodexNativeEnabled} onCheckedChange={setBatchCodexNativeEnabled} disabled={!batchUpdateCodexNativeEnabled} aria-label="批量启用 Codex" /></label>
-                    <p className="mt-2 text-xs text-muted-foreground">关闭后按禁用换号设置处理，优先原账号 BPS。两项都关闭时，该账号不再接收这两条路径的请求。</p>
-                  </div>
-                  <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <span className="text-sm font-semibold">{t("accounts.usageLimitBypassBatchTitle")}</span>
-                      <Switch checked={batchUpdateUsageLimitBypass} onCheckedChange={setBatchUpdateUsageLimitBypass} aria-label={t("accounts.usageLimitBypassBatchTitle")} />
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold">{t("accounts.batchCodexSettingsTitle")}</span>
+                      <Switch checked={batchUpdateCodexSettings} onCheckedChange={setBatchUpdateCodexSettings} aria-label={t("accounts.batchCodexSettingsTitle")} />
                     </div>
-                    <UsageLimitBypassSettings enabled={batchUsageLimitBypassEnabled} onEnabledChange={setBatchUsageLimitBypassEnabled} models={batchUsageLimitBypassModels} onModelsChange={setBatchUsageLimitBypassModels} disabled={!batchUpdateUsageLimitBypass} />
-                  </div>
-                  <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 兼容模式</span><Switch checked={batchUpdateCodexBPSEnabled} onCheckedChange={setBatchUpdateCodexBPSEnabled} aria-label="修改 BPS 兼容模式" /></div>
-                    <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>开启 BPS 兼容模式</span><Switch checked={batchCodexBPSEnabled} onCheckedChange={setBatchCodexBPSEnabled} disabled={!batchUpdateCodexBPSEnabled} aria-label="开启 BPS 兼容模式" /></label>
-                    <p className="mt-2 text-xs text-muted-foreground">保存后生效，与 Codex 开关独立；仅支持普通 Codex OAuth / AT 账号。BPS 会话不能返回 Codex，max 自动调整为 xhigh。</p>
-                  </div>
-                  <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="mb-3 flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 类型</span><Switch checked={batchUpdateCodexBPSProfile} onCheckedChange={setBatchUpdateCodexBPSProfile} aria-label="修改 BPS 类型" /></div>
-                    <BPSProfileSelector value={batchCodexBPSProfile} onChange={setBatchCodexBPSProfile} disabled={!batchUpdateCodexBPSProfile} />
-                    <p className="mt-2 text-xs text-muted-foreground">开启修改后，将所选账号统一设置为此类型；否则保留各账号原值。</p>
-                  </div>
-                  <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改 BPS 历史图片精简</span><Switch checked={batchUpdateCodexBPSImageTrimEnabled} onCheckedChange={setBatchUpdateCodexBPSImageTrimEnabled} aria-label="修改 BPS 历史图片精简" /></div>
-                    <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>精简历史图片</span><Switch checked={batchCodexBPSImageTrimEnabled} onCheckedChange={setBatchCodexBPSImageTrimEnabled} disabled={!batchUpdateCodexBPSImageTrimEnabled} aria-label="批量开启历史图片精简" /></label>
-                    <p className="mt-2 text-xs text-muted-foreground">保存后仅对 BPS 主请求生效。旧图可能无法恢复；保留当前用户附图、最近 3 张工具图及最新整组结果。</p>
-                  </div>
-                  <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">修改原生远程压缩限制</span><Switch checked={batchUpdateCodexNativeCompactionOnly} onCheckedChange={setBatchUpdateCodexNativeCompactionOnly} aria-label="修改原生远程压缩限制" /></div>
-                    <label className="mt-3 flex items-center justify-between gap-3 text-sm"><span>仅允许原生远程压缩</span><Switch checked={batchCodexNativeCompactionOnly} onCheckedChange={setBatchCodexNativeCompactionOnly} disabled={!batchUpdateCodexNativeCompactionOnly} aria-label="批量仅允许原生远程压缩" /></label>
-                    <p className="mt-2 text-xs text-muted-foreground">保存后对所选账号实际走非 BPS 路径的请求生效。拒绝旧式文本摘要压缩，不兼容的客户端需调整配置；实际走 BPS 的请求仍允许旧式压缩。</p>
-                  </div>
-                  <div className="rounded-xl border border-border p-4 md:col-span-2">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-foreground">
-                          {t("accounts.codexFingerprintModeTitle")}
+                    <p className="mt-2 text-xs text-muted-foreground">{t("accounts.batchCodexSettingsHint")}</p>
+                    {batchUpdateCodexSettings && (
+                      <div className="mt-4 space-y-5 border-t border-border pt-4">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="flex items-center justify-between gap-3 text-sm"><span>Codex</span><Switch checked={batchCodexNativeEnabled} onCheckedChange={setBatchCodexNativeEnabled} aria-label={t("accounts.routeEnable", { route: "Codex" })} /></label>
+                          <label className="flex items-center justify-between gap-3 text-sm"><span>BPS</span><Switch checked={batchCodexBPSEnabled} onCheckedChange={setBatchCodexBPSEnabled} aria-label={t("accounts.routeEnable", { route: "BPS" })} /></label>
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {t("accounts.codexFingerprintModeBatchHint")}
+                        <p className="text-xs text-muted-foreground">{t("accounts.routesSummary")}</p>
+                        <UsageLimitBypassSettings enabled={batchUsageLimitBypassEnabled} onEnabledChange={setBatchUsageLimitBypassEnabled} models={batchUsageLimitBypassModels} onModelsChange={setBatchUsageLimitBypassModels} />
+                        <div>
+                          <div className="mb-3 text-sm font-semibold">BPS 类型</div>
+                          <BPSProfileSelector value={batchCodexBPSProfile} onChange={setBatchCodexBPSProfile} />
+                        </div>
+                        <div>
+                          <label className="flex items-center justify-between gap-3 text-sm font-semibold"><span>{t("accounts.bpsImageTrimTitle")}</span><Switch checked={batchCodexBPSImageTrimEnabled} onCheckedChange={setBatchCodexBPSImageTrimEnabled} aria-label={t("accounts.bpsImageTrimTitle")} /></label>
+                          <p className="mt-2 text-xs text-muted-foreground">{t("accounts.bpsImageTrimSummary")}</p>
+                        </div>
+                        <div>
+                          <label className="flex items-center justify-between gap-3 text-sm font-semibold"><span>仅允许原生远程压缩</span><Switch checked={batchCodexNativeCompactionOnly} onCheckedChange={setBatchCodexNativeCompactionOnly} aria-label="批量仅允许原生远程压缩" /></label>
+                          <p className="mt-2 text-xs text-muted-foreground">保存后对所选账号实际走非 BPS 路径的请求生效。拒绝旧式文本摘要压缩，不兼容的客户端需调整配置；实际走 BPS 的请求仍允许旧式压缩。</p>
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold">{t("accounts.codexFingerprintModeTitle")}</div>
+                          <Select className="mt-3" value={batchCodexFingerprintMode} onValueChange={(value) => setBatchCodexFingerprintMode(value as CodexFingerprintMode)} options={codexFingerprintModeOptions(t)} />
+                          <p className="mt-2 text-xs text-muted-foreground">{codexFingerprintModeDetail(t, batchCodexFingerprintMode)}</p>
                         </div>
                       </div>
-                      <Switch
-                        checked={batchUpdateCodexFingerprintMode}
-                        onCheckedChange={setBatchUpdateCodexFingerprintMode}
-                        aria-label={`${t("accounts.batchMetaTitle")}: ${t("accounts.codexFingerprintModeTitle")}`}
-                      />
-                    </div>
-                    <Select
-                      className="mt-3"
-                      value={batchCodexFingerprintMode}
-                      onValueChange={(value) =>
-                        setBatchCodexFingerprintMode(
-                          value as CodexFingerprintMode,
-                        )
-                      }
-                      options={codexFingerprintModeOptions(t)}
-                      disabled={!batchUpdateCodexFingerprintMode}
-                    />
-                    <div className="mt-1.5 text-xs text-muted-foreground">
-                      {codexFingerprintModeDetail(t, batchCodexFingerprintMode)}
-                    </div>
+                    )}
                   </div>
 
                   <div className="rounded-xl border border-border p-4 md:col-span-2">

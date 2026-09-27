@@ -688,8 +688,10 @@
   "accounts": {
     "rawPassthroughTitle": "Raw API passthrough (HTTP / SSE)",
     "rawPassthroughHint": "Off by default. Session fingerprint and Chat endpoint group routing runs first; matching raw accounts are preferred only within the selected group. Records request classification while preserving the endpoint, request body, response status and body. Skips model mapping, identity completion, image uploads and format conversion; failures are not retried automatically. Uses the account credentials, URL, proxy and custom headers. WebSocket is outside this switch’s scope.",
+    "batchCodexSettingsTitle": "Modify Codex / BPS scheduling settings",
+    "batchCodexSettingsHint": "When enabled, all settings below replace those of the selected accounts. When disabled, existing settings are preserved. Defaults enable Codex, BPS, image trimming and quota bypass for gpt-5.6-sol.",
     "usageLimitBypassTitle": "Allow selected models after quota exhaustion",
-    "usageLimitBypassHint": "Off by default. Listed models may continue despite local 5h / 7d quota limits or usage auto-pause. Account errors, manual disable/pause, model permissions and concurrency limits still apply. Actual upstream rejections are returned.",
+    "usageLimitBypassHint": "New accounts enable this for gpt-5.6-sol by default. Listed models may continue despite local 5h / 7d quota limits or usage auto-pause. Account errors, manual disable/pause, model permissions and concurrency limits still apply. Actual upstream rejections are returned.",
     "usageLimitBypassPlaceholder": "Enter a model ID and press Enter",
     "usageLimitBypassModelsHint": "Full model IDs only; wildcards are not supported. An empty list exempts no models. Existing Codex / BPS model lists must also allow the model.",
     "usageLimitBypassBatchTitle": "Change model quota exemptions",

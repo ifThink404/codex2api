@@ -12,23 +12,26 @@ import (
 )
 
 type tokenCredentialSeed struct {
-	codexBPSEnabled              bool
-	codexNativeEnabled           *bool
-	codexNativeModels            []string
-	codexBPSModels               []string
-	codexBPSImageTrim            bool
-	codexBPSProfile              auth.CodexBPSProfile
-	codexUsageLimitBypassEnabled bool
-	codexUsageLimitBypassModels  []string
-	codexNativeCompactionOnly    bool
-	codexInstallationID          string
-	refreshToken                 string
-	sessionToken                 string
-	accessToken                  string
-	accessTokenType              string
-	idToken                      string
-	accountID                    string
-	workspaceID                  string
+	codexBPSEnabled                 bool
+	codexBPSEnabledSet              bool
+	codexNativeEnabled              *bool
+	codexNativeModels               []string
+	codexBPSModels                  []string
+	codexBPSImageTrim               bool
+	codexBPSImageTrimSet            bool
+	codexBPSProfile                 auth.CodexBPSProfile
+	codexUsageLimitBypassEnabled    bool
+	codexUsageLimitBypassEnabledSet bool
+	codexUsageLimitBypassModels     []string
+	codexNativeCompactionOnly       bool
+	codexInstallationID             string
+	refreshToken                    string
+	sessionToken                    string
+	accessToken                     string
+	accessTokenType                 string
+	idToken                         string
+	accountID                       string
+	workspaceID                     string
 	// userID 是 OpenAI 用户 ID（user-...），仅作为账号元数据保存。
 	userID string
 	// allowDuplicate 仅允许有效工作区（Token workspace 或请求头覆盖）为空的账号重复。
@@ -50,7 +53,9 @@ type tokenCredentialSeed struct {
 
 func normalizeTokenCredentialSeed(seed tokenCredentialSeed) tokenCredentialSeed {
 	seed.codexBPSProfile = auth.NormalizeCodexBPSProfile(string(seed.codexBPSProfile))
-	seed.codexUsageLimitBypassModels = auth.NormalizeAccountModels(seed.codexUsageLimitBypassModels)
+	if seed.codexUsageLimitBypassModels != nil {
+		seed.codexUsageLimitBypassModels = append([]string{}, auth.NormalizeAccountModels(seed.codexUsageLimitBypassModels)...)
+	}
 	seed.refreshToken = strings.TrimSpace(seed.refreshToken)
 	seed.sessionToken = strings.TrimSpace(seed.sessionToken)
 	seed.accessToken = strings.TrimSpace(seed.accessToken)
@@ -228,10 +233,14 @@ func tokenCredentialMap(seed tokenCredentialSeed) map[string]interface{} {
 		credentials["codex_5h_usage_updated_at"] = seed.codex5HUsageUpdatedAt
 	}
 	credentials[auth.CodexBPSProfileCredentialKey] = string(auth.NormalizeCodexBPSProfile(string(seed.codexBPSProfile)))
-	credentials[auth.CodexUsageLimitBypassEnabledKey] = seed.codexUsageLimitBypassEnabled
-	credentials[auth.CodexUsageLimitBypassModelsKey] = seed.codexUsageLimitBypassModels
-	if seed.codexBPSImageTrim {
-		credentials[auth.CodexBPSImageTrimCredentialKey] = true
+	if seed.codexUsageLimitBypassEnabledSet || seed.codexUsageLimitBypassEnabled {
+		credentials[auth.CodexUsageLimitBypassEnabledKey] = seed.codexUsageLimitBypassEnabled
+	}
+	if seed.codexUsageLimitBypassModels != nil {
+		credentials[auth.CodexUsageLimitBypassModelsKey] = seed.codexUsageLimitBypassModels
+	}
+	if seed.codexBPSImageTrimSet || seed.codexBPSImageTrim {
+		credentials[auth.CodexBPSImageTrimCredentialKey] = seed.codexBPSImageTrim
 	}
 	if seed.codexNativeCompactionOnly {
 		credentials[auth.CodexNativeCompactionOnlyCredentialKey] = true
@@ -245,8 +254,8 @@ func tokenCredentialMap(seed tokenCredentialSeed) map[string]interface{} {
 	if seed.codexBPSModels != nil {
 		credentials[auth.CodexBPSModelsCredentialKey] = seed.codexBPSModels
 	}
-	if seed.codexBPSEnabled {
-		credentials[auth.CodexBPSEnabledCredentialKey] = true
+	if seed.codexBPSEnabledSet || seed.codexBPSEnabled {
+		credentials[auth.CodexBPSEnabledCredentialKey] = seed.codexBPSEnabled
 	}
 	if seed.codexUsageUpdatedAt != "" {
 		credentials["codex_usage_updated_at"] = seed.codexUsageUpdatedAt
@@ -266,10 +275,30 @@ func (h *Handler) defaultCodexFingerprintModeForNewAccount() string {
 	return auth.NormalizeCodexFingerprintMode(h.store.GetCodexFingerprintDefaultMode())
 }
 
-// newCodexAccountCredentials 为新建/新导入的 Codex 账号生成 credentials，并盖上
-// 系统默认指纹收敛档位。仅用于插入新账号；更新已有账号凭证仍走 tokenCredentialMap，
-// 避免重新导入时覆盖用户在账号上手动调整过的档位。
+// newCodexAccountCredentials 为新建/新导入的 Codex 账号补齐调度默认值，并盖上
+// 系统默认指纹收敛档位；导入的显式开关和空模型名单优先。同步修改 seed，保证
+// 入库和紧接着构造的运行时账号一致。更新已有账号凭证仍走 tokenCredentialMap。
 func (h *Handler) newCodexAccountCredentials(seed *tokenCredentialSeed) map[string]interface{} {
+	if !seed.codexBPSEnabledSet {
+		seed.codexBPSEnabled = true
+	}
+	if !seed.codexBPSImageTrimSet {
+		seed.codexBPSImageTrim = true
+	}
+	if !seed.codexUsageLimitBypassEnabledSet {
+		seed.codexUsageLimitBypassEnabled = true
+	}
+	if seed.codexNativeEnabled == nil {
+		enabled := true
+		// Older exports encoded the native route implicitly through BPS.
+		if seed.codexBPSEnabledSet {
+			enabled = !seed.codexBPSEnabled
+		}
+		seed.codexNativeEnabled = &enabled
+	}
+	if seed.codexUsageLimitBypassModels == nil {
+		seed.codexUsageLimitBypassModels = []string{"gpt-5.6-sol"}
+	}
 	if seed.codexInstallationID == "" {
 		seed.codexInstallationID = uuid.NewString()
 	}
