@@ -53,7 +53,8 @@ func TestUsageLimitBypassSettingsAndBatch(t *testing.T) {
 		require.NoError(t, err)
 		var imported jsonAccountEntry
 		require.NoError(t, json.Unmarshal(data, &imported))
-		require.Equal(t, enabled, imported.CodexUsageLimitBypassEnabled)
+		require.NotNil(t, imported.CodexUsageLimitBypassEnabled)
+		require.Equal(t, enabled, *imported.CodexUsageLimitBypassEnabled)
 		require.Equal(t, models, imported.CodexUsageLimitBypassModels)
 		rebuilt := accountFromCredentialSeed(id, "", tokenCredentialSeedFromAccountRow(row))
 		require.Equal(t, enabled && len(models) > 0, rebuilt.UsageLimitBypassMatches(policy))

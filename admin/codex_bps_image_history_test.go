@@ -51,7 +51,8 @@ func TestBPSImageTrimSettingRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		var imported jsonAccountEntry
 		require.NoError(t, json.Unmarshal(encoded, &imported))
-		require.Equal(t, enabled, imported.CodexBPSImageTrim)
+		require.NotNil(t, imported.CodexBPSImageTrim)
+		require.Equal(t, enabled, *imported.CodexBPSImageTrim)
 		seed := tokenCredentialSeedFromAccountRow(row)
 		require.Equal(t, enabled, accountFromCredentialSeed(id, "", seed).CodexBPSImageTrimEnabled())
 	}

@@ -702,8 +702,10 @@
   "accounts": {
     "rawPassthroughTitle": "Raw API passthrough (HTTP / SSE)",
     "rawPassthroughHint": "Off by default. Forwards request and response bytes without model mapping, identity completion, image uploads or protocol conversion. Preserves existing ordinary account owners. Before sending a response, retry limits may allow another eligible API: relaxed mode applies Key group permissions only; strict mode also requires the original route and shared account groups. Started streams and account-bound continuations are not replayed. Uses the account credentials, URL, proxy and custom headers. Excludes WebSocket.",
+    "batchCodexSettingsTitle": "Modify Codex / BPS scheduling settings",
+    "batchCodexSettingsHint": "When enabled, all settings below replace those of the selected accounts. When disabled, existing settings are preserved. Defaults enable Codex, BPS, image trimming and quota bypass for gpt-5.6-sol.",
     "usageLimitBypassTitle": "Allow selected models after quota exhaustion",
-    "usageLimitBypassHint": "Off by default. Listed models may continue despite local 5h / 7d quota limits or usage auto-pause. Account errors, manual disable/pause, model permissions and concurrency limits still apply. Actual upstream rejections are returned.",
+    "usageLimitBypassHint": "New accounts enable this for gpt-5.6-sol by default. Listed models may continue despite local 5h / 7d quota limits or usage auto-pause. Account errors, manual disable/pause, model permissions and concurrency limits still apply. Actual upstream rejections are returned.",
     "usageLimitBypassPlaceholder": "Enter a model ID and press Enter",
     "usageLimitBypassModelsHint": "Full model IDs only; wildcards are not supported. An empty list exempts no models. Existing Codex / BPS model lists must also allow the model.",
     "usageLimitBypassBatchTitle": "Change model quota exemptions",

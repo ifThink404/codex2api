@@ -14,6 +14,7 @@ export interface BuildBatchMetadataUpdateOptions {
   skipWarmTier?: boolean;
   updateSchedulerPriority: boolean;
   schedulerPriority: number | null;
+  updateCodexSettings?: boolean;
   updateCodexNativeEnabled?: boolean;
   codexNativeEnabled?: boolean;
   updateUsageLimitBypass?: boolean;
@@ -50,6 +51,7 @@ export function buildBatchMetadataUpdate({
   skipWarmTier,
   updateSchedulerPriority,
   schedulerPriority,
+  updateCodexSettings,
   updateCodexNativeEnabled,
   codexNativeEnabled,
   updateUsageLimitBypass,
@@ -79,16 +81,16 @@ export function buildBatchMetadataUpdate({
     payload.base_concurrency_override = baseConcurrency;
   if (updateSkipWarmTier) payload.skip_warm_tier = skipWarmTier ?? false;
   if (updateSchedulerPriority) payload.scheduler_priority = schedulerPriority;
-  if (updateCodexNativeEnabled) payload.codex_native_enabled = codexNativeEnabled ?? true;
-  if (updateUsageLimitBypass) {
+  if (updateCodexSettings ?? updateCodexNativeEnabled) payload.codex_native_enabled = codexNativeEnabled ?? true;
+  if (updateCodexSettings ?? updateUsageLimitBypass) {
     payload.codex_usage_limit_bypass_enabled = usageLimitBypassEnabled ?? false;
     payload.codex_usage_limit_bypass_models = [...(usageLimitBypassModels ?? [])];
   }
-  if (updateCodexBPSEnabled) payload.codex_bps_enabled = codexBPSEnabled ?? false;
-  if (updateCodexBPSProfile) payload.codex_bps_profile = codexBPSProfile ?? "word";
-  if (updateCodexBPSImageTrimEnabled) payload.codex_bps_image_trim_enabled = codexBPSImageTrimEnabled ?? false;
-  if (updateCodexNativeCompactionOnly) payload.codex_native_compaction_only = codexNativeCompactionOnly ?? false;
-  if (updateCodexFingerprintMode)
+  if (updateCodexSettings ?? updateCodexBPSEnabled) payload.codex_bps_enabled = codexBPSEnabled ?? false;
+  if (updateCodexSettings ?? updateCodexBPSProfile) payload.codex_bps_profile = codexBPSProfile ?? "word";
+  if (updateCodexSettings ?? updateCodexBPSImageTrimEnabled) payload.codex_bps_image_trim_enabled = codexBPSImageTrimEnabled ?? false;
+  if (updateCodexSettings ?? updateCodexNativeCompactionOnly) payload.codex_native_compaction_only = codexNativeCompactionOnly ?? false;
+  if (updateCodexSettings ?? updateCodexFingerprintMode)
     payload.codex_fingerprint_mode = codexFingerprintMode ?? "off";
   if (updateSessionCapacity) {
     payload.session_capacity_enabled = sessionCapacityEnabled ?? false;

@@ -45,7 +45,8 @@ func TestBPSAccountSettingSaveReloadAndExport(t *testing.T) {
 		require.NoError(t, err)
 		var imported jsonAccountEntry
 		require.NoError(t, json.Unmarshal(exportedJSON, &imported))
-		require.Equal(t, enabled, imported.CodexBPSEnabled)
+		require.NotNil(t, imported.CodexBPSEnabled)
+		require.Equal(t, enabled, *imported.CodexBPSEnabled)
 		seed := tokenCredentialSeedFromAccountRow(row)
 		require.Equal(t, enabled, accountFromCredentialSeed(id, "", seed).CodexBPSEnabled())
 	}
