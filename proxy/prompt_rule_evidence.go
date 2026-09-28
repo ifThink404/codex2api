@@ -556,11 +556,11 @@ func upstreamPromptPolicyTransport(stream, viaWebsocket bool) string {
 	return "http"
 }
 
+// logPromptPolicyRetryUsage records a failed pre-first-token stream attempt
+// that is about to be retried, with or without a policy incident, so the
+// failure stays queryable even if a later attempt succeeds.
 func (h *Handler) logPromptPolicyRetryUsage(c *gin.Context, input database.UsageLogInput, incidentID string) {
-	if strings.TrimSpace(incidentID) == "" {
-		return
-	}
-	input.PromptPolicyIncidentID = incidentID
+	input.PromptPolicyIncidentID = strings.TrimSpace(incidentID)
 	input.IsRetryAttempt = true
 	h.logUsageForRequest(c, &input)
 }

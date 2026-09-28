@@ -22,8 +22,9 @@ type fileLogger struct {
 }
 
 var (
-	badRequestLogger  = &fileLogger{path: "bad_request.log"}  // 400 错误
-	serverErrorLogger = &fileLogger{path: "server_error.log"} // 5xx 错误
+	badRequestLogger          = &fileLogger{path: "bad_request.log"}           // 400 错误
+	serverErrorLogger         = &fileLogger{path: "server_error.log"}          // 5xx 错误
+	upstreamClientErrorLogger = &fileLogger{path: "upstream_client_error.log"} // 其余 4xx，包括 422/429
 )
 
 const defaultLogDir = "logs"
@@ -106,6 +107,9 @@ func logUpstreamError(endpoint string, statusCode int, model string, accountID i
 		badRequestLogger.writeEntry(endpoint, statusCode, model, accountID, body)
 	case statusCode >= 500:
 		serverErrorLogger.writeEntry(endpoint, statusCode, model, accountID, body)
+	case statusCode > 400:
+		// 只写提取后的原因与响应形态，不写可能回显请求输入的原始正文。
+		upstreamClientErrorLogger.writeEntry(endpoint, statusCode, model, accountID, upstreamClientErrorLogRecord(body))
 	}
 }
 
@@ -113,4 +117,5 @@ func logUpstreamError(endpoint string, statusCode int, model string, accountID i
 func CloseErrorLogger() {
 	badRequestLogger.close()
 	serverErrorLogger.close()
+	upstreamClientErrorLogger.close()
 }

@@ -777,6 +777,11 @@ func usageLogErrorMessageImpl(statusCode int, body []byte, trustedText bool) str
 		}
 	}
 
+	if message == "" && gjson.ValidBytes(body) {
+		// String-valued detail/error and 422 detail arrays (loc/msg only).
+		message, _, _ = upstreamErrorFields(body)
+	}
+
 	if message == "" {
 		// HTML and plain-text provider pages routinely contain request IDs,
 		// internal routing details or echoed credentials. They are not an API
