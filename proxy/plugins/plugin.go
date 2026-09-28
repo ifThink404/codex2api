@@ -166,6 +166,30 @@ func DefaultOverrideCredentialKey(pluginID string) string {
 	return "transport_plugin_" + pluginID + "_enabled"
 }
 
+// Services is the core plumbing a plugin must use for its upstream calls so
+// they are routed, audited and billed exactly like native requests. Core
+// installs it once (Registry.SetServices); Route.Execute puts it on ReqEnv.
+type Services interface {
+	// HTTPClient returns the pooled client for account/proxyURL (the Resin
+	// client when Resin is enabled) and the rewrite core applies to upstream
+	// URLs (Resin reverse proxy; identity otherwise).
+	HTTPClient(account *auth.Account, proxyURL string) (*http.Client, func(url string) string)
+	// PrepareRequest applies core's per-account request decoration (the Resin
+	// account header) to an upstream request.
+	PrepareRequest(req *http.Request, account *auth.Account)
+	// Do sends req and records the upstream trace (request ID, proxy label)
+	// against the attempt's account, like the native executor.
+	Do(client *http.Client, req *http.Request, account *auth.Account, proxyURL string) (*http.Response, error)
+	// RecordUserAgent records the final outbound User-Agent for usage logs.
+	RecordUserAgent(ctx context.Context, userAgent string)
+	// ConsumeModelQuota charges the API key's per-model request quota; call
+	// it once per upstream inference request, before sending.
+	ConsumeModelQuota(ctx context.Context, model string) error
+	// RecycleClient drops a pooled client after a transport error that
+	// poisons connections.
+	RecycleClient(account *auth.Account, proxyURL string, err error)
+}
+
 // Attempt is what Select sees for one upstream attempt.
 type Attempt struct {
 	Request *Request
@@ -197,6 +221,8 @@ type ReqEnv struct {
 	Attempt int
 	// Config is the plugin's config object from the active snapshot.
 	Config json.RawMessage
+	// Services is the core plumbing for upstream calls (see Services).
+	Services Services
 
 	state map[string]any
 }

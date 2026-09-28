@@ -259,3 +259,31 @@ func TestBPSAttachmentFallbackRequiresOptInAndBinaries(t *testing.T) {
 	bpsConverterProbe.installed = false
 	require.False(t, bpsAttachmentFallbackEnabled(), "never active without the converter binaries")
 }
+
+// The connection-test hook follows the account setting in auto mode and an
+// explicit mode otherwise, without changing the account.
+func TestExecuteCodexConnectionTestModes(t *testing.T) {
+	f := newBPSHandlerFixture(t, nil)
+	payload := []byte(`{"model":"gpt-5.5","stream":true,"input":"hi"}`)
+	run := func(mode string) {
+		t.Helper()
+		ctx, err := WithCodexTestMode(context.Background(), mode)
+		require.NoError(t, err)
+		resp, err := ExecuteCodexConnectionTest(ctx, f.account, payload, "")
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	run("auto")
+	require.EqualValues(t, 1, f.native.Load(), "BPS is off for this account")
+	run("bps")
+	require.EqualValues(t, 1, f.bps.Load(), "explicit BPS test mode reaches BPS")
+	_, overridden := f.account.TransportPluginOverride(BPSPluginID)
+	require.False(t, overridden, "a test mode never writes the account")
+	on := true
+	f.store.ApplyAccountTransportPluginOverride(f.account.ID(), BPSPluginID, &on)
+	run("auto")
+	require.EqualValues(t, 2, f.bps.Load())
+	run("codex")
+	require.EqualValues(t, 2, f.native.Load(), "explicit Codex mode stays native")
+}

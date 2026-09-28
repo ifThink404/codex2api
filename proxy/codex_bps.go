@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/proxy/plugins"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -240,7 +241,7 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 // validation/finalization passes (group A) are dropped, the native request
 // headers come from the raw downstream headers instead of a fingerprint, and
 // transport diagnostics go to the plugin capture store and upstream trace.
-func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, cacheKey, proxyOverride, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, compact bool) (*http.Response, error) {
+func executeCodexBPS(ctx context.Context, svc plugins.Services, account *auth.Account, body []byte, cacheKey, proxyOverride, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, compact bool) (*http.Response, error) {
 	ctx, releasePreparation := withBPSAttachmentPreparation(ctx)
 	defer releasePreparation()
 	ctx = withBPSUploadRequest(ctx)
@@ -300,11 +301,8 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	if compact {
 		endpoint += "/compact"
 	}
-	client := getPooledClient(account, proxyURL)
-	if IsResinEnabled() {
-		endpoint = BuildReverseProxyURL(endpoint)
-		client = getResinHTTPClient(account)
-	}
+	client, rewriteURL := svc.HTTPClient(account, proxyURL)
+	endpoint = rewriteURL(endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(projected))
 	if err != nil {
 		return nil, ErrInternalError("创建 BPS 请求失败", err)
@@ -317,12 +315,10 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	applyCodexBPSHeadersForProfile(req.Header, account, accessToken, cacheKey, compact, profile)
 	// The shared Codex profile was audited before the BPS headers replaced it.
 	// Persist the final UA used by both attachment uploads and inference.
-	RecordUpstreamUserAgent(ctx, req.Header.Get("User-Agent"))
-	if IsResinEnabled() {
-		req.Header.Set("X-Resin-Account", ResinAccountID(account))
-	}
+	svc.RecordUserAgent(ctx, req.Header.Get("User-Agent"))
+	svc.PrepareRequest(req, account)
 	// Charge the requested model quota before sending upstream.
-	if err := ConsumeAPIKeyModelRequestQuota(ctx, diagnostic.RequestedModel); err != nil {
+	if err := svc.ConsumeModelQuota(ctx, diagnostic.RequestedModel); err != nil {
 		return nil, err
 	}
 	originalProjected, requestHeaders := projected, req.Header.Clone()
@@ -376,16 +372,14 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		// BPS timing (fj recorded it inside its transport observer).
 		diagnostic.Timing.startInference(time.Now())
 		traced, network := traceBPSHTTP(req)
-		resp, sendErr := doTracedUpstreamRequest(client, traced, account, proxyURL)
+		resp, sendErr := svc.Do(client, traced, account, proxyURL)
 		phases := network.finish(sendErr)
 		diagnostic.Timing.update(func(v *bpsTimingValues) { v.LastInferenceHTTP = phases })
 		if resp != nil {
 			diagnostic.Timing.receivedHeaders(time.Now())
 		}
 		if sendErr != nil {
-			if shouldRecyclePooledClient(sendErr) {
-				recyclePooledClient(account, proxyURL)
-			}
+			svc.RecycleClient(account, proxyURL, sendErr)
 			return nil, ErrUpstream(0, "请求上游失败", sendErr)
 		}
 		if attempt == 0 && invalidateMissingBPSAttachments(resp, used) {

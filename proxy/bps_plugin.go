@@ -349,7 +349,7 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		endpoint += "/compact"
 	}
 	env.Request.SetUsageUpstreamEndpoint(BPSPluginID, endpoint)
-	resp, err := executeCodexBPS(ctx, env.Account, env.Body, env.CacheKey, env.ProxyURL, env.APIKey, deviceCfg, env.Header, env.Compact)
+	resp, err := executeCodexBPS(ctx, pluginServices(env), env.Account, env.Body, env.CacheKey, env.ProxyURL, env.APIKey, deviceCfg, env.Header, env.Compact)
 	if d := bpsAttemptDiagnostic(env); d != nil {
 		meta := map[string]string{"profile": string(d.Profile)}
 		for _, identity := range []*bpsWordIdentityDiagnostic{d.TurnConvergence, d.RoundConvergence, d.FullConvergence, d.WordIdentity} {

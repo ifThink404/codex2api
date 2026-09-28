@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -126,6 +127,58 @@ func TestNewCodexAccountCredentialsLeaveBPSUnset(t *testing.T) {
 	for _, key := range codexBPSCredentialKeys {
 		if _, ok := creds[key]; ok {
 			t.Fatalf("import wrote BPS key %s", key)
+		}
+	}
+}
+
+// A BPS toggle saved through one replica reaches another replica's live
+// account through the scheduler outbox, without a restart.
+func TestCodexBPSToggleReachesOtherReplica(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	id := insertTestAccount(t, db)
+	settings := &database.SystemSettings{MaxConcurrency: 1, SchedulerEngine: "indexed"}
+	local, remote := auth.NewStore(db, nil, settings), auth.NewStore(db, nil, settings)
+	t.Cleanup(func() { local.Stop(); remote.Stop() })
+	for _, store := range []*auth.Store{local, remote} {
+		if err := store.Init(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if local.FindByID(id) == nil || remote.FindByID(id) == nil {
+		t.Fatal("account not loaded on both replicas")
+	}
+	h := &Handler{db: db, store: local}
+	for _, body := range []string{`{"codex_bps_enabled":true,"codex_bps_profile":"powerpoint"}`, `{"codex_bps_enabled":false}`, `{"codex_bps_enabled":null}`} {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(id, 10)}}
+		c.Request = httptest.NewRequest(http.MethodPatch, "/api/admin/accounts/1/scheduler", strings.NewReader(body))
+		h.UpdateAccountScheduler(c)
+		if rec.Code != 200 {
+			t.Fatalf("%s: status=%d %s", body, rec.Code, rec.Body.String())
+		}
+		var want map[string]any
+		_ = json.Unmarshal([]byte(body), &want)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			enabled, ok := remote.FindByID(id).TransportPluginOverride(proxy.BPSPluginID)
+			converged := false
+			switch want["codex_bps_enabled"] {
+			case nil:
+				converged = !ok
+			case true:
+				converged = ok && enabled && remote.FindByID(id).EffectiveCodexBPSProfile() == auth.BPSPowerPoint
+			case false:
+				converged = ok && !enabled
+			}
+			if converged {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s did not reach the other replica", body)
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 }

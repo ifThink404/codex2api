@@ -10,12 +10,16 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy/plugins"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // wiringPlugin is a no-op transport that proves the core hooks: it answers
@@ -95,6 +99,7 @@ func invokeTracedResponses(t *testing.T, handler *Handler, body string) *httptes
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	attachUpstreamTrace(ctx, handler.store)
+	ctx.Request = ctx.Request.WithContext(withUserAgentAudit(ctx.Request.Context()))
 	handler.Responses(ctx)
 	return recorder
 }
@@ -219,4 +224,122 @@ func TestResponsesCompactTransportPluginServesAttempt(t *testing.T) {
 	if plugin.executes.Load() != 1 || nativeCalls.Load() != 0 || env == nil || !env.Compact {
 		t.Fatalf("plugin executes=%d native=%d env=%+v", plugin.executes.Load(), nativeCalls.Load(), env)
 	}
+}
+
+// servicesPlugin performs its upstream call only through env.Services, as a
+// plugin outside this package must.
+type servicesPlugin struct {
+	wiringPlugin
+	sawServices atomic.Bool
+}
+
+func (p *servicesPlugin) Describe() plugins.Meta {
+	return plugins.Meta{Name: "services", Kinds: []plugins.RequestKind{plugins.KindResponses}}
+}
+
+func (p *servicesPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Response, error) {
+	p.executes.Add(1)
+	svc := env.Services
+	p.sawServices.Store(svc != nil)
+	if svc == nil {
+		return nil, context.Canceled
+	}
+	if err := svc.ConsumeModelQuota(ctx, env.Model); err != nil {
+		return nil, err
+	}
+	client, rewrite := svc.HTTPClient(env.Account, env.ProxyURL)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, rewrite("https://plugin.example/responses"), bytes.NewReader(env.Body))
+	req.Header.Set("User-Agent", "PluginAgent/1")
+	svc.PrepareRequest(req, env.Account)
+	svc.RecordUserAgent(ctx, req.Header.Get("User-Agent"))
+	return svc.Do(client, req, env.Account, env.ProxyURL)
+}
+
+func TestTransportPluginServicesAuditLikeNative(t *testing.T) {
+	t.Setenv("CODEX_TRANSPORT_MODE", "standard")
+	handler, db, _, nativeCalls := newTransportPluginTestHandler(t, true)
+	registry := plugins.NewRegistry()
+	plugin := &servicesPlugin{}
+	registry.Register(plugin)
+	require.NoError(t, registry.Attach(context.Background(), db))
+	previous := plugins.SwapDefault(registry)
+	t.Cleanup(func() { plugins.SwapDefault(previous) })
+	require.NoError(t, registry.Save(context.Background(), database.TransportPluginState{ID: plugin.ID(), Enabled: true}))
+
+	previousResin := resinCfg.Load()
+	SetResinConfig(nil)
+	t.Cleanup(func() { SetResinConfig(previousResin) })
+	account := handler.store.FindByID(1)
+	var sentUA string
+	installClaudeBoundaryTransport(t, account, func(r *http.Request) (*http.Response, error) {
+		sentUA = r.Header.Get("User-Agent")
+		sse := "data: " + `{"type":"response.completed","response":{"id":"resp_s","status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}` + "\n\n"
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}, "X-Request-Id": {"req-upstream-7"}}, Body: io.NopCloser(strings.NewReader(sse)), Request: r}, nil
+	})
+	recorder := invokeTracedResponses(t, handler, `{"model":"gpt-5.5","stream":true,"input":"hi"}`)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.True(t, plugin.sawServices.Load(), "Route.Execute hands the plugin the core services")
+	require.Zero(t, nativeCalls.Load())
+	require.Equal(t, "PluginAgent/1", sentUA, "the pooled client for the account carried the request")
+	row := onlyUsageLog(t, db)
+	require.Equal(t, plugin.ID(), row.Transport)
+	require.Equal(t, "PluginAgent/1", row.UpstreamUserAgent, "UA audit")
+	require.Equal(t, "req-upstream-7", row.UpstreamRequestID, "trace begin/finish recorded the upstream request id")
+}
+
+func dialPluginWS(t *testing.T, handler *Handler) *websocket.Conn {
+	t.Helper()
+	router := gin.New()
+	router.GET("/v1/responses", handler.ResponsesWebSocket)
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// A plugin serving a downstream WebSocket turn runs over HTTP through the
+// plugin; the native WS executor is never used, and Admissible still vetoes.
+func TestResponsesWebSocketTurnUsesTransportPlugin(t *testing.T) {
+	previousExec := WebsocketExecuteFunc
+	var wsCalls atomic.Int32
+	WebsocketExecuteFunc = func(context.Context, *auth.Account, []byte, string, string, string, *DeviceProfileConfig, http.Header, string) (*http.Response, error) {
+		wsCalls.Add(1)
+		return nil, context.Canceled
+	}
+	t.Cleanup(func() { WebsocketExecuteFunc = previousExec })
+	handler, db, plugin, nativeCalls := newTransportPluginTestHandler(t, true)
+
+	conn := dialPluginWS(t, handler)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.5","input":"hello"}`)))
+	for {
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+		_, frame, err := conn.ReadMessage()
+		require.NoError(t, err)
+		kind := gjson.GetBytes(frame, "type").String()
+		require.NotContains(t, kind, "plugin.", "frames are transformed before the client sees them")
+		if kind == "response.completed" {
+			break
+		}
+	}
+	require.EqualValues(t, 1, plugin.executes.Load())
+	require.Zero(t, wsCalls.Load())
+	require.Zero(t, nativeCalls.Load())
+	require.Eventually(t, func() bool {
+		db.FlushUsageLogs()
+		logs, err := db.ListRecentUsageLogs(context.Background(), 5)
+		return err == nil && len(logs) == 1 && logs[0].Transport == plugin.ID()
+	}, 3*time.Second, 20*time.Millisecond, "WS turn usage row carries the plugin transport")
+
+	plugin.vetoed.Store(true)
+	vetoed := dialPluginWS(t, handler)
+	require.NoError(t, vetoed.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.5","input":"again"}`)))
+	require.NoError(t, vetoed.SetReadDeadline(time.Now().Add(3*time.Second)))
+	_, frame, err := vetoed.ReadMessage()
+	if err == nil {
+		require.NotEqual(t, "response.completed", gjson.GetBytes(frame, "type").String())
+	}
+	require.EqualValues(t, 1, plugin.executes.Load(), "the only account is vetoed on the WS path too")
+	require.Zero(t, wsCalls.Load())
 }

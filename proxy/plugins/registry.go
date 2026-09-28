@@ -44,6 +44,24 @@ type Registry struct {
 	store   StateStore
 
 	capture *captureWriter
+
+	services atomic.Pointer[Services]
+}
+
+// SetServices installs the core plumbing handed to every Execute.
+func (r *Registry) SetServices(services Services) {
+	if services == nil {
+		r.services.Store(nil)
+		return
+	}
+	r.services.Store(&services)
+}
+
+func (r *Registry) currentServices() Services {
+	if s := r.services.Load(); s != nil {
+		return *s
+	}
+	return nil
 }
 
 func NewRegistry() *Registry {
@@ -373,6 +391,9 @@ func (rt *Route) Execute(ctx context.Context, env ReqEnv) (*http.Response, error
 		env.Attempt = rt.attempt.Index
 	}
 	env.Config = rt.state.Config
+	if env.Services == nil {
+		env.Services = rt.registry.currentServices()
+	}
 	rec := rt.registry.capture.begin(rt.state, &env)
 	rec.request(&env)
 	resp, err := rt.plugin.Execute(ctx, &env)
@@ -402,5 +423,10 @@ func (rt *Route) Execute(ctx context.Context, env ReqEnv) (*http.Response, error
 // SwapDefault replaces the process-wide registry and returns the previous
 // one. It exists for tests that exercise core wiring with test plugins.
 func SwapDefault(r *Registry) *Registry {
+	if previous := defaultRegistry.Load(); previous != nil && r.currentServices() == nil {
+		if s := previous.currentServices(); s != nil {
+			r.SetServices(s)
+		}
+	}
 	return defaultRegistry.Swap(r)
 }
