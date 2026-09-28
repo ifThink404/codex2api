@@ -428,7 +428,8 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 		ownerGroups, oldUpstreamID, groupsKnown = plan.MissingOwner.Groups, plan.MissingOwner.UpstreamID, plan.MissingOwner.GroupsKnown
 	}
 	selection := &database.SessionFailoverSelection{MatchMode: "exact_groups"}
-	matchGroups := !CurrentRuntimeSettings().CodexForkAccountFallbackEnabled
+	relaxedMode := CurrentRuntimeSettings().CodexForkAccountFallbackEnabled
+	matchGroups := !relaxedMode
 	if !groupsKnown {
 		selection.MatchMode = "request_scope_missing_owner"
 	}
@@ -484,7 +485,10 @@ func (handler *Handler) takeSessionAccountFailover(ctx context.Context, key stri
 			trace.RejectAccount(account.ID(), "window_grant_capacity_mismatch")
 			return false
 		}
-		if account.IsRelayStyle() || account.EffectiveAccountID() == "" || account.ID() != oldID && account.EffectiveAccountID() == oldUpstreamID {
+		// Different credentials can share a workspace. Relaxed mode may switch
+		// between those records through the normal ownership/epoch transition.
+		upstreamID := account.EffectiveAccountID()
+		if account.IsRelayStyle() || upstreamID == "" || !relaxedMode && account.ID() != oldID && upstreamID == oldUpstreamID {
 			trace.RejectAccount(account.ID(), "account_identity_ineligible")
 			return false
 		}
