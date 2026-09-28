@@ -5,6 +5,32 @@ import (
 	"time"
 )
 
+// ClearAccountErrorIfUnchanged removes the failure observed at successful
+// credential refresh. A newer cooldown/error or an administrative pause is not
+// overwritten. Both SQLite and PostgreSQL compare and update in one statement.
+func (db *DB) ClearAccountErrorIfUnchanged(ctx context.Context, id int64, reason string, until time.Time, message string) (bool, error) {
+	var cleared bool
+	untilClause := "cooldown_until IS NULL"
+	args := []any{id, reason, message}
+	if !until.IsZero() {
+		untilClause = "cooldown_until=$4"
+		args = append(args, until)
+	}
+	err := db.withSQLiteWriteLock(ctx, func() error {
+		result, err := db.conn.ExecContext(ctx, `UPDATE accounts
+			SET status='active',error_message='',cooldown_reason='',cooldown_until=NULL,updated_at=CURRENT_TIMESTAMP
+			WHERE id=$1 AND COALESCE(cooldown_reason,'')=$2
+			AND COALESCE(error_message,'')=$3 AND status IN ('active','error') AND `+untilClause, args...)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		cleared = rows > 0
+		return err
+	})
+	return cleared, err
+}
+
 // UpdateUsageSnapshot5h 持久化 5h 用量快照（无 7d 数据时使用）
 func (db *DB) UpdateUsageSnapshot5h(ctx context.Context, id int64, pct5h float64, reset5hAt time.Time, updatedAt time.Time) error {
 	return db.UpdateCredentials(ctx, id, map[string]interface{}{

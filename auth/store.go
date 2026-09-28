@@ -12035,11 +12035,7 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 	rt := acc.RefreshToken
 	st := acc.SessionToken
 	dbID := acc.DBID
-	cooldownUntil := acc.CooldownUtil
-	cooldownReason := acc.CooldownReason
 	now := time.Now()
-	activeCooldown := acc.Status == StatusCooldown && now.Before(acc.CooldownUtil)
-	expiredCooldown := acc.Status == StatusCooldown && !now.Before(acc.CooldownUtil)
 	acc.mu.RUnlock()
 
 	// 同一个 OAuth 登录凭据可以派生多个工作区路由。先按 RT 获取跨实例
@@ -12065,8 +12061,7 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 		if changed {
 			lease.Release()
 			if !forceRefresh && usable {
-				s.finishReloadedOAuthRefresh(ctx, acc)
-				return nil
+				return s.finishReloadedCodexRefresh(ctx, acc)
 			}
 			continue
 		}
@@ -12083,30 +12078,9 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 		cachedToken, err = s.tokenCache.GetAccessToken(ctx, dbID)
 	}
 	if cachedToken != "" {
-		acc.mu.Lock()
-		acc.AccessToken = cachedToken
-		if acc.ExpiresAt.IsZero() || time.Until(acc.ExpiresAt) < 5*time.Minute {
-			acc.ExpiresAt = time.Now().Add(30 * time.Minute)
+		if used, reuseErr := s.reuseCodexRefreshToken(ctx, acc, cachedToken, 30*time.Minute); used {
+			return reuseErr
 		}
-		if activeCooldown {
-			acc.Status = StatusCooldown
-			acc.CooldownUtil = cooldownUntil
-			acc.CooldownReason = cooldownReason
-		} else {
-			acc.Status = StatusReady
-			acc.CooldownUtil = time.Time{}
-			acc.CooldownReason = ""
-		}
-		acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-		acc.mu.Unlock()
-		s.fastSchedulerUpdate(acc)
-		if expiredCooldown {
-			s.deleteCachedAccountCooldown(dbID)
-			_ = s.db.ClearCooldown(ctx, dbID)
-		} else if !activeCooldown && s.db != nil {
-			_ = s.db.ClearError(ctx, dbID)
-		}
-		return nil
 	}
 
 	// 2. 获取刷新锁
@@ -12119,28 +12093,9 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 			// 另一个进程在刷新，等待它完成
 			token, waitErr := s.tokenCache.WaitForRefreshComplete(ctx, dbID, 30*time.Second)
 			if !forceRefresh && waitErr == nil && token != "" {
-				acc.mu.Lock()
-				acc.AccessToken = token
-				acc.ExpiresAt = time.Now().Add(55 * time.Minute)
-				if activeCooldown {
-					acc.Status = StatusCooldown
-					acc.CooldownUtil = cooldownUntil
-					acc.CooldownReason = cooldownReason
-				} else {
-					acc.Status = StatusReady
-					acc.CooldownUtil = time.Time{}
-					acc.CooldownReason = ""
+				if used, reuseErr := s.reuseCodexRefreshToken(ctx, acc, token, 55*time.Minute); used {
+					return reuseErr
 				}
-				acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-				acc.mu.Unlock()
-				s.fastSchedulerUpdate(acc)
-				if expiredCooldown && s.db != nil {
-					s.deleteCachedAccountCooldown(dbID)
-					_ = s.db.ClearCooldown(ctx, dbID)
-				} else if !activeCooldown && s.db != nil {
-					_ = s.db.ClearError(ctx, dbID)
-				}
-				return nil
 			}
 			if forceRefresh {
 				if waitErr != nil {
@@ -12224,8 +12179,6 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 	}
 	acc.SessionToken = st
 	acc.ExpiresAt = td.ExpiresAt
-	acc.ErrorMsg = ""
-	acc.PermanentRefreshFailures = 0
 	if info != nil {
 		if info.ChatGPTAccountID != "" {
 			acc.AccountID = info.ChatGPTAccountID
@@ -12255,15 +12208,7 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 			subExpCredentialSet = true
 		}
 	}
-	if activeCooldown {
-		acc.Status = StatusCooldown
-		acc.CooldownUtil = cooldownUntil
-		acc.CooldownReason = cooldownReason
-	} else {
-		acc.Status = StatusReady
-		acc.CooldownUtil = time.Time{}
-		acc.CooldownReason = ""
-	}
+	recovery := acc.recoverCodexRefreshLocked(time.Now())
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	if appliedPlanType != "" {
@@ -12314,18 +12259,7 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 		log.Printf("[账号 %d] 更新数据库失败: %v", dbID, err)
 	}
 	s.propagateSharedOAuthCredentials(ctx, acc, rt, td, credentials, ttl)
-	if err := s.db.ClearError(ctx, dbID); err != nil {
-		log.Printf("[账号 %d] 清理错误状态失败: %v", dbID, err)
-	}
-
-	if expiredCooldown {
-		s.deleteCachedAccountCooldown(dbID)
-		if err := s.db.ClearCooldown(ctx, dbID); err != nil {
-			log.Printf("[账号 %d] 清理过期冷却状态失败: %v", dbID, err)
-		}
-	}
-
-	return nil
+	return s.persistCodexRefreshRecovery(ctx, acc, recovery)
 }
 
 func antigravityCredentialFromStoreRow(row *database.AccountRow) AntigravityCredential {
@@ -12764,7 +12698,8 @@ func (s *Store) RefreshAntigravityAccount(ctx context.Context, acc *Account) err
 
 // propagateSharedOAuthCredentials 将一次成功刷新得到的新凭据同步给使用同一旧 RT
 // 的兄弟工作区路由。只同步认证材料和 Token 原生身份；每条路由自己的
-// Chatgpt-Account-Id、代理、分组、用量、冷却和调度配置保持不变。
+// Chatgpt-Account-Id、代理、分组、用量、额度冷却和调度配置保持不变；
+// Codex 路由上旧凭据引起的授权失败随新凭据一起恢复。
 func (s *Store) propagateSharedOAuthCredentials(
 	ctx context.Context,
 	source *Account,
@@ -12802,7 +12737,12 @@ func (s *Store) propagateSharedOAuthCredentials(
 			sibling.SessionToken = sessionToken
 		}
 		sibling.ExpiresAt = td.ExpiresAt
-		sibling.ErrorMsg = ""
+		var recovery codexRefreshRecovery
+		if sibling.UpstreamType == "" || sibling.UpstreamType == "codex" {
+			recovery = sibling.recoverCodexRefreshLocked(time.Now())
+		} else {
+			sibling.ErrorMsg = ""
+		}
 		if sourceAccountID != "" {
 			sibling.AccountID = sourceAccountID
 		}
@@ -12824,6 +12764,9 @@ func (s *Store) propagateSharedOAuthCredentials(
 		}
 		if s.tokenCache != nil && ttl > 0 {
 			_ = s.tokenCache.SetAccessToken(ctx, sibling.DBID, td.AccessToken, ttl)
+		}
+		if err := s.persistCodexRefreshRecovery(ctx, sibling, recovery); err != nil {
+			log.Printf("[账号 %d] %v", sibling.DBID, err)
 		}
 		log.Printf("[账号 %d] 已同步账号 %d 刷新的共享 OAuth 凭据，工作区路由保持独立", sibling.DBID, sourceID)
 	}

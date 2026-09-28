@@ -366,6 +366,7 @@ func (s *Store) reloadOAuthCredentialsAfterLock(
 	expiresAt := parseOAuthCredentialExpiry(row.GetCredential("expires_at"))
 
 	acc.mu.Lock()
+	rejectedCodexToken := (acc.UpstreamType == "" || acc.UpstreamType == "codex") && acc.codexAuthorizationRejectedLocked() && !accessChanged
 	if refreshToken != "" {
 		acc.RefreshToken = refreshToken
 	}
@@ -391,7 +392,7 @@ func (s *Store) reloadOAuthCredentialsAfterLock(
 	effectiveExpiresAt := acc.ExpiresAt
 	acc.mu.Unlock()
 
-	usable = effectiveAccessToken != "" &&
+	usable = !rejectedCodexToken && effectiveAccessToken != "" &&
 		(effectiveExpiresAt.IsZero() || time.Until(effectiveExpiresAt) > 5*time.Minute)
 	return true, usable, nil
 }
