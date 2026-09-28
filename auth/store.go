@@ -220,6 +220,10 @@ type Account struct {
 	// CodexBPS selects the BPS transport for this account's Responses requests.
 	// It is deliberately account-scoped so native Codex remains the default.
 	CodexBPS bool
+	// transportPluginOverrides holds per-account transport plugin overrides
+	// (plugin ID -> forced on/off) read from registered credential keys; see
+	// transport_plugins.go. Guarded by mu.
+	transportPluginOverrides map[string]bool
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
@@ -5707,6 +5711,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ExcelBPSEnabled:              row.GetCredentialBool(ExcelBPSCredentialKey),
 		Timezone:                     accountTimezone,
 		CodexBPS:                     row.GetCredentialBool(CodexBPSEnabledCredentialKey),
+		transportPluginOverrides:     transportPluginOverridesFromRow(row),
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
 		ClaudeBaseURL:                row.GetCredential(ClaudeBaseURLCredentialKey),
