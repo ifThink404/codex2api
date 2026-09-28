@@ -871,7 +871,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			stickyRetry := continuousRetryBuffersAttempts(continuousRetryPolicy) &&
 				h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
 			if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
 			if retryable && !stickyRetry {
@@ -990,7 +990,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 			}
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			// Claude 的 429 credits_required 是模型级计费门槛:只冷却该模型,不按账号级限流处理
 			// (否则会连累该号的其它可用模型)。命中则跳过账号级用量/限流同步。
@@ -1009,7 +1009,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
+			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
@@ -1177,7 +1177,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					applyUsageCacheWritesToLog(&retryLog, usage)
 				}
 				h.logUsageForRequest(c, &retryLog)
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.Release(account)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 				retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
@@ -1239,7 +1239,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			}
 			h.logUsageForRequest(c, logInput)
 			if outcome.penalize {
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			} else if outcome.logStatusCode == http.StatusOK {
 				h.store.ClearModelCooldown(account, attemptEffectiveModel)
@@ -1543,7 +1543,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			// 否则该账号会保持高分继续被调度（与 /v1/responses 路径保持一致）。
 			var responseFailedDecision codex429Decision
 			if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
-				responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)
+				responseFailedDecision = h.applyAttemptResponseFailedCooldown(c, account, terminalFailurePayload, resp, attemptEffectiveModel)
 			}) {
 				outcome = applyResponseFailedDecisionKind(outcome, terminalFailurePayload, responseFailedDecision)
 			} else {
@@ -1583,7 +1583,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 			} else {
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			}
 			resp.Body.Close()
 			h.store.Release(account)
@@ -1711,7 +1711,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		}
 		if outcome.penalize {
 			recyclePooledClient(account, proxyURL)
-			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+			h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		} else if outcome.logStatusCode == http.StatusOK {
 			h.store.ClearModelCooldown(account, attemptEffectiveModel)

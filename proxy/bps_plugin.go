@@ -39,7 +39,16 @@ type BPSConfig struct {
 	AttachmentInstanceConcurrency   int    `json:"attachment_instance_concurrency,omitempty"`
 	AttachmentAccountConcurrency    int    `json:"attachment_account_concurrency,omitempty"`
 	Attachment429Fallback           bool   `json:"attachment_429_fallback,omitempty"`
-	ExcludeFailuresFromNativeHealth bool   `json:"exclude_failures_from_native_health,omitempty"`
+	// ExcludeFailuresFromNativeHealth keeps BPS failures out of native
+	// account health and cooldown. Absent means on, matching upstream's
+	// official BPS, which never reports its provider failures.
+	ExcludeFailuresFromNativeHealth *bool `json:"exclude_failures_from_native_health,omitempty"`
+}
+
+// SparesNativeHealth reports whether BPS failures stay out of native account
+// health and cooldown.
+func (c BPSConfig) SparesNativeHealth() bool {
+	return c.ExcludeFailuresFromNativeHealth == nil || *c.ExcludeFailuresFromNativeHealth
 }
 
 func (c BPSConfig) normalized() BPSConfig {
@@ -120,6 +129,9 @@ func (bpsPlugin) ValidateConfig(raw json.RawMessage) error {
 	_, err := parseBPSConfig(raw)
 	return err
 }
+
+// SparesNativeHealth follows exclude_failures_from_native_health.
+func (bpsPlugin) SparesNativeHealth() bool { return currentBPSConfig().SparesNativeHealth() }
 
 func (bpsPlugin) Migrate(ctx context.Context, db *database.DB) error {
 	return db.MigrateBPSPlugin(ctx)

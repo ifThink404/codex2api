@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_VIEWS, bpsConfigFields, captureIdFromEvidence, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { PLUGIN_VIEWS, bpsConfigFields, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -30,6 +30,16 @@ test('BPS config form covers every server config key', () => {
   const configBlock = server.slice(server.indexOf('type BPSConfig struct'), server.indexOf('func (c BPSConfig) normalized'))
   const serverKeys = keys.filter(key => configBlock.includes(`json:"${key},`))
   assert.deepEqual(bpsConfigFields.map(field => field.key).sort(), serverKeys.sort())
+})
+
+test('boolean config fields show the server default when absent', () => {
+  const exclude = bpsConfigFields.find(field => field.key === 'exclude_failures_from_native_health')
+  const fallback = bpsConfigFields.find(field => field.key === 'attachment_429_fallback')
+  assert.equal(pluginConfigBoolean({}, exclude), true, 'native-health exclusion defaults on, as on the server')
+  assert.equal(pluginConfigBoolean({ exclude_failures_from_native_health: false }, exclude), false)
+  assert.equal(pluginConfigBoolean({}, fallback), false, 'the 429 fallback defaults off')
+  const server = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
+  assert.match(server, /ExcludeFailuresFromNativeHealth == nil \|\| \*c\.ExcludeFailuresFromNativeHealth/)
 })
 
 test('plugin pages are routed, in the nav, and use shared components and the plugin API', () => {

@@ -16,6 +16,7 @@ import { isBPSAccount, type BPSTriState } from '../lib/bpsAccount'
 import {
   PLUGIN_VIEWS,
   bpsConfigFields,
+  pluginConfigBoolean,
   captureIdFromEvidence,
   pluginCaptureAgentFilters,
   pluginCaptureSource,
@@ -279,7 +280,7 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
                 ) : field.kind === 'boolean' ? (
                   <div className="flex h-9 items-center">
                     <Switch
-                      checked={config[field.key] === true}
+                      checked={pluginConfigBoolean(config, field)}
                       onCheckedChange={(value) => setConfig((prev) => ({ ...prev, [field.key]: value }))}
                       disabled={saving}
                       aria-label={t(`plugins.bpsConfig.${field.key}`)}

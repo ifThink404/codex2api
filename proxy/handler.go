@@ -4389,7 +4389,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 				stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
 				if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
-					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+					h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
 				if retryable && !stickyRetry {
@@ -4493,7 +4493,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 
 				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
-					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+					h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
@@ -4505,7 +4505,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
 					AccountID: account.ID(), AttemptIndex: attempt + 1,
 				}))
-				decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
+				decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
 				shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				usageTiers := resolveUsageServiceTiers("", serviceTier)
 				h.logUsageForRequest(c, &database.UsageLogInput{
@@ -4602,7 +4602,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				if shouldTransparentRetryStreamWithBudgets(outcome, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, downstreamWrote, c.Request.Context().Err(), nil, continuousRetryPolicy) {
 					rememberContinuousRetryStreamFailure(c.Request.Context(), outcome, outcome.failurePayload)
 					_ = streamAttempt.Close()
-					h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+					h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 					h.store.Release(account)
 					h.store.UnbindSessionAffinity(affinityKey, account.ID())
 					retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
@@ -4662,7 +4662,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				h.logUsageForRequest(c, logInput)
 				if outcome.penalize {
-					h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+					h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 					h.store.UnbindSessionAffinity(affinityKey, account.ID())
 				} else if outcome.logStatusCode == http.StatusOK {
 					h.store.ClearModelCooldown(account, attemptEffectiveModel)
@@ -4901,7 +4901,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 				outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 				if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
-					responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)
+					responseFailedDecision = h.applyAttemptResponseFailedCooldown(c, account, terminalFailurePayload, resp, attemptEffectiveModel)
 				}) {
 					outcome = applyResponseFailedDecisionKind(outcome, terminalFailurePayload, responseFailedDecision)
 				} else {
@@ -4941,7 +4941,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				if isFirstTokenTimeoutOutcome(outcome) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 				} else {
-					h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+					h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				}
 				resp.Body.Close()
 				h.store.Release(account)
@@ -5086,7 +5086,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			resp.Body.Close()
 			if outcome.penalize {
 				recyclePooledClient(account, proxyURL)
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			} else if outcome.logStatusCode == http.StatusOK {
 				h.store.ClearModelCooldown(account, attemptEffectiveModel)
@@ -5178,7 +5178,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
 			if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
 			if retryable && !stickyRetry {
@@ -5281,7 +5281,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			if !accountReleasedForOverflow {
@@ -5296,7 +5296,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, effectiveModel)
+			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, effectiveModel)
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
@@ -5795,7 +5795,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 			outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 			if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
-				responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, effectiveModel)
+				responseFailedDecision = h.applyAttemptResponseFailedCooldown(c, account, terminalFailurePayload, resp, effectiveModel)
 			}) {
 				outcome = applyResponseFailedDecisionKind(outcome, terminalFailurePayload, responseFailedDecision)
 			} else {
@@ -5844,7 +5844,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 			} else {
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			}
 			resp.Body.Close()
 			h.store.Release(account)
@@ -6031,7 +6031,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		}
 		if outcome.penalize {
 			recyclePooledClient(account, proxyURL)
-			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+			h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		} else if outcome.logStatusCode == http.StatusOK {
 			h.store.ClearModelCooldown(account, effectiveModel)
@@ -6357,7 +6357,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 				retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
 				if kind := classifyTransportFailure(reqErr); retryable && shouldPenalizeTransportKind(kind) {
-					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+					h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
 				if retryable {
@@ -6411,7 +6411,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 
 				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
-					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+					h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
@@ -6422,7 +6422,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses/compact", logModel, errBody, upstreamCyberPolicyAttempt{
 					Transport: "http", StatusCode: resp.StatusCode, AccountID: account.ID(), AttemptIndex: attempt + 1,
 				}))
-				decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
+				decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
 				shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
 				usageTiers := resolveUsageServiceTiers("", serviceTier)
 				h.logUsageForRequest(c, &database.UsageLogInput{
@@ -6472,7 +6472,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					kind = "transport"
 				}
 				if retryable && shouldPenalizeTransportKind(kind) {
-					h.store.ReportRequestFailure(account, kind, time.Duration(totalDuration)*time.Millisecond)
+					h.reportAttemptFailure(c, account, kind, time.Duration(totalDuration)*time.Millisecond)
 				}
 				h.store.Release(account)
 				if retryable {
@@ -6620,7 +6620,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
 			if kind := classifyTransportFailure(reqErr); retryable && shouldPenalizeTransportKind(kind) {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
 			if retryable {
@@ -6674,7 +6674,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
@@ -6686,7 +6686,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses/compact", logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: "http", StatusCode: resp.StatusCode, AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, effectiveModel)
+			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, effectiveModel)
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
@@ -6744,7 +6744,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				kind = "transport"
 			}
 			if retryable && shouldPenalizeTransportKind(kind) {
-				h.store.ReportRequestFailure(account, kind, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(totalDuration)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
@@ -6821,7 +6821,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 			var decision codex429Decision
 			if !withContinuousRetryDeadlinePending(c.Request.Context(), func() {
-				decision = h.applyResponseFailedCooldown(account, compactFailedPayload, resp, effectiveModel)
+				decision = h.applyAttemptResponseFailedCooldown(c, account, compactFailedPayload, resp, effectiveModel)
 			}) {
 				resp.Body.Close()
 				h.store.Release(account)
@@ -6829,7 +6829,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 			failureOutcome = applyResponseFailedDecisionKind(failureOutcome, compactFailedPayload, decision)
 			if failureOutcome.penalize {
-				h.reportStreamOutcomeFailure(account, failureOutcome, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, failureOutcome, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
@@ -7327,7 +7327,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
 			if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
 			if retryable && !stickyRetry {
@@ -7403,7 +7403,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				}
 			}
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
@@ -7416,7 +7416,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				Transport: upstreamPromptPolicyTransport(isStream, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
+			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
 			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
@@ -7503,7 +7503,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if shouldTransparentRetryStreamWithBudgets(outcome, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, downstreamWrote, c.Request.Context().Err(), nil, continuousRetryPolicy) {
 				rememberContinuousRetryStreamFailure(c.Request.Context(), outcome, outcome.failurePayload)
 				_ = streamAttempt.Close()
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.Release(account)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 				retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
@@ -7560,7 +7560,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			h.logUsageForRequest(c, logInput)
 			if outcome.penalize {
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			} else if outcome.logStatusCode == http.StatusOK {
 				h.store.ClearModelCooldown(account, attemptEffectiveModel)
@@ -7881,7 +7881,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 			outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 			if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
-				responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)
+				responseFailedDecision = h.applyAttemptResponseFailedCooldown(c, account, terminalFailurePayload, resp, attemptEffectiveModel)
 			}) {
 				outcome = applyResponseFailedDecisionKind(outcome, terminalFailurePayload, responseFailedDecision)
 			} else {
@@ -7930,7 +7930,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 			} else {
-				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+				h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			}
 			resp.Body.Close()
 			h.store.Release(account)
@@ -8066,7 +8066,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		resp.Body.Close()
 		if outcome.penalize {
 			recyclePooledClient(account, proxyURL)
-			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+			h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		} else if outcome.logStatusCode == http.StatusOK {
 			h.store.ClearModelCooldown(account, attemptEffectiveModel)

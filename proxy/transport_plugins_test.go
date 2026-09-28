@@ -31,7 +31,15 @@ type wiringPlugin struct {
 	lastEnv  atomic.Pointer[plugins.ReqEnv]
 	// errorKind, when set, is recorded as the usage row's error kind.
 	errorKind string
+	// spare is the plugin's native-health policy; failStatus/failBody make
+	// Execute answer with an HTTP error, failEvent with a failed stream.
+	spare      atomic.Bool
+	failStatus int
+	failBody   string
+	failEvent  string
 }
+
+func (p *wiringPlugin) SparesNativeHealth() bool { return p.spare.Load() }
 
 func (p *wiringPlugin) ID() string { return "wiringplug" }
 func (p *wiringPlugin) Describe() plugins.Meta {
@@ -47,6 +55,13 @@ func (p *wiringPlugin) Execute(_ context.Context, env *plugins.ReqEnv) (*http.Re
 	env.Request.SetUsageMeta(p.ID(), `{"profile":"test"}`)
 	if p.errorKind != "" {
 		env.Request.SetUsageErrorKind(p.ID(), p.errorKind)
+	}
+	if p.failStatus != 0 {
+		return &http.Response{StatusCode: p.failStatus, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(p.failBody))}, nil
+	}
+	if p.failEvent != "" {
+		stream := "data: {\"type\":\"plugin.created\",\"response\":{\"id\":\"resp_p\",\"status\":\"in_progress\"}}\n\ndata: " + p.failEvent + "\n\n"
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream))}, nil
 	}
 	var body bytes.Buffer
 	for _, event := range []string{

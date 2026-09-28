@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"net/http"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -139,4 +141,78 @@ func populateTransportPluginUsage(c *gin.Context, input *database.UsageLogInput)
 		}
 	}
 	input.ViaWebsocket = false
+}
+
+// Native account health for transport plugins. A plugin implementing
+// plugins.NativeHealthPolicy can keep its transport-level failures (4xx/422,
+// upload errors, 5xx, stream failures, its own rate limits) out of the native
+// health score and cooldowns. Account-level signals always reach native
+// health, because they describe the account, not the transport. The handler
+// sites call these wrappers instead of the helpers they delegate to; for
+// native attempts they are exact pass-throughs.
+
+// transportPluginSparesNativeHealth reports whether the attempt in flight on c
+// is served by a plugin whose policy spares native health.
+func transportPluginSparesNativeHealth(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	served := plugins.RequestFromContext(c.Request.Context()).Served()
+	if served == "" || served == database.TransportNative {
+		return false
+	}
+	p, ok := plugins.Default().Get(served)
+	if !ok {
+		return false
+	}
+	policy, ok := p.(plugins.NativeHealthPolicy)
+	return ok && policy.SparesNativeHealth()
+}
+
+// nativeHealthAccountSignal reports failures that describe the account
+// itself: a revoked or invalid credential (401, which also disables the
+// account and drives token refresh), a deactivated workspace, a deleted agent
+// runtime, or a payment requirement. These reach native health even when a
+// plugin spares its failures.
+func nativeHealthAccountSignal(statusCode int, body []byte) bool {
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusPaymentRequired:
+		return true
+	}
+	return IsDeactivatedWorkspaceError(body) || IsAgentRuntimeDeletedError(body)
+}
+
+// nativeHealthAccountFailureKind is nativeHealthAccountSignal for the failure
+// kinds ReportRequestFailure records.
+func nativeHealthAccountFailureKind(kind string) bool {
+	return kind == "unauthorized"
+}
+
+func (h *Handler) reportAttemptFailure(c *gin.Context, account *auth.Account, kind string, d time.Duration) {
+	if transportPluginSparesNativeHealth(c) && !nativeHealthAccountFailureKind(kind) {
+		return
+	}
+	h.store.ReportRequestFailure(account, kind, d)
+}
+
+func (h *Handler) applyAttemptCooldown(c *gin.Context, account *auth.Account, statusCode int, body []byte, resp *http.Response, model string) codex429Decision {
+	if transportPluginSparesNativeHealth(c) && !nativeHealthAccountSignal(statusCode, body) {
+		return codex429Decision{}
+	}
+	return h.applyCooldownForModel(account, statusCode, body, resp, model)
+}
+
+func (h *Handler) applyAttemptResponseFailedCooldown(c *gin.Context, account *auth.Account, payload []byte, resp *http.Response, model string) codex429Decision {
+	if transportPluginSparesNativeHealth(c) && !nativeHealthAccountSignal(responseFailedStatusCode(payload), responseFailedErrorBody(payload)) {
+		return codex429Decision{}
+	}
+	return h.applyResponseFailedCooldown(account, payload, resp, model)
+}
+
+func (h *Handler) reportAttemptOutcomeFailure(c *gin.Context, account *auth.Account, outcome streamOutcome, d time.Duration) {
+	if transportPluginSparesNativeHealth(c) && !nativeHealthAccountFailureKind(outcome.failureKind) &&
+		!nativeHealthAccountSignal(outcome.logStatusCode, responseFailedErrorBody(outcome.failurePayload)) {
+		return
+	}
+	h.reportStreamOutcomeFailure(account, outcome, d)
 }

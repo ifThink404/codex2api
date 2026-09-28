@@ -893,7 +893,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
 			if retryable && kind != "" && !(timedOut && shouldRetry) && !stickyRetry {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
 			if retryable && !stickyRetry && !preserveContinuationBinding() {
@@ -1002,7 +1002,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
-				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
+				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
@@ -1017,7 +1017,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				Transport: upstreamPromptPolicyTransport(true, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, effectiveModel)
+			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, effectiveModel)
 			shouldRetry := retryEnabled && shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
@@ -1492,7 +1492,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
 		outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 		if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
-			responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, effectiveModel)
+			responseFailedDecision = h.applyAttemptResponseFailedCooldown(c, account, terminalFailurePayload, resp, effectiveModel)
 		}) {
 			outcome = applyResponseFailedDecisionKind(outcome, terminalFailurePayload, responseFailedDecision)
 		} else {
@@ -1545,7 +1545,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		}, promptPolicyIncidentID)
 		resp.Body.Close()
 		if !isFirstTokenTimeoutOutcome(outcome) {
-			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+			h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 		}
 		h.store.Release(account)
 		if !preserveAffinity {
@@ -1661,7 +1661,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	resp.Body.Close()
 	if outcome.penalize {
 		recyclePooledClient(account, proxyURL)
-		h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
+		h.reportAttemptOutcomeFailure(c, account, outcome, time.Duration(totalDuration)*time.Millisecond)
 		if !preserveAffinity {
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		}

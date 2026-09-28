@@ -142,6 +142,14 @@ type ExecuteErrorHandler interface {
 	OnExecuteError(ctx context.Context, env *ReqEnv, err error)
 }
 
+// NativeHealthPolicy is optionally implemented by plugins whose failures
+// should stay out of the native account health score and cooldowns. Core
+// still reports account-level signals (revoked credentials, deactivated
+// accounts), which describe the account rather than the transport.
+type NativeHealthPolicy interface {
+	SparesNativeHealth() bool
+}
+
 // ConfigValidator validates the plugin's config JSON object before it is saved.
 type ConfigValidator interface {
 	ValidateConfig(config json.RawMessage) error
