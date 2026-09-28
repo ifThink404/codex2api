@@ -55,7 +55,9 @@ const errorTableHeadClass = 'text-[12px] font-semibold'
 const errorTableTextClass = 'text-[14px]'
 const errorTableMonoClass = 'font-geist-mono text-[13px] tabular-nums'
 
-export default function OperationsErrors() {
+// `transport` scopes every query to one usage-log transport (a plugin page
+// embeds this view); `embedded` drops the Ops page header and tabs.
+export default function OperationsErrors({ transport, embedded = false }: { transport?: string; embedded?: boolean } = {}) {
   const { t } = useTranslation()
   const { toast, showToast } = useToast()
   const [timeRange, setTimeRange] = useState<TimeRangeKey>('1h')
@@ -102,8 +104,9 @@ export default function OperationsErrors() {
       apiKeyId: apiKeyFilter,
       stream: streamFilter,
       q: searchQuery,
+      transport,
     }
-  }, [apiKeyFilter, endpointFilter, errorKindFilter, searchQuery, statusFilter, streamFilter, timeRange])
+  }, [apiKeyFilter, endpointFilter, errorKindFilter, searchQuery, statusFilter, streamFilter, timeRange, transport])
 
   const loadErrorData = useCallback(async () => {
     const baseParams = buildBaseParams()
@@ -234,17 +237,19 @@ export default function OperationsErrors() {
       errorTitle={t('opsErrors.errorTitle')}
     >
       <>
-        <PageHeader
-          title={t('opsErrors.title')}
-          description={t('opsErrors.description')}
-          actions={
-            <Button variant="outline" onClick={() => void reload()}>
-              <RefreshCw className="size-3.5" />
-              {t('common.refresh')}
-            </Button>
-          }
-        />
-        <OpsTabs />
+        {!embedded && (
+          <PageHeader
+            title={t('opsErrors.title')}
+            description={t('opsErrors.description')}
+            actions={
+              <Button variant="outline" onClick={() => void reload()}>
+                <RefreshCw className="size-3.5" />
+                {t('common.refresh')}
+              </Button>
+            }
+          />
+        )}
+        {!embedded && <OpsTabs />}
 
         <div className="mb-6 grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
           <StatTile

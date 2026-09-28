@@ -60,6 +60,7 @@ import {
   usePersistedPageSize,
 } from "../hooks/usePersistedPageSize";
 import { useToast } from "../hooks/useToast";
+import type { CodexTestMode } from "../types";
 import type {
   AccountRow,
   AccountHealthBucket,
@@ -2163,6 +2164,8 @@ export default function Accounts() {
   const [modelsProbing, setModelsProbing] = useState(false);
   const [modelsSaving, setModelsSaving] = useState(false);
   const [editBPS, setEditBPS] = useState<BPSAccountForm>(() => bpsFormFromAccount({}));
+  // Batch connection-test path; applies to that run only, never saved.
+  const [batchTestMode, setBatchTestMode] = useState<CodexTestMode>("auto");
   // 探测看板：逐模型的实时测试状态（pending→testing→结果）。
   const [probeBoard, setProbeBoard] = useState<ModelProbeItem[]>([]);
   const [tagFilter, setTagFilter] = useState<string>("");
@@ -5535,9 +5538,10 @@ export default function Accounts() {
     if (!ids && data.total === 0) return;
     setBatchTesting(true);
     try {
+      const target = ids ? { ids } : { selector: currentAccountSelector };
       const result = await runStreamingAccountOperation(
         "/accounts/batch-test?stream=true",
-        ids ? { ids } : { selector: currentAccountSelector },
+        batchTestMode === "auto" ? target : { ...target, test_mode: batchTestMode },
         t("accounts.batchTestProgressTitle"),
       );
       showToast(
@@ -6500,6 +6504,18 @@ export default function Accounts() {
                         <Plus className="size-3.5" />
                         {t("accounts.addAccount")}
                       </Button>
+<Select
+                        className="w-32 shrink-0"
+                        compact
+                        value={batchTestMode}
+                        onValueChange={(value) => setBatchTestMode(value as CodexTestMode)}
+                        options={(["auto", "codex", "bps"] as CodexTestMode[]).map((value) => ({
+                          value,
+                          label: t(`accounts.bps.testModes.${value}`),
+                        }))}
+                        disabled={batchTesting}
+                        aria-label={t("accounts.bps.testMode")}
+                      />
                       <Button
                         variant="outline"
                         size="sm"

@@ -173,3 +173,13 @@ func TestUsageLogsFilterParsesTransport(t *testing.T) {
 		t.Fatalf("filter = %+v ok=%v", filter, ok)
 	}
 }
+
+func TestOpsErrorsFilterParsesTransport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/ops/errors?transport=bps", nil)
+	filter, ok := parseOpsErrorLogFilter(c, true)
+	if !ok || filter.Transport != "bps" || !filter.ErrorOnly {
+		t.Fatalf("filter = %+v ok=%v", filter, ok)
+	}
+}

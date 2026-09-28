@@ -8023,6 +8023,7 @@ func parseOpsErrorLogFilter(c *gin.Context, withPaging bool) (database.UsageLogF
 		AccountID:       accountID,
 		ErrorOnly:       true,
 		IncludeCanceled: true,
+		Transport:       strings.TrimSpace(c.Query("transport")),
 		ErrorKind:       strings.TrimSpace(c.Query("error_kind")),
 		Query:           strings.TrimSpace(c.Query("q")),
 		Channel:         parseUsageChannel(c),

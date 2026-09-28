@@ -480,6 +480,7 @@ function buildOpsErrorSearchParams(params: {
   stream?: string
   fast?: string
   q?: string
+  transport?: string
   dedupe?: boolean
   excludeStatus?: string
 }) {
@@ -490,6 +491,7 @@ function buildOpsErrorSearchParams(params: {
   if (params.errorKind) search.set('error_kind', params.errorKind)
   if (params.endpoint) search.set('endpoint', params.endpoint)
   if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
+  if (params.transport) search.set('transport', params.transport)
   if (params.stream) search.set('stream', params.stream)
   if (params.fast) search.set('fast', params.fast)
   if (params.q) search.set('q', params.q)
@@ -1131,6 +1133,7 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     return request<OpsErrorSummary>(`/ops/errors/summary?${search.toString()}`)
@@ -1147,6 +1150,7 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     search.set('page', String(params.page))
@@ -1163,6 +1167,7 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
     dedupe?: boolean
     excludeStatus?: string
   }) => {
