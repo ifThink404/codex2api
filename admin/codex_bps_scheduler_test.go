@@ -119,3 +119,13 @@ func TestCodexBPSSchedulerRejectsIneligibleAccounts(t *testing.T) {
 		t.Fatalf("relay account accepted BPS: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Imports never enable BPS: new accounts inherit the plugin's default (OFF).
+func TestNewCodexAccountCredentialsLeaveBPSUnset(t *testing.T) {
+	creds := (&Handler{}).newCodexAccountCredentials(tokenCredentialSeed{refreshToken: "rt", accessToken: "at"})
+	for _, key := range codexBPSCredentialKeys {
+		if _, ok := creds[key]; ok {
+			t.Fatalf("import wrote BPS key %s", key)
+		}
+	}
+}
