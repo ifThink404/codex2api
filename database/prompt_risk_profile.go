@@ -310,6 +310,7 @@ func (db *DB) ensurePromptRiskEventsTable(ctx context.Context) error {
 		return err
 	}
 	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_identities_user_lookup ON prompt_risk_identities(subject_type, platform, external_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_subject ON prompt_risk_events(subject_type, subject_key, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_created ON prompt_risk_events(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_kind ON prompt_risk_events(event_kind, created_at)`,

@@ -2840,6 +2840,30 @@
     "mediaUnpricedHint": "This media model has no upstream unit cost; set one on the model pricing page"
   },
   "promptFilter": {
+    "localMode": "Local rule action",
+    "localModeHint": "Controls local rules only. Monitor and warn do not add conversation locks or user strikes. Model review and its failure policy remain independent; global mode still caps the final action.",
+    "localModes": {
+      "block": "Block",
+      "monitor": "Monitor only",
+      "warn": "Warn only"
+    },
+    "auxiliaryHighConfidence": "High-confidence auxiliary blocking (off by default)",
+    "auxiliaryHighConfidenceHint": "Checks enabled auxiliary layers before forwarding. Only complete, single-segment evidence from strict operational rules with qualifying intent and effective score can block. Audit scores, keywords, and truncated scans alone cannot. Respects local action mode; no conversation locks or user strikes. Turning this off preserves the existing tool-output exception, which also respects local action mode.",
+    "searchScopes": {
+      "all": "All",
+      "username": "NewAPI username",
+      "content": "Content",
+      "rules": "Matched rules",
+      "error": "Errors / review reasons",
+      "api_key": "API Key"
+    },
+    "searchInField": "Search {{field}}",
+    "auditSort": "Sort",
+    "auditSorts": {
+      "newest": "Newest first",
+      "audit_desc": "Audit score: high to low",
+      "audit_asc": "Audit score: low to high"
+    },
     "title": "Prompt Filter",
     "description": "Manage local prompt risk rules and review upstream cyber_policy hits.",
     "views": {
@@ -5776,10 +5800,10 @@
     "allowedGroupsLabel": "Allowed Account Groups",
     "allowedGroupsPlaceholder": "Choose allowed groups",
     "allowedGroupsAll": "All groups",
-    "noAffinityGroupsLabel": "No-affinity request groups",
+    "noAffinityGroupsLabel": "No-fingerprint / Chat request groups",
     "noAffinityGroupsPlaceholder": "Choose groups for requests without affinity",
     "noAffinityGroupsDisabled": "Split routing off",
-    "noAffinityGroupsHint": "Requests without either a Codex engine fingerprint or X-Codex2API-Affinity-Key use only these groups; fingerprinted requests use the original groups above, or — when that is empty (no group limit) — every group except the ones selected here. Leave empty to preserve current behavior. Note the fingerprint is only a client trait: a downstream caller can opt in by sending the header itself.",
+    "noAffinityGroupsHint": "New /v1/chat/completions sessions use only these groups, with or without a fingerprint. Bound Chat sessions keep their existing account groups. On other paths, requests without a Codex engine fingerprint or X-Codex2API-Affinity-Key use these groups; fingerprinted requests use the original groups above, or exclude these groups when the original selection is empty. Leave this selection empty to disable splitting. Account permissions, model support and capacity still apply; fingerprints are not authentication.",
     "allowedGroupsNone": "No group limit",
     "allowedGroupsMissing": "Group no longer exists",
     "allowedGroupsSaved": "Allowed groups saved",

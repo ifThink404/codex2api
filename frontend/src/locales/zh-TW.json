@@ -320,6 +320,8 @@
     "notProbed": "未驗證"
   },
   "apiKeys": {
+    "noAffinityGroupsLabel": "無指紋 / Chat 請求分流組",
+    "noAffinityGroupsHint": "新會話的 /v1/chat/completions 請求無論是否攜帶指紋，都只從這些分組選號；已有綁定的 Chat 會話保留原帳號分組。其他路徑：無 Codex 引擎指紋且無 X-Codex2API-Affinity-Key 時走分流組，帶指紋時走上面的原分組；上面留空則排除分流組。這裡留空不啟用分流。所有請求仍檢查帳號權限、模型和容量，指紋本身不是認證依據。",
     "promptFilterScopeGlobal": "Prompt：沿用全域檢查",
     "promptFilterScopeLocal": "Prompt：僅本地規則",
     "promptFilterScopeOff": "Prompt：已關閉",
@@ -757,6 +759,30 @@
     "claudeMaxToolSchemaBytesDesc": "0 表示不設閘道 Schema 上限；請求體仍受系統大小與上游限制。"
   },
   "promptFilter": {
+    "localMode": "本地規則處理方式",
+    "localModeHint": "僅控制本地規則。僅監控／僅警告不新增對話鎖定或違規處罰；模型複核及失敗策略保持獨立，全域模式仍限制最終動作。",
+    "localModes": {
+      "block": "攔截",
+      "monitor": "僅監控",
+      "warn": "僅警告"
+    },
+    "auxiliaryHighConfidence": "輔助內容高信心攔截（預設關閉）",
+    "auxiliaryHighConfidenceHint": "開啟後，已啟用的輔助來源層會在轉送前檢查。僅同一完整內容段中的高信心操作規則、意圖及有效分均達標才形成攔截候選；影子分、普通關鍵字及截斷內容不會單獨觸發。遵守本地處理方式，不鎖對話、不記違規。關閉不取消既有工具輸出特殊攔截，該路徑也遵守本地處理方式。",
+    "searchScopes": {
+      "all": "全部",
+      "username": "NewAPI 使用者名稱",
+      "content": "內容",
+      "rules": "命中規則",
+      "error": "錯誤／審查原因",
+      "api_key": "API Key"
+    },
+    "searchInField": "搜尋{{field}}",
+    "auditSort": "排序",
+    "auditSorts": {
+      "newest": "時間最新",
+      "audit_desc": "審計分由高到低",
+      "audit_asc": "審計分由低到高"
+    },
     "views": {
       "profiles": "風險畫像",
       "intelligence": "CY 學習審核"

@@ -73,6 +73,8 @@ type PromptFilterForm = Pick<
 >
 
 type LogFilters = {
+	searchScope: string
+	sort: string
   action: string
   source: string
   endpoint: string
@@ -210,7 +212,7 @@ type PromptGuardEditorConfig = Omit<PromptGuardConfig, 'performance'>
 
 type AdvancedProtectionConfig = {
   guard: PromptGuardEditorConfig
-  enforcement: { terminal_categories: string[]; terminal_bypass_models: string[]; local_block_message: string; conversation_lock_enabled: boolean; conversation_lock_ttl_hours: number; user_cyber_cooldown_minutes: number; cyb_strike_enabled: boolean; local_severe_strike_enabled: boolean; authorized_pentest_allowed: boolean }
+  enforcement: { local_mode: string; auxiliary_high_confidence_enabled: boolean; terminal_categories: string[]; terminal_bypass_models: string[]; local_block_message: string; conversation_lock_enabled: boolean; conversation_lock_ttl_hours: number; user_cyber_cooldown_minutes: number; cyb_strike_enabled: boolean; local_severe_strike_enabled: boolean; authorized_pentest_allowed: boolean }
   normalization: {
     enabled: boolean
     decode_url: boolean
@@ -301,7 +303,7 @@ const defaultPromptGuard: PromptGuardEditorConfig = {
 
 const defaultAdvancedProtection: AdvancedProtectionConfig = {
   guard: defaultPromptGuard,
-  enforcement: { terminal_categories: [], terminal_bypass_models: ['codex-auto-review'], local_block_message: '', conversation_lock_enabled: true, conversation_lock_ttl_hours: 168, user_cyber_cooldown_minutes: 30, cyb_strike_enabled: false, local_severe_strike_enabled: true, authorized_pentest_allowed: false },
+  enforcement: { local_mode: 'block', auxiliary_high_confidence_enabled: false, terminal_categories: [], terminal_bypass_models: ['codex-auto-review'], local_block_message: '', conversation_lock_enabled: true, conversation_lock_ttl_hours: 168, user_cyber_cooldown_minutes: 30, cyb_strike_enabled: false, local_severe_strike_enabled: true, authorized_pentest_allowed: false },
   normalization: {
     enabled: true,
     decode_url: true,
@@ -400,6 +402,8 @@ function parseAdvancedProtection(value: AdvancedConfigObject): AdvancedProtectio
       local_block_message: typeof enforcement.local_block_message === 'string'
         ? enforcement.local_block_message
         : defaultAdvancedProtection.enforcement.local_block_message,
+      local_mode: ['monitor', 'warn', 'block'].includes(String(enforcement.local_mode)) ? String(enforcement.local_mode) : 'block',
+      auxiliary_high_confidence_enabled: enforcement.auxiliary_high_confidence_enabled === true,
       conversation_lock_enabled: typeof enforcement.conversation_lock_enabled === 'boolean'
         ? enforcement.conversation_lock_enabled
         : defaultAdvancedProtection.enforcement.conversation_lock_enabled,
@@ -477,6 +481,8 @@ function parsePromptReviewAPIKeyInput(raw: string): string[] {
 }
 
 const emptyFilters: LogFilters = {
+  searchScope: 'all',
+  sort: 'newest',
   action: '',
   source: '',
   endpoint: '',
@@ -968,6 +974,12 @@ function AdvancedProtectionEditor({
   return (
     <div className="space-y-3">
       <SectionTitle title={t('promptFilter.advancedVisualTitle')} />
+      <div className="space-y-3 rounded-lg border border-border bg-background p-4">
+        <Field label={t('promptFilter.localMode')} hint={t('promptFilter.localModeHint')}>
+          <Select value={config.enforcement.local_mode} onValueChange={(local_mode) => update('enforcement', { local_mode })} options={['block', 'monitor', 'warn'].map(value => ({ value, label: t(`promptFilter.localModes.${value}`) }))} />
+        </Field>
+        <SwitchField label={t('promptFilter.auxiliaryHighConfidence')} hint={t('promptFilter.auxiliaryHighConfidenceHint')} checked={config.enforcement.auxiliary_high_confidence_enabled} onCheckedChange={(auxiliary_high_confidence_enabled) => update('enforcement', { auxiliary_high_confidence_enabled })} />
+      </div>
 
       <details className="group overflow-hidden rounded-lg border border-foreground/15 bg-background shadow-sm dark:border-foreground/20">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3.5 marker:content-none [&::-webkit-details-marker]:hidden">
@@ -3752,6 +3764,7 @@ function PromptLogFilterControls({
   showAction = false,
   showSource = false,
   showReviewResult = false,
+  showAuditControls = false,
 }: {
   draftFilters: LogFilters
   setDraftFilters: Dispatch<SetStateAction<LogFilters>>
@@ -3761,6 +3774,7 @@ function PromptLogFilterControls({
   showAction?: boolean
   showSource?: boolean
   showReviewResult?: boolean
+  showAuditControls?: boolean
 }) {
   const { t } = useTranslation()
 
@@ -3817,9 +3831,17 @@ function PromptLogFilterControls({
         <Field label={t('promptFilter.apiKeyId')}>
           <Input value={draftFilters.apiKeyId} onChange={(event) => setDraftFilters((current) => ({ ...current, apiKeyId: event.target.value }))} placeholder="ID" />
         </Field>
-        <Field label={t('promptFilter.keyword')}>
-          <Input value={draftFilters.q} onChange={(event) => setDraftFilters((current) => ({ ...current, q: event.target.value }))} placeholder={t('promptFilter.keywordPlaceholder')} />
-        </Field>
+        <div className={showAuditControls ? 'min-w-0 sm:col-span-2' : 'min-w-0'}>
+          <Field label={t('promptFilter.keyword')}>
+            <div className="flex items-center gap-2">
+              {showAuditControls ? <Select className="w-36 shrink-0" value={draftFilters.searchScope} onValueChange={(searchScope) => setDraftFilters((current) => ({ ...current, searchScope }))} options={['all', 'username', 'content', 'rules', 'error', 'api_key'].map(value => ({ value, label: t(`promptFilter.searchScopes.${value}`) }))} /> : null}
+              <Input className="min-w-0 flex-1" value={draftFilters.q} onChange={(event) => setDraftFilters((current) => ({ ...current, q: event.target.value }))} onKeyDown={(event) => { if (event.key === 'Enter' && !loading) onApply() }} placeholder={showAuditControls && draftFilters.searchScope !== 'all' ? t('promptFilter.searchInField', { field: t(`promptFilter.searchScopes.${draftFilters.searchScope}`) }) : t('promptFilter.keywordPlaceholder')} />
+            </div>
+          </Field>
+        </div>
+        {showAuditControls ? <Field label={t('promptFilter.auditSort')}>
+          <Select value={draftFilters.sort} onValueChange={(sort) => setDraftFilters((current) => ({ ...current, sort }))} options={['newest', 'audit_desc', 'audit_asc'].map(value => ({ value, label: t(`promptFilter.auditSorts.${value}`) }))} />
+        </Field> : null}
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
         <Button onClick={onApply} disabled={loading}>
@@ -3925,6 +3947,8 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
         model: localFilters.model,
         apiKeyId: localFilters.apiKeyId,
         q: localFilters.q,
+        searchScope: localFilters.searchScope,
+        sort: localFilters.sort,
       })
       setLogs(result.logs ?? [])
       setTotal(result.total ?? 0)
@@ -4210,6 +4234,7 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
             </div>
             <PromptLogFilterControls
               draftFilters={localDraftFilters}
+              showAuditControls
               setDraftFilters={setLocalDraftFilters}
               onApply={() => { setLogPage(1); setLocalFilters(localDraftFilters) }}
               onReset={() => { setLocalDraftFilters(defaultLocalLogFilters); setLocalFilters(defaultLocalLogFilters); setLogPage(1) }}
@@ -5618,6 +5643,7 @@ function formatPromptPolicyScore(value: number | null | undefined, unscored: str
 
 function promptFilterDecisionSource(log: PromptFilterLog): 'model' | 'local' | 'combined' | 'conversation' | null {
   if (log.action !== 'block' && log.action !== 'warn') return null
+  if (log.reason_code?.startsWith('external_review_local_')) return 'model'
   if (log.reason_code === 'conversation_cyber_locked') return 'conversation'
   const model = Boolean(log.reviewed && log.review_flagged)
   const local = log.score > 0 || parseLogMatches(log.matched_patterns).length > 0
@@ -6003,6 +6029,7 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
   const auditScore = typeof log.audit_score === 'number' ? log.audit_score : undefined
   const apiKeyLabel = log.api_key_name || log.api_key_masked || '-'
   const decisionSource = promptFilterDecisionSource(log)
+  const localMode = /^(?:local_rules_|external_review_local_)(monitor|warn)$/.exec(log.reason_code || '')?.[1]
   const hasPreviewDetail = Boolean(matchContext || userPrompt || hasFull)
   return (
     <>
@@ -6015,6 +6042,7 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
         <div className="min-w-0 rounded-lg border border-border/70 bg-muted/20 p-2">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <ActionBadge action={log.action} />
+            {localMode ? <Badge variant="outline" className="text-[10px]" title={t('promptFilter.localModeHint')}>{t('promptFilter.localMode')}: {t(`promptFilter.localModes.${localMode}`)}</Badge> : null}
             {decisionSource ? <Badge variant="outline" className="max-w-full text-[10px]" title={t(`promptFilter.decisionSource.${decisionSource}`)}>{t(`promptFilter.decisionSource.${decisionSource}`)}</Badge> : null}
             {log.policy_profile ? (
               <span className="min-w-0 truncate text-[11px] font-semibold text-muted-foreground" title={policyProfileLabel}>

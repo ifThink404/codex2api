@@ -108,6 +108,9 @@ type Match struct {
 }
 
 type Verdict struct {
+	LocalMode           string   `json:"local_mode,omitempty"`
+	LocalOriginalAction string   `json:"local_original_action,omitempty"`
+	LocalAction         string   `json:"local_action,omitempty"`
 	Enabled             bool     `json:"enabled"`
 	Mode                string   `json:"mode"`
 	Action              string   `json:"action"`

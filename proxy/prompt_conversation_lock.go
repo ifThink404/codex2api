@@ -692,6 +692,10 @@ func upstreamPolicyLockReasonCode(errorCode string) string {
 // finalizePromptGuardDecision 也早已把这类命中归为不计违规笔数的弱证据。
 // 一次误报锁死整段会话七天,代价与证据强度不匹配(issue #527)。
 func promptGuardBlockHasLocalEvidence(decision promptfilter.Decision, verdict promptfilter.Verdict) bool {
+	if verdict.LocalMode != "" || decision.AuxiliaryHighConfidence ||
+		(decision.PrimaryOrigin != "" && decision.PrimaryOrigin != promptfilter.OriginCurrentUser) {
+		return false
+	}
 	if decision.PrimaryDetector == promptGuardDetectorExternalReview {
 		return false
 	}

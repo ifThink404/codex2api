@@ -447,6 +447,7 @@ func (h *Handler) inspectImagePromptFilter(c *gin.Context, text string, model st
 	}
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.InspectText(text, cfg)
+	verdict = promptfilter.ApplyLocalMode(verdict, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
 		verdict = reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
 		verdict = promptfilter.ApplyReviewMode(verdict, cfg.Mode)
@@ -501,6 +502,11 @@ func (h *Handler) recordPromptFilterLog(c *gin.Context, input *database.PromptFi
 }
 
 func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
+	searchScope, sortOrder := strings.TrimSpace(c.Query("search_scope")), strings.TrimSpace(c.Query("sort"))
+	if !database.ValidPromptLogSearchScope(searchScope) || !database.ValidPromptLogSort(sortOrder) {
+		writeError(c, http.StatusBadRequest, "invalid prompt log search scope or sort")
+		return
+	}
 	page := positiveQueryInt(c, "page", 1)
 	pageSize := positiveQueryInt(c, "page_size", positiveQueryInt(c, "limit", 100))
 	apiKeyID := int64(0)
@@ -520,6 +526,8 @@ func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
 		Model:               c.Query("model"),
 		APIKeyID:            apiKeyID,
 		Query:               c.Query("q"),
+		SearchScope:         searchScope,
+		Sort:                sortOrder,
 		ReviewState:         c.Query("reviewed"),
 		ReviewResult:        c.Query("review_result"),
 		ExcludeIntelligence: true,

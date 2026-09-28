@@ -2840,6 +2840,30 @@
     "mediaUnpricedHint": "该媒体模型没有上游单位成本，请到模型定价页补填"
   },
   "promptFilter": {
+    "localMode": "本地规则处理方式",
+    "localModeHint": "仅控制本地规则。仅监控／仅警告不新增锁对话或违规处罚；模型复核及其失败策略保持独立，全局执行模式仍限制最终动作。",
+    "localModes": {
+      "block": "拦截",
+      "monitor": "仅监控",
+      "warn": "仅警告"
+    },
+    "auxiliaryHighConfidence": "辅助内容高置信拦截（默认关闭）",
+    "auxiliaryHighConfidenceHint": "开启后，已启用的辅助来源层在发送上游前检查。仅同一完整内容段中明确的高置信操作规则、意图与有效分均达标才形成拦截候选；影子分、普通关键词和截断内容不会单独触发。遵守本地处理方式，不锁对话、不记用户违规。关闭不取消已有工具输出特殊拦截，该旧路径也遵守本地处理方式。",
+    "searchScopes": {
+      "all": "全部",
+      "username": "NewAPI 用户名",
+      "content": "内容",
+      "rules": "命中规则",
+      "error": "错误／审查原因",
+      "api_key": "API Key"
+    },
+    "searchInField": "搜索{{field}}",
+    "auditSort": "排序",
+    "auditSorts": {
+      "newest": "时间最新",
+      "audit_desc": "审计分从高到低",
+      "audit_asc": "审计分从低到高"
+    },
     "title": "Prompt 检查",
     "description": "管理本地 Prompt 风险规则，并查看上游 cyber_policy 触发记录。",
     "views": {
@@ -3198,7 +3222,7 @@
     "threshold": "拦截阈值",
     "strictThreshold": "强规则阈值",
     "strictTerminal": "严格规则终局拦截",
-    "strictTerminalHint": "开启后，当前用户 Prompt 只有在命中 strict:true 高可信规则，且经意图、阈值与上下文判定后仍达到拦截阈值时，才会进入终局拦截流程；敏感词和双用途技术名词不会单独触发。均衡档案仍可进行二次审查，严格档案才跳过降级。",
+    "strictTerminalHint": "开启后，当前用户 Prompt 只有在命中 strict:true 高可信规则，且经意图、阈值与上下文判定后仍达到拦截阈值时，才会进入终局拦截流程；敏感词和双用途技术名词不会单独触发。均衡与严格均遵守已配置的模型复核策略和本地处理方式。",
     "advancedConfig": "高级防护配置 JSON",
     "advancedConfigPlaceholder": "配置规范化、累计风险、本地 Sidecar 和输出扫描；所有功能默认关闭。",
     "advancedConfigHint": "高级能力按各自 enabled 开关启用。保存前服务端会校验 JSON。",
@@ -3225,7 +3249,7 @@
       "profileTitle": "审核档案说明",
       "profileDescription": "档案调整检测深度，不会把单个安全技术名词直接变成终局违规。",
       "layersTitle": "请求来源层",
-      "layersDescription": "当前用户 Prompt 是同步拦截和处罚证据；辅助来源默认只做影子审计。唯一例外是同一段工具输出中出现高置信复合操作指令时，可按全局模式警告或拦截当前请求，但永不计入用户处罚、封禁或终局证据。",
+      "layersDescription": "当前用户 Prompt 是同步拦截和处罚证据；辅助来源默认只做影子审计。可开启辅助内容高置信拦截；另有既有的工具输出高置信特殊拦截。辅助内容不计入用户处罚或终局证据。",
       "performance": {
         "title": "审核性能与首字延迟",
         "description": "复用完全相同的片段检测结果，并可把纯影子辅助层移出用户等待路径，在不降低执行层审核强度的前提下减少重复扫描。",
@@ -3297,7 +3321,7 @@
         },
         "strict": {
           "label": "严格",
-          "description": "启用更深的关联检测和更高审计密度，但终局拦截仍要求高置信证据。"
+          "description": "继承档案的辅助来源默认开启影子审计；显式来源层配置优先，不自动降低阈值或跳过模型复核。"
         },
         "research": {
           "label": "研究",
@@ -5775,10 +5799,10 @@
     "allowedGroupsLabel": "允许账号分组",
     "allowedGroupsPlaceholder": "选择允许调用的分组",
     "allowedGroupsAll": "全部分组",
-    "noAffinityGroupsLabel": "无指纹请求分流组",
+    "noAffinityGroupsLabel": "无指纹 / Chat 请求分流组",
     "noAffinityGroupsPlaceholder": "选择无指纹请求使用的分组",
     "noAffinityGroupsDisabled": "不启用分流",
-    "noAffinityGroupsHint": "不带 Codex 引擎指纹且不带 X-Codex2API-Affinity-Key 的请求只从这些分组选号；带任一指纹的请求走上面的原分组，上面留空（不限分组）时则自动排除这里的分流组。留空保持当前行为。注意指纹只是客户端特征，下游自行加上相应请求头即可绕过。",
+    "noAffinityGroupsHint": "新会话的 /v1/chat/completions 请求无论是否携带指纹，都只从这些分组选号；已有绑定的 Chat 会话保留原账号分组。其他路径：无 Codex 引擎指纹且无 X-Codex2API-Affinity-Key 时走分流组，带指纹时走上面的原分组；上面留空则排除分流组。这里留空不启用分流。所有请求仍检查账号权限、模型和容量，指纹本身不是认证依据。",
     "allowedGroupsNone": "不限制分组",
     "allowedGroupsMissing": "分组已不存在",
     "allowedGroupsSaved": "允许分组已保存",
