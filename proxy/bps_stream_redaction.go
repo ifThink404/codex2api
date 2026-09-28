@@ -20,7 +20,6 @@ import (
 
 const bpsStreamBufferLimit = 16 << 20
 
-
 type bpsPendingFrame struct {
 	event string
 	data  []byte
@@ -123,6 +122,11 @@ func (s *bpsStreamRedactor) push(eventName string, data []byte) ([]plugins.SSEFr
 		if data, err = sjson.SetBytes(data, "delta", delta.String()); err != nil {
 			return nil, err
 		}
+	}
+	if kind == "response.in_progress" && len(s.queue) > 0 {
+		// A keepalive carries no content, so it may overtake frames held for
+		// an open prefix instead of waiting behind them.
+		return append(s.drain(), plugins.SSEFrame{Event: eventName, Data: data}), nil
 	}
 	entry := &bpsPendingFrame{event: eventName, data: data, ready: true}
 	s.queue = append(s.queue, entry)
