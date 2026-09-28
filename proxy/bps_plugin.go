@@ -357,11 +357,8 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 	}
 	if d := bpsAttemptDiagnostic(env); d != nil {
 		meta := map[string]string{"profile": string(d.Profile)}
-		for _, identity := range []*bpsWordIdentityDiagnostic{d.TurnConvergence, d.RoundConvergence, d.FullConvergence, d.WordIdentity} {
-			if identity != nil && identity.AgentIteration != "" {
-				meta["agent_iteration"] = identity.AgentIteration
-				break
-			}
+		if d.AgentIteration != "" {
+			meta["agent_iteration"] = d.AgentIteration
 		}
 		encoded, _ := json.Marshal(meta)
 		env.Request.SetUsageMeta(BPSPluginID, string(encoded))

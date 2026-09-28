@@ -31,6 +31,7 @@ type CodexBPSDiagnostic struct {
 	Profile                  auth.CodexBPSProfile            `json:"profile"`
 	ToolsVersion             string                          `json:"tools_version"`
 	Mode                     string                          `json:"mode"`
+	AgentIteration           string                          `json:"agent_iteration,omitempty"`
 	RequestedModel           string                          `json:"requested_model"`
 	SentModel                string                          `json:"sent_model"`
 	RequestedReasoningEffort string                          `json:"requested_reasoning_effort,omitempty"`
@@ -95,13 +96,15 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		if gjson.GetBytes(item, "type").String() != "configuration_update" {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(item, "reasoning.effort").String()), "max") {
-			updated, err := sjson.SetBytes(item, "reasoning.effort", "xhigh")
-			if err != nil {
-				return nil, nil, err
+		if requested := gjson.GetBytes(item, "reasoning.effort"); requested.Type == gjson.String && strings.TrimSpace(requested.String()) != "" {
+			if effort := normalizeBPSReasoningEffort(requested.String()); effort != requested.String() {
+				updated, err := sjson.SetBytes(item, "reasoning.effort", effort)
+				if err != nil {
+					return nil, nil, err
+				}
+				item = updated
+				configurationMapped = true
 			}
-			item = updated
-			configurationMapped = true
 		}
 		// BPS omits top-level service_tier below. A continuation must not
 		// reintroduce fast/flex through a protocol configuration update.
@@ -116,7 +119,7 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		items[i] = item
 	}
 	if configurationMapped {
-		d.AdaptedFields = append(d.AdaptedFields, "input.configuration_update.reasoning.effort: max → xhigh")
+		d.AdaptedFields = append(d.AdaptedFields, "input.configuration_update.reasoning.effort normalized to a BPS tier")
 	}
 	if configurationTierRemoved {
 		d.RemovedFields = append(d.RemovedFields, "input.configuration_update.service_tier")
@@ -178,7 +181,7 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 	metadata := map[string]string{
 		"task_id":              "task_" + codexIdentityDigest("bps-task-v1", cacheKey, taskSeed),
 		"turn_id":              "turn_" + codexIdentityDigest("bps-turn-v1", cacheKey, turnSeed),
-		"bps_tools_version_id": profile.toolsVersion, "agent_iteration": "1",
+		"bps_tools_version_id": profile.toolsVersion, "agent_iteration": bpsAgentIteration(input),
 	}
 	ctx := context.Background()
 	if len(contexts) > 0 && contexts[0] != nil {
@@ -203,6 +206,7 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		}
 		metadata["task_id"], metadata["turn_id"], metadata["agent_iteration"] = identity.TaskID, identity.TurnID, identity.AgentIteration
 	}
+	d.AgentIteration = metadata["agent_iteration"]
 	result := map[string]any{"model": d.SentModel, "input": items, "metadata": metadata}
 	if !compact {
 		effort := extractReasoningEffort(body)
@@ -210,10 +214,9 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		if strings.TrimSpace(effort) == "" {
 			effort = defaultCodexReasoningEffort
 			d.AdaptedFields = append(d.AdaptedFields, "reasoning_effort: absent → low")
-		}
-		if strings.EqualFold(strings.TrimSpace(effort), "max") {
-			effort = "xhigh"
-			d.AdaptedFields = append(d.AdaptedFields, "reasoning_effort: max → xhigh")
+		} else if normalized := normalizeBPSReasoningEffort(effort); normalized != effort {
+			d.AdaptedFields = append(d.AdaptedFields, "reasoning_effort: "+bpsEffortLabel(effort)+" → "+normalized)
+			effort = normalized
 		}
 		d.SentReasoningEffort = effort
 		result["model_selection"], result["stream"], result["store"] = "explicit", true, false
