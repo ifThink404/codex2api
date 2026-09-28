@@ -198,7 +198,8 @@
   },
   "nav": {
     "qualityTest": "降智檢測",
-    "channelMonitor": "渠道監控"
+    "channelMonitor": "渠道監控",
+    "plugins": "傳輸外掛"
   },
   "imageStudioPortal": {
     "quota": {
@@ -528,7 +529,46 @@
     "hrefQuickInvalid": "跳轉位址格式不正確，必須是完整的 http/https URL",
     "hrefOpenTitle": "開啟帳號跳轉位址",
     "hrefClickHint": "點擊開啟跳轉位址（未設定時開啟 api-base）；Alt/Option+點擊 設定自訂連結",
-    "proxyTimezoneSyncFailed": "同步時區失敗：{{error}}"
+    "proxyTimezoneSyncFailed": "同步時區失敗：{{error}}",
+    "bps": {
+      "title": "BPS 通道",
+      "enabled": "BPS 開關",
+      "enabledHelp": "繼承時依帳號分組與外掛全域開關決定；明確開啟或關閉優先。",
+      "on": "強制開啟",
+      "off": "強制關閉",
+      "inheritPlugin": "繼承（分組 / 全域開關）",
+      "inheritNative": "繼承（BPS 未啟用時走原生）",
+      "activeNow": "目前使用 BPS",
+      "inactiveNow": "目前未使用 BPS",
+      "profile": "BPS 類型",
+      "profiles": {
+        "word": "Word",
+        "excel": "Excel",
+        "sheets": "Sheets",
+        "powerpoint": "PowerPoint"
+      },
+      "convergence": "BPS 任務收斂",
+      "convergenceModes": {
+        "off": "關閉",
+        "session": "會話",
+        "full": "全部收斂",
+        "round": "task_id 輪次",
+        "turn_round": "turn_id 輪次"
+      },
+      "native": "Codex 原生路徑",
+      "imageTrim": "BPS 歷史附件精簡",
+      "bpsModels": "BPS 路徑模型",
+      "nativeModels": "原生路徑模型",
+      "modelsPlaceholder": "留空表示全部模型；支援結尾 * 前綴",
+      "routesHelp": "模型清單只約束主請求；壓縮等關聯請求沿用所屬會話的路徑。",
+      "badge": "BPS",
+      "testMode": "測試路徑",
+      "testModes": {
+        "auto": "依帳號設定",
+        "codex": "Codex",
+        "bps": "BPS"
+      }
+    }
   },
   "runtime": {
     "sessionGuards": "工作階段防護",
@@ -573,35 +613,35 @@
   "settings": {
     "usageMeteringEnabled": "輕量計量（保留計費與 Token）",
     "usageMeteringEnabledDesc": "建議開啟：關閉明細或只記錄錯誤時，仍保留計費、Token 統計和視窗額度。批次儲存精簡記錄，不儲存請求診斷、IP 和 UA。同時關閉會導致統計及視窗額度漏算，累計金額仍會扣除。",
-      "transfer": {
-        "title": "設定匯入與匯出",
-        "description": "在伺服器之間遷移已儲存的系統設定。請先儲存目前頁面的修改再操作。",
-        "export": "匯出設定",
-        "import": "匯入設定",
-        "exportHint": "匯出已儲存的設定；檔案包含服務金鑰，請妥善保存。未儲存的修改需先儲存。",
-        "importHint": "匯入其他伺服器的設定 JSON；未儲存的修改需先儲存。",
-        "scope": "匯入會覆寫檔案中的設定。管理員登入金鑰、帳號、API 金鑰、日誌、獨立規則頁的自訂 Prompt 規則與內建規則修改不會遷移；服務設定金鑰包含在檔案中。背景圖等本機檔案需另行遷移。",
-        "summary": "通用設定 {{count}} 項；其他設定：{{sections}}。",
-        "confirm": "匯入並覆寫",
-        "importing": "正在匯入…",
-        "exported": "設定已匯出，請妥善保存包含服務金鑰的檔案。",
-        "imported": "設定匯入完成",
-        "refresh": "重新整理頁面查看設定",
-        "tooLarge": "設定檔不能超過 10 MB。",
-        "invalid_format": "不是有效的 codex2api 設定檔，或檔案版本不受支援。",
-        "invalid_field": "目標伺服器不支援或不允許匯入欄位：{{field}}。",
-        "invalid_type": "設定欄位類型錯誤：{{field}}。",
-        "failedSection": "「{{section}}」匯入失敗：{{error}}。先前成功的設定已儲存，請重新整理查看。",
-        "applied": "已套用：{{sections}}。",
-        "sections": {
-          "settings": "通用設定",
-          "claude": "Claude",
-          "antigravity": "Antigravity",
-          "channel_tests": "渠道測連",
-          "invite_guide": "邀請引導",
-          "visible_channels": "可見渠道"
-        }
-      },
+    "transfer": {
+      "title": "設定匯入與匯出",
+      "description": "在伺服器之間遷移已儲存的系統設定。請先儲存目前頁面的修改再操作。",
+      "export": "匯出設定",
+      "import": "匯入設定",
+      "exportHint": "匯出已儲存的設定；檔案包含服務金鑰，請妥善保存。未儲存的修改需先儲存。",
+      "importHint": "匯入其他伺服器的設定 JSON；未儲存的修改需先儲存。",
+      "scope": "匯入會覆寫檔案中的設定。管理員登入金鑰、帳號、API 金鑰、日誌、獨立規則頁的自訂 Prompt 規則與內建規則修改不會遷移；服務設定金鑰包含在檔案中。背景圖等本機檔案需另行遷移。",
+      "summary": "通用設定 {{count}} 項；其他設定：{{sections}}。",
+      "confirm": "匯入並覆寫",
+      "importing": "正在匯入…",
+      "exported": "設定已匯出，請妥善保存包含服務金鑰的檔案。",
+      "imported": "設定匯入完成",
+      "refresh": "重新整理頁面查看設定",
+      "tooLarge": "設定檔不能超過 10 MB。",
+      "invalid_format": "不是有效的 codex2api 設定檔，或檔案版本不受支援。",
+      "invalid_field": "目標伺服器不支援或不允許匯入欄位：{{field}}。",
+      "invalid_type": "設定欄位類型錯誤：{{field}}。",
+      "failedSection": "「{{section}}」匯入失敗：{{error}}。先前成功的設定已儲存，請重新整理查看。",
+      "applied": "已套用：{{sections}}。",
+      "sections": {
+        "settings": "通用設定",
+        "claude": "Claude",
+        "antigravity": "Antigravity",
+        "channel_tests": "渠道測連",
+        "invite_guide": "邀請引導",
+        "visible_channels": "可見渠道"
+      }
+    },
     "nav": {
       "codexTransport": "連線與傳輸",
       "codexTransportDesc": "WebSocket、續想、壓縮、首回應計時回報、過載熔斷與回應快取"
@@ -823,7 +863,24 @@
     "rulePreviewDesc": "查看評分用途、主正則、完整組合與排除條件。命中規則不等於必然攔截。",
     "rulePatternTesterTitle": "主正則測試",
     "rulePatternTesterDesc": "僅驗證上方主正則，不包含組合、排除、上下文或來源判定。完整請求請使用 Prompt 檢查測試。",
-    "ruleConditions": {"all_patterns": {"label": "必須全部滿足（AND）", "hint": "每條填寫一個 Go 正則；所有條件均須匹配。主正則可留空，但須保留至少一個正向條件。"}, "any_patterns": {"label": "任選條件（OR / 最少命中數）", "hint": "每條填寫一個 Go 正則；按下方最少命中數量判斷。"}, "exclude_patterns": {"label": "排除條件", "hint": "任意一條匹配，即排除本條規則的命中。"}, "authorization_exclude_patterns": {"label": "宣告式授權排除條件", "hint": "僅在「允許授權滲透測試」設定開啟時生效；關閉時保留設定但不用於排除。"}},
+    "ruleConditions": {
+      "all_patterns": {
+        "label": "必須全部滿足（AND）",
+        "hint": "每條填寫一個 Go 正則；所有條件均須匹配。主正則可留空，但須保留至少一個正向條件。"
+      },
+      "any_patterns": {
+        "label": "任選條件（OR / 最少命中數）",
+        "hint": "每條填寫一個 Go 正則；按下方最少命中數量判斷。"
+      },
+      "exclude_patterns": {
+        "label": "排除條件",
+        "hint": "任意一條匹配，即排除本條規則的命中。"
+      },
+      "authorization_exclude_patterns": {
+        "label": "宣告式授權排除條件",
+        "hint": "僅在「允許授權滲透測試」設定開啟時生效；關閉時保留設定但不用於排除。"
+      }
+    },
     "editBuiltinRuleDesc": "可修改主正則、評分用途、權重、分類、嚴格標記、組合與排除條件。規則識別碼不變；儲存後生效，還原預設會重設全部規則欄位。",
     "editBuiltinRule": "編輯內建規則",
     "rulesCatalogDesc": "內建規則支援啟停和編輯；修改會儲存為覆寫設定，也可還原預設。",
@@ -2400,5 +2457,181 @@
     "tabs": {
       "serviceErrors": "服務錯誤"
     }
+  },
+  "plugins": {
+    "title": "傳輸外掛",
+    "description": "備用上游通道：依全域、帳號分組或單一帳號開啟，所有實例即時生效。",
+    "empty": "沒有已註冊的傳輸外掛",
+    "notFound": "外掛不存在",
+    "globalOn": "全域開啟",
+    "globalOff": "全域關閉",
+    "views": {
+      "overview": "概覽",
+      "captures": "封包",
+      "logs": "日誌",
+      "errors": "錯誤",
+      "agent": "分析助手"
+    },
+    "globalSwitch": "全域開關",
+    "globalSwitchDesc": "對所有未單獨設定、且不在啟用分組內的帳號生效。",
+    "groupsCount": "啟用分組",
+    "overridesCount": "單一帳號設定",
+    "captureRate": "封包取樣",
+    "captureOff": "未開啟",
+    "enablement": "啟用範圍",
+    "enablementDesc": "優先順序：單一帳號設定 > 帳號分組 > 全域開關。預設關閉。",
+    "groups": "啟用的帳號分組",
+    "groupsDesc": "分組內帳號在未單獨設定時啟用外掛。",
+    "groupsPlaceholder": "選擇帳號分組",
+    "saved": "已儲存",
+    "capture": "封包擷取",
+    "captureDesc": "依請求取樣記錄外掛請求與回應（已遮罩，本文最多 64KB，保留 3 天）。",
+    "captureSwitch": "開啟封包擷取",
+    "sampleRate": "取樣比例（%）",
+    "sampleRateDesc": "依請求 ID 取樣，同一請求的各次嘗試一併保留。",
+    "config": "外掛設定",
+    "configDesc": "儲存後所有實例即時生效。",
+    "configInvalid": "設定必須是 JSON 物件",
+    "configZeroDefault": "數值填 0、文字留空表示使用預設值。",
+    "defaultValue": "預設",
+    "accounts": "帳號設定",
+    "accountsDesc": "單一帳號強制開啟、強制關閉或繼承（分組 / 全域開關）。",
+    "accountsSearch": "搜尋帳號",
+    "accountsEmpty": "沒有可設定的帳號",
+    "overrideFor": "帳號 {{id}} 的外掛設定",
+    "captureDisabledHint": "封包擷取未開啟：在概覽中開啟並設定取樣比例後才會記錄新的封包。",
+    "filterRequestId": "請求 ID",
+    "filterAccountId": "帳號 ID",
+    "filterStatus": "狀態碼",
+    "filterDirection": "方向",
+    "directionAll": "全部方向",
+    "directions": {
+      "request": "請求",
+      "response": "回應",
+      "error": "錯誤"
+    },
+    "capturesEmpty": "此時間範圍內沒有封包",
+    "colTime": "時間",
+    "colDirection": "方向",
+    "colStatus": "狀態",
+    "colAccount": "帳號",
+    "colRequest": "請求 ID",
+    "colBytes": "本文位元組",
+    "colModel": "模型",
+    "colTokens": "輸入 / 輸出",
+    "colDuration": "耗時",
+    "colMeta": "外掛資訊",
+    "attempt": "第 {{n}} 次",
+    "truncated": "已截斷",
+    "captureDetail": "封包詳情",
+    "headers": "請求標頭",
+    "body": "本文",
+    "logsEmpty": "此時間範圍內沒有經過此外掛的請求",
+    "agentTitle": "日誌分析助手",
+    "agentDesc": "讓模型分析 {{name}} 的錯誤與封包。",
+    "bpsConfig": {
+      "word_user_agent": "Word User-Agent",
+      "round_convergence_limit": "task_id 輪次：每批呼叫次數",
+      "round_task_lifetime_hours": "task_id 輪次：task 有效小時",
+      "turn_round_limit": "turn_id 輪次：每批提問次數",
+      "turn_task_lifetime_hours": "turn_id 輪次：task 有效小時",
+      "attachment_request_concurrency": "附件上傳：單一請求並行",
+      "attachment_instance_concurrency": "附件上傳：實例並行",
+      "attachment_account_concurrency": "附件上傳：單一帳號並行",
+      "attachment_429_fallback": "附件 429 本機降級（需 pdftotext/libreoffice）",
+      "exclude_failures_from_native_health": "BPS 失敗不計入原生帳號健康",
+      "persist_heuristic_affinity": "跨實例保留推斷會話的帳號親和"
+    },
+    "agentCapturesTitle": "分析封包",
+    "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
+    "agentErrorsTitle": "分析錯誤",
+    "agentErrorsDesc": "分析經過此外掛的錯誤請求。",
+    "agentRequestTitle": "分析此請求",
+    "agentRequestDesc": "分析該請求 ID 的全部封包。",
+    "inherit": "繼承",
+    "forceOn": "強制開啟",
+    "forceOff": "強制關閉",
+    "descriptions": {
+      "bps": "適用於 Codex OAuth 帳號的 Basis Points 通道（Word、Excel、Sheets、PowerPoint 類型）。"
+    },
+    "bpsConfigHints": {
+      "exclude_failures_from_native_health": "開啟時，BPS 的 4xx/5xx、附件上傳、串流內失敗和限流不降低帳號原生健康度，也不觸發冷卻；憑證失效、帳號停用等帳號級訊號仍會上報。",
+      "persist_heuristic_affinity": "開啟時，依對話開頭推斷的會話在所有實例上沿用同一帳號；關閉後只持久化用戶端 task_id，開頭相同的無關對話不會共用帳號，但失去跨實例黏性。"
+    }
+  },
+  "logAgent": {
+    "title": "AI 日誌分析",
+    "description": "將符合條件的記錄分組、遮罩並依上限截斷後，經號池送給所選模型，給出可能根因與證據。",
+    "analyze": "分析",
+    "analyzing": "分析中…",
+    "history": "歷史分析",
+    "historyPlaceholder": "歷史分析",
+    "configLoadFailed": "讀取分析設定失敗：{{message}}",
+    "modelMissing": "日誌分析已開啟，但尚未選擇模型。",
+    "disabledHint": "日誌分析未開啟，請先開啟並選擇閘道 Key 與模型。",
+    "openSettings": "前往設定",
+    "focusPlaceholder": "選填：希望分析重點關注什麼？",
+    "scope": "source={{source}} · refs={{refs}}",
+    "status": {
+      "succeeded": "已完成",
+      "fallback": "非結構化結果",
+      "failed": "失敗"
+    },
+    "confidence": "信心度 {{value}}",
+    "stats": "{{records}} 筆記錄 · {{groups}} 組 · {{tokens}} tokens · {{seconds}}s",
+    "truncated": "上下文已截斷",
+    "failed": "分析失敗。",
+    "fallbackHint": "模型沒有回傳合法的結構化結論，以下顯示其原始回答。",
+    "rootCauses": "可能根因",
+    "actions": "建議操作",
+    "evidence": "證據",
+    "untitled": "（無標題）",
+    "category": {
+      "upstream": "上游",
+      "account": "帳號",
+      "gateway": "閘道",
+      "network": "網路",
+      "client": "用戶端",
+      "config": "設定",
+      "unknown": "未知"
+    },
+    "priority": {
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "evidenceNotOnPage": "{{id}} 不在目前頁面，請調整篩選或時間範圍後查看。",
+    "settings": {
+      "title": "日誌分析 Agent",
+      "description": "依需求對錯誤日誌與外掛抓包進行 AI 診斷。請求經號池送出，用量計入所選閘道 Key。",
+      "loadFailed": "讀取日誌分析設定失敗",
+      "saved": "日誌分析設定已儲存",
+      "saveFailed": "儲存日誌分析設定失敗",
+      "enabled": "啟用日誌分析",
+      "enabledDesc": "關閉時，錯誤頁與外掛頁的分析按鈕無法使用。",
+      "apiKey": "閘道 API Key",
+      "apiKeyDesc": "分析請求的路由、額度與用量歸屬到此 Key；過期或額度耗盡的 Key 會被拒絕。",
+      "noKey": "不綁定 Key（內部請求）",
+      "keyStatus": {
+        "expired": "已過期",
+        "quotaExhausted": "額度耗盡"
+      },
+      "model": "分析模型",
+      "modelDesc": "號池中可輸出 JSON 的模型，模型越強診斷越準。",
+      "modelPlaceholder": "選擇模型",
+      "maxInput": "上下文上限",
+      "maxInputDesc": "送給模型的證據上限（約 4 位元組/token）。",
+      "maxRecords": "記錄上限",
+      "maxRecordsDesc": "每次分析讀取的記錄數，讀取後再合併相似錯誤。",
+      "timeout": "逾時",
+      "timeoutDesc": "等待模型回傳的最長時間。",
+      "retention": "分析記錄保留天數",
+      "retentionDesc": "超過天數的分析記錄自動刪除。"
+    }
+  },
+  "opsErrors": {
+    "logAgentDesc": "分析目前篩選條件與時間範圍內的錯誤。",
+    "logAgentRequestTitle": "分析此請求",
+    "logAgentRequestDesc": "分析此請求 ID 下記錄的全部嘗試。"
   }
 }

@@ -228,8 +228,17 @@ func (h *Handler) GetPromptIntelligenceAIProviders(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	now := time.Now()
-	safeKeys := make([]gin.H, 0, len(keys))
+	review := promptfilter.NormalizeReviewConfig(h.store.GetPromptFilterConfig().Review)
+	c.JSON(http.StatusOK, gin.H{
+		"review":       gin.H{"configured": len(review.APIKeyList()) > 0, "model": review.Model, "key_count": len(review.APIKeyList())},
+		"gateway_keys": gatewayAPIKeyOptions(keys, time.Now()),
+	})
+}
+
+// gatewayAPIKeyOptions 把网关 Key 列成管理台可选项（只含掩码与可用状态），
+// 供提示词情报与日志分析 Agent 等内部分析功能选择计费归属。
+func gatewayAPIKeyOptions(keys []*database.APIKeyRow, now time.Time) []gin.H {
+	options := make([]gin.H, 0, len(keys))
 	for _, row := range keys {
 		status := "active"
 		if row.IsExpired(now) {
@@ -237,13 +246,28 @@ func (h *Handler) GetPromptIntelligenceAIProviders(c *gin.Context) {
 		} else if row.IsQuotaExhausted() {
 			status = "quota_exhausted"
 		}
-		safeKeys = append(safeKeys, gin.H{"id": row.ID, "name": row.Name, "masked": security.MaskAPIKey(row.Key), "status": status})
+		options = append(options, gin.H{"id": row.ID, "name": row.Name, "masked": security.MaskAPIKey(row.Key), "status": status})
 	}
-	review := promptfilter.NormalizeReviewConfig(h.store.GetPromptFilterConfig().Review)
-	c.JSON(http.StatusOK, gin.H{
-		"review":       gin.H{"configured": len(review.APIKeyList()) > 0, "model": review.Model, "key_count": len(review.APIKeyList())},
-		"gateway_keys": safeKeys,
-	})
+	return options
+}
+
+// resolveInternalGatewayAPIKey 读取内部分析选定的网关 Key，拒绝不存在、过期或额度耗尽的 Key；
+// id<=0 表示不绑定 Key，返回 nil。
+func (h *Handler) resolveInternalGatewayAPIKey(ctx context.Context, id int64) (*database.APIKeyRow, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+	row, err := h.db.GetAPIKeyByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("选择的网关 API Key 不存在")
+		}
+		return nil, err
+	}
+	if row.IsExpired(time.Now()) || row.IsQuotaExhausted() {
+		return nil, errors.New("选择的网关 API Key 当前不可用")
+	}
+	return row, nil
 }
 
 func (h *Handler) AnalyzePromptIntelligenceCandidate(c *gin.Context) {
@@ -760,19 +784,9 @@ func (h *Handler) callPromptIntelligenceAI(ctx context.Context, request promptIn
 	if promptIntelligenceModerationOnlyModel(model) {
 		return "", promptIntelligenceAICallAttribution{}, fmt.Errorf("%w：当前模型 %q 仅支持 Moderations，请切换到可生成 JSON 的 Chat 模型", errPromptIntelligenceRequiresChatModel, model)
 	}
-	var row *database.APIKeyRow
-	var err error
-	if request.APIKeyID > 0 {
-		row, err = h.db.GetAPIKeyByID(ctx, request.APIKeyID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return "", promptIntelligenceAICallAttribution{}, errors.New("选择的网关 API Key 不存在")
-			}
-			return "", promptIntelligenceAICallAttribution{}, err
-		}
-		if row.IsExpired(time.Now()) || row.IsQuotaExhausted() {
-			return "", promptIntelligenceAICallAttribution{}, errors.New("选择的网关 API Key 当前不可用")
-		}
+	row, err := h.resolveInternalGatewayAPIKey(ctx, request.APIKeyID)
+	if err != nil {
+		return "", promptIntelligenceAICallAttribution{}, err
 	}
 	body, _ := json.Marshal(map[string]any{"model": model, "instructions": systemPrompt, "input": input, "stream": false})
 	poolCtx, cancel := context.WithTimeout(ctx, promptIntelligenceAIAnalysisTimeout)

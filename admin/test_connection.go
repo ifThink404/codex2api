@@ -107,6 +107,10 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		account = transient
 		isTransient = true
 	}
+	// 测试路径（auto/codex/bps）只作用于本次测试，必须早于上游 Excel BPS 拦截。
+	if !h.applyCodexTestMode(c, account, c.Query("test_mode")) {
+		return
+	}
 	// 连接测试虽是 SSE GET，却会写入未授权、错误、限流或恢复状态。等流结束后
 	// 再失效列表/分析快照，避免账号页继续把已判定的 401 账号显示为“未采样”。
 	if !isTransient {
@@ -201,7 +205,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 
 	// 发送请求
 	start := time.Now()
-	if account.IsExcelBPSAvailableForModel(testModel) {
+	if proxy.UpstreamExcelBPSActive(account, testModel) {
 		// Keep account probes on the same Responses-shaped adapter as normal
 		// traffic. This also covers quality tests, whose HTML prompt is already
 		// represented as a standard Responses input item.
@@ -222,7 +226,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else {
-		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
+		resp, reqErr = proxy.ExecuteCodexConnectionTest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account))
 	}
 	if reqErr != nil {
 		h.logConnectionTestTransportFailure(c, account, usageReason, usageEndpoint, testModel, usageEffort, start, reqErr)
@@ -1237,6 +1241,8 @@ type batchTestRequest struct {
 	Selector *accountOperationSelector `json:"selector,omitempty"`
 	// RestoreOnSuccess 仅回收站批量测试使用：测试通过的账号自动恢复到账号池。
 	RestoreOnSuccess bool `json:"restore_on_success"`
+	// TestMode 选择本次测试路径：auto（按账号配置）/ codex / bps，不写账号配置。
+	TestMode string `json:"test_mode"`
 }
 
 // persistRecycleBinTestResult 将回收站测试结果写入账号 credentials，供列表展示。
@@ -1363,6 +1369,9 @@ func (h *Handler) BatchTest(c *gin.Context) {
 	}
 	if req.IDs != nil && req.Selector != nil {
 		writeError(c, http.StatusBadRequest, "ids 与 selector 不能同时提供")
+		return
+	}
+	if !h.applyCodexTestMode(c, nil, req.TestMode) {
 		return
 	}
 	if req.Selector != nil {
@@ -1665,7 +1674,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	if status, msg, done := h.batchTestSkipDeactivatedWorkspace(acc); done {
 		return status, msg
 	}
-	if acc.IsExcelBPSEnabled() {
+	if proxy.UpstreamExcelBPSActive(acc, "") {
 		return h.runExcelBPSBatchTest(testCtx, acc)
 	}
 
@@ -1697,7 +1706,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
+		resp, err = proxy.ExecuteCodexConnectionTest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc))
 	}
 	if err != nil {
 		if msg, ok := batchTestContextFailure(testCtx, err); ok {
@@ -1863,7 +1872,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
+		resp, err = proxy.ExecuteCodexConnectionTest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc))
 	}
 	if err != nil {
 		if msg, ok := batchTestContextFailure(testCtx, err); ok {
@@ -2006,7 +2015,26 @@ func (h *Handler) batchTestSkipDeactivatedWorkspace(acc *auth.Account) (string, 
 	return "failed", msg, true
 }
 
+// applyCodexTestMode installs the per-test transport mode. account is
+// validated when known (single tests); batch tests validate per account.
+func (h *Handler) applyCodexTestMode(c *gin.Context, account *auth.Account, mode string) bool {
+	ctx, err := proxy.WithCodexTestMode(c.Request.Context(), mode)
+	if err == nil && account != nil {
+		err = proxy.ValidateCodexTestMode(ctx, account)
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return false
+	}
+	c.Request = c.Request.WithContext(ctx)
+	return true
+}
+
 func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account) (string, string, bool) {
+	// BPS tests skip the native WHAM preflight and verify the chosen path.
+	if proxy.CodexTestModeLabel(ctx, acc) == "bps" {
+		return "", "", false
+	}
 	if h == nil || h.store == nil || acc == nil || acc.IsRelayStyle() || acc.GetAccessToken() == "" {
 		return "", "", false
 	}

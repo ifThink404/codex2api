@@ -16,7 +16,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { api, getAdminKey } from "../api";
-import type { AccountRow } from "../types";
+import type { AccountRow, CodexTestMode } from "../types";
+import { isBPSAccount } from "../lib/bpsAccount";
 import type { CodexTestDiagnostics, CodexTestWindow } from "../lib/codexConnectionTest";
 import {
   clampCodexTestPercent,
@@ -110,6 +111,9 @@ export default function TestConnectionModal({
   const [rawOpen, setRawOpen] = useState(false);
   const [detectorOpen, setDetectorOpen] = useState(false);
   const [testContent, setTestContent] = useState("hi");
+  // Per-test transport path (auto/codex/bps); never written to the account.
+  const [testMode, setTestMode] = useState<CodexTestMode>("auto");
+  const testModeAvailable = isBPSAccount(account);
   const abortRef = useRef<AbortController | null>(null);
   const outputEndRef = useRef<HTMLDivElement>(null);
   const settledRef = useRef(false);
@@ -311,6 +315,9 @@ export default function TestConnectionModal({
         const params = new URLSearchParams({ model: selectedModel, prompt: testContent });
         if (restoreOnSuccess) {
           params.set("restore_on_success", "true");
+        }
+        if (testModeAvailable && testMode !== "auto") {
+          params.set("test_mode", testMode);
         }
         const res = await fetch(
           `/api/admin/accounts/${account.id}/test?${params.toString()}`,
@@ -633,6 +640,20 @@ export default function TestConnectionModal({
             />
             {statusText}
           </span>
+          {testModeAvailable && (
+            <Select
+              className="w-40 max-w-full"
+              compact
+              value={testMode}
+              onValueChange={(value) => setTestMode(value as CodexTestMode)}
+              options={(["auto", "codex", "bps"] as CodexTestMode[]).map((value) => ({
+                value,
+                label: t(`accounts.bps.testModes.${value}`),
+              }))}
+              disabled={running}
+              aria-label={t("accounts.bps.testMode")}
+            />
+          )}
           <Select
             className="w-52 max-w-full"
             compact

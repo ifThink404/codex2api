@@ -2,6 +2,12 @@ import { serviceErrorSearchParams, type ServiceErrorPage, type ServiceErrorQuery
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
   BuiltinPromptRuleFields,
+  PluginCapture,
+  PluginCapturePage,
+  PluginCaptureQuery,
+  TransportPlugin,
+  TransportPluginsResponse,
+  TransportPluginUpdate,
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
   AccountPortalSubmitResponse,
@@ -476,6 +482,7 @@ function buildOpsErrorSearchParams(params: {
   stream?: string
   fast?: string
   q?: string
+  transport?: string
   dedupe?: boolean
   excludeStatus?: string
 }) {
@@ -486,6 +493,7 @@ function buildOpsErrorSearchParams(params: {
   if (params.errorKind) search.set('error_kind', params.errorKind)
   if (params.endpoint) search.set('endpoint', params.endpoint)
   if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
+  if (params.transport) search.set('transport', params.transport)
   if (params.stream) search.set('stream', params.stream)
   if (params.fast) search.set('fast', params.fast)
   if (params.q) search.set('q', params.q)
@@ -524,6 +532,8 @@ export type UsageLogQueryParams = {
   turnStateEcho?: string
   /** true | false —— 代理有没有把客户端回带的 turn-state 剥掉。 */
   turnStateStripped?: string
+  /** native 或传输插件 ID。 */
+  transport?: string
 }
 
 export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
@@ -553,6 +563,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.turnStateLength) search.set('turn_state_length', params.turnStateLength)
   if (params.turnStateEcho) search.set('turn_state_echo', params.turnStateEcho)
   if (params.turnStateStripped) search.set('turn_state_stripped', params.turnStateStripped)
+  if (params.transport) search.set('transport', params.transport)
   return search
 }
 
@@ -1129,6 +1140,7 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     return request<OpsErrorSummary>(`/ops/errors/summary?${search.toString()}`)
@@ -1148,6 +1160,7 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     search.set('page', String(params.page))
@@ -1164,12 +1177,34 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
     dedupe?: boolean
     excludeStatus?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     return requestBlob(`/ops/errors/export?${search.toString()}`)
   },
+  getLogAgentConfig: () => request<import('./types').LogAgentConfigResponse>('/log-agent/config'),
+  updateLogAgentConfig: (config: import('./types').LogAgentConfig) =>
+    request<{ config: import('./types').LogAgentConfig }>('/log-agent/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+  // 后端按配置的超时(最长 300s)同步分析,客户端多留余量给取日志与落库。
+  analyzeLogAgent: (data: import('./types').LogAgentAnalyzeRequest) =>
+    request<{ run: import('./types').LogAgentRun }>('/log-agent/analyze', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 330_000,
+    }),
+  listLogAgentRuns: (params: { source?: string; beforeId?: number; limit?: number } = {}) => {
+    const search = new URLSearchParams()
+    if (params.source) search.set('source', params.source)
+    if (params.beforeId) search.set('before_id', String(params.beforeId))
+    if (params.limit) search.set('limit', String(params.limit))
+    return request<{ runs: import('./types').LogAgentRun[] }>(`/log-agent/runs?${search.toString()}`)
+  },
+  getLogAgentRun: (id: number) => request<{ run: import('./types').LogAgentRun }>(`/log-agent/runs/${id}`),
   // 区间统计卡片可携带与 /usage/logs 同一套维度筛选(账号/密钥/模型/端点/搜索等),
   // 后端会忽略状态类参数;累计字段始终全局。
   getUsageStats: (params: Partial<Omit<UsageLogQueryParams, 'start' | 'end'>> & {
@@ -1438,6 +1473,30 @@ export const api = {
 	getPromptPolicyAuditHealth: () =>
 		request<PromptPolicyAuditHealth>('/prompt-policy/incidents/health'),
 	getPromptLogRetention: () => request<PromptLogRetention>('/prompt-filter/retention'),
+	getTransportPlugins: () => request<TransportPluginsResponse>('/plugins'),
+	getTransportPlugin: (id: string) => request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`),
+	updateTransportPlugin: (id: string, update: TransportPluginUpdate) =>
+		request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(update) }),
+	setTransportPluginAccountOverride: (id: string, accountId: number, enabled: boolean | null) =>
+		request<{ account_id: number; plugin: string; enabled: boolean | null }>(
+			`/plugins/${encodeURIComponent(id)}/accounts/${accountId}`,
+			{ method: 'PUT', body: JSON.stringify({ enabled }) },
+		),
+	getPluginCaptures: (id: string, query: PluginCaptureQuery = {}) => {
+		const search = new URLSearchParams()
+		if (query.requestId) search.set('request_id', query.requestId)
+		if (query.accountId) search.set('account_id', String(query.accountId))
+		if (query.status !== undefined) search.set('status', String(query.status))
+		if (query.direction) search.set('direction', query.direction)
+		if (query.start) search.set('start', query.start)
+		if (query.end) search.set('end', query.end)
+		if (query.page) search.set('page', String(query.page))
+		if (query.pageSize) search.set('page_size', String(query.pageSize))
+		const qs = search.toString()
+		return request<PluginCapturePage>(`/plugins/${encodeURIComponent(id)}/captures${qs ? `?${qs}` : ''}`)
+	},
+	getPluginCapture: (id: string, captureId: number) =>
+		request<PluginCapture>(`/plugins/${encodeURIComponent(id)}/captures/${captureId}`),
 	updatePromptLogRetention: (retentionDays: number) =>
 		request<PromptLogRetention>('/prompt-filter/retention', { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) }),
 	runPromptLogRetention: () =>

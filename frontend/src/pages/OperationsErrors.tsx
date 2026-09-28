@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { api } from '../api'
 import OpsTabs from '../components/OpsTabs'
+import LogAgentPanel from '../components/LogAgentPanel'
 import PageHeader from '../components/PageHeader'
 import { StatTile } from '../components/StatTile'
 import { SegmentedTabs } from '../components/SegmentedTabs'
@@ -24,6 +25,7 @@ import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
 import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
+import { opsErrorLogAgentFilters, usageLogIdFromEvidence } from '../lib/logAgent'
 import { formatCompactEmail } from '../lib/utils'
 import { formatBeijingTime } from '../utils/time'
 import type { APIKeyRow, OpsErrorSummary, UsageLog } from '../types'
@@ -55,10 +57,12 @@ const errorTableHeadClass = 'text-[12px] font-semibold'
 const errorTableTextClass = 'text-[14px]'
 const errorTableMonoClass = 'font-geist-mono text-[13px] tabular-nums'
 
-export default function OperationsErrors() {
+// `transport` scopes every query to one usage-log transport (a plugin page
+// embeds this view); `embedded` drops the Ops page header and tabs.
+export default function OperationsErrors({ transport, embedded = false }: { transport?: string; embedded?: boolean } = {}) {
   const { t } = useTranslation()
   const { toast, showToast } = useToast()
-  const [timeRange, setTimeRange] = useState<TimeRangeKey>('1h')
+  const [timeRange, setTimeRange] = useState<TimeRangeKey>(embedded ? '24h' : '1h')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = usePersistedPageSize('ops_errors', 20, pageSizeOptions)
   const [statusFilter, setStatusFilter] = useState('')
@@ -102,8 +106,9 @@ export default function OperationsErrors() {
       apiKeyId: apiKeyFilter,
       stream: streamFilter,
       q: searchQuery,
+      transport,
     }
-  }, [apiKeyFilter, endpointFilter, errorKindFilter, searchQuery, statusFilter, streamFilter, timeRange])
+  }, [apiKeyFilter, endpointFilter, errorKindFilter, searchQuery, statusFilter, streamFilter, timeRange, transport])
 
   const loadErrorData = useCallback(async () => {
     const baseParams = buildBaseParams()
@@ -193,6 +198,17 @@ export default function OperationsErrors() {
     }
   }
 
+  // 分析结论引用的证据若在当前页，直接打开详情；否则提示调整筛选。
+  const openEvidence = (evidenceId: string) => {
+    const id = usageLogIdFromEvidence(evidenceId)
+    const log = id === null ? undefined : data.logs.find((item) => item.id === id)
+    if (log) {
+      setSelectedLog(log)
+    } else {
+      showToast(t('logAgent.evidenceNotOnPage', { id: evidenceId }), 'info')
+    }
+  }
+
   const copyLog = async (log: UsageLog) => {
     const text = JSON.stringify({
       id: log.id,
@@ -234,17 +250,19 @@ export default function OperationsErrors() {
       errorTitle={t('opsErrors.errorTitle')}
     >
       <>
-        <PageHeader
-          title={t('opsErrors.title')}
-          description={t('opsErrors.description')}
-          actions={
-            <Button variant="outline" onClick={() => void reload()}>
-              <RefreshCw className="size-3.5" />
-              {t('common.refresh')}
-            </Button>
-          }
-        />
-        <OpsTabs />
+        {!embedded && (
+          <PageHeader
+            title={t('opsErrors.title')}
+            description={t('opsErrors.description')}
+            actions={
+              <Button variant="outline" onClick={() => void reload()}>
+                <RefreshCw className="size-3.5" />
+                {t('common.refresh')}
+              </Button>
+            }
+          />
+        )}
+        {!embedded && <OpsTabs />}
 
         <div className="mb-6 grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
           <StatTile
@@ -282,6 +300,19 @@ export default function OperationsErrors() {
             value={formatNumber(data.summary?.retry_attempts ?? 0)}
             icon={<RotateCcw className="size-4" />}
             tone="info"
+          />
+        </div>
+
+        <div className="mb-6">
+          <LogAgentPanel
+            source="ops_errors"
+            filters={opsErrorLogAgentFilters(buildBaseParams())}
+            getRange={() => {
+              const { start, end } = buildBaseParams()
+              return { start, end }
+            }}
+            description={t('opsErrors.logAgentDesc')}
+            onEvidenceClick={openEvidence}
           />
         </div>
 
@@ -606,6 +637,20 @@ export default function OperationsErrors() {
                   <DetailRow label={t('usage.upstreamTurnState')} value={selectedLog.upstream_turn_state || '-'} mono />
                 </DetailPanel>
               </div>
+
+              {selectedLog.request_id ? (
+                <div className="rounded-lg border border-border bg-card/75 p-4">
+                  <LogAgentPanel
+                    key={selectedLog.request_id}
+                    bare
+                    showHistory={false}
+                    source="usage_logs"
+                    refs={[selectedLog.request_id]}
+                    title={t('opsErrors.logAgentRequestTitle')}
+                    description={t('opsErrors.logAgentRequestDesc')}
+                  />
+                </div>
+              ) : null}
 
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => void copyLog(selectedLog)}>

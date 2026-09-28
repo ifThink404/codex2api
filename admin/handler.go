@@ -111,6 +111,7 @@ type Handler struct {
 	imageProxy                 *proxy.Handler
 	antigravitySyncAccount     func(context.Context, int64) antigravityRefreshItem
 	antigravityCapabilityProbe antigravityCapabilityExecutor
+	logAgent                   logAgentState
 	// Claude / Antigravity 渠道连通性测试配置的进程内缓存（首次读库，PUT 刷新）。
 	channelTestCfg        atomic.Pointer[database.ChannelTestConfig]
 	channelMonitorWake    chan struct{}
@@ -1293,6 +1294,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors/export", h.ExportOpsErrorLogs)
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
 	api.GET("/ops/service-errors", h.GetServiceErrorLogs)
+	h.registerLogAgentRoutes(api)
 	api.GET("/settings", h.GetSettings)
 	api.GET("/settings/export", h.ExportSettings)
 	api.PUT("/settings", h.UpdateSettings)
@@ -1318,6 +1320,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/prompt-filter/retention", h.GetPromptLogRetention)
 	api.PUT("/prompt-filter/retention", h.UpdatePromptLogRetention)
 	api.POST("/prompt-filter/retention/run", h.RunPromptLogRetentionNow)
+	h.registerTransportPluginRoutes(api)
 	api.GET("/prompt-policy/incidents", h.ListPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents", h.ClearPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents/:incident_id", h.DeletePromptPolicyIncident)
@@ -1695,136 +1698,136 @@ type accountResponse struct {
 	SkipWarmTier bool `json:"skip_warm_tier"`
 	// 账号级策略（auth/account_policies.go）；三列都以 inherit 为默认，
 	// 不加 omitempty——前端下拉要能区分"继承"和"字段缺失"。
-	PromptFilterPolicy            string                      `json:"prompt_filter_policy"`
-	EgressPolicy                  string                      `json:"egress_policy"`
-	SessionGuardsPolicy           string                      `json:"session_guards_policy"`
-	AccountType                   string                      `json:"account_type,omitempty"`
-	AccessTokenType               string                      `json:"access_token_type,omitempty"`
-	OpenAIResponsesAPI            bool                        `json:"openai_responses_api,omitempty"`
-	GrokAPI                       bool                        `json:"grok_api,omitempty"`
-	AntigravityAPI                bool                        `json:"antigravity_api,omitempty"`
-	ClaudeAPI                     bool                        `json:"claude_api,omitempty"`
-	ExcelBPSEnabled               bool                        `json:"openai_excel_bps,omitempty"`
-	ClaudeAuthKind                string                      `json:"claude_auth_kind,omitempty"`
-	ClaudeBaseURL                 string                      `json:"claude_base_url,omitempty"`
-	AntigravityAuthKind           string                      `json:"antigravity_auth_kind,omitempty"`
-	AgentIdentity                 bool                        `json:"agent_identity,omitempty"`
-	GrokAuthKind                  string                      `json:"grok_auth_kind,omitempty"`
-	GrokPlan                      *auth.GrokPlan              `json:"grok_plan,omitempty"`
-	GrokPlanDisplay               *database.GrokPlanDisplay   `json:"grok_plan_display,omitempty"`
-	GrokModels                    *database.GrokModelSummary  `json:"grok_models,omitempty"`
-	GrokBilling                   json.RawMessage             `json:"grok_billing,omitempty"`
-	GrokRateLimit                 *auth.GrokRateLimitSnapshot `json:"grok_rate_limit,omitempty"`
-	GrokFreeQuota                 *auth.GrokFreeQuotaSnapshot `json:"grok_free_quota,omitempty"`
-	AvatarURL                     string                      `json:"avatar_url,omitempty"`
-	VerifiedEmail                 bool                        `json:"verified_email,omitempty"`
-	ProjectID                     string                      `json:"project_id,omitempty"`
-	AntigravityQuota              json.RawMessage             `json:"antigravity_quota,omitempty"`
-	AntigravityPermissions        json.RawMessage             `json:"antigravity_permissions,omitempty"`
-	AntigravitySyncWarning        string                      `json:"antigravity_sync_warning,omitempty"`
-	BaseURL                       string                      `json:"base_url,omitempty"`
-	BalanceQueryURL               string                      `json:"balance_query_url,omitempty"`
-	Models                        []string                    `json:"models,omitempty"`
-	ModelMapping                  string                      `json:"model_mapping,omitempty"`
-	CodexClientMetadataMode       string                      `json:"codex_client_metadata_mode,omitempty"`
-	CodexPassthroughMode          string                      `json:"codex_passthrough_mode,omitempty"`
-	ResponsesUpstreamTransport    string                      `json:"responses_upstream_transport,omitempty"`
-	CodexFingerprintMode          string                      `json:"codex_fingerprint_mode,omitempty"`
-	ClaudeFingerprintMode         string                      `json:"claude_fingerprint_mode,omitempty"`
-	ClaudeUserAgent               string                      `json:"claude_user_agent,omitempty"`
-	ClaudeClientPlatform          string                      `json:"claude_client_platform,omitempty"`
-	ClaudeVersionPolicy           string                      `json:"claude_version_policy,omitempty"`
-	ClaudeClientVersion           string                      `json:"claude_client_version,omitempty"`
-	ClaudeClientPlatformOverride  string                      `json:"claude_client_platform_override,omitempty"`
-	ClaudeVersionPolicyOverride   string                      `json:"claude_version_policy_override,omitempty"`
-	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
-	Timezone                      string                      `json:"timezone,omitempty"`
-	CodexBPS                      bool                        `json:"codex_bps_enabled"`
-	AccountHref                   string                      `json:"account_href,omitempty"`
-	CustomHeaders                 map[string]string           `json:"custom_headers,omitempty"`
-	HealthTier                    string                      `json:"health_tier"`
-	SchedulerScore                float64                     `json:"scheduler_score"`
-	DispatchScore                 float64                     `json:"dispatch_score"`
-	ScoreBiasOverride             *int64                      `json:"score_bias_override"`
-	ScoreBiasEffective            int64                       `json:"score_bias_effective"`
-	BaseConcurrencyOverride       *int64                      `json:"base_concurrency_override"`
-	BaseConcurrencyEffective      int64                       `json:"base_concurrency_effective"`
-	ConcurrencyCap                int64                       `json:"dynamic_concurrency_limit"`
-	ProxyURL                      string                      `json:"proxy_url"`
-	CreatedAt                     string                      `json:"created_at"`
-	UpdatedAt                     string                      `json:"updated_at"`
-	CodexUsageUpdatedAt           string                      `json:"codex_usage_updated_at,omitempty"`
-	Codex5HUsageUpdatedAt         string                      `json:"codex_5h_usage_updated_at,omitempty"`
-	ClaudeUsageProbeAt            string                      `json:"claude_usage_probe_at,omitempty"`
-	ClaudeUsageProbeError         string                      `json:"claude_usage_probe_error,omitempty"`
-	ClaudeUsageWindows            []auth.ClaudeUsageWindow    `json:"claude_usage_windows,omitempty"`
-	ClaudeUsageWindowsProbed      bool                        `json:"claude_usage_windows_probed,omitempty"` // 已跑过 OAuth usage 采样(前端据此只回填从未采样的旧行)
-	ActiveRequests                int64                       `json:"active_requests"`
-	OccupiedRequests              int64                       `json:"occupied_requests"`
-	SessionSlotBufferEnabled      bool                        `json:"session_slot_buffer_enabled"`
-	TotalRequests                 int64                       `json:"total_requests"`
-	LastUsedAt                    string                      `json:"last_used_at"`
-	SuccessRequests               int64                       `json:"success_requests"`
-	ErrorRequests                 int64                       `json:"error_requests"`
-	RetryErrorRequests            int64                       `json:"retry_error_requests"`
-	RateLimitAttempts             int64                       `json:"rate_limit_attempts"`
-	ErrorStatusCounts             map[string]int64            `json:"error_status_counts,omitempty"`
-	SuccessModelCounts            map[string]int64            `json:"success_model_counts,omitempty"`
-	UsagePercent7d                *float64                    `json:"usage_percent_7d"`
-	UsagePercent5h                *float64                    `json:"usage_percent_5h"`
-	UsagePercentSpark             *float64                    `json:"usage_percent_spark"`
-	RateLimitResetCredits         *int                        `json:"rate_limit_reset_credits"`
-	DaybreakSupported             bool                        `json:"daybreak_supported"`
-	DaybreakModels                map[string][]string         `json:"daybreak_models,omitempty"`
-	DaybreakCheckedAt             int64                       `json:"daybreak_checked_at,omitempty"`
-	ApplicableResetCredits        *int                        `json:"applicable_reset_credits"`
-	CreditsValid                  bool                        `json:"credits_valid"`
-	CreditsBalance                *string                     `json:"credits_balance"`
-	CreditsHasCredits             *bool                       `json:"credits_has_credits"`
-	CreditsUnlimited              *bool                       `json:"credits_unlimited"`
-	CreditsOverageLimitReached    *bool                       `json:"credits_overage_limit_reached"`
-	CreditsSpendControlReached    *bool                       `json:"credits_spend_control_reached,omitempty"`
-	CreditsRateLimitReachedType   string                      `json:"credits_rate_limit_reached_type,omitempty"`
-	AutoPause5hThreshold          *float64                    `json:"auto_pause_5h_threshold"`
-	AutoPause7dThreshold          *float64                    `json:"auto_pause_7d_threshold"`
-	AutoPause5hDisabled           bool                        `json:"auto_pause_5h_disabled"`
-	AutoPause7dDisabled           bool                        `json:"auto_pause_7d_disabled"`
-	UsageLimitOverride            *bool                       `json:"ignore_usage_limit_status_override"`
-	UsageLimitEffective           bool                        `json:"ignore_usage_limit_status_effective"`
-	DispatchCountLimit            *int64                      `json:"dispatch_count_limit"`
-	DispatchCountUsed             int64                       `json:"dispatch_count_used,omitempty"`
-	DispatchCountResetAt          string                      `json:"dispatch_count_reset_at,omitempty"`
-	DispatchCountLimited          bool                        `json:"dispatch_count_limited,omitempty"`
-	SchedulerPriority             *int64                      `json:"scheduler_priority"`
-	Usage5hDetail                 *accountUsageWindow         `json:"usage_5h_detail,omitempty"`
-	Usage7dDetail                 *accountUsageWindow         `json:"usage_7d_detail,omitempty"`
-	Reset5hAt                     string                      `json:"reset_5h_at,omitempty"`
-	Reset7dAt                     string                      `json:"reset_7d_at,omitempty"`
-	ResetSparkAt                  string                      `json:"reset_spark_at,omitempty"`
-	Window7dKind                  string                      `json:"usage_window_7d_kind,omitempty"`    // "monthly"(team 月窗)/"weekly"/""；供前端标「30天」而非误标「7天」
-	Window7dSeconds               *int64                      `json:"usage_window_7d_seconds,omitempty"` // 长窗口真实周期秒数
-	Billed5h                      *float64                    `json:"billed_5h"`
-	Billed7d                      *float64                    `json:"billed_7d"`
-	ScoreBreakdown                schedulerBreakdownResponse  `json:"scheduler_breakdown"`
-	LastUnauthorizedAt            string                      `json:"last_unauthorized_at,omitempty"`
-	LastRateLimitedAt             string                      `json:"last_rate_limited_at,omitempty"`
-	LastTimeoutAt                 string                      `json:"last_timeout_at,omitempty"`
-	LastServerErrorAt             string                      `json:"last_server_error_at,omitempty"`
-	CooldownReason                string                      `json:"cooldown_reason,omitempty"`
-	CooldownUntil                 string                      `json:"cooldown_until,omitempty"`
-	ModelCooldowns                []modelCooldownResponse     `json:"model_cooldowns,omitempty"`
-	ModelCooldownModeOverride     *string                     `json:"model_cooldown_mode_override"`
-	ModelCooldownSecondsOverride  *int                        `json:"model_cooldown_seconds_override"`
-	ModelCooldownBackoffOverride  *bool                       `json:"model_cooldown_backoff_override"`
-	ModelCooldownModeEffective    string                      `json:"model_cooldown_mode_effective"`
-	ModelCooldownSecondsEffective int                         `json:"model_cooldown_seconds_effective"`
-	ModelCooldownBackoffEffective bool                        `json:"model_cooldown_backoff_effective"`
-	Enabled                       bool                        `json:"enabled"`
-	Locked                        bool                        `json:"locked"`
-	AllowedAPIKeyIDs              []int64                     `json:"allowed_api_key_ids"`
-	Tags                          []string                    `json:"tags"`
-	GroupIDs                      []int64                     `json:"group_ids"`
-	Note                          string                      `json:"note"`
+	PromptFilterPolicy           string                      `json:"prompt_filter_policy"`
+	EgressPolicy                 string                      `json:"egress_policy"`
+	SessionGuardsPolicy          string                      `json:"session_guards_policy"`
+	AccountType                  string                      `json:"account_type,omitempty"`
+	AccessTokenType              string                      `json:"access_token_type,omitempty"`
+	OpenAIResponsesAPI           bool                        `json:"openai_responses_api,omitempty"`
+	GrokAPI                      bool                        `json:"grok_api,omitempty"`
+	AntigravityAPI               bool                        `json:"antigravity_api,omitempty"`
+	ClaudeAPI                    bool                        `json:"claude_api,omitempty"`
+	ExcelBPSEnabled              bool                        `json:"openai_excel_bps,omitempty"`
+	ClaudeAuthKind               string                      `json:"claude_auth_kind,omitempty"`
+	ClaudeBaseURL                string                      `json:"claude_base_url,omitempty"`
+	AntigravityAuthKind          string                      `json:"antigravity_auth_kind,omitempty"`
+	AgentIdentity                bool                        `json:"agent_identity,omitempty"`
+	GrokAuthKind                 string                      `json:"grok_auth_kind,omitempty"`
+	GrokPlan                     *auth.GrokPlan              `json:"grok_plan,omitempty"`
+	GrokPlanDisplay              *database.GrokPlanDisplay   `json:"grok_plan_display,omitempty"`
+	GrokModels                   *database.GrokModelSummary  `json:"grok_models,omitempty"`
+	GrokBilling                  json.RawMessage             `json:"grok_billing,omitempty"`
+	GrokRateLimit                *auth.GrokRateLimitSnapshot `json:"grok_rate_limit,omitempty"`
+	GrokFreeQuota                *auth.GrokFreeQuotaSnapshot `json:"grok_free_quota,omitempty"`
+	AvatarURL                    string                      `json:"avatar_url,omitempty"`
+	VerifiedEmail                bool                        `json:"verified_email,omitempty"`
+	ProjectID                    string                      `json:"project_id,omitempty"`
+	AntigravityQuota             json.RawMessage             `json:"antigravity_quota,omitempty"`
+	AntigravityPermissions       json.RawMessage             `json:"antigravity_permissions,omitempty"`
+	AntigravitySyncWarning       string                      `json:"antigravity_sync_warning,omitempty"`
+	BaseURL                      string                      `json:"base_url,omitempty"`
+	BalanceQueryURL              string                      `json:"balance_query_url,omitempty"`
+	Models                       []string                    `json:"models,omitempty"`
+	ModelMapping                 string                      `json:"model_mapping,omitempty"`
+	CodexClientMetadataMode      string                      `json:"codex_client_metadata_mode,omitempty"`
+	CodexPassthroughMode         string                      `json:"codex_passthrough_mode,omitempty"`
+	ResponsesUpstreamTransport   string                      `json:"responses_upstream_transport,omitempty"`
+	CodexFingerprintMode         string                      `json:"codex_fingerprint_mode,omitempty"`
+	ClaudeFingerprintMode        string                      `json:"claude_fingerprint_mode,omitempty"`
+	ClaudeUserAgent              string                      `json:"claude_user_agent,omitempty"`
+	ClaudeClientPlatform         string                      `json:"claude_client_platform,omitempty"`
+	ClaudeVersionPolicy          string                      `json:"claude_version_policy,omitempty"`
+	ClaudeClientVersion          string                      `json:"claude_client_version,omitempty"`
+	ClaudeClientPlatformOverride string                      `json:"claude_client_platform_override,omitempty"`
+	ClaudeVersionPolicyOverride  string                      `json:"claude_version_policy_override,omitempty"`
+	ClaudeClientVersionOverride  string                      `json:"claude_client_version_override,omitempty"`
+	Timezone                     string                      `json:"timezone,omitempty"`
+	codexBPSAccountView
+	AccountHref                   string                     `json:"account_href,omitempty"`
+	CustomHeaders                 map[string]string          `json:"custom_headers,omitempty"`
+	HealthTier                    string                     `json:"health_tier"`
+	SchedulerScore                float64                    `json:"scheduler_score"`
+	DispatchScore                 float64                    `json:"dispatch_score"`
+	ScoreBiasOverride             *int64                     `json:"score_bias_override"`
+	ScoreBiasEffective            int64                      `json:"score_bias_effective"`
+	BaseConcurrencyOverride       *int64                     `json:"base_concurrency_override"`
+	BaseConcurrencyEffective      int64                      `json:"base_concurrency_effective"`
+	ConcurrencyCap                int64                      `json:"dynamic_concurrency_limit"`
+	ProxyURL                      string                     `json:"proxy_url"`
+	CreatedAt                     string                     `json:"created_at"`
+	UpdatedAt                     string                     `json:"updated_at"`
+	CodexUsageUpdatedAt           string                     `json:"codex_usage_updated_at,omitempty"`
+	Codex5HUsageUpdatedAt         string                     `json:"codex_5h_usage_updated_at,omitempty"`
+	ClaudeUsageProbeAt            string                     `json:"claude_usage_probe_at,omitempty"`
+	ClaudeUsageProbeError         string                     `json:"claude_usage_probe_error,omitempty"`
+	ClaudeUsageWindows            []auth.ClaudeUsageWindow   `json:"claude_usage_windows,omitempty"`
+	ClaudeUsageWindowsProbed      bool                       `json:"claude_usage_windows_probed,omitempty"` // 已跑过 OAuth usage 采样(前端据此只回填从未采样的旧行)
+	ActiveRequests                int64                      `json:"active_requests"`
+	OccupiedRequests              int64                      `json:"occupied_requests"`
+	SessionSlotBufferEnabled      bool                       `json:"session_slot_buffer_enabled"`
+	TotalRequests                 int64                      `json:"total_requests"`
+	LastUsedAt                    string                     `json:"last_used_at"`
+	SuccessRequests               int64                      `json:"success_requests"`
+	ErrorRequests                 int64                      `json:"error_requests"`
+	RetryErrorRequests            int64                      `json:"retry_error_requests"`
+	RateLimitAttempts             int64                      `json:"rate_limit_attempts"`
+	ErrorStatusCounts             map[string]int64           `json:"error_status_counts,omitempty"`
+	SuccessModelCounts            map[string]int64           `json:"success_model_counts,omitempty"`
+	UsagePercent7d                *float64                   `json:"usage_percent_7d"`
+	UsagePercent5h                *float64                   `json:"usage_percent_5h"`
+	UsagePercentSpark             *float64                   `json:"usage_percent_spark"`
+	RateLimitResetCredits         *int                       `json:"rate_limit_reset_credits"`
+	DaybreakSupported             bool                       `json:"daybreak_supported"`
+	DaybreakModels                map[string][]string        `json:"daybreak_models,omitempty"`
+	DaybreakCheckedAt             int64                      `json:"daybreak_checked_at,omitempty"`
+	ApplicableResetCredits        *int                       `json:"applicable_reset_credits"`
+	CreditsValid                  bool                       `json:"credits_valid"`
+	CreditsBalance                *string                    `json:"credits_balance"`
+	CreditsHasCredits             *bool                      `json:"credits_has_credits"`
+	CreditsUnlimited              *bool                      `json:"credits_unlimited"`
+	CreditsOverageLimitReached    *bool                      `json:"credits_overage_limit_reached"`
+	CreditsSpendControlReached    *bool                      `json:"credits_spend_control_reached,omitempty"`
+	CreditsRateLimitReachedType   string                     `json:"credits_rate_limit_reached_type,omitempty"`
+	AutoPause5hThreshold          *float64                   `json:"auto_pause_5h_threshold"`
+	AutoPause7dThreshold          *float64                   `json:"auto_pause_7d_threshold"`
+	AutoPause5hDisabled           bool                       `json:"auto_pause_5h_disabled"`
+	AutoPause7dDisabled           bool                       `json:"auto_pause_7d_disabled"`
+	UsageLimitOverride            *bool                      `json:"ignore_usage_limit_status_override"`
+	UsageLimitEffective           bool                       `json:"ignore_usage_limit_status_effective"`
+	DispatchCountLimit            *int64                     `json:"dispatch_count_limit"`
+	DispatchCountUsed             int64                      `json:"dispatch_count_used,omitempty"`
+	DispatchCountResetAt          string                     `json:"dispatch_count_reset_at,omitempty"`
+	DispatchCountLimited          bool                       `json:"dispatch_count_limited,omitempty"`
+	SchedulerPriority             *int64                     `json:"scheduler_priority"`
+	Usage5hDetail                 *accountUsageWindow        `json:"usage_5h_detail,omitempty"`
+	Usage7dDetail                 *accountUsageWindow        `json:"usage_7d_detail,omitempty"`
+	Reset5hAt                     string                     `json:"reset_5h_at,omitempty"`
+	Reset7dAt                     string                     `json:"reset_7d_at,omitempty"`
+	ResetSparkAt                  string                     `json:"reset_spark_at,omitempty"`
+	Window7dKind                  string                     `json:"usage_window_7d_kind,omitempty"`    // "monthly"(team 月窗)/"weekly"/""；供前端标「30天」而非误标「7天」
+	Window7dSeconds               *int64                     `json:"usage_window_7d_seconds,omitempty"` // 长窗口真实周期秒数
+	Billed5h                      *float64                   `json:"billed_5h"`
+	Billed7d                      *float64                   `json:"billed_7d"`
+	ScoreBreakdown                schedulerBreakdownResponse `json:"scheduler_breakdown"`
+	LastUnauthorizedAt            string                     `json:"last_unauthorized_at,omitempty"`
+	LastRateLimitedAt             string                     `json:"last_rate_limited_at,omitempty"`
+	LastTimeoutAt                 string                     `json:"last_timeout_at,omitempty"`
+	LastServerErrorAt             string                     `json:"last_server_error_at,omitempty"`
+	CooldownReason                string                     `json:"cooldown_reason,omitempty"`
+	CooldownUntil                 string                     `json:"cooldown_until,omitempty"`
+	ModelCooldowns                []modelCooldownResponse    `json:"model_cooldowns,omitempty"`
+	ModelCooldownModeOverride     *string                    `json:"model_cooldown_mode_override"`
+	ModelCooldownSecondsOverride  *int                       `json:"model_cooldown_seconds_override"`
+	ModelCooldownBackoffOverride  *bool                      `json:"model_cooldown_backoff_override"`
+	ModelCooldownModeEffective    string                     `json:"model_cooldown_mode_effective"`
+	ModelCooldownSecondsEffective int                        `json:"model_cooldown_seconds_effective"`
+	ModelCooldownBackoffEffective bool                       `json:"model_cooldown_backoff_effective"`
+	Enabled                       bool                       `json:"enabled"`
+	Locked                        bool                       `json:"locked"`
+	AllowedAPIKeyIDs              []int64                    `json:"allowed_api_key_ids"`
+	Tags                          []string                   `json:"tags"`
+	GroupIDs                      []int64                    `json:"group_ids"`
+	Note                          string                     `json:"note"`
 	// 图片配额信息
 	ImageQuotaRemaining *int   `json:"image_quota_remaining,omitempty"`
 	ImageQuotaTotal     *int   `json:"image_quota_total,omitempty"`
@@ -2241,9 +2244,9 @@ type updateAccountSchedulerReq struct {
 	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
-	CodexBPS                json.RawMessage `json:"codex_bps_enabled"`
-	AccountHref             json.RawMessage `json:"account_href"`
-	ExcelBPSEnabled         json.RawMessage `json:"openai_excel_bps"`
+	codexBPSAccountFieldsReq
+	AccountHref     json.RawMessage `json:"account_href"`
+	ExcelBPSEnabled json.RawMessage `json:"openai_excel_bps"`
 }
 
 type accountSchedulerUpdate struct {
@@ -2271,7 +2274,6 @@ type accountSchedulerUpdate struct {
 	ClaudeVersionPolicy     database.OptionalString
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
-	CodexBPS                database.OptionalBool
 	AccountHref             database.OptionalString
 	ExcelBPSEnabled         database.OptionalBool
 	CredentialUpdates       map[string]interface{}
@@ -2395,10 +2397,6 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
-	codexBPS, err := parseOptionalBoolField(req.CodexBPS, "codex_bps_enabled")
-	if err != nil {
-		return accountSchedulerUpdate{}, err
-	}
 	accountHref, err := parseOptionalStringField(req.AccountHref, "account_href", validateAccountHref)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2439,8 +2437,8 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if timezoneField.Set {
 		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
 	}
-	if codexBPS.Set {
-		credentialUpdates[auth.CodexBPSEnabledCredentialKey] = codexBPS.Value
+	if err := parseCodexBPSAccountFields(req.codexBPSAccountFieldsReq, credentialUpdates); err != nil {
+		return accountSchedulerUpdate{}, err
 	}
 	if accountHref.Set {
 		normalized, err := auth.NormalizeAccountHref(accountHref.Value)
@@ -2524,7 +2522,6 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ClaudeVersionPolicy:     claudeVersionPolicy,
 		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
-		CodexBPS:                codexBPS,
 		AccountHref:             accountHref,
 		ExcelBPSEnabled:         excelBPSEnabled,
 		CredentialUpdates:       credentialUpdates,
@@ -2594,7 +2591,7 @@ func validateCodexFingerprintMode(value string) error {
 }
 
 func (u accountSchedulerUpdate) hasChanges() bool {
-	return len(u.CredentialUpdates) > 0 || u.ScoreBiasOverride.Set || u.CodexBPS.Set ||
+	return len(u.CredentialUpdates) > 0 || u.ScoreBiasOverride.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
 		u.PromptFilterPolicy.Set ||
@@ -2844,6 +2841,10 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		}
 	}
 
+	if err := h.validateCodexBPSAccountTarget(id, update.CredentialUpdates); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, update.ScoreBiasOverride, update.BaseConcurrencyOverride, update.SkipWarmTier, update.AllowedAPIKeyIDs, database.OptionalStringSlice{Set: update.Tags.Set, Values: update.Tags.Values}, update.GroupIDs, update.ProxyURL, update.CredentialUpdates, update.accountPolicyUpdate()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
@@ -2853,6 +2854,10 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		return
 	}
 	h.applyAccountSchedulerRuntimeUpdate(id, update)
+	// BPS keys are not watched by the account outbox triggers; publish them.
+	if codexBPSFieldsChanged(update.CredentialUpdates) {
+		_ = h.db.InsertSchedulerOutboxEvent(ctx, database.SchedulerEntityAccount, id, "updated")
+	}
 
 	writeMessage(c, http.StatusOK, "账号调度配置已更新")
 }
@@ -2913,9 +2918,7 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	if value, ok := update.CredentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey].(string); ok {
 		h.store.ApplyAccountUpstreamRequestIDHeader(id, value)
 	}
-	if update.CodexBPS.Set {
-		h.store.ApplyAccountCodexBPS(id, update.CodexBPS.Value)
-	}
+	h.applyCodexBPSAccountRuntime(id, update.CredentialUpdates)
 	if update.CustomHeaders.Set {
 		h.store.ApplyAccountCustomHeaders(id, update.CustomHeaders.Values)
 	} else if update.Timezone.Set {
@@ -8039,6 +8042,7 @@ func parseOpsErrorLogFilter(c *gin.Context, withPaging bool) (database.UsageLogF
 		AccountID:       accountID,
 		ErrorOnly:       true,
 		IncludeCanceled: true,
+		Transport:       strings.TrimSpace(c.Query("transport")),
 		ErrorKind:       strings.TrimSpace(c.Query("error_kind")),
 		Query:           strings.TrimSpace(c.Query("q")),
 		Channel:         parseUsageChannel(c),
@@ -8455,6 +8459,7 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 		ErrorKind:         strings.TrimSpace(c.Query("error_kind")),
 		Query:             strings.TrimSpace(c.Query("q")),
 		Channel:           parseUsageChannel(c),
+		Transport:         strings.TrimSpace(c.Query("transport")),
 	}
 
 	if pageStr := c.Query("page"); pageStr != "" {

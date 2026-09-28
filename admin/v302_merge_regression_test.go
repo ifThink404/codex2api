@@ -56,9 +56,9 @@ func TestV302MergedAdminRoutes(t *testing.T) {
 
 func TestV302BPSCapabilitiesRemainIndependent(t *testing.T) {
 	for _, req := range []updateAccountSchedulerReq{
-		{CodexBPS: json.RawMessage(`true`)},
+		{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`true`)}},
 		{ExcelBPSEnabled: json.RawMessage(`true`)},
-		{CodexBPS: json.RawMessage(`false`), ExcelBPSEnabled: json.RawMessage(`true`)},
+		{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`false`)}, ExcelBPSEnabled: json.RawMessage(`true`)},
 	} {
 		got, err := parseAccountSchedulerUpdate(req)
 		if err != nil {
@@ -69,7 +69,7 @@ func TestV302BPSCapabilitiesRemainIndependent(t *testing.T) {
 		}
 		_, codexSet := got.CredentialUpdates[auth.CodexBPSEnabledCredentialKey]
 		_, excelSet := got.CredentialUpdates[auth.ExcelBPSCredentialKey]
-		if codexSet != (req.CodexBPS != nil) || excelSet != (req.ExcelBPSEnabled != nil) {
+		if codexSet != (req.Enabled != nil) || excelSet != (req.ExcelBPSEnabled != nil) {
 			t.Fatal("BPS transport updates are not independent")
 		}
 	}

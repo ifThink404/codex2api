@@ -26,6 +26,7 @@ import (
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/version"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/proxy/wsrelay"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
@@ -378,6 +379,15 @@ func main() {
 	adminHandler.StartOfficialPricingSync(backgroundCtx)
 	// Prompt 审核日志保留清理：默认保留 7 天，每小时分批清理过期行，CY 关联行不动。
 	adminHandler.StartPromptLogRetention(backgroundCtx)
+	// 传输插件：加载状态快照并挂上 outbox 热加载（各副本即时生效）；抓包异步落库、保留 3 天。
+	pluginAttachCtx, pluginAttachCancel := context.WithTimeout(backgroundCtx, 30*time.Second)
+	if err := plugins.Default().Attach(pluginAttachCtx, db); err != nil {
+		pluginAttachCancel()
+		log.Fatalf("加载传输插件状态失败: %v", err)
+	}
+	pluginAttachCancel()
+	plugins.Default().StartCaptureWriter(backgroundCtx)
+	plugins.StartPluginCaptureRetention(backgroundCtx, db)
 	// Responses API 渠道监控按账号启用，健康检查和倍率探测分别调度。
 	adminHandler.StartChannelMonitor(backgroundCtx)
 

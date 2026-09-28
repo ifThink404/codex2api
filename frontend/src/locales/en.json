@@ -198,7 +198,8 @@
     "images": "Images",
     "promptFilter": "Prompt Filter",
     "modelPricing": "Model Pricing",
-    "payloadRules": "Payload Rules"
+    "payloadRules": "Payload Rules",
+    "plugins": "Transport plugins"
   },
   "antigravity": {
     "pageTitle": "Antigravity Accounts",
@@ -2073,7 +2074,46 @@
     "proxyTimezoneSync": "Sync to {{tz}}",
     "proxyTimezoneDrafted": "Timezone filled in; applies on save",
     "proxyTimezoneSynced": "Timezone synced",
-    "proxyTimezoneSyncFailed": "Failed to sync timezone: {{error}}"
+    "proxyTimezoneSyncFailed": "Failed to sync timezone: {{error}}",
+    "bps": {
+      "title": "BPS transport",
+      "enabled": "BPS switch",
+      "enabledHelp": "Inherit follows the account groups and the plugin global switch; an explicit on/off wins.",
+      "on": "Force on",
+      "off": "Force off",
+      "inheritPlugin": "Inherit (groups / global switch)",
+      "inheritNative": "Inherit (native unless BPS is on)",
+      "activeNow": "Currently served by BPS",
+      "inactiveNow": "Not served by BPS",
+      "profile": "BPS profile",
+      "profiles": {
+        "word": "Word",
+        "excel": "Excel",
+        "sheets": "Sheets",
+        "powerpoint": "PowerPoint"
+      },
+      "convergence": "BPS task convergence",
+      "convergenceModes": {
+        "off": "Off",
+        "session": "Session",
+        "full": "Full",
+        "round": "task_id rounds",
+        "turn_round": "turn_id rounds"
+      },
+      "native": "Native Codex route",
+      "imageTrim": "BPS attachment history trim",
+      "bpsModels": "BPS route models",
+      "nativeModels": "Native route models",
+      "modelsPlaceholder": "Empty means all models; a trailing * matches a prefix",
+      "routesHelp": "Model lists only constrain main turns; related requests such as compaction follow their conversation's route.",
+      "badge": "BPS",
+      "testMode": "Test path",
+      "testModes": {
+        "auto": "Account setting",
+        "codex": "Codex",
+        "bps": "BPS"
+      }
+    }
   },
   "invite": {
     "entry": "Codex Invite",
@@ -2508,7 +2548,10 @@
     "exclude401429": "Exclude 401/429",
     "exportSuccess": "Error log JSON exported",
     "exportFailed": "Export failed",
-    "noErrorMessage": "No error message"
+    "noErrorMessage": "No error message",
+    "logAgentDesc": "Analyze the errors matching the current filters and time range.",
+    "logAgentRequestTitle": "Analyze this request",
+    "logAgentRequestDesc": "Analyze every attempt recorded for this request ID."
   },
   "scheduler": {
     "title": "Scheduler Board",
@@ -2867,7 +2910,24 @@
     "ruleAddCondition": "Add condition",
     "ruleNoConditions": "Not configured",
     "ruleConditionsBoundary": "These are the complete configured conditions. The primary pattern and all required patterns must match; alternatives must meet the minimum, and any exclusion cancels the match. Shared origin, defensive/quoted context, threshold and terminal-policy logic still applies and is not edited here.",
-    "ruleConditions": {"all_patterns": {"label": "All required patterns (AND)", "hint": "One Go regex per entry; all must match. The primary regex may be empty if at least one positive condition remains."}, "any_patterns": {"label": "Alternative patterns (OR / minimum count)", "hint": "One Go regex per entry; the minimum count below must match."}, "exclude_patterns": {"label": "Exclusion patterns", "hint": "Any matching exclusion cancels this rule match."}, "authorization_exclude_patterns": {"label": "Claimed-authorization exclusions", "hint": "Applied only when Allow authorized pentesting is enabled; otherwise retained but ignored."}},
+    "ruleConditions": {
+      "all_patterns": {
+        "label": "All required patterns (AND)",
+        "hint": "One Go regex per entry; all must match. The primary regex may be empty if at least one positive condition remains."
+      },
+      "any_patterns": {
+        "label": "Alternative patterns (OR / minimum count)",
+        "hint": "One Go regex per entry; the minimum count below must match."
+      },
+      "exclude_patterns": {
+        "label": "Exclusion patterns",
+        "hint": "Any matching exclusion cancels this rule match."
+      },
+      "authorization_exclude_patterns": {
+        "label": "Claimed-authorization exclusions",
+        "hint": "Applied only when Allow authorized pentesting is enabled; otherwise retained but ignored."
+      }
+    },
     "editBuiltinRuleDesc": "Edit the primary pattern, scoring role, weight, category, strict flag, composite conditions and exclusions. The identifier stays fixed. Saving takes effect immediately; restore resets all rule fields.",
     "editBuiltinRule": "Edit built-in rule",
     "groupDisplay": "Repeated records",
@@ -4419,35 +4479,35 @@
     }
   },
   "settings": {
-      "transfer": {
-        "title": "Settings Import & Export",
-        "description": "Move saved system settings between servers. Save pending changes on this page first.",
-        "export": "Export settings",
-        "import": "Import settings",
-        "exportHint": "Export the saved configuration. The file contains service secrets; keep it private. Save pending changes first.",
-        "importHint": "Import a settings JSON exported from another server. Save pending changes first.",
-        "scope": "Importing overwrites the settings present in the file. The admin login key, accounts, API keys, logs, custom prompt rules from the rules page and built-in rule edits are not migrated; service configuration secrets are included in the file. Local files such as background images must be copied separately.",
-        "summary": "{{count}} general settings; other sections: {{sections}}.",
-        "confirm": "Import and overwrite",
-        "importing": "Importing…",
-        "exported": "Settings exported. Keep the file private; it contains service secrets.",
-        "imported": "Settings imported",
-        "refresh": "Reload to view settings",
-        "tooLarge": "The settings file must not exceed 10 MB.",
-        "invalid_format": "Not a valid codex2api settings file, or its version is not supported.",
-        "invalid_field": "The target server does not support or allow importing field: {{field}}.",
-        "invalid_type": "Wrong type for settings field: {{field}}.",
-        "failedSection": "Importing \"{{section}}\" failed: {{error}}. Sections applied before it were saved; reload to review.",
-        "applied": "Applied: {{sections}}.",
-        "sections": {
-          "settings": "General settings",
-          "claude": "Claude",
-          "antigravity": "Antigravity",
-          "channel_tests": "Channel tests",
-          "invite_guide": "Invite guide",
-          "visible_channels": "Visible channels"
-        }
-      },
+    "transfer": {
+      "title": "Settings Import & Export",
+      "description": "Move saved system settings between servers. Save pending changes on this page first.",
+      "export": "Export settings",
+      "import": "Import settings",
+      "exportHint": "Export the saved configuration. The file contains service secrets; keep it private. Save pending changes first.",
+      "importHint": "Import a settings JSON exported from another server. Save pending changes first.",
+      "scope": "Importing overwrites the settings present in the file. The admin login key, accounts, API keys, logs, custom prompt rules from the rules page and built-in rule edits are not migrated; service configuration secrets are included in the file. Local files such as background images must be copied separately.",
+      "summary": "{{count}} general settings; other sections: {{sections}}.",
+      "confirm": "Import and overwrite",
+      "importing": "Importing…",
+      "exported": "Settings exported. Keep the file private; it contains service secrets.",
+      "imported": "Settings imported",
+      "refresh": "Reload to view settings",
+      "tooLarge": "The settings file must not exceed 10 MB.",
+      "invalid_format": "Not a valid codex2api settings file, or its version is not supported.",
+      "invalid_field": "The target server does not support or allow importing field: {{field}}.",
+      "invalid_type": "Wrong type for settings field: {{field}}.",
+      "failedSection": "Importing \"{{section}}\" failed: {{error}}. Sections applied before it were saved; reload to review.",
+      "applied": "Applied: {{sections}}.",
+      "sections": {
+        "settings": "General settings",
+        "claude": "Claude",
+        "antigravity": "Antigravity",
+        "channel_tests": "Channel tests",
+        "invite_guide": "Invite guide",
+        "visible_channels": "Visible channels"
+      }
+    },
     "codexOAuthKeepalive": "Keep Codex auth active in lazy mode",
     "codexOAuthKeepaliveDesc": "Refresh expiring Codex tokens even in lazy mode, including accounts with quota cooldowns. Keeps cooldowns and sends no generation requests. Off by default.",
     "title": "Settings",
@@ -7279,6 +7339,177 @@
       "dispatch": "Dispatch",
       "validation": "Validation",
       "internal": "Internal service"
+    }
+  },
+  "plugins": {
+    "title": "Transport plugins",
+    "description": "Alternative upstream channels: enable globally, per account group or per account; every replica applies changes immediately.",
+    "empty": "No transport plugins are registered",
+    "notFound": "Plugin not found",
+    "globalOn": "Globally on",
+    "globalOff": "Globally off",
+    "views": {
+      "overview": "Overview",
+      "captures": "Captures",
+      "logs": "Logs",
+      "errors": "Errors",
+      "agent": "Agent"
+    },
+    "globalSwitch": "Global switch",
+    "globalSwitchDesc": "Applies to accounts without their own setting that are not in an enabled group.",
+    "groupsCount": "Enabled groups",
+    "overridesCount": "Account settings",
+    "captureRate": "Capture sampling",
+    "captureOff": "Off",
+    "enablement": "Enablement",
+    "enablementDesc": "Precedence: account setting > account group > global switch. Off by default.",
+    "groups": "Enabled account groups",
+    "groupsDesc": "Accounts in these groups use the plugin unless set otherwise.",
+    "groupsPlaceholder": "Select account groups",
+    "saved": "Saved",
+    "capture": "Packet capture",
+    "captureDesc": "Sampled, masked request/response snapshots (body up to 64KB, kept 3 days).",
+    "captureSwitch": "Enable capture",
+    "sampleRate": "Sample rate (%)",
+    "sampleRateDesc": "Sampled by request ID, so all attempts of a request are kept together.",
+    "config": "Plugin config",
+    "configDesc": "Every replica applies it immediately after saving.",
+    "configInvalid": "The config must be a JSON object",
+    "configZeroDefault": "0 for numbers and empty text mean the default.",
+    "defaultValue": "Default",
+    "accounts": "Account settings",
+    "accountsDesc": "Force on, force off, or inherit (groups / global switch) per account.",
+    "accountsSearch": "Search accounts",
+    "accountsEmpty": "No configurable accounts",
+    "overrideFor": "Plugin setting for account {{id}}",
+    "captureDisabledHint": "Capture is off: enable it with a sample rate on the overview to record new captures.",
+    "filterRequestId": "Request ID",
+    "filterAccountId": "Account ID",
+    "filterStatus": "Status code",
+    "filterDirection": "Direction",
+    "directionAll": "All directions",
+    "directions": {
+      "request": "Request",
+      "response": "Response",
+      "error": "Error"
+    },
+    "capturesEmpty": "No captures in this time range",
+    "colTime": "Time",
+    "colDirection": "Direction",
+    "colStatus": "Status",
+    "colAccount": "Account",
+    "colRequest": "Request ID",
+    "colBytes": "Body bytes",
+    "colModel": "Model",
+    "colTokens": "In / out",
+    "colDuration": "Duration",
+    "colMeta": "Plugin info",
+    "attempt": "attempt {{n}}",
+    "truncated": "truncated",
+    "captureDetail": "Capture detail",
+    "headers": "Headers",
+    "body": "Body",
+    "logsEmpty": "No requests through this plugin in this time range",
+    "agentTitle": "Log analysis agent",
+    "agentDesc": "Let a model analyse {{name}} errors and captures.",
+    "bpsConfig": {
+      "word_user_agent": "Word User-Agent",
+      "round_convergence_limit": "task_id rounds: calls per batch",
+      "round_task_lifetime_hours": "task_id rounds: task lifetime (hours)",
+      "turn_round_limit": "turn_id rounds: questions per batch",
+      "turn_task_lifetime_hours": "turn_id rounds: task lifetime (hours)",
+      "attachment_request_concurrency": "Attachment uploads: per request",
+      "attachment_instance_concurrency": "Attachment uploads: per instance",
+      "attachment_account_concurrency": "Attachment uploads: per account",
+      "attachment_429_fallback": "Local attachment 429 fallback (needs pdftotext/libreoffice)",
+      "exclude_failures_from_native_health": "Exclude BPS failures from native account health",
+      "persist_heuristic_affinity": "Persist inferred-session affinity across replicas"
+    },
+    "agentCapturesTitle": "Analyze captures",
+    "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
+    "agentErrorsTitle": "Analyze errors",
+    "agentErrorsDesc": "Analyze failed requests served by this plugin.",
+    "agentRequestTitle": "Analyze this request",
+    "agentRequestDesc": "Analyze every capture recorded for this request ID.",
+    "inherit": "Inherit",
+    "forceOn": "Force on",
+    "forceOff": "Force off",
+    "descriptions": {
+      "bps": "Basis Points transport for Codex OAuth accounts (Word, Excel, Sheets, PowerPoint profiles)."
+    },
+    "bpsConfigHints": {
+      "exclude_failures_from_native_health": "On: BPS 4xx/5xx, upload, stream and rate-limit failures do not lower the account's native health or start cooldowns. Revoked credentials and deactivated accounts are always reported.",
+      "persist_heuristic_affinity": "On: sessions inferred from the conversation opening keep their account on every replica. Off: only client task IDs are stored, so unrelated conversations with the same opening never share an account, at the cost of cross-replica stickiness."
+    }
+  },
+  "logAgent": {
+    "title": "AI log analysis",
+    "description": "Send the matching records (grouped, masked and size-limited) to the configured model through the pool and get likely root causes with evidence.",
+    "analyze": "Analyze",
+    "analyzing": "Analyzing…",
+    "history": "Previous analyses",
+    "historyPlaceholder": "Previous analyses",
+    "configLoadFailed": "Failed to load analysis settings: {{message}}",
+    "modelMissing": "Log analysis is enabled but no model is selected.",
+    "disabledHint": "Log analysis is off. Enable it and choose a gateway key and model first.",
+    "openSettings": "Open settings",
+    "focusPlaceholder": "Optional: what should the analysis focus on?",
+    "scope": "source={{source}} · refs={{refs}}",
+    "status": {
+      "succeeded": "Completed",
+      "fallback": "Unstructured result",
+      "failed": "Failed"
+    },
+    "confidence": "Confidence {{value}}",
+    "stats": "{{records}} records · {{groups}} groups · {{tokens}} tokens · {{seconds}}s",
+    "truncated": "Context truncated",
+    "failed": "The analysis failed.",
+    "fallbackHint": "The model did not return valid structured findings; its raw answer is shown below.",
+    "rootCauses": "Likely root causes",
+    "actions": "Suggested actions",
+    "evidence": "Evidence",
+    "untitled": "(untitled)",
+    "category": {
+      "upstream": "Upstream",
+      "account": "Account",
+      "gateway": "Gateway",
+      "network": "Network",
+      "client": "Client",
+      "config": "Configuration",
+      "unknown": "Unknown"
+    },
+    "priority": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "evidenceNotOnPage": "{{id}} is not on the current page; adjust filters or the time range to view it.",
+    "settings": {
+      "title": "Log analysis Agent",
+      "description": "On-demand AI diagnosis for error logs and plugin captures. Requests go through the account pool and are billed to the selected gateway key.",
+      "loadFailed": "Failed to load log analysis settings",
+      "saved": "Log analysis settings saved",
+      "saveFailed": "Failed to save log analysis settings",
+      "enabled": "Enable log analysis",
+      "enabledDesc": "When off, analysis buttons on error and plugin pages are disabled.",
+      "apiKey": "Gateway API key",
+      "apiKeyDesc": "Routing, quota and usage of analysis requests are attributed to this key. Expired or exhausted keys are rejected.",
+      "noKey": "No key (internal request)",
+      "keyStatus": {
+        "expired": "expired",
+        "quotaExhausted": "quota exhausted"
+      },
+      "model": "Analysis model",
+      "modelDesc": "A pool model that can return JSON; larger models give better diagnoses.",
+      "modelPlaceholder": "Select a model",
+      "maxInput": "Max context size",
+      "maxInputDesc": "Upper bound of evidence sent to the model (about 4 bytes per token).",
+      "maxRecords": "Max records",
+      "maxRecordsDesc": "Records fetched per analysis before grouping similar errors.",
+      "timeout": "Timeout",
+      "timeoutDesc": "Maximum time to wait for the model.",
+      "retention": "Keep analyses (days)",
+      "retentionDesc": "Older analysis records are deleted automatically."
     }
   }
 }

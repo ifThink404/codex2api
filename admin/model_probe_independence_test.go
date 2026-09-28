@@ -45,7 +45,7 @@ func TestModelProbeIgnoresOptionalRequestTransport(t *testing.T) {
 	store.AddAccount(account)
 	h := &Handler{store: store, db: db}
 	for _, enabled := range []bool{false, true} {
-		store.ApplyAccountCodexBPS(id, enabled)
+		store.ApplyAccountTransportPluginOverride(id, "bps", &enabled)
 		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		results := h.runProbeModels(probeCtx, account, []string{"gpt-6-sol"}, 1, nil)
 		cancel()

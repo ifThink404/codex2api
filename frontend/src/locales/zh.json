@@ -198,7 +198,8 @@
     "images": "生图工作台",
     "promptFilter": "Prompt 检查",
     "modelPricing": "模型定价",
-    "payloadRules": "请求体重写"
+    "payloadRules": "请求体重写",
+    "plugins": "传输插件"
   },
   "antigravity": {
     "pageTitle": "Antigravity 账号",
@@ -2073,7 +2074,46 @@
     "proxyTimezoneSync": "同步为 {{tz}}",
     "proxyTimezoneDrafted": "已填入时区，保存后生效",
     "proxyTimezoneSynced": "时区已同步",
-    "proxyTimezoneSyncFailed": "同步时区失败：{{error}}"
+    "proxyTimezoneSyncFailed": "同步时区失败：{{error}}",
+    "bps": {
+      "title": "BPS 通道",
+      "enabled": "BPS 开关",
+      "enabledHelp": "继承时按账号分组与插件全局开关决定；显式开启或关闭优先。",
+      "on": "强制开启",
+      "off": "强制关闭",
+      "inheritPlugin": "继承（分组 / 全局开关）",
+      "inheritNative": "继承（BPS 未启用时走原生）",
+      "activeNow": "当前使用 BPS",
+      "inactiveNow": "当前未使用 BPS",
+      "profile": "BPS 类型",
+      "profiles": {
+        "word": "Word",
+        "excel": "Excel",
+        "sheets": "Sheets",
+        "powerpoint": "PowerPoint"
+      },
+      "convergence": "BPS 任务收敛",
+      "convergenceModes": {
+        "off": "关闭",
+        "session": "会话",
+        "full": "全部收敛",
+        "round": "task_id 轮次",
+        "turn_round": "turn_id 轮次"
+      },
+      "native": "Codex 原生路径",
+      "imageTrim": "BPS 历史附件精简",
+      "bpsModels": "BPS 路径模型",
+      "nativeModels": "原生路径模型",
+      "modelsPlaceholder": "留空表示全部模型；支持末尾 * 前缀",
+      "routesHelp": "模型列表只约束主请求；压缩等关联请求沿用所属会话的路径。",
+      "badge": "BPS",
+      "testMode": "测试路径",
+      "testModes": {
+        "auto": "按账号配置",
+        "codex": "Codex",
+        "bps": "BPS"
+      }
+    }
   },
   "invite": {
     "entry": "Codex 邀请",
@@ -2508,7 +2548,10 @@
     "exclude401429": "排除 401/429",
     "exportSuccess": "错误日志 JSON 已导出",
     "exportFailed": "导出失败",
-    "noErrorMessage": "暂无错误信息"
+    "noErrorMessage": "暂无错误信息",
+    "logAgentDesc": "分析当前筛选条件与时间范围内的错误。",
+    "logAgentRequestTitle": "分析此请求",
+    "logAgentRequestDesc": "分析该请求 ID 下记录的全部尝试。"
   },
   "scheduler": {
     "title": "调度面板",
@@ -2867,7 +2910,24 @@
     "ruleAddCondition": "添加条件",
     "ruleNoConditions": "未设置",
     "ruleConditionsBoundary": "以上是规则的完整配置条件。主正则与全部必需条件必须同时满足，任选条件达到指定数量，任一排除条件命中则不匹配。系统的来源判定、防御与引用上下文处理、阈值和终局策略仍然生效；这里只编辑规则配置，不修改这些公共算法。",
-    "ruleConditions": {"all_patterns": {"label": "必须全部满足（AND）", "hint": "每条填写一个 Go 正则；所有条件都必须匹配。主正则可以留空，但必须保留至少一个正向条件。"}, "any_patterns": {"label": "任选条件（OR / 最少命中数）", "hint": "每条填写一个 Go 正则；按下面的最少命中数量判断。"}, "exclude_patterns": {"label": "排除条件", "hint": "任意一条匹配，就排除本条规则的命中。"}, "authorization_exclude_patterns": {"label": "声明式授权排除条件", "hint": "仅在“允许授权渗透测试”设置开启时生效；关闭时保留配置但不用于排除。"}},
+    "ruleConditions": {
+      "all_patterns": {
+        "label": "必须全部满足（AND）",
+        "hint": "每条填写一个 Go 正则；所有条件都必须匹配。主正则可以留空，但必须保留至少一个正向条件。"
+      },
+      "any_patterns": {
+        "label": "任选条件（OR / 最少命中数）",
+        "hint": "每条填写一个 Go 正则；按下面的最少命中数量判断。"
+      },
+      "exclude_patterns": {
+        "label": "排除条件",
+        "hint": "任意一条匹配，就排除本条规则的命中。"
+      },
+      "authorization_exclude_patterns": {
+        "label": "声明式授权排除条件",
+        "hint": "仅在“允许授权渗透测试”设置开启时生效；关闭时保留配置但不用于排除。"
+      }
+    },
     "editBuiltinRuleDesc": "可修改主正则、评分用途、权重、分类、严格标记、组合条件和排除条件。规则标识保持不变；保存后生效，恢复默认会还原全部规则字段。",
     "editBuiltinRule": "编辑内置规则",
     "groupDisplay": "重复记录",
@@ -4418,35 +4478,35 @@
     }
   },
   "settings": {
-      "transfer": {
-        "title": "设置导入与导出",
-        "description": "在服务器之间迁移已保存的系统设置。先保存当前页修改再操作。",
-        "export": "导出设置",
-        "import": "导入设置",
-        "exportHint": "导出已保存的配置；文件包含服务密钥，请妥善保存。未保存的修改需先保存。",
-        "importHint": "导入其他服务器的设置 JSON；未保存的修改需先保存。",
-        "scope": "导入会覆盖文件中的设置。管理员登录密钥、账号、API 密钥、日志、独立规则页的自定义 Prompt 规则和内置规则修改不迁移；服务配置密钥包含在文件中。背景图等本地文件需另行迁移。",
-        "summary": "通用设置 {{count}} 项；其他配置：{{sections}}。",
-        "confirm": "导入并覆盖",
-        "importing": "正在导入…",
-        "exported": "设置已导出，请妥善保存包含服务密钥的文件。",
-        "imported": "设置导入完成",
-        "refresh": "刷新页面查看设置",
-        "tooLarge": "设置文件不能超过 10 MB。",
-        "invalid_format": "不是有效的 codex2api 设置文件，或文件版本不受支持。",
-        "invalid_field": "目标服务器不支持或不允许导入字段：{{field}}。",
-        "invalid_type": "设置字段类型错误：{{field}}。",
-        "failedSection": "“{{section}}”导入失败：{{error}}。此前成功的配置已保存，请刷新查看。",
-        "applied": "已应用：{{sections}}。",
-        "sections": {
-          "settings": "通用设置",
-          "claude": "Claude",
-          "antigravity": "Antigravity",
-          "channel_tests": "渠道测连",
-          "invite_guide": "邀请引导",
-          "visible_channels": "可见渠道"
-        }
-      },
+    "transfer": {
+      "title": "设置导入与导出",
+      "description": "在服务器之间迁移已保存的系统设置。先保存当前页修改再操作。",
+      "export": "导出设置",
+      "import": "导入设置",
+      "exportHint": "导出已保存的配置；文件包含服务密钥，请妥善保存。未保存的修改需先保存。",
+      "importHint": "导入其他服务器的设置 JSON；未保存的修改需先保存。",
+      "scope": "导入会覆盖文件中的设置。管理员登录密钥、账号、API 密钥、日志、独立规则页的自定义 Prompt 规则和内置规则修改不迁移；服务配置密钥包含在文件中。背景图等本地文件需另行迁移。",
+      "summary": "通用设置 {{count}} 项；其他配置：{{sections}}。",
+      "confirm": "导入并覆盖",
+      "importing": "正在导入…",
+      "exported": "设置已导出，请妥善保存包含服务密钥的文件。",
+      "imported": "设置导入完成",
+      "refresh": "刷新页面查看设置",
+      "tooLarge": "设置文件不能超过 10 MB。",
+      "invalid_format": "不是有效的 codex2api 设置文件，或文件版本不受支持。",
+      "invalid_field": "目标服务器不支持或不允许导入字段：{{field}}。",
+      "invalid_type": "设置字段类型错误：{{field}}。",
+      "failedSection": "“{{section}}”导入失败：{{error}}。此前成功的配置已保存，请刷新查看。",
+      "applied": "已应用：{{sections}}。",
+      "sections": {
+        "settings": "通用设置",
+        "claude": "Claude",
+        "antigravity": "Antigravity",
+        "channel_tests": "渠道测连",
+        "invite_guide": "邀请引导",
+        "visible_channels": "可见渠道"
+      }
+    },
     "title": "系统设置",
     "description": "管理系统配置和运行参数。多数开关会即时自动保存。",
     "loadingTitle": "正在加载设置",
@@ -7276,6 +7336,177 @@
       "dispatch": "账号调度",
       "validation": "请求校验",
       "internal": "服务内部"
+    }
+  },
+  "plugins": {
+    "title": "传输插件",
+    "description": "备用上游通道：按全局、账号分组或单账号开启，所有实例即时生效。",
+    "empty": "没有已注册的传输插件",
+    "notFound": "插件不存在",
+    "globalOn": "全局开启",
+    "globalOff": "全局关闭",
+    "views": {
+      "overview": "概览",
+      "captures": "抓包",
+      "logs": "日志",
+      "errors": "错误",
+      "agent": "分析助手"
+    },
+    "globalSwitch": "全局开关",
+    "globalSwitchDesc": "对所有未单独设置、且不在启用分组内的账号生效。",
+    "groupsCount": "启用分组",
+    "overridesCount": "单账号设置",
+    "captureRate": "抓包采样",
+    "captureOff": "未开启",
+    "enablement": "启用范围",
+    "enablementDesc": "优先级：单账号设置 > 账号分组 > 全局开关。默认关闭。",
+    "groups": "启用的账号分组",
+    "groupsDesc": "分组内账号在未单独设置时启用插件。",
+    "groupsPlaceholder": "选择账号分组",
+    "saved": "已保存",
+    "capture": "抓包",
+    "captureDesc": "按请求采样记录插件请求与响应（已脱敏，正文最多 64KB，保留 3 天）。",
+    "captureSwitch": "开启抓包",
+    "sampleRate": "采样比例（%）",
+    "sampleRateDesc": "按请求 ID 采样，同一请求的各次尝试一起保留。",
+    "config": "插件配置",
+    "configDesc": "保存后所有实例即时生效。",
+    "configInvalid": "配置必须是 JSON 对象",
+    "configZeroDefault": "数值填 0、文本留空表示使用默认值。",
+    "defaultValue": "默认",
+    "accounts": "账号设置",
+    "accountsDesc": "单账号强制开启、强制关闭或继承（分组 / 全局开关）。",
+    "accountsSearch": "搜索账号",
+    "accountsEmpty": "没有可配置的账号",
+    "overrideFor": "账号 {{id}} 的插件设置",
+    "captureDisabledHint": "抓包未开启：在概览中开启并设置采样比例后才会记录新的抓包。",
+    "filterRequestId": "请求 ID",
+    "filterAccountId": "账号 ID",
+    "filterStatus": "状态码",
+    "filterDirection": "方向",
+    "directionAll": "全部方向",
+    "directions": {
+      "request": "请求",
+      "response": "响应",
+      "error": "错误"
+    },
+    "capturesEmpty": "该时间范围内没有抓包",
+    "colTime": "时间",
+    "colDirection": "方向",
+    "colStatus": "状态",
+    "colAccount": "账号",
+    "colRequest": "请求 ID",
+    "colBytes": "正文字节",
+    "colModel": "模型",
+    "colTokens": "输入 / 输出",
+    "colDuration": "耗时",
+    "colMeta": "插件信息",
+    "attempt": "第 {{n}} 次",
+    "truncated": "已截断",
+    "captureDetail": "抓包详情",
+    "headers": "请求头",
+    "body": "正文",
+    "logsEmpty": "该时间范围内没有经过此插件的请求",
+    "agentTitle": "日志分析助手",
+    "agentDesc": "让模型分析 {{name}} 的错误与抓包。",
+    "bpsConfig": {
+      "word_user_agent": "Word User-Agent",
+      "round_convergence_limit": "task_id 轮次：每批调用次数",
+      "round_task_lifetime_hours": "task_id 轮次：task 有效小时",
+      "turn_round_limit": "turn_id 轮次：每批提问次数",
+      "turn_task_lifetime_hours": "turn_id 轮次：task 有效小时",
+      "attachment_request_concurrency": "附件上传：单请求并发",
+      "attachment_instance_concurrency": "附件上传：实例并发",
+      "attachment_account_concurrency": "附件上传：单账号并发",
+      "attachment_429_fallback": "附件 429 本地降级（需 pdftotext/libreoffice）",
+      "exclude_failures_from_native_health": "BPS 失败不计入原生账号健康",
+      "persist_heuristic_affinity": "跨实例保留推断会话的账号亲和"
+    },
+    "agentCapturesTitle": "分析抓包",
+    "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
+    "agentErrorsTitle": "分析错误",
+    "agentErrorsDesc": "分析经过此插件的错误请求。",
+    "agentRequestTitle": "分析此请求",
+    "agentRequestDesc": "分析该请求 ID 的全部抓包。",
+    "inherit": "继承",
+    "forceOn": "强制开启",
+    "forceOff": "强制关闭",
+    "descriptions": {
+      "bps": "适用于 Codex OAuth 账号的 Basis Points 通道（Word、Excel、Sheets、PowerPoint 类型）。"
+    },
+    "bpsConfigHints": {
+      "exclude_failures_from_native_health": "开启时，BPS 的 4xx/5xx、附件上传、流内失败和限流不降低账号原生健康度，也不触发冷却；凭证失效、账号停用等账号级信号仍会上报。",
+      "persist_heuristic_affinity": "开启时，按对话开头推断的会话在所有实例上沿用同一账号；关闭后只持久化客户端 task_id，开头相同的无关对话不会共用账号，但失去跨实例粘性。"
+    }
+  },
+  "logAgent": {
+    "title": "AI 日志分析",
+    "description": "把匹配的记录分组、脱敏并按上限截断后，经号池发给所选模型，给出可能根因与证据。",
+    "analyze": "分析",
+    "analyzing": "分析中…",
+    "history": "历史分析",
+    "historyPlaceholder": "历史分析",
+    "configLoadFailed": "读取分析配置失败：{{message}}",
+    "modelMissing": "日志分析已开启，但尚未选择模型。",
+    "disabledHint": "日志分析未开启，请先开启并选择网关 Key 与模型。",
+    "openSettings": "前往设置",
+    "focusPlaceholder": "可选：希望分析重点关注什么？",
+    "scope": "source={{source}} · refs={{refs}}",
+    "status": {
+      "succeeded": "已完成",
+      "fallback": "非结构化结果",
+      "failed": "失败"
+    },
+    "confidence": "置信度 {{value}}",
+    "stats": "{{records}} 条记录 · {{groups}} 组 · {{tokens}} tokens · {{seconds}}s",
+    "truncated": "上下文已截断",
+    "failed": "分析失败。",
+    "fallbackHint": "模型没有返回合法的结构化结论，下面展示其原始回答。",
+    "rootCauses": "可能根因",
+    "actions": "建议操作",
+    "evidence": "证据",
+    "untitled": "（无标题）",
+    "category": {
+      "upstream": "上游",
+      "account": "账号",
+      "gateway": "网关",
+      "network": "网络",
+      "client": "客户端",
+      "config": "配置",
+      "unknown": "未知"
+    },
+    "priority": {
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "evidenceNotOnPage": "{{id}} 不在当前页，请调整筛选或时间范围后查看。",
+    "settings": {
+      "title": "日志分析 Agent",
+      "description": "按需对错误日志与插件抓包做 AI 诊断。请求经号池发出，用量计入所选网关 Key。",
+      "loadFailed": "读取日志分析配置失败",
+      "saved": "日志分析配置已保存",
+      "saveFailed": "保存日志分析配置失败",
+      "enabled": "启用日志分析",
+      "enabledDesc": "关闭时，错误页与插件页的分析按钮不可用。",
+      "apiKey": "网关 API Key",
+      "apiKeyDesc": "分析请求的路由、额度与用量归属到该 Key；过期或额度耗尽的 Key 会被拒绝。",
+      "noKey": "不绑定 Key（内部请求）",
+      "keyStatus": {
+        "expired": "已过期",
+        "quotaExhausted": "额度耗尽"
+      },
+      "model": "分析模型",
+      "modelDesc": "号池中可输出 JSON 的模型，模型越强诊断越准。",
+      "modelPlaceholder": "选择模型",
+      "maxInput": "上下文上限",
+      "maxInputDesc": "发送给模型的证据上限（约 4 字节/token）。",
+      "maxRecords": "记录上限",
+      "maxRecordsDesc": "每次分析读取的记录数，读取后再合并相似错误。",
+      "timeout": "超时",
+      "timeoutDesc": "等待模型返回的最长时间。",
+      "retention": "分析记录保留天数",
+      "retentionDesc": "超过天数的分析记录自动删除。"
     }
   }
 }
