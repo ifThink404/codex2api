@@ -412,6 +412,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 				);`,
 		modelCapabilitiesSchema,
 		accountModelObservationsSchema,
+		transportPluginsSchemaSQLite,
 		daybreakSchema,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
@@ -578,6 +579,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		// 上游自报模型 / Codex 客户端窗口号：老库升级走这里回填，新库在上面的建表里。
 		{"usage_logs", "upstream_response_model", "TEXT DEFAULT ''"},
 		{"usage_logs", "window_number", "TEXT DEFAULT ''"},
+		{"usage_logs", "transport", "TEXT NOT NULL DEFAULT 'native'"},
+		{"usage_logs", "plugin_meta", "TEXT NOT NULL DEFAULT ''"},
 		// turn_state_length 没有 DEFAULT：NULL（未记录）与 0（检查过但上游没给）
 		// 含义不同，给 0 会把整张旧表显示成「上游从没给过 turn-state」。
 		{"usage_logs", "turn_state_length", "INTEGER"},
