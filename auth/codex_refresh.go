@@ -320,14 +320,33 @@ func (s *Store) publishCodexRefresh(ctx context.Context, acc *Account) error {
 	return nil
 }
 
+// codexAuthorizationRejectedLocked reports a 401 fence caused by the current
+// credentials. Caller holds acc.mu. Quota cooldowns and administrative or
+// workspace pauses (Disabled / DispatchPaused) are deliberately not included.
+func (a *Account) codexAuthorizationRejectedLocked() bool {
+	return a.Status == StatusCooldown && a.CooldownReason == "unauthorized"
+}
+
+// finishCodexRefresh publishes a successful exchange (or a different, usable
+// token loaded from a completed refresh). The 401 cooldown belonged to the
+// replaced credentials and is cleared even before it expires; an unexpired
+// quota cooldown — including one that arrived while OAuth was in flight — stays.
 func (s *Store) finishCodexRefresh(ctx context.Context, acc *Account, warning string) {
 	acc.mu.Lock()
 	now := time.Now()
-	if acc.Status != StatusCooldown || !now.Before(acc.CooldownUtil) {
+	unauthorized := acc.codexAuthorizationRejectedLocked()
+	if acc.Status != StatusCooldown || !now.Before(acc.CooldownUtil) || unauthorized {
 		acc.Status = StatusReady
 		acc.CooldownUtil, acc.CooldownReason = time.Time{}, ""
 		if acc.HealthTier == HealthTierBanned {
 			acc.HealthTier = HealthTierWarm
+		}
+	}
+	if unauthorized {
+		acc.LastUnauthorizedAt = time.Time{}
+		acc.FailureStreak = 0
+		if acc.LastFailureKind == "unauthorized" {
+			acc.LastFailureKind = ""
 		}
 	}
 	acc.ErrorMsg = warning
@@ -340,6 +359,33 @@ func (s *Store) finishCodexRefresh(ctx context.Context, acc *Account, warning st
 		}
 	}
 	s.fastSchedulerUpdate(acc)
+	if cached, ok := s.getCachedAccountCooldown(id); unauthorized || ok && cached.Reason == "unauthorized" {
+		s.clearRecoveredCodexUnauthorized(ctx, acc)
+	}
+}
+
+// clearRecoveredCodexUnauthorized removes the persisted and cross-instance
+// copies of a 401 cooldown that a successful refresh just recovered. The
+// scheduler re-applies the cached record on every pick (and the cache keeps a
+// 401 over a weaker quota record), so leaving it would keep the account
+// blocked until the 401 TTL expires. The current quota cooldown, if any, is
+// re-published.
+func (s *Store) clearRecoveredCodexUnauthorized(ctx context.Context, acc *Account) {
+	s.deleteCachedAccountCooldown(acc.DBID)
+	acc.mu.RLock()
+	status, reason, current := acc.Status, acc.CooldownReason, acc.CooldownUtil
+	acc.mu.RUnlock()
+	if status == StatusCooldown && reason != "" {
+		s.setCachedAccountCooldown(acc.DBID, reason, current)
+	}
+	if s.db == nil {
+		return
+	}
+	clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if _, err := s.db.ClearCooldownIfReason(clearCtx, acc.DBID, "unauthorized"); err != nil {
+		log.Printf("[账号 %d] 刷新成功后清理 401 冷却状态失败: %v", acc.DBID, err)
+	}
 }
 
 func (s *Store) shouldBackgroundRefresh(acc *Account, codexOnly bool) bool {

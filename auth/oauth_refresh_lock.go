@@ -380,6 +380,10 @@ func (s *Store) reloadOAuthCredentialsAfterLock(
 		acc.mu.Unlock()
 		return false, false, fmt.Errorf("凭据版本在重载期间已变更")
 	}
+	// A new RT alone does not prove the access token that just got a 401 is
+	// valid again; make the Codex caller perform a real exchange instead.
+	rejectedCodexToken := (acc.UpstreamType == "" || acc.UpstreamType == "codex") &&
+		acc.codexAuthorizationRejectedLocked() && !accessChanged
 	acc.CredentialGeneration = row.CredentialGeneration
 	if refreshToken != "" {
 		acc.RefreshToken = refreshToken
@@ -406,7 +410,7 @@ func (s *Store) reloadOAuthCredentialsAfterLock(
 	effectiveExpiresAt := acc.ExpiresAt
 	acc.mu.Unlock()
 
-	usable = effectiveAccessToken != "" &&
+	usable = !rejectedCodexToken && effectiveAccessToken != "" &&
 		(effectiveExpiresAt.IsZero() || time.Until(effectiveExpiresAt) > 5*time.Minute)
 	return true, usable, nil
 }
