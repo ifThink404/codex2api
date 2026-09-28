@@ -25,7 +25,7 @@ func TestBPSTurnQuestionsLimitReplayAndRestart(t *testing.T) {
 		id, reused, err := db.ResolveBPSTurnQuestionIdentity(t.Context(), key, q, limit)
 		require.NoError(t, err)
 		require.False(t, reused)
-		require.Equal(t, BPSRoundIdentity{0, int64(n), 100}, id)
+		require.Equal(t, BPSRoundIdentity{0, int64(n), 100, 0}, id)
 		if n == 1 {
 			first = id
 		}
@@ -40,7 +40,7 @@ func TestBPSTurnQuestionsLimitReplayAndRestart(t *testing.T) {
 	next, reused, err := db.ResolveBPSTurnQuestionIdentity(t.Context(), key, turnTestKey("101"), 7)
 	require.NoError(t, err)
 	require.False(t, reused)
-	require.Equal(t, BPSRoundIdentity{1, 1, 7}, next)
+	require.Equal(t, BPSRoundIdentity{1, 1, 7, 0}, next)
 	require.NoError(t, db.Close())
 	db, err = New("sqlite", path)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestBPSTurnQuestionsLimitReplayAndRestart(t *testing.T) {
 	require.NoError(t, err)
 	next, _, err = db.ResolveBPSTurnQuestionIdentity(t.Context(), key, turnTestKey("102"), 1)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{1, 2, 7}, next)
+	require.Equal(t, BPSRoundIdentity{1, 2, 7, 0}, next)
 	for _, limit := range []int{0, -1, MaxBPSTurnRoundLimit + 1} {
 		_, _, err = db.ResolveBPSTurnQuestionIdentity(t.Context(), key, turnTestKey("invalid"), limit)
 		require.Error(t, err)

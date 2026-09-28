@@ -31,13 +31,13 @@
 - 同一实际上游账号按最终模型＋思考等级分别维护批次；同一账号、同一模型、同一有效思考等级跨用户、会话和 BPS 产品共用当前批次的 `task_id`。以 100 为例，每个组合自己的前 100 次新调用使用同一 task，`agent_iteration` 依次为字符串 `"1"` 至 `"100"`；该组合第 101 次调用换 task 并从 `"1"` 开始，不影响其他组合。切回某个组合时继续它自己的批次；映射到相同出站模型的别名共用批次，例如 `codex-auto-review` 与 `gpt-5.6-luna`。
 - 思考等级按 BPS 实际映射分组：未提供默认 `low`，`max` 归入 `xhigh`；历史顶层协议 `configuration_update.reasoning.effort` 存在时，以最后一个非空更新为准，不读取消息或工具结果内的同名业务字段。两个模型分别使用 `low / medium / high / xhigh` 时，是 8 组当前 task，按需创建，未使用的组合不预建。压缩调用按其携带的等级分组，未携带仍归入默认 `low`，不会因此向压缩接口增加思考字段。
 - 每批 task 在未切号时共用固定 `turn_id`，仅 `agent_iteration` 随新模型调用递增；换批时 task 和 turn 同时更换。切号（包括切回原账号）使用目标账号当前批次的 task，但建立新的 turn；之后在同一迁移段内保持 turn，批次计数继续递增。工具续接及压缩调用也计入。并行工具结果的一批续接计一轮，不按单个工具结果计数。同一账号迁移段内，同一逻辑调用的重试复用原 task、turn、序号，不重复扣轮数；轮换后的旧请求重试也保留旧批次。
-- 每批 task 按最后一次上游推理发送续期 24 小时，包含该批次重试的实际发送；图片和文件准备、只分配编号但未发送均不续期。达到轮数上限或连续空闲 24 小时后，下一次新调用才建立新 task 并从 1 开始，没有新请求就不自动创建。首次及最后发送时间按账号、模型、思考等级和批次持久化，重启保留计时；重试复用原编号，不重复计数，旧批次重试不能延长新批次的有效期。
+- `bps_round_task_lifetime_hours` 控制每批 task 的固定有效期，默认 24 小时，允许 1–8760。每批从首次上游推理发送起计时，持续请求、工具续接及重试不延长截止时间；图片和文件准备、只分配未发送都不启动计时。调用次数达到上限或时间到期后，下一次新调用更换 task_id、turn_id，并从 1 开始，没有新请求就不自动创建。有效期、首次和最后发送时间按批次持久化，重启保留；同账号重试继续使用原批次和编号。修改次数或时长从下一批生效；此配置与 turn_id 轮次的 `bps_turn_task_lifetime_hours` 独立。
 - 计数、分配结果及 UUIDv7 均按上游账号、模型和思考等级持久化；重启、重复导入同一个上游账号不会重置。换到其他上游账号时使用该账号对应组合的批次；切回则继续原账号对应组合的计数。
 - 修改轮数从下一批生效，当前批次按创建时的上限走完。并发请求按数据库原子分配的顺序编号，不串行等待模型完成，因此上游实际到达或完成顺序不保证与编号一致。
 - 编号在准备请求时分配，后续上传或发送失败不会回收；同一逻辑请求重试仍复用该编号。
-- 请求诊断 `upstream.bps_compat.round_convergence` 展示 task、turn、序号、`task_model`、`task_reasoning_effort`、`task_generation`、`round_limit`、`reused_step` 和 `task_scope=upstream_account_model_effort_rounds`。发送时还记录 `task_started_at_unix_ms` 和 `task_expires_at_unix_ms`。Word 同时保留 `word_identity`。缺少持久化身份存储时明确失败，不静默退回每次序号为 1。
+- 请求诊断 `upstream.bps_compat.round_convergence` 展示 task、turn、序号、`task_model`、`task_reasoning_effort`、`task_generation`、`round_limit`、`task_lifetime_hours`、`reused_step` 和 `task_scope=upstream_account_model_effort_rounds`。发送时还记录 `task_started_at_unix_ms` 和 `task_expires_at_unix_ms`。Word 同时保留 `word_identity`。缺少持久化身份存储时明确失败，不静默退回每次序号为 1。
 
-从旧版未区分模型或思考等级的轮次收敛升级时，首次按新规则请求会为各组合新建批次并从 1 开始；不继续使用旧的混合批次。启动时自动新增 `bps_round_batches` 表记录批次首次及最后发送时间，兼容 SQLite/PostgreSQL，既有计数表和记录保留。到期表示不再为新调用复用旧批次，不物理删除历史映射或日志；同一新版分配的重试、轮换及重启继续遵循上述持久化规则。
+从旧版未区分模型或思考等级的轮次收敛升级时，首次按新规则请求会为各组合新建批次并从 1 开始；不继续使用旧的混合批次。启动时自动新增 `bps_round_batches` 表记录批次首次及最后发送时间，兼容 SQLite/PostgreSQL，既有计数表和记录保留。升级时为 `bps_round_tasks` / `bps_round_steps` 增补有效期列，旧批次按默认 24 小时固定有效期处理，已有任务、编号和重试映射不改写；截止时间按已记录的首次发送时间计算。到期表示不再为新调用复用旧批次，不物理删除历史映射或日志；同一新版分配的重试、轮换及重启继续遵循上述持久化规则。
 
 新用量日志中，BPS 请求在思考等级旁显示实际出站的 `metadata.agent_iteration`，悬停可看到字段名。该值独立保存为 `bps_agent_iteration`，不依赖用户窗口序号；重试显示原编号，新批次从 1 开始。非 BPS 请求继续显示窗口序号。历史日志不批量回填。
 

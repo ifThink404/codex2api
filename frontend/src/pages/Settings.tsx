@@ -2233,6 +2233,7 @@ export default function Settings() {
     codex_fingerprint_default_mode: 'off',
     bps_round_convergence_limit: 100,
     bps_turn_task_lifetime_hours: 24,
+    bps_round_task_lifetime_hours: 24,
     bps_turn_round_limit: 100,
     allow_remote_migration: false,
     database_driver: 'postgres',
@@ -4193,21 +4194,32 @@ export default function Settings() {
                           options={codexFingerprintDefaultModeOptions}
                         />
                       </SettingField>
-                      <div className="grid gap-4 xl:grid-cols-3">
+                      <div className="grid gap-4 xl:grid-cols-2">
                         <fieldset className="min-w-0 rounded-lg border border-border/60 p-4">
                           <legend className="px-1.5 text-sm font-semibold">{t('settings.bpsTaskRoundsTitle')}</legend>
                           <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('settings.bpsTaskRoundsHint')}</p>
-                          <SettingField label={t('settings.bpsRoundConvergenceLimit')} description={t('settings.bpsRoundConvergenceLimitDesc')}>
-                            <DraftNumberInput
-                              min={1}
-                              max={1000000}
-                              value={settingsForm.bps_round_convergence_limit ?? 100}
-                              onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_round_convergence_limit: value }))}
-                              onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_round_convergence_limit: value }) }}
-                            />
-                          </SettingField>
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <SettingField label={t('settings.bpsRoundConvergenceLimit')} description={t('settings.bpsRoundConvergenceLimitDesc')}>
+                              <DraftNumberInput
+                                min={1}
+                                max={1000000}
+                                value={settingsForm.bps_round_convergence_limit ?? 100}
+                                onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_round_convergence_limit: value }))}
+                                onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_round_convergence_limit: value }) }}
+                              />
+                            </SettingField>
+                            <SettingField label={t('settings.bpsRoundTaskLifetimeHours')} description={t('settings.bpsRoundTaskLifetimeHoursDesc')}>
+                              <DraftNumberInput
+                                min={1}
+                                max={8760}
+                                value={settingsForm.bps_round_task_lifetime_hours ?? 24}
+                                onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_round_task_lifetime_hours: value }))}
+                                onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_round_task_lifetime_hours: value }) }}
+                              />
+                            </SettingField>
+                          </div>
                         </fieldset>
-                        <fieldset className="min-w-0 rounded-lg border border-border/60 p-4 xl:col-span-2">
+                        <fieldset className="min-w-0 rounded-lg border border-border/60 p-4">
                           <legend className="px-1.5 text-sm font-semibold">{t('settings.bpsTurnRoundsTitle')}</legend>
                           <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('settings.bpsTurnRoundsHint')}</p>
                           <div className="grid gap-4 sm:grid-cols-2">

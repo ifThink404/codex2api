@@ -96,6 +96,7 @@ func withBPSFullConvergence(ctx context.Context, account *auth.Account, profile 
 		// first fixed turn starts at iteration 1 rather than a partial counter.
 		scope.taskKey = codexIdentityDigest("bps-round-account-task-v2", upstreamAccount)
 		scope.roundLimit = CurrentRuntimeSettings().BPSRoundConvergenceLimit
+		scope.taskLifetimeHours = CurrentRuntimeSettings().BPSRoundTaskLifetimeHours
 	}
 	if mode == auth.CodexFingerprintModeTurnRound {
 		scope.taskKey = codexIdentityDigest("bps-turn-account-task-v1", upstreamAccount)

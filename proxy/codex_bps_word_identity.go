@@ -162,7 +162,7 @@ func resolveBPSWordIdentity(ctx context.Context, body []byte, headers http.Heade
 		d.TaskScope = "upstream_account"
 	}
 	stepKey := codexIdentityDigest("bps-word-step-v2", step)
-	if full := bpsFullConvergenceFrom(ctx); full != nil && full.taskLifetimeHours > 0 {
+	if full := bpsFullConvergenceFrom(ctx); full != nil && full.turnRoundLimit > 0 {
 		stepKey = codexIdentityDigest("bps-turn-operation-v1", stepKey, strconv.FormatBool(compact))
 		questionSeed := full.questionTurnSeed
 		if questionSeed == "" {

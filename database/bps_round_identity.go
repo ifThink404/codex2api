@@ -10,7 +10,15 @@ import (
 
 const DefaultBPSRoundConvergenceLimit = 100
 const MaxBPSRoundConvergenceLimit = 1000000
-const BPSRoundTaskIdleTimeout = 24 * time.Hour
+const DefaultBPSRoundTaskLifetimeHours = 24
+const MaxBPSRoundTaskLifetimeHours = 8760
+
+func NormalizeBPSRoundTaskLifetimeHours(value int) int {
+	if value < 1 || value > MaxBPSRoundTaskLifetimeHours {
+		return DefaultBPSRoundTaskLifetimeHours
+	}
+	return value
+}
 
 func NormalizeBPSRoundConvergenceLimit(value int) int {
 	if value < 1 || value > MaxBPSRoundConvergenceLimit {
@@ -20,9 +28,10 @@ func NormalizeBPSRoundConvergenceLimit(value int) int {
 }
 
 type BPSRoundIdentity struct {
-	Generation int64
-	Iteration  int64
-	RoundLimit int
+	Generation    int64
+	Iteration     int64
+	RoundLimit    int
+	LifetimeHours int
 }
 
 type BPSRoundBatchActivity struct {
@@ -33,12 +42,15 @@ type BPSRoundBatchActivity struct {
 // ResolveBPSRoundIdentity assigns a durable position in an account/model/effort batch.
 // accountKey is the caller's opaque account, model and reasoning partition key.
 // A retry keeps its assignment even after rotation, settings changes or restart.
-func (db *DB) ResolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey string, limit int) (identity BPSRoundIdentity, reused bool, err error) {
-	return db.resolveBPSRoundIdentity(ctx, accountKey, stepKey, limit, time.Now)
+func (db *DB) ResolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey string, limit, hours int) (identity BPSRoundIdentity, reused bool, err error) {
+	return db.resolveBPSRoundIdentity(ctx, accountKey, stepKey, limit, hours, time.Now)
 }
 
-func (db *DB) resolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey string, limit int, now func() time.Time) (identity BPSRoundIdentity, reused bool, err error) {
-	return db.resolveBPSRoundCounter(ctx, accountKey, stepKey, limit, now, BPSRoundTaskIdleTimeout)
+func (db *DB) resolveBPSRoundIdentity(ctx context.Context, accountKey, stepKey string, limit, hours int, now func() time.Time) (identity BPSRoundIdentity, reused bool, err error) {
+	if hours < 1 || hours > MaxBPSRoundTaskLifetimeHours {
+		return identity, false, errors.New("invalid BPS round task lifetime")
+	}
+	return db.resolveBPSRoundCounter(ctx, accountKey, stepKey, limit, now, hours)
 }
 
 // ResolveBPSTurnQuestionIdentity counts distinct user questions, not inference
@@ -48,11 +60,11 @@ func (db *DB) ResolveBPSTurnQuestionIdentity(ctx context.Context, userKey, quest
 	return db.resolveBPSRoundCounter(ctx, userKey, questionKey, limit, time.Now, 0)
 }
 
-func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey string, limit int, now func() time.Time, idleTimeout time.Duration) (identity BPSRoundIdentity, reused bool, err error) {
+func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey string, limit int, now func() time.Time, lifetimeHours int) (identity BPSRoundIdentity, reused bool, err error) {
 	if !ValidSessionOperationKey(accountKey) || !ValidSessionOperationKey(stepKey) || limit < 1 || limit > MaxBPSRoundConvergenceLimit {
 		return identity, false, errors.New("invalid BPS round convergence scope or limit")
 	}
-	err = db.conn.QueryRowContext(ctx, `SELECT generation,iteration,round_limit FROM bps_round_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit)
+	err = db.conn.QueryRowContext(ctx, `SELECT generation,iteration,round_limit,lifetime_hours FROM bps_round_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit, &identity.LifetimeHours)
 	if err == nil {
 		return identity, true, nil
 	}
@@ -60,14 +72,14 @@ func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey st
 		return identity, false, err
 	}
 	err = db.withWriteTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO bps_round_tasks(account_key,generation,iteration,round_limit) VALUES($1,0,0,$2) ON CONFLICT(account_key) DO NOTHING`, accountKey, limit); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bps_round_tasks(account_key,generation,iteration,round_limit,lifetime_hours) VALUES($1,0,0,$2,$3) ON CONFLICT(account_key) DO NOTHING`, accountKey, limit, lifetimeHours); err != nil {
 			return err
 		}
 		// Serialize allocation across processes, not only goroutines.
 		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET iteration=iteration WHERE account_key=$1`, accountKey); err != nil {
 			return err
 		}
-		err := tx.QueryRowContext(ctx, `SELECT generation,iteration,round_limit FROM bps_round_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit)
+		err := tx.QueryRowContext(ctx, `SELECT generation,iteration,round_limit,lifetime_hours FROM bps_round_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit, &identity.LifetimeHours)
 		if err == nil {
 			reused = true
 			return nil
@@ -75,19 +87,20 @@ func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey st
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT generation,iteration,round_limit FROM bps_round_tasks WHERE account_key=$1`, accountKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT generation,iteration,round_limit,lifetime_hours FROM bps_round_tasks WHERE account_key=$1`, accountKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit, &identity.LifetimeHours); err != nil {
 			return err
 		}
 		// No start record means the batch was only allocated, not sent yet.
-		// Actual inference sends renew activity; allocation and restart do not.
+		// Only the first inference send starts the fixed timer; activity and
+		// restart never extend it. Question counters have no independent timer.
 		expired := false
-		if idleTimeout > 0 {
-			var lastSentAtMS int64
-			err = tx.QueryRowContext(ctx, `SELECT CASE WHEN last_sent_at_unix_ms > 0 THEN last_sent_at_unix_ms ELSE started_at_unix_ms END FROM bps_round_batches WHERE account_key=$1 AND generation=$2`, accountKey, identity.Generation).Scan(&lastSentAtMS)
+		if lifetimeHours > 0 {
+			var startedAtMS int64
+			err = tx.QueryRowContext(ctx, `SELECT started_at_unix_ms FROM bps_round_batches WHERE account_key=$1 AND generation=$2`, accountKey, identity.Generation).Scan(&startedAtMS)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-			expired = err == nil && now().Sub(time.UnixMilli(lastSentAtMS)) >= idleTimeout
+			expired = err == nil && now().Sub(time.UnixMilli(startedAtMS)) >= time.Duration(identity.LifetimeHours)*time.Hour
 		}
 		if identity.Iteration >= int64(identity.RoundLimit) || expired {
 			if identity.Generation == math.MaxInt64 {
@@ -98,18 +111,20 @@ func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey st
 			// Finish an existing batch under its original limit. A new setting
 			// takes effect on the next batch without rewriting prior IDs.
 			identity.RoundLimit = limit
+			identity.LifetimeHours = lifetimeHours
 		}
 		identity.Iteration++
-		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET generation=$2,iteration=$3,round_limit=$4 WHERE account_key=$1`, accountKey, identity.Generation, identity.Iteration, identity.RoundLimit); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET generation=$2,iteration=$3,round_limit=$4,lifetime_hours=$5 WHERE account_key=$1`, accountKey, identity.Generation, identity.Iteration, identity.RoundLimit, identity.LifetimeHours); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO bps_round_steps(account_key,step_key,generation,iteration,round_limit) VALUES($1,$2,$3,$4,$5)`, accountKey, stepKey, identity.Generation, identity.Iteration, identity.RoundLimit)
+		_, err = tx.ExecContext(ctx, `INSERT INTO bps_round_steps(account_key,step_key,generation,iteration,round_limit,lifetime_hours) VALUES($1,$2,$3,$4,$5,$6)`, accountKey, stepKey, identity.Generation, identity.Iteration, identity.RoundLimit, identity.LifetimeHours)
 		return err
 	})
 	return
 }
 
-// TouchBPSRoundIdentity renews the batch immediately before each inference send.
+// TouchBPSRoundIdentity records activity immediately before each inference send.
+// Later sends never extend the lifetime measured from the first send.
 // Retries update only their assigned generation, never a newer batch's timer.
 func (db *DB) TouchBPSRoundIdentity(ctx context.Context, accountKey string, generation int64) (BPSRoundBatchActivity, error) {
 	return db.touchBPSRoundIdentity(ctx, accountKey, generation, time.Now())
@@ -121,7 +136,7 @@ func (db *DB) touchBPSRoundIdentity(ctx context.Context, accountKey string, gene
 	}
 	err = db.withWriteTx(ctx, func(tx *sql.Tx) error {
 		// Use the same cross-process lock as allocation so expiry decisions see
-		// preceding renewals. Older concurrent sends cannot move activity back.
+		// the first send. Older concurrent sends cannot move activity back.
 		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET iteration=iteration WHERE account_key=$1`, accountKey); err != nil {
 			return err
 		}

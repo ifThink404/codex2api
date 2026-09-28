@@ -134,6 +134,7 @@ func TestBPSRoundConvergenceExecutor(t *testing.T) {
 	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
 	settings := DefaultRuntimeSettings()
 	settings.BPSRoundConvergenceLimit = 2
+	settings.BPSRoundTaskLifetimeHours = 7
 	ApplyRuntimeSettings(settings)
 	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "executor.db"))
 	require.NoError(t, err)
@@ -171,14 +172,14 @@ func TestBPSRoundConvergenceExecutor(t *testing.T) {
 		d := CodexBPSResponseDiagnostic(resp).RoundConvergence
 		require.Positive(t, d.TaskStartedAtMS)
 		require.GreaterOrEqual(t, d.TaskLastSentAtMS, d.TaskStartedAtMS)
-		require.Equal(t, database.BPSRoundTaskIdleTimeout.Milliseconds(), d.TaskExpiresAtMS-d.TaskLastSentAtMS)
+		require.Equal(t, int64(7*60*60*1000), d.TaskExpiresAtMS-d.TaskStartedAtMS)
 		if i == 0 {
 			firstTask = task
 			firstStartedAtMS = d.TaskStartedAtMS
 		}
 		if i < 2 {
 			require.Equal(t, firstTask, task)
-			require.Equal(t, firstStartedAtMS, d.TaskStartedAtMS, "renewal preserves the initial send time")
+			require.Equal(t, firstStartedAtMS, d.TaskStartedAtMS, "activity preserves the initial send time")
 		} else {
 			require.NotEqual(t, firstTask, task)
 		}

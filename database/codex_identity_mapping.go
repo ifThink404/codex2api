@@ -47,11 +47,20 @@ func (db *DB) ensureCodexIdentityMappingTables(ctx context.Context) error {
 			return err
 		}
 	}
-	if db.driver == "sqlite" {
-		return db.ensureSQLiteColumn(ctx, "bps_round_batches", "last_sent_at_unix_ms", "BIGINT NOT NULL DEFAULT 0")
+	for _, column := range []struct{ table, name, definition string }{
+		{"bps_round_batches", "last_sent_at_unix_ms", "BIGINT NOT NULL DEFAULT 0"},
+		{"bps_round_tasks", "lifetime_hours", "INTEGER NOT NULL DEFAULT 24"},
+		{"bps_round_steps", "lifetime_hours", "INTEGER NOT NULL DEFAULT 24"},
+	} {
+		if db.driver == "sqlite" {
+			if err := db.ensureSQLiteColumn(ctx, column.table, column.name, column.definition); err != nil {
+				return err
+			}
+		} else if _, err := db.conn.ExecContext(ctx, "ALTER TABLE "+column.table+" ADD COLUMN IF NOT EXISTS "+column.name+" "+column.definition); err != nil {
+			return err
+		}
 	}
-	_, err := db.conn.ExecContext(ctx, `ALTER TABLE bps_round_batches ADD COLUMN IF NOT EXISTS last_sent_at_unix_ms BIGINT NOT NULL DEFAULT 0`)
-	return err
+	return nil
 }
 
 func (db *DB) ResolveCodexIdentityMapping(ctx context.Context, rootKey string, legacyKeys []string, enabled bool) (CodexIdentityMappingPolicy, error) {

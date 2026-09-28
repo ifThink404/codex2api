@@ -23,32 +23,32 @@ func TestBPSRoundIdentityRotationAndReplay(t *testing.T) {
 		if i > 1 {
 			limit = 2
 		}
-		value, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step(i), limit)
+		value, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step(i), limit, 24)
 		require.NoError(t, err)
 		require.False(t, reused)
 		if i == 1 {
 			first = value
 		}
-		want := []BPSRoundIdentity{{0, 1, 3}, {0, 2, 3}, {0, 3, 3}, {1, 1, 2}, {1, 2, 2}, {2, 1, 2}}[i-1]
+		want := []BPSRoundIdentity{{0, 1, 3, 24}, {0, 2, 3, 24}, {0, 3, 3, 24}, {1, 1, 2, 24}, {1, 2, 2, 24}, {2, 1, 2, 24}}[i-1]
 		require.Equal(t, want, value)
 	}
 	require.NoError(t, db.Close())
 	db, err = New("sqlite", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	old, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step(1), 1)
+	old, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step(1), 1, 24)
 	require.NoError(t, err)
 	require.True(t, reused)
 	require.Equal(t, first, old, "an old retry must not migrate into the latest batch")
-	next, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step(7), 1)
+	next, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step(7), 1, 24)
 	require.NoError(t, err)
 	require.False(t, reused)
-	require.Equal(t, BPSRoundIdentity{2, 2, 2}, next, "restart retains both counter and active batch limit")
+	require.Equal(t, BPSRoundIdentity{2, 2, 2, 24}, next, "restart retains both counter and active batch limit")
 	otherKey := fmt.Sprintf("%x", sha256.Sum256([]byte("another account")))
-	other, _, err := db.ResolveBPSRoundIdentity(t.Context(), otherKey, step(1), 3)
+	other, _, err := db.ResolveBPSRoundIdentity(t.Context(), otherKey, step(1), 3, 24)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{0, 1, 3}, other)
-	_, _, err = db.ResolveBPSRoundIdentity(t.Context(), key, step(9), 0)
+	require.Equal(t, BPSRoundIdentity{0, 1, 3, 24}, other)
+	_, _, err = db.ResolveBPSRoundIdentity(t.Context(), key, step(9), 0, 24)
 	require.Error(t, err)
 }
 
@@ -56,81 +56,81 @@ func TestBPSRoundIdentityConcurrentInstances(t *testing.T) {
 	checkBPSRoundConcurrentInstances(t, "sqlite", filepath.Join(t.TempDir(), "concurrent.db"))
 }
 
-func TestBPSRoundIdentityExpiresAfter24HoursIdle(t *testing.T) {
+func TestBPSRoundIdentityCustomLifetimeAndReplay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "expiry.db")
 	db, err := New("sqlite", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	key := fmt.Sprintf("%x", sha256.Sum256([]byte(t.Name())))
-	otherKey := fmt.Sprintf("%x", sha256.Sum256([]byte(t.Name()+"/other-effort")))
-	step := func(n int) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprint(n)))) }
-	now := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
+	key, otherKey := turnTestKey(t.Name()), turnTestKey(t.Name()+"/other-effort")
+	step := func(n int) string { return turnTestKey(fmt.Sprint(n)) }
+	now := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	first, reused, err := db.resolveBPSRoundIdentity(t.Context(), key, step(1), 100, clock)
+	first, reused, err := db.resolveBPSRoundIdentity(t.Context(), key, step(1), 100, 2, clock)
 	require.NoError(t, err)
 	require.False(t, reused)
-	require.Equal(t, BPSRoundIdentity{0, 1, 100}, first)
-	// Allocating or preparing attachments alone does not start or renew activity.
+	require.Equal(t, BPSRoundIdentity{0, 1, 100, 2}, first)
+	// Attachment preparation or allocation alone does not start the timer.
 	now = now.Add(48 * time.Hour)
-	unsent, _, err := db.resolveBPSRoundIdentity(t.Context(), key, step(2), 100, clock)
+	unsent, _, err := db.resolveBPSRoundIdentity(t.Context(), key, step(2), 100, 2, clock)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{0, 2, 100}, unsent)
+	require.Equal(t, BPSRoundIdentity{0, 2, 100, 2}, unsent)
 	started, err := db.touchBPSRoundIdentity(t.Context(), key, 0, now)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundBatchActivity{now.UnixMilli(), now.UnixMilli()}, started)
-	now = now.Add(24*time.Hour - time.Millisecond)
-	before, _, err := db.resolveBPSRoundIdentity(t.Context(), key, step(3), 2, clock)
+	now = now.Add(2*time.Hour - time.Millisecond)
+	before, _, err := db.resolveBPSRoundIdentity(t.Context(), key, step(3), 2, 72, clock)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{0, 3, 100}, before)
-	renewed, err := db.touchBPSRoundIdentity(t.Context(), key, 0, now)
+	require.Equal(t, BPSRoundIdentity{0, 3, 100, 2}, before, "settings do not rewrite active batches")
+	active, err := db.touchBPSRoundIdentity(t.Context(), key, 0, now)
 	require.NoError(t, err)
-	require.Equal(t, started.StartedAtMS, renewed.StartedAtMS)
-	require.Equal(t, now.UnixMilli(), renewed.LastSentAtMS)
-	now = now.Add(time.Millisecond)
-	stillActive, _, err := db.resolveBPSRoundIdentity(t.Context(), key, step(4), 2, clock)
+	require.Equal(t, started.StartedAtMS, active.StartedAtMS)
+	require.Equal(t, now.UnixMilli(), active.LastSentAtMS)
+	_, _, err = db.resolveBPSRoundIdentity(t.Context(), otherKey, step(1), 100, 72, clock)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{0, 4, 100}, stillActive, "original 24h deadline was extended by the last send")
-	_, _, err = db.resolveBPSRoundIdentity(t.Context(), otherKey, step(1), 100, clock)
-	require.NoError(t, err)
-	_, err = db.touchBPSRoundIdentity(t.Context(), otherKey, 0, now.Add(time.Hour))
+	_, err = db.touchBPSRoundIdentity(t.Context(), otherKey, 0, now)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 	db, err = New("sqlite", path)
 	require.NoError(t, err)
-	now = time.UnixMilli(renewed.LastSentAtMS).Add(24*time.Hour - time.Millisecond)
-	before, _, err = db.resolveBPSRoundIdentity(t.Context(), key, step(5), 2, clock)
-	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{0, 5, 100}, before)
 	now = now.Add(time.Millisecond)
-	retry, reused, err := db.resolveBPSRoundIdentity(t.Context(), key, step(1), 2, clock)
+	retry, reused, err := db.resolveBPSRoundIdentity(t.Context(), key, step(1), 2, 72, clock)
 	require.NoError(t, err)
 	require.True(t, reused)
-	require.Equal(t, first, retry, "expiry must not change an already assigned retry")
-	next, reused, err := db.resolveBPSRoundIdentity(t.Context(), key, step(6), 2, clock)
+	require.Equal(t, first, retry)
+	next, reused, err := db.resolveBPSRoundIdentity(t.Context(), key, step(4), 2, 72, clock)
 	require.NoError(t, err)
 	require.False(t, reused)
-	require.Equal(t, BPSRoundIdentity{1, 1, 2}, next, "first new call after 24h idle rotates, even below the limit")
-	var startedBatches int
-	require.NoError(t, db.conn.QueryRow(`SELECT COUNT(*) FROM bps_round_batches WHERE account_key=$1`, key).Scan(&startedBatches))
-	require.Equal(t, 1, startedBatches, "new batch timer starts at send, not allocation")
-	other, _, err := db.resolveBPSRoundIdentity(t.Context(), otherKey, step(2), 100, clock)
+	require.Equal(t, BPSRoundIdentity{1, 1, 2, 72}, next, "first new call at the fixed deadline rotates despite recent traffic")
+	var batches int
+	require.NoError(t, db.conn.QueryRow(`SELECT COUNT(*) FROM bps_round_batches WHERE account_key=$1`, key).Scan(&batches))
+	require.Equal(t, 1, batches, "new batch remains unsent")
+	other, _, err := db.resolveBPSRoundIdentity(t.Context(), otherKey, step(2), 100, 1, clock)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{0, 2, 100}, other, "model/effort partitions expire independently")
-	newStart, err := db.touchBPSRoundIdentity(t.Context(), key, next.Generation, now)
+	require.Equal(t, BPSRoundIdentity{0, 2, 100, 72}, other)
+	_, err = db.touchBPSRoundIdentity(t.Context(), key, 1, now)
 	require.NoError(t, err)
-	_, err = db.touchBPSRoundIdentity(t.Context(), key, first.Generation, now.Add(time.Hour))
+	_, err = db.touchBPSRoundIdentity(t.Context(), key, 0, now.Add(24*time.Hour))
 	require.NoError(t, err)
-	var currentLastSent int64
-	require.NoError(t, db.conn.QueryRow(`SELECT last_sent_at_unix_ms FROM bps_round_batches WHERE account_key=$1 AND generation=$2`, key, next.Generation).Scan(&currentLastSent))
-	require.Equal(t, newStart.LastSentAtMS, currentLastSent, "old retries must not renew the current batch")
-	_, _, err = db.resolveBPSRoundIdentity(t.Context(), key, step(7), 2, clock)
+	retry, reused, err = db.resolveBPSRoundIdentity(t.Context(), key, step(1), 2, 72, clock)
 	require.NoError(t, err)
-	_, err = db.touchBPSRoundIdentity(t.Context(), key, next.Generation, now)
+	require.True(t, reused)
+	require.Equal(t, first, retry, "late old sends never alter replay assignments")
+	_, _, err = db.resolveBPSRoundIdentity(t.Context(), key, step(5), 2, 72, clock)
 	require.NoError(t, err)
-	byLimit, _, err := db.resolveBPSRoundIdentity(t.Context(), key, step(8), 2, clock)
+	byLimit, _, err := db.resolveBPSRoundIdentity(t.Context(), key, step(6), 2, 72, clock)
 	require.NoError(t, err)
-	require.Equal(t, BPSRoundIdentity{2, 1, 2}, byLimit, "renewing activity does not override the round limit")
+	require.Equal(t, BPSRoundIdentity{2, 1, 2, 72}, byLimit, "call limit still rotates before expiry")
+	for _, hours := range []int{0, -1, 8761} {
+		_, _, err = db.ResolveBPSRoundIdentity(t.Context(), key, step(7), 100, hours)
+		require.Error(t, err)
+		require.Equal(t, 24, NormalizeBPSRoundTaskLifetimeHours(hours))
+	}
+	for _, hours := range []int{1, 8760} {
+		id, _, err := db.ResolveBPSRoundIdentity(t.Context(), turnTestKey(fmt.Sprint(hours)), step(7), 100, hours)
+		require.NoError(t, err)
+		require.Equal(t, hours, id.LifetimeHours)
+	}
 }
+
 func TestBPSRoundIdentityPostgres(t *testing.T) {
 	dsn := os.Getenv("CODEX2API_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -145,7 +145,7 @@ func TestBPSRoundIdentityMigratesExistingCounters(t *testing.T) {
 	require.NoError(t, err)
 	key := fmt.Sprintf("%x", sha256.Sum256([]byte(t.Name())))
 	step := fmt.Sprintf("%x", sha256.Sum256([]byte("legacy-step")))
-	old, _, err := db.ResolveBPSRoundIdentity(t.Context(), key, step, 100)
+	old, _, err := db.ResolveBPSRoundIdentity(t.Context(), key, step, 100, 24)
 	require.NoError(t, err)
 	// Represent the schema deployed before the batch-lifetime table existed.
 	_, err = db.conn.Exec(`DROP TABLE bps_round_batches`)
@@ -154,7 +154,7 @@ func TestBPSRoundIdentityMigratesExistingCounters(t *testing.T) {
 	db, err = New("sqlite", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	retry, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step, 100)
+	retry, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, step, 100, 24)
 	require.NoError(t, err)
 	require.True(t, reused)
 	require.Equal(t, old, retry)
@@ -184,7 +184,7 @@ func checkBPSRoundConcurrentInstances(t *testing.T, driver, dsn string) {
 			db := []*DB{first, second}[i%2]
 			step := i / 2
 			stepKey := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprint(step))))
-			value, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, stepKey, 3)
+			value, reused, err := db.ResolveBPSRoundIdentity(t.Context(), key, stepKey, 3, 24)
 			results <- result{step, value, reused, err}
 		}()
 	}
@@ -207,7 +207,7 @@ func checkBPSRoundConcurrentInstances(t *testing.T, driver, dsn string) {
 	require.Equal(t, 12, newCount)
 	for generation := range int64(4) {
 		for iteration := int64(1); iteration <= 3; iteration++ {
-			require.True(t, positions[BPSRoundIdentity{generation, iteration, 3}])
+			require.True(t, positions[BPSRoundIdentity{generation, iteration, 3, 24}])
 		}
 	}
 	// Concurrent activity updates preserve the first send and the latest send.
@@ -233,7 +233,7 @@ func checkBPSRoundConcurrentInstances(t *testing.T, driver, dsn string) {
 	require.Equal(t, latest, persisted)
 	older, err := second.touchBPSRoundIdentity(t.Context(), key, 3, time.UnixMilli(latest-1000))
 	require.NoError(t, err)
-	require.Equal(t, latest, older.LastSentAtMS, "out-of-order sends cannot shorten the idle deadline")
+	require.Equal(t, latest, older.LastSentAtMS, "out-of-order sends cannot move observed activity backwards")
 }
 
 func TestBPSRoundIdentityMigratesFirstSendTimer(t *testing.T) {
@@ -242,7 +242,7 @@ func TestBPSRoundIdentityMigratesFirstSendTimer(t *testing.T) {
 	require.NoError(t, err)
 	key := fmt.Sprintf("%x", sha256.Sum256([]byte(t.Name())))
 	step := fmt.Sprintf("%x", sha256.Sum256([]byte("step")))
-	_, _, err = db.ResolveBPSRoundIdentity(t.Context(), key, step, 100)
+	_, _, err = db.ResolveBPSRoundIdentity(t.Context(), key, step, 100, 24)
 	require.NoError(t, err)
 	_, err = db.conn.Exec(`ALTER TABLE bps_round_batches DROP COLUMN last_sent_at_unix_ms`)
 	require.NoError(t, err)

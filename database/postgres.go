@@ -1637,6 +1637,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(20) DEFAULT 'off';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_round_convergence_limit INT DEFAULT 100;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_turn_task_lifetime_hours INT DEFAULT 24;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_round_task_lifetime_hours INT DEFAULT 24;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_turn_round_limit INT DEFAULT 100;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
@@ -2584,6 +2585,7 @@ type SystemSettings struct {
 	CodexFingerprintDefaultMode string
 	BPSRoundConvergenceLimit    int
 	BPSTurnTaskLifetimeHours    int
+	BPSRoundTaskLifetimeHours   int
 	BPSTurnRoundLimit           int
 	AutoPause5hThreshold        float64
 	AutoPause7dThreshold        float64
@@ -2869,6 +2871,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(session_balance_mode, ''),
 		       COALESCE(bps_round_convergence_limit, 100),
 		       COALESCE(bps_turn_task_lifetime_hours, 24),
+		       COALESCE(bps_round_task_lifetime_hours, 24),
 		       COALESCE(bps_turn_round_limit, 100)
 			FROM system_settings WHERE id = 1
 		`).Scan(
@@ -2970,6 +2973,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.SessionBalanceMode,
 		&s.BPSRoundConvergenceLimit,
 		&s.BPSTurnTaskLifetimeHours,
+		&s.BPSRoundTaskLifetimeHours,
 		&s.BPSTurnRoundLimit,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -3010,6 +3014,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s.CodexFingerprintDefaultMode = NormalizeCodexFingerprintDefaultMode(s.CodexFingerprintDefaultMode)
 	s.BPSRoundConvergenceLimit = NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit)
 	s.BPSTurnTaskLifetimeHours = NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours)
+	s.BPSRoundTaskLifetimeHours = NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours)
 	s.BPSTurnRoundLimit = NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit)
 	s.SessionSlotBufferSeconds = NormalizeSessionSlotBufferSeconds(s.SessionSlotBufferSeconds)
 	s.ModelsListReadMaxBytes = NormalizeModelsListReadMaxBytes(s.ModelsListReadMaxBytes)
@@ -3245,9 +3250,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					session_balance_mode,
 					bps_round_convergence_limit,
 					bps_turn_task_lifetime_hours,
-					bps_turn_round_limit
+					bps_turn_round_limit,
+					bps_round_task_lifetime_hours
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141, $142)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3379,6 +3385,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					session_balance_mode = EXCLUDED.session_balance_mode,
 					bps_round_convergence_limit = EXCLUDED.bps_round_convergence_limit,
 					bps_turn_task_lifetime_hours = EXCLUDED.bps_turn_task_lifetime_hours,
+					bps_round_task_lifetime_hours = EXCLUDED.bps_round_task_lifetime_hours,
 					bps_turn_round_limit = EXCLUDED.bps_turn_round_limit,
 					passive_internal_models_enabled = EXCLUDED.passive_internal_models_enabled,
 					codex_unlinked_account_fallback_enabled = EXCLUDED.codex_unlinked_account_fallback_enabled,
@@ -3455,7 +3462,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeSessionBalanceMode(s.SessionBalanceMode, s.SessionWindowBalanceEnabled),
 		NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit),
 		NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours),
-		NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit))
+		NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit),
+		NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours))
 	return err
 }
 

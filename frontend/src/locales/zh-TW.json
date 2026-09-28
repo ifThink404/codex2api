@@ -320,9 +320,11 @@
   },
   "settings": {
     "bpsRoundConvergenceLimit": "每個 task 的模型呼叫次數",
-    "bpsRoundConvergenceLimitDesc": "僅適用於「task_id 輪次」，預設 100，範圍 1–1000000。依實際上游帳號、模型與思考等級獨立計數；每批 task_id 固定，未切換帳號時 turn_id 固定，agent_iteration 遞增。切換使用目標帳號目前批次、建立新 turn_id 並繼續計數。工具續接計入，同帳號重試不重複計數。達到上限或連續閒置 24 小時後換批，序號歸 1。修改上限從下一批生效，並行依資料庫分配順序編號。",
+    "bpsRoundConvergenceLimitDesc": "僅適用於「task_id 輪次」，預設 100，範圍 1–1000000。依實際上游帳號、模型與思考等級獨立計數；每批 task_id 固定，未切換帳號時 turn_id 固定，agent_iteration 遞增。切換使用目標帳號目前批次、建立新 turn_id 並繼續計數。工具續接計入，同帳號重試不重複計數。達到上限或設定的固定有效期後換批，序號歸 1。修改次數或週期從下一批生效，並行依資料庫分配順序編號。",
+    "bpsRoundTaskLifetimeHours": "task_id 有效期（小時）",
+    "bpsRoundTaskLifetimeHoursDesc": "僅適用於「task_id 輪次」，預設 24，範圍 1–8760 小時。每批從首次上游推理傳送起固定計時，持續請求不續期；呼叫次數達到上限或到期後，下一次新呼叫更換 task_id、turn_id，序號歸 1。重試沿用原分配，重啟保留計時；修改週期從下一批生效。與右側 turn_id 輪次的有效期獨立。",
     "bpsTaskRoundsTitle": "task_id 輪次模式",
-    "bpsTaskRoundsHint": "按模型呼叫次數更換 task；工具續接計入，同帳號重試不重複計數。",
+    "bpsTaskRoundsHint": "按模型呼叫次數或有效期更換 task，先達到的條件生效；工具續接計入，同帳號重試不重複計數。",
     "bpsTurnRoundsTitle": "turn_id 輪次模式",
     "bpsTurnRoundsHint": "按使用者提問次數更換 turn；同一使用者跨視窗累計，工具續接和重試不佔次數。",
     "bpsTurnRoundLimit": "每個 turn 的使用者提問次數",

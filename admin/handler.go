@@ -9681,6 +9681,7 @@ type settingsResponse struct {
 	CodexFingerprintDefaultMode        string                           `json:"codex_fingerprint_default_mode"`
 	BPSRoundConvergenceLimit           int                              `json:"bps_round_convergence_limit"`
 	BPSTurnTaskLifetimeHours           int                              `json:"bps_turn_task_lifetime_hours"`
+	BPSRoundTaskLifetimeHours          int                              `json:"bps_round_task_lifetime_hours"`
 	BPSTurnRoundLimit                  int                              `json:"bps_turn_round_limit"`
 	AllowRemoteMigration               bool                             `json:"allow_remote_migration"`
 	DatabaseDriver                     string                           `json:"database_driver"`
@@ -9872,6 +9873,7 @@ type updateSettingsReq struct {
 	CodexFingerprintDefaultMode         *string                          `json:"codex_fingerprint_default_mode"`
 	BPSRoundConvergenceLimit            *int                             `json:"bps_round_convergence_limit"`
 	BPSTurnTaskLifetimeHours            *int                             `json:"bps_turn_task_lifetime_hours"`
+	BPSRoundTaskLifetimeHours           *int                             `json:"bps_round_task_lifetime_hours"`
 	BPSTurnRoundLimit                   *int                             `json:"bps_turn_round_limit"`
 	AllowRemoteMigration                *bool                            `json:"allow_remote_migration"`
 	ModelMapping                        *string                          `json:"model_mapping"`
@@ -10730,6 +10732,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		CodexFingerprintDefaultMode:         h.store.GetCodexFingerprintDefaultMode(),
 		BPSRoundConvergenceLimit:            runtimeCfg.BPSRoundConvergenceLimit,
 		BPSTurnTaskLifetimeHours:            runtimeCfg.BPSTurnTaskLifetimeHours,
+		BPSRoundTaskLifetimeHours:           runtimeCfg.BPSRoundTaskLifetimeHours,
 		BPSTurnRoundLimit:                   runtimeCfg.BPSTurnRoundLimit,
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,
@@ -11187,10 +11190,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	previousAutoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	previousBPSRoundLimit := runtimeCfg.BPSRoundConvergenceLimit
 	previousBPSTurnLifetime := runtimeCfg.BPSTurnTaskLifetimeHours
+	previousBPSRoundLifetime := runtimeCfg.BPSRoundTaskLifetimeHours
 	previousBPSTurnRoundLimit := runtimeCfg.BPSTurnRoundLimit
 	if existingSettings != nil {
 		runtimeCfg.BPSRoundConvergenceLimit = database.NormalizeBPSRoundConvergenceLimit(existingSettings.BPSRoundConvergenceLimit)
 		runtimeCfg.BPSTurnTaskLifetimeHours = database.NormalizeBPSTurnTaskLifetimeHours(existingSettings.BPSTurnTaskLifetimeHours)
+		runtimeCfg.BPSRoundTaskLifetimeHours = database.NormalizeBPSRoundTaskLifetimeHours(existingSettings.BPSRoundTaskLifetimeHours)
 		runtimeCfg.BPSTurnRoundLimit = database.NormalizeBPSTurnRoundLimit(existingSettings.BPSTurnRoundLimit)
 		runtimeCfg.CodexSessionFailoverEnabled = existingSettings.CodexSessionFailoverEnabled
 		runtimeCfg.CodexForkAccountFallbackEnabled = existingSettings.CodexForkAccountFallbackEnabled
@@ -11859,6 +11864,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		runtimeCfg.BPSTurnTaskLifetimeHours = *req.BPSTurnTaskLifetimeHours
 	}
+	if req.BPSRoundTaskLifetimeHours != nil {
+		if *req.BPSRoundTaskLifetimeHours < 1 || *req.BPSRoundTaskLifetimeHours > database.MaxBPSRoundTaskLifetimeHours {
+			writeError(c, http.StatusBadRequest, "bps_round_task_lifetime_hours 必须在 1 到 8760 之间")
+			return
+		}
+		runtimeCfg.BPSRoundTaskLifetimeHours = *req.BPSRoundTaskLifetimeHours
+	}
 	if req.BPSTurnRoundLimit != nil {
 		if *req.BPSTurnRoundLimit < 1 || *req.BPSTurnRoundLimit > database.MaxBPSTurnRoundLimit {
 			writeError(c, http.StatusBadRequest, "bps_turn_round_limit 必须在 1 到 1000000 之间")
@@ -12030,6 +12042,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// Do not rotate live task batches until the new limit is persisted.
 	effectiveRuntimeCfg.BPSRoundConvergenceLimit = previousBPSRoundLimit
 	effectiveRuntimeCfg.BPSTurnTaskLifetimeHours = previousBPSTurnLifetime
+	effectiveRuntimeCfg.BPSRoundTaskLifetimeHours = previousBPSRoundLifetime
 	effectiveRuntimeCfg.BPSTurnRoundLimit = previousBPSTurnRoundLimit
 	if autoResetCreditsChanged {
 		effectiveRuntimeCfg.AutoResetCreditsEnabled = previousAutoResetCreditsEnabled
@@ -12346,6 +12359,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexFingerprintDefaultMode:         h.store.GetCodexFingerprintDefaultMode(),
 		BPSRoundConvergenceLimit:            runtimeCfg.BPSRoundConvergenceLimit,
 		BPSTurnTaskLifetimeHours:            runtimeCfg.BPSTurnTaskLifetimeHours,
+		BPSRoundTaskLifetimeHours:           runtimeCfg.BPSRoundTaskLifetimeHours,
 		BPSTurnRoundLimit:                   runtimeCfg.BPSTurnRoundLimit,
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && hasAdminSecret,
 		ModelMapping:                        h.store.GetModelMapping(),
@@ -12405,7 +12419,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	})
 	if err != nil {
 		log.Printf("无法持久化保存设置: %v", err)
-		if req.BPSRoundConvergenceLimit != nil || req.BPSTurnTaskLifetimeHours != nil || req.BPSTurnRoundLimit != nil {
+		if req.BPSRoundTaskLifetimeHours != nil || req.BPSRoundConvergenceLimit != nil || req.BPSTurnTaskLifetimeHours != nil || req.BPSTurnRoundLimit != nil {
 			writeError(c, http.StatusInternalServerError, "保存轮次收敛设置失败，设置未生效")
 			return
 		}
@@ -12457,6 +12471,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			current.CodexImagesMainModel = codexImagesMainModel
 			current.BPSRoundConvergenceLimit = runtimeCfg.BPSRoundConvergenceLimit
 			current.BPSTurnTaskLifetimeHours = runtimeCfg.BPSTurnTaskLifetimeHours
+			current.BPSRoundTaskLifetimeHours = runtimeCfg.BPSRoundTaskLifetimeHours
 			current.BPSTurnRoundLimit = runtimeCfg.BPSTurnRoundLimit
 			return current
 		})
@@ -12715,6 +12730,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexFingerprintDefaultMode:         h.store.GetCodexFingerprintDefaultMode(),
 		BPSRoundConvergenceLimit:            runtimeCfg.BPSRoundConvergenceLimit,
 		BPSTurnTaskLifetimeHours:            runtimeCfg.BPSTurnTaskLifetimeHours,
+		BPSRoundTaskLifetimeHours:           runtimeCfg.BPSRoundTaskLifetimeHours,
 		BPSTurnRoundLimit:                   runtimeCfg.BPSTurnRoundLimit,
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,

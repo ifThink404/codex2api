@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codex2api/database"
 	"github.com/tidwall/gjson"
@@ -11,7 +12,7 @@ import (
 
 type bpsRoundIdentityStore interface {
 	bpsWordIdentityStore
-	ResolveBPSRoundIdentity(context.Context, string, string, int) (database.BPSRoundIdentity, bool, error)
+	ResolveBPSRoundIdentity(context.Context, string, string, int, int) (database.BPSRoundIdentity, bool, error)
 	TouchBPSRoundIdentity(context.Context, string, int64) (database.BPSRoundBatchActivity, error)
 }
 
@@ -49,7 +50,7 @@ func resolveBPSRoundIdentity(ctx context.Context, scope *bpsFullConvergenceScope
 	// actually used upstream. Aliases of the same combination share a counter.
 	model = strings.TrimSpace(model)
 	partitionKey := codexIdentityDigest("bps-round-account-model-effort-v1", scope.taskKey, model, effort)
-	assignment, reused, err := store.ResolveBPSRoundIdentity(ctx, partitionKey, step, scope.roundLimit)
+	assignment, reused, err := store.ResolveBPSRoundIdentity(ctx, partitionKey, step, scope.roundLimit, scope.taskLifetimeHours)
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +74,7 @@ func resolveBPSRoundIdentity(ctx context.Context, scope *bpsFullConvergenceScope
 	d.TaskScope, d.Persisted, d.ReusedStep = "upstream_account_model_effort_rounds", true, reused
 	d.TaskModel, d.TaskReasoningEffort = model, effort
 	d.TaskGeneration, d.RoundLimit = assignment.Generation, assignment.RoundLimit
+	d.TaskLifetimeHours = assignment.LifetimeHours
 	d.roundPartitionKey = partitionKey
 	return d, nil
 }
@@ -91,6 +93,6 @@ func touchBPSRoundIdentity(ctx context.Context, d *bpsWordIdentityDiagnostic) er
 	}
 	d.TaskStartedAtMS = activity.StartedAtMS
 	d.TaskLastSentAtMS = activity.LastSentAtMS
-	d.TaskExpiresAtMS = activity.LastSentAtMS + database.BPSRoundTaskIdleTimeout.Milliseconds()
+	d.TaskExpiresAtMS = activity.StartedAtMS + (time.Duration(d.TaskLifetimeHours) * time.Hour).Milliseconds()
 	return nil
 }

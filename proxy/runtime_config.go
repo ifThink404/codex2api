@@ -64,13 +64,14 @@ const (
 )
 
 type RuntimeSettings struct {
-	ClientCompatMode         string
-	CodexMinCLIVersion       string
-	CodexUserAgentConfig     string
-	BPSRoundConvergenceLimit int
-	BPSTurnTaskLifetimeHours int
-	BPSTurnRoundLimit        int
-	CodexTelemetryEnabled    bool
+	ClientCompatMode          string
+	CodexMinCLIVersion        string
+	CodexUserAgentConfig      string
+	BPSRoundConvergenceLimit  int
+	BPSTurnTaskLifetimeHours  int
+	BPSRoundTaskLifetimeHours int
+	BPSTurnRoundLimit         int
+	CodexTelemetryEnabled     bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -216,6 +217,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexContinueMaxRounds:            defaultCodexContinueMaxRounds,
 		BPSRoundConvergenceLimit:          database.DefaultBPSRoundConvergenceLimit,
 		BPSTurnTaskLifetimeHours:          database.DefaultBPSTurnTaskLifetimeHours,
+		BPSRoundTaskLifetimeHours:         database.DefaultBPSRoundTaskLifetimeHours,
 		BPSTurnRoundLimit:                 database.DefaultBPSTurnRoundLimit,
 		RequestIsolationMode:              defaultRequestIsolationMode(),
 		CodexCLIVersionSyncEnabled:        true,
@@ -350,6 +352,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.CodexOverloadWindowMinutes = database.NormalizeCodexOverloadWindowMinutes(settings.CodexOverloadWindowMinutes)
 	settings.BPSRoundConvergenceLimit = database.NormalizeBPSRoundConvergenceLimit(settings.BPSRoundConvergenceLimit)
 	settings.BPSTurnTaskLifetimeHours = database.NormalizeBPSTurnTaskLifetimeHours(settings.BPSTurnTaskLifetimeHours)
+	settings.BPSRoundTaskLifetimeHours = database.NormalizeBPSRoundTaskLifetimeHours(settings.BPSRoundTaskLifetimeHours)
 	settings.BPSTurnRoundLimit = database.NormalizeBPSTurnRoundLimit(settings.BPSTurnRoundLimit)
 	if settings.CodexContinueMaxRounds < minCodexContinueMaxRounds {
 		settings.CodexContinueMaxRounds = defaults.CodexContinueMaxRounds
@@ -419,6 +422,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexContinueMaxRounds = settings.CodexContinueMaxRounds
 		next.BPSRoundConvergenceLimit = settings.BPSRoundConvergenceLimit
 		next.BPSTurnTaskLifetimeHours = settings.BPSTurnTaskLifetimeHours
+		next.BPSRoundTaskLifetimeHours = settings.BPSRoundTaskLifetimeHours
 		next.BPSTurnRoundLimit = settings.BPSTurnRoundLimit
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled

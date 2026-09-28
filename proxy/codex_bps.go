@@ -198,7 +198,7 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 			d.WordIdentity = identity
 		}
 		if scope := bpsFullConvergenceFrom(ctx); scope != nil {
-			if scope.taskLifetimeHours > 0 {
+			if scope.turnRoundLimit > 0 {
 				d.TurnConvergence = identity
 			} else if scope.roundLimit > 0 {
 				d.RoundConvergence = identity
