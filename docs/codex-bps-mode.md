@@ -1,6 +1,6 @@
 # 账号级 BPS 兼容模式
 
-普通 Codex OAuth / AT 账号的编辑窗口提供“BPS 兼容模式”。新建账号默认开启 BPS、Codex 和历史图片精简，并开启额度耗尽后的 `gpt-5.6-sol` 放行；已有账号保留原配置，导入文件中的显式关闭值也会保留。编辑后点击保存生效。配置键为 credentials.codex_bps_enabled，支持运行时同步、重新加载及原生账号 JSON 导入导出。API 中转和 Agent Identity 不支持开启。
+普通 Codex OAuth / AT 账号的编辑窗口提供“BPS 兼容模式”。新建账号默认关闭 Codex 原生路径，开启 BPS、历史图片精简和跳过预热层级，并开启额度耗尽后的 `gpt-5.6-sol` 放行。跳过预热层级与账号在同一事务中保存，导入后立即生效，重启重载保留；它仅将 warm 调度层级提升为 healthy，不跳过登录刷新、额度检查或封禁状态。已有账号和凭证刷新保留原配置，导入文件中的显式配置优先；没有 `codex_native_enabled` 时统一默认为 false，不从 BPS 开关反推开启 Codex。编辑后点击保存生效。配置键为 credentials.codex_bps_enabled，支持运行时同步、重新加载及原生账号 JSON 导入导出。API 中转和 Agent Identity 不支持开启。
 
 ## 会话与请求路径
 

@@ -3834,7 +3834,7 @@ func (h *Handler) AddAccount(c *gin.Context) {
 			}
 		}
 
-		id, err := h.db.InsertAccountWithCredentials(ctx, name, h.newCodexAccountCredentials(&seed), req.ProxyURL)
+		id, err := h.insertNewCodexAccount(ctx, name, req.ProxyURL, &seed)
 		if err != nil {
 			log.Printf("批量添加账号 %d 失败: %v", i+1, err)
 			failCount++
@@ -3933,7 +3933,7 @@ func (h *Handler) streamAddAccounts(c *gin.Context, req addAccountReq, seeds []t
 			}
 		}
 
-		id, err := h.db.InsertAccountWithCredentials(ctx, name, h.newCodexAccountCredentials(&seed), req.ProxyURL)
+		id, err := h.insertNewCodexAccount(ctx, name, req.ProxyURL, &seed)
 		if err != nil {
 			log.Printf("批量添加账号 %d 失败: %v", i+1, err)
 			failCount++
@@ -4123,7 +4123,7 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 			seenATRoutes[routeKey] = true
 		}
 
-		id, err := h.db.InsertAccountWithCredentials(ctx, name, h.newCodexAccountCredentials(&seed), req.ProxyURL)
+		id, err := h.insertNewCodexAccount(ctx, name, req.ProxyURL, &seed)
 		if err != nil {
 			log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
 			failCount++
@@ -4251,7 +4251,7 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 			seenATRoutes[routeKey] = true
 		}
 
-		id, err := h.db.InsertAccountWithCredentials(ctx, name, h.newCodexAccountCredentials(&seed), req.ProxyURL)
+		id, err := h.insertNewCodexAccount(ctx, name, req.ProxyURL, &seed)
 		if err != nil {
 			log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
 			failCount++
@@ -4910,6 +4910,7 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 
 // importToken 导入时的统一 token 载体
 type importToken struct {
+	skipWarmTier                    *bool
 	codexBPSEnabled                 bool
 	codexBPSEnabledSet              bool
 	codexNativeEnabled              *bool
@@ -5083,6 +5084,7 @@ type jsonAccountEntry struct {
 	Codex5HUsageUpdatedAt        string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt          string                 `json:"codex_usage_updated_at"`
 	CodexBPSEnabled              *bool                  `json:"codex_bps_enabled"`
+	SkipWarmTier                 *bool                  `json:"skip_warm_tier,omitempty"`
 	CodexNativeEnabled           *bool                  `json:"codex_native_enabled,omitempty"`
 	CodexNativeModels            []string               `json:"codex_native_models,omitempty"`
 	CodexBPSModels               []string               `json:"codex_bps_models,omitempty"`
@@ -5113,8 +5115,9 @@ type sub2apiImportPayload struct {
 }
 
 type sub2apiAccountEntry struct {
-	Name        string                    `json:"name"`
-	Credentials sub2apiAccountCredentials `json:"credentials"`
+	SkipWarmTier *bool                     `json:"skip_warm_tier,omitempty"`
+	Name         string                    `json:"name"`
+	Credentials  sub2apiAccountCredentials `json:"credentials"`
 	// 代理是账号属性而不是凭据，不同导出实现有的写在条目根上、有的塞进
 	// credentials，两处都收，根上的优先。
 	ProxyURL     string `json:"proxy_url"`
@@ -5163,6 +5166,7 @@ type sub2apiAccountCredentials struct {
 	Codex5HUsageUpdatedAt        string                 `json:"codex_5h_usage_updated_at"`
 	CodexUsageUpdatedAt          string                 `json:"codex_usage_updated_at"`
 	CodexBPSEnabled              *bool                  `json:"codex_bps_enabled"`
+	SkipWarmTier                 *bool                  `json:"skip_warm_tier,omitempty"`
 	CodexNativeEnabled           *bool                  `json:"codex_native_enabled,omitempty"`
 	CodexNativeModels            []string               `json:"codex_native_models,omitempty"`
 	CodexBPSModels               []string               `json:"codex_bps_models,omitempty"`
@@ -5390,6 +5394,7 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 				codex5HUsageUpdatedAt:           strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 				codexBPSEnabled:                 entry.CodexBPSEnabled != nil && *entry.CodexBPSEnabled,
 				codexBPSEnabledSet:              entry.CodexBPSEnabled != nil,
+				skipWarmTier:                    entry.SkipWarmTier,
 				codexNativeEnabled:              entry.CodexNativeEnabled,
 				codexNativeModels:               entry.CodexNativeModels,
 				codexBPSModels:                  entry.CodexBPSModels,
@@ -5443,6 +5448,10 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 		accID := firstNonEmpty(c.AccountID, c.User.ID, c.Account.ID)
 		expiresAt := firstNonEmpty(c.ExpiresAt.String(), c.Expired.String(), c.Expires.String())
 		proxyURL, proxyLabel, proxyEnabled := account.proxyFields()
+		skipWarmTier := account.SkipWarmTier
+		if skipWarmTier == nil {
+			skipWarmTier = c.SkipWarmTier
+		}
 
 		// Agent Identity 条目：无 RT/ST/AT，单独识别。子对象缺失时回退到
 		// 平铺在 credentials 里的 Agent Identity 字段（sub2api 导出形态）。
@@ -5476,6 +5485,7 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 				codex5HUsageUpdatedAt:           strings.TrimSpace(c.Codex5HUsageUpdatedAt),
 				codexBPSEnabled:                 c.CodexBPSEnabled != nil && *c.CodexBPSEnabled,
 				codexBPSEnabledSet:              c.CodexBPSEnabled != nil,
+				skipWarmTier:                    skipWarmTier,
 				codexNativeEnabled:              c.CodexNativeEnabled,
 				codexNativeModels:               c.CodexNativeModels,
 				codexBPSModels:                  c.CodexBPSModels,
@@ -5596,6 +5606,7 @@ func importTokenSeed(t importToken, conflicts map[string]bool) tokenCredentialSe
 		codex5HUsageUpdatedAt:           t.codex5HUsageUpdatedAt,
 		codexBPSEnabled:                 t.codexBPSEnabled,
 		codexBPSEnabledSet:              t.codexBPSEnabledSet,
+		skipWarmTier:                    t.skipWarmTier,
 		codexNativeEnabled:              t.codexNativeEnabled,
 		codexNativeModels:               t.codexNativeModels,
 		codexBPSModels:                  t.codexBPSModels,
@@ -6340,7 +6351,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 				}
 
 				insertCtx, insertCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				id, err := h.db.InsertAccountWithCredentials(insertCtx, name, h.newCodexAccountCredentials(&seed), proxyURL)
+				id, err := h.insertNewCodexAccount(insertCtx, name, proxyURL, &seed)
 				insertCancel()
 
 				if err != nil {
@@ -6364,7 +6375,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 				}
 
 				insertCtx, insertCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				id, err := h.db.InsertAccountWithCredentials(insertCtx, name, h.newCodexAccountCredentials(&seed), proxyURL)
+				id, err := h.insertNewCodexAccount(insertCtx, name, proxyURL, &seed)
 				insertCancel()
 
 				if err != nil {
@@ -12818,6 +12829,7 @@ func (h *Handler) TestImageStorageConnection(c *gin.Context) {
 // ==================== 导出 & 迁移 ====================
 
 type cpaExportEntry struct {
+	SkipWarmTier                 *bool                `json:"skip_warm_tier,omitempty"`
 	CodexBPSEnabled              bool                 `json:"codex_bps_enabled"`
 	CodexNativeEnabled           *bool                `json:"codex_native_enabled,omitempty"`
 	CodexNativeModels            []string             `json:"codex_native_models,omitempty"`
@@ -13002,6 +13014,7 @@ func accountRowToCPAExportEntry(row *database.AccountRow, proxies exportProxyRes
 	}
 	proxyURL, proxyLabel, proxyEnabled := proxies.resolve(row.ProxyURL)
 	return cpaExportEntry{
+		SkipWarmTier:                 &row.SkipWarmTier,
 		CodexBPSEnabled:              row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
 		CodexNativeEnabled:           auth.CodexNativeEnabledFromRow(row),
 		CodexNativeModels:            row.GetCredentialStringSlice(auth.CodexNativeModelsCredentialKey),
@@ -13238,6 +13251,7 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 			codex5HUsageUpdatedAt:           strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 			codexBPSEnabled:                 entry.CodexBPSEnabled,
 			codexBPSEnabledSet:              true,
+			skipWarmTier:                    entry.SkipWarmTier,
 			codexNativeEnabled:              entry.CodexNativeEnabled,
 			codexNativeModels:               entry.CodexNativeModels,
 			codexBPSModels:                  entry.CodexBPSModels,

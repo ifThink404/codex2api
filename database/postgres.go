@@ -9037,6 +9037,12 @@ func (db *DB) InsertATAccount(ctx context.Context, name string, accessToken stri
 
 // InsertAccountWithCredentials 插入带完整 credentials 的账号。
 func (db *DB) InsertAccountWithCredentials(ctx context.Context, name string, credentials map[string]interface{}, proxyURL string) (int64, error) {
+	return db.InsertAccountWithSchedulerDefaults(ctx, name, credentials, proxyURL, false)
+}
+
+// InsertAccountWithSchedulerDefaults sets new-account scheduling metadata
+// atomically, without changing the schema default or any existing account.
+func (db *DB) InsertAccountWithSchedulerDefaults(ctx context.Context, name string, credentials map[string]interface{}, proxyURL string, skipWarmTier bool) (int64, error) {
 	credentials, err := prepareCodexDeviceCredentials(credentials)
 	if err != nil {
 		return 0, err
@@ -9047,10 +9053,10 @@ func (db *DB) InsertAccountWithCredentials(ctx context.Context, name string, cre
 	}
 
 	return db.insertAccountRowWithFamily(ctx,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3) RETURNING id`,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`,
+		`INSERT INTO accounts (name, credentials, proxy_url, skip_warm_tier) VALUES ($1, $2, $3, $4) RETURNING id`,
+		`INSERT INTO accounts (name, credentials, proxy_url, skip_warm_tier) VALUES ($1, $2, $3, $4)`,
 		credentials,
-		name, credJSON, proxyURL,
+		name, credJSON, proxyURL, skipWarmTier,
 	)
 }
 

@@ -269,7 +269,7 @@ Redis 模式会把 response context 保存到共享后端。后端值在重建�
 | `score_bias_override` | int/null | null | 手工覆盖调度权重分，`null` 跟随套餐默认 |
 | `base_concurrency_override` | int/null | null | 手工覆盖基础并发值（`≥1` 无上限）；`null` 时先继承所属分组的最小有效值，再回退到全局默认 |
 | `scheduler_priority` | int/null | null | 严格调度优先级（`-100..100`）；`null` 恢复默认值 `0` |
-| `skip_warm_tier` | bool | false | 跳过 warm 层级；仅把 warm 提升为 healthy，不覆盖 risky/banned |
+| `skip_warm_tier` | bool | 新建 Codex 账号为 true；其他及旧账号保留原值 | 跳过 warm 层级；仅把 warm 提升为 healthy，不覆盖 risky/banned；导入显式值优先 |
 
 账号列表的批量编辑支持分数偏置、基础并发、调度优先级、标签和分组。勾选某个数值字段但保持输入为空时，会发送 `null`，将该字段重置为继承值或默认值；未勾选的字段保持不变。
 

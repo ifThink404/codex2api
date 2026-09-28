@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 )
 
 type tokenCredentialSeed struct {
+	skipWarmTier                    *bool
 	codexBPSEnabled                 bool
 	codexBPSEnabledSet              bool
 	codexNativeEnabled              *bool
@@ -289,12 +291,12 @@ func (h *Handler) newCodexAccountCredentials(seed *tokenCredentialSeed) map[stri
 		seed.codexUsageLimitBypassEnabled = true
 	}
 	if seed.codexNativeEnabled == nil {
-		enabled := true
-		// Older exports encoded the native route implicitly through BPS.
-		if seed.codexBPSEnabledSet {
-			enabled = !seed.codexBPSEnabled
-		}
+		enabled := false
 		seed.codexNativeEnabled = &enabled
+	}
+	if seed.skipWarmTier == nil {
+		enabled := true
+		seed.skipWarmTier = &enabled
 	}
 	if seed.codexUsageLimitBypassModels == nil {
 		seed.codexUsageLimitBypassModels = []string{"gpt-5.6-sol"}
@@ -310,6 +312,13 @@ func (h *Handler) newCodexAccountCredentials(seed *tokenCredentialSeed) map[stri
 	return credentials
 }
 
+// Persist the scheduling column in the same transaction as a new account.
+// Existing credential refreshes never pass through this defaults path.
+func (h *Handler) insertNewCodexAccount(ctx context.Context, name, proxyURL string, seed *tokenCredentialSeed) (int64, error) {
+	credentials := h.newCodexAccountCredentials(seed)
+	return h.db.InsertAccountWithSchedulerDefaults(ctx, name, credentials, proxyURL, *seed.skipWarmTier)
+}
+
 // newCodexAccountFromSeed 构造刚插入账号的内存态，指纹档位与
 // newCodexAccountCredentials 落库内容保持一致（默认档位无需重载即生效）。
 func (h *Handler) newCodexAccountFromSeed(id int64, proxyURL string, seed tokenCredentialSeed) *auth.Account {
@@ -323,6 +332,7 @@ func accountFromCredentialSeed(id int64, proxyURL string, seed tokenCredentialSe
 	seed = normalizeTokenCredentialSeed(seed)
 	account := &auth.Account{
 		DBID:                         id,
+		SkipWarmTier:                 seed.skipWarmTier != nil && *seed.skipWarmTier,
 		CodexBPS:                     seed.codexBPSEnabled,
 		CodexNative:                  seed.codexNativeEnabled,
 		CodexNativeModels:            append([]string(nil), seed.codexNativeModels...),
