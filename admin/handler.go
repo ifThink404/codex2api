@@ -1132,6 +1132,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		}
 	})
 	api.GET("/stats", h.GetStats)
+	api.POST("/project-integration/newapi/summary", h.ProjectNewAPISummary)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
