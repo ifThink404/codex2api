@@ -134,6 +134,18 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 	defer func() {
 		recordCodexIdentityClaim(ctx, diagnostic)
 		if requestErr != nil {
+			if diagnostic.Result == "not_claimed" {
+				diagnostic.Result = "mapping_failed"
+			}
+			if mapping := fingerprint.accountIdentityDiagnostic; mapping != nil {
+				diagnostic.FailureStage = mapping.FailureStage
+				for _, reference := range mapping.References {
+					if reference.Action == "blocked" && reference.Reason != "" {
+						diagnostic.Reason = reference.Reason
+						break
+					}
+				}
+			}
 			UpstreamTransportObserver(ctx).Failure("gateway", "identity_validation", 0)
 		} else {
 			fingerprint.preparePrivateRequestIdentity(ctx, account, apiKey)
@@ -202,11 +214,8 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 		if len(value) > 512 {
 			return &Error{Code: "codex_session_identity_invalid", Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest, Message: "会话标识过长，请检查客户端请求。"}
 		}
-		for _, scope := range accountScopes {
-			keys = append(keys, codexIdentityDigest("codex-session-v1", scope, value))
-		}
 	}
-	if len(keys) == 0 {
+	if len(seen) == 0 {
 		return nil
 	}
 	claimCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -215,6 +224,16 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 	if fingerprint.accountIdentity == nil {
 		if err := fingerprint.prepareAccountIdentity(claimCtx, account, owner, accountScopes); err != nil {
 			return err
+		}
+	}
+	// Detached parent metadata is not sent and must not claim an identity on
+	// the replacement account or conflict with another user's existing claim.
+	for value := range seen {
+		if fingerprint.accountIdentity != nil && fingerprint.accountIdentity.detachedReferences[canonicalCodexAccountIdentity(value)] {
+			continue
+		}
+		for _, scope := range accountScopes {
+			keys = append(keys, codexIdentityDigest("codex-session-v1", scope, value))
 		}
 	}
 	if err := claimer.ClaimCodexIdentities(claimCtx, keys, owner); err != nil {
@@ -238,6 +257,9 @@ func (fingerprint *CodexFingerprint) ClaimSessionIdentity(ctx context.Context, a
 					mappedKeys := make([]string, 0, len(keys))
 					if mapping := fingerprint.accountIdentity; mapping != nil {
 						for original := range seen {
+							if mapping.detachedReferences[canonicalCodexAccountIdentity(original)] {
+								continue
+							}
 							mapped := mapping.rewriteValue(original)
 							if mapped == "" || mapped == original {
 								mappedKeys = nil

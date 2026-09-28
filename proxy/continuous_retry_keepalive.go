@@ -728,7 +728,7 @@ func continuousRetryRequestErrorMessage(err error) string {
 }
 
 func localResponseFailureMessage(c *gin.Context) string {
-	if c != nil && c.Request != nil && len(responseMappingDiagnostics(c.Request.Context())) > 0 {
+	if c != nil && c.Request != nil && hasLocalResponseMappingFailure(responseMappingDiagnostics(c.Request.Context())) {
 		return responseMappingFailureMessage
 	}
 	return continuousRetryLocalFailureMessage

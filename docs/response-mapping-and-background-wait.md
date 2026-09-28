@@ -15,12 +15,27 @@ Misses and errors are not cached. No unpersisted alias or raw upstream handle is
 published as a recovery shortcut. Reprocessing an issued response ID is
 idempotent within its binding.
 
-Mapping failures are local terminal errors: they do not penalize an upstream
+Storage errors, mapping deadlines and invalid mappings are local terminal errors: they do not penalize an upstream
 account or replay an inference through another account. HTTP/SSE/WebSocket use
 the existing local-failure terminal handling. Usage and service-error diagnostics
 include `response_mapping` (at most 16 entries): operation, reason, duration and
 SQLSTATE when available. `upstream.error_source` is `gateway` and `error_stage`
 is `response_mapping`. Raw SQL/driver text and mapped values are omitted.
+
+A mapping operation stopped by `context.Canceled` is treated separately. With
+no upstream terminal event it follows the existing 499 cancellation outcome,
+without a local-failure event, account penalty or inference replay. A continuous
+retry deadline remains 504. A real storage failure still remains 500, including
+when the client also disconnected; cancellation cannot hide another local error.
+Canceled-only diagnostics keep `response_mapping[].reason=canceled`, with
+`downstream/request_canceled` for 499 rather than `gateway/response_mapping`.
+
+The existing bounded upstream drain is unchanged: after ordinary client
+cancellation it can continue for up to five seconds to collect terminal usage.
+Mapping still uses that upstream context and fails closed after it expires. If
+a terminal event and actual usage arrive during draining, the existing successful
+generation outcome and token counts are retained; downstream delivery is recorded
+separately. No missing usage is fabricated by the classification change.
 
 ## Background wait fallback
 

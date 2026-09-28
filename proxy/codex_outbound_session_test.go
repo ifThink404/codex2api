@@ -100,6 +100,29 @@ func TestCodexOutboundSessionModesAndMissingIdentity(test *testing.T) {
 	require.Equal(test, NewCodexFingerprint(relay, headers, body).ApplyBody(body), NewCodexTransportFingerprint(relay, headers, body, "upstream").ApplyBody(body))
 }
 
+func TestRelaxedOutboundIdentityRequiresPersistentAccount(t *testing.T) {
+	for _, mode := range []string{"preserve", "legacy"} {
+		for _, available := range []string{"ready", "no_upstream_id", "no_store"} {
+			t.Run(mode+"/"+available, func(t *testing.T) {
+				t.Setenv("CODEX_OUTBOUND_SESSION_MODE", mode)
+				h, account, _, _ := failoverTestSetup(t, false)
+				UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = true; return s })
+				c, body := failoverTestRequest(t, h)
+				ctx := c.Request.Context()
+				if available == "no_upstream_id" {
+					account.AccountID = ""
+				}
+				if available == "no_store" {
+					ctx = context.Background()
+				}
+				fingerprint := NewCodexTransportFingerprint(account, c.Request.Header, body, "cache", ctx)
+				require.Equal(t, available == "ready", fingerprint.accountIdentityRequested)
+				require.NoError(t, fingerprint.ClaimSessionIdentity(ctx, account, "test-user-key"))
+			})
+		}
+	}
+}
+
 func TestCodexOutboundSessionHTTPAndCompactFinalBytes(test *testing.T) {
 	test.Setenv("CODEX_SESSION_HEADER_MODE", "native")
 	previousResin := GetResinConfig()

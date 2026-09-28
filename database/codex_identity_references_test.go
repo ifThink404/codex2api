@@ -70,3 +70,30 @@ func TestCodexIdentityReferenceConcurrentClaimHasSingleWinner(test *testing.T) {
 	require.NoError(test, err)
 	require.True(test, found)
 }
+
+func TestCodexDetachedReferencePersistsAndCannotReplaceParentEpoch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "detached.db")
+	db, err := New("sqlite", path)
+	require.NoError(t, err)
+	identity, reference := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	detached := CodexIdentityEpoch{Detached: true}
+	require.NoError(t, db.ClaimCodexIdentityReference(t.Context(), reference, detached))
+	require.Error(t, db.PublishCodexIdentityEpoch(t.Context(), identity, detached))
+	require.Error(t, db.ClaimCodexIdentityReference(t.Context(), strings.Repeat("c", 64), CodexIdentityEpoch{Detached: true, Generation: 1}))
+	parent := CodexIdentityEpoch{RootKey: strings.Repeat("d", 24)}
+	require.NoError(t, db.PublishCodexIdentityEpoch(t.Context(), identity, parent))
+	require.ErrorIs(t, db.ClaimCodexIdentityReference(t.Context(), reference, parent), ErrCodexIdentityConflict)
+	require.NoError(t, db.Close())
+	db, err = New("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	resolved, found, bound, err := db.ReadCodexIdentityReference(t.Context(), reference, identity)
+	require.NoError(t, err)
+	require.True(t, found && bound)
+	require.Equal(t, detached, resolved)
+	resolved, found, bound, err = db.ReadCodexIdentityReference(t.Context(), strings.Repeat("e", 64), identity)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.False(t, bound)
+	require.Equal(t, parent, resolved, "detaching a child cannot modify the actual parent")
+}

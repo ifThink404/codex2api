@@ -23,6 +23,33 @@ func (e *responseMappingError) Error() string        { return errTurnStateMappin
 func (e *responseMappingError) Unwrap() error        { return e.cause }
 func (e *responseMappingError) Is(target error) bool { return target == errTurnStateMapping }
 
+// Cancellation may arrive while a metadata lookup is running, including when
+// the bounded usage drain expires. It is not a storage failure and must not
+// override client cancellation or a terminal event whose usage was collected.
+func canceledResponseMapping(err error) bool {
+	return errors.Is(err, errTurnStateMapping) && errors.Is(err, context.Canceled)
+}
+
+func hasLocalResponseMappingFailure(failures []database.ResponseMappingFailure) bool {
+	for _, failure := range failures {
+		if failure.Reason != "canceled" {
+			return true
+		}
+	}
+	return false
+}
+
+func annotateResponseMappingFailure(upstream *UpstreamTransportDiagnostic, failures []database.ResponseMappingFailure, status int) {
+	if upstream == nil || status < 400 || len(failures) == 0 {
+		return
+	}
+	if hasLocalResponseMappingFailure(failures) {
+		upstream.ErrorSource, upstream.ErrorStage = "gateway", "response_mapping"
+	} else if status == logStatusClientClosed {
+		upstream.ErrorSource, upstream.ErrorStage = "downstream", "request_canceled"
+	}
+}
+
 func protocolIdentitySession(ctx context.Context) *responseIdentitySession {
 	if ctx == nil {
 		return nil

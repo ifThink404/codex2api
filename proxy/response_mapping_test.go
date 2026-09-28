@@ -183,3 +183,82 @@ func TestResponseMappingFailureInUsageAndServiceLogs(t *testing.T) {
 	require.Equal(t, "42P01", page.Items[0].ResponseMapping[0].SQLState)
 	require.Equal(t, "response_mapping", gjson.GetBytes(page.Items[0].UpstreamInfo, "error_stage").String())
 }
+
+func TestResponseMappingCancellationClassification(t *testing.T) {
+	canceled := &responseMappingError{cause: context.Canceled}
+	storage := &responseMappingError{cause: mappingSQLTestError{}}
+	timeout := &responseMappingError{cause: context.DeadlineExceeded}
+	for _, tc := range []struct {
+		name                      string
+		ctxErr, readErr, writeErr error
+		terminal                  bool
+		status                    int
+		local                     bool
+	}{
+		{"client_canceled", context.Canceled, canceled, nil, false, 499, false},
+		{"drain_expired", nil, canceled, nil, false, 499, false},
+		{"write_failed", nil, canceled, io.ErrClosedPipe, false, 499, false},
+		{"wrapped_cancel", context.Canceled, ErrInternalError("mapping failed", canceled), nil, false, 499, false},
+		{"terminal_usage_received", context.Canceled, canceled, io.ErrClosedPipe, true, 200, false},
+		{"real_storage_failure", context.Canceled, storage, nil, false, 500, true},
+		{"real_mapping_timeout", nil, timeout, nil, false, 500, true},
+		{"retry_deadline", errContinuousRetryDeadlineExceeded, canceled, nil, false, 504, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome := classifyStreamOutcome(tc.ctxErr, tc.readErr, tc.writeErr, tc.terminal)
+			// Handlers apply this overlay again after recording stream delivery.
+			outcome = overlayContinuousRetryLocalFailure(outcome, tc.readErr, tc.writeErr)
+			require.Equal(t, tc.status, outcome.logStatusCode)
+			require.Equal(t, tc.local, outcome.terminalLocal)
+			require.False(t, outcome.penalize)
+		})
+	}
+	outcome := overlayContinuousRetryLocalFailure(streamOutcome{}, canceled, storage)
+	require.True(t, outcome.terminalLocal, "a later real failure must not be hidden by cancellation")
+}
+
+func TestResponseMappingCanceledDiagnosticsDoNotReportStorageFailure(t *testing.T) {
+	h, _, _, _ := responsePrivacySetup(t)
+	c, _, _ := responsePrivacyRequest(t, h, 101, "cancel-logging", "")
+	_ = responseMappingFailure(c.Request.Context(), "metadata_read", context.Canceled, time.Now())
+	for _, status := range []int{200, 499, 504} {
+		input := &database.UsageLogInput{StatusCode: status, UpstreamDiagnostics: `{"transport":"http","http_status":200}`}
+		populateUsageRequestDiagnostics(c, input)
+		require.Equal(t, "canceled", gjson.Get(input.RequestDiagnostics, "response_mapping.0.reason").String())
+		require.NotEqual(t, "response_mapping", gjson.Get(input.RequestDiagnostics, "upstream.error_stage").String())
+		if status == 499 {
+			require.Equal(t, "downstream", gjson.Get(input.RequestDiagnostics, "upstream.error_source").String())
+			require.Equal(t, "request_canceled", gjson.Get(input.RequestDiagnostics, "upstream.error_stage").String())
+		}
+	}
+	require.NotEqual(t, responseMappingFailureMessage, localResponseFailureMessage(c))
+}
+
+func TestResponseMappingDrainPreservesTerminalUsage(t *testing.T) {
+	h, owner, _, _ := responsePrivacySetup(t)
+	c, _, _ := responsePrivacyRequest(t, h, 101, "drain-usage", "")
+	clientCtx, cancelClient := context.WithCancel(c.Request.Context())
+	defer cancelClient()
+	upstreamCtx, cancelUpstream := newDrainableUpstreamContext(clientCtx, upstreamDrainTimeout)
+	defer cancelUpstream()
+	response := &http.Response{Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: " + `{"type":"response.completed","response":{"id":"resp_drain_usage","metadata":{"label":"drain-check"},"output":[],"usage":{"input_tokens":123,"output_tokens":17,"total_tokens":140}}}` + "\n\n"))}
+	require.NoError(t, maskTurnStateResponse(upstreamCtx, owner, response))
+	cancelClient()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	data := strings.TrimSpace(strings.TrimPrefix(string(body), "data: "))
+	require.Equal(t, "response.completed", gjson.Get(data, "type").String())
+	require.EqualValues(t, 123, gjson.Get(data, "response.usage.input_tokens").Int())
+	require.EqualValues(t, 17, gjson.Get(data, "response.usage.output_tokens").Int())
+	require.EqualValues(t, 140, gjson.Get(data, "response.usage.total_tokens").Int())
+	require.NotEqual(t, "resp_drain_usage", gjson.Get(data, "response.id").String())
+	require.Empty(t, responseMappingDiagnostics(upstreamCtx))
+	require.Equal(t, 200, classifyStreamOutcome(clientCtx.Err(), err, nil, true).logStatusCode)
+	// Once the bounded drain ends, privacy mapping must fail closed, without a
+	// local 500 or a retry against another account.
+	cancelUpstream()
+	_, err = responseIdentityFrom(upstreamCtx).issue(upstreamCtx, owner, "resp_after_drain")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 499, classifyStreamOutcome(clientCtx.Err(), err, nil, false).logStatusCode)
+}

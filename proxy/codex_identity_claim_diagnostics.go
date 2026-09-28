@@ -4,6 +4,8 @@ import "context"
 
 type codexIdentityClaimDiagnostic struct {
 	Result            string `json:"result"`
+	FailureStage      string `json:"failure_stage,omitempty"`
+	Reason            string `json:"reason,omitempty"`
 	Relaxed           bool   `json:"relaxed"`
 	AccountID         int64  `json:"account_id,omitempty"`
 	OwnerSource       string `json:"owner_source,omitempty"`

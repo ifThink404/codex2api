@@ -3447,12 +3447,15 @@ export default function Settings() {
                 <div className="space-y-4">
                   <SettingField
                     label={t('settings.codexSessionFailoverEnabled')}
-                    description={t('settings.codexSessionFailoverEnabledHint')}
+                    description={t(settingsForm.codex_fork_account_fallback_enabled
+                      ? 'settings.codexSessionFailoverIncludedHint'
+                      : 'settings.codexSessionFailoverEnabledHint')}
                     layout="switch"
                     channels={CHANNELS_CODEX_ONLY}
                   >
                     <Switch
-                      checked={settingsForm.codex_session_failover_enabled}
+                      checked={settingsForm.codex_session_failover_enabled || settingsForm.codex_fork_account_fallback_enabled}
+                      disabled={settingsForm.codex_fork_account_fallback_enabled}
                       onCheckedChange={(checked) => autoSaveBooleanField('codex_session_failover_enabled', checked)}
                     />
                   </SettingField>

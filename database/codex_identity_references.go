@@ -10,6 +10,9 @@ import (
 )
 
 type CodexIdentityEpoch struct {
+	// Detached is a per-child reference decision, never a published parent epoch.
+	// Persist it so a restart or disabling relaxed mode cannot resurrect a parent.
+	Detached       bool   `json:"detached,omitempty"`
 	RootKey        string `json:"root_key,omitempty"`
 	Generation     uint64 `json:"generation"`
 	Segment        string `json:"segment,omitempty"`
@@ -17,6 +20,9 @@ type CodexIdentityEpoch struct {
 }
 
 func validCodexIdentityEpoch(epoch CodexIdentityEpoch) bool {
+	if epoch.Detached {
+		return epoch.RootKey == "" && epoch.Generation == 0 && epoch.Segment == "" && epoch.MappingVersion == ""
+	}
 	_, rootError := hex.DecodeString(epoch.RootKey)
 	validRoot := epoch.RootKey == "" || (len(epoch.RootKey) == 24 || len(epoch.RootKey) == 64) && rootError == nil && epoch.RootKey == strings.ToLower(epoch.RootKey)
 	return validRoot && (epoch.Segment == "" || ValidSessionOperationKey(epoch.Segment)) &&
@@ -24,7 +30,7 @@ func validCodexIdentityEpoch(epoch CodexIdentityEpoch) bool {
 }
 
 func (db *DB) PublishCodexIdentityEpoch(ctx context.Context, identityKey string, next CodexIdentityEpoch) error {
-	if !ValidSessionOperationKey(identityKey) || !validCodexIdentityEpoch(next) {
+	if !ValidSessionOperationKey(identityKey) || !validCodexIdentityEpoch(next) || next.Detached {
 		return errors.New("invalid codex identity epoch")
 	}
 	var snapshot string

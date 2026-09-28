@@ -2447,6 +2447,9 @@ func overlayContinuousRetryLocalFailure(outcome streamOutcome, errs ...error) st
 	}
 	for _, err := range errs {
 		if errors.Is(err, errTurnStateMapping) {
+			if canceledResponseMapping(err) {
+				continue
+			}
 			return streamOutcome{
 				logStatusCode:  http.StatusInternalServerError,
 				failureKind:    "response_mapping",
@@ -2496,7 +2499,7 @@ func classifyStreamOutcome(ctxErr, readErr, writeErr error, gotTerminal bool) (o
 		return streamOutcome{logStatusCode: http.StatusOK}
 	}
 
-	if ctxErr != nil || writeErr != nil {
+	if ctxErr != nil || writeErr != nil || canceledResponseMapping(readErr) {
 		msg := "下游客户端提前断开"
 		switch {
 		case errors.Is(ctxErr, context.DeadlineExceeded):
@@ -2505,6 +2508,8 @@ func classifyStreamOutcome(ctxErr, readErr, writeErr error, gotTerminal bool) (o
 			msg = fmt.Sprintf("写回下游失败: %v", writeErr)
 		case ctxErr != nil:
 			msg = fmt.Sprintf("下游请求提前取消: %v", ctxErr)
+		case canceledResponseMapping(readErr):
+			msg = "请求处理已取消: context canceled"
 		}
 		return streamOutcome{
 			logStatusCode:  logStatusClientClosed,

@@ -12,9 +12,11 @@ test('session failover toggle is default-off and auto-saved near global auto-pau
   assert.ok(cardStart >= 0)
   const card = settings.slice(cardStart, settings.indexOf('</SettingsCard>', cardStart))
   assert.match(card, /label=\{t\('settings\.codexSessionFailoverEnabled'\)\}/)
-  assert.match(card, /description=\{t\('settings\.codexSessionFailoverEnabledHint'\)\}/)
+  assert.match(card, /'settings\.codexSessionFailoverEnabledHint'/)
+  assert.match(card, /'settings\.codexSessionFailoverIncludedHint'/)
   assert.match(card, /channels=\{CHANNELS_CODEX_ONLY\}/)
-  assert.match(card, /checked=\{settingsForm\.codex_session_failover_enabled\}/)
+  assert.match(card, /checked=\{settingsForm\.codex_session_failover_enabled \|\| settingsForm\.codex_fork_account_fallback_enabled\}/)
+  assert.match(card, /disabled=\{settingsForm\.codex_fork_account_fallback_enabled\}/)
   assert.match(card, /autoSaveBooleanField\('codex_session_failover_enabled', checked\)/)
 })
 

@@ -87,31 +87,33 @@ type codexInvalidTurnIdentityDiagnostic struct {
 }
 
 type codexAccountIdentity struct {
-	mode            string
-	secret          []byte
-	owner           string
-	account         string
-	epoch           string
-	preserveRoot    bool
-	windowNumbers   map[string]uint64
-	aliases         map[string]string
-	turnAliases     map[string]string
-	requestAliases  map[string]string
-	diagnostic      codexAccountIdentityDiagnostic
-	protocolDB      *database.DB
-	protocolBinding database.CodexTurnStateBinding
+	mode               string
+	secret             []byte
+	owner              string
+	account            string
+	epoch              string
+	preserveRoot       bool
+	windowNumbers      map[string]uint64
+	detachedReferences map[string]bool
+	aliases            map[string]string
+	turnAliases        map[string]string
+	requestAliases     map[string]string
+	diagnostic         codexAccountIdentityDiagnostic
+	protocolDB         *database.DB
+	protocolBinding    database.CodexTurnStateBinding
 }
 
-var codexAccountIdentityFields = []string{
-	"session_id", "thread_id", "parent_thread_id", "forked_from_thread_id", "context_window_id", "guardian_classifier_source_thread_id",
-	"x-codex-parent-thread-id", "x_codex_parent_thread_id", "x-codex-forked-from-thread-id", "x_codex_forked_from_thread_id",
+var codexAccountIdentityFields = append([]string{
+	"session_id", "thread_id", "context_window_id",
 	"x-codex-context-window-id", "x_codex_context_window_id",
-}
+}, codexParentReferenceFields...)
+
+var codexAccountMetadataFields = append(append([]string(nil), codexAccountIdentityFields...),
+	"x-client-request-id", "client_request_id", "x_client_request_id", "window_id", "x-codex-window-id", "x_codex_window_id")
 
 func codexAccountIdentityInputs(headers http.Header, body []byte) []string {
 	values := codexTransportIdentityValues(headers, body)
-	metadata := gjson.GetBytes(body, "client_metadata")
-	for _, source := range []gjson.Result{metadata, diagnosticMetadataObject(metadata.Get("x-codex-turn-metadata")), gjson.Parse(headers.Get(codexTurnMetadataHeader))} {
+	for _, source := range codexIdentityMetadataSources(headers, body) {
 		for _, field := range codexAccountIdentityFields {
 			if value := source.Get(field); value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
 				values = append(values, value.String())
@@ -187,20 +189,22 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 	}
 	stage = "parent_reference"
 	mappedReference := false
+	parentReferences := make(map[string]codexParentReference, len(fingerprint.accountIdentityReferences))
+	parentOrder := make([]string, 0, len(fingerprint.accountIdentityReferences))
 	for original := range fingerprint.accountIdentityReferences {
-		_, found, _, err := store.ReadCodexIdentityReference(ctx, codexIdentityDigest("codex-account-reference-v1", rootKey, original), codexIdentityDigest("codex-account-root-v1", owner, upstreamAccount, original))
-		if err != nil {
-			return codexAccountIdentityError("暂时无法核实父会话出站身份，请稍后重试。")
-		}
-		mappedReference = mappedReference || found
-		if !found {
-			_, record, exists, err := lookupCodexReferenceRoot(ctx, original)
-			if err != nil {
-				return codexAccountIdentityError("暂时无法核实父会话绑定账号，请稍后重试。")
-			}
-			mappedReference = mappedReference || exists && record.AccountID == account.ID() && record.OutboundWindowReset
-		}
+		parentOrder = append(parentOrder, original)
 	}
+	sort.Strings(parentOrder)
+	for _, original := range parentOrder {
+		ref, err := resolveCodexParentReference(ctx, store, owner, upstreamAccount, rootKey, original, account.ID())
+		if err != nil {
+			diagnostic.References = append(diagnostic.References, codexAccountReferenceDiagnostic{Original: original, Action: "blocked", Reason: ref.reason})
+			return err
+		}
+		parentReferences[original] = ref
+		mappedReference = mappedReference || ref.requiresMapping
+	}
+	allowDetach := currentCodexSessionRecoveryPolicy().detachUnavailableParent(epoch, account.ID())
 	stage = "mapping_policy"
 	policy, err := store.ResolveCodexIdentityMapping(ctx, rootKey, legacyKeys, fingerprint.accountIdentityRequested || epochKey != "" || mappedReference)
 	if err == nil && policy.Mode == "preserve" && fingerprint.isolateConflictingIdentity {
@@ -229,7 +233,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 	if !preserveRoot && (err != nil || len(secret) != 32) {
 		return codexAccountIdentityError("出站身份映射密钥不可用，请恢复完整数据库。")
 	}
-	mapping := &codexAccountIdentity{mode: policy.Mode, secret: secret, owner: owner, account: upstreamAccount, epoch: epochKey, preserveRoot: preserveRoot, aliases: make(map[string]string)}
+	mapping := &codexAccountIdentity{mode: policy.Mode, secret: secret, owner: owner, account: upstreamAccount, epoch: epochKey, preserveRoot: preserveRoot, aliases: make(map[string]string), detachedReferences: make(map[string]bool)}
 	mapping.protocolDB, mapping.protocolBinding = protocolIdentityBinding(ctx, account)
 	stage = "window_mapping"
 	if err := fingerprint.prepareAccountWindows(ctx, mapping, epoch); err != nil {
@@ -279,36 +283,23 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		identityEpoch := currentEpoch
 		legacyParentVerified := false
 		var referenceDiagnostic *codexAccountReferenceDiagnostic
+		var parentReference codexParentReference
 		if fingerprint.accountIdentityReferences[original] {
+			parentReference = parentReferences[original]
 			diagnostic.References = append(diagnostic.References, codexAccountReferenceDiagnostic{Original: original, Action: "blocked"})
 			referenceDiagnostic = &diagnostic.References[len(diagnostic.References)-1]
-			identityEpoch = database.CodexIdentityEpoch{}
-			referenceKey := codexIdentityDigest("codex-account-reference-v1", rootKey, original)
-			resolved, found, bound, err := store.ReadCodexIdentityReference(ctx, referenceKey, baseIdentityKey)
-			if err != nil {
-				referenceDiagnostic.Reason = "reference_lookup_failed"
-				return codexAccountIdentityError("暂时无法核实父会话出站身份，请稍后重试。")
+			identityEpoch = parentReference.resolvedEpoch(currentEpoch, account.ID())
+			legacyParentVerified = parentReference.legacyVerified
+			if identityEpoch.Detached || allowDetach && parentReference.reason != "" {
+				mapping.detachedReferences[original] = true
+				references[parentReference.key] = database.CodexIdentityEpoch{Detached: true}
+				referenceDiagnostic.Action, referenceDiagnostic.Reason = "detached", parentReference.reason
+				continue
 			}
-			if found {
-				identityEpoch = resolved
-				legacyParentVerified = bound && resolved.RootKey != ""
-				if !bound && resolved.RootKey != "" && resolved.RootKey == currentEpoch.RootKey && resolved.Generation < currentEpoch.Generation {
-					identityEpoch = currentEpoch
-				}
+			if parentReference.reason == "parent_account_mismatch" {
+				referenceDiagnostic.Reason = parentReference.reason
+				return codexAccountIdentityError("无法核实该账号对应的父会话出站段，已停止发送父引用。")
 			}
-			if !bound {
-				sourceKey, sourceRecord, exists, err := lookupCodexReferenceRoot(ctx, original)
-				if err != nil || exists && !found && sourceRecord.AccountID != account.ID() {
-					referenceDiagnostic.Reason = "parent_account_unavailable"
-					return codexAccountIdentityError("无法核实该账号对应的父会话出站段，已停止发送父引用。")
-				}
-				legacyParentVerified = exists && sourceRecord.AccountID == account.ID() && sourceRecord.FailoverCount == 0 && !sourceRecord.OutboundWindowReset
-				if exists && sourceRecord.AccountID == account.ID() && (!found || sourceRecord.FailoverCount > identityEpoch.Generation) {
-					sourceEpoch := &sessionOutboundEpoch{key: sourceKey, record: sourceRecord}
-					identityEpoch = database.CodexIdentityEpoch{RootKey: sourceKey, Generation: sourceRecord.FailoverCount, Segment: sourceEpoch.identityKey()}
-				}
-			}
-			references[referenceKey] = identityEpoch
 		}
 		identityLegacyKeys := make([]string, 0, len(accountScopes))
 		for _, scope := range accountScopes {
@@ -335,10 +326,17 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 			if referenceDiagnostic != nil {
 				referenceDiagnostic.Reason = legacyCodexParentReferenceBlock(epoch, account.ID(), identityEpoch, legacyParentVerified)
 				if referenceDiagnostic.Reason != "" {
+					if allowDetach && !parentReference.bound {
+						mapping.detachedReferences[original] = true
+						references[parentReference.key] = database.CodexIdentityEpoch{Detached: true}
+						referenceDiagnostic.Action = "detached"
+						continue
+					}
 					return codexAccountIdentityError("父会话尚无可确认的账号级出站映射，且不符合原账号旧会话兼容条件，已停止发送原始父会话 ID。")
 				}
 				referenceDiagnostic.Action, referenceDiagnostic.Reason = "preserved_legacy_parent", "original_account_unmigrated"
 				legacyParentPreserved = true
+				references[parentReference.key] = identityEpoch
 			} else if codexIdentityEpochMigrated(epoch) {
 				return codexAccountIdentityError("已换号的会话不能发送旧的原始关联身份，已停止发送，请核实迁移记录。")
 			}
@@ -370,6 +368,7 @@ func (fingerprint *CodexFingerprint) prepareAccountIdentity(ctx context.Context,
 		mapping.aliases[original] = outbound
 		if referenceDiagnostic != nil {
 			referenceDiagnostic.Action = "mapped"
+			references[parentReference.key] = identityEpoch
 		}
 		diagnostic.Changes = append(diagnostic.Changes, identityMapping.identityChange(original, outbound))
 		sourceKey := codexIdentityDigest("codex-account-alias-source-v1", owner, upstreamAccount, original)
@@ -535,6 +534,7 @@ func (mapping *codexAccountIdentity) rewriteWindow(original string) string {
 }
 
 func (mapping *codexAccountIdentity) rewriteMetadata(raw string, fallbackThreads ...string) string {
+	raw, _ = detachCodexParentMetadata(raw, mapping.detachedReferences)
 	if !gjson.Valid(raw) || !gjson.Parse(raw).IsObject() {
 		return raw
 	}
@@ -556,7 +556,7 @@ func (mapping *codexAccountIdentity) rewriteMetadata(raw string, fallbackThreads
 			raw, _ = sjson.Set(raw, "window_number", number)
 		}
 	}
-	for _, field := range append(append([]string(nil), codexAccountIdentityFields...), "x-client-request-id", "client_request_id", "x_client_request_id", "window_id", "x-codex-window-id", "x_codex_window_id") {
+	for _, field := range codexAccountMetadataFields {
 		value := gjson.Get(raw, field)
 		if value.Type != gjson.String {
 			continue
@@ -585,6 +585,11 @@ func (mapping *codexAccountIdentity) rewriteMetadata(raw string, fallbackThreads
 
 func (mapping *codexAccountIdentity) rewriteHeaders(headers http.Header) http.Header {
 	headers = headers.Clone()
+	for _, name := range codexParentReferenceHeaders {
+		if mapping.detachedReferences[canonicalCodexAccountIdentity(headers.Get(name))] {
+			headers.Del(name)
+		}
+	}
 	originalThread := headers.Get(codexThreadIDHeader)
 	for _, name := range []string{codexSessionIDHeader, codexLegacySessionIDHeader, codexThreadIDHeader, codexClientRequestIDHeader, codexParentThreadIDHeader, "X-Codex-Forked-From-Thread-Id"} {
 		if value := headers.Get(name); value != "" {
@@ -606,8 +611,7 @@ func (mapping *codexAccountIdentity) rewriteHeaders(headers http.Header) http.He
 
 func codexAccountRequestIdentityInputs(headers http.Header, body []byte) []string {
 	values := []string{headers.Get(codexClientRequestIDHeader)}
-	metadata := gjson.GetBytes(body, "client_metadata")
-	for _, source := range []gjson.Result{metadata, diagnosticMetadataObject(metadata.Get("x-codex-turn-metadata")), gjson.Parse(headers.Get(codexTurnMetadataHeader))} {
+	for _, source := range codexIdentityMetadataSources(headers, body) {
 		for _, field := range []string{"x-client-request-id", "client_request_id", "x_client_request_id"} {
 			if value := source.Get(field); value.Type == gjson.String {
 				values = append(values, value.String())
@@ -633,11 +637,13 @@ func (mapping *codexAccountIdentity) rewriteBody(body []byte) []byte {
 	outerThread := accountMetadataThread(metadata)
 	innerThread := accountMetadataThread(diagnosticMetadataObject(metadata.Get("x-codex-turn-metadata")))
 	raw := mapping.rewriteMetadata(metadata.Raw, innerThread)
-	embedded := gjson.Get(raw, "x-codex-turn-metadata")
-	if embedded.Type == gjson.String {
-		raw, _ = sjson.Set(raw, "x-codex-turn-metadata", mapping.rewriteMetadata(embedded.String(), outerThread))
-	} else if embedded.IsObject() {
-		raw, _ = sjson.SetRaw(raw, "x-codex-turn-metadata", mapping.rewriteMetadata(embedded.Raw, outerThread))
+	for _, name := range []string{"x-codex-turn-metadata", "x_codex_turn_metadata"} {
+		embedded := gjson.Get(raw, name)
+		if embedded.Type == gjson.String {
+			raw, _ = sjson.Set(raw, name, mapping.rewriteMetadata(embedded.String(), outerThread))
+		} else if embedded.IsObject() {
+			raw, _ = sjson.SetRaw(raw, name, mapping.rewriteMetadata(embedded.Raw, outerThread))
+		}
 	}
 	updated, err := sjson.SetRawBytes(body, "client_metadata", []byte(raw))
 	if err != nil {

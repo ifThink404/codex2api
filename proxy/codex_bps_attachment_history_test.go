@@ -65,7 +65,7 @@ func TestBPSAttachmentHistorySharesThreeRecentSlots(t *testing.T) {
 	out, diagnostic, err := prepareCodexBPSBodyWithImageTrim(body, "history", false, true, nil)
 	require.NoError(t, err)
 	d := diagnostic.ImageHistory
-	require.Equal(t, "recent_attachments_v1", d.Policy)
+	require.Equal(t, "recent_attachments_v2", d.Policy)
 	require.Equal(t, 3, d.RecentToolAttachments)
 	require.Equal(t, 7, d.AttachmentsBefore)
 	require.Equal(t, 4, d.AttachmentsAfter)
@@ -261,7 +261,11 @@ func TestBPSAttachmentHistoryKeepsLatestGroupAndConservativeCases(t *testing.T) 
 			}
 			out, _, err := prepareCodexBPSBodyWithImageTrim(body, "history", scenario == "compact", true, nil)
 			require.NoError(t, err)
-			require.Equal(t, "input_file", gjson.GetBytes(out, "input.1.content.1.type").String())
+			want := "input_file"
+			if scenario == "missing_turn" || scenario == "unknown_item_turn" {
+				want = "input_text"
+			}
+			require.Equal(t, want, gjson.GetBytes(out, "input.1.content.1.type").String())
 		})
 	}
 }
@@ -285,4 +289,118 @@ func TestBPSAttachmentHistorySourceNotesNeverInventOrEmbedContent(t *testing.T) 
 	trimmed, err := trimBPSImageHistory(items, bpsAttachmentHistoryTestBody(t), nil, false, &CodexBPSDiagnostic{})
 	require.NoError(t, err)
 	require.Equal(t, raw, trimmed[0])
+}
+
+func TestBPSAttachmentHistoryOrdinaryForkAndWorkerTurns(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, kind, marker string
+		headerOnly                 bool
+	}{
+		{"user_fork", "user", "", "", false},
+		{"worker", "subagent", "thread_spawn", "collab_spawn", false},
+		{"worker_header", "subagent", "thread_spawn", "collab_spawn", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bpsAttachmentHistoryTestBody(t)
+			meta := map[string]any{"session_id": testRootSessionA, "thread_id": testLeafSessionA, "forked_from_thread_id": testRootSessionA, "request_kind": "turn", "thread_source": tc.source, "turn_id": bpsHistoryCurrentTurn}
+			if tc.kind != "" {
+				meta["subagent_kind"] = tc.kind
+			}
+			headers := make(http.Header)
+			if tc.headerOnly {
+				body, _ = sjson.DeleteBytes(body, "client_metadata")
+				raw, err := json.Marshal(meta)
+				require.NoError(t, err)
+				headers.Set(codexTurnMetadataHeader, string(raw))
+				headers.Set("X-OpenAI-Subagent", tc.marker)
+			} else {
+				body, _ = sjson.SetBytes(body, "client_metadata", map[string]any{"session_id": testRootSessionA, "thread_id": testLeafSessionA, "x-codex-turn-metadata": meta, "x-openai-subagent": tc.marker})
+			}
+			root := resolveRequestRootSessionIdentity(headers, body)
+			require.True(t, root.related, "test must exercise related-session history")
+			require.False(t, root.conflict)
+			out, d, err := prepareCodexBPSBodyWithImageTrim(body, "history", false, true, headers)
+			require.NoError(t, err)
+			require.Empty(t, d.ImageHistory.SkipReason)
+			require.Equal(t, 7, d.ImageHistory.AttachmentsBefore)
+			require.Equal(t, 4, d.ImageHistory.AttachmentsAfter)
+			require.Equal(t, 4, bpsCountHistoryImages(out)+bpsHistoryCountFiles(out))
+		})
+	}
+}
+
+func TestBPSAttachmentHistoryWithoutTurnLabels(t *testing.T) {
+	body := bpsAttachmentHistoryTestBody(t)
+	body, _ = sjson.DeleteBytes(body, "client_metadata.x-codex-turn-metadata.turn_id")
+	for i := range gjson.GetBytes(body, "input").Array() {
+		body, _ = sjson.DeleteBytes(body, fmt.Sprintf("input.%d.internal_chat_message_metadata_passthrough.turn_id", i))
+	}
+	original := bytes.Clone(body)
+	out, d, err := prepareCodexBPSBodyWithImageTrim(body, "history", false, true, nil)
+	require.NoError(t, err)
+	require.Empty(t, d.ImageHistory.SkipReason)
+	require.Equal(t, "history_order", d.ImageHistory.BoundarySource)
+	require.Equal(t, 4, d.ImageHistory.AttachmentsAfter)
+	require.Equal(t, "input_text", gjson.GetBytes(out, "input.1.content.1.type").String())
+	require.Equal(t, "input_file", gjson.GetBytes(out, "input.3.content.0.type").String())
+	require.Equal(t, 1, d.ImageHistory.RetainedReasons["latest_user_segment"])
+	require.Equal(t, 2, d.ImageHistory.RetainedReasons["recent_tool"])
+	require.Equal(t, 1, d.ImageHistory.RetainedReasons["latest_tool_group"])
+	require.Equal(t, original, body)
+	again, _, err := prepareCodexBPSBodyWithImageTrim(body, "history", false, true, nil)
+	require.NoError(t, err)
+	require.JSONEq(t, string(out), string(again))
+}
+
+func TestBPSAttachmentHistoryPreservesUnseparatedUserFragments(t *testing.T) {
+	// Consecutive user fragments may belong to one current prompt; neither a
+	// missing turn ID nor an intervening system instruction makes them old.
+	items := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":[{"type":"input_file","file_id":"file-current-one"}]}`),
+		json.RawMessage(`{"role":"system","content":"task context"}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"input_image","file_id":"file-current-two"}]}`),
+		json.RawMessage(`{"role":"assistant","content":"Read both."}`),
+	}
+	d := &CodexBPSDiagnostic{}
+	out, err := trimBPSImageHistory(items, []byte(`{"model":"gpt-6-astra"}`), nil, false, d)
+	require.NoError(t, err)
+	require.Equal(t, items, out)
+	require.Equal(t, 2, d.ImageHistory.RetainedReasons["latest_user_segment"])
+}
+
+func TestBPSAttachmentHistorySkippedRequestsStillCountAttachments(t *testing.T) {
+	for _, tc := range []struct{ source, kind, marker string }{
+		{"guardian_review", "", ""},
+		{"subagent", "guardian_classifier", "guardian_classifier"},
+		{"subagent", "", ""},
+		{"user", "", "memory_consolidation"},
+	} {
+		t.Run(tc.source+"/"+tc.kind+"/"+tc.marker, func(t *testing.T) {
+			body := bpsAttachmentHistoryTestBody(t)
+			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata.thread_source", tc.source)
+			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata.subagent_kind", tc.kind)
+			if tc.marker != "" {
+				// Flat header marker applies when the canonical kind is absent.
+				body, _ = sjson.DeleteBytes(body, "client_metadata.x-codex-turn-metadata.subagent_kind")
+				body, _ = sjson.SetBytes(body, "client_metadata.x-openai-subagent", tc.marker)
+			}
+			_, d, err := prepareCodexBPSBodyWithImageTrim(body, "history", false, true, nil)
+			require.NoError(t, err)
+			require.Equal(t, "non_user_request", d.ImageHistory.SkipReason)
+			require.Equal(t, 7, d.ImageHistory.AttachmentsBefore)
+			require.Equal(t, 7, d.ImageHistory.AttachmentsAfter)
+			require.Equal(t, 7, d.ImageHistory.RetainedReasons["policy_skipped"])
+		})
+	}
+}
+
+func TestBPSAttachmentHistoryUnknownRelatedRequestIsConservative(t *testing.T) {
+	body := bpsAttachmentHistoryTestBody(t)
+	body, _ = sjson.DeleteBytes(body, "client_metadata")
+	headers := nativeSessionHeaders(testRootSessionA, testLeafSessionA, 1)
+	require.True(t, resolveRequestRootSessionIdentity(headers, body).related)
+	out, d, err := prepareCodexBPSBodyWithImageTrim(body, "history", false, true, headers)
+	require.NoError(t, err)
+	require.Equal(t, "non_user_request", d.ImageHistory.SkipReason)
+	require.Equal(t, 7, bpsCountHistoryImages(out)+bpsHistoryCountFiles(out))
 }

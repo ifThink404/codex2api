@@ -119,19 +119,22 @@ func TestBPSImageHistoryWholeLatestGroupAndUnknownMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 7, d.ImageHistory.After) // current user image + whole latest six-image result
 	require.Len(t, gjson.GetBytes(out, fmt.Sprintf("input.%d.output", last+1)).Array(), 6)
-	// Older ungrouped images are preserved; unrelated business JSON is opaque.
+	// Missing per-item labels use the visible user/model history boundary.
 	body, err = sjson.DeleteBytes(body, "input.0.internal_chat_message_metadata_passthrough.turn_id")
 	require.NoError(t, err)
 	out, _, err = prepareCodexBPSBodyWithImageTrim(body, "stable", false, true, nil)
 	require.NoError(t, err)
-	require.Equal(t, "input_image", gjson.GetBytes(out, "input.1.content.1.type").String())
-	// Missing request turn is conservative, including all recent/old images.
+	require.Equal(t, "input_text", gjson.GetBytes(out, "input.1.content.1.type").String())
+	// Missing request turn still preserves the latest user segment and group.
 	body, err = sjson.DeleteBytes(body, "client_metadata.x-codex-turn-metadata.turn_id")
 	require.NoError(t, err)
 	out, d, err = prepareCodexBPSBodyWithImageTrim(body, "stable", false, true, nil)
 	require.NoError(t, err)
-	require.Equal(t, "missing_turn", d.ImageHistory.SkipReason)
-	require.Equal(t, 12, bpsCountHistoryImages(out))
+	require.Empty(t, d.ImageHistory.SkipReason)
+	require.Equal(t, "history_order", d.ImageHistory.BoundarySource)
+	require.Equal(t, 7, bpsCountHistoryImages(out))
+	require.Equal(t, 6, d.ImageHistory.RetainedReasons["latest_tool_group"])
+	require.Equal(t, 1, d.ImageHistory.RetainedReasons["latest_user_segment"])
 }
 
 func TestBPSImageHistoryPassiveAndCompactUnchanged(t *testing.T) {

@@ -860,6 +860,8 @@
     "plan": "计划",
     "status": "状态",
     "activeRequestsTooltip": "当前正在处理 {{count}} 个请求",
+    "activeRequestsBadge": "在途 {{count}}",
+    "bufferedRequestsBadge": "缓冲 {{count}}",
     "occupiedRequestsTooltip": "当前真实在途 {{active}}，占用槽位 {{occupied}}（含 {{buffered}} 个会话缓冲槽）",
     "requests": "请求(7d)",
     "rateLimitBadgeHint": "最近 7 天未清空日志中的 429 次数，清空日志后重新计数",
@@ -1886,7 +1888,7 @@
     "routeModelsPlaceholder": "输入模型或前缀，例如 gpt-5.6-*",
     "routeModelsSelected": "已选择 {{count}} 个模型规则",
     "bpsImageTrimTitle": "BPS 历史附件精简",
-    "bpsImageTrimSummary": "仅用于 BPS。保留当前轮用户附件、图片与文件合计最近 3 个工具附件，以及最新整组结果；其余旧附件仅保留已有来源引用和省略提示，不再上传内嵌内容。无可读取来源时可能无法恢复。"
+    "bpsImageTrimSummary": "用于 BPS 主对话、fork 与普通子任务。保留当前用户附件、图片与文件合计最近 3 个工具附件、最新整组及尚未处理的结果；缺少轮次标记时按对话顺序判断旧附件。其余仅保留已有来源引用和省略提示，不再上传内嵌内容。审核与压缩不精简；没有有效来源时可能无法恢复。"
   },
   "invite": {
     "entry": "Codex 邀请",
@@ -4989,7 +4991,8 @@
     "codexSessionFailoverPreserveInput": "切号时完整保留 input（实验）",
     "codexSessionFailoverPreserveInputHint": "默认关闭，仅在允许换号时生效。开启后保留整个 input，包括加密推理、压缩项、输入项 ID 和动态工具；仍更换账号身份并清理旧 turn-state。未知续写引用或工具调用缺失时停止发送，请客户端提供完整历史。上游拒绝时不会自动删减加密内容重试，也不改写 input 内的环境日期和时区。模式随新出站段保存，关闭开关不会把已启用的会话自动降为有损清理。跨账号兼容性不保证。",
     "codexForkAccountFallbackEnabled": "宽松模式",
-    "codexForkAccountFallbackEnabledHint": "默认关闭。开启后，首次选号、重试和换号均在 Key 授权池内选择，不要求新旧账号同组，也不受主组／分流组边界限制；API 中转同样适用分组放宽，但仍只选择兼容的 API 账号。已有父账号可用时优先跟随；普通会话因额度、暂停、禁用、容量或可重试故障可直接换号，无需另开自动换号。账号权限、模型、身份隔离、预算、并发、窗口授权及黑名单仍生效。上下文按完整保留 input 设置处理；默认清理可能丢失部分历史。关闭后恢复原分组路由与同组换号规则。",
+    "codexForkAccountFallbackEnabledHint": "默认关闭。开启后，首次选号、重试和换号统一在 Key 授权池内进行，不再要求新旧账号同组，并自动包含账号不可用时换号。父账号可用时优先跟随；重建时保留有效父会话映射，无法迁移的旧父引用仅从出站元数据脱离，结果持久化。上下文仍由“完整保留 input”控制。账号权限、模型、预算、并发、窗口授权及黑名单保持生效；数据库查询失败仍报错。关闭后恢复原分组规则及独立换号设置，不恢复已经脱离的旧父引用。",
+    "codexSessionFailoverIncludedHint": "已由宽松模式启用。关闭宽松模式后恢复此开关原来的设置；无需重复开启。",
     "codexSessionFailoverEnabled": "账号不可用或会话容量不足时允许换号",
     "codexSessionFailoverEnabledHint": "默认关闭。账号额度耗尽、自动/手动暂停、禁用或无法接纳当前窗口时，允许后续请求重开，默认使用有损清理；目标账号分组集合必须完全一致，不能多组或少组。每次换号创建新的出站身份段及握手，窗口从 0 开始（47→0、48→1）；同一上下文保持编号，回退或恢复的上下文独立持久化映射，不产生负数，切回旧账号也新建一段。仅在出站副本清理旧加密上下文（加密推理、加密压缩）、文件/输入项引用、未知的 previous_response_id 和旧 turn-state；会丢失对应历史或资料，请优先提供完整明文上下文。清理后没有可用输入时需补充资料或新建会话。当前账号本段已核实的新内容保留。原始找根、入站编号、用户额度及窗口授权过期时间不变。不会仅因 500、busy、黑名单或绑定过期而换号，不绕过用户并发、扩容确认或黑名单限制。",
     "globalAutoPauseDesc": "为所有账号设置默认的自动暂停阈值。账号级别或分组级别的设置优先于全局设置。",

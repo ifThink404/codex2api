@@ -12,7 +12,7 @@ import (
 )
 
 func codexOutboundSessionMode() string {
-	if CurrentRuntimeSettings().CodexSessionFailoverEnabled {
+	if currentCodexSessionRecoveryPolicy().Failover {
 		return "account"
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_OUTBOUND_SESSION_MODE"))) {
@@ -33,9 +33,11 @@ func NewCodexTransportFingerprint(account *auth.Account, headers http.Header, bo
 	if len(contexts) > 0 && outboundEpochFromContext(contexts[0]).identityKey() != "" {
 		mode = "account"
 	}
-	// New persisted sessions use account identities by default. Explicit legacy
-	// settings and previously persisted preserve policies remain compatible.
-	if strings.TrimSpace(os.Getenv("CODEX_OUTBOUND_SESSION_MODE")) == "" && len(contexts) > 0 && contexts[0] != nil && account != nil && !account.IsRelayStyle() && account.EffectiveAccountID() != "" {
+	// Relaxed recovery and new default sessions prefer persistent account
+	// identities only when the account and store can actually provide them.
+	// Legacy accounts without an upstream ID keep their existing initial route;
+	// a committed migration above always requires account identities.
+	if (currentCodexSessionRecoveryPolicy().Relaxed || strings.TrimSpace(os.Getenv("CODEX_OUTBOUND_SESSION_MODE")) == "") && len(contexts) > 0 && contexts[0] != nil && account != nil && !account.IsRelayStyle() && account.EffectiveAccountID() != "" {
 		if _, ok := contexts[0].Value(codexIdentityClaimerContextKey{}).(CodexIdentityStore); ok {
 			mode = "account"
 		}

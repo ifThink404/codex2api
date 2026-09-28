@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -91,10 +90,7 @@ func (h *Handler) configureRelaxedAccountFallback(c *gin.Context, body []byte, i
 		reason = waitReason[0]
 	}
 	state := &relaxedAccountFallback{Reason: reason, ParentAccountID: parentID, Temporary: true, preserveInput: CurrentRuntimeSettings().CodexSessionFailoverPreserveInput, accounts: make(map[int64]bool)}
-	for reference := range codexAccountIdentityReferences(sessionFailoverRequestHeaders(c), body) {
-		state.references = append(state.references, reference)
-	}
-	sort.Strings(state.references)
+	state.references = sortedCodexParentReferences(sessionFailoverRequestHeaders(c), body)
 	identity.affinityID = "temporary-passive:" + NewUpstreamSessionUUID()
 	identity.stableIdentity, identity.relatedToRoot, identity.ownsRootBinding = false, false, false
 	identity.requiresRootAccount, identity.protectedRelatedLease, identity.bypassWindowAccounting = false, false, false

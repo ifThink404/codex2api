@@ -7,6 +7,34 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// The relaxed switch includes ordinary failover. Keep that effective policy
+// shared by scheduling and outbound identity preparation; neither requires the
+// administrator to enable a second switch.
+type codexSessionRecoveryPolicy struct {
+	Relaxed  bool
+	Failover bool
+}
+
+func currentCodexSessionRecoveryPolicy() codexSessionRecoveryPolicy {
+	settings := CurrentRuntimeSettings()
+	return codexSessionRecoveryPolicy{Relaxed: settings.CodexForkAccountFallbackEnabled, Failover: settings.CodexSessionFailoverEnabled}
+}
+
+func (policy codexSessionRecoveryPolicy) enabledBy() string {
+	if policy.Relaxed {
+		return "relaxed_mode"
+	}
+	if policy.Failover {
+		return "session_failover"
+	}
+	return ""
+}
+
+func (policy codexSessionRecoveryPolicy) detachUnavailableParent(epoch *sessionOutboundEpoch, accountID int64) bool {
+	return policy.Relaxed && epoch != nil && epoch.key != "" && epoch.record.AccountID == accountID &&
+		epoch.record.LossyContextRestart && epoch.identityKey() != ""
+}
+
 // Only account-local dispatch failures authorize a replacement. Request
 // validation, authorization of the replacement, replay safety and owner CAS
 // remain separate hard gates in the migration transaction.
@@ -29,14 +57,7 @@ func sessionAccountFailoverEnabledBy(reason string) string {
 	if !sessionAccountFailure(reason) {
 		return ""
 	}
-	settings := CurrentRuntimeSettings()
-	if settings.CodexSessionFailoverEnabled {
-		return "session_failover"
-	}
-	if settings.CodexForkAccountFallbackEnabled {
-		return "relaxed_mode"
-	}
-	return ""
+	return currentCodexSessionRecoveryPolicy().enabledBy()
 }
 
 // Shared by bound roots, forks and temporary background fallback. A nonempty

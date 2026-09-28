@@ -475,9 +475,7 @@ func populateUsageRequestDiagnostics(c *gin.Context, input *database.UsageLogInp
 					upstream.ErrorSource, upstream.ErrorStage = "upstream_stream_or_transport", "after_headers"
 				}
 			}
-			if len(snapshot.ResponseMapping) > 0 && input.StatusCode >= 400 {
-				upstream.ErrorSource, upstream.ErrorStage = "gateway", "response_mapping"
-			}
+			annotateResponseMappingFailure(&upstream, snapshot.ResponseMapping, input.StatusCode)
 			snapshot.Upstream = &upstream
 		}
 	}

@@ -860,6 +860,8 @@
     "plan": "Plan",
     "status": "Status",
     "activeRequestsTooltip": "{{count}} request(s) in progress",
+    "activeRequestsBadge": "In flight {{count}}",
+    "bufferedRequestsBadge": "Buffered {{count}}",
     "occupiedRequestsTooltip": "{{active}} live request(s), {{occupied}} occupied slot(s), including {{buffered}} buffered session slot(s)",
     "requests": "Requests(7d)",
     "rateLimitBadgeHint": "429 attempts in retained logs from the last 7 days. Resets when logs are cleared.",
@@ -1886,7 +1888,7 @@
     "routeModelsPlaceholder": "Enter a model or prefix, e.g. gpt-5.6-*",
     "routeModelsSelected": "{{count}} model rules selected",
     "bpsImageTrimTitle": "Trim BPS attachment history",
-    "bpsImageTrimSummary": "BPS only. Keeps current-turn user attachments, the latest 3 tool attachments across images and files, and the latest complete result group. Older attachments become source references and omission notes without uploading inline content. Recovery requires an accessible source."
+    "bpsImageTrimSummary": "For BPS main chats, forks and ordinary worker turns. Keeps current user attachments, the latest 3 tool attachments across images and files, and complete latest or unprocessed results. Missing turn labels use conversation order. Older inline content becomes source references and omission notes. Review and compaction are not trimmed. Recovery requires an accessible source."
   },
   "invite": {
     "entry": "Codex Invite",
@@ -4987,7 +4989,8 @@
     "codexSessionFailoverPreserveInput": "Preserve complete input on account switch (experimental)",
     "codexSessionFailoverPreserveInputHint": "Off by default; applies when account switching is allowed. Keeps the entire input, including encrypted reasoning, compaction, item IDs and dynamic tools, while changing account identity and clearing old turn-state. Unknown continuation references or missing tool calls stop the request; the client must replay complete history. Upstream rejection never triggers automatic encrypted-content removal. Environment dates and timezones inside input remain unchanged. The mode is saved with the outbound segment; disabling this option does not downgrade existing preserving sessions. Cross-account compatibility is not guaranteed.",
     "codexForkAccountFallbackEnabled": "Relaxed mode",
-    "codexForkAccountFallbackEnabledHint": "Off by default. When enabled, initial selection, retries and failover use the Key-authorized pool without requiring the same account groups or preserving primary/split boundaries. API relays also relax group matching while retaining compatible API accounts. Available parents stay preferred. Ordinary sessions can switch after quota, pause, disablement, capacity or retryable failures without the separate failover switch. Account permissions, models, identity isolation, budgets, concurrency, window authorization and blacklists still apply. Context follows the preserve-input setting; default cleanup may discard history. Disabling restores group routing and same-group failover.",
+    "codexForkAccountFallbackEnabledHint": "Off by default. Selection, retries and failover use the Key-authorized pool without requiring matching groups. Includes failover when an account is unavailable. Available parent accounts remain preferred. During a restart, valid parent mappings are retained; unavailable parent references are detached only from outbound metadata and that decision is persisted. Context still follows Preserve input. Account permissions, models, budgets, concurrency, window authorization and blacklists remain enforced; database lookup failures are still errors. Turning this off restores group routing and the separate failover preference, without restoring previously detached parents.",
+    "codexSessionFailoverIncludedHint": "Included in relaxed mode. Turning relaxed mode off restores this switch’s saved setting; there is no need to enable both.",
     "codexSessionFailoverEnabled": "Allow switching when the account is unavailable or session capacity is full",
     "codexSessionFailoverEnabledHint": "Off by default. Later requests may use a lossy restart when the account is quota-exhausted, paused, disabled, or cannot admit the current window. Group membership must match exactly. Each switch creates a new outbound identity segment and handshake, with window numbers starting at 0 (47→0, 48→1). Context identities retain persisted numbers across retries and rollback, never negative; returning to an earlier account creates another segment. Only the outbound copy drops old encrypted context (encrypted reasoning and compaction), file/item references, unknown previous_response_id and old turn-state. This loses the associated history or files; prefer full plaintext context. If no usable input remains, supply the task and files again or start a new conversation. Verified new content from the current account and segment is retained. Original routing identity, inbound numbering, user quotas and window grant expiry stay unchanged. HTTP 500, busy, blacklisting or binding expiry alone never trigger switching. User concurrency, expansion confirmation and blacklists remain enforced.",
     "globalAutoPauseDesc": "Set default auto-pause thresholds for all accounts. Account-level or group-level settings take priority.",

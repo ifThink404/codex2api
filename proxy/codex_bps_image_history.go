@@ -17,33 +17,76 @@ const bpsOmittedImageNote = "[历史图片已从本次请求省略。若原消�
 // Keep the existing image_history envelope and image counters for old readers.
 // The same saved switch now covers both images and files.
 type codexBPSImageHistoryDiagnostic struct {
-	RecentToolAttachments int      `json:"recent_tool_attachments"`
-	AttachmentsBefore     int      `json:"attachments_before"`
-	AttachmentsAfter      int      `json:"attachments_after"`
-	AttachmentsOmitted    int      `json:"attachments_omitted"`
-	FilesBefore           int      `json:"files_before"`
-	FilesAfter            int      `json:"files_after"`
-	FilesOmitted          int      `json:"files_omitted"`
-	Policy                string   `json:"policy"`
-	SkipReason            string   `json:"skip_reason,omitempty"`
-	RecentToolImages      int      `json:"recent_tool_images"`
-	Before                int      `json:"images_before"`
-	After                 int      `json:"images_after"`
-	Omitted               int      `json:"images_omitted"`
-	ReferenceBytesBefore  int      `json:"reference_bytes_before"`
-	ReferenceBytesAfter   int      `json:"reference_bytes_after"`
-	InputBytesBefore      int      `json:"input_bytes_before"`
-	InputBytesAfter       int      `json:"input_bytes_after"`
-	Positions             []string `json:"positions,omitempty"`
-	DetailsOmitted        int      `json:"details_omitted,omitempty"`
+	RecentToolAttachments int            `json:"recent_tool_attachments"`
+	AttachmentsBefore     int            `json:"attachments_before"`
+	AttachmentsAfter      int            `json:"attachments_after"`
+	AttachmentsOmitted    int            `json:"attachments_omitted"`
+	FilesBefore           int            `json:"files_before"`
+	FilesAfter            int            `json:"files_after"`
+	FilesOmitted          int            `json:"files_omitted"`
+	Policy                string         `json:"policy"`
+	SkipReason            string         `json:"skip_reason,omitempty"`
+	BoundarySource        string         `json:"boundary_source,omitempty"`
+	RetainedReasons       map[string]int `json:"retained_reasons,omitempty"`
+	RecentToolImages      int            `json:"recent_tool_images"`
+	Before                int            `json:"images_before"`
+	After                 int            `json:"images_after"`
+	Omitted               int            `json:"images_omitted"`
+	ReferenceBytesBefore  int            `json:"reference_bytes_before"`
+	ReferenceBytesAfter   int            `json:"reference_bytes_after"`
+	InputBytesBefore      int            `json:"input_bytes_before"`
+	InputBytesAfter       int            `json:"input_bytes_after"`
+	Positions             []string       `json:"positions,omitempty"`
+	DetailsOmitted        int            `json:"details_omitted,omitempty"`
 }
 
 type bpsHistoryAttachment struct {
 	file           bool
 	item, part     int
 	field          string
-	tool, keep     bool
+	tool           bool
+	keepReason     string
+	turn           string
 	referenceBytes int
+}
+
+// Being related to a root session describes routing, not whether this is a
+// passive request. Ordinary forks and explicitly identified worker turns use
+// the same history policy; review, memory and unknown background roles do not.
+func bpsHistorySkipReason(root requestRootSessionIdentity, controls http.Header, body []byte, compact bool) string {
+	if compact {
+		return "compaction"
+	}
+	if root.conflict {
+		return "identity_conflict"
+	}
+	if (root.requestKind != "" && root.requestKind != "turn") || strings.EqualFold(gjson.GetBytes(body, "model").String(), "codex-auto-review") || controls.Get("X-OpenAI-Memgen-Request") == "true" {
+		return "non_user_request"
+	}
+	worker := false
+	for _, kind := range []string{root.subagentKind, controls.Get("X-OpenAI-Subagent")} {
+		switch kind {
+		case "":
+		case "thread_spawn", "collab_spawn":
+			worker = true
+		default:
+			return "non_user_request"
+		}
+	}
+	switch root.threadSource {
+	case "":
+		if root.related && !worker {
+			return "non_user_request"
+		}
+		return ""
+	case "user":
+		return ""
+	case "subagent":
+		if worker {
+			return ""
+		}
+	}
+	return "non_user_request"
 }
 
 // Trimming is a deterministic projection of the supplied history. It never
@@ -52,32 +95,19 @@ type bpsHistoryAttachment struct {
 // newest complete result and unseen parallel results remain intact. Re-reading
 // a file in a new result gets a protected occurrence without a hash cache.
 func trimBPSImageHistory(items []json.RawMessage, body []byte, headers http.Header, compact bool, diagnostic *CodexBPSDiagnostic) ([]json.RawMessage, error) {
-	d := &codexBPSImageHistoryDiagnostic{Policy: "recent_attachments_v1", RecentToolImages: bpsRecentToolAttachments, RecentToolAttachments: bpsRecentToolAttachments}
+	d := &codexBPSImageHistoryDiagnostic{Policy: "recent_attachments_v2", RecentToolImages: bpsRecentToolAttachments, RecentToolAttachments: bpsRecentToolAttachments}
 	diagnostic.ImageHistory = d
-	if compact {
-		d.SkipReason = "compaction"
-		return items, nil
-	}
 	root := resolveRequestRootSessionIdentity(headers, body)
-	if root.conflict {
-		d.SkipReason = "identity_conflict"
-		return items, nil
-	}
-	if root.related || (root.threadSource != "" && root.threadSource != "user") || (root.requestKind != "" && root.requestKind != "turn") || strings.EqualFold(gjson.GetBytes(body, "model").String(), "codex-auto-review") {
-		d.SkipReason = "non_user_request"
-		return items, nil
-	}
 	controls := CodexRequestMetadataHeaders(headers, body)
-	if controls.Get("X-OpenAI-Subagent") != "" || controls.Get("X-OpenAI-Memgen-Request") == "true" {
-		d.SkipReason = "non_user_request"
-		return items, nil
-	}
+	d.SkipReason = bpsHistorySkipReason(root, controls, body, compact)
 	turn := gjson.Get(controls.Get(codexTurnMetadataHeader), "turn_id").String()
-	if turn == "" {
-		d.SkipReason = "missing_turn"
-		return items, nil
+	if d.SkipReason == "" {
+		d.BoundarySource = "history_order"
+		if turn != "" {
+			d.BoundarySource = "turn_metadata_and_history"
+		}
 	}
-	lastModel, lastToolAttachmentItem := -1, -1
+	lastModel, modelBeforeLatestUser, lastToolAttachmentItem := -1, -1, -1
 	var attachments []bpsHistoryAttachment
 	var toolIndices []int
 	for i, raw := range items {
@@ -91,6 +121,10 @@ func trimBPSImageHistory(items []json.RawMessage, body []byte, headers http.Head
 		switch {
 		case (kind == "message" || kind == "") && role == "user":
 			field = "content"
+			// Preserve the whole latest user segment, including multiple message
+			// fragments. A newer user message alone is not proof of a new turn;
+			// a model item between them establishes the history boundary.
+			modelBeforeLatestUser = lastModel
 		case kind == "function_call_output" || kind == "custom_tool_call_output":
 			field, tool = "output", true
 		default:
@@ -107,8 +141,10 @@ func trimBPSImageHistory(items []json.RawMessage, body []byte, headers http.Head
 				continue
 			}
 			known, referenceBytes := bpsHistoryAttachmentReference(part)
-			// Unknown shapes and ungrouped legacy history remain unchanged.
-			entry := bpsHistoryAttachment{item: i, part: j, field: field, tool: tool, file: kind == "input_file", keep: !known || itemTurn == "" || (!tool && itemTurn == turn), referenceBytes: referenceBytes}
+			entry := bpsHistoryAttachment{item: i, part: j, field: field, tool: tool, file: kind == "input_file", turn: itemTurn, referenceBytes: referenceBytes}
+			if !known {
+				entry.keepReason = "unknown_shape"
+			}
 			if tool {
 				toolIndices = append(toolIndices, len(attachments))
 				lastToolAttachmentItem = i
@@ -117,14 +153,24 @@ func trimBPSImageHistory(items []json.RawMessage, body []byte, headers http.Head
 		}
 	}
 	for n, index := range toolIndices {
-		if n >= len(toolIndices)-bpsRecentToolAttachments || attachments[index].item == lastToolAttachmentItem || attachments[index].item >= lastModel {
-			attachments[index].keep = true
+		if attachments[index].keepReason == "" && n >= len(toolIndices)-bpsRecentToolAttachments {
+			attachments[index].keepReason = "recent_tool"
 		}
 	}
-	// Preserve all unseen trailing attachments, including newly appended user files.
 	for i := range attachments {
-		if attachments[i].item >= lastModel {
-			attachments[i].keep = true
+		entry := &attachments[i]
+		switch {
+		case d.SkipReason != "":
+			entry.keepReason = "policy_skipped"
+		case entry.keepReason == "unknown_shape":
+		case !entry.tool && turn != "" && entry.turn == turn:
+			entry.keepReason = "current_user_turn"
+		case !entry.tool && (turn == "" || entry.turn == "") && entry.item > modelBeforeLatestUser:
+			entry.keepReason = "latest_user_segment"
+		case entry.tool && entry.item == lastToolAttachmentItem:
+			entry.keepReason = "latest_tool_group"
+		case entry.item >= lastModel:
+			entry.keepReason = "unseen_result"
 		}
 	}
 	out := append([]json.RawMessage(nil), items...)
@@ -137,7 +183,11 @@ func trimBPSImageHistory(items []json.RawMessage, body []byte, headers http.Head
 			d.Before++
 		}
 		d.ReferenceBytesBefore += entry.referenceBytes
-		if entry.keep {
+		if entry.keepReason != "" {
+			if d.RetainedReasons == nil {
+				d.RetainedReasons = make(map[string]int)
+			}
+			d.RetainedReasons[entry.keepReason]++
 			d.AttachmentsAfter++
 			if entry.file {
 				d.FilesAfter++

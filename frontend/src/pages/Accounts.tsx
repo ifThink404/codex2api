@@ -324,14 +324,16 @@ function AccountConcurrencyBadge({ account }: { account: AccountRow }) {
 
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-blue-600 ring-1 ring-inset ring-blue-500/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20"
+      className="inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-blue-600 ring-1 ring-inset ring-blue-500/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20"
       title={title}
+      aria-label={title}
     >
       <span
-        className="size-1.5 animate-pulse rounded-full bg-blue-500 dark:bg-blue-400"
+        className={cn("size-1.5 rounded-full bg-blue-500 dark:bg-blue-400", active > 0 && "animate-pulse")}
         aria-hidden
       />
-      {showOccupied ? `${active}/${occupied}` : active}
+      {t("accounts.activeRequestsBadge", { count: active })}
+      {showOccupied && <span>· {t("accounts.bufferedRequestsBadge", { count: buffered })}</span>}
     </span>
   );
 }
