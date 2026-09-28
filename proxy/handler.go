@@ -4072,7 +4072,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
-	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindResponses, accountFilter)
+	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindResponses, rawBody, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
@@ -4247,12 +4247,10 @@ func (h *Handler) Responses(c *gin.Context) {
 		attemptLogEffectiveModel := logEffectiveModel
 		// relay/Grok 账号默认走 HTTP，这里排除全局强制 WS，避免日志把它们错标成 via_websocket。
 		// 打开了上游 WebSocket 的 OpenAI Responses 中转账号在体积判断之后单独改回 WS。
-		useWebsocket := h.shouldUseWebsocketForHTTP() && !wsHTTPFallback.ForceHTTP() && !account.IsRelayStyle() && !account.IsExcelBPSAvailableForModel(effectiveModel)
-		// BPS is an HTTP-only account transport. Keep the existing native
-		// executor untouched and route only opted-in Codex accounts here.
-		useBPS := account.CodexBPSEnabled()
+		useWebsocket := h.shouldUseWebsocketForHTTP() && !wsHTTPFallback.ForceHTTP() && !account.IsRelayStyle() && !upstreamExcelBPSActive(account, effectiveModel)
+		// Transport plugins (BPS) are HTTP-only; the native executor stays untouched.
 		transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindResponses, rawBody)
-		if useBPS || transportPlugin != nil {
+		if transportPlugin != nil {
 			useWebsocket = false
 		}
 		// 生图请求强制走 HTTP：WebSocket 传输大体积图片数据会卡死（issue #220）；
@@ -4288,7 +4286,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		// 透传下游请求头用于指纹学习
 		downstreamHeaders := c.Request.Header.Clone()
 
-		if account.IsExcelBPSAvailableForModel(effectiveModel) {
+		if upstreamExcelBPSActive(account, effectiveModel) {
 			bpsBody := codexBody
 			if mappedBody, mappedModel, ok := h.applyAccountModelMappingToBodyForModels(bpsBody, account, logModel, effectiveModel); ok {
 				bpsBody = mappedBody
@@ -5139,11 +5137,8 @@ func (h *Handler) Responses(c *gin.Context) {
 		// 跨账号 turn-state 回带一律剥离（头 + 体）；来源未知的按 strict 开关处理，
 		// 并计数到会话防护统计。见 session_guards.go。
 		upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, upstreamBody)
-		log.Printf("[CODEX-TRANSPORT] endpoint=/v1/responses account=%d bps=%t websocket=%t attempt=%d model=%s", account.ID(), useBPS, useWebsocket, attempt+1, attemptEffectiveModel)
+		log.Printf("[CODEX-TRANSPORT] endpoint=/v1/responses account=%d plugin=%t websocket=%t attempt=%d model=%s", account.ID(), transportPlugin != nil, useWebsocket, attempt+1, attemptEffectiveModel)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
-			if useBPS {
-				return executeCodexBPS(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, false)
-			}
 			if transportPlugin != nil {
 				return transportPlugin.Execute(upstreamCtx, plugins.ReqEnv{Account: account, Model: attemptEffectiveModel, Body: upstreamBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
 			}
@@ -5654,7 +5649,13 @@ func (h *Handler) Responses(c *gin.Context) {
 						// encrypted reasoning must never participate in account rotation.
 						rctx = WithPayloadRuleIdentity(rctx, attemptIdentity)
 						lastUpstreamCancel = rcancel
-						roundResp, roundErr := ExecuteRequest(rctx, account, roundBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+						var roundResp *http.Response
+						var roundErr error
+						if transportPlugin != nil {
+							roundResp, roundErr = transportPlugin.Execute(rctx, plugins.ReqEnv{Account: account, Model: attemptEffectiveModel, Body: roundBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
+						} else {
+							roundResp, roundErr = ExecuteRequest(rctx, account, roundBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+						}
 						// 续想轮同样消耗账号额度：成功开轮后同步上游用量头，
 						// 否则多轮隐藏请求的额度对自动暂停/配速不可见。
 						if roundErr == nil && roundResp != nil && roundResp.StatusCode == http.StatusOK {
@@ -6179,7 +6180,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	}
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
-	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindResponsesCompact, accountFilter)
+	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindResponsesCompact, rawBody, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
@@ -6317,7 +6318,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		}
 		downstreamHeaders := c.Request.Header.Clone()
 
-		if account.IsExcelBPSAvailableForModel(effectiveModel) {
+		if upstreamExcelBPSActive(account, effectiveModel) {
 			bpsBody := codexBody
 			if mappedBody, mappedModel, ok := h.applyAccountCompactModelMappingToBody(bpsBody, account, routingModel, effectiveModel); ok {
 				bpsBody = mappedBody
@@ -6589,17 +6590,13 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		var resp *http.Response
 		var reqErr error
 		codexBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, codexBody)
-		bpsEnabled := account.CodexBPSEnabled()
 		transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindResponsesCompact, rawBody)
 		if compactViaResponses {
 			upstreamEndpointLabel = "/v1/responses"
 		}
-		log.Printf("[CODEX-TRANSPORT] endpoint=%s account=%d bps=%t compact_via_responses=%t attempt=%d model=%s", upstreamEndpointLabel, account.ID(), bpsEnabled, compactViaResponses, attempt+1, effectiveModel)
+		log.Printf("[CODEX-TRANSPORT] endpoint=%s account=%d plugin=%t compact_via_responses=%t attempt=%d model=%s", upstreamEndpointLabel, account.ID(), transportPlugin != nil, compactViaResponses, attempt+1, effectiveModel)
 		if compactViaResponses {
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
-				if account.CodexBPSEnabled() {
-					return executeCodexBPS(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, false)
-				}
 				if transportPlugin != nil {
 					return transportPlugin.Execute(c.Request.Context(), plugins.ReqEnv{Account: account, Model: effectiveModel, Body: appendCompactionTriggerToResponsesBody(codexBody), Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
 				}
@@ -6607,9 +6604,6 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			})
 		} else {
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
-				if account.CodexBPSEnabled() {
-					return executeCodexBPS(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, true)
-				}
 				if transportPlugin != nil {
 					return transportPlugin.Execute(c.Request.Context(), plugins.ReqEnv{Account: account, Model: effectiveModel, Body: codexBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey, Compact: true})
 				}
@@ -7086,6 +7080,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindChatCompletions, codexBody, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	stopRetryDeadline := installContinuousRetryHTTPDeadline(c, continuousRetryPolicy, continuousRetryProtocolChat)
@@ -7280,6 +7275,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				return ExecuteRelayStyleProtocolRequest(upstreamCtx, account, GrokProtocolChatCompletions, rawBody, upstreamBody, proxyURL, downstreamHeaders)
 			})
 		} else {
+			transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindChatCompletions, codexBody)
+			if transportPlugin != nil {
+				useWebsocket = false
+			}
 			// WebSocket 上游下剥离自动注入的图片工具，防止模型自主生图卡死 WS 流（issue #220）。
 			upstreamBody := codexBody
 			if useWebsocket {
@@ -7288,6 +7287,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
 			upstreamBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, upstreamBody)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+				if transportPlugin != nil {
+					return transportPlugin.Execute(upstreamCtx, plugins.ReqEnv{Account: account, Model: attemptEffectiveModel, Body: upstreamBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
+				}
 				return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})
 		}

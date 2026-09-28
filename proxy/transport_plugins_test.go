@@ -54,8 +54,8 @@ func (p *wiringPlugin) FilterHeaders(_ *plugins.ReqEnv, h http.Header) { h.Del("
 func (p *wiringPlugin) TransformJSON(_ *plugins.ReqEnv, _ int, body []byte) ([]byte, error) {
 	return body, nil
 }
-func (p *wiringPlugin) TransformSSEFrame(_ *plugins.ReqEnv, event string, data []byte) (string, []byte, bool) {
-	return event, bytes.ReplaceAll(data, []byte(`"type":"plugin.`), []byte(`"type":"response.`)), false
+func (p *wiringPlugin) TransformSSEFrame(_ *plugins.ReqEnv, event string, data []byte) ([]plugins.SSEFrame, error) {
+	return []plugins.SSEFrame{{Event: event, Data: bytes.ReplaceAll(data, []byte(`"type":"plugin.`), []byte(`"type":"response.`))}}, nil
 }
 
 func newTransportPluginTestHandler(t *testing.T, enabled bool) (*Handler, *database.DB, *wiringPlugin, *atomic.Int32) {

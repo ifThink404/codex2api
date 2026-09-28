@@ -58,11 +58,11 @@ func (transformingPlugin) FilterHeaders(_ *ReqEnv, h http.Header) { h.Del("X-Ups
 func (transformingPlugin) TransformJSON(_ *ReqEnv, _ int, body []byte) ([]byte, error) {
 	return bytes.ReplaceAll(body, []byte("bps"), []byte("responses")), nil
 }
-func (transformingPlugin) TransformSSEFrame(_ *ReqEnv, event string, data []byte) (string, []byte, bool) {
+func (transformingPlugin) TransformSSEFrame(_ *ReqEnv, event string, data []byte) ([]SSEFrame, error) {
 	if event == "bps.internal" {
-		return "", nil, true
+		return nil, nil
 	}
-	return strings.Replace(event, "bps.", "response.", 1), bytes.ReplaceAll(data, []byte("bps"), []byte("responses")), false
+	return []SSEFrame{{Event: strings.Replace(event, "bps.", "response.", 1), Data: bytes.ReplaceAll(data, []byte("bps"), []byte("responses"))}}, nil
 }
 
 func newTestStore(t *testing.T) (*database.DB, *auth.Store) {
@@ -216,7 +216,7 @@ func TestResolveAndAccountFilter(t *testing.T) {
 	}
 
 	base := func(a *auth.Account) bool { return a.ID() != 7 }
-	filter := reg.AccountFilter(context.Background(), KindResponses, "m", base)
+	filter := reg.AccountFilter(context.Background(), req, KindResponses, "m", base)
 	if !filter(account) || filter(&auth.Account{DBID: 7}) {
 		t.Fatal("filter did not respect base filter")
 	}
@@ -224,11 +224,11 @@ func TestResolveAndAccountFilter(t *testing.T) {
 	if filter(account) {
 		t.Fatal("Admissible veto ignored")
 	}
-	if !reg.AccountFilter(context.Background(), KindResponsesCompact, "m", nil)(account) {
-		t.Fatal("veto applied to an unsupported kind")
+	if reg.AccountFilter(context.Background(), req, KindResponsesCompact, "m", nil) != nil {
+		t.Fatal("a kind no plugin supports must leave the filter unchanged")
 	}
 	empty := NewRegistry()
-	if got := empty.AccountFilter(context.Background(), KindResponses, "m", nil); got != nil {
+	if got := empty.AccountFilter(context.Background(), req, KindResponses, "m", nil); got != nil {
 		t.Fatal("registry without plugins must not wrap the filter")
 	}
 }
@@ -241,9 +241,9 @@ func TestSSETransformReader(t *testing.T) {
 		"data: line1\ndata: bps2\n\n" +
 		"data: tail-without-blank"
 	tp := transformingPlugin{&testPlugin{}}
-	r := newSSETransformReader(io.NopCloser(strings.NewReader(src)), func(event string, data []byte) (string, []byte, bool) {
+	r := newSSETransformReader(io.NopCloser(strings.NewReader(src)), func(event string, data []byte) ([]SSEFrame, error) {
 		return tp.TransformSSEFrame(nil, event, data)
-	})
+	}, func() ([]SSEFrame, error) { return []SSEFrame{{Event: "done", Data: []byte("{}")}}, nil })
 	out, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +252,8 @@ func TestSSETransformReader(t *testing.T) {
 		": keepalive\n\n" +
 		"event: response.completed\r\ndata: {\"ok\":true}\r\n\r\n" +
 		"data: line1\ndata: responses2\n\n" +
-		"data: tail-without-blank"
+		"data: tail-without-blank" +
+		"event: done\ndata: {}\n\n"
 	if string(out) != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
 	}

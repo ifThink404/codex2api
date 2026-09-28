@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"net/http"
 	"sync"
 )
@@ -15,11 +16,18 @@ type Request struct {
 	Body     []byte
 	Header   http.Header
 	APIKeyID int64
+	// Model is the effective model core schedules for.
+	Model string
+	// Host is an opaque handle core attaches for plugins compiled into the
+	// same package (the proxy handler and gin context). Plugins in other
+	// packages must not rely on it.
+	Host any
 
 	mu        sync.Mutex
 	bound     map[string]bool
 	state     map[string]any
 	usageMeta map[string]string
+	usageEnd  map[string]string
 	served    string
 	attempts  int
 }
@@ -66,6 +74,20 @@ func (r *Request) SetUsageMeta(pluginID, metaJSON string) {
 	r.usageMeta[pluginID] = metaJSON
 }
 
+// SetUsageUpstreamEndpoint overrides Meta.UpstreamEndpoint in usage rows
+// logged while pluginID serves this request (e.g. a /compact variant).
+func (r *Request) SetUsageUpstreamEndpoint(pluginID, endpoint string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.usageEnd == nil {
+		r.usageEnd = map[string]string{}
+	}
+	r.usageEnd[pluginID] = endpoint
+}
+
 // Transport returns the transport of the latest resolved attempt ("" before
 // the first attempt) and that transport's usage metadata.
 func (r *Request) Transport() (transport, meta string) {
@@ -75,6 +97,39 @@ func (r *Request) Transport() (transport, meta string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.served, r.usageMeta[r.served]
+}
+
+// UsageUpstreamEndpoint returns the endpoint set with SetUsageUpstreamEndpoint.
+func (r *Request) UsageUpstreamEndpoint(pluginID string) string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.usageEnd[pluginID]
+}
+
+// Served returns the transport of the latest resolved attempt.
+func (r *Request) Served() string {
+	transport, _ := r.Transport()
+	return transport
+}
+
+type requestContextKey struct{}
+
+// WithRequest attaches req to ctx so hooks without a Request parameter
+// (Admissible) can reach it.
+func WithRequest(ctx context.Context, req *Request) context.Context {
+	return context.WithValue(ctx, requestContextKey{}, req)
+}
+
+// RequestFromContext returns the Request attached with WithRequest.
+func RequestFromContext(ctx context.Context) *Request {
+	if ctx == nil {
+		return nil
+	}
+	req, _ := ctx.Value(requestContextKey{}).(*Request)
+	return req
 }
 
 // beginAttempt returns the 1-based attempt index and the prior transport.

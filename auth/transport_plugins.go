@@ -135,3 +135,17 @@ func (s *Store) ApplyAccountTransportPluginOverride(dbID int64, pluginID string,
 	acc.transportPluginOverrides[pluginID] = *enabled
 	return true
 }
+
+// SetTransportPluginOverride sets an override on an account that is not (yet)
+// in a store, e.g. while building test accounts.
+func (a *Account) SetTransportPluginOverride(pluginID string, enabled bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.transportPluginOverrides == nil {
+		a.transportPluginOverrides = map[string]bool{}
+	}
+	a.transportPluginOverrides[pluginID] = enabled
+}

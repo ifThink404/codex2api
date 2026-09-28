@@ -556,7 +556,7 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if preserveBinding {
 			account, stickyProxyURL = h.store.NextForContinuationWithDispatch(affinityKey, apiKeyID, exclude, filter, policy)
 		} else {
-			account, stickyProxyURL, guard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy)
+			account, stickyProxyURL, guard = h.nextAccountWithTransportPlugins(ctx, affinityKey, apiKeyID, exclude, filter, policy)
 		}
 		if account != nil {
 			if ctx.Err() != nil {

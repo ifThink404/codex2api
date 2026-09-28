@@ -502,6 +502,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
 	dst.ExcelBPSEnabled = src.ExcelBPSEnabled
 	dst.transportPluginOverrides = cloneTransportPluginOverrides(src.transportPluginOverrides)
+	dst.codexBPS = src.codexBPS.clone()
 	dst.Timezone = src.Timezone
 	dst.ClaudeFingerprintMode = src.ClaudeFingerprintMode
 	dst.claudeSessionWindow = src.claudeSessionWindow

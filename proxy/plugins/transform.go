@@ -3,6 +3,7 @@ package plugins
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -21,9 +22,13 @@ func wrapResponse(resp *http.Response, t ResponseTransformer, env *ReqEnv) error
 		return nil
 	}
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
-		resp.Body = newSSETransformReader(resp.Body, func(event string, data []byte) (string, []byte, bool) {
+		var finish func() ([]SSEFrame, error)
+		if f, ok := t.(SSEFinisher); ok {
+			finish = func() ([]SSEFrame, error) { return f.FinishSSE(env) }
+		}
+		resp.Body = newSSETransformReader(resp.Body, func(event string, data []byte) ([]SSEFrame, error) {
 			return t.TransformSSEFrame(env, event, data)
-		})
+		}, finish)
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
 		return nil
@@ -45,22 +50,25 @@ func wrapResponse(resp *http.Response, t ResponseTransformer, env *ReqEnv) error
 	return nil
 }
 
-type sseFrameFunc func(event string, data []byte) (string, []byte, bool)
+type sseFrameFunc func(event string, data []byte) ([]SSEFrame, error)
 
 // sseTransformReader re-frames an SSE stream. A frame ends at a blank line;
-// frames without data lines, and frames the transformer leaves unchanged, are
-// passed through byte for byte.
+// frames without data lines, and frames the transformer returns unchanged,
+// are passed through byte for byte. A transformer error ends the stream with
+// that error.
 type sseTransformReader struct {
-	src   io.ReadCloser
-	br    *bufio.Reader
-	fn    sseFrameFunc
-	frame bytes.Buffer
-	out   bytes.Buffer
-	err   error
+	src      io.ReadCloser
+	br       *bufio.Reader
+	fn       sseFrameFunc
+	finish   func() ([]SSEFrame, error)
+	frame    bytes.Buffer
+	out      bytes.Buffer
+	err      error
+	finished bool
 }
 
-func newSSETransformReader(src io.ReadCloser, fn sseFrameFunc) *sseTransformReader {
-	return &sseTransformReader{src: src, br: bufio.NewReader(src), fn: fn}
+func newSSETransformReader(src io.ReadCloser, fn sseFrameFunc, finish func() ([]SSEFrame, error)) *sseTransformReader {
+	return &sseTransformReader{src: src, br: bufio.NewReader(src), fn: fn, finish: finish}
 }
 
 func (r *sseTransformReader) Read(p []byte) (int, error) {
@@ -69,12 +77,25 @@ func (r *sseTransformReader) Read(p []byte) (int, error) {
 		if len(line) > 0 {
 			r.frame.Write(line)
 			if len(bytes.TrimRight(line, "\r\n")) == 0 {
-				r.flushFrame()
+				if ferr := r.flushFrame(); ferr != nil {
+					r.err = ferr
+					break
+				}
 			}
 		}
 		if err != nil {
 			if r.frame.Len() > 0 {
-				r.flushFrame()
+				if ferr := r.flushFrame(); ferr != nil {
+					err = ferr
+				}
+			}
+			if errors.Is(err, io.EOF) && !r.finished && r.finish != nil {
+				r.finished = true
+				frames, ferr := r.finish()
+				r.writeFrames(frames)
+				if ferr != nil {
+					err = ferr
+				}
 			}
 			r.err = err
 		}
@@ -87,12 +108,27 @@ func (r *sseTransformReader) Read(p []byte) (int, error) {
 
 func (r *sseTransformReader) Close() error { return r.src.Close() }
 
-func (r *sseTransformReader) flushFrame() {
+func (r *sseTransformReader) writeFrames(frames []SSEFrame) {
+	for _, frame := range frames {
+		if frame.Event != "" {
+			r.out.WriteString("event: ")
+			r.out.WriteString(frame.Event)
+			r.out.WriteByte('\n')
+		}
+		for _, line := range bytes.Split(frame.Data, []byte("\n")) {
+			r.out.WriteString("data: ")
+			r.out.Write(line)
+			r.out.WriteByte('\n')
+		}
+		r.out.WriteByte('\n')
+	}
+}
+
+func (r *sseTransformReader) flushFrame() error {
 	raw := r.frame.Bytes()
 	defer r.frame.Reset()
 	var event string
 	var data [][]byte
-	var other [][]byte
 	hasData := false
 	for _, line := range bytes.SplitAfter(raw, []byte("\n")) {
 		trimmed := bytes.TrimRight(line, "\r\n")
@@ -107,36 +143,27 @@ func (r *sseTransformReader) flushFrame() {
 				value = value[1:]
 			}
 			data = append(data, value)
-		default:
-			other = append(other, trimmed)
 		}
 	}
 	if !hasData {
 		r.out.Write(raw)
-		return
+		return nil
 	}
 	joined := bytes.Join(data, []byte("\n"))
-	outEvent, outData, drop := r.fn(event, joined)
-	if drop {
-		return
+	frames, err := r.fn(event, joined)
+	if err != nil {
+		return err
 	}
-	if outEvent == event && bytes.Equal(outData, joined) {
+	if len(frames) == 1 && frames[0].Event == event && bytes.Equal(frames[0].Data, joined) {
 		r.out.Write(raw)
-		return
+		return nil
 	}
-	for _, line := range other {
-		r.out.Write(line)
-		r.out.WriteByte('\n')
-	}
-	if outEvent != "" {
-		r.out.WriteString("event: ")
-		r.out.WriteString(outEvent)
-		r.out.WriteByte('\n')
-	}
-	for _, line := range bytes.Split(outData, []byte("\n")) {
-		r.out.WriteString("data: ")
-		r.out.Write(line)
-		r.out.WriteByte('\n')
-	}
-	r.out.WriteByte('\n')
+	r.writeFrames(frames)
+	return nil
+}
+
+// ApplyResponseTransformer applies t to resp exactly as Route.Execute does.
+// Exposed for plugin tests.
+func ApplyResponseTransformer(resp *http.Response, t ResponseTransformer, env *ReqEnv) error {
+	return wrapResponse(resp, t, env)
 }

@@ -79,10 +79,16 @@ type Plugin interface {
 }
 
 // RequestBinder is implemented by plugins that derive per-request state from
-// the inbound request. BindRequest runs once per inbound request, before the
-// first Select, for every plugin enabled for that attempt's account.
+// the inbound request. BindRequest runs once per inbound request, before
+// account selection, for every registered plugin supporting the request kind.
 type RequestBinder interface {
 	BindRequest(req *Request)
+}
+
+// SSEFrame is one server-sent event.
+type SSEFrame struct {
+	Event string
+	Data  []byte
 }
 
 // ResponseTransformer rewrites plugin responses into the shape core expects.
@@ -94,13 +100,58 @@ type ResponseTransformer interface {
 	// TransformJSON rewrites a non-SSE body.
 	TransformJSON(env *ReqEnv, status int, body []byte) ([]byte, error)
 	// TransformSSEFrame rewrites one SSE frame (event name and joined data
-	// lines). Returning drop=true removes the frame from the stream.
-	TransformSSEFrame(env *ReqEnv, event string, data []byte) (outEvent string, outData []byte, drop bool)
+	// lines) into zero or more frames, emitted in order. Returning exactly the
+	// input frame passes the original bytes through. A transformer may hold
+	// data back across frames (per-attempt state lives in env) and release it
+	// later or from FinishSSE.
+	TransformSSEFrame(env *ReqEnv, event string, data []byte) ([]SSEFrame, error)
+}
+
+// SSEFinisher is implemented by transformers that buffer across frames; the
+// frames it returns are appended when the upstream stream ends.
+type SSEFinisher interface {
+	FinishSSE(env *ReqEnv) ([]SSEFrame, error)
+}
+
+// AccountForcer lets a plugin force itself on for an account from account
+// state core already tracks. It is checked before the override credential.
+type AccountForcer interface {
+	ForcedFor(account *auth.Account) bool
+}
+
+// Pinner is implemented by plugins whose produced state is route-bound (for
+// example opaque encrypted content only the plugin's upstream accepts). A
+// pinned request may only be scheduled on accounts the plugin is enabled for
+// and admits; Select is still asked per attempt.
+type Pinner interface {
+	Pinned(ctx context.Context, req *Request) bool
+}
+
+// AccountPreferrer supplies a soft scheduling preference (an account ID to
+// try first) and learns the account that was finally selected. It never
+// overrides filters, exclusions or capacity.
+type AccountPreferrer interface {
+	PreferredAccount(ctx context.Context, req *Request, model string) int64
+	AccountSelected(ctx context.Context, req *Request, account *auth.Account, model string)
+}
+
+// ExecuteErrorHandler is told about every error Execute returns, while the
+// attempt's account and trace are still current (e.g. to log a zero-token
+// preparation failure or start an upload cooldown).
+type ExecuteErrorHandler interface {
+	OnExecuteError(ctx context.Context, env *ReqEnv, err error)
 }
 
 // ConfigValidator validates the plugin's config JSON object before it is saved.
 type ConfigValidator interface {
 	ValidateConfig(config json.RawMessage) error
+}
+
+// StateObserver is told about every state snapshot the registry publishes
+// (startup, admin saves and outbox hot reloads), including default state when
+// no row exists yet.
+type StateObserver interface {
+	StateChanged(state database.TransportPluginState)
 }
 
 // Migrator is implemented by plugins that own database tables. Registry.Attach
@@ -146,4 +197,17 @@ type ReqEnv struct {
 	Attempt int
 	// Config is the plugin's config object from the active snapshot.
 	Config json.RawMessage
+
+	state map[string]any
+}
+
+// State returns per-attempt plugin state stored with SetState.
+func (env *ReqEnv) State(key string) any { return env.state[key] }
+
+// SetState stores per-attempt plugin state (e.g. stream buffers).
+func (env *ReqEnv) SetState(key string, value any) {
+	if env.state == nil {
+		env.state = map[string]any{}
+	}
+	env.state[key] = value
 }

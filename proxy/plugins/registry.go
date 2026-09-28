@@ -81,6 +81,9 @@ func (r *Registry) Register(p Plugin) {
 	list := slices.Clone(r.plugins)
 	r.active.Store(&list)
 	auth.RegisterTransportPluginOverrideKey(id, OverrideCredentialKey(p))
+	if o, ok := p.(StateObserver); ok {
+		o.StateChanged(r.State(id))
+	}
 }
 
 // OverrideCredentialKey returns the plugin's per-account override credential key.
@@ -151,6 +154,11 @@ func (r *Registry) applyStates(states []database.TransportPluginState) {
 		next.states[state.ID] = ps
 	}
 	r.state.Store(next)
+	for _, p := range r.Plugins() {
+		if o, ok := p.(StateObserver); ok {
+			o.StateChanged(r.State(p.ID()))
+		}
+	}
 }
 
 // State returns the active state for a plugin (defaults when no row exists).
@@ -188,11 +196,14 @@ func (r *Registry) Save(ctx context.Context, state database.TransportPluginState
 	return r.Reload(ctx)
 }
 
-// EnabledFor applies the precedence account override > group membership >
-// global switch.
+// EnabledFor applies the precedence plugin-forced (AccountForcer) > account
+// override > group membership > global switch.
 func (r *Registry) EnabledFor(p Plugin, account *auth.Account) bool {
 	if account == nil {
 		return false
+	}
+	if f, ok := p.(AccountForcer); ok && f.ForcedFor(account) {
+		return true
 	}
 	id := p.ID()
 	if enabled, ok := account.TransportPluginOverride(id); ok {
@@ -212,19 +223,50 @@ func supportsKind(p Plugin, kind RequestKind) bool {
 	return slices.Contains(p.Describe().Kinds, kind)
 }
 
-// AccountFilter wraps next with every enabled plugin's Admissible veto. With
-// no registered plugins it returns next unchanged.
-func (r *Registry) AccountFilter(ctx context.Context, kind RequestKind, model string, next auth.AccountFilter) auth.AccountFilter {
-	list := r.Plugins()
+// BindRequest runs every RequestBinder supporting req.Kind once. Core calls
+// it (through AccountFilter) before account selection.
+func (r *Registry) BindRequest(req *Request) {
+	if req == nil {
+		return
+	}
+	for _, p := range r.Plugins() {
+		if b, ok := p.(RequestBinder); ok && supportsKind(p, req.Kind) && req.markBound(p.ID()) {
+			b.BindRequest(req)
+		}
+	}
+}
+
+// AccountFilter binds the request, then wraps next with the plugins' account
+// rules: a plugin that pins req admits only accounts it is enabled for, and
+// every plugin enabled for an account may veto it through Admissible. With no
+// registered plugins it returns next unchanged.
+func (r *Registry) AccountFilter(ctx context.Context, req *Request, kind RequestKind, model string, next auth.AccountFilter) auth.AccountFilter {
+	var list []Plugin
+	for _, p := range r.Plugins() {
+		if supportsKind(p, kind) {
+			list = append(list, p)
+		}
+	}
 	if len(list) == 0 {
 		return next
+	}
+	r.BindRequest(req)
+	pinned := make(map[string]bool)
+	for _, p := range list {
+		if pin, ok := p.(Pinner); ok && req != nil && pin.Pinned(ctx, req) {
+			pinned[p.ID()] = true
+		}
 	}
 	return func(account *auth.Account) bool {
 		if next != nil && !next(account) {
 			return false
 		}
 		for _, p := range list {
-			if !supportsKind(p, kind) || !r.EnabledFor(p, account) {
+			enabled := r.EnabledFor(p, account)
+			if pinned[p.ID()] && !enabled {
+				return false
+			}
+			if !enabled {
 				continue
 			}
 			if ok, _ := p.Admissible(ctx, account, model); !ok {
@@ -232,6 +274,35 @@ func (r *Registry) AccountFilter(ctx context.Context, kind RequestKind, model st
 			}
 		}
 		return true
+	}
+}
+
+// PreferredAccount returns the first soft account preference offered by a
+// plugin supporting req.Kind, or 0.
+func (r *Registry) PreferredAccount(ctx context.Context, req *Request, model string) int64 {
+	if req == nil {
+		return 0
+	}
+	for _, p := range r.Plugins() {
+		if pref, ok := p.(AccountPreferrer); ok && supportsKind(p, req.Kind) {
+			if id := pref.PreferredAccount(ctx, req, model); id > 0 {
+				return id
+			}
+		}
+	}
+	return 0
+}
+
+// AccountSelected tells every AccountPreferrer supporting req.Kind which
+// account scheduling chose.
+func (r *Registry) AccountSelected(ctx context.Context, req *Request, account *auth.Account, model string) {
+	if req == nil || account == nil {
+		return
+	}
+	for _, p := range r.Plugins() {
+		if pref, ok := p.(AccountPreferrer); ok && supportsKind(p, req.Kind) {
+			pref.AccountSelected(ctx, req, account, model)
+		}
 	}
 }
 
@@ -257,6 +328,14 @@ func (r *Registry) Resolve(ctx context.Context, req *Request, account *auth.Acco
 	}
 	req.setServed(database.TransportNative)
 	return nil
+}
+
+// RouteFor builds a route for plugin p regardless of enablement and Select.
+// Only administrator connection tests use it (an explicit per-test mode).
+func (r *Registry) RouteFor(p Plugin, req *Request, account *auth.Account, model string, kind RequestKind) *Route {
+	index, prior := req.beginAttempt()
+	req.setServed(p.ID())
+	return &Route{registry: r, plugin: p, attempt: Attempt{Request: req, Account: account, Model: model, Kind: kind, Index: index, Prior: prior}, state: r.State(p.ID())}
 }
 
 // MarkNative records an attempt that core routed natively without asking the
@@ -299,6 +378,9 @@ func (rt *Route) Execute(ctx context.Context, env ReqEnv) (*http.Response, error
 	resp, err := rt.plugin.Execute(ctx, &env)
 	if err != nil {
 		rec.failure(err)
+		if h, ok := rt.plugin.(ExecuteErrorHandler); ok {
+			h.OnExecuteError(ctx, &env, err)
+		}
 		return nil, err
 	}
 	if resp == nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -537,6 +538,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindMessages, rawBody, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	stopRetryDeadline := installContinuousRetryHTTPDeadline(c, continuousRetryPolicy, continuousRetryProtocolAnthropic)
@@ -824,7 +826,11 @@ func (h *Handler) Messages(c *gin.Context) {
 			serviceTier = EffectiveRequestedServiceTier(codexBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
 			upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
 			codexBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, codexBody)
+			transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindMessages, codexBody)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+				if transportPlugin != nil {
+					return transportPlugin.Execute(upstreamCtx, plugins.ReqEnv{Account: account, Model: attemptEffectiveModel, Body: codexBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
+				}
 				return ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})
 		}

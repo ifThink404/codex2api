@@ -47,10 +47,6 @@ const (
 
 const UpstreamOpenAIResponses = "openai_responses"
 
-// CodexBPSEnabledCredentialKey enables the optional Basis Points (BPS)
-// transport for an individual Codex OAuth account.
-const CodexBPSEnabledCredentialKey = "codex_bps_enabled"
-
 const (
 	CodexClientMetadataModeAuto   = "auto"
 	CodexClientMetadataModeAlways = "always"
@@ -217,9 +213,9 @@ type Account struct {
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
 	Timezone string
-	// CodexBPS selects the BPS transport for this account's Responses requests.
-	// It is deliberately account-scoped so native Codex remains the default.
-	CodexBPS bool
+	// codexBPS is the BPS transport plugin's per-account configuration
+	// (routes, profile, convergence, image trim); see codex_bps.go.
+	codexBPS codexBPSAccountConfig
 	// transportPluginOverrides holds per-account transport plugin overrides
 	// (plugin ID -> forced on/off) read from registered credential keys; see
 	// transport_plugins.go. Guarded by mu.
@@ -570,17 +566,6 @@ func (a *Account) ID() int64 {
 // Mu 返回读写锁（供外部包安全读取字段）
 func (a *Account) Mu() *sync.RWMutex {
 	return &a.mu
-}
-
-// CodexBPSEnabled reports whether this account opts into the Basis Points
-// transport. Relay and agent-identity accounts cannot use the BPS OAuth path.
-func (a *Account) CodexBPSEnabled() bool {
-	if a == nil || a.IsRelayStyle() || a.IsCodexAgentIdentity() {
-		return false
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.CodexBPS
 }
 
 func (a *Account) isOpenAIResponsesAPILocked() bool {
@@ -5710,7 +5695,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CodexFingerprintMode:         codexFingerprintMode,
 		ExcelBPSEnabled:              row.GetCredentialBool(ExcelBPSCredentialKey),
 		Timezone:                     accountTimezone,
-		CodexBPS:                     row.GetCredentialBool(CodexBPSEnabledCredentialKey),
+		codexBPS:                     codexBPSAccountConfigFromRow(row),
 		transportPluginOverrides:     transportPluginOverridesFromRow(row),
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
@@ -10082,19 +10067,6 @@ func (s *Store) ApplyAccountCustomHeaders(dbID int64, headers map[string]string)
 	}
 	acc.mu.Lock()
 	acc.CustomHeaders = cloneStringMap(headers)
-	acc.mu.Unlock()
-	return true
-}
-
-// ApplyAccountCodexBPS synchronizes the persisted BPS switch with the runtime
-// account after an admin update or a scheduler reload.
-func (s *Store) ApplyAccountCodexBPS(dbID int64, enabled bool) bool {
-	acc := s.FindByID(dbID)
-	if acc == nil {
-		return false
-	}
-	acc.mu.Lock()
-	acc.CodexBPS = enabled
 	acc.mu.Unlock()
 	return true
 }

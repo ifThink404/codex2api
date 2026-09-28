@@ -278,7 +278,7 @@ func (h *Handler) buildAccountResponse(
 		ClaudeVersionPolicyOverride:  claudeVersionPolicyOverride,
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
-		CodexBPS:                     row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		codexBPSAccountView:          codexBPSAccountViewFromRow(row, runtimeAccount),
 		AccountHref:                  strings.TrimSpace(row.GetCredential(auth.AccountHrefCredentialKey)),
 		CustomHeaders:                customHeaders,
 		UpstreamRequestIDHeader:      row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
