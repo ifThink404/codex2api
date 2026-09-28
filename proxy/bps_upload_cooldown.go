@@ -88,12 +88,13 @@ func (s *bpsUploadCooldowns) remember(key string, until, now time.Time) time.Tim
 }
 
 func (h *Handler) readSharedBPSUploadCooldown(ctx context.Context, key string, now time.Time) (time.Time, error) {
-	if h.cache == nil || !h.cache.SharedAcrossInstances() {
+	store := h.bpsCache()
+	if store == nil || !store.SharedAcrossInstances() {
 		return time.Time{}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, bpsAttachmentCacheTimeout)
 	defer cancel()
-	raw, found, err := h.cache.GetRuntime(ctx, bpsUploadCooldownNamespace, key)
+	raw, found, err := store.GetRuntime(ctx, bpsUploadCooldownNamespace, key)
 	var until time.Time
 	if err != nil {
 		return time.Time{}, err
@@ -117,7 +118,8 @@ func (h *Handler) rememberBPSUploadFailure(ctx context.Context, account *auth.Ac
 	delay = min(delay, bpsUploadCooldownMax)
 	key := bpsUploadCooldownKey(account)
 	until := bpsUploadCooldownState.remember(key, now.Add(delay), now)
-	if h.cache == nil || !h.cache.SharedAcrossInstances() {
+	store := h.bpsCache()
+	if store == nil || !store.SharedAcrossInstances() {
 		return
 	}
 	// Serialize shared updates so an older/shorter failure cannot shorten a
@@ -125,14 +127,14 @@ func (h *Handler) rememberBPSUploadFailure(ctx context.Context, account *auth.Ac
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bpsAttachmentCacheTimeout)
 	defer cancel()
 	owner := NewUpstreamSessionUUID()
-	locked, err := h.cache.AcquireLease(writeCtx, bpsUploadCooldownNamespace, key, owner, time.Second)
+	locked, err := store.AcquireLease(writeCtx, bpsUploadCooldownNamespace, key, owner, time.Second)
 	if err != nil || !locked {
 		return
 	}
 	defer func() {
 		releaseCtx, done := context.WithTimeout(context.WithoutCancel(ctx), bpsAttachmentCacheTimeout)
 		defer done()
-		_ = h.cache.ReleaseLease(releaseCtx, bpsUploadCooldownNamespace, key, owner)
+		_ = store.ReleaseLease(releaseCtx, bpsUploadCooldownNamespace, key, owner)
 	}()
 	shared, err := h.readSharedBPSUploadCooldown(writeCtx, key, now)
 	if err != nil {
@@ -142,7 +144,7 @@ func (h *Handler) rememberBPSUploadFailure(ctx context.Context, account *auth.Ac
 		until = bpsUploadCooldownState.remember(key, shared, now)
 	}
 	raw, _ := json.Marshal(until)
-	_ = h.cache.SetRuntime(writeCtx, bpsUploadCooldownNamespace, key, raw, time.Until(until))
+	_ = store.SetRuntime(writeCtx, bpsUploadCooldownNamespace, key, raw, time.Until(until))
 }
 
 type bpsUploadRequestKey struct{}

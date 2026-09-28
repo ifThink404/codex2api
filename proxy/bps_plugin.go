@@ -330,7 +330,7 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		ctx = context.WithValue(ctx, inferredBPSSessionKey{}, state.inferred)
 		ctx = withBPSCaller(state.c, ctx)
 		if handler != nil {
-			ctx = WithBPSAttachmentCache(ctx, handler.cache)
+			ctx = WithBPSAttachmentCache(ctx, handler.bpsCache())
 			if handler.db != nil {
 				ctx = context.WithValue(ctx, bpsIdentityStoreKey{}, handler.db)
 			}
@@ -478,7 +478,7 @@ func bpsProvenanceContentKey(content string) string {
 
 func bpsRecordProvenance(env *plugins.ReqEnv, payload []byte) {
 	state := bpsRequestState(env.Request)
-	if state == nil || state.handler == nil || state.handler.cache == nil {
+	if state == nil || state.handler.bpsCache() == nil {
 		return
 	}
 	var keys []string
@@ -502,12 +502,13 @@ func bpsRecordProvenance(env *plugins.ReqEnv, payload []byte) {
 	defer cancel()
 	marker := json.RawMessage(`true`)
 	for _, key := range keys {
-		_ = state.handler.cache.SetRuntime(ctx, bpsProvenanceNamespace, key, marker, bpsProvenanceTTL)
+		_ = state.handler.bpsCache().SetRuntime(ctx, bpsProvenanceNamespace, key, marker, bpsProvenanceTTL)
 	}
 }
 
 func (h *Handler) bpsStickyDomain(ctx context.Context, req *plugins.Request) bool {
-	if h == nil || h.cache == nil || req == nil {
+	store := h.bpsCache()
+	if store == nil || req == nil {
 		return false
 	}
 	var keys []string
@@ -523,7 +524,7 @@ func (h *Handler) bpsStickyDomain(ctx context.Context, req *plugins.Request) boo
 	lookupCtx, cancel := context.WithTimeout(ctx, bpsProvenanceTimeout)
 	defer cancel()
 	for _, key := range keys {
-		if _, found, err := h.cache.GetRuntime(lookupCtx, bpsProvenanceNamespace, key); err == nil && found {
+		if _, found, err := store.GetRuntime(lookupCtx, bpsProvenanceNamespace, key); err == nil && found {
 			return true
 		}
 	}

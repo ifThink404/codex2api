@@ -33,6 +33,9 @@ func WithBPSAttachmentCache(ctx context.Context, store cache.TokenCache) context
 	if store == nil || !store.SharedAcrossInstances() {
 		return ctx
 	}
+	if guarded, ok := store.(*bpsRuntimeCache); ok && !guarded.supportsRuntimeOwner() {
+		return ctx
+	}
 	if _, ok := store.(cache.RuntimeOwnerStore); !ok {
 		return ctx
 	}
