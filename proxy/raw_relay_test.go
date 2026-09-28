@@ -104,7 +104,7 @@ func TestRawRelayErrorsAndRedirectsNeverRetryOrRewrite(t *testing.T) {
 	}
 }
 
-func TestRawRelayGzipBytesPreserved(t *testing.T) {
+func TestRawRelayGzipRequestPreservedResponseDecodedForPrivacy(t *testing.T) {
 	compress := func(s string) []byte {
 		var b bytes.Buffer
 		z := gzip.NewWriter(&b)
@@ -113,7 +113,8 @@ func TestRawRelayGzipBytesPreserved(t *testing.T) {
 		return b.Bytes()
 	}
 	body := compress(`{"model":"gpt-6-astra","input":"hello"}`)
-	response := compress(`{"usage":{"input_tokens":5,"output_tokens":2},"vendor":"untouched"}`)
+	const plainResponse = `{"usage":{"input_tokens":5,"output_tokens":2},"vendor":"untouched"}`
+	response := compress(plainResponse)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, _ := io.ReadAll(r.Body)
 		if !bytes.Equal(got, body) || r.Header.Get("Content-Encoding") != "gzip" {
@@ -131,8 +132,8 @@ func TestRawRelayGzipBytesPreserved(t *testing.T) {
 	req.Header.Set("Content-Encoding", "gzip")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), response) || w.Header().Get("Content-Encoding") != "gzip" {
-		t.Fatalf("gzip response changed, status=%d", w.Code)
+	if w.Code != 200 || w.Body.String() != plainResponse || w.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("gzip response not safely decoded, status=%d", w.Code)
 	}
 }
 

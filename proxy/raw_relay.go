@@ -58,7 +58,7 @@ func excludeRawRelayAccountsFilter(filter auth.AccountFilter, trace *auth.Select
 // An explicitly configured raw API route is selected before Codex validation or
 // translation within Key scope and, in strict mode, fingerprint/Chat groups.
 // Existing native owners and native pools take precedence. API failover retains
-// protocol compatibility and preserves raw bytes.
+// protocol compatibility and preserves raw request bytes.
 func (h *Handler) tryRawRelay(c *gin.Context) bool {
 	if h.store == nil || c.Request.Method != http.MethodPost {
 		return false
@@ -187,10 +187,16 @@ func (h *Handler) tryRawRelay(c *gin.Context) bool {
 }
 
 func (h *Handler) writeRawRelayResponse(c *gin.Context, resp *http.Response, routingBody []byte, input *database.UsageLogInput, diagnostic *rawRelayDiagnostic, started time.Time) {
+	if err := prepareRawRelayResponsePrivacy(resp); err != nil {
+		diagnostic.finishStream(c, &rawRelayUsageObserver{}, err, nil, c.Request.Context().Err())
+		input.StatusCode, input.ErrorMessage = http.StatusBadGateway, diagnostic.ResponseError
+		api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "Unable to read upstream response", api.ErrorTypeServer), http.StatusBadGateway)
+		return
+	}
 	for name, values := range rawRelayResponseHeaders(resp.Header) {
 		c.Writer.Header()[name] = append([]string(nil), values...)
 	}
-	for name := range resp.Trailer {
+	for name := range rawRelayResponseTrailers(resp) {
 		c.Writer.Header().Add("Trailer", name)
 	}
 	c.Status(resp.StatusCode)
@@ -226,7 +232,7 @@ func (h *Handler) writeRawRelayResponse(c *gin.Context, resp *http.Response, rou
 	requestContextErr := c.Request.Context().Err()
 	observer.finish()
 	diagnostic.finishStream(c, observer, bodyReadErr, bodyWriteErr, requestContextErr)
-	for name, values := range resp.Trailer {
+	for name, values := range rawRelayResponseTrailers(resp) {
 		c.Writer.Header()[http.TrailerPrefix+name] = append([]string(nil), values...)
 	}
 	applyRawRelayObservation(input, diagnostic, observer, routingBody)
@@ -283,6 +289,18 @@ func rawRelayClient(account *auth.Account, proxyURL string) (*http.Client, error
 }
 
 func rawRelayResponseHeaders(source http.Header) http.Header {
+	headers := rawRelayHopHeaders(source)
+	for name := range headers {
+		if rawRelayPrivateHeader(name) {
+			delete(headers, name)
+		}
+	}
+	return headers
+}
+
+// Requests retain the original forwarding contract. Downstream privacy must
+// never strip client identity or custom headers from the upstream request.
+func rawRelayHopHeaders(source http.Header) http.Header {
 	headers := source.Clone()
 	for _, value := range source.Values("Connection") {
 		for _, name := range strings.Split(value, ",") {
@@ -296,7 +314,7 @@ func rawRelayResponseHeaders(source http.Header) http.Header {
 }
 
 func rawRelayRequestHeaders(source http.Header, account *auth.Account, credential string) http.Header {
-	headers := rawRelayResponseHeaders(source)
+	headers := rawRelayHopHeaders(source)
 	for name := range headers {
 		lower := strings.ToLower(name)
 		if strings.HasPrefix(lower, "x-newapi-") || strings.HasPrefix(lower, "x-codex2api-") || strings.HasPrefix(lower, "x-forwarded-") {
@@ -311,7 +329,7 @@ func rawRelayRequestHeaders(source http.Header, account *auth.Account, credentia
 		headers.Set(name, value)
 	}
 	account.Mu().RUnlock()
-	headers = rawRelayResponseHeaders(headers)
+	headers = rawRelayHopHeaders(headers)
 	headers.Set("Authorization", "Bearer "+credential)
 	if _, ok := headers["User-Agent"]; !ok {
 		headers["User-Agent"] = []string{""}
