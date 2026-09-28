@@ -1,3 +1,4 @@
+import { serviceErrorSearchParams, type ServiceErrorPage, type ServiceErrorQuery } from './lib/serviceErrors.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
   AccountEventTrendPoint,
@@ -1131,6 +1132,9 @@ export const api = {
     const search = buildOpsErrorSearchParams(params)
     return request<OpsErrorSummary>(`/ops/errors/summary?${search.toString()}`)
   },
+  // 网关本地拒绝/失败（鉴权、限流、校验、策略、调度），与上游错误日志分开。
+  getServiceErrors: (query: ServiceErrorQuery, signal?: AbortSignal) =>
+    request<ServiceErrorPage>(`/ops/service-errors?${serviceErrorSearchParams(query)}`, { signal }),
   getOpsErrors: (params: {
     start: string
     end: string

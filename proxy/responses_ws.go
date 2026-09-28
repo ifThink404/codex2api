@@ -301,7 +301,7 @@ func (h *Handler) ResponsesWebSocket(c *gin.Context) {
 
 		if message.messageType != websocket.TextMessage && message.messageType != websocket.BinaryMessage {
 			apiErr := api.NewAPIError(api.ErrCodeInvalidRequest, "unsupported websocket message type", api.ErrorTypeInvalidRequest)
-			_ = writeResponsesWSError(conn, apiErr)
+			_ = writeAuditedResponsesWSError(c, conn, apiErr)
 			closeResponsesWS(conn, websocket.CloseUnsupportedData, apiErr.Message)
 			return
 		}
@@ -348,6 +348,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	// 一条 WS 连接上一个 gin.Context 要服务同一连接的多个轮次，而 turn-state 的
 	// 入站回带分类是「这一轮客户端带了什么」。不清就会把第一轮的分类粘到后面所有轮。
 	beginUsageTurnStateTurn(c)
+	resetServiceErrorFrame(c)
 	reservation, admitted := security.TryAcquireRequestMemory(int64(len(rawPayload)))
 	if !admitted {
 		apiErr := api.NewAPIError(api.ErrCodeServiceUnavailable, "Request memory capacity exhausted, please retry later", api.ErrorTypeServer)
@@ -356,7 +357,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}
 	defer reservation.Release()
 	if apiErr := h.refreshNewAPIWebSocketBinding(c, time.Now()); apiErr != nil {
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
 	}
 	// Each response.create is a separate logical request. Keep the verified
@@ -367,13 +368,13 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	resetUpstreamRequestTrace(c)
 	quotaParentRequest := c.Request
 	if err := h.refreshAPIKeyModelRequestQuotaTurn(c); err != nil {
-		return writeResponsesWSError(conn, apiKeyModelRequestError(err).apiErr)
+		return writeAuditedResponsesWSError(c, conn, apiKeyModelRequestError(err).apiErr)
 	}
 	defer func() { c.Request = quotaParentRequest }()
 	c.Set(promptGuardPolicyEventIDContextKey, policyEventID)
 	rawBody, model, apiErr := normalizeResponsesWebSocketClientPayload(rawPayload)
 	if apiErr != nil {
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
 	}
 	// WebSocket turn metadata is frame-local. Cache a complete zero-or-set
@@ -401,18 +402,18 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	rules["model"] = append(rules["model"], api.ModelValidator(supportedModels))
 	if result := validator.ValidateRequest(rules); !result.Valid {
 		apiErr = validator.ToAPIError()
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
 	}
 
 	if len(rawBody) > security.MaxRequestBodySize {
 		apiErr = api.NewAPIError(api.ErrCodeInvalidRequest, "请求体过大", api.ErrorTypeInvalidRequest)
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.CloseMessageTooBig, apiErr.Message, apiErr)
 	}
 	if err := security.ValidateModelName(model); err != nil {
 		apiErr = api.NewAPIError(api.ErrCodeInvalidParameter, "model 参数无效", api.ErrorTypeInvalidRequest)
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, err)
 	}
 	auditEndpoint := "/v1/responses"
@@ -443,7 +444,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
 		}
 		apiErr = api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest)
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, err)
 	}
 
@@ -461,7 +462,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
 		}
-		_ = writeResponsesWSError(conn, failure)
+		_ = writeAuditedResponsesWSError(c, conn, failure)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
 	}
 	respCacheOwner := responseCacheOwner(apiKeyID)
@@ -488,7 +489,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
 		}
 		apiErr = api.NewAPIError(api.ErrCodeInvalidParameter, err.Error(), api.ErrorTypeInvalidRequest)
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, err)
 	}
 	effectiveModel := effectiveRequestModel(codexBody, model)
@@ -512,7 +513,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			errType, errCode, closeCode = api.ErrorTypeInvalidRequest, api.ErrCodeInvalidParameter, websocket.ClosePolicyViolation
 		}
 		apiErr = api.NewAPIError(errCode, msg, errType)
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(closeCode, apiErr.Message, apiErr)
 	}
 	// Only a request that passed payload, prompt-policy and API-key admission may
@@ -542,7 +543,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
 		}
-		_ = writeResponsesWSError(conn, concurrencyErr)
+		_ = writeAuditedResponsesWSError(c, conn, concurrencyErr)
 		return newResponsesWSCloseError(websocket.CloseTryAgainLater, concurrencyErr.Message, concurrencyErr)
 	}
 	if releaseAPIKeyConcurrency != nil {
@@ -564,7 +565,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
 		}
 		apiErr = compactionProvenanceConflictAPIError()
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
 	}
 	if compactionAffinity.Known {
@@ -590,7 +591,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			apiErr = api.NewAPIError(api.ErrorCode(fmt.Sprintf("upstream_%d", lastFailure.status)), message, api.ErrorTypeUpstream)
 		}
 		if !timeoutTerminalWritten {
-			_ = writeResponsesWSError(conn, apiErr)
+			_ = writeAuditedResponsesWSError(c, conn, apiErr)
 			timeoutTerminalWritten = true
 		}
 		return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
@@ -682,7 +683,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 								}
 								return newResponsesWSCloseError(websocket.ClosePolicyViolation, "prompt blocked", nil)
 							}
-							_ = writeResponsesWSError(conn, contextErr)
+							_ = writeAuditedResponsesWSError(c, conn, contextErr)
 							return newResponsesWSCloseError(responsesWSContextCloseCode(contextErr), contextErr.Message, contextErr)
 						}
 					}
@@ -732,7 +733,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
-			_ = writeResponsesWSError(conn, apiErr)
+			_ = writeAuditedResponsesWSError(c, conn, apiErr)
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
 		}
 		// 选到账号才知道拦不拦；与四个 HTTP 入口对齐：在占 scope 并发位和绑定
@@ -773,7 +774,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		if failure := h.enforceInitialSessionAdmission(c, account, c.Request.Header, rawBody, sessionIdentity, turnHasBinding, time.Now()); failure != nil {
 			h.store.Release(account)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
-			_ = writeResponsesWSError(conn, failure)
+			_ = writeAuditedResponsesWSError(c, conn, failure)
 			return newResponsesWSCloseError(websocket.ClosePolicyViolation, failure.Message, failure)
 		}
 
@@ -817,7 +818,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				ttftGuard.Stop()
 				upstreamCancel()
 				h.store.Release(account)
-				_ = writeResponsesWSError(conn, contextErr)
+				_ = writeAuditedResponsesWSError(c, conn, contextErr)
 				return newResponsesWSCloseError(responsesWSContextCloseCode(contextErr), contextErr.Message, contextErr)
 			}
 			// 降级时快照已经算过一次，直接复用展开后的 input，不再二次过滤。
@@ -860,7 +861,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				ttftGuard.Stop()
 				h.store.Release(account)
 				// A model-specific budget must not close the connection for other models.
-				return writeResponsesWSError(conn, quotaErr.apiErr)
+				return writeAuditedResponsesWSError(c, conn, quotaErr.apiErr)
 			}
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
@@ -909,7 +910,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				}
 				apiErr = api.NewAPIError(api.ErrCodeUpstreamError, reqErr.Error(), api.ErrorTypeUpstream)
 				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
-				_ = writeResponsesWSError(conn, clientErr)
+				_ = writeAuditedResponsesWSError(c, conn, clientErr)
 				return newResponsesWSCloseError(websocket.CloseInternalServerErr, clientErr.Message, reqErr)
 			}
 			log.Printf("Responses WebSocket upstream request failed (attempt %d): %v", attempt+1, reqErr)
@@ -932,7 +933,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
-			_ = writeResponsesWSError(conn, clientErr)
+			_ = writeAuditedResponsesWSError(c, conn, clientErr)
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, reqErr)
 		}
 
@@ -983,7 +984,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if canDegradeContinuation() && isPreviousResponseNotFoundBody(errBody) {
 				if contextErr := degradeContinuation(fmt.Sprintf("upstream rejected previous_response_id on account %d", account.ID()), attempt+1); contextErr != nil {
 					h.store.Release(account)
-					_ = writeResponsesWSError(conn, contextErr)
+					_ = writeAuditedResponsesWSError(c, conn, contextErr)
 					return newResponsesWSCloseError(responsesWSContextCloseCode(contextErr), contextErr.Message, contextErr)
 				}
 				SyncCodexUsageState(h.store, account, resp)
@@ -1049,7 +1050,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 					return errResponsesWSClientGone
 				}
-				_ = writeResponsesWSError(conn, newAPIPolicyDecisionAPIError(metadata))
+				_ = writeAuditedResponsesWSError(c, conn, newAPIPolicyDecisionAPIError(metadata))
 				return nil
 			}
 
@@ -1058,7 +1059,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
-			_ = writeResponsesWSError(conn, clientErr)
+			_ = writeAuditedResponsesWSError(c, conn, clientErr)
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
 		}
 
@@ -1077,7 +1078,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				// 账号已在流内释放，未记失败也未解绑：剥离续链 id 后原地再试一次。
 				// turn-state 钉号同样走这条路：上游已经说找不到 id，换号无益，剥 id 才能继续。
 				if contextErr := degradeContinuation(fmt.Sprintf("upstream rejected previous_response_id on account %d", account.ID()), attempt+1); contextErr != nil {
-					_ = writeResponsesWSError(conn, contextErr)
+					_ = writeAuditedResponsesWSError(c, conn, contextErr)
 					return newResponsesWSCloseError(responsesWSContextCloseCode(contextErr), contextErr.Message, contextErr)
 				}
 				continue
@@ -1113,7 +1114,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 					return errResponsesWSClientGone
 				}
-				_ = writeResponsesWSError(conn, clientErr)
+				_ = writeAuditedResponsesWSError(c, conn, clientErr)
 				return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
 			}
 			if errors.Is(err, errResponsesWSClientGone) {
@@ -1514,7 +1515,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			h.store.Release(account)
 			return errResponsesWSClientGone
 		}
-		_ = writeResponsesWSError(conn, newAPIPolicyDecisionAPIError(metadata))
+		_ = writeAuditedResponsesWSError(c, conn, newAPIPolicyDecisionAPIError(metadata))
 		return nil
 	}
 	if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, viaWebsocket, downstreamWroteBeforeCommit, c.Request.Context().Err(), writeErr) && !account.OpenAIResponsesUsesUpstreamWebsocket() {
@@ -1667,7 +1668,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	}
 	if outcome.terminalLocal {
 		apiErr := api.NewAPIError(api.ErrCodeServerError, continuousRetryLocalFailureMessage, api.ErrorTypeServer)
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.CloseInternalServerErr, apiErr.Message, apiErr)
 	}
 	if c.Request.Context().Err() != nil {
@@ -1679,7 +1680,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 			return errResponsesWSClientGone
 		}
-		_ = writeResponsesWSError(conn, apiErr)
+		_ = writeAuditedResponsesWSError(c, conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
 	}
 	if writeErr != nil {
@@ -1703,7 +1704,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 			return errResponsesWSClientGone
 		}
-		_ = writeResponsesWSError(conn, clientErr)
+		_ = writeAuditedResponsesWSError(c, conn, clientErr)
 		return newResponsesWSCloseError(responsesWSCloseCodeForStatus(outcome.logStatusCode), clientErr.Message, apiErr)
 	}
 	if outcome.logStatusCode != http.StatusOK && !hideUpstreamErrors && len(terminalFailureClientPayload) > 0 && !downstreamWrote {
@@ -1724,7 +1725,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 			return errResponsesWSClientGone
 		}
-		_ = writeResponsesWSError(conn, clientErr)
+		_ = writeAuditedResponsesWSError(c, conn, clientErr)
 		return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
 	}
 	if outcome.logStatusCode != http.StatusOK && len(terminalFailurePayload) == 0 {
@@ -1739,7 +1740,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 			return errResponsesWSClientGone
 		}
-		_ = writeResponsesWSError(conn, clientErr)
+		_ = writeAuditedResponsesWSError(c, conn, clientErr)
 		return newResponsesWSCloseError(websocket.CloseInternalServerErr, clientErr.Message, apiErr)
 	}
 	return nil
@@ -1821,10 +1822,10 @@ func (h *Handler) evaluatePromptFilterWS(c *gin.Context, conn *websocket.Conn, r
 			metadata := buildNewAPIPolicyDecisionMetadataWithSecret(policyContext.Identity, decision, verdict, cfg, rawBody, endpoint, model, policyEventID, policyContext.VerificationSecret)
 			writeNewAPIPolicyDecisionHeaders(c, metadata)
 			writePromptCyberRestrictionHeaders(c, restriction)
-			_ = writeResponsesWSError(conn, promptCyberRestrictionAPIError(restriction, newAPIPolicyDecisionDetails(metadata)))
+			_ = writeAuditedResponsesWSError(c, conn, promptCyberRestrictionAPIError(restriction, newAPIPolicyDecisionDetails(metadata)))
 			return nil, true, true
 		}
-		_ = writeResponsesWSError(conn, promptCyberRestrictionAPIError(restriction, nil))
+		_ = writeAuditedResponsesWSError(c, conn, promptCyberRestrictionAPIError(restriction, nil))
 		return nil, true, false
 	}
 	// Keep disabled filters off the WebSocket request-body hot path too.
@@ -1858,10 +1859,10 @@ func (h *Handler) executePromptBlockWS(c *gin.Context, conn *websocket.Conn, pen
 	if policyContext, verified := h.verifyNewAPIPolicyContext(c, cfg.Advanced.NewAPI, nil); verified {
 		metadata := buildNewAPIPolicyDecisionMetadataWithSecret(policyContext.Identity, pending.evaluation.Decision, pending.evaluation.Verdict, cfg, pending.rawBody, pending.endpoint, pending.model, policyEventID, policyContext.VerificationSecret)
 		writeNewAPIPolicyDecisionHeaders(c, metadata)
-		_ = writeResponsesWSError(conn, newAPILocalPromptPolicyDecisionAPIError(metadata, cfg))
+		_ = writeAuditedResponsesWSError(c, conn, newAPILocalPromptPolicyDecisionAPIError(metadata, cfg))
 		return true, true
 	}
-	_ = writeResponsesWSError(conn, api.NewAPIError(errorCode, errorMessage, api.ErrorTypeInvalidRequest))
+	_ = writeAuditedResponsesWSError(c, conn, api.NewAPIError(errorCode, errorMessage, api.ErrorTypeInvalidRequest))
 	return true, false
 }
 

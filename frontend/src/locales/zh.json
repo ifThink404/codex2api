@@ -2237,7 +2237,8 @@
       "overview": "运行概览",
       "runtime": "运行时状态",
       "errors": "错误日志",
-      "scheduler": "调度面板"
+      "scheduler": "调度面板",
+      "serviceErrors": "服务错误"
     },
     "loadingTitle": "正在加载系统运维",
     "loadingDesc": "服务状态、连接池和实时流量正在同步。",
@@ -7125,6 +7126,53 @@
       "5": "周五",
       "6": "周六",
       "7": "周日"
+    }
+  },
+  "serviceErrors": {
+    "grouped": "收敛显示",
+    "individual": "逐条显示",
+    "groupHint": "按调用方、Key、接口、模型、状态及错误原因合并。次数覆盖整个筛选时间段；点击次数查看原始请求。",
+    "groupSummary": "{{groups}} 组 · {{total}} 次错误",
+    "occurrences": "{{count}} 次",
+    "viewOccurrences": "查看这组 {{count}} 次错误",
+    "firstSeen": "首次",
+    "lastSeen": "最近",
+    "latestDetails": "最近详情",
+    "groupDetails": "重复错误明细",
+    "groupDetailsDescription": "显示打开该分组时筛选范围内的原始请求，按最近发生排序。每条记录都可查看和复制完整诊断。",
+    "allStatuses": "全部状态",
+    "allStages": "全部阶段",
+    "search": "搜索",
+    "page": "第 {{page}} 页",
+    "columns": {
+      "time": "时间",
+      "count": "次数",
+      "status": "状态",
+      "stage": "发生阶段",
+      "request": "请求",
+      "identity": "调用方 / 请求 ID",
+      "error": "错误信息"
+    },
+    "title": "服务错误",
+    "description": "收集 Codex2API 本地拦截与服务异常；上游账号错误仍在「错误日志」中查看。",
+    "total": "服务错误总数",
+    "searchPlaceholder": "精确查询请求 ID / NewAPI 请求 ID",
+    "retention": "保留最近 {{days}} 天、最多约 {{rows}} 条，定期清理。不计入用量、费用或账号错误统计。",
+    "collector": "采集器（本次启动）：待写入 {{pending}} · 队列丢弃 {{dropped}} · 写入失败 {{failed}}",
+    "lossWarning": "存在未落库日志，请检查服务控制台与数据库状态",
+    "empty": "暂无服务错误",
+    "emptyDescription": "仅记录升级后到达 Codex2API 的服务错误，不补录历史；NewAPI 转发前的拦截不会出现在这里。",
+    "unidentified": "未识别调用方",
+    "details": "服务错误详情",
+    "detailsDescription": "只保留诊断字段，不采集请求正文、Authorization 或密钥。WS 状态码是错误对应的状态，不是升级握手状态。",
+    "copy": "复制 JSON",
+    "stages": {
+      "authentication": "入口鉴权",
+      "rate_limit": "额度 / 并发限制",
+      "policy": "策略拦截",
+      "dispatch": "账号调度",
+      "validation": "请求校验",
+      "internal": "服务内部"
     }
   }
 }

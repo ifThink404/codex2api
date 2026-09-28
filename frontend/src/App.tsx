@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard'
 const Accounts = lazy(() => import('./pages/Accounts'))
 const Operations = lazy(() => import('./pages/Operations'))
 const OperationsErrors = lazy(() => import('./pages/OperationsErrors'))
+const ServiceErrors = lazy(() => import('./pages/ServiceErrors'))
 const RuntimeStatus = lazy(() => import('./pages/RuntimeStatus'))
 const Proxies = lazy(() => import('./pages/Proxies'))
 const SchedulerBoard = lazy(() => import('./pages/SchedulerBoard'))
@@ -78,6 +79,7 @@ function AdminApp() {
           <Route path="/ops/overview" element={<Operations />} />
           <Route path="/ops/runtime" element={<RuntimeStatus />} />
           <Route path="/ops/errors" element={<OperationsErrors />} />
+          <Route path="/ops/service-errors" element={<ServiceErrors />} />
           <Route path="/ops/scheduler" element={<SchedulerBoard />} />
           <Route path="/usage" element={<Usage />} />
           <Route path="/channel-monitor" element={<ChannelMonitor />} />

@@ -399,8 +399,16 @@ func main() {
 	if err := configureTrustedProxies(r, cfg.TrustedProxies); err != nil {
 		log.Fatalf("配置可信代理失败: %v", err)
 	}
+	// handler 不再接收 cfg.APIKeys
+	// 从环境变量读取 Codex 画像与 Beta 配置。
+	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
+	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
+	handler.SetRuntimeCache(tc)
+
 	r.Use(api.RecoveryMiddleware())
 	r.Use(api.RequestContextMiddleware())
+	// 服务错误采集放在限流/请求体校验之前，才能记录这些网关本地拒绝。
+	r.Use(handler.ServiceErrorMiddleware())
 	r.Use(api.VersionMiddleware())
 	security.MaxRequestBodySize = cfg.MaxRequestBodySize
 	security.ConfigureRequestMemoryBudget(cfg.RequestMemoryBudgetBytes)
@@ -422,11 +430,6 @@ func main() {
 	r.Use(loggerMiddleware())
 	r.Use(security.SecurityHeadersMiddleware())
 
-	// handler 不再接收 cfg.APIKeys
-	// 从环境变量读取 Codex 画像与 Beta 配置。
-	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
-	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
-	handler.SetRuntimeCache(tc)
 	proxy.ConfigureExcelBPSReplay(tc)
 	defer handler.CloseAPIKeyAuthCache()
 	adminHandler.SetAPIKeyAuthCacheHandler(handler)

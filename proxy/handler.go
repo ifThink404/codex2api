@@ -3242,7 +3242,10 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 	return func(c *gin.Context) {
 		attachUserAgentAudit(c)
 		attachWsAcquireAudit(c)
-		attachUpstreamTrace(c, h.store)
+		// ServiceErrorMiddleware may already have attached the request trace.
+		if upstreamTraceFromContext(c.Request.Context()) == nil {
+			attachUpstreamTrace(c, h.store)
+		}
 		// 如果没有配置任何密钥
 		hasKeys, presenceErr := h.hasAnyKeysWithError()
 		if presenceErr != nil {
@@ -3253,6 +3256,7 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 		if !hasKeys {
 			if allowAnonymous {
 				// 显式允许匿名访问（旧行为，仅在 CODEX_ALLOW_ANONYMOUS=true 时启用）
+				markServiceErrorAuthenticated(c)
 				c.Next()
 				return
 			}
@@ -3296,6 +3300,7 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 			c.Abort()
 			return
 		}
+		noteServiceErrorAPIKey(c, apiKeyRow.ID, strings.TrimSpace(apiKeyRow.Name))
 		if !apiKeyRow.Enabled {
 			maskedKey := security.MaskAPIKey(key)
 			security.SecurityAuditLog("AUTH_FAILED_DISABLED_KEY", fmt.Sprintf("path=%s ip=%s key=%s", c.Request.URL.Path, c.ClientIP(), maskedKey))
@@ -3324,6 +3329,7 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 		c.Set(contextAPIKeyRow, apiKeyRow)
 		h.attachAPIKeyModelRequestQuota(c, false)
 		c.Set("apiKey", key)
+		markServiceErrorAuthenticated(c)
 		if h.enforceRequiredNewAPIIdentityAtIngress(c) {
 			c.Abort()
 			return

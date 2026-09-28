@@ -2237,7 +2237,8 @@
       "overview": "Overview",
       "runtime": "Runtime",
       "errors": "Error Logs",
-      "scheduler": "Scheduler"
+      "scheduler": "Scheduler",
+      "serviceErrors": "Service Errors"
     },
     "loadingTitle": "Loading Operations",
     "loadingDesc": "Syncing service status, connection pools, and traffic.",
@@ -7128,6 +7129,53 @@
       "5": "Friday",
       "6": "Saturday",
       "7": "Sunday"
+    }
+  },
+  "serviceErrors": {
+    "grouped": "Grouped",
+    "individual": "Individual",
+    "groupHint": "Groups matching caller, key, endpoint, model, status and cause across the filtered time range. Click a count to inspect original requests.",
+    "groupSummary": "{{groups}} groups · {{total}} errors",
+    "occurrences": "{{count}} occurrences",
+    "viewOccurrences": "View these {{count}} errors",
+    "firstSeen": "First",
+    "lastSeen": "Latest",
+    "latestDetails": "Latest details",
+    "groupDetails": "Repeated error details",
+    "groupDetailsDescription": "Original requests within the filters captured when opening this group, newest first. Inspect and copy the full diagnostics for each request.",
+    "title": "Service errors",
+    "description": "Local Codex2API rejections and service failures. Upstream account failures remain in Error logs.",
+    "total": "Service errors",
+    "allStatuses": "All statuses",
+    "allStages": "All stages",
+    "search": "Search",
+    "page": "Page {{page}}",
+    "searchPlaceholder": "Exact request ID / NewAPI request ID",
+    "retention": "Retains up to {{days}} days and approximately {{rows}} recent records, pruned periodically. Excluded from usage, billing and account error statistics.",
+    "collector": "Collector (since startup): pending {{pending}} · dropped {{dropped}} · write failures {{failed}}",
+    "lossWarning": "Some logs were not persisted; check the service console and database",
+    "empty": "No service errors",
+    "emptyDescription": "Only collects service errors reaching Codex2API after this upgrade. No historical backfill or NewAPI pre-forwarding rejections.",
+    "unidentified": "Unidentified caller",
+    "details": "Service error details",
+    "detailsDescription": "Diagnostics only; no request body, Authorization or keys. WS status codes describe the error, not the upgrade handshake.",
+    "copy": "Copy JSON",
+    "columns": {
+      "time": "Time",
+      "count": "Count",
+      "status": "Status",
+      "stage": "Stage",
+      "request": "Request",
+      "identity": "Caller / request ID",
+      "error": "Error"
+    },
+    "stages": {
+      "authentication": "Authentication",
+      "rate_limit": "Quota / concurrency",
+      "policy": "Policy rejection",
+      "dispatch": "Dispatch",
+      "validation": "Validation",
+      "internal": "Internal service"
     }
   }
 }

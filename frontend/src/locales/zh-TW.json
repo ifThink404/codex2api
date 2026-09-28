@@ -2238,5 +2238,57 @@
       "6": "週六",
       "7": "週日"
     }
+  },
+  "serviceErrors": {
+    "grouped": "收斂顯示",
+    "individual": "逐筆顯示",
+    "groupHint": "依呼叫方、Key、端點、模型、狀態及錯誤原因合併。次數涵蓋整個篩選時段；點選次數查看原始請求。",
+    "groupSummary": "{{groups}} 組 · {{total}} 次錯誤",
+    "occurrences": "{{count}} 次",
+    "viewOccurrences": "查看這組 {{count}} 次錯誤",
+    "firstSeen": "首次",
+    "lastSeen": "最近",
+    "latestDetails": "最近詳情",
+    "groupDetails": "重複錯誤明細",
+    "groupDetailsDescription": "顯示開啟分組時篩選範圍內的原始請求，依最近發生排序。每筆記錄皆可查看及複製完整診斷。",
+    "allStatuses": "全部狀態",
+    "allStages": "全部階段",
+    "search": "搜尋",
+    "page": "第 {{page}} 頁",
+    "columns": {
+      "time": "時間",
+      "count": "次數",
+      "status": "狀態",
+      "stage": "發生階段",
+      "request": "請求",
+      "identity": "呼叫方 / 請求 ID",
+      "error": "錯誤資訊"
+    },
+    "title": "服務錯誤",
+    "description": "收集 Codex2API 本地攔截與服務異常；上游帳號錯誤仍在「錯誤日誌」中查看。",
+    "total": "服務錯誤總數",
+    "searchPlaceholder": "精確查詢請求 ID / NewAPI 請求 ID",
+    "retention": "保留最近 {{days}} 天、最多約 {{rows}} 筆，定期清理。不計入用量、費用或帳號錯誤統計。",
+    "collector": "採集器（本次啟動）：待寫入 {{pending}} · 佇列丟棄 {{dropped}} · 寫入失敗 {{failed}}",
+    "lossWarning": "存在未寫入的日誌，請檢查服務控制台與資料庫狀態",
+    "empty": "暫無服務錯誤",
+    "emptyDescription": "僅記錄升級後到達 Codex2API 的服務錯誤，不補錄歷史；NewAPI 轉發前的攔截不會出現在這裡。",
+    "unidentified": "未識別呼叫方",
+    "details": "服務錯誤詳情",
+    "detailsDescription": "只保留診斷欄位，不採集請求正文、Authorization 或金鑰。WS 狀態碼是錯誤對應的狀態，不是升級握手狀態。",
+    "copy": "複製 JSON",
+    "stages": {
+      "authentication": "入口鑑權",
+      "rate_limit": "額度 / 並發限制",
+      "policy": "策略攔截",
+      "dispatch": "帳號調度",
+      "validation": "請求校驗",
+      "internal": "服務內部"
+    }
+  },
+  "ops": {
+    "tabs": {
+      "serviceErrors": "服務錯誤"
+    }
   }
 }
