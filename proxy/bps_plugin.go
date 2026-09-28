@@ -30,19 +30,29 @@ const BPSPluginID = "bps"
 // BPSConfig is the plugin config JSON (transport_plugins.config). Zero values
 // mean the documented defaults.
 type BPSConfig struct {
-	WordUserAgent                   string `json:"word_user_agent,omitempty"`
-	RoundConvergenceLimit           int    `json:"round_convergence_limit,omitempty"`
-	RoundTaskLifetimeHours          int    `json:"round_task_lifetime_hours,omitempty"`
-	TurnTaskLifetimeHours           int    `json:"turn_task_lifetime_hours,omitempty"`
-	TurnRoundLimit                  int    `json:"turn_round_limit,omitempty"`
-	AttachmentRequestConcurrency    int    `json:"attachment_request_concurrency,omitempty"`
-	AttachmentInstanceConcurrency   int    `json:"attachment_instance_concurrency,omitempty"`
-	AttachmentAccountConcurrency    int    `json:"attachment_account_concurrency,omitempty"`
-	Attachment429Fallback           bool   `json:"attachment_429_fallback,omitempty"`
+	WordUserAgent                 string `json:"word_user_agent,omitempty"`
+	RoundConvergenceLimit         int    `json:"round_convergence_limit,omitempty"`
+	RoundTaskLifetimeHours        int    `json:"round_task_lifetime_hours,omitempty"`
+	TurnTaskLifetimeHours         int    `json:"turn_task_lifetime_hours,omitempty"`
+	TurnRoundLimit                int    `json:"turn_round_limit,omitempty"`
+	AttachmentRequestConcurrency  int    `json:"attachment_request_concurrency,omitempty"`
+	AttachmentInstanceConcurrency int    `json:"attachment_instance_concurrency,omitempty"`
+	AttachmentAccountConcurrency  int    `json:"attachment_account_concurrency,omitempty"`
+	Attachment429Fallback         bool   `json:"attachment_429_fallback,omitempty"`
 	// ExcludeFailuresFromNativeHealth keeps BPS failures out of native
 	// account health and cooldown. Absent means on, matching upstream's
 	// official BPS, which never reports its provider failures.
 	ExcludeFailuresFromNativeHealth *bool `json:"exclude_failures_from_native_health,omitempty"`
+	// PersistHeuristicAffinity stores the task affinity of heuristic
+	// (conversation-prefix) seeds in the database, shared by every replica.
+	// Absent means on, as in fj-server; off keeps them in a local LRU.
+	PersistHeuristicAffinity *bool `json:"persist_heuristic_affinity,omitempty"`
+}
+
+// PersistsHeuristicAffinity reports whether heuristic seeds are bound in the
+// database.
+func (c BPSConfig) PersistsHeuristicAffinity() bool {
+	return c.PersistHeuristicAffinity == nil || *c.PersistHeuristicAffinity
 }
 
 // SparesNativeHealth reports whether BPS failures stay out of native account

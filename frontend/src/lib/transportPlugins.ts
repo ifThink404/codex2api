@@ -30,7 +30,7 @@ export function parsePluginConfigText(text: string): Record<string, unknown> | n
 // BPS plugin config (proxy BPSConfig). 0 / empty means the server default.
 export type PluginConfigField =
   | { key: string; kind: 'number'; min: number; max: number }
-  | { key: string; kind: 'boolean'; defaultValue?: boolean }
+  | { key: string; kind: 'boolean'; defaultValue?: boolean; hint?: boolean }
   | { key: string; kind: 'text' }
 
 export const bpsConfigFields: PluginConfigField[] = [
@@ -43,7 +43,8 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'attachment_instance_concurrency', kind: 'number', min: 0, max: 1024 },
   { key: 'attachment_account_concurrency', kind: 'number', min: 0, max: 1024 },
   { key: 'attachment_429_fallback', kind: 'boolean' },
-  { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true },
+  { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
+  { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
 ]
 
 // pluginConfigBoolean is a boolean field's effective value: absent means the

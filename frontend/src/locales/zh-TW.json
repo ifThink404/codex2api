@@ -2340,7 +2340,8 @@
       "attachment_instance_concurrency": "附件上傳：實例並行",
       "attachment_account_concurrency": "附件上傳：單一帳號並行",
       "attachment_429_fallback": "附件 429 本機降級（需 pdftotext/libreoffice）",
-      "exclude_failures_from_native_health": "BPS 失敗不計入原生帳號健康"
+      "exclude_failures_from_native_health": "BPS 失敗不計入原生帳號健康",
+      "persist_heuristic_affinity": "跨實例保留推斷會話的帳號親和"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2353,6 +2354,10 @@
     "forceOff": "強制關閉",
     "descriptions": {
       "bps": "適用於 Codex OAuth 帳號的 Basis Points 通道（Word、Excel、Sheets、PowerPoint 類型）。"
+    },
+    "bpsConfigHints": {
+      "exclude_failures_from_native_health": "開啟時，BPS 的 4xx/5xx、附件上傳、串流內失敗和限流不降低帳號原生健康度，也不觸發冷卻；憑證失效、帳號停用等帳號級訊號仍會上報。",
+      "persist_heuristic_affinity": "開啟時，依對話開頭推斷的會話在所有實例上沿用同一帳號；關閉後只持久化用戶端 task_id，開頭相同的無關對話不會共用帳號，但失去跨實例黏性。"
     }
   },
   "logAgent": {

@@ -38,6 +38,9 @@ test('boolean config fields show the server default when absent', () => {
   assert.equal(pluginConfigBoolean({}, exclude), true, 'native-health exclusion defaults on, as on the server')
   assert.equal(pluginConfigBoolean({ exclude_failures_from_native_health: false }, exclude), false)
   assert.equal(pluginConfigBoolean({}, fallback), false, 'the 429 fallback defaults off')
+  const persist = bpsConfigFields.find(field => field.key === 'persist_heuristic_affinity')
+  assert.equal(pluginConfigBoolean({}, persist), true, 'heuristic affinity persists by default, as in fj')
+  assert.ok(exclude.hint && persist.hint, 'both tradeoff switches explain themselves')
   const server = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
   assert.match(server, /ExcludeFailuresFromNativeHealth == nil \|\| \*c\.ExcludeFailuresFromNativeHealth/)
 })
@@ -64,7 +67,10 @@ test('plugin i18n keys exist in zh, en and zh-TW', () => {
   const used = new Set([...page.matchAll(/t\('plugins\.([a-zA-Z.]+)'/g)].map(match => match[1]))
   for (const view of PLUGIN_VIEWS) used.add(`views.${view}`)
   for (const dir of ['request', 'response', 'error']) used.add(`directions.${dir}`)
-  for (const field of bpsConfigFields) used.add(`bpsConfig.${field.key}`)
+  for (const field of bpsConfigFields) {
+    used.add(`bpsConfig.${field.key}`)
+    if (field.hint) used.add(`bpsConfigHints.${field.key}`)
+  }
   for (const lang of ['zh', 'en', 'zh-TW']) {
     const locale = JSON.parse(read(`locales/${lang}.json`))
     assert.ok(locale.nav.plugins, `${lang} nav.plugins`)

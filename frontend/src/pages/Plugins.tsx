@@ -266,7 +266,7 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
         {typedFields ? (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {typedFields.map((field) => (
-              <Field key={field.key} label={t(`plugins.bpsConfig.${field.key}`)}>
+              <Field key={field.key} label={t(`plugins.bpsConfig.${field.key}`)} help={field.kind === 'boolean' && field.hint ? t(`plugins.bpsConfigHints.${field.key}`) : undefined}>
                 {field.kind === 'number' ? (
                   <DraftNumberInput
                     value={typeof config[field.key] === 'number' ? (config[field.key] as number) : 0}

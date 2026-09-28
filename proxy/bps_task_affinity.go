@@ -14,9 +14,12 @@ type bpsTaskAffinityDiagnostic struct {
 	PreferredAccountID int64  `json:"preferred_account_id,omitempty"`
 	SelectedAccountID  int64  `json:"selected_account_id,omitempty"`
 	Persisted          bool   `json:"persisted"`
-	BindingRevision    int64  `json:"binding_revision,omitempty"`
-	revision           int64
-	turnEpoch          string
+	// Store is where the binding lives: database, or local for heuristic
+	// seeds when persist_heuristic_affinity is off.
+	Store           string `json:"store,omitempty"`
+	BindingRevision int64  `json:"binding_revision,omitempty"`
+	revision        int64
+	turnEpoch       string
 }
 
 // Turn isolation follows an authoritative migration segment first. Requests
@@ -57,13 +60,17 @@ func bpsTaskAffinityAccount(account *auth.Account, model string) bool {
 // task_id itself is account-scoped and can only be resolved after selection.
 // Never promote this heuristic into a fingerprint, owner, slot, or strict pin.
 func (h *Handler) bpsPreferredTaskAccount(ctx context.Context, state *inferredBPSSession, model string) int64 {
-	if state == nil || state.seed == "" || h == nil || h.db == nil || h.store == nil || h.store.GetAffinityMode() == "off" {
+	if state == nil || state.seed == "" || h == nil || h.store == nil || h.store.GetAffinityMode() == "off" {
 		return 0
 	}
-	diagnostic := &bpsTaskAffinityDiagnostic{TaskKey: state.seed, Result: "new_task", turnEpoch: NewUpstreamSessionUUID()}
+	affinities, where := h.bpsTaskAffinityStoreFor(state)
+	if affinities == nil {
+		return 0
+	}
+	diagnostic := &bpsTaskAffinityDiagnostic{TaskKey: state.seed, Result: "new_task", Store: where, turnEpoch: NewUpstreamSessionUUID()}
 	state.affinity = diagnostic
 	lookupCtx, cancel := context.WithTimeout(ctx, time.Second)
-	record, err := h.db.ReadBPSTaskAffinity(lookupCtx, codexIdentityDigest("bps-task-affinity-v1", state.seed))
+	record, err := affinities.ReadBPSTaskAffinity(lookupCtx, codexIdentityDigest("bps-task-affinity-v1", state.seed))
 	cancel()
 	if err != nil {
 		diagnostic.Result = "lookup_failed"
@@ -78,7 +85,11 @@ func (h *Handler) bpsPreferredTaskAccount(ctx context.Context, state *inferredBP
 }
 
 func (h *Handler) rememberBPSTaskAccount(ctx context.Context, state *inferredBPSSession, account *auth.Account, model string) {
-	if state == nil || state.affinity == nil || h.db == nil || account == nil || state.affinity.Result == "lookup_failed" {
+	if state == nil || state.affinity == nil || account == nil || state.affinity.Result == "lookup_failed" {
+		return
+	}
+	affinities, where := h.bpsTaskAffinityStoreFor(state)
+	if affinities == nil {
 		return
 	}
 	diagnostic := state.affinity
@@ -89,7 +100,8 @@ func (h *Handler) rememberBPSTaskAccount(ctx context.Context, state *inferredBPS
 		return
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, time.Second)
-	current, err := h.db.UpdateBPSTaskAffinity(writeCtx, codexIdentityDigest("bps-task-affinity-v1", state.seed), diagnostic.revision, account.ID())
+	diagnostic.Store = where
+	current, err := affinities.UpdateBPSTaskAffinity(writeCtx, codexIdentityDigest("bps-task-affinity-v1", state.seed), diagnostic.revision, account.ID())
 	cancel()
 	if err == nil && current.AccountID == account.ID() {
 		diagnostic.BindingRevision, diagnostic.revision = current.Revision, current.Revision
