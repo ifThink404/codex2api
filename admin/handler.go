@@ -45,6 +45,8 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	usageLogExportBusy atomic.Bool
+
 	imageQueue         *imageJobQueue
 	qualityTestContext context.Context
 	qualityTestWG      sync.WaitGroup
@@ -1259,6 +1261,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/usage/api-keys", h.GetAPIKeyTokenStats)
 	api.GET("/usage/api-keys/:id/accounts", h.GetAPIKeyAccountStats)
 	api.GET("/usage/logs", h.GetUsageLogs)
+	api.POST("/usage/logs/export", h.ExportUsageLogs)
 	api.GET("/usage/logs/error-summary", h.GetUsageLogsErrorSummary)
 	api.GET("/usage/chart-data", h.GetChartData)
 	api.DELETE("/usage/logs", h.ClearUsageLogs)

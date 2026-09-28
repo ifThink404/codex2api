@@ -1218,6 +1218,14 @@ export const api = {
     if (params.pageSize) searchParams.set('page_size', String(params.pageSize))
     return request<UsageLogsPagedResponse>(`/usage/logs?${searchParams.toString()}`)
   },
+  // 确认后下载使用日志 JSON：filtered 复用列表筛选（必须带时间范围），all 导出全部保留记录。
+  downloadUsageLogs: (scope: 'filtered' | 'all', params?: UsageLogQueryParams, signal?: AbortSignal) => {
+    if (scope === 'filtered' && !params) throw new Error('Filtered export requires a time range')
+    const search = scope === 'filtered' && params ? buildUsageLogSearchParams(params) : new URLSearchParams()
+    search.set('scope', scope)
+    search.set('confirmed', 'true')
+    return requestBlob(`/usage/logs/export?${search.toString()}`, { method: 'POST', signal })
+  },
   getUsageLogsErrorSummary: (params: UsageLogQueryParams) => {
     const searchParams = buildUsageLogSearchParams(params)
     return request<OpsErrorSummary>(`/usage/logs/error-summary?${searchParams.toString()}`)

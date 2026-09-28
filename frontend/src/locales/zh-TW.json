@@ -1685,6 +1685,17 @@
     "cyberRiskSubjectEvents": "{{count}} 筆事件"
   },
   "usage": {
+    "exportFiltered": "按篩選下載",
+    "exportAll": "全部下載",
+    "exportFilteredTitle": "確認下載篩選日誌？",
+    "exportAllTitle": "確認下載全部使用日誌？",
+    "exportFilteredDesc": "下載點擊時的時間範圍及所有篩選條件下的全部符合記錄，不限目前頁面（最多 200,000 筆）。JSON 欄位與日誌列表一致：請求類型、錯誤、用量、計費及用戶端/上游資訊。",
+    "exportAllDesc": "忽略目前時間、渠道及所有篩選條件，下載資料庫中仍保留的全部使用日誌（最多最新 200,000 筆），包括失敗、取消及內部請求。不會還原已清理日誌；資料量大時建議按篩選下載。",
+    "exportPrivacy": "檔案保留使用者識別、信箱、IP 和用戶端 UA 以便排查。疑似憑據的內容會遮蔽，不匯出請求/回應本文；分享前請再次檢查。僅下載至本機，不會自動上傳。",
+    "exportConfirm": "確認下載 JSON",
+    "exportCancel": "取消下載",
+    "exportSuccess": "檔案已產生，瀏覽器已開始儲存",
+    "exportFailed": "下載使用日誌失敗：{{error}}",
     "searchLogs": "搜尋錯誤、模型、端點、帳號、IP、用戶端 UA 或 API Key…",
     "usageAnalysis": "用量分析",
     "modelStatsDesc": "主要模型的請求、Token 與金額分布。",

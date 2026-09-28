@@ -21,6 +21,7 @@ import { UsageTurnState, usageTurnStateKind } from '../components/UsageTurnState
 import { UsageWindowNumberBadge } from '../components/UsageWindowNumberBadge'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
+import { confirmedUsageLogDownload, saveUsageLogExport } from '../lib/usageLogExport'
 import { useToast } from '../hooks/useToast'
 import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import type { APIKeyRow, OpsErrorSummary, SystemSettings, UsageAPIKeyStat, UsageEndpointStat, UsageFeatureStats, UsageLog, UsageModelStat, UsageStats, PromptFilterLog, PromptPolicyIncidentDetailResponse } from '../types'
@@ -42,7 +43,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
+import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical, Download } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 
@@ -1661,6 +1662,9 @@ export default function Usage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = usePersistedPageSize('usage_logs', 20, DEFAULT_PAGE_SIZE_OPTIONS)
   const [clearing, setClearing] = useState(false)
+  const [exporting, setExporting] = useState<'filtered' | 'all' | null>(null)
+  const exportController = useRef<AbortController | null>(null)
+  useEffect(() => () => exportController.current?.abort(), [])
   const [timeRange, setTimeRange] = useState<UsageTimeRangeKey>(getInitialUsageRange)
   const [customRange, setCustomRange] = useState<CustomRange | null>(getInitialUsageCustomRange)
   const [showCustomPopover, setShowCustomPopover] = useState(false)
@@ -1801,6 +1805,42 @@ export default function Usage() {
     }
     void reloadSilently()
   }, [buildDimensionFilterParams, reloadSilently])
+
+  const downloadLogs = async (scope: 'filtered' | 'all') => {
+    if (exportController.current) return
+    const controller = new AbortController()
+    exportController.current = controller
+    setExporting(scope)
+    const params = scope === 'filtered' ? buildLogFilterParams() : undefined
+    try {
+      const saved = await confirmedUsageLogDownload(
+        () => confirm({
+          title: t(scope === 'filtered' ? 'usage.exportFilteredTitle' : 'usage.exportAllTitle'),
+          description: (
+            <div className="space-y-3">
+              <p>{t(scope === 'filtered' ? 'usage.exportFilteredDesc' : 'usage.exportAllDesc')}</p>
+              {params && (
+                <p className="break-all font-mono text-xs text-muted-foreground">{params.start} — {params.end}</p>
+              )}
+              <p className="text-sm text-amber-700 dark:text-amber-300">{t('usage.exportPrivacy')}</p>
+            </div>
+          ),
+          confirmText: t('usage.exportConfirm'),
+          tone: 'warning',
+        }),
+        () => api.downloadUsageLogs(scope, params, controller.signal),
+        (blob) => saveUsageLogExport(blob, scope),
+      )
+      if (saved) showToast(t('usage.exportSuccess'))
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        showToast(t('usage.exportFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
+      }
+    } finally {
+      exportController.current = null
+      setExporting(null)
+    }
+  }
 
   // 服务端分页加载日志
   const loadLogs = useCallback(async () => {
@@ -2260,8 +2300,21 @@ export default function Usage() {
                   />
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
                 <span className="whitespace-nowrap text-xs text-muted-foreground">{logsLoading ? t('common.loading') : t('usage.recordsCount', { count: logsTotal })}</span>
+                <Button type="button" variant="outline" size="sm" disabled={exporting !== null || clearing} onClick={() => void downloadLogs('filtered')}>
+                  {exporting === 'filtered' ? <RefreshCw className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+                  {t('usage.exportFiltered')}
+                </Button>
+                <Button type="button" variant="outline" size="sm" disabled={exporting !== null || clearing} onClick={() => void downloadLogs('all')}>
+                  {exporting === 'all' ? <RefreshCw className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+                  {t('usage.exportAll')}
+                </Button>
+                {exporting !== null && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => exportController.current?.abort()}>
+                    {t('usage.exportCancel')}
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -2279,7 +2332,7 @@ export default function Usage() {
                 <Button
                   variant="destructive"
                   size="sm"
-                  disabled={clearing || logs.length === 0}
+                  disabled={clearing || exporting !== null || logs.length === 0}
                   onClick={async () => {
                     const confirmed = await confirm({
                       title: t('usage.clearLogsTitle'),

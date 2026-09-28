@@ -6705,8 +6705,23 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 
 // ListUsageLogsByFilter 按过滤条件查询请求日志，不分页，用于导出。
 func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*UsageLog, error) {
+	logs := []*UsageLog{}
+	err := db.WalkUsageLogsByFilter(ctx, f, func(l *UsageLog) error {
+		logs = append(logs, l)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return logs, nil
+}
+
+// WalkUsageLogsByFilter streams the rows ListUsageLogsByFilter would return,
+// newest first, so large exports never hold the whole result in memory.
+// Returning an error from visit stops the walk with that error.
+func (db *DB) WalkUsageLogsByFilter(ctx context.Context, f UsageLogFilter, visit func(*UsageLog) error) error {
 	where, args := db.buildUsageLogWhere(f)
-	where += ` ORDER BY u.created_at DESC`
+	where += ` ORDER BY u.created_at DESC, u.id DESC`
 
 	query := `SELECT u.id, u.account_id, COALESCE(u.client_ip, ''), u.endpoint, u.model, COALESCE(u.effective_model, ''), COALESCE(u.upstream_response_model, ''), u.upstream_model_mismatch, u.prompt_tokens, u.completion_tokens, u.total_tokens, u.status_code, u.duration_ms,
 			COALESCE(u.input_tokens, 0), COALESCE(u.output_tokens, 0), COALESCE(u.reasoning_tokens, 0),
@@ -6727,11 +6742,10 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 
 	rows, err := db.conn.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 
-	var logs []*UsageLog
 	for rows.Next() {
 		l := &UsageLog{}
 		var credentialRaw interface{}
@@ -6745,7 +6759,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.TurnStateOverridden, &l.TurnStateRewriteNote, &l.Channel,
 			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.InjectedTurnState, &l.UpstreamTurnState, &l.WindowNumber, &l.TurnStateLength, &l.TurnStateEcho, &l.TurnStateStripped, &l.DaybreakProgram,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
-			return nil, err
+			return err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
 		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
@@ -6755,15 +6769,14 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 		}
 		l.CreatedAt, err = parseDBTimeValue(createdAtRaw)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		l.populateBillingBreakdown()
-		logs = append(logs, l)
+		if err := visit(l); err != nil {
+			return err
+		}
 	}
-	if logs == nil {
-		logs = []*UsageLog{}
-	}
-	return logs, rows.Err()
+	return rows.Err()
 }
 
 // ClearUsageLogs 清空所有使用日志（先快照累计值到基线表）
