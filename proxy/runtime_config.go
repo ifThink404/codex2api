@@ -135,6 +135,9 @@ type RuntimeSettings struct {
 	// reports loose upstream timing in response headers at normal commit only;
 	// it never enables early metadata passthrough.
 	CodexPreflightSSEPassthrough bool
+	// CodexEarlySSEPassthrough forwards Responses lifecycle and metadata events
+	// before model output. Continuous retry keeps its private attempt buffer.
+	CodexEarlySSEPassthrough bool
 	// FirstTokenExcludesWsAcquire 落库的 first_token_ms 是否扣除本次 attempt 的
 	// WS 取连耗时（默认 false，保持含取连的原口径；原始值 = first_token_ms + ws_acquire_ms）。
 	FirstTokenExcludesWsAcquire bool
@@ -417,6 +420,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.OverflowAutoCompact = settings.OverflowAutoCompactEnabled
 		next.CompactViaResponses = settings.CompactViaResponsesEnabled
 		next.CodexPreflightSSEPassthrough = settings.CodexPreflightSSEPassthroughEnabled
+		next.CodexEarlySSEPassthrough = settings.CodexEarlySSEPassthroughEnabled
 		next.FirstTokenExcludesWsAcquire = settings.FirstTokenExcludesWsAcquire
 		next.CodexContinueThinking = settings.CodexContinueThinkingEnabled
 		next.CodexContinueMaxRounds = settings.CodexContinueMaxRounds

@@ -1257,9 +1257,8 @@ func (h *Handler) streamResponsesWSUpstream(
 	// preflight passthrough，这两帧会先写出并置位 wroteAnyBody。若用它们做
 	// 「首包前」判断，previous_response_not_found 降级在真实上游上永远进不去（#541）。
 	contentTokenSeen := false
-	preflightSettings := CurrentRuntimeSettings()
-	preflightSettings.ContinuousRetryPolicy = continuousRetryPolicy
-	preflightPassthrough := continuousRetryPreflightPassthrough(preflightSettings)
+	// Early SSE delivery is an HTTP option. WebSocket messages retain their
+	// existing pre-content retry boundary.
 	gotTerminal := false
 	deltaCharCount := 0
 	var readErr error
@@ -1411,7 +1410,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			// previous_response_not_found 的先导 error 帧同样缓冲：它按 invalid_request
 			// 分类不属于可重试帧，立即写出会置位 wroteAnyBody，随后的 response.failed
 			// 就进不了下面的续链降级分支。
-			shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
+			shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, false) ||
 				(!contentTokenSeen && !wroteAnyBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy)) ||
 				(allowContinuationDegrade && !contentTokenSeen && !gotTerminal && eventType == "error" && isPreviousResponseNotFoundBody(data))
 			if shouldDefer {

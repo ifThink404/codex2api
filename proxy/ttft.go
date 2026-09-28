@@ -41,6 +41,7 @@ func isFirstTokenEvent(eventType string) bool {
 
 // isPreContentLifecycleEvent 判断一个 SSE 事件是否为纯前置生命周期帧
 // （response.created / response.in_progress）——它们不携带任何模型产出。
+// 默认暂存这些事件；显式开启 CodexEarlySSEPassthrough 后允许提前提交响应。
 //
 // 这是唯一可以在"流可见地开始"之前短暂缓冲的帧：缓冲它们，才能在首个真实
 // token 到来前遇到可重试的上游故障时，静默换号重试且客户端不会看到"假开始"。

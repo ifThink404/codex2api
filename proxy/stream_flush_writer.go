@@ -187,6 +187,20 @@ func appendSSEData(buf *bytes.Buffer, data []byte) {
 	buf.Write(sseDataSuffix)
 }
 
+// Explicit early delivery must not leave response.created in the coalescing
+// buffer waiting for a later token. Output filtering still uses its normal path.
+func writeResponsesSSEData(streamWriter *streamFlushWriter, pending *bytes.Buffer, data []byte, shouldDefer, flushEarly bool) (bool, error) {
+	if !flushEarly || streamWriter == nil {
+		return writeDeferredSSEData(streamWriter, pending, data, shouldDefer)
+	}
+	before := streamWriter.deliveredBytes()
+	_, err := writeDeferredSSEData(streamWriter, pending, data, shouldDefer)
+	if err == nil && !shouldDefer && streamWriter.buffer.Len() > 0 {
+		err = streamWriter.Flush()
+	}
+	return streamWriter.deliveredBytes() > before, err
+}
+
 func writeDeferredSSEData(streamWriter *streamFlushWriter, pending *bytes.Buffer, data []byte, shouldDefer bool) (bool, error) {
 	if streamWriter == nil {
 		return false, nil

@@ -36,20 +36,24 @@ func (e continuousRetryTestHTTPError) Error() string             { return "upstr
 func (e continuousRetryTestHTTPError) UpstreamStatusCode() int   { return e.status }
 func (e continuousRetryTestHTTPError) UpstreamErrorBody() []byte { return e.body }
 
-func TestContinuousRetryPreflightPassthroughStopsBeforeAnyRetryPolicy(t *testing.T) {
+func TestEarlyResponsesSSEPassthroughRespectsContinuousRetry(t *testing.T) {
 	settings := RuntimeSettings{CodexPreflightSSEPassthrough: true}
-	if continuousRetryPreflightPassthrough(settings) {
+	if earlyResponsesSSEPassthrough(settings) {
 		t.Fatal("timing reports must not enable early metadata passthrough")
+	}
+	settings.CodexEarlySSEPassthrough = true
+	if !earlyResponsesSSEPassthrough(settings) {
+		t.Fatal("explicit early-delivery switch should release lifecycle events")
 	}
 	settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{
 		Enabled:    true,
 		Categories: []string{database.ContinuousRetryCategoryResponseFailed},
 	}
-	if continuousRetryPreflightPassthrough(settings) {
+	if earlyResponsesSSEPassthrough(settings) {
 		t.Fatal("selective continuous retry leaked preflight metadata before the retry boundary")
 	}
 	settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{Enabled: true, CatchAll: true}
-	if continuousRetryPreflightPassthrough(settings) {
+	if earlyResponsesSSEPassthrough(settings) {
 		t.Fatal("catch-all continuous retry leaked preflight metadata before the retry boundary")
 	}
 }

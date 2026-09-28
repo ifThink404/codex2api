@@ -176,13 +176,13 @@ func TestShouldDeferPreContentSSEEvent(t *testing.T) {
 		{"off_responsesapi_metadata_deferred", "responsesapi.response.metadata", false, false, false, true},
 		{"off_created_deferred", "response.created", false, false, false, true},
 		{"off_in_progress_deferred", "response.in_progress", false, false, false, true},
-		// 开关开启:preflight 元数据立即写出,生命周期事件仍缓冲
+		// Early delivery releases both metadata and lifecycle events.
 		{"on_rate_limits_passthrough", "codex.rate_limits", false, false, true, false},
 		{"on_codex_metadata_passthrough", "codex.response.metadata", false, false, true, false},
 		{"on_http_metadata_passthrough", "response.metadata", false, false, true, false},
 		{"on_responsesapi_metadata_passthrough", "responsesapi.response.metadata", false, false, true, false},
-		{"on_created_still_deferred", "response.created", false, false, true, true},
-		{"on_in_progress_still_deferred", "response.in_progress", false, false, true, true},
+		{"on_created_passthrough", "response.created", false, false, true, false},
+		{"on_in_progress_passthrough", "response.in_progress", false, false, true, false},
 		// 内容开始后不再缓冲,与开关状态无关
 		{"content_seen_off", "codex.rate_limits", true, false, false, false},
 		{"content_seen_on", "response.created", true, false, true, false},

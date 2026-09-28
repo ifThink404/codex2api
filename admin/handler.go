@@ -9629,6 +9629,7 @@ type settingsResponse struct {
 	OverflowAutoCompactEnabled          bool   `json:"overflow_auto_compact_enabled"`
 	CompactViaResponsesEnabled          bool   `json:"compact_via_responses_enabled"`
 	CodexPreflightSSEPassthroughEnabled bool   `json:"codex_preflight_sse_passthrough_enabled"`
+	CodexEarlySSEPassthroughEnabled     bool   `json:"codex_early_sse_passthrough_enabled"`
 	FirstTokenExcludesWsAcquire         bool   `json:"first_token_excludes_ws_acquire"`
 	CodexContinueThinkingEnabled        bool   `json:"codex_continue_thinking_enabled"`
 	CodexContinueMaxRounds              int    `json:"codex_continue_max_rounds"`
@@ -9830,6 +9831,7 @@ type updateSettingsReq struct {
 	OverflowAutoCompactEnabled          *bool                            `json:"overflow_auto_compact_enabled"`
 	CompactViaResponsesEnabled          *bool                            `json:"compact_via_responses_enabled"`
 	CodexPreflightSSEPassthroughEnabled *bool                            `json:"codex_preflight_sse_passthrough_enabled"`
+	CodexEarlySSEPassthroughEnabled     *bool                            `json:"codex_early_sse_passthrough_enabled"`
 	FirstTokenExcludesWsAcquire         *bool                            `json:"first_token_excludes_ws_acquire"`
 	CodexContinueThinkingEnabled        *bool                            `json:"codex_continue_thinking_enabled"`
 	CodexContinueMaxRounds              *int                             `json:"codex_continue_max_rounds"`
@@ -10688,6 +10690,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		OverflowAutoCompactEnabled:          h.store.OverflowAutoCompactEnabled(),
 		CompactViaResponsesEnabled:          h.store.CompactViaResponsesEnabled(),
 		CodexPreflightSSEPassthroughEnabled: h.store.CodexPreflightSSEPassthroughEnabled(),
+		CodexEarlySSEPassthroughEnabled:     runtimeCfg.CodexEarlySSEPassthrough,
 		FirstTokenExcludesWsAcquire:         h.store.FirstTokenExcludesWsAcquire(),
 		CodexContinueThinkingEnabled:        h.store.CodexContinueThinkingEnabled(),
 		CodexContinueMaxRounds:              h.store.CodexContinueMaxRounds(),
@@ -11192,6 +11195,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	runtimeCfg := proxy.CurrentRuntimeSettings()
 	previousAutoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	previousBPSRoundLimit := runtimeCfg.BPSRoundConvergenceLimit
+	previousEarlySSEPassthrough := runtimeCfg.CodexEarlySSEPassthrough
 	previousBPSTurnLifetime := runtimeCfg.BPSTurnTaskLifetimeHours
 	previousBPSRoundLifetime := runtimeCfg.BPSRoundTaskLifetimeHours
 	previousBPSTurnRoundLimit := runtimeCfg.BPSTurnRoundLimit
@@ -11605,6 +11609,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		h.store.SetCodexPreflightSSEPassthroughEnabled(*req.CodexPreflightSSEPassthroughEnabled)
 		runtimeCfg.CodexPreflightSSEPassthrough = *req.CodexPreflightSSEPassthroughEnabled
 		log.Printf("设置已更新: codex_preflight_sse_passthrough_enabled = %t", *req.CodexPreflightSSEPassthroughEnabled)
+	}
+	if req.CodexEarlySSEPassthroughEnabled != nil {
+		runtimeCfg.CodexEarlySSEPassthrough = *req.CodexEarlySSEPassthroughEnabled
 	}
 
 	if req.FirstTokenExcludesWsAcquire != nil {
@@ -12049,6 +12056,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// 确认保存成功前，运行态继续使用旧配置，避免持久化失败后后台任务仍然开始执行。
 	runtimeCfg = proxy.NormalizeRuntimeSettings(runtimeCfg)
 	effectiveRuntimeCfg := runtimeCfg
+	// Early delivery is published only after a successful durable settings write.
+	effectiveRuntimeCfg.CodexEarlySSEPassthrough = previousEarlySSEPassthrough
 	// Do not rotate live task batches until the new limit is persisted.
 	effectiveRuntimeCfg.BPSRoundConvergenceLimit = previousBPSRoundLimit
 	effectiveRuntimeCfg.BPSTurnTaskLifetimeHours = previousBPSTurnLifetime
@@ -12338,6 +12347,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		OverflowAutoCompactEnabled:          h.store.OverflowAutoCompactEnabled(),
 		CompactViaResponsesEnabled:          h.store.CompactViaResponsesEnabled(),
 		CodexPreflightSSEPassthroughEnabled: h.store.CodexPreflightSSEPassthroughEnabled(),
+		CodexEarlySSEPassthroughEnabled:     runtimeCfg.CodexEarlySSEPassthrough,
 		FirstTokenExcludesWsAcquire:         h.store.FirstTokenExcludesWsAcquire(),
 		CodexContinueThinkingEnabled:        h.store.CodexContinueThinkingEnabled(),
 		CodexContinueMaxRounds:              h.store.CodexContinueMaxRounds(),
@@ -12427,6 +12437,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			writeError(c, http.StatusInternalServerError, "保存日志与计量设置失败，设置未生效")
 			return
 		}
+		if req.CodexEarlySSEPassthroughEnabled != nil {
+			writeError(c, http.StatusInternalServerError, "保存前置事件透传设置失败，设置未生效")
+			return
+		}
 		log.Printf("无法持久化保存设置: %v", err)
 		if req.BPSRoundTaskLifetimeHours != nil || req.BPSRoundConvergenceLimit != nil || req.BPSTurnTaskLifetimeHours != nil || req.BPSTurnRoundLimit != nil {
 			writeError(c, http.StatusInternalServerError, "保存轮次收敛设置失败，设置未生效")
@@ -12489,6 +12503,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexImagesMainModel = codexImagesMainModel
 		proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 			current.CodexImagesMainModel = codexImagesMainModel
+			current.CodexEarlySSEPassthrough = runtimeCfg.CodexEarlySSEPassthrough
 			current.BPSRoundConvergenceLimit = runtimeCfg.BPSRoundConvergenceLimit
 			current.BPSTurnTaskLifetimeHours = runtimeCfg.BPSTurnTaskLifetimeHours
 			current.BPSRoundTaskLifetimeHours = runtimeCfg.BPSRoundTaskLifetimeHours
@@ -12707,6 +12722,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		OverflowAutoCompactEnabled:          h.store.OverflowAutoCompactEnabled(),
 		CompactViaResponsesEnabled:          h.store.CompactViaResponsesEnabled(),
 		CodexPreflightSSEPassthroughEnabled: h.store.CodexPreflightSSEPassthroughEnabled(),
+		CodexEarlySSEPassthroughEnabled:     runtimeCfg.CodexEarlySSEPassthrough,
 		FirstTokenExcludesWsAcquire:         h.store.FirstTokenExcludesWsAcquire(),
 		CodexContinueThinkingEnabled:        h.store.CodexContinueThinkingEnabled(),
 		CodexContinueMaxRounds:              h.store.CodexContinueMaxRounds(),

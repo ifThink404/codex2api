@@ -104,15 +104,12 @@ func isCodexPreflightSSEEvent(eventType string) bool {
 	return strings.HasPrefix(eventType, "codex.")
 }
 
-// shouldDeferPreContentSSEEvent 决定首个内容事件前的 SSE 事件是否延迟冲刷。
-// 生命周期事件（response.created / response.in_progress）始终缓冲；前置元数据
-// 事件默认一并缓冲，preflightPassthrough 开启时立即写出（旧版兼容，issue #425）——
-// 代价是提前提交 200，该窗口内的 response.failed 无法再按真实错误码返回，
-// 也无法走静默换号或超窗压缩重试。
-func shouldDeferPreContentSSEEvent(eventType string, contentTokenSeen, gotTerminal, preflightPassthrough bool) bool {
-	return !contentTokenSeen && !gotTerminal &&
-		(isPreContentLifecycleEvent(eventType) ||
-			(!preflightPassthrough && isCodexPreflightSSEEvent(eventType)))
+// shouldDeferPreContentSSEEvent keeps lifecycle and metadata events private by
+// default. Opting into early passthrough commits HTTP 200 before model output,
+// closing the transparent retry / HTTP error window as soon as bytes are sent.
+func shouldDeferPreContentSSEEvent(eventType string, contentTokenSeen, gotTerminal, earlyPassthrough bool) bool {
+	return !earlyPassthrough && !contentTokenSeen && !gotTerminal &&
+		(isPreContentLifecycleEvent(eventType) || isCodexPreflightSSEEvent(eventType))
 }
 
 // isContextLengthExceededBody 判断上游错误体（HTTP 错误响应或 response.failed

@@ -1628,6 +1628,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS overflow_auto_compact_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS compact_via_responses_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_preflight_sse_passthrough_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_early_sse_passthrough_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_excludes_ws_acquire BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_silent_max_retries INT DEFAULT 2;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_continue_thinking_enabled BOOLEAN DEFAULT FALSE;
@@ -2595,7 +2596,8 @@ type SystemSettings struct {
 	CodexOverloadWindowMinutes          int  // 统计窗口（分钟），默认 5，范围 1-120
 	OverflowAutoCompactEnabled          bool // 上下文超窗时自动摘要旧轮次并重试一次（实验性，默认 false，issue #415）
 	CompactViaResponsesEnabled          bool // /v1/responses/compact 改写为 /responses body-signal 压缩（上游已下线专用端点，默认 false）
-	CodexPreflightSSEPassthroughEnabled bool // 前置元数据 SSE 事件立即透传下游（旧版兼容，默认 false，issue #425）
+	CodexPreflightSSEPassthroughEnabled bool // Legacy name: reports loose first-response timing only.
+	CodexEarlySSEPassthroughEnabled     bool // Forward Responses lifecycle and metadata before content; default false.
 	FirstTokenExcludesWsAcquire         bool // 落库 first_token_ms 扣除 WS 取连耗时，默认 false（原始值 = first_token_ms + ws_acquire_ms）
 	CodexContinueThinkingEnabled        bool // 检测到上游截断思考时自动续想并折叠成单响应，默认 false
 	CodexContinueMaxRounds              int  // 单次请求最大续想轮数（含首轮），默认 8
@@ -2893,7 +2895,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(bps_turn_task_lifetime_hours, 24),
 		       COALESCE(bps_round_task_lifetime_hours, 24),
 		       COALESCE(bps_turn_round_limit, 100),
-		       COALESCE(usage_metering_enabled, true)
+		       COALESCE(usage_metering_enabled, true),
+		       COALESCE(codex_early_sse_passthrough_enabled, false)
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2997,6 +3000,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.BPSRoundTaskLifetimeHours,
 		&s.BPSTurnRoundLimit,
 		&s.UsageMeteringEnabled,
+		&s.CodexEarlySSEPassthroughEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -3273,9 +3277,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					bps_round_convergence_limit,
 					bps_turn_task_lifetime_hours,
 					bps_turn_round_limit,
-					bps_round_task_lifetime_hours, usage_metering_enabled
+					bps_round_task_lifetime_hours, usage_metering_enabled, codex_early_sse_passthrough_enabled
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141, $142, $143)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141, $142, $143, $144)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3381,6 +3385,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					overflow_auto_compact_enabled = EXCLUDED.overflow_auto_compact_enabled,
 					first_token_excludes_ws_acquire = EXCLUDED.first_token_excludes_ws_acquire,
 					codex_preflight_sse_passthrough_enabled = EXCLUDED.codex_preflight_sse_passthrough_enabled,
+					codex_early_sse_passthrough_enabled = EXCLUDED.codex_early_sse_passthrough_enabled,
 					utls_shutdown_timeout_minutes = EXCLUDED.utls_shutdown_timeout_minutes,
 					codex_ws_weak_network_mode = EXCLUDED.codex_ws_weak_network_mode,
 					codex_ws_context_takeover = EXCLUDED.codex_ws_context_takeover,
@@ -3486,7 +3491,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit),
 		NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours),
 		NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit),
-		NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours), s.UsageMeteringEnabled)
+		NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours), s.UsageMeteringEnabled, s.CodexEarlySSEPassthroughEnabled)
 	return err
 }
 

@@ -319,6 +319,12 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "codexEarlySSEPassthrough": "前置事件立即轉發（含 response.created）",
+    "codexEarlySSEPassthroughDesc": "收到 response.created、response.in_progress 及前置中繼資料後，立即傳給 Responses 串流用戶端。獨立於首字統計與 NewAPI 計時回報。",
+    "codexEarlySSEPassthroughEnabled": "啟用前置事件立即轉發",
+    "codexEarlySSEPassthroughEnabledDesc": "預設關閉，儲存後對後續串流轉發生效，重啟保留。提前傳送會提交 HTTP 200；之後的失敗無法改為 HTTP 錯誤，也無法透明切換帳號或超窗壓縮重試。持續重試開啟時仍快取整次回應；需關閉持續重試才能提前轉發。不影響非串流請求與協定轉換，不改變 token 與計費計算。",
+    "codexEarlySSEPassthroughBuffered": "目前持續重試已開啟：前置事件仍會隨成功回應一併傳送。關閉持續重試後，本開關才會提前轉發。",
+    "codexCompatTogglesDesc": "超窗自動壓縮、compact 端點改寫、上游首回應計時回報與前置事件轉發。",
     "usageMeteringEnabled": "輕量計量（保留計費與 Token）",
     "usageMeteringEnabledDesc": "建議開啟：關閉明細或只記錄錯誤時，仍保留計費、Token 統計和視窗額度。批次儲存精簡記錄，不儲存請求診斷、IP 和 UA。同時關閉會導致統計及視窗額度漏算，累計金額仍會扣除。",
     "bpsRoundConvergenceLimit": "每個 task 的模型呼叫次數",

@@ -4173,6 +4173,11 @@
     }
   },
   "settings": {
+    "codexEarlySSEPassthrough": "前置事件立即透传（含 response.created）",
+    "codexEarlySSEPassthroughDesc": "收到 response.created、response.in_progress 及前置元数据后立即向 Responses 流客户端发送，让客户端更早看到请求开始。独立于首字统计和 NewAPI 计时上报。",
+    "codexEarlySSEPassthroughEnabled": "启用前置事件立即透传",
+    "codexEarlySSEPassthroughEnabledDesc": "默认关闭，保存后对后续流转发生效，重启保留。提前发送会提交 HTTP 200；之后的失败无法改为 HTTP 错误，也无法透明切号或超窗压缩重试。持续重试开启时仍缓存整次响应；需关闭持续重试才能提前透传。非流式请求和协议转换不受影响，不改变 token 与计费计算。",
+    "codexEarlySSEPassthroughBuffered": "当前持续重试已开启：前置事件仍会随成功响应一起发送。关闭持续重试后，本开关才会提前透传。",
     "usageMeteringEnabled": "轻量计量（保留计费与 Token）",
     "usageMeteringEnabledDesc": "建议开启：关闭明细或只记录错误时，仍保留计费、Token 统计和窗口额度。批量保存精简记录，不保存请求诊断、IP 和 UA。同时关闭会导致统计及窗口额度漏算，累计金额仍会扣除。",
     "sessionBalanceSession": "会话",
@@ -5032,7 +5037,7 @@
     "codexPreflightSSEPassthroughEnabled": "启用首响应计时上报",
     "codexPreflightSSEPassthroughEnabledDesc": "仅上报计时，不提前下发元数据或提交 HTTP 200。固定使用宽松口径，包含网关准入及此前重试耗时；原首字统计口径仍控制本地使用日志。需部署支持此协议的 NewAPI，并配置可信 codex2api 目标。响应头已提交时回退实际首包统计。默认关闭，即时生效。",
     "codexCompatToggles": "压缩与兼容开关",
-    "codexCompatTogglesDesc": "超窗自动压缩、compact 端点改写与上游首响应计时上报，均即时生效。",
+    "codexCompatTogglesDesc": "超窗自动压缩、compact 端点改写、上游首响应计时上报与前置事件透传。",
     "modelCooldownTitle": "模型 429 冷却策略",
     "modelCooldownDesc": "分别控制 API 直连上游与 OAuth 账号池的模型级 429 冷却。明确的 5h/7d 用量窗口仍按真实重置时间处理。",
     "relayModelCooldownTitle": "API 计划 / 直连上游",

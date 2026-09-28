@@ -4172,6 +4172,11 @@
     }
   },
   "settings": {
+    "codexEarlySSEPassthrough": "Forward early SSE events (including response.created)",
+    "codexEarlySSEPassthroughDesc": "Forward response.created, response.in_progress and preflight metadata as they arrive on Responses streams. Independent of first-token metrics and NewAPI timing reports.",
+    "codexEarlySSEPassthroughEnabled": "Enable early SSE passthrough",
+    "codexEarlySSEPassthroughEnabledDesc": "Off by default. Saved changes apply to subsequent stream attempts and survive restarts. Early delivery commits HTTP 200, preventing later HTTP error responses, transparent account retries and overflow compaction retries. Continuous retry still buffers the entire attempt; disable it for early delivery. Non-streaming requests and protocol conversion are unchanged. Token and billing calculations are unchanged.",
+    "codexEarlySSEPassthroughBuffered": "Continuous retry is enabled: early events remain buffered until a successful response. Disable continuous retry to forward them immediately.",
     "usageMeteringEnabled": "Lightweight metering",
     "usageMeteringEnabledDesc": "Recommended: keep billing, token statistics and window quotas when details are disabled. Stores small batched records without request diagnostics, IPs or UAs. Disabling this as well makes statistics and window quotas incomplete; cumulative charges still apply.",
     "sessionBalanceSession": "Sessions",
@@ -5030,7 +5035,7 @@
     "codexPreflightSSEPassthroughEnabled": "Enable first-response timing reports",
     "codexPreflightSSEPassthroughEnabledDesc": "Reports timing only; never sends metadata or commits HTTP 200 early. Uses loose timing including gateway admission and earlier retries. Local usage logs retain their configured first-token mode. Requires compatible NewAPI and a trusted codex2api destination. Already committed headers fall back to observed timing. Off by default; changes apply immediately.",
     "codexCompatToggles": "Compaction & compatibility toggles",
-    "codexCompatTogglesDesc": "Overflow auto-compaction, compact endpoint rewriting and upstream first-response timing reports take effect immediately.",
+    "codexCompatTogglesDesc": "Overflow auto-compaction, compact endpoint rewriting, upstream timing reports and early SSE delivery.",
     "modelCooldownTitle": "Model 429 cooldown policy",
     "modelCooldownDesc": "Control model-level 429 cooldowns separately for direct API upstreams and OAuth account pools. Explicit 5h/7d usage windows still follow their real reset times.",
     "relayModelCooldownTitle": "API plan / direct upstream",

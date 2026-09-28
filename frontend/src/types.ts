@@ -2121,6 +2121,7 @@ export interface SystemSettings {
   overflow_auto_compact_enabled: boolean
   compact_via_responses_enabled: boolean
   codex_preflight_sse_passthrough_enabled: boolean
+  codex_early_sse_passthrough_enabled: boolean
   codex_continue_max_rounds: number
   utls_shutdown_timeout_minutes: number
   scheduler_mode: string

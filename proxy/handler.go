@@ -4919,7 +4919,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			contentTokenSeen := false
 			preflightSettings := CurrentRuntimeSettings()
 			preflightSettings.ContinuousRetryPolicy = continuousRetryPolicy
-			preflightPassthrough := continuousRetryPreflightPassthrough(preflightSettings)
+			preflightPassthrough := earlyResponsesSSEPassthrough(preflightSettings)
 			gotTerminal := false
 			deltaCharCount := 0
 			var readErr error
@@ -5057,7 +5057,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						if !shouldDefer && streamAttempt == nil && !c.Writer.Written() {
 							relayCodexTurnStateResponseHeader(c, affinityKey, account, resp.Header)
 						}
-						wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, data, shouldDefer)
+						wrote, err := writeResponsesSSEData(streamWriter, &pendingFirstTokenEvents, data, shouldDefer, preflightPassthrough && !contentTokenSeen)
 						if err != nil {
 							writeErr = err
 							clientGone = true
@@ -5674,11 +5674,11 @@ func (h *Handler) Responses(c *gin.Context) {
 			var pendingFirstTokenEvents bytes.Buffer
 			contEnabled, contMaxRounds := codexContinueThinkingSettings()
 			contEnabled = contEnabled && !PreserveSessionInput(c.Request.Context())
-			// 前置元数据事件立即透传（旧版兼容，issue #425）：每个 attempt 取一次快照，
-			// 热更新对新请求生效，流转发中途不切换缓冲策略。
+			// Snapshot early delivery once per attempt; never switch buffering
+			// policy partway through a stream during a settings update.
 			preflightSettings := CurrentRuntimeSettings()
 			preflightSettings.ContinuousRetryPolicy = continuousRetryPolicy
-			preflightPassthrough := continuousRetryPreflightPassthrough(preflightSettings)
+			preflightPassthrough := earlyResponsesSSEPassthrough(preflightSettings)
 			emptyIncomplete := &emptyIncompleteTracker{}
 			forwardWithEvent := func(sseEvent string, data []byte) bool {
 				streamDiag.markUpstreamFrame()
@@ -5801,12 +5801,9 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 
 				if !clientGone {
-					// codex.* 前置元数据事件（rate_limits / response.metadata）与生命周期
-					// 事件一样延迟到首 token 一起冲刷：立即写出会提交 200 header 并置位
-					// wroteAnyBody，使首 token 前的 response.failed（如 context_length_exceeded）
-					// 既无法按真实错误码返回，也无法走超窗压缩重试。
-					// preflightPassthrough（issue #425）恢复旧版语义：元数据事件立即下发，
-					// 管理员显式接受上述代价；生命周期事件（created/in_progress）不受开关影响。
+					// Only the explicit early-delivery switch releases lifecycle and
+					// metadata events before content. The timing-report switch does
+					// not affect buffering or the visible-output retry boundary.
 					shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
 						(!contentTokenSeen && !visibleBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy))
 					if !shouldDefer && streamAttempt == nil && !c.Writer.Written() {
@@ -5814,7 +5811,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						// Publish its alias before the first real downstream write.
 						relayCodexTurnStateResponseHeader(c, affinityKey, account, resp.Header)
 					}
-					wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, data, shouldDefer)
+					wrote, err := writeResponsesSSEData(streamWriter, &pendingFirstTokenEvents, data, shouldDefer, preflightPassthrough && !contentTokenSeen)
 					if isResponsesTerminalEvent(eventType) || eventType == "error" {
 						disposition := "accepted"
 						if streamAttempt != nil {

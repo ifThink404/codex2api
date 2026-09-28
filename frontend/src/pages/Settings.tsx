@@ -2195,6 +2195,7 @@ export default function Settings() {
     overflow_auto_compact_enabled: false,
     compact_via_responses_enabled: false,
     codex_preflight_sse_passthrough_enabled: false,
+    codex_early_sse_passthrough_enabled: false,
     codex_continue_max_rounds: 8,
     utls_shutdown_timeout_minutes: 30,
     scheduler_mode: 'round_robin',
@@ -3820,7 +3821,7 @@ export default function Settings() {
                 </div>
               </SettingsCard>
 
-              {/* 三个只有一个开关的兼容项合并成一张卡逐行排列，说明外显；拆成三张窄卡时开关会被挤成半宽折行。 */}
+              {/* Compatibility switches share a row layout with visible descriptions. */}
               <SettingsCard title={t('settings.codexCompatToggles')} description={t('settings.codexCompatTogglesDesc')} icon={<Layers className="size-4" />}>
                 <div className={SETTINGS_ROW_LIST}>
                   <SettingField
@@ -3859,6 +3860,21 @@ export default function Settings() {
                       onCheckedChange={(checked) => autoSaveBooleanField('codex_preflight_sse_passthrough_enabled', checked)}
                     />
                   </SettingField>
+                  <SettingField
+                    label={t('settings.codexEarlySSEPassthrough')}
+                    description={t('settings.codexEarlySSEPassthroughDesc')}
+                    help={t('settings.codexEarlySSEPassthroughEnabledDesc')}
+                    layout="row"
+                  >
+                    <Switch
+                      aria-label={t('settings.codexEarlySSEPassthroughEnabled')}
+                      checked={settingsForm.codex_early_sse_passthrough_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('codex_early_sse_passthrough_enabled', checked)}
+                    />
+                  </SettingField>
+                  {settingsForm.codex_early_sse_passthrough_enabled && settingsForm.continuous_retry_enabled && (
+                    <p role="status" className="text-sm text-muted-foreground">{t('settings.codexEarlySSEPassthroughBuffered')}</p>
+                  )}
                 </div>
               </SettingsCard>
 
