@@ -34,6 +34,13 @@ func TestPromptAuditControlsHTTPQuery(t *testing.T) {
 		{"search_scope=all&q=alice&sort=audit_asc&page_size=1", 200, 2, 10},
 		{"sort=invalid", 400, 0, 0},
 		{"search_scope=invalid", 400, 0, 0},
+		{"grouped=true&search_scope=username&q=alice", 200, 1, 90},
+		{"grouped=invalid", 400, 0, 0},
+		{"grouped=", 400, 0, 0},
+		{"group_id=", 400, 0, 0},
+		{"group_id=0", 400, 0, 0},
+		{"group_id=-1", 400, 0, 0},
+		{"group_id=9223372036854775808", 400, 0, 0},
 	} {
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)

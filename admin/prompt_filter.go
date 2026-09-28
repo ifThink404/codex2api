@@ -502,6 +502,30 @@ func (h *Handler) recordPromptFilterLog(c *gin.Context, input *database.PromptFi
 }
 
 func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
+	var groupID int64
+	if _, exists := c.Request.URL.Query()["group_id"]; exists {
+		raw := c.Query("group_id")
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeError(c, http.StatusBadRequest, "invalid prompt log group ID")
+			return
+		}
+		groupID = parsed
+	}
+	grouped := false
+	if _, exists := c.Request.URL.Query()["grouped"]; exists {
+		raw := c.Query("grouped")
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, "invalid prompt log grouping")
+			return
+		}
+		grouped = parsed
+	}
+	queryTimeout := 5 * time.Second
+	if grouped || groupID > 0 {
+		queryTimeout = 15 * time.Second
+	}
 	searchScope, sortOrder := strings.TrimSpace(c.Query("search_scope")), strings.TrimSpace(c.Query("sort"))
 	if !database.ValidPromptLogSearchScope(searchScope) || !database.ValidPromptLogSort(sortOrder) {
 		writeError(c, http.StatusBadRequest, "invalid prompt log search scope or sort")
@@ -515,9 +539,11 @@ func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
 			apiKeyID = parsed
 		}
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), queryTimeout)
 	defer cancel()
 	logs, total, err := h.db.ListPromptFilterLogsPage(ctx, database.PromptFilterLogQuery{
+		Grouped:             grouped,
+		GroupID:             groupID,
 		Page:                page,
 		PageSize:            pageSize,
 		Source:              c.Query("source"),

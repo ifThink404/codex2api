@@ -375,3 +375,18 @@ test('prompt audit controls use shared components, API params and three locales'
     assert.equal(Object.keys(messages.searchScopes).length, 6)
   }
 })
+
+test('prompt audit log grouping is wired through the API and three locales', () => {
+  const page = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
+  const apiSource = readFileSync(new URL('../api.ts', import.meta.url), 'utf8')
+  assert.match(apiSource, /search\.set\('grouped', String\(params\.grouped\)\)/)
+  assert.match(apiSource, /search\.set\('group_id', String\(params\.groupId\)\)/)
+  assert.match(page, /function PromptAuditGroupDialog/)
+  assert.match(page, /grouped: false, groupId: log\.group_id/)
+  for (const locale of ['zh', 'en', 'zh-TW']) {
+    const messages = JSON.parse(readFileSync(new URL(`../locales/${locale}.json`, import.meta.url), 'utf8')).promptFilter
+    for (const key of ['groupDisplay', 'groupHint', 'groupTotal', 'groupDetailsTitle', 'groupDetailsHint']) {
+      assert.ok(messages[key], `${locale}: promptFilter.${key}`)
+    }
+  }
+})

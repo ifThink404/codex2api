@@ -759,6 +759,18 @@
     "claudeMaxToolSchemaBytesDesc": "0 表示不設閘道 Schema 上限；請求體仍受系統大小與上游限制。"
   },
   "promptFilter": {
+    "groupDisplay": "重複記錄",
+    "groupViews": {
+      "grouped": "合併相同記錄",
+      "individual": "逐條顯示"
+    },
+    "groupTotal": "{{count}} 組",
+    "groupOccurrences": "{{count}} 次 · 查看明細",
+    "groupFirstSeen": "首次",
+    "groupLatestRecord": "上方為最近一次記錄",
+    "groupHint": "相同使用者、Key、模型、命中內容及處理結果的記錄合併顯示；點擊次數查看原始請求。",
+    "groupDetailsTitle": "重複記錄明細",
+    "groupDetailsHint": "保留目前篩選條件，依時間倒序顯示該組原始記錄；合併顯示不會刪除日誌。",
     "localMode": "本地規則處理方式",
     "localModeHint": "僅控制本地規則。僅監控／僅警告不新增對話鎖定或違規處罰；模型複核及失敗策略保持獨立，全域模式仍限制最終動作。",
     "localModes": {

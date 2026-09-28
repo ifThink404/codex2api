@@ -2840,6 +2840,18 @@
     "mediaUnpricedHint": "This media model has no upstream unit cost; set one on the model pricing page"
   },
   "promptFilter": {
+    "groupDisplay": "Repeated records",
+    "groupViews": {
+      "grouped": "Group matching records",
+      "individual": "Individual records"
+    },
+    "groupTotal": "{{count}} groups",
+    "groupOccurrences": "{{count}} occurrences · Details",
+    "groupFirstSeen": "First seen",
+    "groupLatestRecord": "Latest record shown above",
+    "groupHint": "Matching user, key, model, evidence and decision are grouped. Click the count to inspect original requests.",
+    "groupDetailsTitle": "Group records",
+    "groupDetailsHint": "Original records matching the current filters, newest first. Grouping does not delete logs.",
     "localMode": "Local rule action",
     "localModeHint": "Controls local rules only. Monitor and warn do not add conversation locks or user strikes. Model review and its failure policy remain independent; global mode still caps the final action.",
     "localModes": {

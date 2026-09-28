@@ -73,8 +73,9 @@ type PromptFilterForm = Pick<
 >
 
 type LogFilters = {
-	searchScope: string
-	sort: string
+  grouped: boolean
+  searchScope: string
+  sort: string
   action: string
   source: string
   endpoint: string
@@ -481,6 +482,7 @@ function parsePromptReviewAPIKeyInput(raw: string): string[] {
 }
 
 const emptyFilters: LogFilters = {
+  grouped: false,
   searchScope: 'all',
   sort: 'newest',
   action: '',
@@ -494,6 +496,7 @@ const emptyFilters: LogFilters = {
 
 const defaultLocalLogFilters: LogFilters = {
   ...emptyFilters,
+  grouped: true,
   source: 'local_filter',
 }
 
@@ -3842,6 +3845,9 @@ function PromptLogFilterControls({
         {showAuditControls ? <Field label={t('promptFilter.auditSort')}>
           <Select value={draftFilters.sort} onValueChange={(sort) => setDraftFilters((current) => ({ ...current, sort }))} options={['newest', 'audit_desc', 'audit_asc'].map(value => ({ value, label: t(`promptFilter.auditSorts.${value}`) }))} />
         </Field> : null}
+        {showAuditControls ? <Field label={t('promptFilter.groupDisplay')} hint={t('promptFilter.groupHint')}>
+          <Select value={draftFilters.grouped ? 'grouped' : 'individual'} onValueChange={(value) => setDraftFilters(current => ({ ...current, grouped: value === 'grouped' }))} options={['grouped', 'individual'].map(value => ({ value, label: t(`promptFilter.groupViews.${value}`) }))} />
+        </Field> : null}
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
         <Button onClick={onApply} disabled={loading}>
@@ -3879,6 +3885,7 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
   const [incidentPage, setIncidentPage] = useState(1)
   const [incidentPageSize, setIncidentPageSize] = usePersistedPageSize('prompt_policy_incidents', 20, DEFAULT_PAGE_SIZE_OPTIONS)
   const [logs, setLogs] = useState<PromptFilterLog[]>([])
+  const [groupLog, setGroupLog] = useState<PromptFilterLog | null>(null)
   const [total, setTotal] = useState(0)
   const [reviewLogs, setReviewLogs] = useState<PromptFilterLog[]>([])
   const [reviewTotal, setReviewTotal] = useState(0)
@@ -3949,6 +3956,7 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
         q: localFilters.q,
         searchScope: localFilters.searchScope,
         sort: localFilters.sort,
+        grouped: localFilters.grouped,
       })
       setLogs(result.logs ?? [])
       setTotal(result.total ?? 0)
@@ -4218,8 +4226,9 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
           <section className="rounded-xl border p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold">{t('promptFilter.localAuditLogsTitle')} · {total}</div>
+                <div className="text-sm font-semibold">{t('promptFilter.localAuditLogsTitle')} · {localFilters.grouped ? t('promptFilter.groupTotal', { count: total }) : total}</div>
                 <p className="mt-1 text-xs text-muted-foreground">{t('promptFilter.sectionRefreshHint')}</p>
+                {localFilters.grouped ? <p className="mt-1 text-xs text-muted-foreground">{t('promptFilter.groupHint')}</p> : null}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" onClick={() => void loadLocalLogs()} disabled={localLoading || clearingSection !== null}>
@@ -4243,12 +4252,13 @@ function LogsView({ onPromptLogsChanged }: { onPromptLogsChanged: () => Promise<
               showSource
             />
             <StateShell loading={localLoading} error={localError} isEmpty={!localLoading && logs.length === 0} onRetry={() => void loadLocalLogs()} emptyTitle={t('promptFilter.noLogs')}>
-              <PromptFilterLogsTable logs={logs} />
+              <PromptFilterLogsTable logs={logs} onOpenGroup={setGroupLog} />
               <Pagination page={logPage} totalPages={logTotalPages} totalItems={total} pageSize={logPageSize} onPageChange={setLogPage} onPageSizeChange={(next) => { setLogPage(1); setLogPageSize(next) }} pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS} />
             </StateShell>
           </section>
         </div>
       </CardContent>
+      {groupLog ? <PromptAuditGroupDialog key={groupLog.group_id} log={groupLog} filters={localFilters} onClose={() => setGroupLog(null)} /> : null}
       <Dialog open={auditHealthOpen} onOpenChange={setAuditHealthOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -5725,7 +5735,44 @@ function PromptReviewLogsTable({ logs }: { logs: PromptFilterLog[] }) {
   )
 }
 
-function PromptFilterLogsTable({ logs, compact = false }: { logs: PromptFilterLog[]; compact?: boolean }) {
+function PromptAuditGroupDialog({ log, filters, onClose }: { log: PromptFilterLog; filters: LogFilters; onClose: () => void }) {
+  const { t } = useTranslation()
+  const [page, setPage] = useState(1)
+  const [rows, setRows] = useState<PromptFilterLog[]>([])
+  const [total, setTotal] = useState(log.occurrence_count ?? 0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+  const pageSize = 20
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError(null)
+    api.getPromptFilterLogs({ ...filters, grouped: false, groupId: log.group_id, sort: 'newest', page, pageSize })
+      .then(result => { if (active) { setRows(result.logs ?? []); setTotal(result.total ?? 0) } })
+      .catch(err => { if (active) setError(getErrorMessage(err)) })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [log.group_id, filters, page, reload])
+  return <Dialog open onOpenChange={open => { if (!open) onClose() }}>
+    <DialogContent className="flex h-[90dvh] w-[96vw] max-w-[1600px] flex-col overflow-hidden sm:max-w-[1600px]">
+      <DialogHeader className="shrink-0 pr-8">
+        <DialogTitle>{t('promptFilter.groupDetailsTitle')} · {total}</DialogTitle>
+        <DialogDescription>{t('promptFilter.groupDetailsHint')}</DialogDescription>
+      </DialogHeader>
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+        <StateShell loading={loading} error={error} isEmpty={!loading && rows.length === 0} onRetry={() => setReload(value => value + 1)} emptyTitle={t('promptFilter.noLogs')}>
+          <div className="min-w-[1420px]"><PromptFilterLogsTable logs={rows} /></div>
+        </StateShell>
+      </div>
+      <div className="shrink-0">
+        <Pagination page={page} totalPages={Math.max(1, Math.ceil(total / pageSize))} totalItems={total} pageSize={pageSize} onPageChange={setPage} />
+      </div>
+    </DialogContent>
+  </Dialog>
+}
+
+function PromptFilterLogsTable({ logs, compact = false, onOpenGroup }: { logs: PromptFilterLog[]; compact?: boolean; onOpenGroup?: (log: PromptFilterLog) => void }) {
   const { t } = useTranslation()
   return (
     <div className="overflow-hidden rounded-lg border border-border">
@@ -5746,7 +5793,7 @@ function PromptFilterLogsTable({ logs, compact = false }: { logs: PromptFilterLo
             <TableRow>
               <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">{t('promptFilter.noLogs')}</TableCell>
             </TableRow>
-          ) : logs.map((log) => <PromptFilterLogRow key={log.id} log={log} compact={compact} />)}
+          ) : logs.map((log) => <PromptFilterLogRow key={log.id} log={log} compact={compact} onOpenGroup={onOpenGroup} />)}
         </TableBody>
       </Table>
     </div>
@@ -6003,7 +6050,7 @@ function MiniStat({ label, value, mono = false }: { label: string; value: string
   )
 }
 
-function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: boolean }) {
+function PromptFilterLogRow({ log, compact, onOpenGroup }: { log: PromptFilterLog; compact?: boolean; onOpenGroup?: (log: PromptFilterLog) => void }) {
   const { t } = useTranslation()
   const matches = parseLogMatches(log.matched_patterns)
   const [expanded, setExpanded] = useState(false)
@@ -6037,6 +6084,11 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
       <TableCell className={compact ? 'w-[92px] min-w-0' : 'w-[150px] min-w-0'}>
         <div className="font-medium text-foreground">{formatRelativeTime(log.created_at, { variant: 'compact' })}</div>
         {!compact ? <div className="text-xs text-muted-foreground">{formatBeijingTime(log.created_at)}</div> : null}
+        {log.group_id && onOpenGroup ? <div className="mt-2 space-y-1">
+          <button type="button" className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/20" onClick={() => onOpenGroup(log)}>{t('promptFilter.groupOccurrences', { count: log.occurrence_count ?? 1 })}</button>
+          {log.first_seen ? <div className="text-[11px] text-muted-foreground">{t('promptFilter.groupFirstSeen')}: {formatBeijingTime(log.first_seen)}</div> : null}
+          <div className="text-[11px] text-muted-foreground">{t('promptFilter.groupLatestRecord')}</div>
+        </div> : null}
       </TableCell>
       <TableCell className="min-w-0 align-top whitespace-normal">
         <div className="min-w-0 rounded-lg border border-border/70 bg-muted/20 p-2">

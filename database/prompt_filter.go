@@ -576,50 +576,54 @@ func (db *DB) WaitPromptFilterAuditIdle(ctx context.Context) bool {
 }
 
 type PromptFilterLog struct {
-	ID                   int64     `json:"id"`
-	CreatedAt            time.Time `json:"created_at"`
-	Source               string    `json:"source"`
-	Endpoint             string    `json:"endpoint"`
-	Protocol             string    `json:"protocol"`
-	Provider             string    `json:"provider"`
-	Model                string    `json:"model"`
-	Action               string    `json:"action"`
-	Mode                 string    `json:"mode"`
-	Score                int       `json:"score"`
-	AuditScore           int       `json:"audit_score"`
-	Threshold            int       `json:"threshold"`
-	PolicyProfile        string    `json:"policy_profile"`
-	ReasonCode           string    `json:"reason_code"`
-	PrimaryOrigin        string    `json:"primary_origin"`
-	StrikeEligible       bool      `json:"strike_eligible"`
-	MatchedPatterns      string    `json:"matched_patterns"`
-	TextPreview          string    `json:"text_preview"`
-	MatchContext         string    `json:"match_context"`
-	FullText             string    `json:"full_text"`
-	APIKeyID             int64     `json:"api_key_id"`
-	AccountID            int64     `json:"account_id"`
-	APIKeyName           string    `json:"api_key_name"`
-	APIKeyMasked         string    `json:"api_key_masked"`
-	ClientIP             string    `json:"client_ip"`
-	ErrorCode            string    `json:"error_code"`
-	ReviewModel          string    `json:"review_model"`
-	ReviewFlagged        bool      `json:"review_flagged"`
-	ReviewError          string    `json:"review_error"`
-	Reviewed             bool      `json:"reviewed"`
-	ReviewConfidence     *float64  `json:"review_confidence"`
-	ReviewThreshold      *float64  `json:"review_threshold"`
-	ReviewReason         string    `json:"review_reason"`
-	ReviewEndpoint       string    `json:"review_endpoint"`
-	ReviewRequestMode    string    `json:"review_request_mode"`
-	ReviewLatencyMS      *int64    `json:"review_latency_ms"`
-	RequestCorrelationID string    `json:"request_correlation_id,omitempty"`
-	NewAPIPolicyStatus   string    `json:"newapi_policy_status,omitempty"`
-	NewAPIPlatform       string    `json:"newapi_platform,omitempty"`
-	NewAPIUserID         string    `json:"newapi_user_id,omitempty"`
-	NewAPIRequestID      string    `json:"newapi_request_id,omitempty"`
-	NewAPIDecisionID     string    `json:"newapi_decision_id,omitempty"`
-	SessionHash          string    `json:"session_hash,omitempty"`
-	ClientIPHash         string    `json:"client_ip_hash,omitempty"`
+	OccurrenceCount      int64      `json:"occurrence_count,omitempty"`
+	GroupID              int64      `json:"group_id,omitempty"`
+	FirstSeen            *time.Time `json:"first_seen,omitempty"`
+	LastSeen             *time.Time `json:"last_seen,omitempty"`
+	ID                   int64      `json:"id"`
+	CreatedAt            time.Time  `json:"created_at"`
+	Source               string     `json:"source"`
+	Endpoint             string     `json:"endpoint"`
+	Protocol             string     `json:"protocol"`
+	Provider             string     `json:"provider"`
+	Model                string     `json:"model"`
+	Action               string     `json:"action"`
+	Mode                 string     `json:"mode"`
+	Score                int        `json:"score"`
+	AuditScore           int        `json:"audit_score"`
+	Threshold            int        `json:"threshold"`
+	PolicyProfile        string     `json:"policy_profile"`
+	ReasonCode           string     `json:"reason_code"`
+	PrimaryOrigin        string     `json:"primary_origin"`
+	StrikeEligible       bool       `json:"strike_eligible"`
+	MatchedPatterns      string     `json:"matched_patterns"`
+	TextPreview          string     `json:"text_preview"`
+	MatchContext         string     `json:"match_context"`
+	FullText             string     `json:"full_text"`
+	APIKeyID             int64      `json:"api_key_id"`
+	AccountID            int64      `json:"account_id"`
+	APIKeyName           string     `json:"api_key_name"`
+	APIKeyMasked         string     `json:"api_key_masked"`
+	ClientIP             string     `json:"client_ip"`
+	ErrorCode            string     `json:"error_code"`
+	ReviewModel          string     `json:"review_model"`
+	ReviewFlagged        bool       `json:"review_flagged"`
+	ReviewError          string     `json:"review_error"`
+	Reviewed             bool       `json:"reviewed"`
+	ReviewConfidence     *float64   `json:"review_confidence"`
+	ReviewThreshold      *float64   `json:"review_threshold"`
+	ReviewReason         string     `json:"review_reason"`
+	ReviewEndpoint       string     `json:"review_endpoint"`
+	ReviewRequestMode    string     `json:"review_request_mode"`
+	ReviewLatencyMS      *int64     `json:"review_latency_ms"`
+	RequestCorrelationID string     `json:"request_correlation_id,omitempty"`
+	NewAPIPolicyStatus   string     `json:"newapi_policy_status,omitempty"`
+	NewAPIPlatform       string     `json:"newapi_platform,omitempty"`
+	NewAPIUserID         string     `json:"newapi_user_id,omitempty"`
+	NewAPIRequestID      string     `json:"newapi_request_id,omitempty"`
+	NewAPIDecisionID     string     `json:"newapi_decision_id,omitempty"`
+	SessionHash          string     `json:"session_hash,omitempty"`
+	ClientIPHash         string     `json:"client_ip_hash,omitempty"`
 }
 
 type PromptFilterLogInput struct {
@@ -671,6 +675,9 @@ type PromptFilterLogInput struct {
 }
 
 type PromptFilterLogQuery struct {
+	Grouped             bool
+	GroupID             int64
+	ids                 []int64
 	Page                int
 	PageSize            int
 	Limit               int
@@ -772,6 +779,9 @@ func (db *DB) ListPromptFilterLogs(ctx context.Context, limit int) ([]*PromptFil
 }
 
 func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLogQuery) ([]*PromptFilterLog, int, error) {
+	if query.Grouped && query.GroupID == 0 {
+		return db.listPromptFilterLogGroups(ctx, query)
+	}
 	pageSize := query.PageSize
 	if pageSize <= 0 {
 		pageSize = query.Limit
@@ -841,6 +851,23 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 func promptFilterLogWhere(query PromptFilterLogQuery) (string, []any) {
 	clauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
+	if query.GroupID > 0 {
+		args = append(args, query.GroupID)
+		left, right := promptLogGroupExpressions("prompt_filter_logs."), promptLogGroupExpressions("reference.")
+		conditions := []string{"reference.id = $1"}
+		for i := range left {
+			conditions = append(conditions, left[i]+" = "+right[i])
+		}
+		clauses = append(clauses, "EXISTS (SELECT 1 FROM prompt_filter_logs reference WHERE "+strings.Join(conditions, " AND ")+")")
+	}
+	if len(query.ids) > 0 {
+		placeholders := make([]string, 0, len(query.ids))
+		for _, id := range query.ids {
+			args = append(args, id)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		clauses = append(clauses, "id IN ("+strings.Join(placeholders, ",")+")")
+	}
 	addExact := func(column, value string) {
 		value = strings.TrimSpace(value)
 		if value == "" || value == "all" {

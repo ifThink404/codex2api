@@ -2840,6 +2840,18 @@
     "mediaUnpricedHint": "该媒体模型没有上游单位成本，请到模型定价页补填"
   },
   "promptFilter": {
+    "groupDisplay": "重复记录",
+    "groupViews": {
+      "grouped": "合并相同记录",
+      "individual": "逐条显示"
+    },
+    "groupTotal": "{{count}} 组",
+    "groupOccurrences": "{{count}} 次 · 查看明细",
+    "groupFirstSeen": "首次",
+    "groupLatestRecord": "上方为最近一次记录",
+    "groupHint": "同一用户、Key、模型、命中内容和处理结果相同的记录合并展示；点击次数查看原始请求。",
+    "groupDetailsTitle": "重复记录明细",
+    "groupDetailsHint": "保留当前筛选条件，按时间倒序展示该组原始记录；合并展示不会删除日志。",
     "localMode": "本地规则处理方式",
     "localModeHint": "仅控制本地规则。仅监控／仅警告不新增锁对话或违规处罚；模型复核及其失败策略保持独立，全局执行模式仍限制最终动作。",
     "localModes": {
