@@ -24,6 +24,7 @@ type toolProtocolItem struct {
 }
 
 type toolProtocolDiagnostic struct {
+	TopLevelToolsType  string             `json:"top_level_tools_type"`
 	Declarations       int                `json:"declarations"`
 	Calls              int                `json:"calls"`
 	MissingNames       int                `json:"missing_names"`
@@ -72,13 +73,28 @@ func (d *toolProtocolDiagnostic) addIssue(item toolProtocolItem) {
 
 func diagnoseToolProtocol(body []byte) *toolProtocolDiagnostic {
 	root := gjson.ParseBytes(body)
-	d := &toolProtocolDiagnostic{}
+	tools := root.Get("tools")
+	d := &toolProtocolDiagnostic{TopLevelToolsType: "absent"}
+	switch {
+	case !tools.Exists():
+	case tools.IsArray():
+		d.TopLevelToolsType = "array"
+	case tools.IsObject():
+		d.TopLevelToolsType = "object"
+	case tools.Type == gjson.True || tools.Type == gjson.False:
+		d.TopLevelToolsType = "boolean"
+	default:
+		d.TopLevelToolsType = strings.ToLower(tools.Type.String())
+	}
 	// Match by hash to avoid retaining identifiers in the diagnostic. A default
 	// declaration makes an unqualified call valid even if a namespaced twin exists.
 	defaultNames, namespacedNames := map[string]bool{}, map[string]bool{}
 	visited := 0
 	var declarations func(gjson.Result, string, bool, int)
 	declarations = func(tools gjson.Result, path string, namespaced bool, depth int) {
+		if !tools.IsArray() {
+			return
+		}
 		if depth > 8 {
 			d.ScanTruncated = true
 			return
@@ -122,7 +138,7 @@ func diagnoseToolProtocol(body []byte) *toolProtocolDiagnostic {
 			return true
 		})
 	}
-	declarations(root.Get("tools"), "tools", false, 0)
+	declarations(tools, "tools", false, 0)
 	root.Get("input").ForEach(func(index, item gjson.Result) bool {
 		if kind := item.Get("type").String(); kind == "additional_tools" || kind == "tool_search_output" {
 			declarations(item.Get("tools"), fmt.Sprintf("input[%d].tools", index.Int()), false, 0)
@@ -171,7 +187,9 @@ func diagnoseToolProtocol(body []byte) *toolProtocolDiagnostic {
 		})
 		return visited <= 4096
 	})
-	if d.Declarations == 0 && d.Calls == 0 && !d.ScanTruncated {
+	// Keep invalid collection shapes even when there are no recognizable tools
+	// or historical calls. Never retain their contents in the diagnostic.
+	if d.Declarations == 0 && d.Calls == 0 && !d.ScanTruncated && (!tools.Exists() || tools.IsArray()) {
 		return nil
 	}
 	return d

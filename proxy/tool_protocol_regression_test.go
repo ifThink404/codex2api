@@ -78,6 +78,7 @@ func TestFunctionNamespaceChatRoundTrip(t *testing.T) {
 func TestToolProtocolDiagnosticsPrivacyBoundsAndNamespaces(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"namespace","name":"private-namespace","tools":[{"type":"function","name":"private-tool","description":"private-description","parameters":{"private-schema":true}}]}],"input":[{"type":"function_call","name":"private-tool","call_id":"private-id","arguments":"private-arguments"},{"type":"function_call_output","output":"private-result"}]}`)
 	d := diagnoseToolProtocol(body)
+	require.Equal(t, "array", d.TopLevelToolsType)
 	require.Equal(t, 2, d.Declarations)
 	require.Equal(t, 1, d.Calls)
 	require.Equal(t, 1, d.MissingNamespaces)
@@ -166,4 +167,52 @@ func TestChatRejectsUnnamedToolBeforeAccountSelection(t *testing.T) {
 	require.Len(t, page.Items, 1)
 	require.EqualValues(t, 1, gjson.GetBytes(page.Items[0].ToolProtocol, "missing_names").Int())
 	require.Equal(t, "not_started", gjson.GetBytes(page.Items[0].UpstreamInfo, "transport").String())
+}
+
+func TestResponsesInvalidToolsTypeIsSavedWithoutContents(t *testing.T) {
+	for _, tc := range []struct{ name, value, kind string }{
+		{"null", `null`, "null"},
+		{"object", `{"private-key":{"type":"function","name":"private-tool"}}`, "object"},
+		{"string", `"[{\"type\":\"function\",\"name\":\"private-tool\"}]"`, "string"},
+		{"true", `true`, "boolean"},
+		{"false", `false`, "boolean"},
+		{"number", `1`, "number"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newServiceErrorTestHandler(t)
+			router := gin.New()
+			router.Use(h.ServiceErrorMiddleware())
+			router.POST("/v1/responses", h.Responses)
+			body := `{"model":"gpt-6-astra","input":"private-prompt","tools":` + tc.value + `}`
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body)))
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			require.Contains(t, recorder.Body.String(), "Field 'tools' must be an array")
+			page := serviceErrorTestPage(t, h)
+			require.Len(t, page.Items, 1)
+			event := page.Items[0]
+			require.Equal(t, "validation", event.Stage)
+			require.Equal(t, tc.kind, gjson.GetBytes(event.ToolProtocol, "top_level_tools_type").String())
+			require.Zero(t, gjson.GetBytes(event.ToolProtocol, "declarations").Int())
+			require.Equal(t, "not_started", gjson.GetBytes(event.UpstreamInfo, "transport").String())
+			encoded, err := json.Marshal(event)
+			require.NoError(t, err)
+			require.NotContains(t, string(encoded), "private-")
+		})
+	}
+	for _, fields := range []string{"", `,"tools":[]`} {
+		body := []byte(`{"model":"gpt-6-astra","input":"hello"` + fields + `}`)
+		require.True(t, api.ValidateResponsesAPIRequest(body, []string{"gpt-6-astra"}).Valid)
+		require.Nil(t, diagnoseToolProtocol(body), "ordinary tool-free requests should not add diagnostics")
+	}
+	for _, tc := range []struct{ fields, kind string }{
+		{"", "absent"}, {`,"tools":[]`, "array"}, {`,"tools":null`, "null"},
+	} {
+		body := []byte(`{"input":[{"type":"custom_tool_call","name":"private-tool","call_id":"private-call","input":"private-input"}]` + tc.fields + `}`)
+		d := diagnoseToolProtocol(body)
+		require.NotNil(t, d)
+		require.Equal(t, tc.kind, d.TopLevelToolsType)
+		require.Equal(t, 1, d.Calls)
+		require.Zero(t, d.Declarations)
+	}
 }
