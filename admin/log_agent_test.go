@@ -216,8 +216,12 @@ func TestLogAgentAnalyzeUsageLogRefsFallbackAndFailure(t *testing.T) {
 
 	llm.err = errors.New("HTTP 503")
 	recorder, payload = doLogAgentRequest(t, router, http.MethodPost, "/api/admin/log-agent/analyze", `{"source":"usage_logs","refs":["req-b"]}`)
-	if recorder.Code != http.StatusBadGateway || payload["run"].(map[string]any)["status"] != database.LogAgentRunStatusFailed {
+	failed := payload["run"].(map[string]any)
+	if recorder.Code != http.StatusBadGateway || failed["status"] != database.LogAgentRunStatusFailed || failed["error_message"] != "HTTP 503" || payload["error"] != "HTTP 503" {
 		t.Fatalf("failure status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if findings := failed["findings"].(map[string]any); len(findings) != 0 {
+		t.Fatalf("failed run must not carry empty findings: %v", findings)
 	}
 	runs, err := db.ListLogAgentRuns(context.Background(), database.LogAgentRunFilter{})
 	if err != nil || len(runs) != 2 {

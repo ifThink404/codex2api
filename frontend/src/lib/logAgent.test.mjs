@@ -9,6 +9,8 @@ const locales = ['zh', 'en', 'zh-TW'].map((name) => JSON.parse(read(`../locales/
 test('runFindings tolerates failed runs and partial findings', () => {
   assert.equal(runFindings(null), null)
   assert.equal(runFindings({ findings: {} }), null)
+  assert.equal(runFindings({ findings: { summary: '' } }), null)
+  assert.equal(runFindings({ findings: { summary: '', fallback: true } })?.fallback, true)
   assert.deepEqual(runFindings({ findings: { summary: 's', confidence: 0.4 } }), {
     summary: 's', root_causes: [], suggested_actions: [], confidence: 0.4, fallback: false,
   })

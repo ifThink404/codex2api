@@ -222,9 +222,12 @@ func (h *Handler) AnalyzeLogAgent(c *gin.Context) {
 		Model:       cfg.Model,
 		APIKeyID:    cfg.APIKeyID,
 		RecordCount: len(records),
+		Findings:    json.RawMessage(`{}`),
 	}
 	if result != nil {
-		run.Findings, _ = json.Marshal(result.Findings)
+		if analyzeErr == nil {
+			run.Findings, _ = json.Marshal(result.Findings)
+		}
 		run.ContextStats, _ = json.Marshal(result.Context)
 		run.InputTokens, run.OutputTokens, run.TotalTokens = result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens
 		run.DurationMs = result.DurationMs
@@ -232,7 +235,12 @@ func (h *Handler) AnalyzeLogAgent(c *gin.Context) {
 	switch {
 	case analyzeErr != nil:
 		run.Status = database.LogAgentRunStatusFailed
-		run.ErrorMessage = logagent.MaskText(analyzeErr.Error())
+		// Analyze 给模型错误加了包前缀，管理台只展示内层原因。
+		message := analyzeErr.Error()
+		if inner := errors.Unwrap(analyzeErr); inner != nil {
+			message = inner.Error()
+		}
+		run.ErrorMessage = logagent.MaskText(message)
 	case result.ParseError != "":
 		run.Status = database.LogAgentRunStatusFallback
 		run.ErrorMessage = result.ParseError

@@ -6,6 +6,7 @@ import type { LogAgentFindings, LogAgentRun } from '../types'
 export function runFindings(run: LogAgentRun | null | undefined): LogAgentFindings | null {
   const findings = run?.findings as Partial<LogAgentFindings> | undefined
   if (!findings || typeof findings.summary !== 'string') return null
+  if (!findings.summary && !findings.fallback) return null
   return {
     summary: findings.summary,
     root_causes: Array.isArray(findings.root_causes) ? findings.root_causes : [],
