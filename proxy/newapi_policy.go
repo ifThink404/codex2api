@@ -796,7 +796,12 @@ func (h *Handler) VerifyNewAPIPolicyHandshake(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"success": false, "message": "NewAPI 审核档案元数据签名或格式无效", "code": "policy_meta_invalid", "identity_verified": true})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "NewAPI 审计签名校验成功", "user_id": policyContext.Identity.UserID, "client_ip": policyContext.Identity.ClientIP, "request_id": policyContext.Identity.RequestID, "timestamp": c.GetHeader("X-NewAPI-Timestamp"), "platform": policyContext.Platform, "policy_meta_verified": policyContext.MetaVerified, "policy_meta": policyContext.Meta})
+	// Prove possession of this binding's secret to the connection tester. The
+	// purpose-separated response is bound to the fresh request ID and timestamp.
+	mac := hmac.New(sha256.New, []byte(policyContext.VerificationSecret))
+	mac.Write([]byte(strings.Join([]string{"newapi-handshake-result-v1", policyContext.Identity.RequestID, policyContext.Platform, c.GetHeader("X-NewAPI-Timestamp"), "ok"}, "\n")))
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "NewAPI 审计签名校验成功", "user_id": policyContext.Identity.UserID, "client_ip": policyContext.Identity.ClientIP, "request_id": policyContext.Identity.RequestID, "timestamp": c.GetHeader("X-NewAPI-Timestamp"), "platform": policyContext.Platform, "policy_meta_verified": policyContext.MetaVerified, "policy_meta": policyContext.Meta, "handshake_signature": hex.EncodeToString(mac.Sum(nil))})
 }
 
 // sendNewAPIPolicyDecision returns a structured policy event to NewAPI. NewAPI
