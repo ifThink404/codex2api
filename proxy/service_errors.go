@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -301,8 +302,12 @@ func (handler *Handler) recordServiceError(ctx *gin.Context, status int, apiErro
 		endpoint = ctx.Request.URL.Path
 	}
 	model := ctx.GetString("x-model")
-	if model == "" && transport != "websocket" {
-		model = gjson.GetBytes(api.GetRawBody(ctx), "model").String()
+	var body []byte
+	if transport != "websocket" {
+		body = api.GetRawBody(ctx)
+	}
+	if model == "" {
+		model = gjson.GetBytes(body, "model").String()
 	}
 	event := database.ServiceErrorEvent{
 		ID: NewUpstreamSessionUUID(), CreatedAt: time.Now().UTC(), RequestID: requestID,
@@ -313,6 +318,9 @@ func (handler *Handler) recordServiceError(ctx *gin.Context, status int, apiErro
 		APIKeyID: state.apiKeyID, APIKeyName: serviceErrorSafeText(ctx, state.apiKeyName, 160),
 		ThreadID:   serviceErrorLabel(ctx.GetHeader("Thread-Id")),
 		ClientInfo: serviceErrorClientInfo(ctx),
+	}
+	if stage == "validation" {
+		event.ToolProtocol = serviceErrorToolsShape(body)
 	}
 	if metadata := ctx.GetHeader(codexTurnMetadataHeader); metadata != "" && len(metadata) <= 16384 {
 		parsed := gjson.Parse(metadata)
@@ -333,6 +341,28 @@ func (handler *Handler) recordServiceError(ctx *gin.Context, status int, apiErro
 		event.NewAPIRequestID = serviceErrorLabel(ctx.GetHeader("X-NewAPI-Request-ID"))
 	}
 	handler.db.EnqueueServiceError(event)
+}
+
+// serviceErrorToolsShape records only the JSON type of an invalid top-level
+// tools collection, never its contents. A missing or array value is normal
+// and adds nothing.
+func serviceErrorToolsShape(body []byte) json.RawMessage {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return nil
+	}
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || tools.IsArray() {
+		return nil
+	}
+	kind := strings.ToLower(tools.Type.String())
+	switch {
+	case tools.IsObject():
+		kind = "object"
+	case tools.Type == gjson.True || tools.Type == gjson.False:
+		kind = "boolean"
+	}
+	encoded, _ := json.Marshal(map[string]string{"top_level_tools_type": kind})
+	return encoded
 }
 
 // serviceErrorClientInfo keeps the client's self-reported identity headers,

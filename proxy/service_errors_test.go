@@ -276,3 +276,42 @@ func TestServiceErrorsKeyQuotaKeepsCallerBeforeAuthenticationCompletes(test *tes
 		test.Fatalf("API key persisted: %s", payload)
 	}
 }
+
+func TestResponsesInvalidToolsTypeIsSavedWithoutContents(test *testing.T) {
+	for _, tc := range []struct{ name, value, kind string }{
+		{"object", `{"private-key":{"type":"function","name":"private-tool"}}`, "object"},
+		{"string", `"[{\"type\":\"function\",\"name\":\"private-tool\"}]"`, "string"},
+		{"true", `true`, "boolean"},
+		{"number", `1`, "number"},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			handler := newServiceErrorTestHandler(test)
+			router := gin.New()
+			router.Use(handler.ServiceErrorMiddleware(), api.BodyCacheMiddleware())
+			router.POST("/v1/responses", handler.APIKeyAuthMiddleware(), handler.Responses)
+			body := `{"model":"gpt-5.5","input":"private-prompt","tools":` + tc.value + `}`
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "Field 'tools' must be an array") {
+				test.Fatalf("validation response changed: %d %s", recorder.Code, recorder.Body.String())
+			}
+			page := serviceErrorTestPage(test, handler)
+			if len(page.Items) != 1 {
+				test.Fatalf("missing validation error: %+v", page)
+			}
+			event := page.Items[0]
+			var shape map[string]string
+			if err := json.Unmarshal(event.ToolProtocol, &shape); err != nil || event.Stage != "validation" || shape["top_level_tools_type"] != tc.kind {
+				test.Fatalf("tools shape = %s stage=%s err=%v", event.ToolProtocol, event.Stage, err)
+			}
+			if encoded, _ := json.Marshal(event); strings.Contains(string(encoded), "private-") {
+				test.Fatalf("request contents persisted: %s", encoded)
+			}
+		})
+	}
+	for _, body := range []string{`{"model":"gpt-5.5","input":"hello"}`, `{"model":"gpt-5.5","input":"hello","tools":[]}`} {
+		if shape := serviceErrorToolsShape([]byte(body)); shape != nil {
+			test.Fatalf("ordinary tools must not add diagnostics: %s", shape)
+		}
+	}
+}
