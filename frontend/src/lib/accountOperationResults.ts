@@ -8,6 +8,11 @@ export interface AccountOperationEvent {
   http_status?: number;
   message?: string;
   error?: string;
+  output?: string;
+  output_truncated?: boolean;
+  test_model?: string;
+  response_model?: string;
+  response_field_count?: number;
 }
 
 export interface AccountOperationResult {
@@ -17,6 +22,11 @@ export interface AccountOperationResult {
   status: string;
   httpStatus?: number;
   message: string;
+  output?: string;
+  outputTruncated?: boolean;
+  testModel?: string;
+  responseModel?: string;
+  responseFieldCount?: number;
 }
 
 export interface AccountOperationSummary {
@@ -88,6 +98,13 @@ export function collectAccountOperationResult(
         ? event.http_status
         : undefined,
     message: event.error?.trim() || event.message?.trim() || "",
+    ...(event.output ? { output: event.output } : {}),
+    ...(event.output_truncated ? { outputTruncated: true } : {}),
+    ...(event.test_model ? { testModel: event.test_model } : {}),
+    ...(event.response_model ? { responseModel: event.response_model } : {}),
+    ...(typeof event.response_field_count === "number"
+      ? { responseFieldCount: event.response_field_count }
+      : {}),
   });
 }
 

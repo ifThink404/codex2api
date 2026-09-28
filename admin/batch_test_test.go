@@ -110,6 +110,7 @@ func TestEmitBatchTestProgressIncludesStructuredResult(t *testing.T) {
 		&rateLimited,
 		"rate_limited",
 		"上游返回 429: 账号触发限流",
+		nil,
 	)
 
 	if got.Type != "progress" || got.Action != "batch_test" {

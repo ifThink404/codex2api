@@ -298,7 +298,46 @@ export default function OperationResultsModal({
                           )}
                         </TableCell>
                         <TableCell className="min-w-72 max-w-[32rem] whitespace-normal break-words text-xs">
-                          {result.message || "—"}
+                          <div>{result.message || "—"}</div>
+                          {state.action === "batch_test" && result.output ? (
+                            <details className="mt-1.5 rounded-md border border-border bg-muted/20 p-2">
+                              <summary className="cursor-pointer font-medium text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                {t("accounts.operationResultsViewOutput")}
+                              </summary>
+                              {result.testModel ? (
+                                <div className="mt-2 space-y-0.5 text-muted-foreground">
+                                  <div>
+                                    {t("accounts.operationResultsTestModel")}：{" "}
+                                    <span className="font-mono">{result.testModel}</span>
+                                  </div>
+                                  {result.responseModel ? (
+                                    <div>
+                                      {t("accounts.operationResultsResponseModel")}：{" "}
+                                      <span className="font-mono">{result.responseModel}</span>
+                                    </div>
+                                  ) : null}
+                                  {result.responseFieldCount != null ? (
+                                    <div>
+                                      {t("accounts.operationResultsResponseFields")}：{" "}
+                                      <span className="font-mono">{result.responseFieldCount}</span>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed select-text">
+                                {result.output}
+                              </pre>
+                              {result.outputTruncated ? (
+                                <p className="mt-2 text-muted-foreground">
+                                  {t("accounts.operationResultsOutputTruncated")}
+                                </p>
+                              ) : null}
+                            </details>
+                          ) : state.action === "batch_test" && result.status === "success" ? (
+                            <div className="mt-1 text-muted-foreground">
+                              {t("accounts.operationResultsNoOutput")}
+                            </div>
+                          ) : null}
                         </TableCell>
                       </TableRow>
                     );

@@ -97,6 +97,49 @@ test("collectAccountOperationResult clears stale results and supports legacy eve
   ]);
 });
 
+test("batch test output stays attached to its account through filtering and pagination", () => {
+  const results = new Map();
+  collectAccountOperationResult(results, {
+    type: "progress",
+    action: "batch_test",
+    account_id: 12,
+    status: "success",
+    http_status: 200,
+    message: "测试通过",
+    output: "第一行\n  第二行\n<script>plain text</script>",
+    output_truncated: true,
+    test_model: "gpt-test",
+    response_model: "gpt-test-2026",
+    response_field_count: 0,
+  });
+  collectAccountOperationResult(results, {
+    type: "progress",
+    action: "batch_test",
+    account_id: 13,
+    status: "failed",
+    error: "测试失败",
+    output: "未完成的回答",
+  });
+
+  const success = paginateAccountOperationResults(
+    filterAccountOperationResults(snapshotAccountOperationResults(results), "success"),
+    1,
+    50,
+  ).results;
+  assert.equal(success.length, 1);
+  assert.equal(success[0].accountId, 12);
+  assert.equal(success[0].output, "第一行\n  第二行\n<script>plain text</script>");
+  assert.equal(success[0].outputTruncated, true);
+  assert.equal(success[0].testModel, "gpt-test");
+  assert.equal(success[0].responseModel, "gpt-test-2026");
+  assert.equal(success[0].responseFieldCount, 0);
+  assert.equal(results.get(13).status, "failed");
+  assert.equal(results.get(13).output, "未完成的回答");
+
+  collectAccountOperationResult(results, { type: "start", action: "batch_test" });
+  assert.equal(results.size, 0);
+});
+
 test("summarizeAccountOperationResults groups every result for the modal header", () => {
   assert.deepEqual(
     summarizeAccountOperationResults([

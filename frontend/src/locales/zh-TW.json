@@ -344,6 +344,12 @@
     }
   },
   "accounts": {
+    "operationResultsViewOutput": "查看測試輸出",
+    "operationResultsTestModel": "測試模型",
+    "operationResultsResponseModel": "實際回應模型",
+    "operationResultsResponseFields": "回應欄位數",
+    "operationResultsOutputTruncated": "輸出較長，僅顯示前 4 KiB。",
+    "operationResultsNoOutput": "本次結果未提供輸出文字",
     "probePolicyTitle": "背景探測與復原",
     "probeMode": "背景探測模式",
     "probeModeAuto": "自動",
