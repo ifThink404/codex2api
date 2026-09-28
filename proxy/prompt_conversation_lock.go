@@ -632,7 +632,9 @@ func (h *Handler) lockPromptConversationAfterUpstreamCYB(c *gin.Context, endpoin
 	if !exactConversation && promptUserCyberCooldownTTL(cfg) <= 0 {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	// An observed upstream rejection must survive a disconnected client. Detach
+	// only this bounded persistence step; model requests keep their cancellation.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 3*time.Second)
 	defer cancel()
 	item, _, err := h.db.LockPromptConversation(ctx, database.PromptConversationLockInput{
 		LockKey: identity.LockKey, IdentityKind: identity.Kind,
@@ -648,7 +650,7 @@ func (h *Handler) lockPromptConversationAfterUpstreamCYB(c *gin.Context, endpoin
 	if !exactConversation {
 		return false
 	}
-	h.cachePromptConversationLock(c.Request.Context(), item, promptConversationLockTTL(cfg))
+	h.cachePromptConversationLock(ctx, item, promptConversationLockTTL(cfg))
 	return item != nil && item.Status == database.PromptConversationLockStatusActive
 }
 
@@ -676,7 +678,8 @@ func (h *Handler) lockPromptConversationAfterUnsignedUpstreamCYB(c *gin.Context,
 		reasonCode = promptUpstreamBioPolicyReasonCode
 	}
 	requestID := ensurePromptPolicyRequestCorrelationID(c)
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	// Unsigned session/replay locks must also persist after a client disconnect.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 3*time.Second)
 	defer cancel()
 	item, _, err := h.db.LockPromptConversation(ctx, database.PromptConversationLockInput{
 		LockKey: identity.LockKey, IdentityKind: identity.Kind,
@@ -694,7 +697,7 @@ func (h *Handler) lockPromptConversationAfterUnsignedUpstreamCYB(c *gin.Context,
 		lockTTL = promptUserCyberCooldownTTL(cfg)
 		h.markFingerprintReplayLockCreated()
 	}
-	h.cachePromptConversationLock(c.Request.Context(), item, lockTTL)
+	h.cachePromptConversationLock(ctx, item, lockTTL)
 	return item != nil && item.Status == database.PromptConversationLockStatusActive
 }
 
