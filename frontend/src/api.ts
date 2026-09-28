@@ -1,5 +1,11 @@
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
+  PluginCapture,
+  PluginCapturePage,
+  PluginCaptureQuery,
+  TransportPlugin,
+  TransportPluginsResponse,
+  TransportPluginUpdate,
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
   AccountPortalSubmitResponse,
@@ -522,6 +528,8 @@ export type UsageLogQueryParams = {
   turnStateEcho?: string
   /** true | false —— 代理有没有把客户端回带的 turn-state 剥掉。 */
   turnStateStripped?: string
+  /** native 或传输插件 ID。 */
+  transport?: string
 }
 
 export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
@@ -551,6 +559,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.turnStateLength) search.set('turn_state_length', params.turnStateLength)
   if (params.turnStateEcho) search.set('turn_state_echo', params.turnStateEcho)
   if (params.turnStateStripped) search.set('turn_state_stripped', params.turnStateStripped)
+  if (params.transport) search.set('transport', params.transport)
   return search
 }
 
@@ -1415,6 +1424,30 @@ export const api = {
 	getPromptPolicyAuditHealth: () =>
 		request<PromptPolicyAuditHealth>('/prompt-policy/incidents/health'),
 	getPromptLogRetention: () => request<PromptLogRetention>('/prompt-filter/retention'),
+	getTransportPlugins: () => request<TransportPluginsResponse>('/plugins'),
+	getTransportPlugin: (id: string) => request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`),
+	updateTransportPlugin: (id: string, update: TransportPluginUpdate) =>
+		request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(update) }),
+	setTransportPluginAccountOverride: (id: string, accountId: number, enabled: boolean | null) =>
+		request<{ account_id: number; plugin: string; enabled: boolean | null }>(
+			`/plugins/${encodeURIComponent(id)}/accounts/${accountId}`,
+			{ method: 'PUT', body: JSON.stringify({ enabled }) },
+		),
+	getPluginCaptures: (id: string, query: PluginCaptureQuery = {}) => {
+		const search = new URLSearchParams()
+		if (query.requestId) search.set('request_id', query.requestId)
+		if (query.accountId) search.set('account_id', String(query.accountId))
+		if (query.status !== undefined) search.set('status', String(query.status))
+		if (query.direction) search.set('direction', query.direction)
+		if (query.start) search.set('start', query.start)
+		if (query.end) search.set('end', query.end)
+		if (query.page) search.set('page', String(query.page))
+		if (query.pageSize) search.set('page_size', String(query.pageSize))
+		const qs = search.toString()
+		return request<PluginCapturePage>(`/plugins/${encodeURIComponent(id)}/captures${qs ? `?${qs}` : ''}`)
+	},
+	getPluginCapture: (id: string, captureId: number) =>
+		request<PluginCapture>(`/plugins/${encodeURIComponent(id)}/captures/${captureId}`),
 	updatePromptLogRetention: (retentionDays: number) =>
 		request<PromptLogRetention>('/prompt-filter/retention', { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) }),
 	runPromptLogRetention: () =>

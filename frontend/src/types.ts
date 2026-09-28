@@ -3722,9 +3722,96 @@ export interface UsageLog {
   upstream_error_kind: string
 	error_message: string
 	prompt_policy_incident_id?: string
+	/** 'native' or the transport plugin ID that served this attempt. */
+	transport?: string
+	/** Plugin-owned JSON metadata; empty for native rows. */
+	plugin_meta?: string
 }
 
 export type UsageLogsResponse = ApiListResponse<'logs', UsageLog>
+
+export type TransportPluginRequestKind = 'responses' | 'responses_compact' | 'chat_completions' | 'messages'
+
+export interface TransportPluginMeta {
+  name: string
+  description: string
+  kinds: TransportPluginRequestKind[]
+  override_credential_key: string
+  upstream_endpoint?: string
+}
+
+export interface TransportPluginState {
+  id: string
+  enabled: boolean
+  group_ids: number[]
+  config: Record<string, unknown>
+  capture_enabled: boolean
+  capture_sample_rate: number
+  updated_at: string
+}
+
+export interface TransportPluginAccountOverride {
+  account_id: number
+  name: string
+  enabled: boolean
+}
+
+export interface TransportPlugin {
+  id: string
+  meta: TransportPluginMeta
+  override_credential_key: string
+  state: TransportPluginState
+  overrides: TransportPluginAccountOverride[]
+}
+
+export interface TransportPluginsResponse {
+  plugins: TransportPlugin[]
+  capture_written: number
+  capture_dropped: number
+}
+
+export interface TransportPluginUpdate {
+  enabled?: boolean
+  group_ids?: number[]
+  config?: Record<string, unknown>
+  capture_enabled?: boolean
+  capture_sample_rate?: number
+}
+
+export type PluginCaptureDirection = 'request' | 'response' | 'error'
+
+export interface PluginCapture {
+  id: number
+  plugin: string
+  request_id: string
+  account_id: number
+  attempt: number
+  direction: PluginCaptureDirection
+  status: number
+  headers: string
+  /** Present only on the single-capture endpoint. */
+  body?: string
+  body_bytes: number
+  error_kind: string
+  truncated: boolean
+  created_at: string
+}
+
+export interface PluginCapturePage {
+  captures: PluginCapture[]
+  total: number
+}
+
+export interface PluginCaptureQuery {
+  requestId?: string
+  accountId?: number
+  status?: number
+  direction?: PluginCaptureDirection
+  start?: string
+  end?: string
+  page?: number
+  pageSize?: number
+}
 
 export interface UsageLogsPagedResponse {
   logs: UsageLog[]
