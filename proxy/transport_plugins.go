@@ -128,6 +128,9 @@ func populateTransportPluginUsage(c *gin.Context, input *database.UsageLogInput)
 	if input.PluginMeta == "" {
 		input.PluginMeta = meta
 	}
+	if input.UpstreamErrorKind == "" {
+		input.UpstreamErrorKind = req.UsageErrorKind(transport)
+	}
 	if endpoint := req.UsageUpstreamEndpoint(transport); endpoint != "" {
 		input.UpstreamEndpoint = endpoint
 	} else if p, ok := plugins.Default().Get(transport); ok {

@@ -29,6 +29,8 @@ type wiringPlugin struct {
 	executes atomic.Int32
 	vetoed   atomic.Bool
 	lastEnv  atomic.Pointer[plugins.ReqEnv]
+	// errorKind, when set, is recorded as the usage row's error kind.
+	errorKind string
 }
 
 func (p *wiringPlugin) ID() string { return "wiringplug" }
@@ -43,6 +45,9 @@ func (p *wiringPlugin) Execute(_ context.Context, env *plugins.ReqEnv) (*http.Re
 	p.executes.Add(1)
 	p.lastEnv.Store(env)
 	env.Request.SetUsageMeta(p.ID(), `{"profile":"test"}`)
+	if p.errorKind != "" {
+		env.Request.SetUsageErrorKind(p.ID(), p.errorKind)
+	}
 	var body bytes.Buffer
 	for _, event := range []string{
 		`{"type":"plugin.created","response":{"id":"resp_p","status":"in_progress"}}`,
@@ -141,6 +146,19 @@ func TestResponsesTransportPluginServesAttempt(t *testing.T) {
 				t.Fatalf("usage row transport=%q meta=%q endpoint=%q input=%d rid=%q", row.Transport, row.PluginMeta, row.UpstreamEndpoint, row.InputTokens, row.RequestID)
 			}
 		})
+	}
+}
+
+func TestResponsesTransportPluginRecordsUsageErrorKind(t *testing.T) {
+	handler, db, plugin, _ := newTransportPluginTestHandler(t, true)
+	plugin.errorKind = "plugin_marker"
+	recorder := invokeTracedResponses(t, handler, `{"model":"gpt-5.5","stream":true,"input":"hi"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	row := onlyUsageLog(t, db)
+	if row.Transport != plugin.ID() || row.StatusCode != http.StatusOK || row.UpstreamErrorKind != "plugin_marker" {
+		t.Fatalf("usage row transport=%q status=%d kind=%q", row.Transport, row.StatusCode, row.UpstreamErrorKind)
 	}
 }
 

@@ -352,7 +352,8 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 	env.Request.SetUsageUpstreamEndpoint(BPSPluginID, endpoint)
 	resp, err := executeCodexBPS(ctx, pluginServices(env), env.Account, env.Body, env.CacheKey, env.ProxyURL, env.APIKey, deviceCfg, env.Header, env.Compact)
 	if err == nil && resp != nil && resp.StatusCode == http.StatusOK && !env.Compact && bpsStreamIsEventStream(resp.Header.Get("Content-Type")) {
-		resp.Body = newBPSStreamGuard(resp.Body)
+		request := env.Request
+		resp.Body = newBPSStreamGuard(resp.Body, func() { request.SetUsageErrorKind(BPSPluginID, BPSCutoffCompletedKind) })
 	}
 	if d := bpsAttemptDiagnostic(env); d != nil {
 		meta := map[string]string{"profile": string(d.Profile)}

@@ -28,6 +28,7 @@ type Request struct {
 	state     map[string]any
 	usageMeta map[string]string
 	usageEnd  map[string]string
+	usageKind map[string]string
 	served    string
 	attempts  int
 }
@@ -86,6 +87,31 @@ func (r *Request) SetUsageUpstreamEndpoint(pluginID, endpoint string) {
 		r.usageEnd = map[string]string{}
 	}
 	r.usageEnd[pluginID] = endpoint
+}
+
+// SetUsageErrorKind records usage_logs.upstream_error_kind for rows logged
+// while pluginID serves this request and core recorded no error kind (e.g. a
+// successful response the plugin had to complete itself).
+func (r *Request) SetUsageErrorKind(pluginID, kind string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.usageKind == nil {
+		r.usageKind = map[string]string{}
+	}
+	r.usageKind[pluginID] = kind
+}
+
+// UsageErrorKind returns the kind set with SetUsageErrorKind.
+func (r *Request) UsageErrorKind(pluginID string) string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.usageKind[pluginID]
 }
 
 // Transport returns the transport of the latest resolved attempt ("" before
