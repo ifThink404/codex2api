@@ -33,6 +33,21 @@ func newAntigravityConnectionTestAccount() *auth.Account {
 	}
 }
 
+func TestCodexConnectionTestAcceptsAccountManifestModel(t *testing.T) {
+	account := &auth.Account{Models: []string{"gpt-6-sol", "gpt-6-terra", "gpt-6-luna", "gpt-image-2"}}
+	for _, model := range []string{"gpt-6-sol", "GPT-6-Terra", "gpt-6-luna"} {
+		if !codexAccountAdvertisesTextModel(account, model) {
+			t.Fatalf("account manifest model %q should be accepted", model)
+		}
+	}
+	if codexAccountAdvertisesTextModel(account, "gpt-image-2") {
+		t.Fatal("image models must not be accepted as text connection tests")
+	}
+	if codexAccountAdvertisesTextModel(nil, "gpt-6-sol") || codexAccountAdvertisesTextModel(account, "gpt-7") {
+		t.Fatal("models outside the account manifest must be rejected")
+	}
+}
+
 func TestConnectionAntigravityUsesNativeExecutorAndStreamsContent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := auth.NewStore(nil, nil, nil)
