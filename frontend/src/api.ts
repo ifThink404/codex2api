@@ -1160,6 +1160,27 @@ export const api = {
     const search = buildOpsErrorSearchParams(params)
     return requestBlob(`/ops/errors/export?${search.toString()}`)
   },
+  getLogAgentConfig: () => request<import('./types').LogAgentConfigResponse>('/log-agent/config'),
+  updateLogAgentConfig: (config: import('./types').LogAgentConfig) =>
+    request<{ config: import('./types').LogAgentConfig }>('/log-agent/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+  // 后端按配置的超时(最长 300s)同步分析,客户端多留余量给取日志与落库。
+  analyzeLogAgent: (data: import('./types').LogAgentAnalyzeRequest) =>
+    request<{ run: import('./types').LogAgentRun }>('/log-agent/analyze', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 330_000,
+    }),
+  listLogAgentRuns: (params: { source?: string; beforeId?: number; limit?: number } = {}) => {
+    const search = new URLSearchParams()
+    if (params.source) search.set('source', params.source)
+    if (params.beforeId) search.set('before_id', String(params.beforeId))
+    if (params.limit) search.set('limit', String(params.limit))
+    return request<{ runs: import('./types').LogAgentRun[] }>(`/log-agent/runs?${search.toString()}`)
+  },
+  getLogAgentRun: (id: number) => request<{ run: import('./types').LogAgentRun }>(`/log-agent/runs/${id}`),
   // 区间统计卡片可携带与 /usage/logs 同一套维度筛选(账号/密钥/模型/端点/搜索等),
   // 后端会忽略状态类参数;累计字段始终全局。
   getUsageStats: (params: Partial<Omit<UsageLogQueryParams, 'start' | 'end'>> & {
