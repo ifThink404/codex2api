@@ -771,6 +771,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "prompt_filter_sensitive_words", "TEXT DEFAULT ''"},
 		{"system_settings", "prompt_filter_custom_patterns", "TEXT DEFAULT '[]'"},
 		{"system_settings", "prompt_filter_disabled_patterns", "TEXT DEFAULT '[]'"},
+		{"system_settings", "prompt_filter_builtin_overrides", "TEXT DEFAULT '[]'"},
 		{"system_settings", "prompt_filter_review_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "prompt_filter_review_api_key", "TEXT DEFAULT ''"},
 		{"system_settings", "prompt_filter_review_base_url", "TEXT DEFAULT 'https://api.deepseek.com'"},

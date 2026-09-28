@@ -3105,12 +3105,34 @@ export function patchAdvancedConfigDocument(
   }
 }
 
+export interface BuiltinPromptRuleFields {
+  name: string
+  pattern: string
+  weight: number
+  category: string
+  strict: boolean
+  signal_only: boolean
+  all_patterns: string[]
+  any_patterns: string[]
+  exclude_patterns: string[]
+  authorization_exclude_patterns: string[]
+  min_matches: number
+}
+
 export interface PromptFilterRule {
+  overridden?: boolean
+  default?: BuiltinPromptRuleFields
   name: string
   pattern: string
   weight: number
   category?: string
   strict?: boolean
+  signal_only?: boolean
+  all_patterns?: string[] | null
+  any_patterns?: string[] | null
+  exclude_patterns?: string[] | null
+  authorization_exclude_patterns?: string[] | null
+  min_matches?: number
   enabled?: boolean
   builtin?: boolean
 }

@@ -16,8 +16,10 @@ import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import { getPromptFilterScoreBand, normalizePromptFilterScore } from '../lib/promptFilterScore'
+import { defaultPromptRuleFilters, matchesPromptRuleFilters, promptRuleConditionKeys, promptRuleConditionsValid, promptRuleFields, promptRuleParticipates } from '../lib/promptRuleFields'
+import type { PromptRuleConditionKey, PromptRuleFilters } from '../lib/promptRuleFields'
 import { parseAdvancedConfigDocument, patchAdvancedConfigDocument, readAdvancedConfigPath } from '../types'
-import type { AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIdentityUpdateMode, PromptIntelligenceAIAnalysisResponse, PromptIntelligenceAIProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceGatewayKey, PromptIntelligenceRun, PromptPolicyAuditHealth, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewAPIKeyDescriptor, PromptReviewKeyTestResult, PromptReviewProfile, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings, PromptLogRetention, PromptRiskIncidentSubject, PromptIntelligenceDraftSuggestion } from '../types'
+import type { BuiltinPromptRuleFields, AdvancedConfigObject, AdvancedConfigPatch, PromptFilterLog, PromptFilterMatch, PromptFilterRule, PromptFilterRulesResponse, PromptFilterTestResponse, PromptGuardConfig, PromptGuardLayer, PromptGuardMode, PromptGuardProfile, PromptGuardProvider, PromptIdentityUpdateMode, PromptIntelligenceAIAnalysisResponse, PromptIntelligenceAIProvider, PromptIntelligenceCandidate, PromptIntelligenceEvidenceResponse, PromptIntelligenceGatewayKey, PromptIntelligenceRun, PromptPolicyAuditHealth, PromptPolicyIncident, PromptPolicyIncidentDetailResponse, PromptReviewAPIKeyDescriptor, PromptReviewKeyTestResult, PromptReviewProfile, PromptReviewTestResponse, PromptRiskProfile, PromptRiskProfileDetailResponse, SystemSettings, PromptLogRetention, PromptRiskIncidentSubject, PromptIntelligenceDraftSuggestion } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -111,6 +113,12 @@ type CustomRuleDraft = {
   weight: string
   category: string
   strict: boolean
+  signal_only: boolean
+  all_patterns: string[]
+  any_patterns: string[]
+  exclude_patterns: string[]
+  authorization_exclude_patterns: string[]
+  min_matches: string
 }
 
 type ReviewAdapterFormConfig = {
@@ -506,6 +514,8 @@ const defaultCustomRuleDraft: CustomRuleDraft = {
   weight: '50',
   category: 'custom',
   strict: false,
+  signal_only: false,
+  all_patterns: [], any_patterns: [], exclude_patterns: [], authorization_exclude_patterns: [], min_matches: '0',
 }
 
 const defaultRulePatternTestState: RulePatternTestState = {
@@ -529,11 +539,13 @@ function customRuleIdentity(rule: PromptFilterRule): string {
 
 function customRuleDraftFromRule(rule: PromptFilterRule): CustomRuleDraft {
   return {
+    ...promptRuleFields(rule),
     name: rule.name || '',
     pattern: rule.pattern || '',
     weight: String(rule.weight || 50),
     category: rule.category || 'custom',
     strict: Boolean(rule.strict),
+    min_matches: String(rule.min_matches ?? 0),
   }
 }
 
@@ -4774,11 +4786,12 @@ function RulesView({
   const [infoOpen, setInfoOpen] = useState(false)
   const [previewRule, setPreviewRule] = useState<PromptFilterRule | null>(null)
   const [previewPatternCopied, setPreviewPatternCopied] = useState(false)
-  const [customDialogMode, setCustomDialogMode] = useState<'create' | 'edit' | null>(null)
+  const [customDialogMode, setCustomDialogMode] = useState<'create' | 'edit' | 'builtin' | null>(null)
   const [editingCustomOriginalFingerprint, setEditingCustomOriginalFingerprint] = useState<string | null>(null)
+  const [editingBuiltin, setEditingBuiltin] = useState<PromptFilterRule | null>(null)
   const [customDialogDraft, setCustomDialogDraft] = useState<CustomRuleDraft>(defaultCustomRuleDraft)
   const [savingRule, setSavingRule] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState<string>('')
+  const [ruleFilters, setRuleFilters] = useState<PromptRuleFilters>(defaultPromptRuleFilters)
   const [selectedRules, setSelectedRules] = useState<Set<string>>(new Set())
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
@@ -4807,15 +4820,24 @@ function RulesView({
 
   const allCategories = useMemo(() => {
     const cats = new Set<string>()
-    ;(rules?.builtin_patterns ?? []).forEach((rule) => rule.category && cats.add(rule.category))
+    ;[...(rules?.builtin_patterns ?? []), ...customPatterns].forEach((rule) => rule.category && cats.add(rule.category))
     return Array.from(cats).sort()
-  }, [rules?.builtin_patterns])
+  }, [rules?.builtin_patterns, customPatterns])
 
   const filteredBuiltinRules = useMemo(() => {
     const builtins = rules?.builtin_patterns ?? []
-    if (!categoryFilter) return builtins
-    return builtins.filter((rule) => rule.category === categoryFilter)
-  }, [rules?.builtin_patterns, categoryFilter])
+    return builtins.filter((rule) => matchesPromptRuleFilters(rule, ruleFilters))
+  }, [rules?.builtin_patterns, ruleFilters])
+
+  const filteredCustomRules = useMemo(() => customPatterns
+    .map((rule, index) => ({ rule: { ...rule, builtin: false }, index }))
+    .filter(({ rule }) => matchesPromptRuleFilters(rule, ruleFilters)), [customPatterns, ruleFilters])
+
+  const updateRuleFilter = (key: keyof PromptRuleFilters, value: string) => {
+    setRuleFilters((current) => ({ ...current, [key]: value }))
+    setPage(1)
+    setSelectedRules(new Set())
+  }
 
   const paginatedRules = useMemo(() => {
     const start = (page - 1) * pageSize
@@ -4823,6 +4845,15 @@ function RulesView({
   }, [filteredBuiltinRules, page, pageSize])
 
   const totalPages = Math.max(1, Math.ceil(filteredBuiltinRules.length / pageSize))
+
+  useEffect(() => { setPage((current) => Math.min(current, totalPages)) }, [totalPages])
+  useEffect(() => {
+    const visible = new Set(paginatedRules.map((rule) => rule.name))
+    setSelectedRules((current) => {
+      const next = new Set([...current].filter((name) => visible.has(name)))
+      return next.size === current.size ? current : next
+    })
+  }, [paginatedRules])
 
   const toggleSelectAll = () => {
     if (selectedRules.size === paginatedRules.length) {
@@ -4908,6 +4939,41 @@ function RulesView({
     })
   }
 
+  const draftConditionsValid = promptRuleConditionsValid(customDialogDraft, customDialogDraft.min_matches)
+  const draftRuleFields = (): BuiltinPromptRuleFields => ({
+    ...customDialogDraft, name: customDialogDraft.name.trim(), weight: parseRuleWeight(customDialogDraft.weight)!,
+    category: customDialogDraft.category.trim(), min_matches: Number(customDialogDraft.min_matches),
+  })
+
+  const startEditBuiltinRule = (rule: PromptFilterRule) => {
+    setEditingBuiltin(rule)
+    setCustomDialogMode('builtin')
+    setCustomDialogDraft(customRuleDraftFromRule(rule))
+  }
+
+  const saveBuiltinRule = async (restore: boolean) => {
+    if (!editingBuiltin) return
+    const weight = parseRuleWeight(customDialogDraft.weight)
+    if (!restore && (weight === null || !draftConditionsValid)) return
+    setSavingRule('rules')
+    try {
+      const nextRules = await api.updateBuiltinPromptRule(editingBuiltin.name, promptRuleFields(editingBuiltin), restore ? null : { ...draftRuleFields(), name: editingBuiltin.name })
+      onRulesUpdated(nextRules)
+      closeCustomRuleDialog()
+      showToast(t(restore ? 'promptFilter.builtinRestored' : 'promptFilter.builtinSaved'))
+    } catch (error) {
+      if (error instanceof AdminAPIError && error.status === 409) {
+        try {
+          const [latestRules, latestSettings] = await Promise.all([api.getPromptFilterRules(), api.getSettings()])
+          onRulesUpdated(latestRules, latestSettings)
+        } catch { /* keep the current draft available */ }
+        showToast(t('promptFilter.ruleSaveConflict'), 'warning')
+      } else {
+        showToast(`${t('promptFilter.saveFailed')}: ${getErrorMessage(error)}`, 'error')
+      }
+    } finally { setSavingRule('') }
+  }
+
   const startCreateCustomRule = () => {
     setCustomDialogMode('create')
     setEditingCustomOriginalFingerprint(null)
@@ -4923,21 +4989,24 @@ function RulesView({
   }
 
   const closeCustomRuleDialog = () => {
+    setEditingBuiltin(null)
     setCustomDialogMode(null)
     setEditingCustomOriginalFingerprint(null)
     setCustomDialogDraft(defaultCustomRuleDraft)
   }
 
   const saveCustomRuleDialog = async () => {
+    if (customDialogMode === 'builtin') { await saveBuiltinRule(false); return }
     const name = customDialogDraft.name.trim()
     const pattern = customDialogDraft.pattern
     const weight = parseRuleWeight(customDialogDraft.weight)
-    if (!name || !pattern.trim() || weight === null) return
+    if (!name || !draftConditionsValid || weight === null) return
 
     if (customDialogMode === 'create') {
       const saved = await saveCustomPatterns([
         ...customPatterns,
         {
+          ...draftRuleFields(),
           name,
           pattern,
           weight,
@@ -4959,6 +5028,7 @@ function RulesView({
       }
       const next = customPatterns.map((rule, index) => index === editingCustomIndex ? {
         ...rule,
+        ...draftRuleFields(),
         name,
         pattern,
         weight,
@@ -4981,6 +5051,32 @@ function RulesView({
 
   return (
     <>
+      <Card className="mb-4">
+        <CardContent>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <SectionTitle title={t('promptFilter.ruleFiltersTitle')} />
+            <Button size="sm" variant="outline" onClick={() => { setRuleFilters(defaultPromptRuleFilters); setPage(1); setSelectedRules(new Set()) }}>{t('promptFilter.resetFilters')}</Button>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <Field label={t('promptFilter.ruleNameSearch')}>
+              <Input value={ruleFilters.name} onChange={(event) => updateRuleFilter('name', event.target.value)} placeholder={t('promptFilter.ruleNameSearchPlaceholder')} />
+            </Field>
+            <Field label={t('promptFilter.filterByCategory')}>
+              <Select value={ruleFilters.category} onValueChange={(value) => updateRuleFilter('category', value)} options={[{ label: t('common.all'), value: '' }, ...allCategories.map((cat) => ({ label: cat, value: cat }))]} />
+            </Field>
+            {([
+              ['source', 'ruleSourceFilter', [['builtin', 'builtinRule'], ['custom', 'customRule']]],
+              ['participation', 'ruleParticipation', [['execution', 'ruleExecution'], ['audit', 'ruleAuditOnly']]],
+              ['strength', 'ruleStrengthFilter', [['strict', 'ruleStrict'], ['ordinary', 'ruleOrdinary']]],
+              ['modification', 'ruleModificationFilter', [['modified', 'builtinModified'], ['default', 'ruleDefault']]],
+              ['enabled', 'ruleEnabledFilter', [['enabled', 'ruleEnabled'], ['disabled', 'ruleDisabled']]],
+            ] as const).map(([key, label, options]) => <Field key={key} label={t(`promptFilter.${label}`)}>
+              <Select value={ruleFilters[key]} onValueChange={(value) => updateRuleFilter(key, value)} options={[{ label: t('common.all'), value: '' }, ...options.map(([value, text]) => ({ value, label: t(`promptFilter.${text}`) }))]} />
+            </Field>)}
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">{t('promptFilter.ruleFiltersHint', { builtin: filteredBuiltinRules.length, custom: filteredCustomRules.length })}</p>
+        </CardContent>
+      </Card>
       <Card>
         <CardContent>
           <div className="mb-4 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
@@ -4995,22 +5091,6 @@ function RulesView({
           </div>
 
           <div className="mb-4 flex flex-wrap items-center gap-3">
-            <div className="min-w-[240px]">
-              <Field label={t('promptFilter.filterByCategory')}>
-                <Select
-                  value={categoryFilter}
-                  onValueChange={(value) => {
-                    setCategoryFilter(value)
-                    setPage(1)
-                    setSelectedRules(new Set())
-                  }}
-                  options={[
-                    { label: t('common.all'), value: '' },
-                    ...allCategories.map((cat) => ({ label: cat, value: cat }))
-                  ]}
-                />
-              </Field>
-            </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={toggleSelectAll}>
                 {selectedRules.size === paginatedRules.length && paginatedRules.length > 0 ? t('promptFilter.deselectAll') : t('promptFilter.selectAll')}
@@ -5046,7 +5126,7 @@ function RulesView({
               <TableBody>
                 {paginatedRules.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">{t('promptFilter.noRulesInCategory')}</TableCell>
+                    <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">{t('promptFilter.noMatchingRules')}</TableCell>
                   </TableRow>
                 ) : paginatedRules.map((rule) => (
                   <RuleRow
@@ -5056,6 +5136,7 @@ function RulesView({
                     onSelect={() => toggleSelectRule(rule.name)}
                     onPreview={() => openRulePreview(rule)}
                     onToggle={() => void toggleBuiltin(rule)}
+                    onEdit={() => startEditBuiltinRule(rule)}
                     busy={saving || savingRule !== ''}
                   />
                 ))}
@@ -5068,7 +5149,7 @@ function RulesView({
             totalPages={totalPages}
             totalItems={filteredBuiltinRules.length}
             pageSize={pageSize}
-            onPageChange={setPage}
+            onPageChange={(next) => { setPage(next); setSelectedRules(new Set()) }}
             onPageSizeChange={(next) => {
               setPage(1)
               setPageSize(next)
@@ -5104,11 +5185,11 @@ function RulesView({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {customPatterns.length === 0 ? (
+                {filteredCustomRules.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">{t('promptFilter.noCustomRules')}</TableCell>
+                    <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">{t(customPatterns.length === 0 ? 'promptFilter.noCustomRules' : 'promptFilter.noMatchingRules')}</TableCell>
                   </TableRow>
-                ) : customPatterns.map((rule, index) => (
+                ) : filteredCustomRules.map(({ rule, index }) => (
                   <RuleRow
                     key={`${customRuleIdentity(rule)}-${index}`}
                     rule={{ ...rule, builtin: false, enabled: rule.enabled !== false }}
@@ -5127,14 +5208,14 @@ function RulesView({
       </Card>
 
       <Dialog open={customDialogMode !== null} onOpenChange={(open) => { if (!open) closeCustomRuleDialog() }}>
-        <DialogContent className="max-h-[calc(100vh-2rem)] max-w-2xl overflow-y-auto">
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-3xl">
           <DialogHeader>
-            <DialogTitle>{customDialogMode === 'create' ? t('promptFilter.addCustomRule') : t('promptFilter.editCustomRule')}</DialogTitle>
-            <DialogDescription>{customDialogMode === 'create' ? t('promptFilter.addCustomRuleDesc') : t('promptFilter.editCustomRuleDesc')}</DialogDescription>
+            <DialogTitle>{customDialogMode === 'builtin' ? t('promptFilter.editBuiltinRule') : customDialogMode === 'create' ? t('promptFilter.addCustomRule') : t('promptFilter.editCustomRule')}</DialogTitle>
+            <DialogDescription>{customDialogMode === 'builtin' ? t('promptFilter.editBuiltinRuleDesc') : customDialogMode === 'create' ? t('promptFilter.addCustomRuleDesc') : t('promptFilter.editCustomRuleDesc')}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 sm:grid-cols-[minmax(160px,0.8fr)_minmax(0,1.2fr)]">
             <Field label={t('promptFilter.ruleName')}>
-              <Input value={customDialogDraft.name} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, name: event.target.value }))} placeholder="custom_rule" />
+              <Input readOnly={customDialogMode === 'builtin'} value={customDialogDraft.name} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, name: event.target.value }))} placeholder="custom_rule" />
             </Field>
             <Field label={t('promptFilter.ruleCategory')}>
               <Input value={customDialogDraft.category} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, category: event.target.value }))} />
@@ -5143,18 +5224,28 @@ function RulesView({
           <Field label={t('promptFilter.rulePattern')}>
             <Textarea rows={5} value={customDialogDraft.pattern} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, pattern: event.target.value }))} placeholder="(?i)dangerous phrase" />
           </Field>
+          <Field label={t('promptFilter.ruleParticipation')} hint={t('promptFilter.ruleParticipationHint')}>
+            <Select value={promptRuleParticipates(customDialogDraft) ? 'execution' : 'audit'} onValueChange={(value) => setCustomDialogDraft((current) => ({ ...current, signal_only: value === 'audit', strict: value === 'audit' ? false : current.strict }))} options={[{ label: t('promptFilter.ruleExecution'), value: 'execution' }, { label: t('promptFilter.ruleAuditOnly'), value: 'audit' }]} />
+          </Field>
+          {customDialogDraft.signal_only && customDialogDraft.strict ? <p className="text-xs text-muted-foreground">{t('promptFilter.ruleStrictPriority')}</p> : null}
+          <RuleConditionFields rule={customDialogDraft} onChange={(key, items) => setCustomDialogDraft((current) => ({ ...current, [key]: items }))} />
+          <Field label={t('promptFilter.ruleMinMatches')} hint={t('promptFilter.ruleMinMatchesHint')}>
+            <Input type="number" min={0} max={customDialogDraft.any_patterns.length} value={customDialogDraft.min_matches} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, min_matches: event.target.value }))} />
+          </Field>
+          <p className="text-xs leading-5 text-muted-foreground">{t('promptFilter.ruleConditionsBoundary')}</p>
           <RulePatternTester pattern={customDialogDraft.pattern} />
           <div className="grid gap-3 sm:grid-cols-[minmax(120px,0.8fr)_minmax(140px,0.8fr)]">
             <Field label={t('promptFilter.ruleWeight')}>
               <Input type="number" min={1} max={1000} value={customDialogDraft.weight} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, weight: event.target.value }))} />
             </Field>
             <Field label={t('promptFilter.ruleStrict')}>
-              <Select value={customDialogDraft.strict ? 'true' : 'false'} onValueChange={(value) => setCustomDialogDraft((current) => ({ ...current, strict: value === 'true' }))} triggerClassName="h-9 rounded-md px-3 text-sm" options={[{ label: t('common.enabled'), value: 'true' }, { label: t('common.disabled'), value: 'false' }]} />
+              <Select value={customDialogDraft.strict ? 'true' : 'false'} onValueChange={(value) => setCustomDialogDraft((current) => ({ ...current, strict: value === 'true', signal_only: value === 'true' ? false : current.signal_only }))} triggerClassName="h-9 rounded-md px-3 text-sm" options={[{ label: t('common.enabled'), value: 'true' }, { label: t('common.disabled'), value: 'false' }]} />
             </Field>
           </div>
           <DialogFooter>
+            {customDialogMode === 'builtin' && editingBuiltin?.overridden && <Button variant="outline" onClick={() => void saveBuiltinRule(true)} disabled={savingRule !== ''}>{t('promptFilter.restoreBuiltinRule')}</Button>}
             <Button variant="outline" onClick={closeCustomRuleDialog} disabled={savingRule !== ''}>{t('common.cancel')}</Button>
-            <Button onClick={() => void saveCustomRuleDialog()} disabled={savingRule !== '' || !customDialogDraft.name.trim() || !customDialogDraft.pattern.trim() || parseRuleWeight(customDialogDraft.weight) === null}>
+            <Button onClick={() => void saveCustomRuleDialog()} disabled={savingRule !== '' || !customDialogDraft.name.trim() || !draftConditionsValid || parseRuleWeight(customDialogDraft.weight) === null}>
               <Save className="size-4" />
               {savingRule !== '' ? t('common.saving') : t('common.save')}
             </Button>
@@ -5195,7 +5286,7 @@ function RulesView({
           }
         }}
       >
-        <DialogContent className="max-h-[calc(100vh-2rem)] max-w-3xl overflow-y-auto">
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle className="font-mono text-base">{previewRule?.name}</DialogTitle>
             <DialogDescription>{t('promptFilter.rulePreviewDesc')}</DialogDescription>
@@ -5210,6 +5301,7 @@ function RulesView({
                   <Badge variant="outline">{t('promptFilter.customRule')}</Badge>
                 )}
                 {previewRule.strict ? <Badge variant="destructive">{t('promptFilter.ruleStrict')}</Badge> : null}
+                <RuleParticipationBadge rule={previewRule} />
                 <Badge variant={previewRule.enabled !== false ? 'default' : 'outline'}>
                   {previewRule.enabled !== false ? t('common.enabled') : t('common.disabled')}
                 </Badge>
@@ -5234,6 +5326,10 @@ function RulesView({
                 </pre>
               </div>
 
+              <RuleConditionFields rule={previewRule} />
+              <p className="text-sm">{t('promptFilter.ruleMinMatches')}: {previewRule.min_matches ?? 0} <span className="text-xs text-muted-foreground">{t('promptFilter.ruleMinMatchesHint')}</span></p>
+              {previewRule.signal_only && previewRule.strict ? <p className="text-xs text-muted-foreground">{t('promptFilter.ruleStrictPriority')}</p> : null}
+              <p className="text-xs leading-5 text-muted-foreground">{t('promptFilter.ruleConditionsBoundary')}</p>
               <RulePatternTester pattern={previewRule.pattern || ''} />
             </div>
           ) : null}
@@ -5245,6 +5341,32 @@ function RulesView({
       </Dialog>
     </>
   )
+}
+
+function RuleParticipationBadge({ rule }: { rule: Pick<PromptFilterRule, 'signal_only' | 'strict'> }) {
+  const { t } = useTranslation()
+  return <Badge variant="outline" title={t('promptFilter.ruleParticipationHint')}>{t(promptRuleParticipates(rule) ? 'promptFilter.ruleExecution' : 'promptFilter.ruleAuditOnly')}</Badge>
+}
+
+function RuleConditionFields({ rule, onChange }: {
+  rule: Pick<PromptFilterRule, PromptRuleConditionKey>
+  onChange?: (key: PromptRuleConditionKey, patterns: string[]) => void
+}) {
+  const { t } = useTranslation()
+  return <div className="space-y-3">{promptRuleConditionKeys.map((key) => {
+    const patterns = rule[key] ?? []
+    return <div key={key} className="min-w-0 space-y-2 rounded-lg border border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold">{t(`promptFilter.ruleConditions.${key}.label`)}</span>
+        {onChange ? <Button type="button" size="sm" variant="outline" disabled={patterns.length >= 128} onClick={() => onChange(key, [...patterns, ''])}><Plus className="size-3.5" />{t('promptFilter.ruleAddCondition')}</Button> : null}
+      </div>
+      <p className="text-xs leading-5 text-muted-foreground">{t(`promptFilter.ruleConditions.${key}.hint`)}</p>
+      {patterns.length === 0 ? <p className="text-xs text-muted-foreground">{t('promptFilter.ruleNoConditions')}</p> : patterns.map((pattern, index) => onChange ? <div key={index} className="flex items-start gap-2">
+        <Textarea rows={2} className="min-w-0 font-mono text-xs" aria-label={`${t(`promptFilter.ruleConditions.${key}.label`)} ${index + 1}`} value={pattern} onChange={(event) => onChange(key, patterns.map((value, position) => position === index ? event.target.value : value))} />
+        <Button type="button" size="icon-sm" variant="ghost" aria-label={`${t('common.delete')} ${t(`promptFilter.ruleConditions.${key}.label`)} ${index + 1}`} onClick={() => onChange(key, patterns.filter((_, position) => position !== index))}><Trash2 className="size-4" /></Button>
+      </div> : <pre key={index} className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/40 p-2 font-mono text-xs leading-5">{pattern}</pre>)}
+    </div>
+  })}</div>
 }
 
 function RulePatternTester({ pattern, className }: { pattern: string; className?: string }) {
@@ -5372,9 +5494,11 @@ function RuleRow({
             {rule.name}
           </div>
         </button>
-        <div className="mt-1 flex gap-1">
+        <div className="mt-1 flex flex-wrap gap-1">
           {rule.builtin ? <Badge variant="secondary">{t('promptFilter.builtinRule')}</Badge> : <Badge variant="outline">{t('promptFilter.customRule')}</Badge>}
+          {rule.overridden ? <Badge variant="outline">{t('promptFilter.builtinModified')}</Badge> : null}
           {rule.strict ? <Badge variant="destructive">{t('promptFilter.ruleStrict')}</Badge> : null}
+          <RuleParticipationBadge rule={rule} />
           <Badge variant={enabled ? 'default' : 'outline'}>{enabled ? t('common.enabled') : t('common.disabled')}</Badge>
         </div>
       </TableCell>
@@ -5403,7 +5527,7 @@ function RuleRow({
             </Button>
           )}
           {onEdit ? (
-            <Button size="icon-sm" variant="ghost" onClick={onEdit} disabled={busy} aria-label={t('promptFilter.editCustomRule')} title={t('promptFilter.editCustomRule')}>
+            <Button size="icon-sm" variant="ghost" onClick={onEdit} disabled={busy} aria-label={t(rule.builtin ? 'promptFilter.editBuiltinRule' : 'promptFilter.editCustomRule')} title={t(rule.builtin ? 'promptFilter.editBuiltinRule' : 'promptFilter.editCustomRule')}>
               <Pencil className="size-3.5" />
             </Button>
           ) : null}

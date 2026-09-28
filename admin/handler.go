@@ -1338,6 +1338,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/prompt-filter/review/models", h.ListPromptReviewModels)
 	api.POST("/prompt-filter/rules/test", h.TestPromptFilterRulePattern)
 	api.GET("/prompt-filter/rules", h.GetPromptFilterRules)
+	api.PUT("/prompt-filter/rules/builtin/:name", h.UpdatePromptFilterBuiltinRule)
 	api.GET("/prompt-filter/newapi-bindings", h.ListPromptFilterNewAPIBindings)
 	api.POST("/prompt-filter/newapi-bindings", h.CreatePromptFilterNewAPIBinding)
 	api.GET("/prompt-filter/newapi-bindings/:api_key_id", h.GetPromptFilterNewAPIBinding)
@@ -12194,6 +12195,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				// just-published rule is not temporarily replaced in this Store by the
 				// older snapshot used to edit unrelated Prompt settings.
 				if persisted, readErr := h.db.GetSystemSettings(c.Request.Context()); readErr == nil && persisted != nil {
+					if overrides, parseErr := promptfilter.ParseBuiltinPatternOverrides(persisted.PromptFilterBuiltinOverrides); parseErr == nil {
+						promptFilterCfg.BuiltinOverrides = overrides
+					}
 					if patterns, parseErr := promptfilter.ParseCustomPatterns(persisted.PromptFilterCustomPatterns); parseErr == nil {
 						promptFilterCfg.CustomPatterns = patterns
 					} else {

@@ -1500,6 +1500,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_sensitive_words TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_custom_patterns TEXT DEFAULT '[]';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_disabled_patterns TEXT DEFAULT '[]';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_builtin_overrides TEXT DEFAULT '[]';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_api_key TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_base_url TEXT DEFAULT 'https://api.deepseek.com';
@@ -2474,6 +2475,7 @@ type SystemSettings struct {
 	PromptFilterSensitiveWords          string
 	PromptFilterCustomPatterns          string
 	PromptFilterDisabledPatterns        string
+	PromptFilterBuiltinOverrides        string // Managed through CompareAndSwapPromptFilterBuiltinOverrides.
 	PromptFilterReviewEnabled           bool
 	PromptFilterReviewAPIKey            string
 	PromptFilterReviewBaseURL           string
@@ -2752,6 +2754,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(prompt_filter_sensitive_words, ''),
 		       COALESCE(prompt_filter_custom_patterns, '[]'),
 		       COALESCE(prompt_filter_disabled_patterns, '[]'),
+		       COALESCE(prompt_filter_builtin_overrides, '[]'),
 		       COALESCE(prompt_filter_review_enabled, false),
 		       COALESCE(prompt_filter_review_api_key, ''),
 		       COALESCE(prompt_filter_review_base_url, 'https://api.deepseek.com'),
@@ -2854,7 +2857,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.ResinURL, &s.ResinPlatformName,
 		&s.PromptFilterEnabled, &s.PromptFilterMode, &s.PromptFilterThreshold, &s.PromptFilterStrictThreshold, &s.PromptFilterStrictTerminalEnabled, &s.PromptFilterAdvancedConfig,
 		&s.PromptFilterLogMatches, &s.PromptFilterMaxTextLength, &s.PromptFilterSensitiveWords,
-		&s.PromptFilterCustomPatterns, &s.PromptFilterDisabledPatterns,
+		&s.PromptFilterCustomPatterns, &s.PromptFilterDisabledPatterns, &s.PromptFilterBuiltinOverrides,
 		&s.PromptFilterReviewEnabled, &s.PromptFilterReviewAPIKey, &s.PromptFilterReviewBaseURL,
 		&s.PromptFilterReviewModel, &s.PromptFilterReviewTimeoutSeconds, &s.PromptFilterReviewFailClosed,
 		&s.ClientCompatMode, &s.CodexMinCLIVersion, &s.CodexUserAgentConfig, &s.UsageLogMode, &s.UsageLogBatchSize,

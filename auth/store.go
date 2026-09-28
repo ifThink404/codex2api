@@ -8932,6 +8932,9 @@ func promptFilterConfigFromSettings(settings *database.SystemSettings) (promptfi
 	if disabled, err := promptfilter.ParseDisabledPatterns(settings.PromptFilterDisabledPatterns); err == nil {
 		cfg.DisabledPatterns = disabled
 	}
+	if overrides, err := promptfilter.ParseBuiltinPatternOverrides(settings.PromptFilterBuiltinOverrides); err == nil {
+		cfg.BuiltinOverrides = overrides
+	}
 	cfg.Review = promptfilter.ReviewConfig{
 		Enabled:        settings.PromptFilterReviewEnabled,
 		APIKey:         settings.PromptFilterReviewAPIKey,

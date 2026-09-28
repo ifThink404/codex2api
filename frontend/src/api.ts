@@ -1,6 +1,7 @@
 import { serviceErrorSearchParams, type ServiceErrorPage, type ServiceErrorQuery } from './lib/serviceErrors.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
+  BuiltinPromptRuleFields,
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
   AccountPortalSubmitResponse,
@@ -1497,6 +1498,8 @@ export const api = {
     request<{ ok: boolean }>(`/prompt-filter/review/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   testPromptFilterRulePattern: (data: { pattern: string; text: string }) =>
     request<PromptFilterRulePatternTestResponse>('/prompt-filter/rules/test', { method: 'POST', body: JSON.stringify(data) }),
+  updateBuiltinPromptRule: (name: string, expected: BuiltinPromptRuleFields, rule: BuiltinPromptRuleFields | null) =>
+    request<PromptFilterRulesResponse>(`/prompt-filter/rules/builtin/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ expected, rule }) }),
   getPromptFilterRules: () =>
     request<PromptFilterRulesResponse>('/prompt-filter/rules'),
   runPromptIntelligence: () =>
