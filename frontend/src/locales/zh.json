@@ -2071,8 +2071,8 @@
       "title": "BPS 通道",
       "enabled": "BPS 开关",
       "enabledHelp": "继承时按账号分组与插件全局开关决定；显式开启或关闭优先。",
-      "on": "开启",
-      "off": "关闭",
+      "on": "强制开启",
+      "off": "强制关闭",
       "inheritPlugin": "继承（分组 / 全局开关）",
       "inheritNative": "继承（BPS 未启用时走原生）",
       "activeNow": "当前使用 BPS",
@@ -7221,7 +7221,7 @@
     "body": "正文",
     "logsEmpty": "该时间范围内没有经过此插件的请求",
     "agentTitle": "日志分析助手",
-    "agentDesc": "让模型分析 {{name}} 的抓包、日志与错误。",
+    "agentDesc": "让模型分析 {{name}} 的错误与抓包。",
     "bpsConfig": {
       "word_user_agent": "Word User-Agent",
       "round_convergence_limit": "task_id 轮次：每批调用次数",
@@ -7239,7 +7239,13 @@
     "agentErrorsTitle": "分析错误",
     "agentErrorsDesc": "分析经过此插件的错误请求。",
     "agentRequestTitle": "分析此请求",
-    "agentRequestDesc": "分析该请求 ID 的全部抓包。"
+    "agentRequestDesc": "分析该请求 ID 的全部抓包。",
+    "inherit": "继承",
+    "forceOn": "强制开启",
+    "forceOff": "强制关闭",
+    "descriptions": {
+      "bps": "适用于 Codex OAuth 账号的 Basis Points 通道（Word、Excel、Sheets、PowerPoint 类型）。"
+    }
   },
   "logAgent": {
     "title": "AI 日志分析",

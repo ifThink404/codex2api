@@ -2071,8 +2071,8 @@
       "title": "BPS transport",
       "enabled": "BPS switch",
       "enabledHelp": "Inherit follows the account groups and the plugin global switch; an explicit on/off wins.",
-      "on": "On",
-      "off": "Off",
+      "on": "Force on",
+      "off": "Force off",
       "inheritPlugin": "Inherit (groups / global switch)",
       "inheritNative": "Inherit (native unless BPS is on)",
       "activeNow": "Currently served by BPS",
@@ -7224,7 +7224,7 @@
     "body": "Body",
     "logsEmpty": "No requests through this plugin in this time range",
     "agentTitle": "Log analysis agent",
-    "agentDesc": "Let a model analyse {{name}} captures, logs and errors.",
+    "agentDesc": "Let a model analyse {{name}} errors and captures.",
     "bpsConfig": {
       "word_user_agent": "Word User-Agent",
       "round_convergence_limit": "task_id rounds: calls per batch",
@@ -7242,7 +7242,13 @@
     "agentErrorsTitle": "Analyze errors",
     "agentErrorsDesc": "Analyze failed requests served by this plugin.",
     "agentRequestTitle": "Analyze this request",
-    "agentRequestDesc": "Analyze every capture recorded for this request ID."
+    "agentRequestDesc": "Analyze every capture recorded for this request ID.",
+    "inherit": "Inherit",
+    "forceOn": "Force on",
+    "forceOff": "Force off",
+    "descriptions": {
+      "bps": "Basis Points transport for Codex OAuth accounts (Word, Excel, Sheets, PowerPoint profiles)."
+    }
   },
   "logAgent": {
     "title": "AI log analysis",

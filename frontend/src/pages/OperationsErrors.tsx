@@ -62,7 +62,7 @@ const errorTableMonoClass = 'font-geist-mono text-[13px] tabular-nums'
 export default function OperationsErrors({ transport, embedded = false }: { transport?: string; embedded?: boolean } = {}) {
   const { t } = useTranslation()
   const { toast, showToast } = useToast()
-  const [timeRange, setTimeRange] = useState<TimeRangeKey>('1h')
+  const [timeRange, setTimeRange] = useState<TimeRangeKey>(embedded ? '24h' : '1h')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = usePersistedPageSize('ops_errors', 20, pageSizeOptions)
   const [statusFilter, setStatusFilter] = useState('')

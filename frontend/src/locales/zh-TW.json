@@ -524,8 +524,8 @@
       "title": "BPS 通道",
       "enabled": "BPS 開關",
       "enabledHelp": "繼承時依帳號分組與外掛全域開關決定；明確開啟或關閉優先。",
-      "on": "開啟",
-      "off": "關閉",
+      "on": "強制開啟",
+      "off": "強制關閉",
       "inheritPlugin": "繼承（分組 / 全域開關）",
       "inheritNative": "繼承（BPS 未啟用時走原生）",
       "activeNow": "目前使用 BPS",
@@ -2329,7 +2329,7 @@
     "body": "本文",
     "logsEmpty": "此時間範圍內沒有經過此外掛的請求",
     "agentTitle": "日誌分析助手",
-    "agentDesc": "讓模型分析 {{name}} 的封包、日誌與錯誤。",
+    "agentDesc": "讓模型分析 {{name}} 的錯誤與封包。",
     "bpsConfig": {
       "word_user_agent": "Word User-Agent",
       "round_convergence_limit": "task_id 輪次：每批呼叫次數",
@@ -2347,7 +2347,13 @@
     "agentErrorsTitle": "分析錯誤",
     "agentErrorsDesc": "分析經過此外掛的錯誤請求。",
     "agentRequestTitle": "分析此請求",
-    "agentRequestDesc": "分析該請求 ID 的全部封包。"
+    "agentRequestDesc": "分析該請求 ID 的全部封包。",
+    "inherit": "繼承",
+    "forceOn": "強制開啟",
+    "forceOff": "強制關閉",
+    "descriptions": {
+      "bps": "適用於 Codex OAuth 帳號的 Basis Points 通道（Word、Excel、Sheets、PowerPoint 類型）。"
+    }
   },
   "logAgent": {
     "title": "AI 日誌分析",

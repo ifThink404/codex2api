@@ -47,10 +47,9 @@ const monoClass = 'font-mono text-xs text-muted-foreground'
 export default function Plugins() {
   const { id, view } = useParams()
   const { t } = useTranslation()
-  const { data, loading, error, reload } = useDataLoader<TransportPlugin[]>({
-    initialData: [],
-    load: async () => (await api.getTransportPlugins()).plugins ?? [],
-  })
+  // load must be stable: useDataLoader re-runs whenever it changes.
+  const load = useCallback(async () => (await api.getTransportPlugins()).plugins ?? [], [])
+  const { data, loading, error, reload } = useDataLoader<TransportPlugin[]>({ initialData: [], load })
   if (!id) {
     return (
       <StateShell variant="page" loading={loading} error={error} onRetry={() => void reload()} isEmpty={!loading && data.length === 0} emptyTitle={t('plugins.empty')}>
@@ -68,7 +67,7 @@ export default function Plugins() {
                         {plugin.state.enabled ? t('plugins.globalOn') : t('plugins.globalOff')}
                       </Badge>
                     </div>
-                    <p className="text-xs text-muted-foreground">{plugin.meta.description}</p>
+                    <p className="text-xs text-muted-foreground">{t(`plugins.descriptions.${plugin.id}`, { defaultValue: plugin.meta.description })}</p>
                     <p className={monoClass}>{plugin.id}</p>
                   </div>
                   <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -89,7 +88,7 @@ export default function Plugins() {
         <>
           <PageHeader
             title={plugin.meta.name}
-            description={plugin.meta.description}
+            description={t(`plugins.descriptions.${plugin.id}`, { defaultValue: plugin.meta.description })}
             onRefresh={() => void reload()}
             titleAdornment={<span className={monoClass}>{plugin.id}</span>}
           />
@@ -326,9 +325,6 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
     return { accounts: res.accounts ?? [], total: res.total ?? 0 }
   }, [page, search])
   const { data, loading, error, reload } = useDataLoader<{ accounts: AccountRow[]; total: number }>({ initialData: { accounts: [], total: 0 }, load })
-  useEffect(() => {
-    void reload()
-  }, [reload])
   const overrides = useMemo(() => new Map((plugin.overrides ?? []).map((item) => [item.account_id, item.enabled])), [plugin.overrides])
   const eligible = plugin.id === 'bps' ? data.accounts.filter(isBPSAccount) : data.accounts
 
@@ -367,14 +363,14 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
                   </span>
                 </div>
                 <Select
-                  className="w-full sm:w-56"
+                  className="w-full sm:w-44"
                   compact
                   value={override}
                   onValueChange={(value) => void change(account, value as BPSTriState)}
                   options={[
-                    { value: 'inherit', label: t('accounts.bps.inheritPlugin') },
-                    { value: 'on', label: t('accounts.bps.on') },
-                    { value: 'off', label: t('accounts.bps.off') },
+                    { value: 'inherit', label: t('plugins.inherit') },
+                    { value: 'on', label: t('plugins.forceOn') },
+                    { value: 'off', label: t('plugins.forceOff') },
                   ]}
                   disabled={busy !== null}
                   aria-label={t('plugins.overrideFor', { id: account.id })}
@@ -426,9 +422,6 @@ function PluginCaptures({ plugin }: { plugin: TransportPlugin }) {
     })
   }, [accountId, direction, page, plugin.id, requestId, status, timeRange])
   const { data, loading, error, reload } = useDataLoader({ initialData: { captures: [] as PluginCapture[], total: 0 }, load })
-  useEffect(() => {
-    void reload()
-  }, [reload])
 
   const openDetail = async (capture: PluginCapture) => {
     setDetail(capture)
@@ -584,9 +577,6 @@ function PluginLogs({ plugin }: { plugin: TransportPlugin }) {
     return { logs: res.logs ?? [], total: res.total ?? 0 }
   }, [page, plugin.id, timeRange])
   const { data, loading, error, reload } = useDataLoader<{ logs: UsageLog[]; total: number }>({ initialData: { logs: [], total: 0 }, load })
-  useEffect(() => {
-    void reload()
-  }, [reload])
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -604,9 +594,9 @@ function PluginLogs({ plugin }: { plugin: TransportPlugin }) {
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t('plugins.colTime')}</TableHead>
+                    <TableHead>{t('plugins.colStatus')}</TableHead>
                     <TableHead>{t('plugins.colAccount')}</TableHead>
                     <TableHead>{t('plugins.colModel')}</TableHead>
-                    <TableHead>{t('plugins.colStatus')}</TableHead>
                     <TableHead className="text-right">{t('plugins.colTokens')}</TableHead>
                     <TableHead className="text-right">{t('plugins.colDuration')}</TableHead>
                     <TableHead>{t('plugins.colMeta')}</TableHead>
@@ -617,12 +607,12 @@ function PluginLogs({ plugin }: { plugin: TransportPlugin }) {
                   {data.logs.map((log) => (
                     <TableRow key={log.id}>
                       <TableCell className="whitespace-nowrap text-xs">{formatBeijingTime(log.created_at)}</TableCell>
-                      <TableCell className="text-xs"><span className="block max-w-[180px] truncate">{log.account_name || log.account_email || `#${log.account_id}`}</span></TableCell>
-                      <TableCell className="text-xs">{log.model}</TableCell>
                       <TableCell className="text-xs tabular-nums">
                         <Badge variant={log.status_code >= 400 ? 'destructive' : 'secondary'}>{log.status_code}</Badge>
                         {log.upstream_error_kind && <span className="ml-1 text-muted-foreground">{log.upstream_error_kind}</span>}
                       </TableCell>
+                      <TableCell className="text-xs"><span className="block max-w-[180px] truncate">{log.account_name || log.account_email || `#${log.account_id}`}</span></TableCell>
+                      <TableCell className="text-xs">{log.model}</TableCell>
                       <TableCell className="text-right text-xs tabular-nums">{log.input_tokens} / {log.output_tokens}</TableCell>
                       <TableCell className="text-right text-xs tabular-nums">{log.duration_ms} ms</TableCell>
                       <TableCell className={monoClass}>{pluginMetaSummary(log.plugin_meta) || '—'}</TableCell>
