@@ -2319,6 +2319,7 @@ export default function Settings() {
     codex_cli_version_sync_interval_hours: 12,
     codex_user_agent_config: '{}',
     usage_log_mode: 'full',
+    usage_metering_enabled: true,
     usage_log_batch_size: 200,
     usage_log_flush_interval_seconds: 5,
     stream_flush_policy: 'immediate',
@@ -5659,6 +5660,14 @@ export default function Settings() {
               <SettingsSection id="settings-runtime" title={t('settings.nav.runtime')} description={t('settings.nav.runtimeDesc')} icon={<Wrench className="size-4" />}>
               <SettingsCard title={t('settings.runtimeOptimization')} description={t('settings.runtimeOptimizationDesc')} icon={<Wrench className="size-4" />} channels={ALL_UPSTREAM_CHANNELS}>
                 <div className="space-y-4">
+                  <div className={SETTINGS_SWITCH_ROW}>
+                    <SettingField label={t('settings.usageMeteringEnabled')} description={t('settings.usageMeteringEnabledDesc')} layout="switch">
+                      <Switch
+                        checked={settingsForm.usage_metering_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('usage_metering_enabled', checked)}
+                      />
+                    </SettingField>
+                  </div>
                   <div className={SETTINGS_FIELD_GRID_3}>
                     <SettingField label={t('settings.usageLogMode')} description={t('settings.usageLogModeDesc')}>
                       <Select

@@ -4919,6 +4919,8 @@
     "codexUAWarn_app_name": "末尾标记名",
     "codexUAWarn_platform": "平台",
     "codexUAWarn_version_pair": "版本配对",
+    "usageMeteringEnabled": "轻量计量（保留计费与 Token）",
+    "usageMeteringEnabledDesc": "建议开启：关闭明细或只记录错误时，仍保留计费、Token 统计和窗口额度。批量保存精简记录，不保存请求诊断、IP 和 UA。同时关闭会导致统计及窗口额度漏算，累计金额仍会扣除。",
     "usageLogMode": "使用日志写入",
     "usageLogModeDesc": "full 记录全部请求；errors 只记录错误；off 关闭 usage_logs 写入以降低磁盘压力。",
     "usageLogFull": "全部请求",

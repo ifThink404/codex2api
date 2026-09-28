@@ -4920,6 +4920,8 @@
     "codexUAWarn_app_name": "marker name",
     "codexUAWarn_platform": "platform",
     "codexUAWarn_version_pair": "version pair",
+    "usageMeteringEnabled": "Lightweight metering",
+    "usageMeteringEnabledDesc": "Recommended: keep billing, token statistics and window quotas when details are disabled or limited to errors. Stores small batched records without request diagnostics, IPs or UAs. Disabling this as well makes statistics and window quotas incomplete; cumulative charges still apply.",
     "usageLogMode": "Usage Log Writes",
     "usageLogModeDesc": "full records all requests; errors records failures only; off disables usage_logs writes to reduce disk pressure.",
     "usageLogFull": "All Requests",

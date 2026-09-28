@@ -571,6 +571,8 @@
     "promptBlockedAfterSelection": "選號後攔截"
   },
   "settings": {
+    "usageMeteringEnabled": "輕量計量（保留計費與 Token）",
+    "usageMeteringEnabledDesc": "建議開啟：關閉明細或只記錄錯誤時，仍保留計費、Token 統計和視窗額度。批次儲存精簡記錄，不儲存請求診斷、IP 和 UA。同時關閉會導致統計及視窗額度漏算，累計金額仍會扣除。",
     "nav": {
       "codexTransport": "連線與傳輸",
       "codexTransportDesc": "WebSocket、續想、壓縮、首回應計時回報、過載熔斷與回應快取"

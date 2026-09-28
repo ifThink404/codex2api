@@ -57,7 +57,7 @@ func (db *DB) getAPIKeyUsageSince(ctx context.Context, apiKeyID int64, since tim
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(user_billed), 0),
 			MIN(created_at)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE api_key_id = $1
 		  AND created_at >= $2
 		  AND status_code <> 499
@@ -69,7 +69,7 @@ func (db *DB) getAPIKeyUsageSince(ctx context.Context, apiKeyID int64, since tim
 				COALESCE(SUM(u.total_tokens), 0),
 				COALESCE(SUM(u.user_billed), 0),
 				MIN(u.created_at)
-			FROM usage_logs u
+			FROM usage_metered_events u
 			JOIN api_keys k ON k.id = u.api_key_id
 			WHERE u.api_key_id = $1
 			  AND u.created_at >= $2
@@ -109,7 +109,7 @@ func (db *DB) GetAPIKeyAccountWindowUsage(ctx context.Context, apiKeyID int64, w
 			COUNT(*),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(user_billed), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE api_key_id = $1
 		  AND created_at >= $2
 		  AND status_code <> 499
@@ -167,7 +167,7 @@ func (db *DB) GetAPIKeyAccountWindowsUsage(ctx context.Context, apiKeyID int64) 
 			COALESCE(SUM(CASE WHEN created_at >= $4 THEN total_tokens ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN created_at >= $4 THEN user_billed ELSE 0 END), 0),
 			COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(user_billed), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE api_key_id = $1 AND created_at >= $5 AND status_code <> 499
 		GROUP BY account_id
 	`, apiKeyID, since5h, since1d, since7d, since30d)
@@ -228,7 +228,7 @@ func (db *DB) GetAPIKeysAccountWindowUsage(ctx context.Context, apiKeyIDs []int6
 			COUNT(*),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(user_billed), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE api_key_id IN (%s)
 		  AND created_at >= %s
 		  AND status_code <> 499
@@ -294,7 +294,7 @@ func (db *DB) ListAPIKeyTokenStats(ctx context.Context, rangeStart, rangeEnd tim
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(SUM(user_billed), 0) AS user_billed
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE status_code <> 499
 		  AND created_at >= $1
 	`
@@ -391,7 +391,7 @@ func (db *DB) ListAPIKeyAccountStats(ctx context.Context, apiKeyID int64, rangeS
 				COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 				COALESCE(SUM(account_billed), 0) AS account_billed,
 				COALESCE(SUM(user_billed), 0) AS user_billed
-			FROM usage_logs
+			FROM usage_metered_events AS usage_logs
 			WHERE api_key_id = $1 AND status_code <> 499 AND created_at >= $2
 	`
 	args := []interface{}{apiKeyID, db.timeArg(rangeStart)}
@@ -549,7 +549,7 @@ func emailFromCredentialsJSON(raw string) string {
 func (db *DB) ListAPIKeyLastUsedAt(ctx context.Context) (map[int64]time.Time, error) {
 	query := `
 		SELECT api_key_id, MAX(created_at)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE api_key_id > 0
 		  AND status_code <> 499
 		GROUP BY api_key_id
@@ -602,7 +602,7 @@ func (db *DB) getAllAPIKeysCostSince(ctx context.Context, since time.Time, honor
 	}
 	query := `
 		SELECT api_key_id, COALESCE(SUM(user_billed), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE api_key_id > 0
 		  AND created_at >= $1
 		  AND status_code <> 499
@@ -611,7 +611,7 @@ func (db *DB) getAllAPIKeysCostSince(ctx context.Context, since time.Time, honor
 	if honorReset {
 		query = `
 			SELECT u.api_key_id, COALESCE(SUM(u.user_billed), 0)
-			FROM usage_logs u
+			FROM usage_metered_events u
 			JOIN api_keys k ON k.id = u.api_key_id
 			WHERE u.api_key_id > 0
 			  AND u.created_at >= $1
@@ -993,7 +993,7 @@ func (db *DB) getAPIKeySelfUsageSummary(ctx context.Context, apiKeyID int64, ran
 			COALESCE(AVG(NULLIF(first_token_ms, 0)), 0),
 			COALESCE(SUM(CASE WHEN created_at >= ` + minuteArg + ` THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN created_at >= ` + minuteArg + ` THEN total_tokens ELSE 0 END), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE ` + where
 	var summary APIKeySelfUsageSummary
 	err := db.conn.QueryRowContext(ctx, query, args...).Scan(
@@ -1033,7 +1033,7 @@ func (db *DB) listAPIKeySelfUsageBreakdown(ctx context.Context, apiKeyID int64, 
 			COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(SUM(user_billed), 0) AS user_billed
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE ` + where + `
 		GROUP BY 1
 		ORDER BY user_billed DESC, requests DESC, name ASC

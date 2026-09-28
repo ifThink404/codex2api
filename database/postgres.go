@@ -244,6 +244,7 @@ type DB struct {
 	usageLogDropped   int64
 	usageLogDropLogAt time.Time // 溢出日志的限流时间戳，由 logMu 保护
 
+	usageMeteringDisabled atomic.Bool
 	usageLogMode          atomic.Value // string: full|errors|off
 	usageLogBatchSize     int64
 	usageLogFlushInterval int64 // ns
@@ -327,6 +328,7 @@ type usageLogEntry struct {
 	UpstreamProxyID      int64
 	UpstreamProxyName    string
 	StoreUsageLog        bool
+	StoreMetering        bool
 	AccountID            int64
 	CredentialGeneration int64
 	Channel              string
@@ -581,6 +583,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	if err := db.ensureUsageStatsBaselineBillingColumns(ctx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureUsageMetering(ctx); err != nil {
+		return nil, fmt.Errorf("initialize usage metering: %w", err)
+	}
 	rollupCtx, rollupCancel := usageStatsRollupStartupContext(ctx)
 	rollupErr := db.ensureUsageStatsRollup(rollupCtx)
 	rollupCancel()
@@ -786,6 +791,15 @@ func (db *DB) rebuildUsageStatsRollup(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := rebuildUsageStatsRollupWithTx(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// rebuildUsageStatsRollupWithTx recomputes the cumulative rollup from the
+// baseline plus every live metered event (detail logs and lightweight rows).
+func rebuildUsageStatsRollupWithTx(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_stats_rollup`); err != nil {
 		return err
 	}
@@ -799,7 +813,7 @@ func (db *DB) rebuildUsageStatsRollup(ctx context.Context) error {
 		b.first_token_ms_sum + COALESCE(SUM(CASE WHEN u.first_token_ms > 0 THEN u.first_token_ms ELSE 0 END), 0),
 		b.first_token_samples + COALESCE(SUM(CASE WHEN u.first_token_ms > 0 THEN 1 ELSE 0 END), 0),
 		b.account_billed + COALESCE(SUM(u.account_billed), 0), b.user_billed + COALESCE(SUM(u.user_billed), 0)
-	FROM usage_stats_baseline b LEFT JOIN usage_logs u ON u.status_code <> 499
+	FROM usage_stats_baseline b LEFT JOIN usage_metered_events u ON u.status_code <> 499
 		AND TRIM(COALESCE(u.internal_reason, '')) = '' WHERE b.id=1
 	GROUP BY b.total_requests, b.total_tokens, b.prompt_tokens, b.completion_tokens, b.cached_tokens,
 		b.cache_hit_requests, b.first_token_ms_sum, b.first_token_samples, b.account_billed, b.user_billed`); err != nil {
@@ -814,7 +828,7 @@ func (db *DB) rebuildUsageStatsRollup(ctx context.Context) error {
 		COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN first_token_ms ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
-	FROM usage_logs WHERE status_code <> 499 AND TRIM(COALESCE(internal_reason, '')) = ''
+	FROM usage_metered_events WHERE status_code <> 499 AND TRIM(COALESCE(internal_reason, '')) = ''
 		AND TRIM(COALESCE(channel, '')) <> '' GROUP BY TRIM(COALESCE(channel, ''))`); err != nil {
 		return err
 	}
@@ -824,7 +838,7 @@ func (db *DB) rebuildUsageStatsRollup(ctx context.Context) error {
 			aggregation_version=excluded.aggregation_version, updated_at=CURRENT_TIMESTAMP`); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (db *DB) loadUsageStatsRollup(ctx context.Context, channel string) (usageStatsRollup, error) {
@@ -885,7 +899,7 @@ func applyUsageStatsRollupWithExec(ctx context.Context, execer sqlExecer, batch 
 		item.TotalUserBilled += entry.UserBilled
 	}
 	for _, entry := range batch {
-		if !entry.StoreUsageLog || entry.StatusCode == 499 || strings.TrimSpace(entry.InternalReason) != "" {
+		if (!entry.StoreUsageLog && !entry.StoreMetering) || entry.StatusCode == 499 || strings.TrimSpace(entry.InternalReason) != "" {
 			continue
 		}
 		add("", entry)
@@ -1341,12 +1355,20 @@ func (db *DB) migrate(ctx context.Context) error {
 	-- ensureUsageLogsGenerationIndex 在启动后用 CREATE INDEX CONCURRENTLY 在线构建。
 	-- 上游渠道（codex/grok），写入时按调度账号固化，供仪表盘/用量分渠道聚合
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS channel VARCHAR(16) DEFAULT '';
-	ALTER TABLE usage_logs ALTER COLUMN reasoning_effort TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN requested_service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN actual_service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN billing_service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN image_format TYPE VARCHAR(100);
+	-- Skip already-applied width migrations: PostgreSQL rejects ALTER TYPE on
+	-- columns referenced by the usage_metered_events view even when the type
+	-- is unchanged. Any future ALTER TYPE on a viewed column must do the same.
+	DO $$
+	DECLARE col_name TEXT;
+	BEGIN
+		FOR col_name IN SELECT column_name FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'usage_logs'
+			AND column_name IN ('reasoning_effort', 'service_tier', 'requested_service_tier', 'actual_service_tier', 'billing_service_tier', 'image_format')
+			AND character_maximum_length IS DISTINCT FROM 100
+		LOOP
+			EXECUTE format('ALTER TABLE usage_logs ALTER COLUMN %I TYPE VARCHAR(100)', col_name);
+		END LOOP;
+	END $$;
 
 	CREATE INDEX IF NOT EXISTS idx_usage_logs_api_key_created_at ON usage_logs(api_key_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_usage_logs_channel_created_at ON usage_logs(channel, created_at);
@@ -4545,6 +4567,9 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 	}
 	log = SnapshotUsageLogBilling(log)
 	storeUsageLog := db.shouldStoreUsageLog(log)
+	// A request whose detail row is dropped by usage_log_mode is still metered
+	// (tokens, billing, windows) unless lightweight metering is switched off.
+	storeMetering := !storeUsageLog && db.GetUsageMeteringEnabled()
 
 	billingServiceTier := usageLogBillingServiceTier(log)
 
@@ -4561,17 +4586,17 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 
 	// User image fees are independent of upstream token cost.
 	userBilled := UsageLogUserBilledCost(log)
-	if !storeUsageLog && (log.APIKeyID <= 0 || userBilled <= 0 || log.StatusCode == 499) {
+	if !storeUsageLog && !storeMetering && (log.APIKeyID <= 0 || userBilled <= 0 || log.StatusCode == 499) {
 		return nil
 	}
 
-	db.logMu.Lock()
-	db.logBuf = append(db.logBuf, usageLogEntry{
+	entry := usageLogEntry{
 		RequestID:              clampUsageLogText(log.RequestID, usageLogRequestIDMaxLen),
 		UpstreamRequestID:      clampUsageLogText(log.UpstreamRequestID, usageLogRequestIDMaxLen),
 		UpstreamProxyID:        log.UpstreamProxyID,
 		UpstreamProxyName:      clampUsageLogText(log.UpstreamProxyName, usageLogAPIKeyNameMaxLen),
 		StoreUsageLog:          storeUsageLog,
+		StoreMetering:          storeMetering,
 		AccountID:              log.AccountID,
 		CredentialGeneration:   log.CredentialGeneration,
 		Channel:                clampUsageLogText(log.Channel, usageLogChannelMaxLen),
@@ -4637,7 +4662,16 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		UpstreamErrorKind:      clampUsageLogText(log.UpstreamErrorKind, usageLogShortTextMaxLen),
 		ErrorMessage:           log.ErrorMessage,
 		PromptPolicyIncidentID: clampUsageLogText(log.PromptPolicyIncidentID, usageLogShortTextMaxLen),
-	})
+	}
+	if !storeUsageLog {
+		// Detail-only fields are never written for this event; do not let the
+		// asynchronous queue hold large error bodies or diagnostics for it.
+		entry.ErrorMessage = ""
+		entry.ClientUserAgent, entry.UpstreamUserAgent = "", ""
+		entry.ParentRequestID, entry.RequestID, entry.UpstreamRequestID = "", "", ""
+	}
+	db.logMu.Lock()
+	db.logBuf = append(db.logBuf, entry)
 	db.trimUsageLogBufferLocked()
 	bufLen := len(db.logBuf)
 	db.logMu.Unlock()
@@ -5080,13 +5114,16 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 		}
 	}
 
+	if err := db.insertUsageMeteringBatch(ctx, tx, batch); err != nil {
+		return err
+	}
 	if err := db.applyAPIKeyScopeCountersWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新 scope 累计额度: %w", err)
 	}
 	if err := db.applyAPIKeyQuotaUsageWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新 API Key 额度用量: %w", err)
 	}
-	if err := applyUsageStatsRollupWithExec(ctx, tx, logsToStore); err != nil {
+	if err := applyUsageStatsRollupWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新用量累计汇总: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -5127,13 +5164,16 @@ func (db *DB) batchInsertLogs(ctx context.Context, batch []usageLogEntry) error 
 			return err
 		}
 	}
+	if err := db.insertUsageMeteringBatch(ctx, tx, batch); err != nil {
+		return err
+	}
 	if err := db.applyAPIKeyScopeCountersWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新 scope 累计额度: %w", err)
 	}
 	if err := db.applyAPIKeyQuotaUsageWithExec(ctx, tx, batch); err != nil {
 		return err
 	}
-	if err := applyUsageStatsRollupWithExec(ctx, tx, logsToStore); err != nil {
+	if err := applyUsageStatsRollupWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新用量累计汇总: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -5394,7 +5434,7 @@ func (db *DB) getUsageStats(ctx context.Context, rangeStart, rangeEnd time.Time,
 		COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
 		COALESCE(SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END), 0) AS today_cache_hit_requests,
 		COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS today_errors
-	FROM usage_logs u
+	FROM ` + usageStatsSource(dim) + ` u
 	WHERE created_at >= $1` + endClause + `
 	  AND status_code <> 499
 	  AND TRIM(COALESCE(internal_reason, '')) = ''
@@ -5469,7 +5509,7 @@ func (db *DB) CountTodayRequestsByChannel(ctx context.Context) (map[string]int64
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT COALESCE(channel, ''), COUNT(*)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 		GROUP BY 1`, db.timeArg(todayStart))
@@ -5533,7 +5573,7 @@ func (db *DB) getUsageModelStats(ctx context.Context, limit int, rangeStart, ran
 			COALESCE(SUM(account_billed), 0) AS account_billed,
 			COALESCE(SUM(user_billed), 0) AS user_billed,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count
-		FROM usage_logs u
+		FROM `+usageStatsSource(dim)+` u
 		WHERE `+timeWhere+` AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 		GROUP BY 1
@@ -5590,7 +5630,7 @@ func (db *DB) populateUsageBreakdownStats(ctx context.Context, stats *UsageStats
 			-- is_retry_attempt 标的是「本次失败且将要重试」的那条失败记录，算进来会重复计一次。
 			COALESCE(SUM(CASE WHEN attempt_index > 1 THEN 1 ELSE 0 END), 0) AS retry_requests,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_requests
-		FROM usage_logs u
+		FROM `+usageStatsSource(dim)+` u
 		WHERE `+timeWhere+` AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 	`, args...).Scan(
@@ -5633,7 +5673,7 @@ func (db *DB) getUsageEndpointStats(ctx context.Context, limit int, rangeStart, 
 			COALESCE(SUM(total_tokens), 0) AS tokens,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(SUM(user_billed), 0) AS user_billed
-		FROM usage_logs u
+		FROM `+usageStatsSource(dim)+` u
 		WHERE `+timeWhere+` AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 		GROUP BY 1
@@ -5677,7 +5717,7 @@ func (db *DB) getUsageAPIKeyStats(ctx context.Context, limit int, rangeStart, ra
 			COALESCE(SUM(total_tokens), 0) AS tokens,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(SUM(user_billed), 0) AS user_billed
-		FROM usage_logs u
+		FROM `+usageStatsSource(dim)+` u
 		WHERE `+timeWhere+` AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 		GROUP BY 1, 2
@@ -5719,7 +5759,7 @@ func (db *DB) GetTrafficSnapshot(ctx context.Context) (*TrafficSnapshot, error) 
 			date_trunc('second', created_at) AS sec,
 			COUNT(*)::float8 AS req_count,
 			COALESCE(SUM(total_tokens), 0)::float8 AS token_count
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= NOW() - INTERVAL '5 minutes'
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 		GROUP BY 1
@@ -5940,7 +5980,7 @@ func (db *DB) GetChartAggregation(ctx context.Context, start, end time.Time, buc
 			TO_TIMESTAMP(FLOOR(EXTRACT(EPOCH FROM created_at) / ($3 * 60)) * ($3 * 60)) AS bucket,
 			COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown') AS model_name,
 			duration_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, status_code
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND created_at < $2
 		  AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''` + channelClause + `
@@ -6047,7 +6087,7 @@ func (db *DB) GetAccountUsageStats(ctx context.Context, accountID int64, days in
 		COALESCE(account_billed, 0), COALESCE(user_billed, 0), COALESCE(duration_ms, 0),
 		COALESCE(first_token_ms, 0), status_code, COALESCE(is_retry_attempt, false),
 		COALESCE(attempt_index, 0), COALESCE(stream, false), COALESCE(compact, false)
-	FROM usage_logs
+	FROM usage_metered_events AS usage_logs
 	WHERE account_id = $1 AND `+timeWhere+` AND status_code <> 499
 	  AND TRIM(COALESCE(internal_reason, '')) = ''`, queryArgs...)
 	if err != nil {
@@ -6804,22 +6844,29 @@ func (db *DB) ClearUsageLogs(ctx context.Context) error {
 	defer tx.Rollback()
 	if !db.isSQLite() {
 		// 先锁明细表，等待正在写入的批次完整提交；之后的新写入在清理事务结束前不会插入。
-		if _, err := tx.ExecContext(ctx, `LOCK TABLE usage_logs IN ACCESS EXCLUSIVE MODE`); err != nil {
+		if _, err := tx.ExecContext(ctx, `LOCK TABLE usage_logs, usage_metering IN ACCESS EXCLUSIVE MODE`); err != nil {
 			return err
 		}
 	}
+	// Only the detail rows being deleted enter the baseline; lightweight
+	// metering rows stay live and keep counting through usage_metered_events.
 	var rollup usageStatsRollup
-	if err := tx.QueryRowContext(ctx, `SELECT total_requests, total_tokens, prompt_tokens, completion_tokens,
-		cached_tokens, cache_hit_requests, first_token_ms_sum, first_token_samples, account_billed, user_billed
-		FROM usage_stats_rollup WHERE channel=''`).Scan(&rollup.TotalRequests, &rollup.TotalTokens,
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(prompt_tokens), 0),
+		COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cached_tokens), 0),
+		COALESCE(SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN first_token_ms ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
+		FROM usage_logs WHERE status_code <> 499 AND TRIM(COALESCE(internal_reason, '')) = ''`).Scan(&rollup.TotalRequests, &rollup.TotalTokens,
 		&rollup.PromptTokens, &rollup.CompletionTokens, &rollup.CachedTokens, &rollup.CacheHitRequests,
 		&rollup.FirstTokenMsSum, &rollup.FirstTokenSamples, &rollup.TotalAccountBilled, &rollup.TotalUserBilled); err != nil {
 		return fmt.Errorf("锁定后读取完整累计失败: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE usage_stats_baseline SET
-		total_requests=$1, total_tokens=$2, prompt_tokens=$3, completion_tokens=$4,
-		cached_tokens=$5, cache_hit_requests=$6, first_token_ms_sum=$7, first_token_samples=$8,
-		account_billed=$9, user_billed=$10 WHERE id=1`, rollup.TotalRequests, rollup.TotalTokens,
+		total_requests=total_requests+$1, total_tokens=total_tokens+$2, prompt_tokens=prompt_tokens+$3,
+		completion_tokens=completion_tokens+$4, cached_tokens=cached_tokens+$5, cache_hit_requests=cache_hit_requests+$6,
+		first_token_ms_sum=first_token_ms_sum+$7, first_token_samples=first_token_samples+$8,
+		account_billed=account_billed+$9, user_billed=user_billed+$10 WHERE id=1`, rollup.TotalRequests, rollup.TotalTokens,
 		rollup.PromptTokens, rollup.CompletionTokens, rollup.CachedTokens, rollup.CacheHitRequests,
 		rollup.FirstTokenMsSum, rollup.FirstTokenSamples, rollup.TotalAccountBilled, rollup.TotalUserBilled); err != nil {
 		return fmt.Errorf("快照统计基线失败: %w", err)
@@ -6834,10 +6881,7 @@ func (db *DB) ClearUsageLogs(ctx context.Context) error {
 	} else if _, err = tx.ExecContext(ctx, `TRUNCATE TABLE usage_logs RESTART IDENTITY`); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM usage_stats_rollup WHERE channel <> ''`); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE usage_stats_rollup_state SET initialized=1, last_log_id=0, updated_at=CURRENT_TIMESTAMP WHERE id=1`); err != nil {
+	if err := rebuildUsageStatsRollupWithTx(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -6927,7 +6971,7 @@ func (db *DB) GetAccountRequestCounts(ctx context.Context) (map[int64]*AccountRe
 		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0) AS error_count,
 		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0) AS retry_error_count,
 		COALESCE(SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END), 0) AS rate_limit_attempt_count
-	FROM usage_logs
+	FROM usage_metered_events AS usage_logs
 	WHERE created_at >= $1 AND %s
 	GROUP BY account_id
 	`, retryFalse, retryFalse, retryTrue, db.endUserUsageLogPredicate())
@@ -6965,7 +7009,7 @@ func (db *DB) GetAccountTimeRangeUsage(ctx context.Context, since time.Time) (ma
 		COALESCE(SUM(total_tokens), 0) AS tokens,
 		COALESCE(SUM(account_billed), 0) AS account_billed,
 		COALESCE(SUM(user_billed), 0) AS user_billed
-	FROM usage_logs
+	FROM usage_metered_events AS usage_logs
 	WHERE created_at >= $1 AND status_code <> 499 AND %s AND %s AND %s
 	GROUP BY account_id
 	`, db.nonRetryUsageLogPredicate(), db.currentAccountUsageGenerationPredicate(), db.endUserUsageLogPredicate())
@@ -6998,7 +7042,7 @@ func (db *DB) GetAccountUsageWindows(ctx context.Context, shortSince, longSince 
 		COALESCE(SUM(CASE WHEN created_at >= $1 THEN account_billed ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN created_at >= $1 THEN user_billed ELSE 0 END), 0),
 		COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
-	FROM usage_logs
+	FROM usage_metered_events AS usage_logs
 	WHERE created_at >= $2 AND status_code <> 499 AND %s AND %s AND %s
 	GROUP BY account_id`, db.nonRetryUsageLogPredicate(), db.currentAccountUsageGenerationPredicate(), db.endUserUsageLogPredicate())
 	rows, err := db.conn.QueryContext(ctx, query, db.timeArg(shortSince), db.timeArg(longSince))
@@ -7029,7 +7073,7 @@ func (db *DB) GetAccountUsageWindows(ctx context.Context, shortSince, longSince 
 func (db *DB) GetAccountBilledSince(ctx context.Context, accountID int64, since time.Time) (float64, error) {
 	var billed float64
 	err := db.conn.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(account_billed), 0) FROM usage_logs WHERE account_id = $1 AND created_at >= $2
+		`SELECT COALESCE(SUM(account_billed), 0) FROM usage_metered_events AS usage_logs WHERE account_id = $1 AND created_at >= $2
 		 AND status_code <> 499 AND TRIM(COALESCE(internal_reason, '')) = ''`,
 		accountID, db.timeArg(since)).Scan(&billed)
 	return billed, err
@@ -7092,7 +7136,7 @@ func (db *DB) getAccountsBilledSinceChunk(ctx context.Context, ids []int64, wind
 	)
 	SELECT billing_windows.account_id, COALESCE(SUM(usage_logs.account_billed), 0) AS account_billed
 	FROM billing_windows
-	LEFT JOIN usage_logs
+	LEFT JOIN usage_metered_events AS usage_logs
 		ON usage_logs.account_id = billing_windows.account_id
 		AND usage_logs.created_at >= billing_windows.since_at
 		AND usage_logs.status_code <> 499

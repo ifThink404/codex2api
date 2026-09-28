@@ -2377,6 +2377,7 @@ export interface SystemSettings {
   codex_effective_cli_version?: string
   codex_user_agent_config: string
   usage_log_mode: 'full' | 'errors' | 'off' | string
+  usage_metering_enabled: boolean
   usage_log_batch_size: number
   usage_log_flush_interval_seconds: number
   stream_flush_policy: 'immediate' | 'coalesce' | string

@@ -9505,6 +9505,7 @@ type settingsResponse struct {
 	CodexSessionAutoLockThreshold       int                              `json:"codex_session_auto_lock_threshold"`
 	CodexTurnStateVaultEnabled          bool                             `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        string                           `json:"usage_log_mode"`
+	UsageMeteringEnabled                bool                             `json:"usage_metering_enabled"`
 	UsageLogBatchSize                   int                              `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        int                              `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                   string                           `json:"stream_flush_policy"`
@@ -9683,6 +9684,7 @@ type updateSettingsReq struct {
 	CodexSessionAutoLockThreshold       *int                             `json:"codex_session_auto_lock_threshold"`
 	CodexTurnStateVaultEnabled          *bool                            `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
+	UsageMeteringEnabled                *bool                            `json:"usage_metering_enabled"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                   *string                          `json:"stream_flush_policy"`
@@ -10534,6 +10536,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexSessionAutoLockThreshold:       runtimeCfg.CodexSessionAutoLockThreshold,
 		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
+		UsageMeteringEnabled:                h.db.GetUsageMeteringEnabled(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
@@ -11774,11 +11777,26 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		usageLogChanged = true
 		log.Printf("设置已更新: usage_log_flush_interval_seconds = %d", usageLogFlushIntervalSeconds)
 	}
+	if req.UsageMeteringEnabled != nil {
+		if err := h.db.SaveUsageMeteringEnabled(c.Request.Context(), *req.UsageMeteringEnabled); err != nil {
+			writeError(c, http.StatusInternalServerError, "保存轻量计量设置失败，设置未生效")
+			return
+		}
+		log.Printf("设置已更新: usage_metering_enabled = %v", *req.UsageMeteringEnabled)
+	}
+	// Enable metering before dropping details, and apply the detail mode before
+	// disabling metering, so a combined change never opens an unmetered gap.
+	if req.UsageMeteringEnabled != nil && *req.UsageMeteringEnabled {
+		h.db.SetUsageMeteringEnabled(true)
+	}
 	if usageLogChanged {
 		h.db.SetUsageLogConfig(usageLogMode, usageLogBatchSize, usageLogFlushIntervalSeconds)
 		usageLogMode = h.db.GetUsageLogMode()
 		usageLogBatchSize = h.db.GetUsageLogBatchSize()
 		usageLogFlushIntervalSeconds = h.db.GetUsageLogFlushIntervalSeconds()
+	}
+	if req.UsageMeteringEnabled != nil && !*req.UsageMeteringEnabled {
+		h.db.SetUsageMeteringEnabled(false)
 	}
 
 	promptFilterCfg := h.store.GetPromptFilterConfig()
@@ -12468,6 +12486,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexSessionAutoLockThreshold:       runtimeCfg.CodexSessionAutoLockThreshold,
 		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        usageLogMode,
+		UsageMeteringEnabled:                h.db.GetUsageMeteringEnabled(),
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
