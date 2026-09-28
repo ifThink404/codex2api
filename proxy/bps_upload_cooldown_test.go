@@ -26,6 +26,8 @@ import (
 // An upload failure must survive request boundaries and trigger migration
 // before another upload, even if no replacement was available on first failure.
 func TestBPSUploadCooldownSkipsPersistedOwner(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	h, owner, target, _ := failoverTestSetup(t, false)
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
 		s.CodexForkAccountFallbackEnabled = true
@@ -266,6 +268,8 @@ func TestBPSUploadCooldownSharedAndMonotonic(t *testing.T) {
 }
 
 func TestBPSUploadCooldownFailoverKeepsKeyScope(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	h, owner, target, key := failoverTestSetup(t, false)
 	key += "-upload"
 	h.store.BindSessionAffinity(key, owner, "")
@@ -293,6 +297,8 @@ func TestBPSUploadCooldownFailoverKeepsKeyScope(t *testing.T) {
 }
 
 func TestBPSUploadCooldownFreshSelectionAndExpiry(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	h, a, b, _ := failoverTestSetup(t, false)
 	off := false
 	a.CodexNative, a.CodexBPS = &off, true
@@ -320,6 +326,8 @@ func TestBPSUploadCooldownFreshSelectionAndExpiry(t *testing.T) {
 }
 
 func TestBPSUploadCooldownPassiveFallbackPreservesParent(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	for _, textOnly := range []bool{false, true} {
 		t.Run(fmt.Sprint(textOnly), func(t *testing.T) {
 			h, parent, _, _ := failoverTestSetup(t, false)

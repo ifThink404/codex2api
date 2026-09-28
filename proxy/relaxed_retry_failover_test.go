@@ -116,6 +116,8 @@ func TestRelaxedRetryFailureEvidenceClearedByTerminalFailure(t *testing.T) {
 }
 
 func TestRelaxedRetryBPSImageUpload429SwitchesBeforeInference(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	h, owner, target, _ := failoverTestSetup(t, false)
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = true; return s })
 	h.store.SetMaxRetries(0)

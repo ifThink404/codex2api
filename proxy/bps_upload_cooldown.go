@@ -273,6 +273,14 @@ func bpsUploadPartKey(account *auth.Account, part gjson.Result) string {
 }
 
 func bpsUploadCooldownForRequest(ctx context.Context, account *auth.Account, mode string) bool {
+	// Upload throttling with a local fallback is not an account health failure.
+	// Keep this account usable; normal preparation will reuse IDs or adapt data.
+	if account != nil && mode == "bps" && bpsAttachmentFallbackEnabled() {
+		s := &bpsFallbackState{key: bpsAttachmentFallbackKey(account), registry: bpsFallbacks, backend: nil}
+		if s.active(ctx) {
+			return false
+		}
+	}
 	// A temporary upload limit may only trigger account rotation when selected.
 	// Keep observations so switching back to rotate retains the cooldown.
 	if currentRateLimitRetryPolicy() != database.RateLimitRetryRotate {
@@ -321,6 +329,12 @@ func bpsUploadCooldownForRequest(ctx context.Context, account *auth.Account, mod
 			_, found, err := backend.read(ctx, attachmentKey)
 			if !backend.failed(ctx, err) && found {
 				continue
+			}
+		}
+		if bpsAttachmentFallbackEnabled() {
+			state := &bpsFallbackState{key: bpsAttachmentFallbackKey(account), registry: bpsFallbacks, backend: bpsSharedAttachments(ctx)}
+			if state.active(ctx) {
+				return false
 			}
 		}
 		return true

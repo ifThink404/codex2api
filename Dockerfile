@@ -45,7 +45,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ============================================================
 FROM alpine:3.19
 
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata \
+    poppler-utils libreoffice-writer libreoffice-calc libreoffice-impress \
+    font-noto font-noto-cjk
 
 COPY --from=go-builder /codex2api /usr/local/bin/codex2api
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/security"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -36,7 +38,7 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 		itemIndex, partIndex         int
 		field                        string
 		key, id                      string
-		reused                       bool
+		reused, fallback             bool
 	}
 	var jobs []imageJob
 	if d != nil && d.Images != nil {
@@ -95,8 +97,14 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 		}
 		job.key = bpsPreparedUploadKey(account, "image", prepared)
 		job.id, job.reused, err = bpsImages.resolveContext(workCtx, job.key, func(uploadCtx context.Context) (string, error) {
-			return upload(uploadCtx, prepared.file.Data, prepared.file.ContentType)
+			return bpsUploadWithFallback(uploadCtx, func(c context.Context) (string, error) {
+				return upload(c, prepared.file.Data, prepared.file.ContentType)
+			})
 		})
+		if errors.Is(err, errBPSAttachmentFallback) {
+			job.fallback = true
+			return nil
+		}
 		return err
 	})
 	if err != nil {
@@ -104,9 +112,13 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 	}
 	for index, original := range duplicates {
 		jobs[index].key, jobs[index].id, jobs[index].reused = jobs[original].key, jobs[original].id, true
+		jobs[index].fallback = jobs[original].fallback
 	}
 	references := make(map[int][]bpsImageReference)
 	for _, job := range jobs {
+		if job.fallback {
+			continue
+		}
 		references[job.itemIndex] = append(references[job.itemIndex], bpsImageReference{Part: job.partIndex, Field: job.field, ID: job.id})
 	}
 	body, err = rewriteBPSImageReferences(body, references)
@@ -114,6 +126,19 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 		return nil, nil, ErrInternalError("构建图片附件引用失败", err)
 	}
 	for _, job := range jobs {
+		if job.fallback {
+			bpsTimingFromContext(ctx).update(func(v *bpsTimingValues) { v.AttachmentFallbackImages++ })
+			if d != nil && d.Images != nil {
+				for k := range d.Images.Details {
+					v := &d.Images.Details[k]
+					if v.Path == job.diagnosticPath {
+						v.OutboundReference = "data_url"
+						v.Action = "upload_429_inline_fallback"
+					}
+				}
+			}
+			continue
+		}
 		used[job.key] = job.id
 		if d != nil && d.Images != nil {
 			if job.reused {
@@ -153,10 +178,11 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 }
 
 type bpsImageReference struct {
-	Remove []string
-	Part   int
-	Field  string
-	ID     string
+	Content []json.RawMessage
+	Remove  []string
+	Part    int
+	Field   string
+	ID      string
 }
 
 // Rewrite each affected item once, and the full input once. Repeated sjson
@@ -172,6 +198,7 @@ func rewriteBPSImageReferences(body []byte, references map[int][]bpsImageReferen
 	}
 	for index, replacements := range references {
 		fields := map[string][]json.RawMessage{}
+		expanded := map[string]map[int][]json.RawMessage{}
 		for _, replacement := range replacements {
 			parts, ok := fields[replacement.Field]
 			if !ok {
@@ -179,6 +206,13 @@ func rewriteBPSImageReferences(body []byte, references map[int][]bpsImageReferen
 					parts = append(parts, json.RawMessage(part.Raw))
 				}
 				fields[replacement.Field] = parts
+			}
+			if replacement.Content != nil {
+				if expanded[replacement.Field] == nil {
+					expanded[replacement.Field] = map[int][]json.RawMessage{}
+				}
+				expanded[replacement.Field][replacement.Part] = replacement.Content
+				continue
 			}
 			remove := replacement.Remove
 			if len(remove) == 0 {
@@ -201,6 +235,17 @@ func rewriteBPSImageReferences(body []byte, references map[int][]bpsImageReferen
 			parts[replacement.Part] = encoded
 		}
 		for field, parts := range fields {
+			if len(expanded[field]) > 0 {
+				var updated []json.RawMessage
+				for i, p := range parts {
+					if r, ok := expanded[field][i]; ok {
+						updated = append(updated, r...)
+					} else {
+						updated = append(updated, p)
+					}
+				}
+				parts = updated
+			}
 			encoded, err := json.Marshal(parts)
 			if err != nil {
 				return nil, err
@@ -209,6 +254,13 @@ func rewriteBPSImageReferences(body []byte, references map[int][]bpsImageReferen
 			if err != nil {
 				return nil, err
 			}
+		}
+	}
+	total := 0
+	for _, item := range items {
+		total += len(item)
+		if total > security.MaxRequestBodySize {
+			return nil, bpsFallbackFileError("附件展开后的请求超过大小上限，请拆分附件；未截断正文。")
 		}
 	}
 	encoded, err := json.Marshal(items)
@@ -235,6 +287,10 @@ func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.
 		return "", err
 	}
 	defer release()
+	// A sibling may have observed 429 while this upload was queued.
+	if s := bpsFallbackFromContext(ctx); s != nil && s.active(ctx) {
+		return "", errBPSAttachmentFallback
+	}
 	started, status := time.Now(), 0
 	defer func() {
 		bpsTimingFromContext(ctx).uploaded(time.Since(started), len(file.Data), status, resultErr != nil)

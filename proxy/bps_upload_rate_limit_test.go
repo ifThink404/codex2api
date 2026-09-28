@@ -22,6 +22,8 @@ import (
 )
 
 func TestBPSUploadRetryBudgetAndLogs(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	for _, tc := range []struct {
 		name, policy                                         string
 		ratePolicy                                           string

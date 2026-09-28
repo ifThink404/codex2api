@@ -22,6 +22,8 @@ import (
 // budget is available. Preserve the final selection outcome separately so an
 // unavailable or ineligible replacement is distinguishable from another 429.
 func TestBPSUploadRetryFinalSelectionDiagnostics(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	for _, reason := range []string{"healthy", "account_disabled", "different_groups", "outside_key_groups", "all_uploads_limited"} {
 		t.Run(reason, func(t *testing.T) {
 			h, owner, target, _ := failoverTestSetup(t, false)

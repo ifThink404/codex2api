@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/codex2api/auth"
@@ -151,6 +152,86 @@ func TestBPSAttachmentHistoryExecutorUploadsOnlyKeptContent(t *testing.T) {
 				require.Len(t, parts, 4)
 			} else {
 				require.Len(t, parts, 7)
+			}
+		})
+	}
+}
+
+func TestBPSAttachmentHistoryTenToFourBeforeUploadAndFallback(t *testing.T) {
+	t.Setenv("CODEX_TRANSPORT_MODE", "standard")
+	for _, mode := range []string{"normal", "first_upload_429", "cooldown"} {
+		t.Run(mode, func(t *testing.T) {
+			db, err := database.New("sqlite", filepath.Join(t.TempDir(), "trim-fallback.db"))
+			require.NoError(t, err)
+			defer db.Close()
+			a := &auth.Account{DBID: 9988302, AccountID: NewUpstreamSessionUUID(), AccessToken: "test-only", CodexBPS: true, CodexBPSImageTrim: true}
+			key := bpsAttachmentFallbackKey(a)
+			t.Cleanup(func() { bpsFallbacks.mu.Lock(); delete(bpsFallbacks.entries, key); bpsFallbacks.mu.Unlock() })
+			if mode == "cooldown" {
+				(&bpsFallbackState{key: key, registry: bpsFallbacks}).trip(t.Context())
+			}
+			body := bpsAttachmentHistoryTestBody(t)
+			var oldContent []json.RawMessage
+			for _, part := range gjson.GetBytes(body, "input.0.content").Array() {
+				oldContent = append(oldContent, json.RawMessage(part.Raw))
+			}
+			// These binary files would fail text conversion if accidentally restored
+			// after trimming. Their source labels may remain, but never their bytes.
+			for i := 0; i < 3; i++ {
+				part, e := json.Marshal(map[string]string{"type": "input_file", "filename": fmt.Sprintf("old-%d.bin", i), "file_data": base64.StdEncoding.EncodeToString([]byte{0, 0xff, byte(i)})})
+				require.NoError(t, e)
+				oldContent = append(oldContent, part)
+			}
+			encoded, err := json.Marshal(oldContent)
+			require.NoError(t, err)
+			body, err = sjson.SetRawBytes(body, "input.0.content", encoded)
+			require.NoError(t, err)
+			var uploads atomic.Int32
+			installClaudeBoundaryTransport(t, a, func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/attachments") {
+					uploads.Add(1)
+					status, data := 200, `{"openai_file_id":"file-retained-four"}`
+					if mode != "normal" {
+						status, data = 429, `{"error":{"type":"server_error","message":"429: Rate limit exceeded"}}`
+					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(data)), Request: r}, nil
+				}
+				wire, e := io.ReadAll(r.Body)
+				require.NoError(t, e)
+				require.NotContains(t, string(wire), "file_data")
+				require.NotContains(t, string(wire), "old-user-file")
+				if mode != "normal" {
+					for _, kept := range []string{"current-user-file", "result_2", "result_4"} {
+						require.Contains(t, string(wire), kept)
+					}
+				}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"output":[]}`)), Request: r}, nil
+			})
+			resp, err := ExecuteRequest(WithCodexAccountTestIdentityStore(t.Context(), db, a), a, body, testRootSessionA, "", "", nil, nil, false)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			d := CodexBPSResponseDiagnostic(resp)
+			require.NotNil(t, d)
+			require.NotNil(t, d.ImageHistory)
+			require.Equal(t, 10, d.ImageHistory.AttachmentsBefore)
+			require.Equal(t, 4, d.ImageHistory.AttachmentsAfter)
+			require.Equal(t, 6, d.ImageHistory.AttachmentsOmitted)
+			require.Equal(t, 3, d.Files.Count)
+			require.Equal(t, 1, d.ImageHistory.After, "image scan count can include images omitted before preparation")
+			require.Equal(t, 4, d.Timing.values.AttachmentDecodes, "only the four retained source attachments enter preparation")
+			if mode == "normal" {
+				require.EqualValues(t, 4, uploads.Load())
+				require.Zero(t, d.Files.Fallback)
+			} else {
+				require.Equal(t, 3, d.Files.Fallback)
+				require.Equal(t, 1, d.Images.InlineImages)
+				require.Equal(t, 3, d.Timing.values.AttachmentFallbackFiles)
+				require.Equal(t, 1, d.Timing.values.AttachmentFallbackImages)
+				want := int32(0)
+				if mode == "first_upload_429" {
+					want = 1
+				}
+				require.Equal(t, want, uploads.Load())
 			}
 		})
 	}

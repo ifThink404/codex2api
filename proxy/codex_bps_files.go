@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -32,6 +33,7 @@ type codexBPSFileDiagnostic struct {
 	Count                  int                  `json:"count"`
 	Uploaded               int                  `json:"uploaded"`
 	UploadReused           int                  `json:"upload_reused"`
+	Fallback               int                  `json:"fallback,omitempty"`
 	ToolAttachmentMessages int                  `json:"tool_attachment_messages,omitempty"`
 	DetailsOmitted         int                  `json:"details_omitted,omitempty"`
 	Details                []codexBPSFileDetail `json:"details"`
@@ -128,10 +130,13 @@ func bpsFileUploadKey(account *auth.Account, file bpsFileAttachment) string {
 func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body []byte, d *CodexBPSDiagnostic, upload func(context.Context, bpsFileAttachment) (string, error)) ([]byte, map[string]string, error) {
 	type fileJob struct {
 		value, name, field, carrier string
+		url                         string
 		item, part                  int
 		key, id                     string
 		size                        int
 		reused                      bool
+		fallback                    []json.RawMessage
+		fallbackFormat              string
 	}
 	var jobs []fileJob
 	if d != nil {
@@ -164,15 +169,15 @@ func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body 
 			if field == "output" && strings.TrimSpace(item.Get("call_id").String()) == "" {
 				return nil, nil, bpsFileInputError("文件工具结果缺少 call_id，无法关联原工具调用。")
 			}
-			jobs = append(jobs, fileJob{value: data.String(), name: part.Get("filename").String(), field: field, carrier: carrier, item: i, part: j})
+			jobs = append(jobs, fileJob{value: data.String(), name: part.Get("filename").String(), url: part.Get("file_url").String(), field: field, carrier: carrier, item: i, part: j})
 		}
 	}
 	unique := make([]int, 0, len(jobs))
-	type source struct{ value, name string }
+	type source struct{ value, name, url string }
 	first := make(map[source]int)
 	duplicates := make(map[int]int)
 	for i, job := range jobs {
-		key := source{job.value, job.name}
+		key := source{job.value, job.name, job.url}
 		if original, found := first[key]; found {
 			duplicates[i] = original
 		} else {
@@ -194,7 +199,20 @@ func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body 
 		}
 		job.size = len(prepared.file.Data)
 		job.key = bpsPreparedUploadKey(account, "file", prepared)
-		job.id, job.reused, err = bpsImages.resolveContext(workCtx, job.key, func(uploadCtx context.Context) (string, error) { return upload(uploadCtx, prepared.file) })
+		job.id, job.reused, err = bpsImages.resolveContext(workCtx, job.key, func(uploadCtx context.Context) (string, error) {
+			return bpsUploadWithFallback(uploadCtx, func(c context.Context) (string, error) { return upload(c, prepared.file) })
+		})
+		if errors.Is(err, errBPSAttachmentFallback) {
+			if u, e := url.Parse(job.url); e == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil {
+				raw, _ := json.Marshal(map[string]string{"type": "input_file", "file_url": job.url})
+				job.fallback, job.fallbackFormat, err = []json.RawMessage{raw}, "file_url", nil
+			} else {
+				job.fallback, job.fallbackFormat, err = bpsFallbackDocument(workCtx, prepared.file)
+			}
+			if err == nil {
+				bpsTimingFromContext(workCtx).update(func(v *bpsTimingValues) { v.AttachmentFallbackFiles++ })
+			}
+		}
 		return err
 	})
 	if err != nil {
@@ -202,6 +220,7 @@ func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body 
 	}
 	for index, original := range duplicates {
 		jobs[index].key, jobs[index].id, jobs[index].size, jobs[index].reused = jobs[original].key, jobs[original].id, jobs[original].size, true
+		jobs[index].fallback, jobs[index].fallbackFormat = jobs[original].fallback, jobs[original].fallbackFormat
 	}
 	used := make(map[string]string)
 	references := make(map[int][]bpsImageReference)
@@ -210,6 +229,17 @@ func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body 
 		diagnostic = &codexBPSFileDiagnostic{}
 	}
 	for _, job := range jobs {
+		if job.fallback != nil {
+			references[job.item] = append(references[job.item], bpsImageReference{Part: job.part, Field: job.field, Content: job.fallback})
+			diagnostic.Count++
+			diagnostic.Fallback++
+			if len(diagnostic.Details) == 8 {
+				diagnostic.Details = diagnostic.Details[1:]
+				diagnostic.DetailsOmitted++
+			}
+			diagnostic.Details = append(diagnostic.Details, codexBPSFileDetail{Path: fmt.Sprintf("input[%d].%s[%d]", job.item, job.field, job.part), Carrier: job.carrier, Bytes: job.size, Action: "upload_429_fallback_" + job.fallbackFormat, OutboundReference: "inline_content"})
+			continue
+		}
 		used[job.key] = job.id
 		references[job.item] = append(references[job.item], bpsImageReference{Part: job.part, Field: job.field, ID: job.id, Remove: []string{"file_data", "filename", "file_url"}})
 		diagnostic.Count++
@@ -260,7 +290,7 @@ func bridgeBPSToolAttachments(body []byte, d *CodexBPSDiagnostic) ([]byte, error
 		if kind == "function_call_output" || kind == "custom_tool_call_output" {
 			for j, part := range item.Get("output").Array() {
 				isImage := part.Get("type").String() == "input_image" && part.Get("file_id").String() != ""
-				isFile := part.Get("type").String() == "input_file" && part.Get("file_id").String() != ""
+				isFile := part.Get("type").String() == "input_file" && (part.Get("file_id").String() != "" || part.Get("file_url").String() != "")
 				if !isImage && !isFile {
 					continue
 				}

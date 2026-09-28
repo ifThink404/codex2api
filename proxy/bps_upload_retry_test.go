@@ -28,6 +28,8 @@ func freshRetryImage(t *testing.T) string {
 }
 
 func TestBackgroundUploadRetryDetachesWithoutMovingParent(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	t.Setenv("CODEX_REQUEST_COMPRESSION", "off")
 	for _, path := range []string{"/v1/responses", "/v1/responses/compact", "/v1/chat/completions", "/v1/messages"} {
 		t.Run(path, func(t *testing.T) {
@@ -127,6 +129,8 @@ func TestBackgroundUploadRetryDetachesWithoutMovingParent(t *testing.T) {
 }
 
 func TestBPSUploadPoolExhaustionReturnsUploadError(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	h, owner, target, _ := failoverTestSetup(t, false)
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexForkAccountFallbackEnabled = true; return s })
 	h.store.SetMaxRetries(0)

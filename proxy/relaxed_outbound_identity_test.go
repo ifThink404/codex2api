@@ -112,6 +112,8 @@ func testRelaxedSignedOnlyMissingOwnerReachesUpstream(t *testing.T, canonical bo
 }
 
 func TestRelaxedSignedOnlyUpload429SwitchesAndResumes(t *testing.T) {
+	// Explicit rollback mode retains the existing upload retry/failover contract.
+	t.Setenv("CODEX_BPS_ATTACHMENT_429_FALLBACK", "off")
 	for _, split := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no_split", true: "cross_split"}[split], func(t *testing.T) {
 			testRelaxedSignedOnlyUpload429SwitchesAndResumes(t, split)

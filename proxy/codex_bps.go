@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -257,6 +258,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	defer releasePreparation()
 	ctx = withBPSUploadRequest(ctx)
 	ctx = context.WithValue(ctx, bpsUploadAccountKey{}, account.ID())
+	ctx = withBPSAttachmentFallback(ctx, account)
 	started := time.Now()
 	account.Mu().RLock()
 	accessToken, proxyURL := account.AccessToken, account.ProxyURL
@@ -325,6 +327,11 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		if failure := diagnostic.Timing.uploadFailure(); failure != nil && failure.HTTPStatus != 0 {
 			status, source = failure.HTTPStatus, "upstream_http"
 		}
+		var conversion *Error
+		if errors.As(err, &conversion) && conversion.Code == "attachment_fallback_unavailable" {
+			status, source = conversion.HTTPStatus, "gateway"
+			stage = "bps_attachment_fallback"
+		}
 		observer := UpstreamTransportObserver(ctx)
 		observer.Failure(source, stage, 0)
 		observer.update(func(d *UpstreamTransportDiagnostic) { d.HTTPStatus = status })
@@ -386,6 +393,9 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 		}
 		phaseStarted = time.Now()
 		projected, err = bridgeBPSToolAttachments(projected, diagnostic)
+		if err == nil {
+			projected, err = bridgeBPSFallbackImages(projected, diagnostic)
+		}
 		diagnostic.Timing.update(func(v *bpsTimingValues) { v.ToolBridgeMS += time.Since(phaseStarted).Milliseconds() })
 		if err != nil {
 			preparationFailed("bps_tool_attachment_bridge")
