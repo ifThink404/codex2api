@@ -1312,6 +1312,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/prompt-filter/retention", h.GetPromptLogRetention)
 	api.PUT("/prompt-filter/retention", h.UpdatePromptLogRetention)
 	api.POST("/prompt-filter/retention/run", h.RunPromptLogRetentionNow)
+	h.registerTransportPluginRoutes(api)
 	api.GET("/prompt-policy/incidents", h.ListPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents", h.ClearPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents/:incident_id", h.DeletePromptPolicyIncident)
@@ -8438,6 +8439,7 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 		ErrorKind:         strings.TrimSpace(c.Query("error_kind")),
 		Query:             strings.TrimSpace(c.Query("q")),
 		Channel:           parseUsageChannel(c),
+		Transport:         strings.TrimSpace(c.Query("transport")),
 	}
 
 	if pageStr := c.Query("page"); pageStr != "" {
