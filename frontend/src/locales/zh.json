@@ -7129,6 +7129,10 @@
     }
   },
   "serviceErrors": {
+    "downloadPage": "下载当前页",
+    "downloadHint": "下载当前筛选下本页的完整诊断 JSON；收敛显示时包含每组最近一条详情与分组次数。",
+    "downloadSuccess": "已发起下载，本页包含 {{count}} 条诊断记录",
+    "downloadFailed": "下载失败，请重试",
     "grouped": "收敛显示",
     "individual": "逐条显示",
     "groupHint": "按调用方、Key、接口、模型、状态及错误原因合并。次数覆盖整个筛选时间段；点击次数查看原始请求。",

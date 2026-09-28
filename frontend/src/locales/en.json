@@ -7132,6 +7132,10 @@
     }
   },
   "serviceErrors": {
+    "downloadPage": "Download current page",
+    "downloadHint": "Download full diagnostic JSON for this page with the applied filters. Grouped view includes the latest event and occurrence count for each group.",
+    "downloadSuccess": "Download started with {{count}} diagnostic records from this page",
+    "downloadFailed": "Download failed. Please try again.",
     "grouped": "Grouped",
     "individual": "Individual",
     "groupHint": "Groups matching caller, key, endpoint, model, status and cause across the filtered time range. Click a count to inspect original requests.",

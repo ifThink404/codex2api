@@ -2240,6 +2240,10 @@
     }
   },
   "serviceErrors": {
+    "downloadPage": "下載目前頁面",
+    "downloadHint": "下載目前篩選下本頁的完整診斷 JSON；收斂顯示時包含每組最近一筆詳情與分組次數。",
+    "downloadSuccess": "已開始下載，本頁包含 {{count}} 筆診斷記錄",
+    "downloadFailed": "下載失敗，請重試",
     "grouped": "收斂顯示",
     "individual": "逐筆顯示",
     "groupHint": "依呼叫方、Key、端點、模型、狀態及錯誤原因合併。次數涵蓋整個篩選時段；點選次數查看原始請求。",

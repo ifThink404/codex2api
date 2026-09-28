@@ -53,6 +53,7 @@ test('service errors page is routed, uses shared controls and has translations',
   assert.match(opsTabs, /to: '\/ops\/service-errors', labelKey: 'ops\.tabs\.serviceErrors'/)
   assert.match(api, /getServiceErrors: \(query: ServiceErrorQuery/)
   assert.match(page, /api\.getServiceErrors\(/)
+  assert.match(page, /saveServiceErrorPageExport\(buildServiceErrorPageExport\(data, data\.query, data\.pageNumber\)\)/)
   assert.match(page, /<Select /)
   assert.match(page, /<SegmentedTabs/)
   assert.doesNotMatch(page, /<select|type="checkbox"/)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ChevronLeft, ChevronRight, Copy, Search, ServerCrash, ShieldAlert, TimerReset } from 'lucide-react'
+import { AlertCircle, ChevronLeft, ChevronRight, Copy, Download, Search, ServerCrash, ShieldAlert, TimerReset } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api'
 import OpsTabs from '../components/OpsTabs'
@@ -10,6 +10,7 @@ import { StatTile } from '../components/StatTile'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
 import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
+import { buildServiceErrorPageExport, saveServiceErrorPageExport } from '../lib/serviceErrorExport'
 import { SERVICE_ERROR_STAGES, serviceErrorCollectorHasLoss, serviceErrorNewAPIUserLabel, type ServiceErrorEvent, type ServiceErrorPage, type ServiceErrorQuery } from '../lib/serviceErrors'
 import { formatBeijingTime } from '../utils/time'
 import { Badge } from '@/components/ui/badge'
@@ -30,6 +31,7 @@ const emptyPage: ServiceErrorPage & { query?: ServiceErrorQuery; pageNumber?: nu
 
 export default function ServiceErrors() {
   const { t } = useTranslation()
+  const { showToast } = useToast()
   const [filters, setFilters] = useState({ timeRange: '1h' as TimeRangeKey, status: '', stage: '', requestID: '', grouped: true, cursors: [''] })
   const [groupSelection, setGroupSelection] = useState<{ event: ServiceErrorEvent; query: ServiceErrorQuery } | null>(null)
   const [search, setSearch] = useState('')
@@ -62,10 +64,25 @@ export default function ServiceErrors() {
   const updateFilters = (change: Partial<Omit<typeof filters, 'cursors'>>) => {
     setFilters(current => ({ ...current, ...change, cursors: [''] }))
   }
+  // Only a fully loaded page that matches the current filters can be exported.
+  const canDownload = !loading && !error && data.items.length > 0 && !!data.query && data.snapshotKey === snapshotKey
+  const downloadPage = () => {
+    if (!canDownload || !data.query || !data.pageNumber) return
+    try {
+      saveServiceErrorPageExport(buildServiceErrorPageExport(data, data.query, data.pageNumber))
+      showToast(t('serviceErrors.downloadSuccess', { count: data.items.length }))
+    } catch {
+      showToast(t('serviceErrors.downloadFailed'), 'error')
+    }
+  }
 
   return (
     <>
-      <PageHeader title={t('serviceErrors.title')} description={t('serviceErrors.description')} onRefresh={() => {
+      <PageHeader title={t('serviceErrors.title')} description={t('serviceErrors.description')} actions={
+        <Button type="button" variant="outline" size="sm" disabled={!canDownload} onClick={downloadPage} title={t('serviceErrors.downloadHint')}>
+          <Download className="size-3.5" />{t('serviceErrors.downloadPage')}
+        </Button>
+      } onRefresh={() => {
         if (cursor) setFilters(current => ({ ...current, cursors: [''] }))
         else void reload()
       }} />
