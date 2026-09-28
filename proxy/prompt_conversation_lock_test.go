@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -124,6 +125,77 @@ func TestExplicitUpstreamCYBLocksOnlyTheSignedConversation(t *testing.T) {
 	setIngressRequestBodyIfAbsent(other, body)
 	if blocked := handler.inspectPromptFilterOpenAI(other, body, "/v1/responses", "gpt-5.5"); blocked {
 		t.Fatal("different user was blocked by another user's CYB lock")
+	}
+}
+
+func TestUpstreamCYBLockSurvivesRequestCancellation(t *testing.T) {
+	for _, signed := range []bool{true, false} {
+		for _, expired := range []bool{false, true} {
+			t.Run(fmt.Sprintf("signed=%t/expired=%t", signed, expired), func(t *testing.T) {
+				handler, db := newPromptConversationLockTestHandler(t)
+				body := []byte(`{"model":"gpt-5.5","input":"ordinary request","stream":true}`)
+				fingerprint := "0123456789abcdef0123456789abcdef"
+				newRequest := func(requestID string) *gin.Context {
+					var request *gin.Context
+					if signed {
+						request = signedBoundNewAPIPolicyContext(t, requestID, newAPIIdentity{UserID: "42", ClientIP: "203.0.113.8"}, body, 101, "gateway-a", "gateway-a-secret", fingerprint)
+					} else {
+						request, _ = gin.CreateTestContext(httptest.NewRecorder())
+						request.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+						request.Request.Header.Set("Session-ID", "cyb-canceled-session")
+						request.Set(contextAPIKeyID, int64(202))
+					}
+					setIngressRequestBodyIfAbsent(request, body)
+					return request
+				}
+				first := newRequest("cancel-cyb-first")
+				var identity promptConversationLockIdentity
+				var ok bool
+				if signed {
+					policy, verified := handler.verifyNewAPIPolicyContext(first, handler.promptFilterConfigForRequest(first).Advanced.NewAPI, body)
+					if !verified {
+						t.Fatal("signed fixture was not verified")
+					}
+					identity, ok = verifiedPromptConversationLockIdentity(first, policy)
+				} else {
+					identity, ok = promptConversationLockFallbackIdentity(first)
+				}
+				if !ok {
+					t.Fatal("stable conversation identity was not available")
+				}
+				var requestContext context.Context
+				var cancel context.CancelFunc
+				wantErr := context.Canceled
+				if expired {
+					requestContext, cancel = context.WithDeadline(first.Request.Context(), time.Now().Add(-time.Second))
+					wantErr = context.DeadlineExceeded
+				} else {
+					requestContext, cancel = context.WithCancel(first.Request.Context())
+				}
+				defer cancel()
+				first.Request = first.Request.WithContext(requestContext)
+				cancel()
+				terminal := []byte(`{"type":"response.failed","response":{"status":"failed","error":{"code":"cyber_policy","message":"synthetic policy rejection"}}}`)
+				handler.attachUpstreamCyberPolicyStreamDecision(first, "/v1/responses", "gpt-5.5", terminal, upstreamCyberPolicyAttempt{Transport: "http", StatusCode: 400, AccountID: 1, AttemptIndex: 1})
+				if !errors.Is(first.Request.Context().Err(), wantErr) {
+					t.Fatalf("client request cancellation changed: %v", first.Request.Context().Err())
+				}
+				lock, err := db.GetActivePromptConversationLock(t.Context(), identity.LockKey)
+				if err != nil || lock == nil || lock.Status != database.PromptConversationLockStatusActive {
+					t.Fatalf("observed CYB was not durably locked after client cancellation: lock=%+v err=%v", lock, err)
+				}
+				// A fresh handler must see the durable lock, not only an in-memory entry.
+				handler = NewHandler(handler.store, db, nil, nil)
+				handler.SetRuntimeCache(cache.NewMemory(1))
+				repeat := newRequest("cancel-cyb-repeat")
+				if !handler.inspectPromptFilterOpenAI(repeat, body, "/v1/responses", "gpt-5.5") {
+					t.Fatal("same conversation was forwarded after the canceled request's CYB")
+				}
+				if scope := repeat.Writer.Header().Get("X-Codex2API-Policy-Restriction-Scope"); scope != database.PromptConversationRestrictionScopeConversation {
+					t.Fatalf("next request was not blocked by the conversation lock: scope=%q", scope)
+				}
+			})
+		}
 	}
 }
 
@@ -454,9 +526,14 @@ func TestConversationLockStorageFailureDoesNotClaimConversationWasLocked(t *test
 	if !delegated {
 		t.Fatal("signed CYB decision was not emitted")
 	}
-	canceledContext, cancel := context.WithCancel(c.Request.Context())
-	cancel()
-	c.Request = c.Request.WithContext(canceledContext)
+	failedDB, err := database.New("sqlite", filepath.Join(t.TempDir(), "closed-lock.db"))
+	if err != nil {
+		t.Fatalf("create unavailable database fixture: %v", err)
+	}
+	if err := failedDB.Close(); err != nil {
+		t.Fatalf("close lock database: %v", err)
+	}
+	handler.db = failedDB
 	metadata.ConversationLocked = handler.lockPromptConversationAfterUpstreamCYB(c, "/v1/responses", "gpt-5.5", "incident-db-failure", metadata)
 	if metadata.ConversationLocked {
 		t.Fatal("database failure was reported as a successful conversation lock")
