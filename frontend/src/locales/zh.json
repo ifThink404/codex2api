@@ -33,6 +33,10 @@
     "columns": { "user": "用户 / 平台", "session": "主会话 ID", "account": "错误账号", "count": "错误次数", "last": "最近错误", "error": "错误 / 模型", "activity": "请求状态", "status": "会话状态", "details": "详情" }
   },
   "serviceErrors": {
+    "downloadPage": "下载当前页",
+    "downloadHint": "下载当前筛选下本页的完整诊断 JSON；收敛显示时包含每组最近一条详情与分组次数。",
+    "downloadSuccess": "已发起下载，本页包含 {{count}} 条诊断记录",
+    "downloadFailed": "下载失败，请重试",
     "view": "服务错误视图",
     "grouped": "收敛显示",
     "individual": "逐条显示",

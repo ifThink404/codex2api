@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ChevronLeft, ChevronRight, Copy, Search, ServerCrash, ShieldAlert, TimerReset } from 'lucide-react'
+import { AlertCircle, ChevronLeft, ChevronRight, Copy, Download, Search, ServerCrash, ShieldAlert, TimerReset } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api'
 import OpsTabs from '../components/OpsTabs'
@@ -11,6 +11,7 @@ import { useToast } from '../hooks/useToast'
 import { writeClipboardText } from '../lib/clipboard'
 import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { SERVICE_ERROR_STAGES, serviceErrorCollectorHasLoss, serviceErrorNewAPIUserLabel, type ServiceErrorEvent, type ServiceErrorPage, type ServiceErrorQuery } from '../lib/serviceErrors'
+import { buildServiceErrorPageExport, saveServiceErrorPageExport } from '../lib/serviceErrorExport'
 import { formatBeijingTime } from '../utils/time'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,7 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
-const emptyPage: ServiceErrorPage & { query?: ServiceErrorQuery } = {
+const emptyPage: ServiceErrorPage & { query?: ServiceErrorQuery; pageNumber?: number; snapshotKey?: string } = {
   items: [],
   summary: { total: 0, status_429: 0, status_4xx: 0, status_5xx: 0 },
   collector: { pending: 0, written: 0, dropped: 0, write_failures: 0, capacity: 512, retention_days: 7, max_rows: 100000 },
@@ -28,12 +29,15 @@ const emptyPage: ServiceErrorPage & { query?: ServiceErrorQuery } = {
 
 export default function ServiceErrors() {
   const { t } = useTranslation()
+  const { showToast } = useToast()
   const [filters, setFilters] = useState({ timeRange: '1h' as TimeRangeKey, status: '', stage: '', requestID: '', grouped: true, cursors: [''] })
   const [groupSelection, setGroupSelection] = useState<{ event: ServiceErrorEvent; query: ServiceErrorQuery } | null>(null)
   const [search, setSearch] = useState('')
   const range = useRef(getTimeRangeISO('1h'))
   const pending = useRef<AbortController | null>(null)
   const cursor = filters.cursors[filters.cursors.length - 1]
+  const pageNumber = filters.cursors.length
+  const snapshotKey = JSON.stringify([filters.timeRange, filters.status, filters.stage, filters.requestID, filters.grouped, cursor, pageNumber])
   const load = useCallback(async () => {
     pending.current?.abort()
     const controller = new AbortController()
@@ -41,8 +45,8 @@ export default function ServiceErrors() {
     if (!cursor) range.current = getTimeRangeISO(filters.timeRange)
     const query = { ...range.current, status: filters.status, stage: filters.stage, request_id: filters.requestID, grouped: filters.grouped, cursor }
     const page = await api.getServiceErrors(query, controller.signal)
-    return { ...page, query }
-  }, [cursor, filters.requestID, filters.stage, filters.status, filters.timeRange, filters.grouped])
+    return { ...page, query, pageNumber, snapshotKey }
+  }, [cursor, filters.requestID, filters.stage, filters.status, filters.timeRange, filters.grouped, pageNumber, snapshotKey])
   const { data, loading, error, reload, reloadSilently } = useDataLoader({ initialData: emptyPage, load })
 
   useEffect(() => () => pending.current?.abort(), [])
@@ -57,10 +61,24 @@ export default function ServiceErrors() {
   const updateFilters = (change: Partial<Omit<typeof filters, 'cursors'>>) => {
     setFilters(current => ({ ...current, ...change, cursors: [''] }))
   }
+  const canDownload = !loading && !error && data.items.length > 0 && !!data.query && data.snapshotKey === snapshotKey
+  const downloadPage = () => {
+    if (!canDownload || !data.query || !data.pageNumber) return
+    try {
+      saveServiceErrorPageExport(buildServiceErrorPageExport(data, data.query, data.pageNumber))
+      showToast(t('serviceErrors.downloadSuccess', { count: data.items.length }))
+    } catch {
+      showToast(t('serviceErrors.downloadFailed'), 'error')
+    }
+  }
 
   return (
     <>
-      <PageHeader title={t('serviceErrors.title')} description={t('serviceErrors.description')} onRefresh={() => {
+      <PageHeader title={t('serviceErrors.title')} description={t('serviceErrors.description')} actions={
+        <Button type="button" variant="outline" size="sm" disabled={!canDownload} onClick={downloadPage} title={t('serviceErrors.downloadHint')}>
+          <Download className="size-3.5" />{t('serviceErrors.downloadPage')}
+        </Button>
+      } onRefresh={() => {
         if (cursor) setFilters(current => ({ ...current, cursors: [''] }))
         else void reload()
       }} />

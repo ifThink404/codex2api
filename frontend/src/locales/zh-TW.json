@@ -23,6 +23,10 @@
     "columns": { "user": "使用者 / 平台", "session": "主會話 ID", "account": "錯誤帳號", "count": "錯誤次數", "last": "最近錯誤", "error": "錯誤 / 模型", "status": "會話狀態", "details": "詳情" }
   },
   "serviceErrors": {
+    "downloadPage": "下載目前頁面",
+    "downloadHint": "下載目前篩選下本頁的完整診斷 JSON；收斂顯示時包含每組最近一筆詳情與分組次數。",
+    "downloadSuccess": "已開始下載，本頁包含 {{count}} 筆診斷記錄",
+    "downloadFailed": "下載失敗，請重試",
     "view": "服務錯誤檢視",
     "grouped": "收斂顯示",
     "individual": "逐筆顯示",
