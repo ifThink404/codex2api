@@ -309,3 +309,44 @@ func TestFetchCodexModelsManifest_UsesCustomHeaderAccountIDOverride(t *testing.T
 		t.Errorf("chatgpt-account-id = %q, want acc-override", gotAccountID)
 	}
 }
+
+func TestAutoCompleteCodexAccountWhitelistAppendsManifestModels(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.New("sqlite", t.TempDir()+"/codex2api.db")
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	defer db.Close()
+	manifest := []byte(`{"models":[{"slug":"gpt-5.5"},{"slug":"gpt-6-astra"}]}`)
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5"})
+	handler := &Handler{store: store}
+
+	restrictedID, err := db.InsertAccountWithCredentials(ctx, "restricted", map[string]interface{}{"refresh_token": "rt-a", "models": []string{"gpt-5.5"}}, "")
+	if err != nil {
+		t.Fatalf("insert restricted account: %v", err)
+	}
+	restricted := &auth.Account{DBID: restrictedID, AccessToken: "at-a", Models: []string{"gpt-5.5"}, Status: auth.StatusReady}
+	store.AddAccount(restricted)
+	handler.autoCompleteCodexAccountWhitelist(ctx, restricted, manifest)
+	if got := restricted.CodexModels(); strings.Join(got, ",") != "gpt-5.5,gpt-6-astra" {
+		t.Fatalf("runtime whitelist = %v, want manifest model appended", got)
+	}
+	row, err := db.GetAccountByID(ctx, restrictedID)
+	if err != nil {
+		t.Fatalf("GetAccountByID: %v", err)
+	}
+	if got := row.GetCredentialStringSlice("models"); strings.Join(got, ",") != "gpt-5.5,gpt-6-astra" {
+		t.Fatalf("persisted whitelist = %v", got)
+	}
+
+	unlimitedID, err := db.InsertAccountWithCredentials(ctx, "unlimited", map[string]interface{}{"refresh_token": "rt-b"}, "")
+	if err != nil {
+		t.Fatalf("insert unlimited account: %v", err)
+	}
+	unlimited := &auth.Account{DBID: unlimitedID, AccessToken: "at-b", Status: auth.StatusReady}
+	store.AddAccount(unlimited)
+	handler.autoCompleteCodexAccountWhitelist(ctx, unlimited, manifest)
+	if got := unlimited.CodexModels(); len(got) != 0 {
+		t.Fatalf("unlimited account became restricted: %v", got)
+	}
+}

@@ -4824,8 +4824,8 @@ func validateAccountModelsForAccount(account *auth.Account, models []string) err
 }
 
 // SyncAccountUpstreamModels 用账号自身凭据实时拉取上游模型清单，
-// 返回该账号真实可用的模型 slug 列表。账号白名单本身只读不落库，由管理端确认后再保存；
-// 但清单里注册表尚不认识的模型会顺手学习进注册表（只增不改不删，与客户端刷新
+// 返回该账号真实可用的模型 slug 列表。已有非空白名单会自动并入清单中缺少的新模型；
+// 空白名单代表“全部放行”，保持为空。清单里注册表尚不认识的模型会顺手学习进注册表（只增不改不删，与客户端刷新
 // 选单时的学习同一实现）：否则 Trusted Access for Cyber 这类只有个别账号才有的模型
 // 探测看得见、保存进白名单后 /v1/models 却不列、调用直接报模型不存在（issue #624）。
 func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
@@ -4867,7 +4867,12 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 			return
 		}
 		models = auth.NormalizeAccountModels(models)
-		c.JSON(http.StatusOK, gin.H{"models": models})
+		whitelist, added, mergeErr := h.store.MergeAccountModelsFromUpstream(c.Request.Context(), id, models)
+		if mergeErr != nil {
+			writeError(c, http.StatusInternalServerError, fmt.Sprintf("更新账号模型白名单失败: %s", mergeErr.Error()))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"models": models, "whitelist": whitelist, "whitelist_added": added})
 		return
 	}
 	if account.IsOpenAIResponsesAPI() {
@@ -4904,7 +4909,12 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 	} else if len(added) > 0 {
 		log.Printf("[账号 %d] 已从上游模型清单学习 %d 个新模型进注册表: %s", id, len(added), strings.Join(added, ", "))
 	}
-	c.JSON(http.StatusOK, gin.H{"models": models})
+	whitelist, whitelistAdded, mergeErr := h.store.MergeAccountModelsFromUpstream(c.Request.Context(), id, models)
+	if mergeErr != nil {
+		writeError(c, http.StatusInternalServerError, fmt.Sprintf("更新账号模型白名单失败: %s", mergeErr.Error()))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"models": models, "whitelist": whitelist, "whitelist_added": whitelistAdded})
 }
 
 // importToken 导入时的统一 token 载体

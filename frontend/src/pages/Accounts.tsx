@@ -5270,8 +5270,11 @@ export default function Accounts() {
       void reloadSilently();
       const fetched = result.models ?? [];
       setModelsDraft((current) => mergeModelLists(current, fetched));
+      const added = result.whitelist_added?.length ?? 0;
       showToast(
-        t("accounts.supportedModelsSyncDone", { count: fetched.length }),
+        added > 0
+          ? t("accounts.supportedModelsSyncDoneWithAutoAdded", { count: fetched.length, added })
+          : t("accounts.supportedModelsSyncDone", { count: fetched.length }),
       );
     } catch (error) {
       showToast(
@@ -10511,6 +10514,9 @@ export default function Accounts() {
                       : t("accounts.supportedModelsSync")}
                   </Button>
                 </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {t("accounts.supportedModelsSyncHint")}
+                </p>
                 <p className="mt-2 text-xs text-muted-foreground">
                   {t("accounts.supportedModelsProbeHint")}
                 </p>

@@ -926,8 +926,13 @@ export const api = {
   updateAccountModels: (id: number, models: string[]) =>
     request<{ models: string[] }>(`/accounts/${id}/models`, { method: 'PATCH', body: JSON.stringify({ models }) }),
   // 拉取并记录账号清单证据；白名单只在管理员保存后更新。
+  // 已有非空白名单会自动并入缺少的新模型，空白名单保持“全部放行”语义。
   syncAccountModelsUpstream: (id: number) =>
-    request<{ models: string[] }>(`/accounts/${id}/models/sync-upstream`, { method: 'POST' }),
+    request<{
+      models: string[]
+      whitelist?: string[]
+      whitelist_added?: string[]
+    }>(`/accounts/${id}/models/sync-upstream`, { method: 'POST' }),
   // 实测并记录账号模型证据，model 非空时只测该模型；不修改白名单/调度健康。
   probeAccountModels: (id: number, model?: string) =>
     request<{

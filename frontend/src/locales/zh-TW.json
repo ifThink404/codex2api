@@ -344,6 +344,8 @@
     }
   },
   "accounts": {
+    "supportedModelsSyncDoneWithAutoAdded": "已從上游同步 {{count}} 個模型，自動補充白名單 {{added}} 項",
+    "supportedModelsSyncHint": "同步會把上游確認的新模型自動加入既有白名單；空白名單維持全部放行。",
     "operationResultsViewOutput": "查看測試輸出",
     "operationResultsTestModel": "測試模型",
     "operationResultsResponseModel": "實際回應模型",

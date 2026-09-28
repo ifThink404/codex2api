@@ -1815,6 +1815,8 @@
     "supportedModelsSync": "Sync from upstream",
     "supportedModelsSyncing": "Syncing…",
     "supportedModelsSyncDone": "Synced {{count}} models from upstream",
+    "supportedModelsSyncDoneWithAutoAdded": "Synced {{count}} models from upstream; automatically added {{added}} whitelist entries",
+    "supportedModelsSyncHint": "Sync automatically adds upstream-confirmed models to an existing whitelist; an empty whitelist remains unrestricted.",
     "supportedModelsSyncFailed": "Failed to sync from upstream: {{error}}",
     "supportedModelsProbe": "Probe available models",
     "supportedModelsProbing": "Probing…",
