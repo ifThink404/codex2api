@@ -3245,11 +3245,12 @@ func TestUsageLogsIncludeAccountNameForOpenAIResponsesAccount(t *testing.T) {
 		t.Fatalf("InsertOpenAIResponsesAccount 返回错误: %v", err)
 	}
 	if err := db.InsertUsageLog(ctx, &UsageLogInput{
-		AccountID:  accountID,
-		Endpoint:   "/v1/responses",
-		Model:      "gpt-4.1",
-		StatusCode: 200,
-		DurationMs: 120,
+		AccountID:       accountID,
+		Endpoint:        "/v1/responses",
+		Model:           "gpt-4.1",
+		StatusCode:      200,
+		DurationMs:      120,
+		ClientUserAgent: "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.26200; x86_64)",
 	}); err != nil {
 		t.Fatalf("InsertUsageLog 返回错误: %v", err)
 	}
@@ -3296,6 +3297,20 @@ func TestUsageLogsIncludeAccountNameForOpenAIResponsesAccount(t *testing.T) {
 	}
 	if len(logs) != 1 || logs[0].AccountName != "API 别名" {
 		t.Fatalf("filter logs = %+v, want one account name match", logs)
+	}
+
+	page, err = db.ListUsageLogsByTimeRangePaged(ctx, UsageLogFilter{
+		Start:    now.Add(-1 * time.Hour),
+		End:      now.Add(1 * time.Hour),
+		Page:     1,
+		PageSize: 10,
+		Query:    "codex desktop/0.149.0-alpha.4.3",
+	})
+	if err != nil {
+		t.Fatalf("ListUsageLogsByTimeRangePaged 客户端 UA 返回错误: %v", err)
+	}
+	if page.Total != 1 || len(page.Logs) != 1 || !strings.Contains(page.Logs[0].ClientUserAgent, "Codex Desktop/0.149.0-alpha.4.3") {
+		t.Fatalf("filter page = %+v, want one client user-agent match", page)
 	}
 }
 

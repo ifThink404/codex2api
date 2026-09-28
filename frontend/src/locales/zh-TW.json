@@ -1677,6 +1677,7 @@
     "cyberRiskSubjectEvents": "{{count}} 筆事件"
   },
   "usage": {
+    "searchLogs": "搜尋錯誤、模型、端點、帳號、IP、用戶端 UA 或 API Key…",
     "usageAnalysis": "用量分析",
     "modelStatsDesc": "主要模型的請求、Token 與金額分布。",
     "modelStatsScope": "占比依金額排名前 10 的模型計算。",

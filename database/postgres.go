@@ -6520,6 +6520,7 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 				OR LOWER(COALESCE(u.api_key_name, '')) LIKE LOWER(%[1]s)
 				OR LOWER(COALESCE(u.api_key_masked, '')) LIKE LOWER(%[1]s)
 				OR LOWER(COALESCE(u.client_ip, '')) LIKE LOWER(%[1]s)
+				OR LOWER(COALESCE(u.client_user_agent, '')) LIKE LOWER(%[1]s)
 				OR u.account_id IN (
 					SELECT search_accounts.id
 					FROM accounts search_accounts
