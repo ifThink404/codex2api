@@ -40,6 +40,13 @@ func bpsInstanceUploadLimit() int {
 	return database.DefaultBPSAttachmentInstanceConcurrency
 }
 
+func bpsAccountUploadLimit() int {
+	if settings, ok := runtimeSettings.Load().(RuntimeSettings); ok {
+		return database.NormalizeBPSAttachmentAccountConcurrency(settings.BPSAttachmentAccountConcurrency)
+	}
+	return database.DefaultBPSAttachmentAccountConcurrency
+}
+
 func bpsUploadBufferLimit() int64 {
 	return int64(bpsAttachmentInt("CODEX_BPS_ATTACHMENT_BUFFER_MIB", 512, 64, 16384)) << 20
 }

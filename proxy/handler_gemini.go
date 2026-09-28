@@ -283,14 +283,18 @@ func (h *Handler) handleGeminiCountTokens(c *gin.Context, model string, rawBody 
 				}
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			disposition := h.rateLimitFailureDisposition(resp.StatusCode, errBody, shouldRetry, continuousRetryPolicy)
+			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && disposition.reportAccount && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			h.store.UnbindSessionAffinity(affinityKey, account.ID())
-			retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			h.applySessionFailureAffinity(affinityKey, account, disposition)
+			if !disposition.retainAffinity {
+				retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			}
 			log.Printf("Gemini native countTokens upstream error (attempt %d, status %d): %s", attempt+1, resp.StatusCode, upstreamErrorConsoleBody(errBody))
-			if shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) {
+			if shouldRetry {
 				retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				if h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					continue
@@ -463,21 +467,27 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 				log.Printf("Antigravity OAuth refresh failed after upstream 401 (account=%d, endpoint=%s): %v", account.ID(), inboundEndpoint, refreshErr)
 			}
 
+			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			disposition := h.rateLimitFailureDisposition(resp.StatusCode, errBody, shouldRetry, continuousRetryPolicy)
 			antigravityRefreshFailed := resp.StatusCode == http.StatusUnauthorized && antigravityRefreshRetried[account.ID()]
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && disposition.reportAccount && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			h.store.UnbindSessionAffinity(affinityKey, account.ID())
-			retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			h.applySessionFailureAffinity(affinityKey, account, disposition)
+			if !disposition.retainAffinity {
+				retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			}
 
 			log.Printf("Gemini native upstream error (attempt %d, status %d, %s): %s", attempt+1, resp.StatusCode, inboundEndpoint, upstreamErrorConsoleBody(errBody))
 			logUpstreamErrorForRequest(c, inboundEndpoint, resp.StatusCode, model, account.ID(), errBody)
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, model)
-			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			decision := codex429Decision{}
+			if disposition.reportAccount {
+				decision = h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, model)
+			}
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:         account.ID(),
-				Endpoint:            inboundEndpoint,
+				Endpoint:          inboundEndpoint,
 				Model:             model,
 				EffectiveModel:    model,
 				StatusCode:        resp.StatusCode,

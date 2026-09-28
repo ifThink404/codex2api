@@ -29,6 +29,7 @@ import (
 func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 	for _, tc := range []struct {
 		name                                                         string
+		retryOff, invertTransport                                    bool
 		native, streamFailure, temporary, preserve, visible, compact bool
 		headerQuota, targetQuota, temporaryAlways                    bool
 		budget                                                       int
@@ -36,6 +37,11 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 		disabled                                                     bool
 		targetMismatch                                               string
 	}{
+		{name: "off_http_temporary", budget: 2, temporary: true, retryOff: true},
+		{name: "off_native_stream_temporary", native: true, streamFailure: true, budget: 2, temporary: true, retryOff: true},
+		{name: "independent_sticky_http", budget: 1, temporary: true, invertTransport: true},
+		{name: "independent_sticky_native_stream", native: true, streamFailure: true, budget: 1, temporary: true, invertTransport: true},
+		{name: "independent_rotate_http", budget: 1, temporary: true, relaxed: true, invertTransport: true},
 		{name: "http_429", budget: 1},
 		{name: "header_only_quota", budget: 1, headerQuota: true},
 		{name: "native_header_only_quota", native: true, budget: 1, headerQuota: true},
@@ -72,9 +78,16 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 			settings := CurrentRuntimeSettings()
 			settings.CodexPreflightSSEPassthrough = true
 			settings.CodexSessionFailoverPreserveInput = tc.preserve
+			settings.RateLimitRetryPolicy = "sticky"
+			if tc.relaxed {
+				settings.RateLimitRetryPolicy = "rotate"
+			}
 			if tc.relaxed {
 				settings.CodexForkAccountFallbackEnabled = true
 				settings.CodexSessionFailoverEnabled = false
+			}
+			if tc.retryOff {
+				settings.RateLimitRetryPolicy = "off"
 			}
 			settings.CompactViaResponses = tc.compact && tc.streamFailure
 			settings.CodexWSSilentRetry, settings.CodexWSSilentRetries = tc.budget > 0, tc.budget
@@ -85,6 +98,13 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 			h.store.SetTransportRetryPolicy("sticky")
 			if tc.relaxed {
 				h.store.SetTransportRetryPolicy("rotate")
+			}
+			if tc.invertTransport {
+				if tc.relaxed {
+					h.store.SetTransportRetryPolicy("sticky")
+				} else {
+					h.store.SetTransportRetryPolicy("rotate")
+				}
 			}
 			switch tc.targetMismatch {
 			case "tags":
@@ -241,7 +261,7 @@ func TestSessionQuotaRetryEndToEnd(t *testing.T) {
 			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata.window_number", 1)
 			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata.window_id", root+":1")
 			output, status = send(body, tc.compact)
-			blocked := tc.budget == 0 || tc.disabled || tc.targetMismatch == "groups" || tc.targetMismatch == "model" || tc.visible
+			blocked := tc.retryOff || tc.budget == 0 || tc.disabled || tc.targetMismatch == "groups" || tc.targetMismatch == "model" || tc.visible
 			expectSwitch := !blocked && (!tc.temporary || tc.relaxed)
 			var attempts []capture
 			for len(seen) > 0 {

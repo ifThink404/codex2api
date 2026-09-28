@@ -204,6 +204,18 @@ func (h *Handler) dispatchRawRelay(c *gin.Context, body, routingBody []byte, mod
 			}
 		}
 		if retry && canRetry() && c.Request.Context().Err() == nil && !c.Writer.Written() {
+			if resp != nil && h.rateLimitFailureDisposition(resp.StatusCode, failureBody, true, database.ContinuousRetryPolicy{}).retrySameAccount {
+				resp.Body.Close()
+				observer := &rawRelayUsageObserver{}
+				observer.Write(failureBody)
+				observer.finish()
+				applyRawRelayObservation(input, diagnostic, observer, routingBody)
+				logAttempt()
+				if !h.waitBeforeRetryWithBudget(c.Request.Context(), rateRetries, h.getMaxRateLimitRetries(), resp) {
+					return
+				}
+				continue
+			}
 			excluded[account.ID()] = true
 			if next := selectAccount(); next != nil {
 				if resp != nil {

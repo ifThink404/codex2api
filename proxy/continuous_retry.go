@@ -54,6 +54,9 @@ func earlyResponsesSSEPassthrough(settings RuntimeSettings) bool {
 }
 
 func continuousRetryHTTPSelected(policy database.ContinuousRetryPolicy, status int, body []byte) bool {
+	if status == http.StatusTooManyRequests && rateLimitRetryDisabled() {
+		return false
+	}
 	if codexCapacityErrorForClient(body) != nil {
 		return false
 	}
@@ -86,6 +89,9 @@ func continuousRetryHTTPSelected(policy database.ContinuousRetryPolicy, status i
 }
 
 func continuousRetryLimitsForHTTP(status int, body []byte, generalLimit, rateLimit int, policies ...database.ContinuousRetryPolicy) (int, int) {
+	if status == http.StatusTooManyRequests && rateLimitRetryDisabled() {
+		return generalLimit, 0
+	}
 	policy := continuousRetryPolicyForCall(policies)
 	if !continuousRetryHTTPSelected(policy, status, body) {
 		return generalLimit, rateLimit
@@ -97,6 +103,9 @@ func continuousRetryLimitsForHTTP(status int, body []byte, generalLimit, rateLim
 }
 
 func continuousRetryLimitForRequestError(err error, generalLimit int, policies ...database.ContinuousRetryPolicy) int {
+	if rateLimitRequestError(err) && rateLimitRetryDisabled() {
+		return 0
+	}
 	policy := continuousRetryPolicyForCall(policies)
 	if err == nil || errors.Is(err, context.Canceled) {
 		return generalLimit
@@ -183,6 +192,9 @@ func continuousRetryRequestErrorSelected(policy database.ContinuousRetryPolicy, 
 }
 
 func continuousRetryStreamSelected(outcome streamOutcome, payload []byte, eventType string, policies ...database.ContinuousRetryPolicy) bool {
+	if streamOutcomeUsesRateLimitBudget(outcome) && rateLimitRetryDisabled() {
+		return false
+	}
 	if outcome.replayBlocked {
 		return false
 	}
@@ -293,6 +305,9 @@ func terminalUpstreamErrorPayload(payload []byte) []byte {
 // into account-scoped 4xx/context/error-frame failures whose legacy outcome is
 // not penalized.
 func continuousRetryStreamFailureSelected(outcome streamOutcome, payload []byte, eventType string, policies ...database.ContinuousRetryPolicy) bool {
+	if streamOutcomeUsesRateLimitBudget(outcome) && rateLimitRetryDisabled() {
+		return false
+	}
 	if outcome.replayBlocked {
 		return false
 	}
@@ -377,6 +392,9 @@ func isExplicitUpstreamSafetyPolicy(payload []byte) bool {
 }
 
 func continuousRetryLimitsForStream(outcome streamOutcome, payload []byte, eventType string, generalLimit, rateLimit int, policies ...database.ContinuousRetryPolicy) (int, int) {
+	if streamOutcomeUsesRateLimitBudget(outcome) && rateLimitRetryDisabled() {
+		return generalLimit, 0
+	}
 	if !continuousRetryStreamSelected(outcome, payload, eventType, policies...) {
 		return generalLimit, rateLimit
 	}

@@ -376,6 +376,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					codex_continue_max_rounds INTEGER DEFAULT 8,
 					retry_interval_ms INTEGER DEFAULT 0,
 					transport_retry_policy TEXT DEFAULT 'rotate',
+					rate_limit_retry_policy TEXT DEFAULT '',
 					continuous_retry_policy TEXT DEFAULT '{"enabled":false,"catch_all":false,"categories":["transport","http_429","http_5xx","stream_error"],"status_codes":[],"error_codes":[],"max_duration_seconds":600}',
 					codex_synced_cli_version TEXT DEFAULT '',
 					codex_cli_version_sync_enabled INTEGER DEFAULT 1,
@@ -394,6 +395,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					bps_round_task_lifetime_hours INTEGER DEFAULT 24,
 					bps_attachment_request_concurrency INTEGER DEFAULT 15,
 					bps_attachment_instance_concurrency INTEGER DEFAULT 64,
+					bps_attachment_account_concurrency INTEGER DEFAULT 15,
 					resin_account_max_conns INTEGER DEFAULT 15,
 					bps_turn_round_limit INTEGER DEFAULT 100,
 					response_cache_local_max_bytes INTEGER NOT NULL DEFAULT 67108864,
@@ -702,6 +704,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "codex_continue_max_rounds", "INTEGER DEFAULT 8"},
 		{"system_settings", "retry_interval_ms", "INTEGER DEFAULT 0"},
 		{"system_settings", "transport_retry_policy", "TEXT DEFAULT 'rotate'"},
+		{"system_settings", "rate_limit_retry_policy", "TEXT DEFAULT ''"},
 		{"system_settings", "codex_synced_cli_version", "TEXT DEFAULT ''"},
 		{"system_settings", "codex_cli_version_sync_enabled", "INTEGER DEFAULT 1"},
 		{"system_settings", "codex_cli_version_sync_interval_hours", "INTEGER DEFAULT 12"},
@@ -719,6 +722,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "bps_round_task_lifetime_hours", "INTEGER DEFAULT 24"},
 		{"system_settings", "bps_attachment_request_concurrency", "INTEGER DEFAULT 15"},
 		{"system_settings", "bps_attachment_instance_concurrency", "INTEGER DEFAULT 64"},
+		{"system_settings", "bps_attachment_account_concurrency", "INTEGER DEFAULT 15"},
 		{"system_settings", "resin_account_max_conns", "INTEGER DEFAULT 15"},
 		{"system_settings", "bps_turn_round_limit", "INTEGER DEFAULT 100"},
 		{"system_settings", "response_cache_local_max_bytes", "INTEGER NOT NULL DEFAULT 67108864"},
@@ -932,6 +936,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		return fmt.Errorf("install scheduler outbox triggers: %w", err)
 	}
 
+	if err := db.backfillRateLimitRetryPolicy(ctx); err != nil {
+		return err
+	}
 	return db.runDataMigrationsWithTimeout()
 }
 

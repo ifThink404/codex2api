@@ -2168,6 +2168,7 @@ export interface SystemSettings {
   max_retries: number
   max_rate_limit_retries: number
   retry_interval_ms: number
+  rate_limit_retry_policy: 'off' | 'sticky' | 'rotate'
   transport_retry_policy: string
   continuous_retry_enabled: boolean
   continuous_retry_catch_all: boolean
@@ -2182,6 +2183,7 @@ export interface SystemSettings {
   bps_round_task_lifetime_hours: number
   bps_attachment_request_concurrency: number
   bps_attachment_instance_concurrency: number
+  bps_attachment_account_concurrency: number
   resin_account_max_conns: number
   bps_turn_round_limit: number
   allow_remote_migration: boolean

@@ -72,7 +72,9 @@ type RuntimeSettings struct {
 	BPSRoundTaskLifetimeHours        int
 	BPSAttachmentRequestConcurrency  int
 	BPSAttachmentInstanceConcurrency int
+	BPSAttachmentAccountConcurrency  int
 	ResinAccountMaxConns             int
+	RateLimitRetryPolicy             string
 	BPSTurnRoundLimit                int
 	CodexTelemetryEnabled            bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
@@ -226,7 +228,9 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		BPSRoundTaskLifetimeHours:         database.DefaultBPSRoundTaskLifetimeHours,
 		BPSAttachmentRequestConcurrency:   database.DefaultBPSAttachmentRequestConcurrency,
 		BPSAttachmentInstanceConcurrency:  database.DefaultBPSAttachmentInstanceConcurrency,
+		BPSAttachmentAccountConcurrency:   database.DefaultBPSAttachmentAccountConcurrency,
 		ResinAccountMaxConns:              database.DefaultResinAccountMaxConns,
+		RateLimitRetryPolicy:              database.RateLimitRetryRotate,
 		BPSTurnRoundLimit:                 database.DefaultBPSTurnRoundLimit,
 		RequestIsolationMode:              defaultRequestIsolationMode(),
 		CodexCLIVersionSyncEnabled:        true,
@@ -364,7 +368,9 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.BPSRoundTaskLifetimeHours = database.NormalizeBPSRoundTaskLifetimeHours(settings.BPSRoundTaskLifetimeHours)
 	settings.BPSAttachmentRequestConcurrency = database.NormalizeBPSAttachmentRequestConcurrency(settings.BPSAttachmentRequestConcurrency)
 	settings.BPSAttachmentInstanceConcurrency = database.NormalizeBPSAttachmentInstanceConcurrency(settings.BPSAttachmentInstanceConcurrency)
+	settings.BPSAttachmentAccountConcurrency = database.NormalizeBPSAttachmentAccountConcurrency(settings.BPSAttachmentAccountConcurrency)
 	settings.ResinAccountMaxConns = database.NormalizeResinAccountMaxConns(settings.ResinAccountMaxConns)
+	settings.RateLimitRetryPolicy = database.NormalizeRateLimitRetryPolicy(settings.RateLimitRetryPolicy)
 	settings.BPSTurnRoundLimit = database.NormalizeBPSTurnRoundLimit(settings.BPSTurnRoundLimit)
 	if settings.CodexContinueMaxRounds < minCodexContinueMaxRounds {
 		settings.CodexContinueMaxRounds = defaults.CodexContinueMaxRounds
@@ -438,7 +444,9 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.BPSRoundTaskLifetimeHours = settings.BPSRoundTaskLifetimeHours
 		next.BPSAttachmentRequestConcurrency = settings.BPSAttachmentRequestConcurrency
 		next.BPSAttachmentInstanceConcurrency = settings.BPSAttachmentInstanceConcurrency
+		next.BPSAttachmentAccountConcurrency = settings.BPSAttachmentAccountConcurrency
 		next.ResinAccountMaxConns = settings.ResinAccountMaxConns
+		next.RateLimitRetryPolicy = database.ResolveRateLimitRetryPolicy(settings.RateLimitRetryPolicy, settings.TransportRetryPolicy)
 		next.BPSTurnRoundLimit = settings.BPSTurnRoundLimit
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
@@ -490,7 +498,7 @@ func storeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings = NormalizeRuntimeSettings(settings)
 	telemetryWasEnabled := currentRuntimeSettings().CodexTelemetryEnabled
 	runtimeSettings.Store(settings)
-	// Reconsider queued uploads immediately when the instance limit increases.
+	// Reconsider queued uploads immediately when an account or instance limit increases.
 	bpsUploads.mu.Lock()
 	bpsUploads.dispatch()
 	bpsUploads.mu.Unlock()

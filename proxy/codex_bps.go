@@ -256,6 +256,7 @@ func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, ca
 	ctx, releasePreparation := withBPSAttachmentPreparation(ctx)
 	defer releasePreparation()
 	ctx = withBPSUploadRequest(ctx)
+	ctx = context.WithValue(ctx, bpsUploadAccountKey{}, account.ID())
 	started := time.Now()
 	account.Mu().RLock()
 	accessToken, proxyURL := account.AccessToken, account.ProxyURL

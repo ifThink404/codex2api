@@ -17,6 +17,7 @@ type bpsTimingValues struct {
 	UploadQueueMS               int64                        `json:"upload_queue_ms"`
 	BufferWaitMS                int64                        `json:"buffer_wait_ms"`
 	InstanceUploadLimit         int                          `json:"instance_upload_limit,omitempty"`
+	AccountUploadLimit          int                          `json:"account_upload_limit,omitempty"`
 	FirstTokenModeAtStart       string                       `json:"first_token_mode_at_start,omitempty"`
 	LastInferenceHTTP           *bpsHTTPPhases               `json:"last_inference_http,omitempty"`
 	SlowestUploadHTTP           *bpsHTTPPhases               `json:"slowest_upload_http,omitempty"`

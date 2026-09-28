@@ -19,3 +19,15 @@
 相关测试位于 `proxy/session_quota_retry_test.go` 与 `proxy/wsrelay/session_failover_epoch_test.go`；沿用已有切号、额度分类、持续重试、turn-state 持久化与身份隔离测试。
 
 `proxy/relaxed_retry_failover_test.go` 另行覆盖临时排除、宽松开关、连续迁移及真实附件上传路径：原账号上传 429，目标账号上传成功后只向目标账号发起一次推理。诊断中的 `account_failover.trigger_reason=request_excluded`、`enabled_by=relaxed_mode` 和目标账号 ID 用于核对这条路径。NewAPI 继续读取 Codex2API 的真实调度结果，无需屏蔽错误；没有符合条件的候选或重试预算耗尽时仍返回失败。
+
+## 独立的 429 重试策略
+
+系统设置 → 常规 → 流量保护增加 `rate_limit_retry_policy`，与 `transport_retry_policy` 分开保存：
+
+- `off`：不自动重试 429；即使持续重试选择了 429 或启用了超级模式，也不会再次发送该 429 请求。
+- `sticky`：临时 429 保留账号重试，图片/文件上传与 HTTP、Responses 流内错误使用同一选择。附件上传的临时冷却不会触发换号。
+- `rotate`：按原有账号筛选、分组、会话与上下文归属规则换号，不能突破这些边界。
+
+有限次数仍由 `max_rate_limit_retries` 控制，0 表示关闭有限次数重试。明确启用的持续重试可以扩展次数，但遵守 429 策略的停用和同号/换号选择。网络错误和 5xx 继续由原临时故障策略控制；429 不消耗通用重试计数。
+
+明确额度耗尽、失效账号、取消、已输出正文、禁止重放或上游安全终态仍按原规则处理，不会强行在不可用账号上反复请求。旧数据库首次增加字段时复制当时的临时故障策略，随后两项独立；新安装默认换号重试。保存成功才更新运行态，配置支持 PostgreSQL/SQLite、重启恢复及导入导出。

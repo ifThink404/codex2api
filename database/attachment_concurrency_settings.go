@@ -1,6 +1,8 @@
 package database
 
 const (
+	DefaultBPSAttachmentAccountConcurrency  = 15
+	MaxBPSAttachmentAccountConcurrency      = 1024
 	DefaultBPSAttachmentRequestConcurrency  = 15
 	MaxBPSAttachmentRequestConcurrency      = 64
 	DefaultBPSAttachmentInstanceConcurrency = 64
@@ -26,6 +28,13 @@ func NormalizeBPSAttachmentInstanceConcurrency(value int) int {
 func NormalizeResinAccountMaxConns(value int) int {
 	if value < 1 || value > MaxResinAccountMaxConns {
 		return DefaultResinAccountMaxConns
+	}
+	return value
+}
+
+func NormalizeBPSAttachmentAccountConcurrency(value int) int {
+	if value < 1 || value > MaxBPSAttachmentAccountConcurrency {
+		return DefaultBPSAttachmentAccountConcurrency
 	}
 	return value
 }

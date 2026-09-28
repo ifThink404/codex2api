@@ -64,8 +64,7 @@ func (e *bpsAttachmentUploadError) UpstreamErrorBody() []byte {
 // belongs to the independent rate-limit budget. Other request errors retain
 // the general budget and the existing replay, policy and cancellation checks.
 func requestErrorRetryBudget(err error, generalRetries, rateLimitRetries *int, generalLimit, rateLimit int) (*int, int) {
-	var upload *bpsAttachmentUploadError
-	if errors.As(err, &upload) && upload.UpstreamStatusCode() == http.StatusTooManyRequests {
+	if rateLimitRequestError(err) {
 		return rateLimitRetries, rateLimit
 	}
 	return generalRetries, generalLimit

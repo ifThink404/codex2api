@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -272,6 +273,11 @@ func bpsUploadPartKey(account *auth.Account, part gjson.Result) string {
 }
 
 func bpsUploadCooldownForRequest(ctx context.Context, account *auth.Account, mode string) bool {
+	// A temporary upload limit may only trigger account rotation when selected.
+	// Keep observations so switching back to rotate retains the cooldown.
+	if currentRateLimitRetryPolicy() != database.RateLimitRetryRotate {
+		return false
+	}
 	s, _ := ctx.Value(bpsUploadRequestKey{}).(*bpsUploadRequest)
 	if s == nil || account == nil || mode != "bps" {
 		return false

@@ -7,21 +7,24 @@ import (
 )
 
 type bpsUploadQueueRequestKey struct{}
+type bpsUploadAccountKey struct{}
 type bpsUploadQueueRequest struct{ marker byte }
 type bpsUploadTicket struct {
-	ready   chan struct{}
-	bytes   int64
-	granted bool
+	ready     chan struct{}
+	bytes     int64
+	granted   bool
+	accountID int64
 }
 type bpsUploadQueue struct {
 	request *bpsUploadQueueRequest
 	tickets []*bpsUploadTicket
 }
 type bpsUploadScheduler struct {
-	mu     sync.Mutex
-	queues []*bpsUploadQueue
-	active int
-	bytes  int64
+	mu       sync.Mutex
+	queues   []*bpsUploadQueue
+	active   int
+	bytes    int64
+	accounts map[int64]int
 }
 
 var bpsUploads bpsUploadScheduler
@@ -36,9 +39,17 @@ func withBPSUploadRequest(ctx context.Context) context.Context {
 // Round-robin across waiting business requests. A large upload at the head is
 // allowed to drain active work rather than starving behind endless small files.
 func (s *bpsUploadScheduler) dispatch() {
-	for len(s.queues) > 0 && s.active < bpsInstanceUploadLimit() {
+	blocked := 0
+	for len(s.queues) > 0 && s.active < bpsInstanceUploadLimit() && blocked < len(s.queues) {
 		q := s.queues[0]
 		t := q.tickets[0]
+		if s.accounts[t.accountID] >= bpsAccountUploadLimit() {
+			// A saturated account must not block other accounts in the queue.
+			copy(s.queues, s.queues[1:])
+			s.queues[len(s.queues)-1] = q
+			blocked++
+			continue
+		}
 		if s.bytes+t.bytes > bpsUploadBufferLimit() && s.active > 0 {
 			return
 		}
@@ -50,6 +61,11 @@ func (s *bpsUploadScheduler) dispatch() {
 			s.queues = append(s.queues, q)
 		}
 		t.granted = true
+		blocked = 0
+		if s.accounts == nil {
+			s.accounts = make(map[int64]int)
+		}
+		s.accounts[t.accountID]++
 		s.active++
 		s.bytes += t.bytes
 		close(t.ready)
@@ -64,7 +80,8 @@ func (s *bpsUploadScheduler) acquire(ctx context.Context, bytes int64) (func(), 
 	if request == nil {
 		request = &bpsUploadQueueRequest{}
 	}
-	t := &bpsUploadTicket{ready: make(chan struct{}), bytes: bytes}
+	accountID, _ := ctx.Value(bpsUploadAccountKey{}).(int64)
+	t := &bpsUploadTicket{ready: make(chan struct{}), bytes: bytes, accountID: accountID}
 	started := time.Now()
 	s.mu.Lock()
 	var queue *bpsUploadQueue
@@ -81,13 +98,12 @@ func (s *bpsUploadScheduler) acquire(ctx context.Context, bytes int64) (func(), 
 	queue.tickets = append(queue.tickets, t)
 	s.dispatch()
 	s.mu.Unlock()
-	release := func() { s.mu.Lock(); s.active--; s.bytes -= bytes; s.dispatch(); s.mu.Unlock() }
+	release := func() { s.mu.Lock(); s.release(t); s.dispatch(); s.mu.Unlock() }
 	select {
 	case <-ctx.Done():
 		s.mu.Lock()
 		if t.granted {
-			s.active--
-			s.bytes -= bytes
+			s.release(t)
 		} else {
 			for i, q := range s.queues {
 				if q != queue {
@@ -116,7 +132,19 @@ func (s *bpsUploadScheduler) acquire(ctx context.Context, bytes int64) (func(), 
 		bpsTimingFromContext(ctx).update(func(v *bpsTimingValues) {
 			v.UploadQueueMS += time.Since(started).Milliseconds()
 			v.InstanceUploadLimit = bpsInstanceUploadLimit()
+			v.AccountUploadLimit = bpsAccountUploadLimit()
 		})
 		return release, nil
+	}
+}
+
+// Called under mu. Remove idle account counters so this map is bounded by
+// active uploads, rather than the number of accounts ever seen by the process.
+func (s *bpsUploadScheduler) release(t *bpsUploadTicket) {
+	s.active--
+	s.bytes -= t.bytes
+	s.accounts[t.accountID]--
+	if s.accounts[t.accountID] == 0 {
+		delete(s.accounts, t.accountID)
 	}
 }

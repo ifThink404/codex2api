@@ -1727,7 +1727,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				h.store.Release(account)
 				return
 			}
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !(resp.StatusCode == http.StatusTooManyRequests && currentRateLimitRetryPolicy() != database.RateLimitRetryRotate && !isPermanentAccountHTTPFailure(resp.StatusCode, errBody)) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -1768,9 +1768,16 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
 			markImageModelUnavailableFromHTTP(h.store, account, requestModel, resp.StatusCode, errBody)
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, requestModel)
 			continuousSelected := continuousRetryHTTPSelected(continuousRetryPolicy, resp.StatusCode, errBody)
 			shouldRetry := retryAllowedByEndpointCap(attempt, maxImageAttempts, continuousSelected) && shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
+			disposition := sessionFailureDisposition{reportAccount: true}
+			if resp.StatusCode == http.StatusTooManyRequests {
+				disposition = h.httpSessionFailureDispositionForUpstream(account, resp, errBody, shouldRetry, continuousRetryPolicy)
+			}
+			decision := codex429Decision{}
+			if disposition.reportAccount {
+				decision = h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, requestModel)
+			}
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),
 				Endpoint:               inboundEndpoint,
@@ -1791,10 +1798,14 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				clearNewAPIUpstreamCyberPolicyDecision(c)
 				lastStatusCode = resp.StatusCode
 				lastBody = errBody
-				retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
+				if disposition.retrySameAccount {
+					sameAccountRetryID = account.ID()
+				} else {
+					retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
+				}
 				continuousRetryActive = continuousRetryActive || continuousSelected
 				retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
-				if retryLimit == -1 && !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
+				if (retryLimit == -1 || disposition.retrySameAccount) && !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					return
 				}
 				continue
@@ -1853,8 +1864,14 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				accountID := account.ID()
 				resp.Body.Close()
 				h.store.Release(account)
-				willRetry := c.Request.Context().Err() == nil && shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts, continuousRetryPolicy)
+				retryCounter, retryBaseLimit := &generalRetries, maxRetries
+				if imageErrorStatusCode(readErr) == http.StatusTooManyRequests {
+					retryCounter, retryBaseLimit = &rateLimitRetries, maxRateLimitRetries
+				}
+				willRetry := c.Request.Context().Err() == nil && shouldRetryImageStreamError(readErr, retryCounter, retryBaseLimit, attempt, maxImageAttempts, continuousRetryPolicy)
 				preferSameAccount := willRetry && imageErrorPrefersSameAccountRetry(readErr) && !sameAccountEmptyRetried[accountID]
+				sticky429 := h.rateLimitFailureDisposition(imageErrorStatusCode(readErr), imageErrorResponseBody(readErr), willRetry, continuousRetryPolicy).retrySameAccount
+				preferSameAccount = preferSameAccount || sticky429
 				if preferSameAccount {
 					sameAccountEmptyRetried[accountID] = true
 					sameAccountRetryID = accountID
@@ -1877,9 +1894,13 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 					lastStatusCode = imageErrorStatusCode(readErr)
 					lastBody = imageErrorResponseBody(readErr)
 					continuousSelected := imageStreamRetryLimit(readErr, 0, continuousRetryPolicy) == -1
-					retryLimit := imageStreamRetryLimit(readErr, maxRetries, continuousRetryPolicy)
+					continuousRetryActive = continuousRetryActive || continuousSelected
+					retryLimit := imageStreamRetryLimit(readErr, retryBaseLimit, continuousRetryPolicy)
 					if preferSameAccount {
 						// A truly empty terminal is often a one-off upstream miss. Retry
+						if sticky429 && !h.waitBeforeRetryWithBudget(c.Request.Context(), *retryCounter, retryLimit, resp) {
+							return
+						}
 						// the same credential once without cooling or excluding it.
 					} else if continuousSelected {
 						continuousRetryActive = true
@@ -1919,8 +1940,14 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			// Connected/keepalive comments do not commit model output. A retry is
 			// still transparent until the first partial/completed image event.
 			downstreamWrote := streamAttempt.downstreamWrote(wroteImageOutput)
-			willRetry := !localReplayFailure && !downstreamWrote && !isImageStreamWriteError(readErr) && c.Request.Context().Err() == nil && shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts, continuousRetryPolicy)
+			retryCounter, retryBaseLimit := &generalRetries, maxRetries
+			if imageErrorStatusCode(readErr) == http.StatusTooManyRequests {
+				retryCounter, retryBaseLimit = &rateLimitRetries, maxRateLimitRetries
+			}
+			willRetry := !localReplayFailure && !downstreamWrote && !isImageStreamWriteError(readErr) && c.Request.Context().Err() == nil && shouldRetryImageStreamError(readErr, retryCounter, retryBaseLimit, attempt, maxImageAttempts, continuousRetryPolicy)
 			preferSameAccount := willRetry && imageErrorPrefersSameAccountRetry(readErr) && !sameAccountEmptyRetried[accountID]
+			sticky429 := h.rateLimitFailureDisposition(imageErrorStatusCode(readErr), imageErrorResponseBody(readErr), willRetry, continuousRetryPolicy).retrySameAccount
+			preferSameAccount = preferSameAccount || sticky429
 			if preferSameAccount {
 				sameAccountEmptyRetried[accountID] = true
 				sameAccountRetryID = accountID
@@ -1948,9 +1975,13 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				lastStatusCode = statusCode
 				lastBody = imageErrorResponseBody(readErr)
 				continuousSelected := imageStreamRetryLimit(readErr, 0, continuousRetryPolicy) == -1
-				retryLimit := imageStreamRetryLimit(readErr, maxRetries, continuousRetryPolicy)
+				continuousRetryActive = continuousRetryActive || continuousSelected
+				retryLimit := imageStreamRetryLimit(readErr, retryBaseLimit, continuousRetryPolicy)
 				if preferSameAccount {
 					// Same-account empty-output retry is intentionally immediate.
+					if sticky429 && !h.waitBeforeRetryWithBudget(c.Request.Context(), *retryCounter, retryLimit, resp) {
+						return
+					}
 				} else if continuousSelected {
 					continuousRetryActive = true
 					retryExclusions.MarkTransient(accountID)
@@ -2107,6 +2138,9 @@ func buildImageErrorUsageLog(account *auth.Account, inboundEndpoint, logModel, l
 // catch-all. Explicitly selected failures bypass the ordinary image-attempt
 // cap; unselected legacy retry budgets keep honoring it.
 func shouldRetryImageStreamError(err error, generalRetries *int, maxGeneralRetries int, attempt int, maxAttempts int, policies ...database.ContinuousRetryPolicy) bool {
+	if err != nil && imageErrorStatusCode(err) == http.StatusTooManyRequests && rateLimitRetryDisabled() {
+		return false
+	}
 	if err == nil || generalRetries == nil {
 		return false
 	}
@@ -2198,6 +2232,9 @@ func shouldRetryImageStreamError(err error, generalRetries *int, maxGeneralRetri
 }
 
 func imageStreamRetryLimit(err error, generalLimit int, policies ...database.ContinuousRetryPolicy) int {
+	if err != nil && imageErrorStatusCode(err) == http.StatusTooManyRequests && rateLimitRetryDisabled() {
+		return 0
+	}
 	if isContinuousRetryLocalFailure(err) {
 		return generalLimit
 	}

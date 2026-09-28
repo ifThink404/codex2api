@@ -915,7 +915,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			if retryable && !stickyRetry {
+			if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			}
 			if timedOut && shouldRetry {
@@ -928,7 +928,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 				continue
 			}
-			if retryable && !timedOut && !stickyRetry {
+			if retryable && !timedOut && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 

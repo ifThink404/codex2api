@@ -388,11 +388,12 @@ func (h *Handler) recordAccountSessionBinding(c *gin.Context, affinityKey string
 
 // httpSessionFailureDispositionForPolicy layers the operator's continuous
 // retry selection over the normal sticky policy. A selected continuous-retry
-// failure must rotate accounts; otherwise transient sticky failures retain the
+// failure other than 429 must rotate; 429 follows its dedicated policy. Other
+// transient sticky failures retain the
 // binding and request-scoped 4xx failures do not poison account health.
 func (h *Handler) httpSessionFailureDispositionForPolicy(statusCode int, body []byte, shouldRetry bool, policy database.ContinuousRetryPolicy) sessionFailureDisposition {
 	disposition := h.httpSessionFailureDisposition(statusCode, body, shouldRetry)
-	if continuousRetryHTTPSelected(policy, statusCode, body) {
+	if continuousRetryHTTPSelected(policy, statusCode, body) && statusCode != http.StatusTooManyRequests {
 		disposition.retrySameAccount = false
 		disposition.retainAffinity = false
 		disposition.pinAffinity = false
@@ -407,7 +408,7 @@ func (h *Handler) streamSessionFailureDispositionForPolicy(outcome streamOutcome
 	if len(body) == 0 {
 		body = outcome.failurePayload
 	}
-	if continuousRetryStreamSelected(outcome, body, "", policy) {
+	if continuousRetryStreamSelected(outcome, body, "", policy) && !streamOutcomeUsesRateLimitBudget(outcome) {
 		disposition.retrySameAccount = false
 		disposition.retainAffinity = false
 		disposition.pinAffinity = false
@@ -3607,6 +3608,9 @@ func isRetryableStatus(code int) bool {
 }
 
 func shouldRetryHTTPStatus(statusCode int, body []byte, generalRetries *int, rateLimitRetries *int, maxGeneralRetries, maxRateLimitRetries int, policies ...database.ContinuousRetryPolicy) bool {
+	if statusCode == http.StatusTooManyRequests && rateLimitRetryDisabled() {
+		return false
+	}
 	if codexCapacityRetryDisabled(body) {
 		return false
 	}
@@ -3669,6 +3673,9 @@ func (h *Handler) shouldRetryUpstreamHTTPStatus(statusCode int, body []byte, gen
 }
 
 func shouldRetryRequestError(err error, generalRetries *int, maxGeneralRetries int, policies ...database.ContinuousRetryPolicy) bool {
+	if rateLimitRequestError(err) && rateLimitRetryDisabled() {
+		return false
+	}
 	if TransportReplayBlocked(err) {
 		return false
 	}
@@ -3699,6 +3706,9 @@ func shouldRetryRequestError(err error, generalRetries *int, maxGeneralRetries i
 // ErrUpstream(0, ..., cause) for failures from http.Client.Do; those remain
 // retryable even though a status-less Error cannot set Retryable by status.
 func isRetryableRequestError(err error) bool {
+	if rateLimitRequestError(err) && rateLimitRetryDisabled() {
+		return false
+	}
 	if errors.Is(err, errTurnStateMapping) || TransportReplayBlocked(err) {
 		return false
 	}
@@ -3911,8 +3921,11 @@ func (h *Handler) stickyTransportRetryEnabled() bool {
 
 // shouldStickyTransportRetry keeps the legacy same-account behavior only for
 // plain transport blips. A selected upstream error, and every catch-all
-// failure, must rotate so the continuous-retry switch does what its label says.
+// failure, must rotate. Status-bearing 429 errors follow the separate policy.
 func (h *Handler) shouldStickyTransportRetry(err error, kind string, timedOut, shouldRetry bool, policy database.ContinuousRetryPolicy) bool {
+	if rateLimitRequestError(err) {
+		return shouldRetry && !timedOut && currentRateLimitRetryPolicy() == database.RateLimitRetrySticky && retainRateLimitRequestAffinity(err)
+	}
 	if !shouldRetry || timedOut || kind == "" || kind == upstreamErrorKindWsBusyAcquire || !h.stickyTransportRetryEnabled() {
 		return false
 	}
@@ -4612,7 +4625,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
-				if retryable && !stickyRetry {
+				if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 					h.store.UnbindSessionAffinity(affinityKey, account.ID())
 				}
 				if timedOut && shouldRetry {
@@ -4625,7 +4638,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 					continue
 				}
-				if retryable && !timedOut && !stickyRetry {
+				if retryable && !timedOut && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 					retryExclusions.MarkRequestFailure(account.ID(), reqErr, maxRetries, continuousRetryPolicy)
 				}
 
@@ -5421,7 +5434,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			if retryable && !stickyRetry {
+			if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			}
 			if timedOut && shouldRetry {
@@ -5434,7 +5447,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				continue
 			}
-			if retryable && !timedOut && !stickyRetry {
+			if retryable && !timedOut && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 
@@ -6723,7 +6736,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
-				if retryable && !stickyRetry {
+				if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 					h.store.UnbindSessionAffinity(affinityKey, account.ID())
 					retryExclusions.MarkRequestFailure(account.ID(), reqErr, maxRetries, continuousRetryPolicy)
 				}
@@ -6852,7 +6865,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					h.store.ReportRequestFailure(account, kind, time.Duration(totalDuration)*time.Millisecond)
 				}
 				h.store.Release(account)
-				if retryable && !stickyRetry {
+				if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 					h.store.UnbindSessionAffinity(affinityKey, account.ID())
 					retryExclusions.MarkRequestFailure(account.ID(), readErr, maxRetries, continuousRetryPolicy)
 				}
@@ -6999,7 +7012,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			if retryable && !stickyRetry {
+			if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
@@ -7135,7 +7148,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
-			if retryable && !stickyRetry {
+			if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 				retryExclusions.MarkRequestFailure(account.ID(), readErr, maxRetries, continuousRetryPolicy)
 			}
@@ -7744,7 +7757,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			if retryable && !stickyRetry {
+			if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			}
 			if timedOut && shouldRetry {
@@ -7757,7 +7770,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				}
 				continue
 			}
-			if retryable && !timedOut && !stickyRetry {
+			if retryable && !timedOut && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 

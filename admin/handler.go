@@ -9685,7 +9685,9 @@ type settingsResponse struct {
 	BPSRoundTaskLifetimeHours          int                              `json:"bps_round_task_lifetime_hours"`
 	BPSAttachmentRequestConcurrency    int                              `json:"bps_attachment_request_concurrency"`
 	BPSAttachmentInstanceConcurrency   int                              `json:"bps_attachment_instance_concurrency"`
+	BPSAttachmentAccountConcurrency    int                              `json:"bps_attachment_account_concurrency"`
 	ResinAccountMaxConns               int                              `json:"resin_account_max_conns"`
+	RateLimitRetryPolicy               string                           `json:"rate_limit_retry_policy"`
 	BPSTurnRoundLimit                  int                              `json:"bps_turn_round_limit"`
 	AllowRemoteMigration               bool                             `json:"allow_remote_migration"`
 	DatabaseDriver                     string                           `json:"database_driver"`
@@ -9882,7 +9884,9 @@ type updateSettingsReq struct {
 	BPSRoundTaskLifetimeHours           *int                             `json:"bps_round_task_lifetime_hours"`
 	BPSAttachmentRequestConcurrency     *int                             `json:"bps_attachment_request_concurrency"`
 	BPSAttachmentInstanceConcurrency    *int                             `json:"bps_attachment_instance_concurrency"`
+	BPSAttachmentAccountConcurrency     *int                             `json:"bps_attachment_account_concurrency"`
 	ResinAccountMaxConns                *int                             `json:"resin_account_max_conns"`
+	RateLimitRetryPolicy                *string                          `json:"rate_limit_retry_policy"`
 	BPSTurnRoundLimit                   *int                             `json:"bps_turn_round_limit"`
 	AllowRemoteMigration                *bool                            `json:"allow_remote_migration"`
 	ModelMapping                        *string                          `json:"model_mapping"`
@@ -10746,7 +10750,9 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		BPSRoundTaskLifetimeHours:           runtimeCfg.BPSRoundTaskLifetimeHours,
 		BPSAttachmentRequestConcurrency:     runtimeCfg.BPSAttachmentRequestConcurrency,
 		BPSAttachmentInstanceConcurrency:    runtimeCfg.BPSAttachmentInstanceConcurrency,
+		BPSAttachmentAccountConcurrency:     runtimeCfg.BPSAttachmentAccountConcurrency,
 		ResinAccountMaxConns:                runtimeCfg.ResinAccountMaxConns,
+		RateLimitRetryPolicy:                runtimeCfg.RateLimitRetryPolicy,
 		BPSTurnRoundLimit:                   runtimeCfg.BPSTurnRoundLimit,
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,
@@ -11209,7 +11215,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	previousBPSRoundLifetime := runtimeCfg.BPSRoundTaskLifetimeHours
 	previousBPSAttachmentRequestConcurrency := runtimeCfg.BPSAttachmentRequestConcurrency
 	previousBPSAttachmentInstanceConcurrency := runtimeCfg.BPSAttachmentInstanceConcurrency
+	previousBPSAttachmentAccountConcurrency := runtimeCfg.BPSAttachmentAccountConcurrency
 	previousResinAccountMaxConns := runtimeCfg.ResinAccountMaxConns
+	previousRateLimitRetryPolicy := runtimeCfg.RateLimitRetryPolicy
 	previousBPSTurnRoundLimit := runtimeCfg.BPSTurnRoundLimit
 	if existingSettings != nil {
 		runtimeCfg.BPSRoundConvergenceLimit = database.NormalizeBPSRoundConvergenceLimit(existingSettings.BPSRoundConvergenceLimit)
@@ -11217,7 +11225,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.BPSRoundTaskLifetimeHours = database.NormalizeBPSRoundTaskLifetimeHours(existingSettings.BPSRoundTaskLifetimeHours)
 		runtimeCfg.BPSAttachmentRequestConcurrency = database.NormalizeBPSAttachmentRequestConcurrency(existingSettings.BPSAttachmentRequestConcurrency)
 		runtimeCfg.BPSAttachmentInstanceConcurrency = database.NormalizeBPSAttachmentInstanceConcurrency(existingSettings.BPSAttachmentInstanceConcurrency)
+		runtimeCfg.BPSAttachmentAccountConcurrency = database.NormalizeBPSAttachmentAccountConcurrency(existingSettings.BPSAttachmentAccountConcurrency)
 		runtimeCfg.ResinAccountMaxConns = database.NormalizeResinAccountMaxConns(existingSettings.ResinAccountMaxConns)
+		runtimeCfg.RateLimitRetryPolicy = database.ResolveRateLimitRetryPolicy(existingSettings.RateLimitRetryPolicy, existingSettings.TransportRetryPolicy)
 		runtimeCfg.BPSTurnRoundLimit = database.NormalizeBPSTurnRoundLimit(existingSettings.BPSTurnRoundLimit)
 		runtimeCfg.CodexSessionFailoverEnabled = existingSettings.CodexSessionFailoverEnabled
 		runtimeCfg.CodexForkAccountFallbackEnabled = existingSettings.CodexForkAccountFallbackEnabled
@@ -11876,6 +11886,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: retry_interval_ms = %d", v)
 	}
 
+	if req.RateLimitRetryPolicy != nil {
+		v := strings.ToLower(strings.TrimSpace(*req.RateLimitRetryPolicy))
+		if v != "off" && v != "sticky" && v != "rotate" {
+			writeError(c, http.StatusBadRequest, "rate_limit_retry_policy 必须为 off、sticky 或 rotate")
+			return
+		}
+		runtimeCfg.RateLimitRetryPolicy = v
+	}
 	if req.TransportRetryPolicy != nil {
 		v := database.NormalizeTransportRetryPolicy(*req.TransportRetryPolicy)
 		h.store.SetTransportRetryPolicy(v)
@@ -11909,6 +11927,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 		runtimeCfg.BPSAttachmentInstanceConcurrency = *req.BPSAttachmentInstanceConcurrency
+	}
+	if req.BPSAttachmentAccountConcurrency != nil {
+		if *req.BPSAttachmentAccountConcurrency < 1 || *req.BPSAttachmentAccountConcurrency > database.MaxBPSAttachmentAccountConcurrency {
+			writeError(c, http.StatusBadRequest, "bps_attachment_account_concurrency 必须在 1 到 1024 之间")
+			return
+		}
+		runtimeCfg.BPSAttachmentAccountConcurrency = *req.BPSAttachmentAccountConcurrency
 	}
 	if req.ResinAccountMaxConns != nil {
 		if *req.ResinAccountMaxConns < 1 || *req.ResinAccountMaxConns > database.MaxResinAccountMaxConns {
@@ -12100,7 +12125,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	effectiveRuntimeCfg.BPSRoundTaskLifetimeHours = previousBPSRoundLifetime
 	effectiveRuntimeCfg.BPSAttachmentRequestConcurrency = previousBPSAttachmentRequestConcurrency
 	effectiveRuntimeCfg.BPSAttachmentInstanceConcurrency = previousBPSAttachmentInstanceConcurrency
+	effectiveRuntimeCfg.BPSAttachmentAccountConcurrency = previousBPSAttachmentAccountConcurrency
 	effectiveRuntimeCfg.ResinAccountMaxConns = previousResinAccountMaxConns
+	effectiveRuntimeCfg.RateLimitRetryPolicy = previousRateLimitRetryPolicy
 	effectiveRuntimeCfg.BPSTurnRoundLimit = previousBPSTurnRoundLimit
 	if autoResetCreditsChanged {
 		effectiveRuntimeCfg.AutoResetCreditsEnabled = previousAutoResetCreditsEnabled
@@ -12415,7 +12442,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		BPSRoundTaskLifetimeHours:           runtimeCfg.BPSRoundTaskLifetimeHours,
 		BPSAttachmentRequestConcurrency:     runtimeCfg.BPSAttachmentRequestConcurrency,
 		BPSAttachmentInstanceConcurrency:    runtimeCfg.BPSAttachmentInstanceConcurrency,
+		BPSAttachmentAccountConcurrency:     runtimeCfg.BPSAttachmentAccountConcurrency,
 		ResinAccountMaxConns:                runtimeCfg.ResinAccountMaxConns,
+		RateLimitRetryPolicy:                runtimeCfg.RateLimitRetryPolicy,
 		BPSTurnRoundLimit:                   runtimeCfg.BPSTurnRoundLimit,
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && hasAdminSecret,
 		ModelMapping:                        h.store.GetModelMapping(),
@@ -12479,8 +12508,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			writeError(c, http.StatusInternalServerError, "保存日志与计量设置失败，设置未生效")
 			return
 		}
-		if req.BPSAttachmentRequestConcurrency != nil || req.BPSAttachmentInstanceConcurrency != nil || req.ResinAccountMaxConns != nil {
+		if req.BPSAttachmentRequestConcurrency != nil || req.BPSAttachmentInstanceConcurrency != nil || req.BPSAttachmentAccountConcurrency != nil || req.ResinAccountMaxConns != nil {
 			writeError(c, http.StatusInternalServerError, "保存上传与连接并发设置失败，设置未生效")
+			return
+		}
+		if req.RateLimitRetryPolicy != nil {
+			writeError(c, http.StatusInternalServerError, "保存 429 重试策略失败，设置未生效")
 			return
 		}
 		if req.CodexEarlySSEPassthroughEnabled != nil {
@@ -12555,7 +12588,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			current.BPSRoundTaskLifetimeHours = runtimeCfg.BPSRoundTaskLifetimeHours
 			current.BPSAttachmentRequestConcurrency = runtimeCfg.BPSAttachmentRequestConcurrency
 			current.BPSAttachmentInstanceConcurrency = runtimeCfg.BPSAttachmentInstanceConcurrency
+			current.BPSAttachmentAccountConcurrency = runtimeCfg.BPSAttachmentAccountConcurrency
 			current.ResinAccountMaxConns = runtimeCfg.ResinAccountMaxConns
+			current.RateLimitRetryPolicy = runtimeCfg.RateLimitRetryPolicy
 			current.BPSTurnRoundLimit = runtimeCfg.BPSTurnRoundLimit
 			return current
 		})
@@ -12818,7 +12853,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		BPSRoundTaskLifetimeHours:           runtimeCfg.BPSRoundTaskLifetimeHours,
 		BPSAttachmentRequestConcurrency:     runtimeCfg.BPSAttachmentRequestConcurrency,
 		BPSAttachmentInstanceConcurrency:    runtimeCfg.BPSAttachmentInstanceConcurrency,
+		BPSAttachmentAccountConcurrency:     runtimeCfg.BPSAttachmentAccountConcurrency,
 		ResinAccountMaxConns:                runtimeCfg.ResinAccountMaxConns,
+		RateLimitRetryPolicy:                runtimeCfg.RateLimitRetryPolicy,
 		BPSTurnRoundLimit:                   runtimeCfg.BPSTurnRoundLimit,
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,

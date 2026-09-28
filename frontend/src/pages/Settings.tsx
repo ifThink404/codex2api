@@ -2020,6 +2020,11 @@ export default function Settings() {
       description: t('settings.schedulerEngineIndexedDesc'),
     },
   ]
+  const rateLimitRetryPolicyOptions = [
+    { value: 'off', label: t('settings.rateLimitRetryPolicyOff') },
+    { value: 'sticky', label: t('settings.rateLimitRetryPolicySticky') },
+    { value: 'rotate', label: t('settings.rateLimitRetryPolicyRotate') },
+  ]
   const transportRetryPolicyOptions = [
     { label: t('settings.transportRetryPolicyRotate'), value: 'rotate' },
     { label: t('settings.transportRetryPolicySticky'), value: 'sticky' },
@@ -2224,6 +2229,7 @@ export default function Settings() {
     max_retries: 2,
     max_rate_limit_retries: 1,
     retry_interval_ms: 0,
+    rate_limit_retry_policy: 'rotate',
     transport_retry_policy: 'rotate',
     continuous_retry_enabled: false,
     continuous_retry_catch_all: false,
@@ -2237,6 +2243,7 @@ export default function Settings() {
     bps_round_task_lifetime_hours: 24,
     bps_attachment_request_concurrency: 15,
     bps_attachment_instance_concurrency: 64,
+    bps_attachment_account_concurrency: 15,
     resin_account_max_conns: 15,
     bps_turn_round_limit: 100,
     allow_remote_migration: false,
@@ -4219,6 +4226,15 @@ export default function Settings() {
                             onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_attachment_request_concurrency: value }) }}
                           />
                         </SettingField>
+                        <SettingField label={t('settings.bpsAttachmentAccountConcurrency')} description={t('settings.bpsAttachmentAccountConcurrencyDesc')}>
+                          <DraftNumberInput
+                            min={1}
+                            max={1024}
+                            value={settingsForm.bps_attachment_account_concurrency ?? 15}
+                            onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_attachment_account_concurrency: value }))}
+                            onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_attachment_account_concurrency: value }) }}
+                          />
+                        </SettingField>
                         <SettingField label={t('settings.bpsAttachmentInstanceConcurrency')} description={t('settings.bpsAttachmentInstanceConcurrencyDesc')}>
                           <DraftNumberInput
                             min={1}
@@ -5306,10 +5322,18 @@ export default function Settings() {
                         onValueChange={(value) => setSettingsForm(f => ({ ...f, max_retries: value }))}
                       />
                     </SettingField>
+                    <SettingField label={t('settings.rateLimitRetryPolicy')} description={t('settings.rateLimitRetryPolicyDesc')}>
+                      <SegmentedPillGroup
+                        value={settingsForm.rate_limit_retry_policy || 'rotate'}
+                        onChange={(value) => autoSaveStringField('rate_limit_retry_policy', value)}
+                        options={rateLimitRetryPolicyOptions}
+                      />
+                    </SettingField>
                     <SettingField label={t('settings.maxRateLimitRetries')} description={t('settings.maxRateLimitRetriesRange')} suffix={t('settings.unit.times')}>
                       <DraftNumberInput
                         min={0}
                         max={10}
+                        disabled={settingsForm.rate_limit_retry_policy === 'off'}
                         value={settingsForm.max_rate_limit_retries}
                         emptyValue={0}
                         onValueChange={(value) => setSettingsForm(f => ({ ...f, max_rate_limit_retries: value }))}

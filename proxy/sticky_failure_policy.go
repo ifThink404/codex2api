@@ -44,6 +44,10 @@ func (h *Handler) httpSessionFailureDisposition(statusCode int, body []byte, sho
 	permanent := isPermanentAccountHTTPFailure(statusCode, body)
 	requestScoped := isRequestScopedHTTPFailure(statusCode, body)
 	sticky := h.stickyTransportRetryEnabled()
+	if statusCode == http.StatusTooManyRequests {
+		sticky = currentRateLimitRetryPolicy() != database.RateLimitRetryRotate
+		shouldRetry = shouldRetry && !rateLimitRetryDisabled()
+	}
 	retrySame := sticky && shouldRetry && !permanent
 	retain := requestScoped || (sticky && !permanent)
 	return sessionFailureDisposition{
@@ -63,7 +67,11 @@ func (h *Handler) streamSessionFailureDisposition(outcome streamOutcome, payload
 	if len(body) == 0 && outcome.failureMessage != "" {
 		body = []byte(outcome.failureMessage)
 	}
-	disposition := h.httpSessionFailureDisposition(outcome.logStatusCode, body, shouldRetry)
+	status := outcome.logStatusCode
+	if streamOutcomeUsesRateLimitBudget(outcome) {
+		status = http.StatusTooManyRequests
+	}
+	disposition := h.httpSessionFailureDisposition(status, body, shouldRetry)
 	switch outcome.failureKind {
 	case "usage_limit", "spark_usage_limit", "rate_limited_5h", "rate_limited_7d":
 		return sessionFailureDisposition{reportAccount: true, permanentAccount: true}

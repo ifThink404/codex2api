@@ -22,6 +22,9 @@ func stickyFailureSuccess(w http.ResponseWriter) {
 
 func newStickyFailureHarness(t *testing.T, maxRetries, max429Retries int, upstreamA, upstreamB http.Handler) (*Handler, *auth.Store, *auth.Account, *auth.Account, string, func()) {
 	t.Helper()
+	previous := CurrentRuntimeSettings()
+	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.RateLimitRetryPolicy = "sticky"; return s })
 	serverA := httptest.NewServer(upstreamA)
 	serverB := httptest.NewServer(upstreamB)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{

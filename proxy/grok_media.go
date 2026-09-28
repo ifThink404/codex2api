@@ -532,6 +532,7 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
 	continuousRetryActive := false
+	var sameAccountRetryID int64
 
 	for attempt := 0; ; attempt++ {
 		if attempt >= maxGrokMediaAttempts && !continuousRetryActive {
@@ -545,7 +546,14 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 		}
 		var account *auth.Account
 		var stickyProxyURL string
-		if continuousRetryActive {
+		if sameAccountRetryID > 0 {
+			filter := h.applyScopeBudgetFilter(c, applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(imageModel, grokMediaAccountFilter(imageModel))))
+			account = h.store.TakePreferredAccountWithDispatch(sameAccountRetryID, apiKeyID, nil, filter, dispatchPolicyForModel(imageModel))
+			sameAccountRetryID = 0
+			if account != nil {
+				stickyProxyURL = account.GetProxyURL()
+			}
+		} else if continuousRetryActive {
 			account, stickyProxyURL = nextContinuousRetryAccount(c.Request.Context(), retryExclusions, selectAccount, h.store.Release)
 		} else {
 			account, stickyProxyURL = nextBoundedRetryAccountWithContext(c.Request.Context(), h.store.Release, retryExclusions, selectAccount)
@@ -621,15 +629,19 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 				h.store.Release(account)
 				return
 			}
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !(resp.StatusCode == http.StatusTooManyRequests && currentRateLimitRetryPolicy() != database.RateLimitRetryRotate && !isPermanentAccountHTTPFailure(resp.StatusCode, errBody)) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
 			logUpstreamErrorForRequest(c, inboundEndpoint, resp.StatusCode, logModel, account.ID(), errBody)
-			decision := applyGrokMediaCooldown(h.store, account, resp.StatusCode, errBody, resp, result.Model)
 			effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, h.getMaxRateLimitRetries())
 			continuousSelected := continuousRetryHTTPSelected(continuousRetryPolicy, resp.StatusCode, errBody)
 			shouldRetry := retryAllowedByEndpointCap(attempt, maxGrokMediaAttempts, continuousSelected) && shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+			disposition := h.rateLimitFailureDisposition(resp.StatusCode, errBody, shouldRetry, continuousRetryPolicy)
+			decision := codex429Decision{}
+			if disposition.reportAccount {
+				decision = applyGrokMediaCooldown(h.store, account, resp.StatusCode, errBody, resp, result.Model)
+			}
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: inboundEndpoint, Model: logModel, EffectiveModel: logEffectiveModel,
 				StatusCode: resp.StatusCode, DurationMs: durationMs,
@@ -641,10 +653,14 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 			if shouldRetry {
 				lastStatusCode = resp.StatusCode
 				lastBody = errBody
-				retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+				if disposition.retrySameAccount {
+					sameAccountRetryID = account.ID()
+				} else {
+					retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+				}
 				continuousRetryActive = continuousRetryActive || continuousSelected
 				retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
-				if retryLimit == -1 && !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
+				if (retryLimit == -1 || disposition.retrySameAccount) && !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					return
 				}
 				continue
@@ -900,6 +916,7 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
 	continuousRetryActive := false
+	var sameAccountRetryID int64
 
 	for attempt := 0; ; attempt++ {
 		if attempt >= maxGrokMediaAttempts && !continuousRetryActive {
@@ -913,7 +930,14 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 		}
 		var account *auth.Account
 		var stickyProxyURL string
-		if continuousRetryActive {
+		if sameAccountRetryID > 0 {
+			filter := h.applyScopeBudgetFilter(c, applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, grokMediaAccountFilter(model))))
+			account = h.store.TakePreferredAccountWithDispatch(sameAccountRetryID, apiKeyID, nil, filter, dispatchPolicyForModel(model))
+			sameAccountRetryID = 0
+			if account != nil {
+				stickyProxyURL = account.GetProxyURL()
+			}
+		} else if continuousRetryActive {
 			account, stickyProxyURL = nextContinuousRetryAccount(c.Request.Context(), retryExclusions, selectAccount, h.store.Release)
 		} else {
 			account, stickyProxyURL = nextBoundedRetryAccountWithContext(c.Request.Context(), h.store.Release, retryExclusions, selectAccount)
@@ -989,15 +1013,19 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 				h.store.Release(account)
 				return
 			}
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !(resp.StatusCode == http.StatusTooManyRequests && currentRateLimitRetryPolicy() != database.RateLimitRetryRotate && !isPermanentAccountHTTPFailure(resp.StatusCode, errBody)) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
 			logUpstreamErrorForRequest(c, inboundEndpoint, resp.StatusCode, model, account.ID(), errBody)
-			decision := applyGrokMediaCooldown(h.store, account, resp.StatusCode, errBody, resp, result.Model)
 			effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, h.getMaxRateLimitRetries())
 			continuousSelected := continuousRetryHTTPSelected(continuousRetryPolicy, resp.StatusCode, errBody)
 			shouldRetry := retryAllowedByEndpointCap(attempt, maxGrokMediaAttempts, continuousSelected) && shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+			disposition := h.rateLimitFailureDisposition(resp.StatusCode, errBody, shouldRetry, continuousRetryPolicy)
+			decision := codex429Decision{}
+			if disposition.reportAccount {
+				decision = applyGrokMediaCooldown(h.store, account, resp.StatusCode, errBody, resp, result.Model)
+			}
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: inboundEndpoint, Model: requestModel, EffectiveModel: logEffectiveModel,
 				StatusCode: resp.StatusCode, DurationMs: durationMs,
@@ -1009,10 +1037,14 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 			if shouldRetry {
 				lastStatusCode = resp.StatusCode
 				lastBody = errBody
-				retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+				if disposition.retrySameAccount {
+					sameAccountRetryID = account.ID()
+				} else {
+					retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+				}
 				continuousRetryActive = continuousRetryActive || continuousSelected
 				retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
-				if retryLimit == -1 && !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
+				if (retryLimit == -1 || disposition.retrySameAccount) && !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					return
 				}
 				continue

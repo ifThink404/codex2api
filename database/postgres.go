@@ -1648,6 +1648,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS smart_pacing_windows TEXT DEFAULT '5h,7d';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS retry_interval_ms INT DEFAULT 0;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS transport_retry_policy VARCHAR(20) DEFAULT 'rotate';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS rate_limit_retry_policy VARCHAR(20) DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS continuous_retry_policy TEXT DEFAULT '{"enabled":false,"catch_all":false,"categories":["transport","http_429","http_5xx","stream_error"],"status_codes":[],"error_codes":[],"max_duration_seconds":600}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS ignore_usage_limit_status BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_enabled BOOLEAN DEFAULT FALSE;
@@ -1660,6 +1661,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_round_task_lifetime_hours INT DEFAULT 24;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_attachment_request_concurrency INT DEFAULT 15;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_attachment_instance_concurrency INT DEFAULT 64;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_attachment_account_concurrency INT DEFAULT 15;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS resin_account_max_conns INT DEFAULT 15;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_turn_round_limit INT DEFAULT 100;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
@@ -1900,6 +1902,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer migrateCancel()
 	if _, err = db.conn.ExecContext(migrateCtx, migrateQuery); err != nil {
+		return err
+	}
+	if err := db.backfillRateLimitRetryPolicy(ctx); err != nil {
 		return err
 	}
 	return db.runDataMigrationsWithTimeout()
@@ -2613,6 +2618,7 @@ type SystemSettings struct {
 	BPSRoundTaskLifetimeHours        int
 	BPSAttachmentRequestConcurrency  int
 	BPSAttachmentInstanceConcurrency int
+	BPSAttachmentAccountConcurrency  int
 	ResinAccountMaxConns             int
 	BPSTurnRoundLimit                int
 	AutoPause5hThreshold             float64
@@ -2624,6 +2630,7 @@ type SystemSettings struct {
 	SmartPacingWindows               string // "5h,7d" / "5h" / "7d"
 	IgnoreUsageLimitStatus           bool   // 用量窗口仅作参考，以 Responses 成功/usage_limit_reached 判定可用性
 	RetryIntervalMS                  int    // 重试间隔毫秒（0 = 立即重试，保持旧行为）
+	RateLimitRetryPolicy             string // off / sticky / rotate; independent of transport errors
 	TransportRetryPolicy             string // 临时故障重试策略: rotate（换号，旧行为）/ sticky（同号延迟重试并保留绑定）
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本缓存，
 	// 用于抬升出站 UA / manifest 的模拟版本（绝不低于内置常量），空表示尚未同步。
@@ -2851,6 +2858,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 			       COALESCE(smart_pacing_windows, '5h,7d'),
 			       COALESCE(retry_interval_ms, 0),
 			       COALESCE(NULLIF(TRIM(transport_retry_policy), ''), 'rotate'),
+			       COALESCE(NULLIF(TRIM(rate_limit_retry_policy), ''), NULLIF(TRIM(transport_retry_policy), ''), 'rotate'),
 			       COALESCE(codex_synced_cli_version, ''),
 			       COALESCE(codex_cli_version_sync_enabled, true),
 			       COALESCE(codex_cli_version_sync_interval_hours, 12),
@@ -2902,6 +2910,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(bps_round_task_lifetime_hours, 24),
 		       COALESCE(bps_attachment_request_concurrency, 15),
 		       COALESCE(bps_attachment_instance_concurrency, 64),
+		       COALESCE(bps_attachment_account_concurrency, 15),
 		       COALESCE(resin_account_max_conns, 15),
 		       COALESCE(bps_turn_round_limit, 100),
 		       COALESCE(usage_metering_enabled, true),
@@ -2958,6 +2967,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.SmartPacingWindows,
 		&s.RetryIntervalMS,
 		&s.TransportRetryPolicy,
+		&s.RateLimitRetryPolicy,
 		&s.CodexSyncedCLIVersion,
 		&s.CodexCLIVersionSyncEnabled,
 		&s.CodexCLIVersionSyncIntervalHours,
@@ -3009,6 +3019,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.BPSRoundTaskLifetimeHours,
 		&s.BPSAttachmentRequestConcurrency,
 		&s.BPSAttachmentInstanceConcurrency,
+		&s.BPSAttachmentAccountConcurrency,
 		&s.ResinAccountMaxConns,
 		&s.BPSTurnRoundLimit,
 		&s.UsageMeteringEnabled,
@@ -3017,6 +3028,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
+	s.RateLimitRetryPolicy = ResolveRateLimitRetryPolicy(s.RateLimitRetryPolicy, s.TransportRetryPolicy)
 	s.SiteName = NormalizeSiteName(s.SiteName)
 	s.SiteLogo = strings.TrimSpace(s.SiteLogo)
 	s.TestContent = strings.TrimSpace(s.TestContent)
@@ -3055,6 +3067,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s.BPSRoundTaskLifetimeHours = NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours)
 	s.BPSAttachmentRequestConcurrency = NormalizeBPSAttachmentRequestConcurrency(s.BPSAttachmentRequestConcurrency)
 	s.BPSAttachmentInstanceConcurrency = NormalizeBPSAttachmentInstanceConcurrency(s.BPSAttachmentInstanceConcurrency)
+	s.BPSAttachmentAccountConcurrency = NormalizeBPSAttachmentAccountConcurrency(s.BPSAttachmentAccountConcurrency)
 	s.ResinAccountMaxConns = NormalizeResinAccountMaxConns(s.ResinAccountMaxConns)
 	s.BPSTurnRoundLimit = NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit)
 	s.SessionSlotBufferSeconds = NormalizeSessionSlotBufferSeconds(s.SessionSlotBufferSeconds)
@@ -3293,9 +3306,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					bps_turn_task_lifetime_hours,
 					bps_turn_round_limit,
 					bps_round_task_lifetime_hours, usage_metering_enabled, codex_early_sse_passthrough_enabled,
-					bps_attachment_request_concurrency, bps_attachment_instance_concurrency, resin_account_max_conns
+					bps_attachment_request_concurrency, bps_attachment_instance_concurrency, resin_account_max_conns, rate_limit_retry_policy, bps_attachment_account_concurrency
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141, $142, $143, $144, $145, $146, $147)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141, $142, $143, $144, $145, $146, $147, $148, $149)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3383,6 +3396,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					smart_pacing_windows = EXCLUDED.smart_pacing_windows,
 					retry_interval_ms = EXCLUDED.retry_interval_ms,
 					transport_retry_policy = EXCLUDED.transport_retry_policy,
+					rate_limit_retry_policy = EXCLUDED.rate_limit_retry_policy,
 					codex_continue_thinking_enabled = EXCLUDED.codex_continue_thinking_enabled,
 					codex_continue_max_rounds = EXCLUDED.codex_continue_max_rounds,
 					codex_cli_version_sync_enabled = EXCLUDED.codex_cli_version_sync_enabled,
@@ -3432,6 +3446,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					bps_round_task_lifetime_hours = EXCLUDED.bps_round_task_lifetime_hours,
 					bps_attachment_request_concurrency = EXCLUDED.bps_attachment_request_concurrency,
 					bps_attachment_instance_concurrency = EXCLUDED.bps_attachment_instance_concurrency,
+					bps_attachment_account_concurrency = EXCLUDED.bps_attachment_account_concurrency,
 					resin_account_max_conns = EXCLUDED.resin_account_max_conns,
 					bps_turn_round_limit = EXCLUDED.bps_turn_round_limit,
 					passive_internal_models_enabled = EXCLUDED.passive_internal_models_enabled,
@@ -3511,7 +3526,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours),
 		NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit),
 		NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours), s.UsageMeteringEnabled, s.CodexEarlySSEPassthroughEnabled,
-		NormalizeBPSAttachmentRequestConcurrency(s.BPSAttachmentRequestConcurrency), NormalizeBPSAttachmentInstanceConcurrency(s.BPSAttachmentInstanceConcurrency), NormalizeResinAccountMaxConns(s.ResinAccountMaxConns))
+		NormalizeBPSAttachmentRequestConcurrency(s.BPSAttachmentRequestConcurrency), NormalizeBPSAttachmentInstanceConcurrency(s.BPSAttachmentInstanceConcurrency), NormalizeResinAccountMaxConns(s.ResinAccountMaxConns), ResolveRateLimitRetryPolicy(s.RateLimitRetryPolicy, s.TransportRetryPolicy), NormalizeBPSAttachmentAccountConcurrency(s.BPSAttachmentAccountConcurrency))
 	return err
 }
 

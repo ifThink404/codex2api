@@ -24,9 +24,14 @@ import (
 func TestBPSUploadRetryBudgetAndLogs(t *testing.T) {
 	for _, tc := range []struct {
 		name, policy                                         string
+		ratePolicy                                           string
+		onlyFirstFailure, continuous                         bool
 		general, rate, uploadStatus, wantStatus, wantUploads int
 		allFail, file, websocket                             bool
 	}{
+		{name: "independent_same_account_upload", policy: "rotate", ratePolicy: "sticky", rate: 3, uploadStatus: 429, wantStatus: 200, wantUploads: 2, onlyFirstFailure: true},
+		{name: "independent_same_account_ws_upload", policy: "rotate", ratePolicy: "sticky", rate: 3, uploadStatus: 429, wantStatus: 200, wantUploads: 2, onlyFirstFailure: true, websocket: true},
+		{name: "independent_off_overrides_continuous", policy: "sticky", ratePolicy: "off", rate: 3, uploadStatus: 429, wantStatus: 429, wantUploads: 1, continuous: true},
 		{name: "first_binding_rotate", policy: "rotate", rate: 10, uploadStatus: 429, wantStatus: 200, wantUploads: 2},
 		{name: "first_binding_sticky", policy: "sticky", rate: 10, uploadStatus: 429, wantStatus: 200, wantUploads: 2},
 		{name: "file_upload", policy: "rotate", rate: 10, uploadStatus: 429, wantStatus: 200, wantUploads: 2, file: true},
@@ -41,7 +46,8 @@ func TestBPSUploadRetryBudgetAndLogs(t *testing.T) {
 			h, a, b, _ := failoverTestSetup(t, false)
 			UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
 				s.CodexForkAccountFallbackEnabled = true
-				s.ContinuousRetryPolicy = database.ContinuousRetryPolicy{}
+				s.ContinuousRetryPolicy = database.ContinuousRetryPolicy{Enabled: tc.continuous, CatchAll: tc.continuous}
+				s.RateLimitRetryPolicy = database.NormalizeRateLimitRetryPolicy(tc.ratePolicy)
 				return s
 			})
 			cfg := h.store.GetPromptFilterConfig()
@@ -55,15 +61,20 @@ func TestBPSUploadRetryBudgetAndLogs(t *testing.T) {
 			a.CodexNative, a.CodexBPS = &off, true
 			b.CodexNative, b.CodexBPS = &off, true
 			var uploads, inferences atomic.Int32
+			var tokenMu sync.Mutex
+			var uploadTokens []string
 			var first sync.Once
 			var failingToken string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.Copy(io.Discard, r.Body)
 				w.Header().Set("Content-Type", "application/json")
 				if strings.HasSuffix(r.URL.Path, "/attachments") {
-					uploads.Add(1)
+					n := uploads.Add(1)
+					tokenMu.Lock()
+					uploadTokens = append(uploadTokens, r.Header.Get("Authorization"))
+					tokenMu.Unlock()
 					first.Do(func() { failingToken = r.Header.Get("Authorization") })
-					if tc.allFail || r.Header.Get("Authorization") == failingToken {
+					if tc.allFail || (tc.onlyFirstFailure && n == 1) || (!tc.onlyFirstFailure && r.Header.Get("Authorization") == failingToken) {
 						w.Header().Set("X-Request-Id", "upload-retry-test")
 						w.WriteHeader(tc.uploadStatus)
 						_, _ = fmt.Fprintf(w, `{"error":{"type":"server_error","message":"attachment endpoint rejected %s file-secret private.txt"}}`, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -145,6 +156,10 @@ func TestBPSUploadRetryBudgetAndLogs(t *testing.T) {
 				require.Equal(t, tc.wantStatus, recorder.Code, recorder.Body.String())
 			}
 			require.EqualValues(t, tc.wantUploads, uploads.Load())
+			if tc.onlyFirstFailure {
+				require.Len(t, uploadTokens, 2)
+				require.Equal(t, uploadTokens[0], uploadTokens[1], "same-account policy must retain upload credentials")
+			}
 			wantInference, failedAttempts := 0, tc.wantUploads
 			if tc.wantStatus == http.StatusOK {
 				wantInference, failedAttempts = 1, tc.wantUploads-1
@@ -172,7 +187,7 @@ func TestBPSUploadRetryBudgetAndLogs(t *testing.T) {
 				require.Zero(t, entry.TotalTokens)
 				require.Zero(t, entry.TotalCost)
 				require.Zero(t, entry.UserBilled)
-				require.Equal(t, tc.uploadStatus == 429 && tc.rate > 0 || tc.general > 0 && tc.uploadStatus == 500, entry.IsRetryAttempt)
+				require.Equal(t, tc.uploadStatus == 429 && tc.rate > 0 && tc.ratePolicy != "off" || tc.general > 0 && tc.uploadStatus == 500, entry.IsRetryAttempt)
 				detail, err := h.db.GetUsageRequestDiagnostics(t.Context(), entry.ID)
 				require.NoError(t, err)
 				diagnostics := string(detail.Diagnostics)

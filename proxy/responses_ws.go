@@ -89,9 +89,10 @@ func isPreviousResponseNotFoundBody(payload []byte) bool {
 }
 
 type responsesWSCloseError struct {
-	code   int
-	reason string
-	err    error
+	code           int
+	reason         string
+	err            error
+	retainAffinity bool
 }
 
 type responsesWSForwardOptions struct {
@@ -885,7 +886,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
-			if retryable && !stickyRetry && !preserveContinuationBinding() {
+			if retryable && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) && !preserveContinuationBinding() {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			}
 			if timedOut && shouldRetry {
@@ -898,7 +899,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				}
 				continue
 			}
-			if retryable && !timedOut && !stickyRetry {
+			if retryable && !timedOut && !stickyRetry && !retainRateLimitRequestAffinity(reqErr) {
 				retryExclusions.MarkRequestFailure(account.ID(), reqErr, requestRetryLimit, continuousRetryPolicy)
 			}
 
@@ -1162,7 +1163,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if errors.Is(err, errResponsesWSClientGone) {
 				return err
 			}
-			if shouldRetryErr, ok := err.(*responsesWSCloseError); ok && shouldRetryErr.code == websocket.CloseTryAgainLater && !preserveContinuationBinding() && !h.stickyTransportRetryEnabled() {
+			if shouldRetryErr, ok := err.(*responsesWSCloseError); ok && shouldRetryErr.code == websocket.CloseTryAgainLater && !shouldRetryErr.retainAffinity && !preserveContinuationBinding() && !h.stickyTransportRetryEnabled() {
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			}
 			return err
@@ -1781,7 +1782,8 @@ func (h *Handler) streamResponsesWSUpstream(
 			return errResponsesWSClientGone
 		}
 		_ = writeAuditedResponsesWSError(c, conn, clientErr)
-		return newResponsesWSCloseError(responsesWSCloseCodeForStatus(outcome.logStatusCode), clientErr.Message, apiErr)
+		return newResponsesWSCloseError(responsesWSCloseCodeForStatus(outcome.logStatusCode), clientErr.Message, apiErr,
+			streamOutcomeUsesRateLimitBudget(outcome) && h.streamSessionFailureDisposition(outcome, terminalFailurePayload, false).retainAffinity)
 	}
 	if outcome.logStatusCode != http.StatusOK && !hideUpstreamErrors && len(terminalFailureClientPayload) > 0 && !downstreamWrote {
 		// An unselected selective-mode failure still ends the logical turn. Its
@@ -1803,7 +1805,8 @@ func (h *Handler) streamResponsesWSUpstream(
 			return errResponsesWSClientGone
 		}
 		_ = writeAuditedResponsesWSError(c, conn, clientErr)
-		return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
+		return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr,
+			streamOutcomeUsesRateLimitBudget(outcome) && h.streamSessionFailureDisposition(outcome, terminalFailurePayload, false).retainAffinity)
 	}
 	if outcome.logStatusCode != http.StatusOK && len(terminalFailurePayload) == 0 {
 		errCode := api.ErrCodeUpstreamError
@@ -2069,11 +2072,12 @@ func truncateWebSocketCloseReason(reason string) string {
 	return reason[:end]
 }
 
-func newResponsesWSCloseError(code int, reason string, err error) error {
+func newResponsesWSCloseError(code int, reason string, err error, retainAffinity ...bool) error {
 	return &responsesWSCloseError{
-		code:   code,
-		reason: truncateWebSocketCloseReason(reason),
-		err:    err,
+		code:           code,
+		reason:         truncateWebSocketCloseReason(reason),
+		err:            err,
+		retainAffinity: len(retainAffinity) > 0 && retainAffinity[0],
 	}
 }
 
