@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,64 @@ import (
 
 func TestRelaxedFailoverHeaderOnlyHTTPIngress(t *testing.T) {
 	runSessionAccountFailoverIngress(t, false, false, false, true, true)
+}
+
+func TestRelaxedFailoverLegacyWindow(t *testing.T) {
+	for _, persisted := range []bool{true, false} {
+		for _, mode := range []string{"off", "observe", "enforce"} {
+			for _, path := range []string{"/v1/responses", "/v1/responses/compact", "websocket"} {
+				t.Run(fmt.Sprintf("persisted_%v/%s/%s", persisted, mode, path), func(t *testing.T) {
+					websocket := path == "websocket"
+					h, owner, target, key, c, body := relaxedOwnerRecoverySetup(t, persisted, true, mode)
+					if websocket {
+						c.Request.Header.Set("Connection", "Upgrade")
+						c.Request.Header.Set("Upgrade", "websocket")
+						c.Request.Header.Set(codexWindowIDHeader, "bad-handshake-window")
+						body, _ = sjson.SetBytes(body, "client_metadata.x-codex-window-id", continuityTestThread)
+					} else {
+						c.Request.Header.Set(codexWindowIDHeader, continuityTestThread)
+						c.Request.URL.Path = path
+					}
+					c.Set(ingressRequestBodyContextKey, body)
+					failure := h.configureSessionModelAffinity(c, requestSessionIdentity{stableIdentity: true}, key, "gpt-5.6-sol", "gpt-5.6-sol", false, body)
+					if mode == "enforce" {
+						require.NotNil(t, failure)
+						return
+					}
+					require.Nil(t, failure)
+					d := usageRequestDiagnosticState(c).AccountFailover
+					require.Equal(t, "window_legacy", d.Continuity.WindowState)
+					require.True(t, d.Continuity.DeferredWindow)
+					selected, _, handled := h.takeSessionAccountFailover(c.Request.Context(), key, 0, nil, nil, auth.DispatchPolicyStandard)
+					require.True(t, handled)
+					encoded, _ := json.Marshal(d)
+					require.NotNil(t, selected, "%s", encoded)
+					require.Equal(t, target.ID(), selected.ID())
+					h.store.Release(selected)
+					require.Nil(t, h.commitSessionContinuity(c, selected))
+					cleaned, headers, err := PrepareSessionRestartOutbound(c.Request.Context(), target, body, sessionFailoverRequestHeaders(c))
+					require.NoError(t, err)
+					assertSessionTools(t, cleaned)
+					fingerprint := NewCodexTransportFingerprint(target, headers, cleaned, "", c.Request.Context())
+					require.NoError(t, fingerprint.ClaimSessionIdentity(c.Request.Context(), target, "test-user-key"))
+					require.Empty(t, fingerprint.accountWindowInputs, "legacy UUID must not invent a numbered window")
+					record, found, err := h.db.ReadSessionContinuity(t.Context(), hashRiskIdentity(key))
+					require.NoError(t, err)
+					require.True(t, found)
+					require.Equal(t, target.ID(), record.AccountID)
+					require.Equal(t, owner.ID(), record.PreviousAccountID)
+					require.EqualValues(t, 1, record.FailoverCount)
+					require.Empty(t, record.OutboundWindowBases)
+					h.continuityRecords = nil
+					h.store.UnbindSessionAffinity(key, target.ID())
+					resumed, _ := failoverTestRequest(t, h)
+					resumed.Request.Header.Set(codexWindowIDHeader, continuityTestThread)
+					require.Nil(t, h.configureSessionModelAffinity(resumed, requestSessionIdentity{stableIdentity: true}, key, "gpt-5.6-sol", "gpt-5.6-sol", false, body))
+					require.Equal(t, target.ID(), selectionTraceForRequest(resumed).PinnedAccount())
+				})
+			}
+		}
+	}
 }
 
 func TestRelaxedFailoverBlockedContinuityIsAudited(t *testing.T) {

@@ -90,6 +90,15 @@ func parseContinuityWindow(headers http.Header, body []byte, websocket bool) (st
 		return thread, 0, false, "window_missing"
 	}
 	separator := strings.LastIndexByte(window, ':')
+	// Older clients send an opaque UUID without a sequence. Do not infer the
+	// thread or invent a :0 baseline; relaxed failover can defer numbering only
+	// after verifying the existing scoped owner.
+	if separator < 0 && validSessionGraphUUID(window) {
+		if gjson.Get(headers.Get(codexTurnMetadataHeader), "window_number").Exists() {
+			return thread, 0, false, "number_conflict"
+		}
+		return thread, 0, false, "window_legacy"
+	}
 	if separator <= 0 || separator == len(window)-1 {
 		return thread, 0, false, "window_invalid"
 	}

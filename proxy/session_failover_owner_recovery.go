@@ -18,8 +18,8 @@ func recordFailoverContinuity(request *gin.Context, body []byte, state *sessionC
 		windowState = "valid"
 	}
 	missing := CurrentRuntimeSettings().CodexForkAccountFallbackEnabled && state.Diagnostic.Mode != "enforce" &&
-		invalid == "window_missing" && !state.Known &&
-		(!state.Diagnostic.WouldBlock || state.Diagnostic.Result == "window_missing") &&
+		(invalid == "window_missing" || invalid == "window_legacy") && !state.Known &&
+		(!state.Diagnostic.WouldBlock || state.Diagnostic.Result == invalid) &&
 		(state.ThreadID == "" || state.Record.ThreadID == "" || state.ThreadID == state.Record.ThreadID)
 	diagnostic.Continuity = &database.SessionFailoverContinuity{
 		Mode: state.Diagnostic.Mode, Result: state.Diagnostic.Result, WouldBlock: state.Diagnostic.WouldBlock,

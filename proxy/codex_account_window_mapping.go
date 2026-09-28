@@ -45,10 +45,17 @@ func accountMetadataThread(source gjson.Result) string {
 	return source.Get("session_id").String()
 }
 
-func codexAccountWindowInputs(headers http.Header, body []byte) (map[string]uint64, error) {
+func codexAccountWindowInputs(headers http.Header, body []byte, allowLegacy ...bool) (map[string]uint64, error) {
 	windows := make(map[string]uint64)
 	metadata := gjson.GetBytes(body, "client_metadata")
-	for index, source := range []gjson.Result{metadata, diagnosticMetadataObject(metadata.Get("x-codex-turn-metadata")), gjson.Parse(headers.Get(codexTurnMetadataHeader))} {
+	sources := []gjson.Result{metadata, diagnosticMetadataObject(metadata.Get("x-codex-turn-metadata")), gjson.Parse(headers.Get(codexTurnMetadataHeader))}
+	legacy := len(allowLegacy) > 0 && allowLegacy[0]
+	for _, source := range sources {
+		if source.Get("window_number").Exists() {
+			legacy = false
+		}
+	}
+	for index, source := range sources {
 		thread := source.Get("thread_id").String()
 		if thread == "" {
 			thread = accountMetadataThread(source)
@@ -65,6 +72,9 @@ func codexAccountWindowInputs(headers http.Header, body []byte) (map[string]uint
 		}
 		for _, field := range []string{"window_id", "x-codex-window-id", "x_codex_window_id"} {
 			if value := source.Get(field); value.Exists() {
+				if legacy && value.Type == gjson.String && validSessionGraphUUID(value.String()) {
+					continue // Opaque UUID: no sequence or thread may be inferred.
+				}
 				windowThread, number, err := parseAccountWindow(value.String())
 				if err != nil || thread != "" && !strings.EqualFold(thread, windowThread) {
 					return nil, errors.New("outbound window thread is inconsistent")
@@ -89,6 +99,9 @@ func codexAccountWindowInputs(headers http.Header, body []byte) (map[string]uint
 		}
 	}
 	if value := headers.Get(codexWindowIDHeader); value != "" {
+		if legacy && validSessionGraphUUID(value) {
+			return windows, nil
+		}
 		thread, number, err := parseAccountWindow(value)
 		if err != nil {
 			return nil, err
@@ -101,8 +114,8 @@ func codexAccountWindowInputs(headers http.Header, body []byte) (map[string]uint
 	return windows, nil
 }
 
-func codexAccountWindowIdentities(headers http.Header, body []byte) (map[string]database.SessionOutboundWindowInput, error) {
-	numbers, err := codexAccountWindowInputs(headers, body)
+func codexAccountWindowIdentities(headers http.Header, body []byte, allowLegacy ...bool) (map[string]database.SessionOutboundWindowInput, error) {
+	numbers, err := codexAccountWindowInputs(headers, body, allowLegacy...)
 	if err != nil {
 		return nil, err
 	}
