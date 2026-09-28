@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
@@ -74,21 +73,29 @@ func TestBPSTimingSeparatesPreparationHeadersAndContent(t *testing.T) {
 func TestBPSCacheTimingDistinguishesReadyAndInflight(t *testing.T) {
 	timing := &bpsTimingDiagnostic{}
 	ctx := context.WithValue(t.Context(), bpsTimingContextKey{}, timing)
-	ready := make(chan struct{})
-	close(ready)
-	cache := &bpsAttachmentCache{entries: map[string]*bpsAttachmentEntry{
-		"ready":   {ready: ready, id: "file-existing", expires: time.Now().Add(time.Hour)},
-		"pending": {ready: make(chan struct{})},
-	}}
-	upload := func() (string, error) { t.Fatal("should reuse existing entry"); return "", nil }
-	_, reused, err := cache.resolve(ctx, "ready", upload)
+	cache := newBPSLocalCache()
+	_, _, err := cache.resolve(t.Context(), "ready", func() (string, error) { return "file-existing", nil })
+	require.NoError(t, err)
+	_, reused, err := cache.resolve(ctx, "ready", func() (string, error) { return "file-unexpected", nil })
 	require.NoError(t, err)
 	require.True(t, reused)
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, _, err := cache.resolve(t.Context(), "pending", func() (string, error) { close(started); <-release; return "file-pending", nil })
+		done <- err
+	}()
+	<-started
 	canceled, cancel := context.WithCancel(ctx)
+	follower := make(chan error, 1)
+	go func() {
+		_, _, err := cache.resolve(canceled, "pending", func() (string, error) { return "file-unexpected", nil })
+		follower <- err
+	}()
+	require.Eventually(t, func() bool { cache.mu.Lock(); defer cache.mu.Unlock(); return cache.flights["pending"].waiters == 2 }, time.Second, time.Millisecond)
 	cancel()
-	_, reused, err = cache.resolve(canceled, "pending", upload)
-	require.ErrorIs(t, err, context.Canceled)
-	require.False(t, reused)
+	require.ErrorIs(t, <-follower, context.Canceled)
+	close(release)
+	require.NoError(t, <-done)
 	_, reused, err = cache.resolve(ctx, "new", func() (string, error) { return "file-new", nil })
 	require.NoError(t, err)
 	require.False(t, reused)
@@ -101,32 +108,28 @@ func TestBPSCacheTimingDistinguishesReadyAndInflight(t *testing.T) {
 }
 
 func TestBPSCacheTimingExplainsCapacityChurn(t *testing.T) {
+	t.Setenv("CODEX_BPS_ATTACHMENT_CACHE_ENTRIES", "2")
 	timing := &bpsTimingDiagnostic{}
 	ctx := context.WithValue(t.Context(), bpsTimingContextKey{}, timing)
-	cache := &bpsAttachmentCache{entries: map[string]*bpsAttachmentEntry{}}
-	ready := make(chan struct{})
-	close(ready)
-	for i := 0; i < bpsAttachmentCacheLimit; i++ {
-		cache.entries[fmt.Sprint(i)] = &bpsAttachmentEntry{ready: ready, id: "file", expires: time.Now().Add(time.Hour)}
-	}
+	cache := newBPSLocalCache()
 	upload := func() (string, error) { return "file-new", nil }
+	for _, key := range []string{"one", "two"} {
+		_, _, err := cache.resolve(t.Context(), key, upload)
+		require.NoError(t, err)
+	}
 	_, _, err := cache.resolve(ctx, "new", upload)
 	require.NoError(t, err)
-	cache.entries["expired"] = &bpsAttachmentEntry{ready: ready, expires: time.Now().Add(-time.Second)}
+	cache.entries["new"].expires = time.Now().Add(-time.Second)
 	_, _, err = cache.resolve(ctx, "new", upload)
-	require.NoError(t, err)
-	for _, entry := range cache.entries {
-		entry.expires = time.Time{}
-	}
-	_, _, err = cache.resolve(ctx, "bypassed", upload)
 	require.NoError(t, err)
 	encoded, err := json.Marshal(timing)
 	require.NoError(t, err)
-	for _, key := range []string{"cache_evictions", "cache_expired_entries", "cache_capacity_bypasses"} {
+	for _, key := range []string{"cache_evictions", "cache_expired_entries"} {
 		require.EqualValues(t, 1, gjson.GetBytes(encoded, key).Int())
 	}
-	require.EqualValues(t, bpsAttachmentCacheLimit, gjson.GetBytes(encoded, "cache_entries_at_miss_max").Int())
-	require.NotContains(t, cache.entries, "bypassed")
+	require.EqualValues(t, 2, gjson.GetBytes(encoded, "cache_entries_at_miss_max").Int())
+	require.Zero(t, gjson.GetBytes(encoded, "cache_capacity_bypasses").Int())
+	require.Len(t, cache.entries, 2)
 }
 
 func TestBPSTimingObserverSkipsEmptyDeltaAndLifecycleContent(t *testing.T) {

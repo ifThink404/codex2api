@@ -14,13 +14,13 @@ func runBPSAttachmentJobs(ctx context.Context, count int, run func(context.Conte
 	if count == 0 {
 		return nil
 	}
-	workCtx, cancel := context.WithCancel(ctx)
+	workCtx, cancel := context.WithCancel(withBPSUploadRequest(ctx))
 	defer cancel()
 	var next atomic.Int64
 	var once sync.Once
 	var firstErr error
 	var wg sync.WaitGroup
-	for worker := 0; worker < min(count, bpsAttachmentUploadConcurrency); worker++ {
+	for worker := 0; worker < min(count, bpsRequestUploadLimit()); worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

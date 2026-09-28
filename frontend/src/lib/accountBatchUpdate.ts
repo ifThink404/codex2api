@@ -81,7 +81,7 @@ export function buildBatchMetadataUpdate({
     payload.base_concurrency_override = baseConcurrency;
   if (updateSkipWarmTier) payload.skip_warm_tier = skipWarmTier ?? false;
   if (updateSchedulerPriority) payload.scheduler_priority = schedulerPriority;
-  if (updateCodexSettings ?? updateCodexNativeEnabled) payload.codex_native_enabled = codexNativeEnabled ?? true;
+  if (updateCodexSettings ?? updateCodexNativeEnabled) payload.codex_native_enabled = codexNativeEnabled ?? false;
   if (updateCodexSettings ?? updateUsageLimitBypass) {
     payload.codex_usage_limit_bypass_enabled = usageLimitBypassEnabled ?? false;
     payload.codex_usage_limit_bypass_models = [...(usageLimitBypassModels ?? [])];

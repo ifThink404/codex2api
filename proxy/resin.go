@@ -172,33 +172,40 @@ func InheritLease(tempAccount, newAccount string) {
 // 池键按 accountID 隔离，复用底层 TCP 连接
 func getResinHTTPClient(account *auth.Account) *http.Client {
 	key := fmt.Sprintf("resin|%d", account.ID())
+	limit := CurrentRuntimeSettings().ResinAccountMaxConns
+	for {
+		previous, exists := clientPool.Load(key)
+		if exists {
+			entry := previous.(*poolEntry)
+			if transport, ok := entry.client.Transport.(*http.Transport); ok && transport.MaxConnsPerHost == limit {
+				entry.touch()
+				return entry.client
+			}
+		}
+		transport := &http.Transport{
+			MaxIdleConns:        limit,
+			MaxIdleConnsPerHost: limit,
+			MaxConnsPerHost:     limit,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		}
 
-	if v, ok := clientPool.Load(key); ok {
-		entry := v.(*poolEntry)
+		entry := &poolEntry{
+			client: &http.Client{
+				Transport: transport,
+				Timeout:   0, // 流式响应不设超时
+			},
+		}
 		entry.touch()
-		return entry.client
+		if exists {
+			// Replace the transport instead of racing with in-flight requests by
+			// mutating its limits. Existing streams finish on the old transport.
+			if clientPool.CompareAndSwap(key, previous, entry) {
+				releaseEvictedClient(previous.(*poolEntry).client)
+				return entry.client
+			}
+		} else if _, loaded := clientPool.LoadOrStore(key, entry); !loaded {
+			return entry.client
+		}
 	}
-
-	transport := &http.Transport{
-		MaxIdleConns:        10,
-		MaxIdleConnsPerHost: 5,
-		MaxConnsPerHost:     10,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-
-	entry := &poolEntry{
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   0, // 流式响应不设超时
-		},
-	}
-	entry.touch()
-
-	if v, loaded := clientPool.LoadOrStore(key, entry); loaded {
-		e := v.(*poolEntry)
-		e.touch()
-		return e.client
-	}
-	return entry.client
 }

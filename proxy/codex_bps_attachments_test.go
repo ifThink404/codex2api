@@ -109,12 +109,12 @@ func TestBPSUserImageAttachmentsExecutor(t *testing.T) {
 				require.EqualValues(t, 1, timing.Get("upload_requests").Int())
 				require.EqualValues(t, len(decoded), timing.Get("upload_bytes").Int())
 				require.EqualValues(t, 1, timing.Get("cache_misses").Int())
-				require.EqualValues(t, 2, timing.Get("cache_hits").Int()+timing.Get("cache_waits").Int())
+				require.EqualValues(t, 2, timing.Get("cache_hits").Int()+timing.Get("cache_waits").Int()+timing.Get("attachment_deduplicated").Int())
 			} else {
 				require.Zero(t, d.Images.Uploaded)
 				require.Equal(t, 3, d.Images.UploadReused)
 				require.Zero(t, timing.Get("upload_requests").Int())
-				require.EqualValues(t, 3, timing.Get("cache_hits").Int())
+				require.EqualValues(t, 3, timing.Get("cache_hits").Int()+timing.Get("attachment_deduplicated").Int())
 			}
 			logged, e := json.Marshal(d)
 			require.NoError(t, e)

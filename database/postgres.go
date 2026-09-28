@@ -1658,6 +1658,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_round_convergence_limit INT DEFAULT 100;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_turn_task_lifetime_hours INT DEFAULT 24;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_round_task_lifetime_hours INT DEFAULT 24;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_attachment_request_concurrency INT DEFAULT 15;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_attachment_instance_concurrency INT DEFAULT 64;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS resin_account_max_conns INT DEFAULT 15;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS bps_turn_round_limit INT DEFAULT 100;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
@@ -2604,21 +2607,24 @@ type SystemSettings struct {
 	UTLSShutdownTimeoutMinutes          int  // uTLS 连接被摘出池后等待在途 stream 收尾的上限（分钟，默认 30，范围 1-240，issue #446）
 	// CodexFingerprintDefaultMode 是新导入/新建 Codex 账号默认盖上的指纹收敛档位
 	// （off/device/session/full/round/turn_round，默认 off）。只影响导入之后新建的账号，已有账号不变。
-	CodexFingerprintDefaultMode string
-	BPSRoundConvergenceLimit    int
-	BPSTurnTaskLifetimeHours    int
-	BPSRoundTaskLifetimeHours   int
-	BPSTurnRoundLimit           int
-	AutoPause5hThreshold        float64
-	AutoPause7dThreshold        float64
-	AutoPause5hGuardBandPercent float64
-	AutoPause5hGuardConcurrency int
-	SmartPacingEnabled          bool   // issue #312 智能配速总开关
-	SmartPacingMinConcurrency   int    // 配速并发下限
-	SmartPacingWindows          string // "5h,7d" / "5h" / "7d"
-	IgnoreUsageLimitStatus      bool   // 用量窗口仅作参考，以 Responses 成功/usage_limit_reached 判定可用性
-	RetryIntervalMS             int    // 重试间隔毫秒（0 = 立即重试，保持旧行为）
-	TransportRetryPolicy        string // 临时故障重试策略: rotate（换号，旧行为）/ sticky（同号延迟重试并保留绑定）
+	CodexFingerprintDefaultMode      string
+	BPSRoundConvergenceLimit         int
+	BPSTurnTaskLifetimeHours         int
+	BPSRoundTaskLifetimeHours        int
+	BPSAttachmentRequestConcurrency  int
+	BPSAttachmentInstanceConcurrency int
+	ResinAccountMaxConns             int
+	BPSTurnRoundLimit                int
+	AutoPause5hThreshold             float64
+	AutoPause7dThreshold             float64
+	AutoPause5hGuardBandPercent      float64
+	AutoPause5hGuardConcurrency      int
+	SmartPacingEnabled               bool   // issue #312 智能配速总开关
+	SmartPacingMinConcurrency        int    // 配速并发下限
+	SmartPacingWindows               string // "5h,7d" / "5h" / "7d"
+	IgnoreUsageLimitStatus           bool   // 用量窗口仅作参考，以 Responses 成功/usage_limit_reached 判定可用性
+	RetryIntervalMS                  int    // 重试间隔毫秒（0 = 立即重试，保持旧行为）
+	TransportRetryPolicy             string // 临时故障重试策略: rotate（换号，旧行为）/ sticky（同号延迟重试并保留绑定）
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本缓存，
 	// 用于抬升出站 UA / manifest 的模拟版本（绝不低于内置常量），空表示尚未同步。
 	CodexSyncedCLIVersion string
@@ -2894,6 +2900,9 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(bps_round_convergence_limit, 100),
 		       COALESCE(bps_turn_task_lifetime_hours, 24),
 		       COALESCE(bps_round_task_lifetime_hours, 24),
+		       COALESCE(bps_attachment_request_concurrency, 15),
+		       COALESCE(bps_attachment_instance_concurrency, 64),
+		       COALESCE(resin_account_max_conns, 15),
 		       COALESCE(bps_turn_round_limit, 100),
 		       COALESCE(usage_metering_enabled, true),
 		       COALESCE(codex_early_sse_passthrough_enabled, false)
@@ -2998,6 +3007,9 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.BPSRoundConvergenceLimit,
 		&s.BPSTurnTaskLifetimeHours,
 		&s.BPSRoundTaskLifetimeHours,
+		&s.BPSAttachmentRequestConcurrency,
+		&s.BPSAttachmentInstanceConcurrency,
+		&s.ResinAccountMaxConns,
 		&s.BPSTurnRoundLimit,
 		&s.UsageMeteringEnabled,
 		&s.CodexEarlySSEPassthroughEnabled,
@@ -3041,6 +3053,9 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s.BPSRoundConvergenceLimit = NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit)
 	s.BPSTurnTaskLifetimeHours = NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours)
 	s.BPSRoundTaskLifetimeHours = NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours)
+	s.BPSAttachmentRequestConcurrency = NormalizeBPSAttachmentRequestConcurrency(s.BPSAttachmentRequestConcurrency)
+	s.BPSAttachmentInstanceConcurrency = NormalizeBPSAttachmentInstanceConcurrency(s.BPSAttachmentInstanceConcurrency)
+	s.ResinAccountMaxConns = NormalizeResinAccountMaxConns(s.ResinAccountMaxConns)
 	s.BPSTurnRoundLimit = NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit)
 	s.SessionSlotBufferSeconds = NormalizeSessionSlotBufferSeconds(s.SessionSlotBufferSeconds)
 	s.ModelsListReadMaxBytes = NormalizeModelsListReadMaxBytes(s.ModelsListReadMaxBytes)
@@ -3277,9 +3292,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					bps_round_convergence_limit,
 					bps_turn_task_lifetime_hours,
 					bps_turn_round_limit,
-					bps_round_task_lifetime_hours, usage_metering_enabled, codex_early_sse_passthrough_enabled
+					bps_round_task_lifetime_hours, usage_metering_enabled, codex_early_sse_passthrough_enabled,
+					bps_attachment_request_concurrency, bps_attachment_instance_concurrency, resin_account_max_conns
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141, $142, $143, $144)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $133, $134, $135, $136, $137, $138, $139, $140, $141, $142, $143, $144, $145, $146, $147)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3414,6 +3430,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					bps_round_convergence_limit = EXCLUDED.bps_round_convergence_limit,
 					bps_turn_task_lifetime_hours = EXCLUDED.bps_turn_task_lifetime_hours,
 					bps_round_task_lifetime_hours = EXCLUDED.bps_round_task_lifetime_hours,
+					bps_attachment_request_concurrency = EXCLUDED.bps_attachment_request_concurrency,
+					bps_attachment_instance_concurrency = EXCLUDED.bps_attachment_instance_concurrency,
+					resin_account_max_conns = EXCLUDED.resin_account_max_conns,
 					bps_turn_round_limit = EXCLUDED.bps_turn_round_limit,
 					passive_internal_models_enabled = EXCLUDED.passive_internal_models_enabled,
 					codex_unlinked_account_fallback_enabled = EXCLUDED.codex_unlinked_account_fallback_enabled,
@@ -3491,7 +3510,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeBPSRoundConvergenceLimit(s.BPSRoundConvergenceLimit),
 		NormalizeBPSTurnTaskLifetimeHours(s.BPSTurnTaskLifetimeHours),
 		NormalizeBPSTurnRoundLimit(s.BPSTurnRoundLimit),
-		NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours), s.UsageMeteringEnabled, s.CodexEarlySSEPassthroughEnabled)
+		NormalizeBPSRoundTaskLifetimeHours(s.BPSRoundTaskLifetimeHours), s.UsageMeteringEnabled, s.CodexEarlySSEPassthroughEnabled,
+		NormalizeBPSAttachmentRequestConcurrency(s.BPSAttachmentRequestConcurrency), NormalizeBPSAttachmentInstanceConcurrency(s.BPSAttachmentInstanceConcurrency), NormalizeResinAccountMaxConns(s.ResinAccountMaxConns))
 	return err
 }
 

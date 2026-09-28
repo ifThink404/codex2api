@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -150,13 +151,18 @@ func TestRelaxedRetryBPSImageUpload429SwitchesBeforeInference(t *testing.T) {
 	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "relaxed-upload-retry"})
 	t.Setenv("CODEX_REQUEST_COMPRESSION", "off")
 	c, body := failoverTestRequest(t, h)
-	body, _ = sjson.SetRawBytes(body, "input", []byte(`[{"role":"user","content":[{"type":"input_text","text":"describe this picture"},{"type":"input_image","image_url":"data:image/png;base64,`+bpsTestPNG(t)+`"}]}]`))
+	// This test must miss the cache. Other fixtures use the same account IDs
+	// and PNG; relying on their entries being evicted breaks with a larger LRU.
+	imageData, err := base64.StdEncoding.DecodeString(bpsTestPNG(t))
+	require.NoError(t, err)
+	imageData = append(imageData, []byte(NewUpstreamSessionUUID())...)
+	body, _ = sjson.SetRawBytes(body, "input", []byte(`[{"role":"user","content":[{"type":"input_text","text":"describe this picture"},{"type":"input_image","image_url":"data:image/png;base64,`+base64.StdEncoding.EncodeToString(imageData)+`"}]}]`))
 	body, _ = sjson.SetBytes(body, "stream", true)
 	c.Set(contextAPIKeyID, int64(101))
 	c.Set(ingressRequestBodyContextKey, body)
 	identity := h.resolveRequestSessionIdentityForContext(c, body)
 	key := capacityAwareSessionAffinityKey(identity, 101)
-	_, err := h.db.CommitSessionContinuity(t.Context(), hashRiskIdentity(key), database.SessionContinuityRecord{AccountID: owner.ID(), ThreadID: continuityTestThread, NumberKnown: true, LastSeen: time.Now(), UpstreamMode: "bps"})
+	_, err = h.db.CommitSessionContinuity(t.Context(), hashRiskIdentity(key), database.SessionContinuityRecord{AccountID: owner.ID(), ThreadID: continuityTestThread, NumberKnown: true, LastSeen: time.Now(), UpstreamMode: "bps"})
 	require.NoError(t, err)
 	h.store.BindSessionAffinity(key, owner, "")
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))

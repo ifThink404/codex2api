@@ -64,14 +64,17 @@ const (
 )
 
 type RuntimeSettings struct {
-	ClientCompatMode          string
-	CodexMinCLIVersion        string
-	CodexUserAgentConfig      string
-	BPSRoundConvergenceLimit  int
-	BPSTurnTaskLifetimeHours  int
-	BPSRoundTaskLifetimeHours int
-	BPSTurnRoundLimit         int
-	CodexTelemetryEnabled     bool
+	ClientCompatMode                 string
+	CodexMinCLIVersion               string
+	CodexUserAgentConfig             string
+	BPSRoundConvergenceLimit         int
+	BPSTurnTaskLifetimeHours         int
+	BPSRoundTaskLifetimeHours        int
+	BPSAttachmentRequestConcurrency  int
+	BPSAttachmentInstanceConcurrency int
+	ResinAccountMaxConns             int
+	BPSTurnRoundLimit                int
+	CodexTelemetryEnabled            bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -221,6 +224,9 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		BPSRoundConvergenceLimit:          database.DefaultBPSRoundConvergenceLimit,
 		BPSTurnTaskLifetimeHours:          database.DefaultBPSTurnTaskLifetimeHours,
 		BPSRoundTaskLifetimeHours:         database.DefaultBPSRoundTaskLifetimeHours,
+		BPSAttachmentRequestConcurrency:   database.DefaultBPSAttachmentRequestConcurrency,
+		BPSAttachmentInstanceConcurrency:  database.DefaultBPSAttachmentInstanceConcurrency,
+		ResinAccountMaxConns:              database.DefaultResinAccountMaxConns,
 		BPSTurnRoundLimit:                 database.DefaultBPSTurnRoundLimit,
 		RequestIsolationMode:              defaultRequestIsolationMode(),
 		CodexCLIVersionSyncEnabled:        true,
@@ -356,6 +362,9 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.BPSRoundConvergenceLimit = database.NormalizeBPSRoundConvergenceLimit(settings.BPSRoundConvergenceLimit)
 	settings.BPSTurnTaskLifetimeHours = database.NormalizeBPSTurnTaskLifetimeHours(settings.BPSTurnTaskLifetimeHours)
 	settings.BPSRoundTaskLifetimeHours = database.NormalizeBPSRoundTaskLifetimeHours(settings.BPSRoundTaskLifetimeHours)
+	settings.BPSAttachmentRequestConcurrency = database.NormalizeBPSAttachmentRequestConcurrency(settings.BPSAttachmentRequestConcurrency)
+	settings.BPSAttachmentInstanceConcurrency = database.NormalizeBPSAttachmentInstanceConcurrency(settings.BPSAttachmentInstanceConcurrency)
+	settings.ResinAccountMaxConns = database.NormalizeResinAccountMaxConns(settings.ResinAccountMaxConns)
 	settings.BPSTurnRoundLimit = database.NormalizeBPSTurnRoundLimit(settings.BPSTurnRoundLimit)
 	if settings.CodexContinueMaxRounds < minCodexContinueMaxRounds {
 		settings.CodexContinueMaxRounds = defaults.CodexContinueMaxRounds
@@ -427,6 +436,9 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.BPSRoundConvergenceLimit = settings.BPSRoundConvergenceLimit
 		next.BPSTurnTaskLifetimeHours = settings.BPSTurnTaskLifetimeHours
 		next.BPSRoundTaskLifetimeHours = settings.BPSRoundTaskLifetimeHours
+		next.BPSAttachmentRequestConcurrency = settings.BPSAttachmentRequestConcurrency
+		next.BPSAttachmentInstanceConcurrency = settings.BPSAttachmentInstanceConcurrency
+		next.ResinAccountMaxConns = settings.ResinAccountMaxConns
 		next.BPSTurnRoundLimit = settings.BPSTurnRoundLimit
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
@@ -478,6 +490,10 @@ func storeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings = NormalizeRuntimeSettings(settings)
 	telemetryWasEnabled := currentRuntimeSettings().CodexTelemetryEnabled
 	runtimeSettings.Store(settings)
+	// Reconsider queued uploads immediately when the instance limit increases.
+	bpsUploads.mu.Lock()
+	bpsUploads.dispatch()
+	bpsUploads.mu.Unlock()
 	if telemetryWasEnabled && !settings.CodexTelemetryEnabled {
 		codexTelemetryGlobal.disable()
 	}

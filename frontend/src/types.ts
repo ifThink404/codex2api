@@ -2180,6 +2180,9 @@ export interface SystemSettings {
   bps_round_convergence_limit: number
   bps_turn_task_lifetime_hours: number
   bps_round_task_lifetime_hours: number
+  bps_attachment_request_concurrency: number
+  bps_attachment_instance_concurrency: number
+  resin_account_max_conns: number
   bps_turn_round_limit: number
   allow_remote_migration: boolean
   database_driver: string

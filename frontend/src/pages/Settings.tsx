@@ -2235,6 +2235,9 @@ export default function Settings() {
     bps_round_convergence_limit: 100,
     bps_turn_task_lifetime_hours: 24,
     bps_round_task_lifetime_hours: 24,
+    bps_attachment_request_concurrency: 15,
+    bps_attachment_instance_concurrency: 64,
+    resin_account_max_conns: 15,
     bps_turn_round_limit: 100,
     allow_remote_migration: false,
     database_driver: 'postgres',
@@ -4203,6 +4206,39 @@ export default function Settings() {
                         </span>
                       </div>
                     </SettingField>
+                    <fieldset className="min-w-0 rounded-lg border border-border/60 p-4 sm:col-span-2 xl:col-span-3">
+                      <legend className="px-1.5 text-sm font-semibold">{t('settings.bpsAttachmentConcurrencyTitle')}</legend>
+                      <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('settings.bpsAttachmentConcurrencyHint')}</p>
+                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                        <SettingField label={t('settings.bpsAttachmentRequestConcurrency')} description={t('settings.bpsAttachmentRequestConcurrencyDesc')}>
+                          <DraftNumberInput
+                            min={1}
+                            max={64}
+                            value={settingsForm.bps_attachment_request_concurrency ?? 15}
+                            onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_attachment_request_concurrency: value }))}
+                            onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_attachment_request_concurrency: value }) }}
+                          />
+                        </SettingField>
+                        <SettingField label={t('settings.bpsAttachmentInstanceConcurrency')} description={t('settings.bpsAttachmentInstanceConcurrencyDesc')}>
+                          <DraftNumberInput
+                            min={1}
+                            max={1024}
+                            value={settingsForm.bps_attachment_instance_concurrency ?? 64}
+                            onValueChange={(value) => setSettingsForm(f => ({ ...f, bps_attachment_instance_concurrency: value }))}
+                            onValueCommit={(value) => { void autoSaveSettingsPatch({ bps_attachment_instance_concurrency: value }) }}
+                          />
+                        </SettingField>
+                        <SettingField label={t('settings.resinAccountMaxConns')} description={t('settings.resinAccountMaxConnsDesc')}>
+                          <DraftNumberInput
+                            min={1}
+                            max={1024}
+                            value={settingsForm.resin_account_max_conns ?? 15}
+                            onValueChange={(value) => setSettingsForm(f => ({ ...f, resin_account_max_conns: value }))}
+                            onValueCommit={(value) => { void autoSaveSettingsPatch({ resin_account_max_conns: value }) }}
+                          />
+                        </SettingField>
+                      </div>
+                    </fieldset>
                     <div className="space-y-4 sm:col-span-2 xl:col-span-3">
                       <SettingField className="max-w-lg" label={t('settings.codexFingerprintDefaultMode')} description={t('settings.codexFingerprintDefaultModeDesc')}>
                         <Select

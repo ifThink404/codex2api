@@ -107,6 +107,13 @@ func (claims *localCodexIdentityClaims) ClaimCodexIdentities(ctx context.Context
 }
 
 func (handler *Handler) bindCodexIdentityClaims(ctx *gin.Context) {
+	prepared := ctx.Request.Context()
+	// HTTP request contexts are canceled on completion. Internal callers with
+	// an unbounded background context use executeCodexBPS's scoped cleanup.
+	if prepared.Done() != nil {
+		prepared, _ = withBPSAttachmentPreparation(prepared)
+	}
+	ctx.Request = ctx.Request.WithContext(withBPSUploadRequest(prepared))
 	ctx.Request = ctx.Request.WithContext(WithBPSAttachmentCache(ctx.Request.Context(), handler.cache))
 	var claimer codexIdentityClaimer = &handler.codexIdentityClaims
 	if handler.db != nil {

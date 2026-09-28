@@ -29,6 +29,7 @@ func TestSettingsExportCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
 	s.PromptFilterReviewAPIKey = "source-review-test-only"
 	s.CodexInitialSessionMaxAgeSeconds = 123
 	s.CodexInitialSessionAgeCheckDisabled = true
+	s.BPSAttachmentRequestConcurrency, s.BPSAttachmentInstanceConcurrency, s.ResinAccountMaxConns = 9, 96, 20
 	require.NoError(t, db.UpdateSystemSettings(context.Background(), s))
 	oauth := auth.AntigravityOAuthSettings{ActiveKey: "migrate", Clients: []auth.AntigravityOAuthClientConfig{{Key: "migrate", ClientID: "source-client-test-only", ClientSecret: "source-client-secret-test-only"}}}
 	oauthRaw, err := auth.EncodeAntigravityOAuthSettings(oauth)
@@ -68,6 +69,7 @@ func TestSettingsExportCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
 	s.AdminSecret = "target-admin-test-only"
 	s.CodexInitialSessionAgeCheckDisabled = false
 	s.CodexInitialSessionMaxAgeSeconds = 42
+	s.BPSAttachmentRequestConcurrency, s.BPSAttachmentInstanceConcurrency, s.ResinAccountMaxConns = 15, 64, 15
 	require.NoError(t, db.SaveAntigravityOAuthConfig(context.Background(), "{}"))
 	auth.SetConfiguredAntigravityOAuth(auth.AntigravityOAuthSettings{})
 	require.NoError(t, db.UpdateSystemSettings(context.Background(), s))
@@ -85,6 +87,9 @@ func TestSettingsExportCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
 	require.Equal(t, s.PromptFilterCustomPatterns, persisted.PromptFilterCustomPatterns)
 	require.True(t, persisted.CodexInitialSessionAgeCheckDisabled)
 	require.Equal(t, 123, persisted.CodexInitialSessionMaxAgeSeconds)
+	require.Equal(t, 9, persisted.BPSAttachmentRequestConcurrency)
+	require.Equal(t, 96, persisted.BPSAttachmentInstanceConcurrency)
+	require.Equal(t, 20, persisted.ResinAccountMaxConns)
 	require.True(t, proxy.CurrentRuntimeSettings().CodexInitialSessionAgeCheckDisabled)
 	restoredRaw, err := db.LoadAntigravityOAuthConfig(context.Background())
 	require.NoError(t, err)

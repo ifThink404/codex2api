@@ -166,6 +166,8 @@
     }
   },
   "accounts": {
+    "bpsImageTrimTitle": "BPS 歷史附件精簡",
+    "bpsImageTrimSummary": "僅用於 BPS。保留本輪使用者附件、圖片與檔案合計最近 3 個工具附件，以及最新整組結果；其他舊附件僅保留既有來源參照與省略提示，不再上傳內嵌內容。沒有可讀取來源時可能無法還原。",
     "codexFingerprintModeRound": "task_id 輪次",
     "codexFingerprintModeRoundDetail": "同一上游帳號依實際模型＋思考等級分組。每批 task_id 固定，未切換帳號時 turn_id 固定；切換或切回使用目標帳號目前的 task_id，建立新 turn_id 並繼續該批計數。agent_iteration 依新模型呼叫遞增，工具續接計入，同帳號重試沿用編號。達到次數上限或連續閒置 24 小時後，新呼叫換批並從 1 開始。原生 Codex 僅收斂裝置。",
     "codexFingerprintModeTurnRound": "turn_id 輪次",
@@ -335,6 +337,14 @@
     "bpsRoundConvergenceLimitDesc": "僅適用於「task_id 輪次」，預設 100，範圍 1–1000000。依實際上游帳號、模型與思考等級獨立計數；每批 task_id 固定，未切換帳號時 turn_id 固定，agent_iteration 遞增。切換使用目標帳號目前批次、建立新 turn_id 並繼續計數。工具續接計入，同帳號重試不重複計數。達到上限或設定的固定有效期後換批，序號歸 1。修改次數或週期從下一批生效，並行依資料庫分配順序編號。",
     "bpsRoundTaskLifetimeHours": "task_id 有效期（小時）",
     "bpsRoundTaskLifetimeHoursDesc": "僅適用於「task_id 輪次」，預設 24，範圍 1–8760 小時。每批從首次上游推理傳送起固定計時，持續請求不續期；呼叫次數達到上限或到期後，下一次新呼叫更換 task_id、turn_id，序號歸 1。重試沿用原分配，重啟保留計時；修改週期從下一批生效。與右側 turn_id 輪次的有效期獨立。",
+    "bpsAttachmentConcurrencyTitle": "BPS 附件上傳與連線並行",
+    "bpsAttachmentConcurrencyHint": "按附件個數計算，不是對話數或 RPM。圖片與檔案共用名額，所有帳號共同受執行個體上限約束；快取命中不占上傳名額，超出上限排隊。儲存後生效並保留至重新啟動，正在進行的上傳不會中斷。",
+    "bpsAttachmentRequestConcurrency": "單次請求附件並行數",
+    "bpsAttachmentRequestConcurrencyDesc": "每次請求並行準備、上傳的附件數量，預設 15，範圍 1–64。不是帳號上限；同一帳號的多個請求分別計算。修改從新一批附件處理開始生效。",
+    "bpsAttachmentInstanceConcurrency": "執行個體同時上傳附件數",
+    "bpsAttachmentInstanceConcurrencyDesc": "每個 codex2api 服務程序內，所有帳號合計同時上傳的附件個數，預設 64，範圍 1–1024。每張圖片或每個檔案占一個名額，上傳結束釋放；多個執行個體分別計算，記憶體准入可能進一步降低實際並行數。",
+    "resinAccountMaxConns": "Resin 每帳號連線上限",
+    "resinAccountMaxConnsDesc": "僅適用於 Resin 反向代理：每個帳號到同一主機的連線數上限，預設 15，範圍 1–1024。附件上傳與推論等 HTTP 請求共用連線池，不是附件專用額度；一般直連不受此項限制。儲存後新請求使用新連線池，舊請求正常結束，切換期間連線數可能暫時超過新上限。",
     "bpsTaskRoundsTitle": "task_id 輪次模式",
     "bpsTaskRoundsHint": "按模型呼叫次數或有效期更換 task，先達到的條件生效；工具續接計入，同帳號重試不重複計數。",
     "bpsTurnRoundsTitle": "turn_id 輪次模式",

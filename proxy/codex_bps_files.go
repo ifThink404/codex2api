@@ -126,8 +126,14 @@ func bpsFileUploadKey(account *auth.Account, file bpsFileAttachment) string {
 }
 
 func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body []byte, d *CodexBPSDiagnostic, upload func(context.Context, bpsFileAttachment) (string, error)) ([]byte, map[string]string, error) {
-	used := make(map[string]string)
-	var diagnostic *codexBPSFileDiagnostic
+	type fileJob struct {
+		value, name, field, carrier string
+		item, part                  int
+		key, id                     string
+		size                        int
+		reused                      bool
+	}
+	var jobs []fileJob
 	if d != nil {
 		d.Files = nil
 	}
@@ -155,52 +161,80 @@ func prepareBPSFileAttachments(ctx context.Context, account *auth.Account, body 
 			if data.Type != gjson.String {
 				return nil, nil, bpsFileInputError("file_data 必须是 Base64 字符串或 data URL。")
 			}
-			file, err := decodeBPSFileData(data.String(), part.Get("filename").String())
-			if err != nil {
-				return nil, nil, err
+			if field == "output" && strings.TrimSpace(item.Get("call_id").String()) == "" {
+				return nil, nil, bpsFileInputError("文件工具结果缺少 call_id，无法关联原工具调用。")
 			}
-			key := bpsFileUploadKey(account, file)
-			id, reused, err := bpsImages.resolve(ctx, key, func() (string, error) { return upload(ctx, file) })
-			if err != nil {
-				return nil, nil, err
-			}
-			used[key] = id
-			fieldPath := fmt.Sprintf("input.%d.%s.%d", i, field, j)
-			// These are mutually exclusive with file_id. The filename is kept
-			// on the uploaded attachment, rather than repeated in its reference.
-			for _, name := range []string{"file_data", "filename", "file_url"} {
-				body, err = sjson.DeleteBytes(body, fieldPath+"."+name)
-				if err != nil {
-					return nil, nil, ErrInternalError("转换文件附件引用失败", err)
-				}
-			}
-			body, err = sjson.SetBytes(body, fieldPath+".file_id", id)
-			if err != nil {
-				return nil, nil, ErrInternalError("写入文件附件引用失败", err)
-			}
-			if diagnostic == nil {
-				diagnostic = &codexBPSFileDiagnostic{}
-				if d != nil {
-					d.Files = diagnostic
-				}
-			}
-			diagnostic.Count++
-			action := "uploaded"
-			if reused {
-				diagnostic.UploadReused++
-				action = "upload_reused"
-			} else {
-				diagnostic.Uploaded++
-			}
-			if len(diagnostic.Details) == 8 {
-				diagnostic.Details = append(diagnostic.Details[:0], diagnostic.Details[1:]...)
-				diagnostic.DetailsOmitted++
-			}
-			diagnostic.Details = append(diagnostic.Details, codexBPSFileDetail{Path: fmt.Sprintf("input[%d].%s[%d]", i, field, j), Carrier: carrier, Bytes: len(file.Data), Action: action, OutboundReference: "file_id"})
+			jobs = append(jobs, fileJob{value: data.String(), name: part.Get("filename").String(), field: field, carrier: carrier, item: i, part: j})
 		}
 	}
-	if len(used) > 0 && d != nil && !slices.Contains(d.AdaptedFields, "input file_data → uploaded attachment") {
-		d.AdaptedFields = append(d.AdaptedFields, "input file_data → uploaded attachment")
+	unique := make([]int, 0, len(jobs))
+	type source struct{ value, name string }
+	first := make(map[source]int)
+	duplicates := make(map[int]int)
+	for i, job := range jobs {
+		key := source{job.value, job.name}
+		if original, found := first[key]; found {
+			duplicates[i] = original
+		} else {
+			first[key] = i
+			unique = append(unique, i)
+		}
+	}
+	bpsTimingFromContext(ctx).update(func(v *bpsTimingValues) { v.AttachmentDeduplicated += len(duplicates) })
+	err := runBPSAttachmentJobs(ctx, len(unique), func(workCtx context.Context, index int) error {
+		job := &jobs[unique[index]]
+		release, err := bpsAttachmentBuffers.acquire(workCtx, len(job.value))
+		if err != nil {
+			return err
+		}
+		defer release()
+		prepared, err := prepareBPSAttachment(workCtx, "file", job.value, job.name)
+		if err != nil {
+			return err
+		}
+		job.size = len(prepared.file.Data)
+		job.key = bpsPreparedUploadKey(account, "file", prepared)
+		job.id, job.reused, err = bpsImages.resolveContext(workCtx, job.key, func(uploadCtx context.Context) (string, error) { return upload(uploadCtx, prepared.file) })
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	for index, original := range duplicates {
+		jobs[index].key, jobs[index].id, jobs[index].size, jobs[index].reused = jobs[original].key, jobs[original].id, jobs[original].size, true
+	}
+	used := make(map[string]string)
+	references := make(map[int][]bpsImageReference)
+	var diagnostic *codexBPSFileDiagnostic
+	if len(jobs) > 0 {
+		diagnostic = &codexBPSFileDiagnostic{}
+	}
+	for _, job := range jobs {
+		used[job.key] = job.id
+		references[job.item] = append(references[job.item], bpsImageReference{Part: job.part, Field: job.field, ID: job.id, Remove: []string{"file_data", "filename", "file_url"}})
+		diagnostic.Count++
+		action := "uploaded"
+		if job.reused {
+			diagnostic.UploadReused++
+			action = "upload_reused"
+		} else {
+			diagnostic.Uploaded++
+		}
+		if len(diagnostic.Details) == 8 {
+			diagnostic.Details = append(diagnostic.Details[:0], diagnostic.Details[1:]...)
+			diagnostic.DetailsOmitted++
+		}
+		diagnostic.Details = append(diagnostic.Details, codexBPSFileDetail{Path: fmt.Sprintf("input[%d].%s[%d]", job.item, job.field, job.part), Carrier: job.carrier, Bytes: job.size, Action: action, OutboundReference: "file_id"})
+	}
+	body, err = rewriteBPSImageReferences(body, references)
+	if err != nil {
+		return nil, nil, ErrInternalError("转换文件附件引用失败", err)
+	}
+	if d != nil {
+		d.Files = diagnostic
+		if len(used) > 0 && !slices.Contains(d.AdaptedFields, "input file_data → uploaded attachment") {
+			d.AdaptedFields = append(d.AdaptedFields, "input file_data → uploaded attachment")
+		}
 	}
 	return body, used, nil
 }

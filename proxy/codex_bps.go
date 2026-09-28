@@ -253,6 +253,9 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 }
 
 func executeCodexBPS(ctx context.Context, account *auth.Account, body []byte, cacheKey, proxyOverride, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, fingerprint *CodexFingerprint, compact bool) (*http.Response, error) {
+	ctx, releasePreparation := withBPSAttachmentPreparation(ctx)
+	defer releasePreparation()
+	ctx = withBPSUploadRequest(ctx)
 	started := time.Now()
 	account.Mu().RLock()
 	accessToken, proxyURL := account.AccessToken, account.ProxyURL

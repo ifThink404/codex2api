@@ -2370,7 +2370,7 @@ export default function Accounts() {
   const [batchSchedulerPriorityInput, setBatchSchedulerPriorityInput] =
     useState("");
   const [batchUpdateCodexSettings, setBatchUpdateCodexSettings] = useState(false);
-  const [batchCodexNativeEnabled, setBatchCodexNativeEnabled] = useState(true);
+  const [batchCodexNativeEnabled, setBatchCodexNativeEnabled] = useState(false);
   const [batchUsageLimitBypassEnabled, setBatchUsageLimitBypassEnabled] = useState(true);
   const [batchUsageLimitBypassModels, setBatchUsageLimitBypassModels] = useState<string[]>(["gpt-5.6-sol"]);
   const [batchCodexBPSProfile, setBatchCodexBPSProfile] = useState<CodexBPSProfile>("word");
@@ -5236,7 +5236,7 @@ export default function Accounts() {
     setBatchUpdateSchedulerPriority(false);
     setBatchSchedulerPriorityInput("");
     setBatchUpdateCodexSettings(false);
-    setBatchCodexNativeEnabled(true);
+    setBatchCodexNativeEnabled(false);
     setBatchUsageLimitBypassEnabled(true);
     setBatchUsageLimitBypassModels(["gpt-5.6-sol"]);
     setBatchCodexBPSProfile("word");
@@ -5267,7 +5267,7 @@ export default function Accounts() {
     setBatchUpdateSchedulerPriority(false);
     setBatchSchedulerPriorityInput("");
     setBatchUpdateCodexSettings(false);
-    setBatchCodexNativeEnabled(true);
+    setBatchCodexNativeEnabled(false);
     setBatchUsageLimitBypassEnabled(true);
     setBatchUsageLimitBypassModels(["gpt-5.6-sol"]);
     setBatchCodexBPSProfile("word");

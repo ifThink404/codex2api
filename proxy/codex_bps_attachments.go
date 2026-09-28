@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,115 +13,12 @@ import (
 	"net/textproto"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/codex2api/auth"
-	"github.com/codex2api/security"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-// Only opaque handles are cached, never credentials, original filenames or
-// media bytes. The account is part of the key: handles cannot cross accounts.
-const bpsAttachmentCacheLimit = 256
-const bpsAttachmentCacheTTL = 30 * time.Minute
-
-type bpsAttachmentEntry struct {
-	ready   chan struct{}
-	id      string
-	err     error
-	expires time.Time
-}
-type bpsAttachmentCache struct {
-	mu      sync.Mutex
-	entries map[string]*bpsAttachmentEntry
-}
-
-var bpsImages = bpsAttachmentCache{entries: make(map[string]*bpsAttachmentEntry)}
-
-func (c *bpsAttachmentCache) resolve(ctx context.Context, key string, upload func() (string, error)) (string, bool, error) {
-	timing := bpsTimingFromContext(ctx)
-	c.mu.Lock()
-	now := time.Now()
-	expired := 0
-	for k, e := range c.entries {
-		if !e.expires.IsZero() && !now.Before(e.expires) {
-			delete(c.entries, k)
-			expired++
-		}
-	}
-	timing.update(func(v *bpsTimingValues) {
-		v.CacheExpiredEntries += expired
-		v.CacheEntryLimit = bpsAttachmentCacheLimit
-		v.UploadConcurrencyLimit = bpsAttachmentUploadConcurrency
-	})
-	if e := c.entries[key]; e != nil {
-		waiting := e.expires.IsZero()
-		c.mu.Unlock()
-		if waiting {
-			started := time.Now()
-			timing.update(func(v *bpsTimingValues) { v.CacheWaits++ })
-			defer func() {
-				timing.update(func(v *bpsTimingValues) { v.CacheWaitMS += time.Since(started).Milliseconds() })
-			}()
-		} else {
-			timing.update(func(v *bpsTimingValues) { v.CacheHits++ })
-		}
-		select {
-		case <-ctx.Done():
-			return "", false, ctx.Err()
-		case <-e.ready:
-			return e.id, e.err == nil, e.err
-		}
-	}
-	timing.update(func(v *bpsTimingValues) {
-		v.CacheMisses++
-		v.CacheEntriesAtMissMax = max(v.CacheEntriesAtMissMax, len(c.entries))
-	})
-	if len(c.entries) >= bpsAttachmentCacheLimit {
-		oldestKey := ""
-		var oldest time.Time
-		for k, e := range c.entries {
-			if !e.expires.IsZero() && (oldestKey == "" || e.expires.Before(oldest)) {
-				oldestKey, oldest = k, e.expires
-			}
-		}
-		if oldestKey != "" {
-			delete(c.entries, oldestKey)
-			timing.update(func(v *bpsTimingValues) { v.CacheEvictions++ })
-		} else {
-			timing.update(func(v *bpsTimingValues) { v.CacheCapacityBypasses++ })
-			// Do not let many concurrent unique uploads grow the cache unbounded.
-			c.mu.Unlock()
-			id, err := upload()
-			return id, false, err
-		}
-	}
-	e := &bpsAttachmentEntry{ready: make(chan struct{})}
-	c.entries[key] = e
-	c.mu.Unlock()
-	id, expires, shared, err := resolveSharedBPSAttachment(ctx, key, upload)
-	c.mu.Lock()
-	e.id, e.err, e.expires = id, err, expires
-	if shared {
-		timing.update(func(v *bpsTimingValues) { v.CacheMisses--; v.CacheHits++ })
-	}
-	if err != nil {
-		delete(c.entries, key)
-	}
-	close(e.ready)
-	c.mu.Unlock()
-	return id, shared, err
-}
-
-func (c *bpsAttachmentCache) forget(key, id string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e := c.entries[key]; e != nil && !e.expires.IsZero() && e.id == id {
-		delete(c.entries, key)
-	}
-}
 
 func bpsImageUploadKey(account *auth.Account, data []byte) string {
 	digest := sha256.Sum256(data)
@@ -173,29 +69,41 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			jobs = append(jobs, imageJob{url: url, itemIndex: i, partIndex: j, field: field, diagnosticPath: fmt.Sprintf("input[%d].%s[%d]", i, field, j), adapted: adapted})
 		}
 	}
-	err := runBPSAttachmentJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
-		job := &jobs[index]
-		detail := codexBPSImageDetail{}
-		normalized := normalizeBPSImageDataURL(job.url, &detail)
-		if detail.DetectedMIME == "" {
-			return bpsImageInputError("图片数据无效或格式不受支持，请使用 PNG、JPEG、GIF 或 WebP 图片。")
+	// One job per original data URL; keep every source position for rewriting.
+	unique := make([]int, 0, len(jobs))
+	first := make(map[string]int)
+	duplicates := make(map[int]int)
+	for i := range jobs {
+		if original, found := first[jobs[i].url]; found {
+			duplicates[i] = original
+		} else {
+			first[jobs[i].url] = i
+			unique = append(unique, i)
 		}
-		_, encoded, _ := strings.Cut(normalized, ",")
-		if len(encoded) > security.MaxRequestBodySize {
-			return bpsImageInputError("图片数据超过请求大小限制。")
-		}
-		data, err := base64.StdEncoding.DecodeString(encoded)
+	}
+	bpsTimingFromContext(ctx).update(func(v *bpsTimingValues) { v.AttachmentDeduplicated += len(duplicates) })
+	err := runBPSAttachmentJobs(ctx, len(unique), func(workCtx context.Context, index int) error {
+		job := &jobs[unique[index]]
+		release, err := bpsAttachmentBuffers.acquire(workCtx, len(job.url))
 		if err != nil {
-			return bpsImageInputError("图片 Base64 数据不完整或无效，请重新附加图片。")
+			return err
 		}
-		job.key = bpsImageUploadKey(account, data)
-		job.id, job.reused, err = bpsImages.resolve(workCtx, job.key, func() (string, error) {
-			return upload(workCtx, data, detail.DetectedMIME)
+		defer release()
+		prepared, err := prepareBPSAttachment(workCtx, "image", job.url, "")
+		if err != nil {
+			return err
+		}
+		job.key = bpsPreparedUploadKey(account, "image", prepared)
+		job.id, job.reused, err = bpsImages.resolveContext(workCtx, job.key, func(uploadCtx context.Context) (string, error) {
+			return upload(uploadCtx, prepared.file.Data, prepared.file.ContentType)
 		})
 		return err
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	for index, original := range duplicates {
+		jobs[index].key, jobs[index].id, jobs[index].reused = jobs[original].key, jobs[original].id, true
 	}
 	references := make(map[int][]bpsImageReference)
 	for _, job := range jobs {
@@ -245,9 +153,10 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 }
 
 type bpsImageReference struct {
-	Part  int
-	Field string
-	ID    string
+	Remove []string
+	Part   int
+	Field  string
+	ID     string
 }
 
 // Rewrite each affected item once, and the full input once. Repeated sjson
@@ -271,7 +180,18 @@ func rewriteBPSImageReferences(body []byte, references map[int][]bpsImageReferen
 				}
 				fields[replacement.Field] = parts
 			}
-			encoded, err := sjson.DeleteBytes(parts[replacement.Part], "image_url")
+			remove := replacement.Remove
+			if len(remove) == 0 {
+				remove = []string{"image_url"}
+			}
+			encoded := []byte(parts[replacement.Part])
+			var err error
+			for _, field := range remove {
+				encoded, err = sjson.DeleteBytes(encoded, field)
+				if err != nil {
+					return nil, err
+				}
+			}
 			if err == nil {
 				encoded, err = sjson.SetBytes(encoded, "file_id", replacement.ID)
 			}
@@ -308,6 +228,13 @@ func uploadBPSImage(ctx context.Context, client *http.Client, headers http.Heade
 }
 
 func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.Header, file bpsFileAttachment) (result string, resultErr error) {
+	// Include the decoded file and processing headroom. An oversized valid file
+	// runs alone instead of deadlocking forever behind the byte budget.
+	release, err := bpsUploads.acquire(ctx, int64(len(file.Data))*2+1024)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	started, status := time.Now(), 0
 	defer func() {
 		bpsTimingFromContext(ctx).uploaded(time.Since(started), len(file.Data), status, resultErr != nil)
@@ -317,24 +244,29 @@ func uploadBPSAttachment(ctx context.Context, client *http.Client, headers http.
 	var buffer bytes.Buffer
 	form := multipart.NewWriter(&buffer)
 	name := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(file.Name)
-	part, err := form.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="file"; filename="` + name + `"`}, "Content-Type": {file.ContentType}})
+	_, err = form.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="file"; filename="` + name + `"`}, "Content-Type": {file.ContentType}})
 	if err != nil {
 		return "", ErrInternalError("构建附件失败", err)
 	}
-	if _, err = part.Write(file.Data); err != nil {
-		return "", ErrInternalError("构建附件失败", err)
-	}
+	// Header only: stream the immutable file bytes without copying them.
+	headerSize := buffer.Len()
 	if err = form.Close(); err != nil {
 		return "", ErrInternalError("构建附件失败", err)
+	}
+	header, trailer := buffer.Bytes()[:headerSize], buffer.Bytes()[headerSize:]
+	newBody := func() io.Reader {
+		return io.MultiReader(bytes.NewReader(header), bytes.NewReader(file.Data), bytes.NewReader(trailer))
 	}
 	endpoint := CodexBPSBaseURL + "/attachments"
 	if IsResinEnabled() {
 		endpoint = BuildReverseProxyURL(endpoint)
 	}
-	req, err := http.NewRequestWithContext(uploadCtx, http.MethodPost, endpoint, &buffer)
+	req, err := http.NewRequestWithContext(uploadCtx, http.MethodPost, endpoint, newBody())
 	if err != nil {
 		return "", ErrInternalError("创建附件请求失败", nil)
 	}
+	req.ContentLength = int64(len(header)) + int64(len(file.Data)) + int64(len(trailer))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(newBody()), nil }
 	req.Header = headers.Clone()
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	req.Header.Set("Accept", "application/json")

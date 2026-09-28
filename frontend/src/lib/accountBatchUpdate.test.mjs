@@ -3,6 +3,17 @@ import test from "node:test";
 
 import { buildBatchMetadataUpdate } from "./accountBatchUpdate.ts";
 
+test("batch Codex defaults stay off unless explicitly enabled", () => {
+  const base = { ids: [1, 2], updateTags: false, tags: [], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
+  for (const selection of [{ updateCodexSettings: true }, { updateCodexNativeEnabled: true }]) {
+    const options = { ...base, ...selection };
+    assert.equal(buildBatchMetadataUpdate(options).codex_native_enabled, false);
+    assert.equal(buildBatchMetadataUpdate({ ...options, codexNativeEnabled: false }).codex_native_enabled, false);
+    assert.equal(buildBatchMetadataUpdate({ ...options, codexNativeEnabled: true }).codex_native_enabled, true);
+  }
+  assert.deepEqual(buildBatchMetadataUpdate({ ...base, updateCodexSettings: false, updateCodexNativeEnabled: true, codexNativeEnabled: true }), { ids: [1, 2] });
+});
+
 test("one Codex settings switch applies all values and omits them when off", () => {
   const base = { ids: [1, 2], updateTags: true, tags: ["keep"], updateGroups: false, groupIds: [], updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null };
   const settings = { codexNativeEnabled: true, codexBPSEnabled: true, usageLimitBypassEnabled: true, usageLimitBypassModels: ["gpt-5.6-sol"], codexBPSProfile: "word", codexBPSImageTrimEnabled: true, codexNativeCompactionOnly: false, codexFingerprintMode: "off" };
