@@ -7,7 +7,7 @@ import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
+import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, LogAgentConfig, LogAgentConfigResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
 import { ANTIGRAVITY_DEFAULT_MODELS } from '../lib/antigravityModels'
 import { countPayloadRules } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
@@ -1842,6 +1842,145 @@ function VisibleChannelsPicker() {
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">{t('settings.visibleChannelsFallbackHint')}</p>
     </div>
+  )
+}
+
+// LogAgentSettingsCard 是日志分析 Agent 的配置卡片(独立读写 /log-agent/config)：
+// 选择计费归属的网关 Key 与分析模型，以及上下文上限、超时与记录保留天数。
+function LogAgentSettingsCard({ models }: { models: string[] }) {
+  const { t } = useTranslation()
+  const { showToast } = useToast()
+  const [config, setConfig] = useState<LogAgentConfig | null>(null)
+  const [gatewayKeys, setGatewayKeys] = useState<LogAgentConfigResponse['gateway_keys']>([])
+  const [limits, setLimits] = useState<LogAgentConfigResponse['limits'] | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .getLogAgentConfig()
+      .then((result) => {
+        if (cancelled) return
+        setConfig(result.config)
+        setGatewayKeys(result.gateway_keys ?? [])
+        setLimits(result.limits)
+      })
+      .catch((error) => {
+        if (!cancelled) showToast(`${t('logAgent.settings.loadFailed')}: ${getErrorMessage(error)}`, 'error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [showToast, t])
+
+  const update = (patch: Partial<LogAgentConfig>) => setConfig((current) => (current ? { ...current, ...patch } : current))
+
+  const save = async () => {
+    if (!config) return
+    setSaving(true)
+    try {
+      const result = await api.updateLogAgentConfig(config)
+      setConfig(result.config)
+      showToast(t('logAgent.settings.saved'), 'success')
+    } catch (error) {
+      showToast(`${t('logAgent.settings.saveFailed')}: ${getErrorMessage(error)}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const keyOptions = useMemo(() => [
+    { value: '0', label: t('logAgent.settings.noKey') },
+    ...gatewayKeys.map((key) => ({
+      value: String(key.id),
+      label: key.status === 'active'
+        ? `${key.name || key.masked} · ${key.masked}`
+        : `${key.name || key.masked} · ${t(`logAgent.settings.keyStatus.${key.status === 'expired' ? 'expired' : 'quotaExhausted'}`)}`,
+    })),
+  ], [gatewayKeys, t])
+  const modelOptions = useMemo(() => {
+    const ids = config?.model && !models.includes(config.model) ? [config.model, ...models] : models
+    return [{ value: '', label: t('logAgent.settings.modelPlaceholder') }, ...ids.map((id) => ({ value: id, label: id }))]
+  }, [config?.model, models, t])
+
+  return (
+    <SettingsCard
+      title={t('logAgent.settings.title')}
+      description={t('logAgent.settings.description')}
+      icon={<Brain className="size-4" />}
+      channels={ALL_UPSTREAM_CHANNELS}
+      footer={
+        <div className="flex justify-end">
+          <Button onClick={() => void save()} disabled={!config || saving}>
+            {saving ? <RefreshCw className="size-3.5 animate-spin" /> : null}
+            {t('common.save')}
+          </Button>
+        </div>
+      }
+    >
+      {config ? (
+        <div className="space-y-4">
+          <div className={SETTINGS_SWITCH_ROW}>
+            <SettingField label={t('logAgent.settings.enabled')} description={t('logAgent.settings.enabledDesc')} layout="switch">
+              <Switch checked={config.enabled} onCheckedChange={(checked) => update({ enabled: checked })} />
+            </SettingField>
+          </div>
+          <div className={SETTINGS_FIELD_GRID}>
+            <SettingField label={t('logAgent.settings.apiKey')} description={t('logAgent.settings.apiKeyDesc')}>
+              <Select
+                value={String(config.api_key_id || 0)}
+                onValueChange={(value) => update({ api_key_id: Number(value) || 0 })}
+                options={keyOptions}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.model')} description={t('logAgent.settings.modelDesc')}>
+              <Select
+                value={config.model}
+                onValueChange={(value) => update({ model: value })}
+                options={modelOptions}
+                placeholder={t('logAgent.settings.modelPlaceholder')}
+              />
+            </SettingField>
+          </div>
+          <div className={SETTINGS_FIELD_GRID}>
+            <SettingField label={t('logAgent.settings.maxInput')} description={t('logAgent.settings.maxInputDesc')} suffix="KB">
+              <DraftNumberInput
+                min={Math.round((limits?.min_max_input_bytes ?? 4096) / 1024)}
+                max={Math.round((limits?.max_max_input_bytes ?? 524288) / 1024)}
+                value={Math.round(config.max_input_bytes / 1024)}
+                onValueChange={(value) => update({ max_input_bytes: value * 1024 })}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.maxRecords')} description={t('logAgent.settings.maxRecordsDesc')}>
+              <DraftNumberInput
+                min={1}
+                max={limits?.max_max_records ?? 1000}
+                value={config.max_records}
+                onValueChange={(value) => update({ max_records: value })}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.timeout')} description={t('logAgent.settings.timeoutDesc')} suffix="s">
+              <DraftNumberInput
+                min={limits?.min_timeout_seconds ?? 10}
+                max={limits?.max_timeout_seconds ?? 300}
+                value={config.timeout_seconds}
+                onValueChange={(value) => update({ timeout_seconds: value })}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.retention')} description={t('logAgent.settings.retentionDesc')}>
+              <DraftNumberInput
+                min={1}
+                max={limits?.max_retention_days ?? 365}
+                value={config.retention_days}
+                onValueChange={(value) => update({ retention_days: value })}
+              />
+            </SettingField>
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">{t('common.loading')}</p>
+      )}
+    </SettingsCard>
   )
 }
 
@@ -5870,6 +6009,7 @@ export default function Settings() {
                   </div>
                 </div>
               </SettingsCard>
+              <LogAgentSettingsCard models={visibleModelItems.filter((model) => model.enabled).map((model) => model.id)} />
               </SettingsSection>
 
               <SettingsSection id="settings-storage" title={t('settings.nav.storage')} description={t('settings.nav.storageDesc')} icon={<ImageIcon className="size-4" />}>

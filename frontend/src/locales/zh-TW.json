@@ -2343,5 +2343,80 @@
       "attachment_429_fallback": "附件 429 本機降級（需 pdftotext/libreoffice）",
       "exclude_failures_from_native_health": "BPS 失敗不計入原生帳號健康"
     }
+  },
+  "logAgent": {
+    "title": "AI 日誌分析",
+    "description": "將符合條件的記錄分組、遮罩並依上限截斷後，經號池送給所選模型，給出可能根因與證據。",
+    "analyze": "分析",
+    "analyzing": "分析中…",
+    "history": "歷史分析",
+    "historyPlaceholder": "歷史分析",
+    "configLoadFailed": "讀取分析設定失敗：{{message}}",
+    "modelMissing": "日誌分析已開啟，但尚未選擇模型。",
+    "disabledHint": "日誌分析未開啟，請先開啟並選擇閘道 Key 與模型。",
+    "openSettings": "前往設定",
+    "focusPlaceholder": "選填：希望分析重點關注什麼？",
+    "scope": "source={{source}} · refs={{refs}}",
+    "status": {
+      "succeeded": "已完成",
+      "fallback": "非結構化結果",
+      "failed": "失敗"
+    },
+    "confidence": "信心度 {{value}}",
+    "stats": "{{records}} 筆記錄 · {{groups}} 組 · {{tokens}} tokens · {{seconds}}s",
+    "truncated": "上下文已截斷",
+    "failed": "分析失敗。",
+    "fallbackHint": "模型沒有回傳合法的結構化結論，以下顯示其原始回答。",
+    "rootCauses": "可能根因",
+    "actions": "建議操作",
+    "evidence": "證據",
+    "untitled": "（無標題）",
+    "category": {
+      "upstream": "上游",
+      "account": "帳號",
+      "gateway": "閘道",
+      "network": "網路",
+      "client": "用戶端",
+      "config": "設定",
+      "unknown": "未知"
+    },
+    "priority": {
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "evidenceNotOnPage": "{{id}} 不在目前頁面，請調整篩選或時間範圍後查看。",
+    "settings": {
+      "title": "日誌分析 Agent",
+      "description": "依需求對錯誤日誌與外掛抓包進行 AI 診斷。請求經號池送出，用量計入所選閘道 Key。",
+      "loadFailed": "讀取日誌分析設定失敗",
+      "saved": "日誌分析設定已儲存",
+      "saveFailed": "儲存日誌分析設定失敗",
+      "enabled": "啟用日誌分析",
+      "enabledDesc": "關閉時，錯誤頁與外掛頁的分析按鈕無法使用。",
+      "apiKey": "閘道 API Key",
+      "apiKeyDesc": "分析請求的路由、額度與用量歸屬到此 Key；過期或額度耗盡的 Key 會被拒絕。",
+      "noKey": "不綁定 Key（內部請求）",
+      "keyStatus": {
+        "expired": "已過期",
+        "quotaExhausted": "額度耗盡"
+      },
+      "model": "分析模型",
+      "modelDesc": "號池中可輸出 JSON 的模型，模型越強診斷越準。",
+      "modelPlaceholder": "選擇模型",
+      "maxInput": "上下文上限",
+      "maxInputDesc": "送給模型的證據上限（約 4 位元組/token）。",
+      "maxRecords": "記錄上限",
+      "maxRecordsDesc": "每次分析讀取的記錄數，讀取後再合併相似錯誤。",
+      "timeout": "逾時",
+      "timeoutDesc": "等待模型回傳的最長時間。",
+      "retention": "分析記錄保留天數",
+      "retentionDesc": "超過天數的分析記錄自動刪除。"
+    }
+  },
+  "opsErrors": {
+    "logAgentDesc": "分析目前篩選條件與時間範圍內的錯誤。",
+    "logAgentRequestTitle": "分析此請求",
+    "logAgentRequestDesc": "分析此請求 ID 下記錄的全部嘗試。"
   }
 }

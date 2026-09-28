@@ -179,3 +179,30 @@ test('provider visibility picker lives in general and keeps the fallback channel
     }
   }
 })
+
+test('log analysis agent settings card lives in general and uses shared controls', () => {
+  const start = settings.indexOf("{activeTab === 'general' ? (")
+  assert.ok(settings.indexOf('<LogAgentSettingsCard models={', start) > start, 'general tab renders the log agent card')
+  const cardStart = settings.indexOf('function LogAgentSettingsCard(')
+  const cardEnd = settings.indexOf('\n}\n', cardStart)
+  const card = settings.slice(cardStart, cardEnd)
+  assert.ok(cardStart > 0)
+  assert.match(card, /api\s*\.getLogAgentConfig\(\)/)
+  assert.match(card, /api\.updateLogAgentConfig\(config\)/)
+  assert.match(card, /channels=\{ALL_UPSTREAM_CHANNELS\}/)
+  assert.match(card, /<Switch checked=\{config\.enabled\}/)
+  assert.equal((card.match(/<Select\n/g) ?? []).length, 2, 'gateway key and model use the shared Select')
+  assert.equal((card.match(/<DraftNumberInput\n/g) ?? []).length, 4)
+  assert.match(card, /className=\{SETTINGS_SWITCH_ROW\}/)
+  assert.doesNotMatch(card, /<select|type="checkbox"|type="number"/)
+  const zhTW = JSON.parse(readFileSync(new URL('../locales/zh-TW.json', import.meta.url), 'utf8'))
+  for (const locale of [zh, en, zhTW]) {
+    for (const key of card.match(/logAgent\.settings\.[A-Za-z]+\b(?!\.)/g)) {
+      const leaf = key.split('.').pop()
+      assert.equal(typeof locale.logAgent?.settings?.[leaf], 'string', key)
+    }
+    for (const status of ['expired', 'quotaExhausted']) {
+      assert.equal(typeof locale.logAgent.settings.keyStatus[status], 'string', `keyStatus.${status}`)
+    }
+  }
+})

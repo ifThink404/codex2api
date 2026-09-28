@@ -2539,7 +2539,10 @@
     "exclude401429": "Exclude 401/429",
     "exportSuccess": "Error log JSON exported",
     "exportFailed": "Export failed",
-    "noErrorMessage": "No error message"
+    "noErrorMessage": "No error message",
+    "logAgentDesc": "Analyze the errors matching the current filters and time range.",
+    "logAgentRequestTitle": "Analyze this request",
+    "logAgentRequestDesc": "Analyze every attempt recorded for this request ID."
   },
   "scheduler": {
     "title": "Scheduler Board",
@@ -7234,6 +7237,76 @@
       "attachment_account_concurrency": "Attachment uploads: per account",
       "attachment_429_fallback": "Local attachment 429 fallback (needs pdftotext/libreoffice)",
       "exclude_failures_from_native_health": "Exclude BPS failures from native account health"
+    }
+  },
+  "logAgent": {
+    "title": "AI log analysis",
+    "description": "Send the matching records (grouped, masked and size-limited) to the configured model through the pool and get likely root causes with evidence.",
+    "analyze": "Analyze",
+    "analyzing": "Analyzing…",
+    "history": "Previous analyses",
+    "historyPlaceholder": "Previous analyses",
+    "configLoadFailed": "Failed to load analysis settings: {{message}}",
+    "modelMissing": "Log analysis is enabled but no model is selected.",
+    "disabledHint": "Log analysis is off. Enable it and choose a gateway key and model first.",
+    "openSettings": "Open settings",
+    "focusPlaceholder": "Optional: what should the analysis focus on?",
+    "scope": "source={{source}} · refs={{refs}}",
+    "status": {
+      "succeeded": "Completed",
+      "fallback": "Unstructured result",
+      "failed": "Failed"
+    },
+    "confidence": "Confidence {{value}}",
+    "stats": "{{records}} records · {{groups}} groups · {{tokens}} tokens · {{seconds}}s",
+    "truncated": "Context truncated",
+    "failed": "The analysis failed.",
+    "fallbackHint": "The model did not return valid structured findings; its raw answer is shown below.",
+    "rootCauses": "Likely root causes",
+    "actions": "Suggested actions",
+    "evidence": "Evidence",
+    "untitled": "(untitled)",
+    "category": {
+      "upstream": "Upstream",
+      "account": "Account",
+      "gateway": "Gateway",
+      "network": "Network",
+      "client": "Client",
+      "config": "Configuration",
+      "unknown": "Unknown"
+    },
+    "priority": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "evidenceNotOnPage": "{{id}} is not on the current page; adjust filters or the time range to view it.",
+    "settings": {
+      "title": "Log analysis Agent",
+      "description": "On-demand AI diagnosis for error logs and plugin captures. Requests go through the account pool and are billed to the selected gateway key.",
+      "loadFailed": "Failed to load log analysis settings",
+      "saved": "Log analysis settings saved",
+      "saveFailed": "Failed to save log analysis settings",
+      "enabled": "Enable log analysis",
+      "enabledDesc": "When off, analysis buttons on error and plugin pages are disabled.",
+      "apiKey": "Gateway API key",
+      "apiKeyDesc": "Routing, quota and usage of analysis requests are attributed to this key. Expired or exhausted keys are rejected.",
+      "noKey": "No key (internal request)",
+      "keyStatus": {
+        "expired": "expired",
+        "quotaExhausted": "quota exhausted"
+      },
+      "model": "Analysis model",
+      "modelDesc": "A pool model that can return JSON; larger models give better diagnoses.",
+      "modelPlaceholder": "Select a model",
+      "maxInput": "Max context size",
+      "maxInputDesc": "Upper bound of evidence sent to the model (about 4 bytes per token).",
+      "maxRecords": "Max records",
+      "maxRecordsDesc": "Records fetched per analysis before grouping similar errors.",
+      "timeout": "Timeout",
+      "timeoutDesc": "Maximum time to wait for the model.",
+      "retention": "Keep analyses (days)",
+      "retentionDesc": "Older analysis records are deleted automatically."
     }
   }
 }

@@ -2539,7 +2539,10 @@
     "exclude401429": "排除 401/429",
     "exportSuccess": "错误日志 JSON 已导出",
     "exportFailed": "导出失败",
-    "noErrorMessage": "暂无错误信息"
+    "noErrorMessage": "暂无错误信息",
+    "logAgentDesc": "分析当前筛选条件与时间范围内的错误。",
+    "logAgentRequestTitle": "分析此请求",
+    "logAgentRequestDesc": "分析该请求 ID 下记录的全部尝试。"
   },
   "scheduler": {
     "title": "调度面板",
@@ -7231,6 +7234,76 @@
       "attachment_account_concurrency": "附件上传：单账号并发",
       "attachment_429_fallback": "附件 429 本地降级（需 pdftotext/libreoffice）",
       "exclude_failures_from_native_health": "BPS 失败不计入原生账号健康"
+    }
+  },
+  "logAgent": {
+    "title": "AI 日志分析",
+    "description": "把匹配的记录分组、脱敏并按上限截断后，经号池发给所选模型，给出可能根因与证据。",
+    "analyze": "分析",
+    "analyzing": "分析中…",
+    "history": "历史分析",
+    "historyPlaceholder": "历史分析",
+    "configLoadFailed": "读取分析配置失败：{{message}}",
+    "modelMissing": "日志分析已开启，但尚未选择模型。",
+    "disabledHint": "日志分析未开启，请先开启并选择网关 Key 与模型。",
+    "openSettings": "前往设置",
+    "focusPlaceholder": "可选：希望分析重点关注什么？",
+    "scope": "source={{source}} · refs={{refs}}",
+    "status": {
+      "succeeded": "已完成",
+      "fallback": "非结构化结果",
+      "failed": "失败"
+    },
+    "confidence": "置信度 {{value}}",
+    "stats": "{{records}} 条记录 · {{groups}} 组 · {{tokens}} tokens · {{seconds}}s",
+    "truncated": "上下文已截断",
+    "failed": "分析失败。",
+    "fallbackHint": "模型没有返回合法的结构化结论，下面展示其原始回答。",
+    "rootCauses": "可能根因",
+    "actions": "建议操作",
+    "evidence": "证据",
+    "untitled": "（无标题）",
+    "category": {
+      "upstream": "上游",
+      "account": "账号",
+      "gateway": "网关",
+      "network": "网络",
+      "client": "客户端",
+      "config": "配置",
+      "unknown": "未知"
+    },
+    "priority": {
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "evidenceNotOnPage": "{{id}} 不在当前页，请调整筛选或时间范围后查看。",
+    "settings": {
+      "title": "日志分析 Agent",
+      "description": "按需对错误日志与插件抓包做 AI 诊断。请求经号池发出，用量计入所选网关 Key。",
+      "loadFailed": "读取日志分析配置失败",
+      "saved": "日志分析配置已保存",
+      "saveFailed": "保存日志分析配置失败",
+      "enabled": "启用日志分析",
+      "enabledDesc": "关闭时，错误页与插件页的分析按钮不可用。",
+      "apiKey": "网关 API Key",
+      "apiKeyDesc": "分析请求的路由、额度与用量归属到该 Key；过期或额度耗尽的 Key 会被拒绝。",
+      "noKey": "不绑定 Key（内部请求）",
+      "keyStatus": {
+        "expired": "已过期",
+        "quotaExhausted": "额度耗尽"
+      },
+      "model": "分析模型",
+      "modelDesc": "号池中可输出 JSON 的模型，模型越强诊断越准。",
+      "modelPlaceholder": "选择模型",
+      "maxInput": "上下文上限",
+      "maxInputDesc": "发送给模型的证据上限（约 4 字节/token）。",
+      "maxRecords": "记录上限",
+      "maxRecordsDesc": "每次分析读取的记录数，读取后再合并相似错误。",
+      "timeout": "超时",
+      "timeoutDesc": "等待模型返回的最长时间。",
+      "retention": "分析记录保留天数",
+      "retentionDesc": "超过天数的分析记录自动删除。"
     }
   }
 }

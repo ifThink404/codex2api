@@ -4526,3 +4526,101 @@ export interface ClaudeGlobalConfig {
   max_tool_count: number
   max_tool_schema_bytes: number
 }
+
+// 日志分析 Agent（/log-agent/*）：独立于具体功能，source 由后端注册（usage_logs、ops_errors 及各插件）。
+export interface LogAgentConfig {
+  enabled: boolean
+  api_key_id: number
+  model: string
+  max_input_bytes: number
+  max_records: number
+  timeout_seconds: number
+  retention_days: number
+}
+
+export interface LogAgentLimits {
+  min_max_input_bytes: number
+  max_max_input_bytes: number
+  max_max_records: number
+  min_timeout_seconds: number
+  max_timeout_seconds: number
+  max_retention_days: number
+}
+
+export interface LogAgentConfigResponse {
+  config: LogAgentConfig
+  gateway_keys: PromptIntelligenceGatewayKey[]
+  sources: string[]
+  limits: LogAgentLimits
+}
+
+export type LogAgentRootCauseCategory = 'upstream' | 'account' | 'gateway' | 'network' | 'client' | 'config' | 'unknown'
+
+export interface LogAgentRootCause {
+  title: string
+  detail: string
+  category: LogAgentRootCauseCategory
+  evidence_ids: string[]
+  confidence: number
+}
+
+export interface LogAgentAction {
+  title: string
+  detail: string
+  priority: 'high' | 'medium' | 'low'
+}
+
+export interface LogAgentFindings {
+  summary: string
+  root_causes: LogAgentRootCause[]
+  suggested_actions: LogAgentAction[]
+  confidence: number
+  fallback?: boolean
+}
+
+export interface LogAgentContextStats {
+  records: number
+  dropped_records: number
+  groups: number
+  included_groups: number
+  input_bytes: number
+  truncated: boolean
+  evidence_ids: string[] | null
+}
+
+export interface LogAgentSubject {
+  refs?: string[]
+  filters?: Record<string, string>
+  start?: string
+  end?: string
+  focus?: string
+  language?: string
+}
+
+export interface LogAgentRun {
+  id: number
+  source: string
+  subject: LogAgentSubject
+  model: string
+  api_key_id: number
+  status: 'succeeded' | 'fallback' | 'failed'
+  findings: LogAgentFindings | Record<string, never>
+  context_stats: LogAgentContextStats | Record<string, never>
+  error_message: string
+  record_count: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  duration_ms: number
+  created_at: string
+}
+
+export interface LogAgentAnalyzeRequest {
+  source: string
+  refs?: string[]
+  filters?: Record<string, string>
+  start?: string
+  end?: string
+  focus?: string
+  language?: string
+}
