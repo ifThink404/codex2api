@@ -4419,6 +4419,35 @@
     }
   },
   "settings": {
+      "transfer": {
+        "title": "Settings Import & Export",
+        "description": "Move saved system settings between servers. Save pending changes on this page first.",
+        "export": "Export settings",
+        "import": "Import settings",
+        "exportHint": "Export the saved configuration. The file contains service secrets; keep it private. Save pending changes first.",
+        "importHint": "Import a settings JSON exported from another server. Save pending changes first.",
+        "scope": "Importing overwrites the settings present in the file. The admin login key, accounts, API keys, logs, custom prompt rules from the rules page and built-in rule edits are not migrated; service configuration secrets are included in the file. Local files such as background images must be copied separately.",
+        "summary": "{{count}} general settings; other sections: {{sections}}.",
+        "confirm": "Import and overwrite",
+        "importing": "Importing…",
+        "exported": "Settings exported. Keep the file private; it contains service secrets.",
+        "imported": "Settings imported",
+        "refresh": "Reload to view settings",
+        "tooLarge": "The settings file must not exceed 10 MB.",
+        "invalid_format": "Not a valid codex2api settings file, or its version is not supported.",
+        "invalid_field": "The target server does not support or allow importing field: {{field}}.",
+        "invalid_type": "Wrong type for settings field: {{field}}.",
+        "failedSection": "Importing \"{{section}}\" failed: {{error}}. Sections applied before it were saved; reload to review.",
+        "applied": "Applied: {{sections}}.",
+        "sections": {
+          "settings": "General settings",
+          "claude": "Claude",
+          "antigravity": "Antigravity",
+          "channel_tests": "Channel tests",
+          "invite_guide": "Invite guide",
+          "visible_channels": "Visible channels"
+        }
+      },
     "codexOAuthKeepalive": "Keep Codex auth active in lazy mode",
     "codexOAuthKeepaliveDesc": "Refresh expiring Codex tokens even in lazy mode, including accounts with quota cooldowns. Keeps cooldowns and sends no generation requests. Off by default.",
     "title": "Settings",

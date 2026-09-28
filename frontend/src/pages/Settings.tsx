@@ -5,6 +5,7 @@ import { api, resetAdminAuthState, setAdminKey } from '../api'
 import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
 import PageHeader from '../components/PageHeader'
 import BPSAccountSettings from '../components/BPSAccountSettings'
+import SettingsTransfer from '../components/SettingsTransfer'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
@@ -80,6 +81,7 @@ import {
   CircleHelp,
   Cloud,
   Database,
+  Download,
   ExternalLink,
   Eye,
   Gauge,
@@ -5178,6 +5180,12 @@ export default function Settings() {
               </SettingsCard>
               <SettingsCard title={t('settings.visibleChannelsTitle')} description={t('settings.visibleChannelsDesc')} icon={<Eye className="size-4" />}>
                 <VisibleChannelsPicker />
+              </SettingsCard>
+              <SettingsCard title={t('settings.transfer.title')} description={t('settings.transfer.description')} icon={<Download className="size-4" />} channels={ALL_UPSTREAM_CHANNELS}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <SettingsTransfer disabled={savingSettings || autoSaveStatus === 'saving' || dirtyCount > 0} />
+                </div>
+                <p className="mt-3 text-xs text-muted-foreground">{t('settings.transfer.scope')}</p>
               </SettingsCard>
               </SettingsSection>
 

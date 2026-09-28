@@ -1337,6 +1337,7 @@ export const api = {
     request<MessageResponse>('/usage/logs', { method: 'DELETE' }),
   getSetupHints: () => request<SetupHintsResponse>('/setup-hints'),
   getSettings: () => request<SystemSettings>('/settings'),
+  exportSettings: () => request<{ format: 'codex2api.settings'; version: 1; exported_at: string; settings: Record<string, unknown> }>('/settings/export'),
   getClaudeConfig: () =>
     request<ClaudeGlobalConfig>('/settings/claude-config'),
   updateClaudeConfig: (data: ClaudeGlobalConfig) =>

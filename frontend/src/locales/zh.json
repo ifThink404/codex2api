@@ -4418,6 +4418,35 @@
     }
   },
   "settings": {
+      "transfer": {
+        "title": "设置导入与导出",
+        "description": "在服务器之间迁移已保存的系统设置。先保存当前页修改再操作。",
+        "export": "导出设置",
+        "import": "导入设置",
+        "exportHint": "导出已保存的配置；文件包含服务密钥，请妥善保存。未保存的修改需先保存。",
+        "importHint": "导入其他服务器的设置 JSON；未保存的修改需先保存。",
+        "scope": "导入会覆盖文件中的设置。管理员登录密钥、账号、API 密钥、日志、独立规则页的自定义 Prompt 规则和内置规则修改不迁移；服务配置密钥包含在文件中。背景图等本地文件需另行迁移。",
+        "summary": "通用设置 {{count}} 项；其他配置：{{sections}}。",
+        "confirm": "导入并覆盖",
+        "importing": "正在导入…",
+        "exported": "设置已导出，请妥善保存包含服务密钥的文件。",
+        "imported": "设置导入完成",
+        "refresh": "刷新页面查看设置",
+        "tooLarge": "设置文件不能超过 10 MB。",
+        "invalid_format": "不是有效的 codex2api 设置文件，或文件版本不受支持。",
+        "invalid_field": "目标服务器不支持或不允许导入字段：{{field}}。",
+        "invalid_type": "设置字段类型错误：{{field}}。",
+        "failedSection": "“{{section}}”导入失败：{{error}}。此前成功的配置已保存，请刷新查看。",
+        "applied": "已应用：{{sections}}。",
+        "sections": {
+          "settings": "通用设置",
+          "claude": "Claude",
+          "antigravity": "Antigravity",
+          "channel_tests": "渠道测连",
+          "invite_guide": "邀请引导",
+          "visible_channels": "可见渠道"
+        }
+      },
     "title": "系统设置",
     "description": "管理系统配置和运行参数。多数开关会即时自动保存。",
     "loadingTitle": "正在加载设置",

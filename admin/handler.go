@@ -1294,6 +1294,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
 	api.GET("/ops/service-errors", h.GetServiceErrorLogs)
 	api.GET("/settings", h.GetSettings)
+	api.GET("/settings/export", h.ExportSettings)
 	api.PUT("/settings", h.UpdateSettings)
 	api.GET("/settings/codex-user-agent/catalog", h.GetCodexUserAgentCatalog)
 	api.POST("/settings/codex-user-agent/preview", h.PreviewCodexUserAgent)
@@ -10316,20 +10317,29 @@ func (h *Handler) GetObservedInstructions(c *gin.Context) {
 }
 
 func (h *Handler) GetSettings(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	snapshot, err := h.settingsSnapshot(c.Request.Context())
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, snapshot)
+}
+
+// settingsSnapshot builds the GET /settings view; ExportSettings reuses it so a
+// backup and the settings page always read the same saved state.
+func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, error) {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	cacheSettingsStore := h.cacheSettingsStore()
 	if cacheSettingsStore == nil {
-		writeError(c, http.StatusInternalServerError, "响应缓存设置存储不可用")
-		return
+		return nil, fmt.Errorf("响应缓存设置存储不可用")
 	}
 	responseCacheSettings, err := cacheSettingsStore.GetResponseCacheSettings(ctx)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "读取响应缓存设置失败："+err.Error())
-		return
+		return nil, fmt.Errorf("读取响应缓存设置失败：%w", err)
 	}
 	dbSettings, _ := h.db.GetSystemSettings(ctx)
-	_, adminAuthSource := h.resolveAdminSecret(c.Request.Context())
+	_, adminAuthSource := h.resolveAdminSecret(parent)
 	adminSecret := ""
 	var resinURL, resinPlatformName string
 	branding := brandingFromSettings(dbSettings)
@@ -10377,7 +10387,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	}
 	modelCooldownSettings := h.store.GetModelCooldownSettings()
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
-	c.JSON(http.StatusOK, settingsResponse{
+	return &settingsResponse{
 		antigravityOAuthSettingsView:        currentAntigravityOAuthSettingsView(),
 		SiteName:                            branding.SiteName,
 		SiteLogo:                            branding.SiteLogo,
@@ -10565,7 +10575,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		SmartPacingMinConcurrency:           h.store.GetSmartPacingMinConcurrency(),
 		SmartPacingWindows:                  h.store.GetSmartPacingWindows(),
 		IgnoreUsageLimitStatus:              h.store.IgnoreUsageLimitStatus(),
-	})
+	}, nil
 }
 
 func promptFilterCustomPatternSnapshotsEquivalent(leftRaw, rightRaw string) bool {
