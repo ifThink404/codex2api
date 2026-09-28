@@ -518,7 +518,46 @@
     "hrefQuickInvalid": "跳轉位址格式不正確，必須是完整的 http/https URL",
     "hrefOpenTitle": "開啟帳號跳轉位址",
     "hrefClickHint": "點擊開啟跳轉位址（未設定時開啟 api-base）；Alt/Option+點擊 設定自訂連結",
-    "proxyTimezoneSyncFailed": "同步時區失敗：{{error}}"
+    "proxyTimezoneSyncFailed": "同步時區失敗：{{error}}",
+    "bps": {
+      "title": "BPS 通道",
+      "enabled": "BPS 開關",
+      "enabledHelp": "繼承時依帳號分組與外掛全域開關決定；明確開啟或關閉優先。",
+      "on": "開啟",
+      "off": "關閉",
+      "inheritPlugin": "繼承（分組 / 全域開關）",
+      "inheritNative": "繼承（BPS 未啟用時走原生）",
+      "activeNow": "目前使用 BPS",
+      "inactiveNow": "目前未使用 BPS",
+      "profile": "BPS 類型",
+      "profiles": {
+        "word": "Word",
+        "excel": "Excel",
+        "sheets": "Sheets",
+        "powerpoint": "PowerPoint"
+      },
+      "convergence": "BPS 任務收斂",
+      "convergenceModes": {
+        "off": "關閉",
+        "session": "會話",
+        "full": "全部收斂",
+        "round": "task_id 輪次",
+        "turn_round": "turn_id 輪次"
+      },
+      "native": "Codex 原生路徑",
+      "imageTrim": "BPS 歷史附件精簡",
+      "bpsModels": "BPS 路徑模型",
+      "nativeModels": "原生路徑模型",
+      "modelsPlaceholder": "留空表示全部模型；支援結尾 * 前綴",
+      "routesHelp": "模型清單只約束主請求；壓縮等關聯請求沿用所屬會話的路徑。",
+      "badge": "BPS",
+      "testMode": "測試路徑",
+      "testModes": {
+        "auto": "依帳號設定",
+        "codex": "Codex",
+        "bps": "BPS"
+      }
+    }
   },
   "runtime": {
     "sessionGuards": "工作階段防護",

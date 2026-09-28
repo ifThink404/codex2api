@@ -2065,7 +2065,46 @@
     "proxyTimezoneSync": "Sync to {{tz}}",
     "proxyTimezoneDrafted": "Timezone filled in; applies on save",
     "proxyTimezoneSynced": "Timezone synced",
-    "proxyTimezoneSyncFailed": "Failed to sync timezone: {{error}}"
+    "proxyTimezoneSyncFailed": "Failed to sync timezone: {{error}}",
+    "bps": {
+      "title": "BPS transport",
+      "enabled": "BPS switch",
+      "enabledHelp": "Inherit follows the account groups and the plugin global switch; an explicit on/off wins.",
+      "on": "On",
+      "off": "Off",
+      "inheritPlugin": "Inherit (groups / global switch)",
+      "inheritNative": "Inherit (native unless BPS is on)",
+      "activeNow": "Currently served by BPS",
+      "inactiveNow": "Not served by BPS",
+      "profile": "BPS profile",
+      "profiles": {
+        "word": "Word",
+        "excel": "Excel",
+        "sheets": "Sheets",
+        "powerpoint": "PowerPoint"
+      },
+      "convergence": "BPS task convergence",
+      "convergenceModes": {
+        "off": "Off",
+        "session": "Session",
+        "full": "Full",
+        "round": "task_id rounds",
+        "turn_round": "turn_id rounds"
+      },
+      "native": "Native Codex route",
+      "imageTrim": "BPS attachment history trim",
+      "bpsModels": "BPS route models",
+      "nativeModels": "Native route models",
+      "modelsPlaceholder": "Empty means all models; a trailing * matches a prefix",
+      "routesHelp": "Model lists only constrain main turns; related requests such as compaction follow their conversation's route.",
+      "badge": "BPS",
+      "testMode": "Test path",
+      "testModes": {
+        "auto": "Account setting",
+        "codex": "Codex",
+        "bps": "BPS"
+      }
+    }
   },
   "invite": {
     "entry": "Codex Invite",

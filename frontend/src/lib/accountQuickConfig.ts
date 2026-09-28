@@ -6,6 +6,12 @@ import {
   accountProbePolicyFromAccount,
   type AccountProbePolicy,
 } from "./accountProbePolicy.ts";
+import {
+  bpsFormFromAccount,
+  bpsPayloadFromForm,
+  type BPSAccountForm,
+  type BPSAccountSource,
+} from "./bpsAccount.ts";
 
 export type QuickConfigLoadStatus = "loading" | "ready" | "error";
 
@@ -21,8 +27,7 @@ export type QuickConfigReadySaveError = Exclude<
   "not_ready"
 >;
 
-export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
-  codex_bps_enabled?: boolean;
+export interface QuickConfigAccountSource extends Partial<AccountProbePolicy>, BPSAccountSource {
   upstream_request_id_header?: string | null;
   id: number;
   detail_loaded?: boolean;
@@ -38,7 +43,7 @@ export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
 }
 
 export interface QuickConfigFormState {
-  bpsEnabled: boolean;
+  bps: BPSAccountForm;
   probePolicy: AccountProbePolicy;
   upstreamRequestIdHeader: string;
   accountId: number;
@@ -119,7 +124,7 @@ export function formStateFromAccount(
 ): QuickConfigFormState {
   return {
     probePolicy: accountProbePolicyFromAccount(account),
-    bpsEnabled: account.codex_bps_enabled ?? false,
+    bps: bpsFormFromAccount(account),
     accountId: account.id,
     upstreamRequestIdHeader: account.upstream_request_id_header ?? "",
     fingerprintMode: normalizeCodexFingerprintMode(
@@ -214,7 +219,7 @@ export function buildQuickConfigSavePayload(
     ok: true,
     payload: {
       ...form.probePolicy,
-      codex_bps_enabled: form.bpsEnabled,
+      ...bpsPayloadFromForm(form.bps, true),
       score_bias_override: form.scoreMode === "custom" ? parsedScoreBias : null,
       base_concurrency_override:
         form.concurrencyMode === "custom" ? parsedBaseConcurrency : null,

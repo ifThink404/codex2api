@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 import { api, resetAdminAuthState, setAdminKey } from '../api'
 import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
 import PageHeader from '../components/PageHeader'
-import BPSAccountSettings from '../components/BPSAccountSettings'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
@@ -3655,9 +3654,6 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-codex-transport" title={t('settings.nav.codexTransport')} description={t('settings.nav.codexTransportDesc')} icon={<Wifi className="size-4" />}>
-                <SettingsCard title="BPS 通道（账户级）" description="可选请求转发方式，可按账户随时开启或关闭。" icon={<Wifi className="size-4" />}>
-                  <BPSAccountSettings />
-                </SettingsCard>
               <SettingsCard title={t('settings.codexWebsocket')} description={t('settings.codexWebsocketDesc')} icon={<Wifi className="size-4" />}>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

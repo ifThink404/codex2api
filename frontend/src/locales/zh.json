@@ -2065,7 +2065,46 @@
     "proxyTimezoneSync": "同步为 {{tz}}",
     "proxyTimezoneDrafted": "已填入时区，保存后生效",
     "proxyTimezoneSynced": "时区已同步",
-    "proxyTimezoneSyncFailed": "同步时区失败：{{error}}"
+    "proxyTimezoneSyncFailed": "同步时区失败：{{error}}",
+    "bps": {
+      "title": "BPS 通道",
+      "enabled": "BPS 开关",
+      "enabledHelp": "继承时按账号分组与插件全局开关决定；显式开启或关闭优先。",
+      "on": "开启",
+      "off": "关闭",
+      "inheritPlugin": "继承（分组 / 全局开关）",
+      "inheritNative": "继承（BPS 未启用时走原生）",
+      "activeNow": "当前使用 BPS",
+      "inactiveNow": "当前未使用 BPS",
+      "profile": "BPS 类型",
+      "profiles": {
+        "word": "Word",
+        "excel": "Excel",
+        "sheets": "Sheets",
+        "powerpoint": "PowerPoint"
+      },
+      "convergence": "BPS 任务收敛",
+      "convergenceModes": {
+        "off": "关闭",
+        "session": "会话",
+        "full": "全部收敛",
+        "round": "task_id 轮次",
+        "turn_round": "turn_id 轮次"
+      },
+      "native": "Codex 原生路径",
+      "imageTrim": "BPS 历史附件精简",
+      "bpsModels": "BPS 路径模型",
+      "nativeModels": "原生路径模型",
+      "modelsPlaceholder": "留空表示全部模型；支持末尾 * 前缀",
+      "routesHelp": "模型列表只约束主请求；压缩等关联请求沿用所属会话的路径。",
+      "badge": "BPS",
+      "testMode": "测试路径",
+      "testModes": {
+        "auto": "按账号配置",
+        "codex": "Codex",
+        "bps": "BPS"
+      }
+    }
   },
   "invite": {
     "entry": "Codex 邀请",

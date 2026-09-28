@@ -7,8 +7,8 @@ import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
-import BPSTransportField from '../components/BPSTransportField';
-import { isBPSAccount } from '../lib/bpsAccount';
+import BPSAccountFields from '../components/BPSAccountFields';
+import { bpsFormFromAccount, bpsPayloadFromForm, isBPSAccount, type BPSAccountForm } from '../lib/bpsAccount';
 import { AccountModelAvailabilityProvider, AccountModelAvailabilityToolbar, AccountModelAvailabilityBadge, AccountModelAvailabilityPanel } from '../components/AccountModelAvailability';
 import AccountHrefQuickEditor, {
   openAccountHref,
@@ -1387,7 +1387,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                           {account.rate_limit_reset_credits ?? 0}
                                         </button>
                                       )}
-                                      {account.codex_bps_enabled && <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">BPS</span>}
+                                      {account.codex_bps_active && <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">{t("accounts.bps.badge")}</span>}
                                       <AccountModelAvailabilityBadge account={account} onClick={() => actions.openModelsEditor(account)} />
                                       {getCreditBalanceDisplay(account) !==
                                         null && (
@@ -2162,7 +2162,7 @@ export default function Accounts() {
   const [modelsSyncing, setModelsSyncing] = useState(false);
   const [modelsProbing, setModelsProbing] = useState(false);
   const [modelsSaving, setModelsSaving] = useState(false);
-  const [editBPSEnabled, setEditBPSEnabled] = useState(false);
+  const [editBPS, setEditBPS] = useState<BPSAccountForm>(() => bpsFormFromAccount({}));
   // 探测看板：逐模型的实时测试状态（pending→testing→结果）。
   const [probeBoard, setProbeBoard] = useState<ModelProbeItem[]>([]);
   const [tagFilter, setTagFilter] = useState<string>("");
@@ -5715,7 +5715,7 @@ export default function Accounts() {
     setEditTimezoneCustom(
       Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
     );
-    setEditBPSEnabled(account.codex_bps_enabled ?? false);
+    setEditBPS(bpsFormFromAccount(account));
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
     setEditOpenAIForm({
@@ -5946,7 +5946,7 @@ export default function Accounts() {
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
               timezone: editTimezone.trim(),
-              ...(isBPSAccount(editingAccount) ? { codex_bps_enabled: editBPSEnabled } : {}),
+              ...(isBPSAccount(editingAccount) ? bpsPayloadFromForm(editBPS) : {}),
             }
           : {}),
       };
@@ -10173,7 +10173,7 @@ export default function Accounts() {
                         </div>
 
                         {/* 设备指纹收敛 */}
-                        {isBPSAccount(editingAccount) && <div className="md:col-span-2"><BPSTransportField checked={editBPSEnabled} onChange={setEditBPSEnabled} disabled={editSubmitting} /></div>}
+                        {isBPSAccount(editingAccount) && <div className="md:col-span-2"><BPSAccountFields form={editBPS} onChange={patch => setEditBPS(prev => ({ ...prev, ...patch }))} disabled={editSubmitting} active={editingAccount.codex_bps_active} /></div>}
                         {isCodexOfficialAccount(editingAccount) ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                             <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
@@ -14098,7 +14098,7 @@ function AccountMobileCard({
               </span>
             )}
             <div className="codex-account-card__flags">
-              {account.codex_bps_enabled && <span className="codex-account-card__flag">BPS</span>}
+              {account.codex_bps_active && <span className="codex-account-card__flag">{t("accounts.bps.badge")}</span>}
               {onEditModels && <AccountModelAvailabilityBadge account={account} onClick={onEditModels} />}
               <SubscriptionBadge
                 accountId={account.id}

@@ -437,7 +437,17 @@ export interface AccountRow {
   /** 账号页跳转地址;空值回退打开 base_url(api-base)。 */
   account_href?: string
   custom_headers?: Record<string, string> | null
-  codex_bps_enabled?: boolean
+  /** BPS plugin per-account override: null = inherit (group / global switch). */
+  codex_bps_enabled?: boolean | null
+  /** Whether BPS currently serves this account (override, group, global switch or Excel flag). */
+  codex_bps_active?: boolean
+  codex_bps_eligible?: boolean
+  codex_native_enabled?: boolean | null
+  codex_native_models?: string[] | null
+  codex_bps_models?: string[] | null
+  codex_bps_image_trim_enabled?: boolean
+  codex_bps_profile?: CodexBPSProfile
+  codex_bps_convergence?: CodexBPSConvergence
   model_observations?: AccountModelObservation[]
   health_tier?: string
   scheduler_score?: number
@@ -1568,8 +1578,19 @@ export interface AccountModelObservation {
   observed_at: number
 }
 
+export type CodexBPSProfile = 'word' | 'excel' | 'sheets' | 'powerpoint'
+export type CodexBPSConvergence = 'off' | 'session' | 'full' | 'round' | 'turn_round'
+/** Connection-test path; only affects that test. */
+export type CodexTestMode = 'auto' | 'codex' | 'bps'
+
 export interface UpdateAccountSchedulerRequest {
-  codex_bps_enabled?: boolean
+  codex_bps_enabled?: boolean | null
+  codex_native_enabled?: boolean | null
+  codex_native_models?: string[] | null
+  codex_bps_models?: string[] | null
+  codex_bps_image_trim_enabled?: boolean
+  codex_bps_profile?: CodexBPSProfile
+  codex_bps_convergence?: CodexBPSConvergence
   api_auto_recovery_enabled?: boolean
   probe_mode?: AccountProbeMode
   probe_interval_minutes?: number
