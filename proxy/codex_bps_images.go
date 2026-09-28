@@ -25,6 +25,7 @@ type codexBPSImageDiagnostic struct {
 	InlineImages           int                   `json:"inline_images"`
 	ToolAttachmentMessages int                   `json:"tool_attachment_messages,omitempty"`
 	DetailsOmitted         int                   `json:"details_omitted,omitempty"`
+	OmittedAfterRefusal    int                   `json:"omitted_after_refusal,omitempty"`
 	Details                []codexBPSImageDetail `json:"details"`
 }
 

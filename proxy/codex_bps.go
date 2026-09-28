@@ -322,6 +322,7 @@ func executeCodexBPS(ctx context.Context, svc plugins.Services, account *auth.Ac
 		return nil, err
 	}
 	originalProjected, requestHeaders := projected, req.Header.Clone()
+	ctx, ladder := withBPSImageLadder(ctx)
 	for attempt := 0; ; attempt++ {
 		var used map[string]string
 		phaseStarted := time.Now()
@@ -383,6 +384,11 @@ func executeCodexBPS(ctx context.Context, svc plugins.Services, account *auth.Ac
 			return nil, ErrUpstream(0, "请求上游失败", sendErr)
 		}
 		if attempt == 0 && invalidateMissingBPSAttachments(resp, used) {
+			diagnostic.Timing.update(func(v *bpsTimingValues) { v.AttachmentRetries++ })
+			resp.Body.Close()
+			continue
+		}
+		if bpsImageRefusal(resp) && ladder.advance(ctx) {
 			diagnostic.Timing.update(func(v *bpsTimingValues) { v.AttachmentRetries++ })
 			resp.Body.Close()
 			continue

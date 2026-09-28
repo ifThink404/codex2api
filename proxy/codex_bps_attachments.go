@@ -39,12 +39,23 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 		field                        string
 		key, id                      string
 		reused, fallback             bool
+		// current marks an image of the latest user turn; omitted a history
+		// image that could not be uploaded and is sent as a note instead.
+		current, omitted bool
 	}
 	var jobs []imageJob
 	if d != nil && d.Images != nil {
 		d.Images.Uploaded, d.Images.UploadReused, d.Images.ToolAttachmentMessages = 0, 0, 0
 	}
-	for i, item := range gjson.GetBytes(body, "input").Array() {
+	ladder := bpsImageLadderFrom(ctx)
+	if ladder.omitting() {
+		body, err := omitBPSImages(body, d)
+		ladder.record(nil, false, false)
+		return body, used, err
+	}
+	input := gjson.GetBytes(body, "input").Array()
+	latest := bpsLatestUserIndex(input)
+	for i, item := range input {
 		field, adapted := "", ""
 		switch item.Get("type").String() {
 		case "message", "":
@@ -68,7 +79,7 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			if field == "output" && strings.TrimSpace(item.Get("call_id").String()) == "" {
 				return nil, nil, bpsImageInputError("图片工具结果缺少 call_id，无法关联原工具调用。")
 			}
-			jobs = append(jobs, imageJob{url: url, itemIndex: i, partIndex: j, field: field, diagnosticPath: fmt.Sprintf("input[%d].%s[%d]", i, field, j), adapted: adapted})
+			jobs = append(jobs, imageJob{url: url, itemIndex: i, partIndex: j, field: field, diagnosticPath: fmt.Sprintf("input[%d].%s[%d]", i, field, j), adapted: adapted, current: i >= latest})
 		}
 	}
 	// One job per original data URL; keep every source position for rewriting.
@@ -83,6 +94,10 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			unique = append(unique, i)
 		}
 	}
+	for index, original := range duplicates {
+		// An image repeated in the latest turn is a latest-turn image.
+		jobs[original].current = jobs[original].current || jobs[index].current
+	}
 	bpsTimingFromContext(ctx).update(func(v *bpsTimingValues) { v.AttachmentDeduplicated += len(duplicates) })
 	err := runBPSAttachmentJobs(ctx, len(unique), func(workCtx context.Context, index int) error {
 		job := &jobs[unique[index]]
@@ -92,17 +107,22 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 		}
 		defer release()
 		prepared, err := prepareBPSAttachment(workCtx, "image", job.url, "")
-		if err != nil {
-			return err
-		}
-		job.key = bpsPreparedUploadKey(account, "image", prepared)
-		job.id, job.reused, err = bpsImages.resolveContext(workCtx, job.key, func(uploadCtx context.Context) (string, error) {
-			return bpsUploadWithFallback(uploadCtx, func(c context.Context) (string, error) {
-				return upload(c, prepared.file.Data, prepared.file.ContentType)
+		if err == nil {
+			job.key = bpsPreparedUploadKey(account, "image", prepared)
+			job.id, job.reused, err = bpsImages.resolveContext(workCtx, job.key, func(uploadCtx context.Context) (string, error) {
+				return bpsUploadWithFallback(uploadCtx, func(c context.Context) (string, error) {
+					return upload(c, prepared.file.Data, prepared.file.ContentType)
+				})
 			})
-		})
+		}
 		if errors.Is(err, errBPSAttachmentFallback) {
 			job.fallback = true
+			return nil
+		}
+		if !job.current && bpsHistoryImageDegradable(workCtx, err) {
+			// A conversation must never get stuck on an image from an
+			// earlier turn.
+			job.omitted = true
 			return nil
 		}
 		return err
@@ -113,10 +133,15 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 	for index, original := range duplicates {
 		jobs[index].key, jobs[index].id, jobs[index].reused = jobs[original].key, jobs[original].id, true
 		jobs[index].fallback = jobs[original].fallback
+		jobs[index].omitted = jobs[original].omitted
 	}
 	references := make(map[int][]bpsImageReference)
 	for _, job := range jobs {
 		if job.fallback {
+			continue
+		}
+		if job.omitted {
+			references[job.itemIndex] = append(references[job.itemIndex], bpsImageReference{Part: job.partIndex, Field: job.field, Content: []json.RawMessage{bpsImageOmittedPart(bpsImageOmittedUpload)}})
 			continue
 		}
 		references[job.itemIndex] = append(references[job.itemIndex], bpsImageReference{Part: job.partIndex, Field: job.field, ID: job.id})
@@ -125,7 +150,18 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 	if err != nil {
 		return nil, nil, ErrInternalError("构建图片附件引用失败", err)
 	}
+	anyReused := false
 	for _, job := range jobs {
+		if job.omitted {
+			if d != nil && d.Images != nil {
+				for k := range d.Images.Details {
+					if v := &d.Images.Details[k]; v.Path == job.diagnosticPath {
+						v.OutboundReference, v.Action = "omitted", "omitted_upload_failed"
+					}
+				}
+			}
+			continue
+		}
 		if job.fallback {
 			bpsTimingFromContext(ctx).update(func(v *bpsTimingValues) { v.AttachmentFallbackImages++ })
 			if d != nil && d.Images != nil {
@@ -140,6 +176,7 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 			continue
 		}
 		used[job.key] = job.id
+		anyReused = anyReused || job.reused
 		if d != nil && d.Images != nil {
 			if job.reused {
 				d.Images.UploadReused++
@@ -161,20 +198,62 @@ func prepareBPSUserImageAttachments(ctx context.Context, account *auth.Account, 
 		}
 	}
 	// Describe the final representation, not the pre-upload or pre-trim input.
-	if d != nil && d.Images != nil {
-		d.Images.InlineImages = 0
-		for _, item := range gjson.GetBytes(body, "input").Array() {
-			for _, field := range []string{"content", "output"} {
-				for _, part := range item.Get(field).Array() {
-					url := part.Get("image_url").String()
-					if part.Get("type").String() == "input_image" && len(url) >= 5 && strings.EqualFold(url[:5], "data:") {
-						d.Images.InlineImages++
-					}
+	inline := 0
+	for _, item := range gjson.GetBytes(body, "input").Array() {
+		for _, field := range []string{"content", "output"} {
+			for _, part := range item.Get(field).Array() {
+				url := part.Get("image_url").String()
+				if part.Get("type").String() == "input_image" && len(url) >= 5 && strings.EqualFold(url[:5], "data:") {
+					inline++
 				}
 			}
 		}
 	}
+	if d != nil && d.Images != nil {
+		d.Images.InlineImages = inline
+	}
+	ladder.record(used, anyReused, inline > 0)
 	return body, used, nil
+}
+
+// omitBPSImages replaces every image of user messages and tool results with a
+// text note, the last step of the image-refusal ladder.
+func omitBPSImages(body []byte, d *CodexBPSDiagnostic) ([]byte, error) {
+	references := make(map[int][]bpsImageReference)
+	omitted := 0
+	for i, item := range gjson.GetBytes(body, "input").Array() {
+		field := ""
+		switch item.Get("type").String() {
+		case "message", "":
+			if item.Get("role").String() == "user" {
+				field = "content"
+			}
+		case "function_call_output", "custom_tool_call_output":
+			field = "output"
+		}
+		if field == "" {
+			continue
+		}
+		for j, part := range item.Get(field).Array() {
+			if part.Get("type").String() != "input_image" {
+				continue
+			}
+			references[i] = append(references[i], bpsImageReference{Part: j, Field: field, Content: []json.RawMessage{bpsImageOmittedPart(bpsImageOmittedRefused)}})
+			omitted++
+		}
+	}
+	body, err := rewriteBPSImageReferences(body, references)
+	if err != nil {
+		return nil, ErrInternalError("构建图片附件引用失败", err)
+	}
+	if d != nil && d.Images != nil {
+		d.Images.InlineImages = 0
+		d.Images.OmittedAfterRefusal = omitted
+		for k := range d.Images.Details {
+			d.Images.Details[k].OutboundReference, d.Images.Details[k].Action = "omitted", "omitted_after_refusal"
+		}
+	}
+	return body, nil
 }
 
 type bpsImageReference struct {

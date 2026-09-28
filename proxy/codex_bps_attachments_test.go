@@ -218,8 +218,15 @@ func TestBPSAttachmentExpiredReferenceRetriesOnce(t *testing.T) {
 			responses++
 			raw, e := io.ReadAll(r.Body)
 			require.NoError(t, e)
-			require.Equal(t, fmt.Sprintf("file-version-%d", uploads), gjson.GetBytes(raw, "input.1.content.0.file_id").String())
-			// Even when the second handle is also missing, do not loop forever.
+			if responses <= 2 {
+				require.Equal(t, fmt.Sprintf("file-version-%d", uploads), gjson.GetBytes(raw, "input.1.content.0.file_id").String())
+			} else {
+				// The fresh handle was refused too: the image-refusal ladder
+				// sends a note instead of the image.
+				require.Equal(t, bpsImageOmittedRefused, gjson.GetBytes(raw, "input.1.content.0.text").String())
+				require.NotContains(t, string(raw), "file-version-")
+			}
+			// Even when every handle is missing, do not loop forever.
 			status = 400
 			body = fmt.Sprintf(`{"error":{"code":"file_not_found","message":"File file-version-%d not found"}}`, uploads)
 		}
@@ -233,12 +240,12 @@ func TestBPSAttachmentExpiredReferenceRetriesOnce(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, 400, resp.StatusCode)
 	require.Equal(t, 2, uploads)
-	require.Equal(t, 2, responses)
+	require.Equal(t, 3, responses)
 	timingJSON, err := json.Marshal(CodexBPSResponseDiagnostic(resp).Timing)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, gjson.GetBytes(timingJSON, "upload_requests").Int())
-	require.EqualValues(t, 2, gjson.GetBytes(timingJSON, "inference_attempts").Int())
-	require.EqualValues(t, 1, gjson.GetBytes(timingJSON, "attachment_retries").Int())
+	require.EqualValues(t, 3, gjson.GetBytes(timingJSON, "inference_attempts").Int())
+	require.EqualValues(t, 2, gjson.GetBytes(timingJSON, "attachment_retries").Int())
 	for _, status := range []int{400, 422, 500} {
 		raw := `{"error":{"message":"unrelated error"}}`
 		resp := &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(raw))}
