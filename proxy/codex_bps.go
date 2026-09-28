@@ -134,6 +134,17 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 		prefix = append(prefix, item)
 		d.AdaptedFields = append(d.AdaptedFields, "instructions → input.developer")
 	}
+	if format := gjson.GetBytes(body, "text.format"); !compact && format.IsObject() {
+		contract, err := bpsOutputFormatContract(format)
+		if err != nil {
+			return nil, nil, err
+		}
+		if contract != "" {
+			item, _ := json.Marshal(map[string]any{"type": "message", "role": "developer", "content": []map[string]string{{"type": "input_text", "text": contract}}})
+			prefix = append(prefix, item)
+			d.AdaptedFields = append(d.AdaptedFields, "text.format → input.developer output contract (not enforced)")
+		}
+	}
 	items = append(prefix, items...)
 	items, d.Images = normalizeBPSInputImages(items)
 	if d.Images != nil && d.Images.MIMENormalized > 0 {

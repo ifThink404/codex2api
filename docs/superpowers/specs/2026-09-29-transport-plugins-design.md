@@ -54,6 +54,8 @@ Keep from production-main's BPS (which is deleted): default OFF (incl. import de
 
 Adopt from official BPS (approved 2026-09-29): 1 SSE keepalive (`response.in_progress` while upstream silent); 2 cutoff completion with marker; 3 image-refusal fallback ladder + latest-turn-only failure rule (merge ideas with fj's re-upload); 4 provider error scrubbing; 5 `text.format` → prompt instruction; 6 effort normalization + agent_iteration fallback; 8 BPS failures excluded from native account health/cooldown, as a policy switch; 9 replay persisted only with identified conversation, cache-failure backoff. Deferred: 7 run_officejs relay.
 
+Structured output (adoption 5) is not enforced. BPS has no structured-output field, so `text.format` (`json_object` or `json_schema`) becomes a developer instruction that asks the model to answer in that format. Nothing validates or repairs the answer, so callers that need a guaranteed schema must validate it themselves. Other format types, and `json_schema` without a schema object, are rejected with 400.
+
 Attachment 429 local fallback (pdftotext/libreoffice): ported, OFF by default, only active when binaries exist.
 
 ## Phases
