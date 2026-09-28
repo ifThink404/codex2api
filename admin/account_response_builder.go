@@ -247,6 +247,7 @@ func (h *Handler) buildAccountResponse(
 		allowedAPIKeyIDs = row.GetCredentialInt64Slice("allowed_api_key_ids")
 	}
 	resp := accountResponse{
+		CredentialGeneration:           row.CredentialGeneration,
 		DetailLoaded:                   includeDetails,
 		ID:                             row.ID,
 		Name:                           row.Name,

@@ -1071,6 +1071,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/project-integration/newapi/summary", h.ProjectNewAPISummary)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
+	api.GET("/accounts/reserve-eligibility", h.GetQuotaReserveEligibility)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
 	api.GET("/accounts/live", h.GetAccountLiveState)
 	api.GET("/accounts/:id", h.GetAccount)
@@ -1593,6 +1594,7 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 type accountResponse struct {
 	UpstreamRequestIDHeader string `json:"upstream_request_id_header"`
 	DetailLoaded            bool   `json:"detail_loaded,omitempty"`
+	CredentialGeneration    int64  `json:"credential_generation,omitempty"`
 	ID                      int64  `json:"id"`
 	Name                    string `json:"name"`
 	Email                   string `json:"email"`
