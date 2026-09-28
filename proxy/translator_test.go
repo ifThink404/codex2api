@@ -2042,6 +2042,74 @@ func TestPrepareResponsesBody_PromptCompatAndTopLevelImageOptions(t *testing.T) 
 	}
 }
 
+func TestResponsesBackgroundModeDoesNotBecomeImageBackground(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields, requestBackground, imageBackground string
+		codexImage, apiImage                             bool
+	}{
+		{"foreground_probe", `"background":false`, "false", "", true, false},
+		{"background_request", `"background":true`, "true", "", true, false},
+		{"structured_foreground", `"background":false,"text":{"format":{"type":"json_object"}}`, "false", "", false, false},
+		{"structured_background", `"background":true,"text":{"format":{"type":"json_object"}}`, "true", "", false, false},
+		{"image_tool_with_foreground", `"background":false,"tools":[{"type":"image_generation"}]`, "false", "", true, true},
+		{"image_tool_with_background", `"background":true,"tools":[{"type":"image_generation"}]`, "true", "", true, true},
+		{"independent_image_background", `"background":false,"tools":[{"type":"image_generation","background":"transparent"}]`, "false", `"transparent"`, true, true},
+		{"legacy_transparent", `"background":"transparent"`, "", `"transparent"`, true, true},
+		{"legacy_opaque", `"background":"opaque"`, "", `"opaque"`, true, true},
+		{"legacy_auto", `"background":"auto"`, "", `"auto"`, true, true},
+	} {
+		for _, route := range []string{"codex_bps", "openai_relay"} {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				raw := []byte(`{"model":"gpt-5.6-sol","input":"Reply with JSON: {\"ok\":true}","stream":false,` + tc.fields + `}`)
+				var prepared []byte
+				wantImage := tc.apiImage
+				if route == "codex_bps" {
+					prepared, _ = PrepareResponsesBody(raw)
+					wantImage = tc.codexImage
+				} else {
+					prepared = PrepareOpenAIResponsesBody(raw)
+				}
+				if got := gjson.GetBytes(prepared, "background").Raw; got != tc.requestBackground {
+					t.Errorf("request background = %q, want %q", got, tc.requestBackground)
+				}
+				if got := gjson.GetBytes(prepared, "tools.0.background").Raw; got != tc.imageBackground {
+					t.Errorf("image background = %q, want %q", got, tc.imageBackground)
+				}
+				if got := gjson.GetBytes(prepared, "tools.0.type").String() == "image_generation"; got != wantImage {
+					t.Errorf("image tool present = %t, want %t", got, wantImage)
+				}
+				if route != "codex_bps" {
+					return
+				}
+				// BPS moves tools into input.additional_tools. Verify the actual
+				// outbound location reported by the upstream invalid_type error.
+				outbound, _, err := prepareCodexBPSBody(prepared, "background-mode-regression", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, item := range gjson.GetBytes(outbound, "input").Array() {
+					if item.Get("type").String() != "additional_tools" {
+						continue
+					}
+					for _, tool := range item.Get("tools").Array() {
+						if tool.Get("type").String() != "image_generation" {
+							continue
+						}
+						found = true
+						if got := tool.Get("background").Raw; got != tc.imageBackground {
+							t.Errorf("BPS input.additional_tools image background = %q, want %q", got, tc.imageBackground)
+						}
+					}
+				}
+				if found != wantImage {
+					t.Errorf("BPS image tool present = %t, want %t", found, wantImage)
+				}
+			})
+		}
+	}
+}
+
 func TestPrepareResponsesBody_InjectsImageToolWithinToolLimit(t *testing.T) {
 	tools := make([]any, maxTools)
 	for i := range tools {
