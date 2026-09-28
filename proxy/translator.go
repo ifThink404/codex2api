@@ -454,6 +454,19 @@ func firstResponsesImageGenerationTool(body map[string]any) map[string]any {
 	return nil
 }
 
+func isTopLevelResponsesImageOption(key string, value any) bool {
+	if value == nil {
+		return false
+	}
+	if key == "background" {
+		// The Responses boolean controls asynchronous execution. Only the
+		// legacy image option belongs inside the image_generation tool.
+		_, requestBackgroundMode := value.(bool)
+		return !requestBackgroundMode
+	}
+	return true
+}
+
 func moveTopLevelResponsesImageOptions(body map[string]any) bool {
 	toolMap := firstResponsesImageGenerationTool(body)
 	if len(body) == 0 || toolMap == nil {
@@ -462,7 +475,7 @@ func moveTopLevelResponsesImageOptions(body map[string]any) bool {
 	modified := false
 	for _, key := range responsesImageGenerationOptionFields {
 		value, exists := body[key]
-		if !exists || value == nil {
+		if !exists || !isTopLevelResponsesImageOption(key, value) {
 			continue
 		}
 		_, toolHas := toolMap[key]
@@ -692,7 +705,7 @@ func hasTopLevelResponsesImageOptions(body map[string]any) bool {
 		return false
 	}
 	for _, key := range responsesImageGenerationOptionFields {
-		if value, exists := body[key]; exists && value != nil {
+		if value, exists := body[key]; exists && isTopLevelResponsesImageOption(key, value) {
 			return true
 		}
 	}
