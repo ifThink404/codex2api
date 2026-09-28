@@ -2330,7 +2330,6 @@
     "logsEmpty": "此時間範圍內沒有經過此外掛的請求",
     "agentTitle": "日誌分析助手",
     "agentDesc": "讓模型分析 {{name}} 的封包、日誌與錯誤。",
-    "agentPending": "日誌分析助手即將接入。",
     "bpsConfig": {
       "word_user_agent": "Word User-Agent",
       "round_convergence_limit": "task_id 輪次：每批呼叫次數",
@@ -2342,7 +2341,13 @@
       "attachment_account_concurrency": "附件上傳：單一帳號並行",
       "attachment_429_fallback": "附件 429 本機降級（需 pdftotext/libreoffice）",
       "exclude_failures_from_native_health": "BPS 失敗不計入原生帳號健康"
-    }
+    },
+    "agentCapturesTitle": "分析封包",
+    "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
+    "agentErrorsTitle": "分析錯誤",
+    "agentErrorsDesc": "分析經過此外掛的錯誤請求。",
+    "agentRequestTitle": "分析此請求",
+    "agentRequestDesc": "分析該請求 ID 的全部封包。"
   },
   "logAgent": {
     "title": "AI 日誌分析",

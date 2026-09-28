@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Cable, ChevronRight, RefreshCw, Save, Search } from 'lucide-react'
 import { api } from '../api'
 import AccountGroupMultiSelect from '../components/AccountGroupMultiSelect'
+import LogAgentPanel from '../components/LogAgentPanel'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
 import StateShell from '../components/StateShell'
@@ -15,6 +16,9 @@ import { isBPSAccount, type BPSTriState } from '../lib/bpsAccount'
 import {
   PLUGIN_VIEWS,
   bpsConfigFields,
+  captureIdFromEvidence,
+  pluginCaptureAgentFilters,
+  pluginCaptureSource,
   normalizePluginView,
   parsePluginConfigText,
   pluginMetaSummary,
@@ -434,6 +438,11 @@ function PluginCaptures({ plugin }: { plugin: TransportPlugin }) {
       // Keep the list row; the body is simply unavailable.
     }
   }
+  const openEvidence = (evidenceId: string) => {
+    const id = captureIdFromEvidence(evidenceId)
+    if (id) void api.getPluginCapture(plugin.id, id).then(setDetail).catch(() => undefined)
+  }
+  const agentFilters = pluginCaptureAgentFilters({ requestId, accountId, status, direction })
 
   return (
     <div className="space-y-4">
@@ -469,6 +478,13 @@ function PluginCaptures({ plugin }: { plugin: TransportPlugin }) {
           </div>
         </CardContent>
       </Card>
+      <LogAgentPanel
+        source={pluginCaptureSource(plugin.id)}
+        filters={agentFilters}
+        getRange={() => getTimeRangeISO(timeRange)}
+        description={t('plugins.agentCapturesDesc')}
+        onEvidenceClick={openEvidence}
+      />
       <StateShell loading={loading} error={error} onRetry={() => void reload()} isEmpty={!loading && data.captures.length === 0} emptyTitle={t('plugins.capturesEmpty')}>
         <Card>
           <CardContent className="p-0">
@@ -529,6 +545,17 @@ function PluginCaptures({ plugin }: { plugin: TransportPlugin }) {
                 <div className="mb-1 font-medium">{t('plugins.body')}</div>
                 <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/50 p-3 font-mono">{detail.body ?? ''}</pre>
               </div>
+              {detail.request_id && (
+                <LogAgentPanel
+                  key={detail.request_id}
+                  bare
+                  showHistory={false}
+                  source={pluginCaptureSource(plugin.id)}
+                  refs={[detail.request_id]}
+                  title={t('plugins.agentRequestTitle')}
+                  description={t('plugins.agentRequestDesc')}
+                />
+              )}
             </div>
           )}
         </DialogContent>
@@ -615,9 +642,26 @@ function PluginLogs({ plugin }: { plugin: TransportPlugin }) {
 
 function PluginAgent({ plugin }: { plugin: TransportPlugin }) {
   const { t } = useTranslation()
+  const [timeRange, setTimeRange] = useState<TimeRangeKey>('24h')
   return (
-    <Section title={t('plugins.agentTitle')} description={t('plugins.agentDesc', { name: plugin.meta.name })}>
-      <p className="text-xs text-muted-foreground">{t('plugins.agentPending')}</p>
-    </Section>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">{t('plugins.agentDesc', { name: plugin.meta.name })}</p>
+        <TimeRangeTabs value={timeRange} onChange={setTimeRange} />
+      </div>
+      <LogAgentPanel
+        source="ops_errors"
+        filters={{ transport: plugin.id }}
+        getRange={() => getTimeRangeISO(timeRange)}
+        title={t('plugins.agentErrorsTitle')}
+        description={t('plugins.agentErrorsDesc')}
+      />
+      <LogAgentPanel
+        source={pluginCaptureSource(plugin.id)}
+        getRange={() => getTimeRangeISO(timeRange)}
+        title={t('plugins.agentCapturesTitle')}
+        description={t('plugins.agentCapturesDesc')}
+      />
+    </div>
   )
 }

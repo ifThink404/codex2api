@@ -60,3 +60,23 @@ export function pluginMetaSummary(raw: string | undefined): string {
     return ''
   }
 }
+
+// Log-agent source of a plugin's capture store (registered by admin).
+export function pluginCaptureSource(pluginId: string): string {
+  return `${pluginId}.captures`
+}
+
+// Capture evidence IDs are "cap:<id>".
+export function captureIdFromEvidence(evidenceId: string): number | null {
+  const match = /^cap:(\d+)$/.exec(evidenceId.trim())
+  return match ? Number(match[1]) : null
+}
+
+export function pluginCaptureAgentFilters(filters: { requestId: string; accountId: string; status: string; direction: string }): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (filters.requestId.trim()) out.request_id = filters.requestId.trim()
+  if (Number(filters.accountId) > 0) out.account_id = String(Number(filters.accountId))
+  if (filters.status.trim() !== '' && Number.isInteger(Number(filters.status))) out.status = String(Number(filters.status))
+  if (filters.direction) out.direction = filters.direction
+  return out
+}

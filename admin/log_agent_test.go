@@ -293,3 +293,48 @@ func logAgentJSONNumber(value int64) string {
 	payload, _ := json.Marshal(value)
 	return string(payload)
 }
+
+func TestLogAgentPluginCaptureSource(t *testing.T) {
+	db := newTestAdminDB(t)
+	ctx := context.Background()
+	now := time.Now()
+	if err := db.InsertPluginCaptures(ctx, []database.PluginCapture{
+		{Plugin: "bps", RequestID: "req-a", AccountID: 5, Attempt: 1, Direction: "request", Headers: `{"User-Agent":["x"]}`, Body: `{"input":"hi"}`, CreatedAt: now},
+		{Plugin: "bps", RequestID: "req-a", AccountID: 5, Attempt: 1, Direction: "response", Status: 429, ErrorKind: "http_too_many_requests", Body: "rate limited", CreatedAt: now},
+		{Plugin: "other", RequestID: "req-a", Direction: "request", Body: "not bps", CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{db: db}
+	src, ok := h.lookupLogAgentSource("bps.captures")
+	if !ok {
+		t.Fatal("bps.captures is not registered")
+	}
+	records, err := src.Fetch(ctx, logagent.Query{Refs: []string{"req-a"}})
+	if err != nil || len(records) != 2 {
+		t.Fatalf("by request id: %d records, err %v", len(records), err)
+	}
+	for _, record := range records {
+		if !strings.HasPrefix(record.ID, "cap:") || record.Fields["request_id"] != "req-a" || record.Body == "" || record.Kind != "plugin_capture" {
+			t.Fatalf("record = %+v", record)
+		}
+	}
+	byID, err := src.Fetch(ctx, logagent.Query{Refs: []string{records[0].ID}})
+	if err != nil || len(byID) != 1 || byID[0].ID != records[0].ID {
+		t.Fatalf("by capture id: %+v %v", byID, err)
+	}
+	filtered, err := src.Fetch(ctx, logagent.Query{Filters: map[string]string{"status": "429"}, Start: now.Add(-time.Hour), End: now.Add(time.Hour)})
+	if err != nil || len(filtered) != 1 || filtered[0].Body != "rate limited" || filtered[0].ErrorKind != "http_too_many_requests" {
+		t.Fatalf("filtered: %+v %v", filtered, err)
+	}
+	if _, err := src.Fetch(ctx, logagent.Query{Filters: map[string]string{"account_id": "x"}}); err == nil {
+		t.Fatal("invalid account filter accepted")
+	}
+}
+
+func TestLogAgentUsageLogFilterTransport(t *testing.T) {
+	filter, err := usageLogFilterFromLogAgentFilters(map[string]string{"transport": "bps", "status": "5xx"})
+	if err != nil || filter.Transport != "bps" || filter.StatusFamily != "5xx" {
+		t.Fatalf("filter = %+v err %v", filter, err)
+	}
+}

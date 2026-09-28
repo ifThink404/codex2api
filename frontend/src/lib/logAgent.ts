@@ -47,8 +47,10 @@ export function opsErrorLogAgentFilters(params: {
   apiKeyId?: string
   stream?: string
   q?: string
+  transport?: string
 }): Record<string, string> {
   return compactFilters({
+    transport: params.transport,
     status: params.status,
     error_kind: params.errorKind,
     endpoint: params.endpoint,

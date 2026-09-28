@@ -55,6 +55,7 @@ func (h *Handler) logAgentBuiltins() *logagent.Registry {
 		registry := logagent.NewRegistry()
 		_ = registry.Register(&usageLogAgentSource{db: h.db, name: logAgentSourceUsageLogs})
 		_ = registry.Register(&usageLogAgentSource{db: h.db, name: logAgentSourceOpsErrors, errorOnly: true})
+		registerPluginCaptureLogAgentSources(registry, h.db)
 		h.logAgent.builtins = registry
 	})
 	return h.logAgent.builtins

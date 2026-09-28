@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_VIEWS, bpsConfigFields, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { PLUGIN_VIEWS, bpsConfigFields, captureIdFromEvidence, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -69,4 +69,16 @@ test('batch connection test sends the chosen test path', () => {
   const accounts = read('pages/Accounts.tsx')
   assert.ok(accounts.includes('test_mode: batchTestMode'))
   assert.ok(accounts.includes('value={batchTestMode}'))
+})
+
+test('plugin log-agent wiring', () => {
+  assert.equal(pluginCaptureSource('bps'), 'bps.captures')
+  assert.equal(captureIdFromEvidence('cap:42'), 42)
+  assert.equal(captureIdFromEvidence('usage:42'), null)
+  assert.deepEqual(pluginCaptureAgentFilters({ requestId: ' r1 ', accountId: 'x', status: '429', direction: 'error' }), { request_id: 'r1', status: '429', direction: 'error' })
+  const page = read('pages/Plugins.tsx')
+  assert.ok(page.includes('source={pluginCaptureSource(plugin.id)}'), 'captures and agent views use the capture source')
+  assert.ok(page.includes('source="ops_errors"') && page.includes('filters={{ transport: plugin.id }}'), 'agent view analyses the plugin errors')
+  assert.ok(page.includes('refs={[detail.request_id]}'), 'capture detail analyses one request')
+  assert.ok(read('lib/logAgent.ts').includes('transport: params.transport'), 'embedded errors view passes its transport to the agent')
 })

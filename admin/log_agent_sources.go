@@ -111,6 +111,8 @@ func usageLogFilterFromLogAgentFilters(filters map[string]string) (database.Usag
 			filter.Query = value
 		case "request_id":
 			filter.RequestID = value
+		case "transport":
+			filter.Transport = value
 		case "channel":
 			switch value {
 			case database.UpstreamChannelCodex, database.UpstreamChannelGrok, database.UpstreamChannelAntigravity, database.UpstreamChannelClaude:
