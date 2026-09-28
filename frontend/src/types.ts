@@ -2234,6 +2234,8 @@ export interface SystemSettings {
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
+  // Rewrites existing web_search tools' user_location from the outbound proxy's stored egress location.
+  codex_web_search_proxy_location: boolean
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean

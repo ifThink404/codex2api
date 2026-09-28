@@ -3570,6 +3570,9 @@ func (a *Account) GetLastUsedAt() time.Time {
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
 	proxyAuditLabels                   map[string]ProxyAuditLabel
+	// proxyLocations is the stored egress location per proxy URL, refreshed with
+	// the proxy pool; web search reads it without any DB or network access.
+	proxyLocations map[string]database.ProxyLocation
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
 	accounts                           []*Account
@@ -5249,8 +5252,12 @@ func (s *Store) ReloadProxyPool() error {
 	s.proxyPoolSet = buildProxyPoolSet(enabledURLs)
 	s.managedProxySet = buildProxyPoolSet(managedURLs)
 	s.proxyAuditLabels = make(map[string]ProxyAuditLabel, len(auditRows))
+	s.proxyLocations = make(map[string]database.ProxyLocation, len(auditRows))
 	for _, row := range auditRows {
 		if row != nil {
+			if location := row.Location(); location != (database.ProxyLocation{}) {
+				s.proxyLocations[strings.TrimSpace(row.URL)] = location
+			}
 			name := strings.TrimSpace(row.Label)
 			if name == "" {
 				name = "proxy"
@@ -5261,6 +5268,17 @@ func (s *Store) ReloadProxyPool() error {
 	s.mu.Unlock()
 	log.Printf("代理池已重新加载: %d 个活跃代理", len(enabledURLs))
 	return nil
+}
+
+// ProxyLocation returns the stored egress location of a managed proxy URL, or
+// the zero value for direct connections and proxies outside the proxy table.
+func (s *Store) ProxyLocation(proxyURL string) database.ProxyLocation {
+	if s == nil {
+		return database.ProxyLocation{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.proxyLocations[strings.TrimSpace(proxyURL)]
 }
 
 // UnusableManagedProxies returns the subset of proxyURLs that are known to the

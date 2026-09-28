@@ -2150,6 +2150,7 @@ export default function Settings() {
       ...cacheNormalized,
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
+      codex_web_search_proxy_location: cacheNormalized.codex_web_search_proxy_location ?? false,
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
       codex_turn_state_strict: cacheNormalized.codex_turn_state_strict ?? false,
       codex_session_no_borrow_enabled: cacheNormalized.codex_session_no_borrow_enabled ?? false,
@@ -2212,6 +2213,7 @@ export default function Settings() {
     auto_activate_5h_window_enabled: false,
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
+    codex_web_search_proxy_location: false,
     codex_telemetry_timing_debug: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
@@ -4128,6 +4130,15 @@ export default function Settings() {
                       <Switch
                         checked={settingsForm.codex_telemetry_enabled}
                         onCheckedChange={(checked) => autoSaveBooleanField('codex_telemetry_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.codexWebSearchProxyLocation')}
+                      description={t('settings.codexWebSearchProxyLocationDesc')}
+                    >
+                      <Switch
+                        checked={settingsForm.codex_web_search_proxy_location}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_web_search_proxy_location', checked)}
                       />
                     </SettingField>
                     <SettingField

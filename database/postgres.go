@@ -245,6 +245,8 @@ type DB struct {
 	usageLogDropLogAt time.Time // 溢出日志的限流时间戳，由 logMu 保护
 
 	usageMeteringDisabled atomic.Bool
+	// codexWebSearchProxyLocation mirrors system_settings.codex_web_search_proxy_location.
+	codexWebSearchProxyLocation atomic.Bool
 	usageLogMode          atomic.Value // string: full|errors|off
 	usageLogBatchSize     int64
 	usageLogFlushInterval int64 // ns
@@ -585,6 +587,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	}
 	if err := db.ensureUsageMetering(ctx); err != nil {
 		return nil, fmt.Errorf("initialize usage metering: %w", err)
+	}
+	if err := db.ensureProxyLocation(ctx); err != nil {
+		return nil, fmt.Errorf("initialize proxy location: %w", err)
 	}
 	rollupCtx, rollupCancel := usageStatsRollupStartupContext(ctx)
 	rollupErr := db.ensureUsageStatsRollup(rollupCtx)
@@ -3766,6 +3771,10 @@ type ProxyRow struct {
 	TestLatencyMs int       `json:"test_latency_ms"`
 	TestStatus    string    `json:"test_status"`
 	TestTimezone  string    `json:"test_timezone"`
+	// Structured egress location of the last successful test (English names).
+	TestCountryCode string `json:"test_country_code"`
+	TestRegion      string `json:"test_region"`
+	TestCity        string `json:"test_city"`
 	// BoundCount 是绑定到该代理的账号数,由列表接口按 proxy_url 聚合填充,
 	// 前端据此免拉全量账号(代理页大号池卡死问题)。
 	BoundCount int64                   `json:"bound_count"`
@@ -3831,7 +3840,7 @@ func (db *DB) CountAccountsByProxyURL(ctx context.Context) (map[string]int64, er
 
 // ListProxies 获取所有代理
 func (db *DB) ListProxies(ctx context.Context) ([]*ProxyRow, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT id, url, label, enabled, created_at, COALESCE(test_ip,''), COALESCE(test_location,''), COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'), COALESCE(test_timezone,'') FROM proxies ORDER BY id`)
+	rows, err := db.conn.QueryContext(ctx, `SELECT id, url, label, enabled, created_at, COALESCE(test_ip,''), COALESCE(test_location,''), COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'), COALESCE(test_timezone,''), COALESCE(test_country_code,''), COALESCE(test_region,''), COALESCE(test_city,'') FROM proxies ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -3841,7 +3850,7 @@ func (db *DB) ListProxies(ctx context.Context) ([]*ProxyRow, error) {
 	for rows.Next() {
 		p := &ProxyRow{}
 		var createdAtRaw interface{}
-		if err := rows.Scan(&p.ID, &p.URL, &p.Label, &p.Enabled, &createdAtRaw, &p.TestIP, &p.TestLocation, &p.TestLatencyMs, &p.TestStatus, &p.TestTimezone); err != nil {
+		if err := rows.Scan(&p.ID, &p.URL, &p.Label, &p.Enabled, &createdAtRaw, &p.TestIP, &p.TestLocation, &p.TestLatencyMs, &p.TestStatus, &p.TestTimezone, &p.TestCountryCode, &p.TestRegion, &p.TestCity); err != nil {
 			return nil, err
 		}
 		p.CreatedAt, err = parseDBTimeValue(createdAtRaw)
@@ -3873,7 +3882,8 @@ func (db *DB) GetProxy(ctx context.Context, id int64) (*ProxyRow, error) {
 		SELECT id, url, label, enabled, created_at,
 		       COALESCE(test_ip,''), COALESCE(test_location,''),
 		       COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'),
-		       COALESCE(test_timezone,'')
+		       COALESCE(test_timezone,''), COALESCE(test_country_code,''),
+		       COALESCE(test_region,''), COALESCE(test_city,'')
 		FROM proxies
 		WHERE id = $1
 	`, id).Scan(
@@ -3887,6 +3897,9 @@ func (db *DB) GetProxy(ctx context.Context, id int64) (*ProxyRow, error) {
 		&p.TestLatencyMs,
 		&p.TestStatus,
 		&p.TestTimezone,
+		&p.TestCountryCode,
+		&p.TestRegion,
+		&p.TestCity,
 	)
 	if err != nil {
 		return nil, err
@@ -3907,7 +3920,8 @@ func (db *DB) ListProxiesByIDs(ctx context.Context, ids []int64) ([]*ProxyRow, e
 		SELECT id, url, label, enabled, created_at,
 		       COALESCE(test_ip,''), COALESCE(test_location,''),
 		       COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'),
-		       COALESCE(test_timezone,'')
+		       COALESCE(test_timezone,''), COALESCE(test_country_code,''),
+		       COALESCE(test_region,''), COALESCE(test_city,'')
 		FROM proxies
 		WHERE id IN (%s)
 		ORDER BY id
@@ -3933,6 +3947,9 @@ func (db *DB) ListProxiesByIDs(ctx context.Context, ids []int64) ([]*ProxyRow, e
 			&p.TestLatencyMs,
 			&p.TestStatus,
 			&p.TestTimezone,
+			&p.TestCountryCode,
+			&p.TestRegion,
+			&p.TestCity,
 		); err != nil {
 			return nil, err
 		}
@@ -3947,9 +3964,9 @@ func (db *DB) ListProxiesByIDs(ctx context.Context, ids []int64) ([]*ProxyRow, e
 
 // ListEnabledProxies 获取已启用的代理
 func (db *DB) ListEnabledProxies(ctx context.Context) ([]*ProxyRow, error) {
-	query := `SELECT id, url, label, enabled, created_at, COALESCE(test_ip,''), COALESCE(test_location,''), COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'), COALESCE(test_timezone,'') FROM proxies WHERE enabled = true AND COALESCE(test_status,'untested') <> 'error' ORDER BY id`
+	query := `SELECT id, url, label, enabled, created_at, COALESCE(test_ip,''), COALESCE(test_location,''), COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'), COALESCE(test_timezone,''), COALESCE(test_country_code,''), COALESCE(test_region,''), COALESCE(test_city,'') FROM proxies WHERE enabled = true AND COALESCE(test_status,'untested') <> 'error' ORDER BY id`
 	if db.isSQLite() {
-		query = `SELECT id, url, label, enabled, created_at, COALESCE(test_ip,''), COALESCE(test_location,''), COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'), COALESCE(test_timezone,'') FROM proxies WHERE enabled = 1 AND COALESCE(test_status,'untested') <> 'error' ORDER BY id`
+		query = `SELECT id, url, label, enabled, created_at, COALESCE(test_ip,''), COALESCE(test_location,''), COALESCE(test_latency_ms,0), COALESCE(test_status,'untested'), COALESCE(test_timezone,''), COALESCE(test_country_code,''), COALESCE(test_region,''), COALESCE(test_city,'') FROM proxies WHERE enabled = 1 AND COALESCE(test_status,'untested') <> 'error' ORDER BY id`
 	}
 	rows, err := db.conn.QueryContext(ctx, query)
 	if err != nil {
@@ -3961,7 +3978,7 @@ func (db *DB) ListEnabledProxies(ctx context.Context) ([]*ProxyRow, error) {
 	for rows.Next() {
 		p := &ProxyRow{}
 		var createdAtRaw interface{}
-		if err := rows.Scan(&p.ID, &p.URL, &p.Label, &p.Enabled, &createdAtRaw, &p.TestIP, &p.TestLocation, &p.TestLatencyMs, &p.TestStatus, &p.TestTimezone); err != nil {
+		if err := rows.Scan(&p.ID, &p.URL, &p.Label, &p.Enabled, &createdAtRaw, &p.TestIP, &p.TestLocation, &p.TestLatencyMs, &p.TestStatus, &p.TestTimezone, &p.TestCountryCode, &p.TestRegion, &p.TestCity); err != nil {
 			return nil, err
 		}
 		p.CreatedAt, err = parseDBTimeValue(createdAtRaw)
@@ -4075,6 +4092,9 @@ func (db *DB) UpdateProxy(ctx context.Context, id int64, urlValue *string, label
 			fmt.Sprintf("test_location = CASE WHEN url <> %s THEN '' ELSE test_location END", urlPlaceholder),
 			fmt.Sprintf("test_latency_ms = CASE WHEN url <> %s THEN 0 ELSE test_latency_ms END", urlPlaceholder),
 			fmt.Sprintf("test_timezone = CASE WHEN url <> %s THEN '' ELSE test_timezone END", urlPlaceholder),
+			fmt.Sprintf("test_country_code = CASE WHEN url <> %s THEN '' ELSE test_country_code END", urlPlaceholder),
+			fmt.Sprintf("test_region = CASE WHEN url <> %s THEN '' ELSE test_region END", urlPlaceholder),
+			fmt.Sprintf("test_city = CASE WHEN url <> %s THEN '' ELSE test_city END", urlPlaceholder),
 			fmt.Sprintf("url = %s", urlPlaceholder),
 		)
 	}
@@ -4104,6 +4124,12 @@ func (db *DB) UpdateProxy(ctx context.Context, id int64, urlValue *string, label
 
 // UpdateProxyTestResult 仅在代理 URL 与测试目标仍一致时更新测试结果。
 func (db *DB) UpdateProxyTestResult(ctx context.Context, id int64, expectedURL, status, ip, location, timezone string, latencyMs int) error {
+	return db.UpdateProxyTestResultWithGeo(ctx, id, expectedURL, status, ip, location, timezone, latencyMs, ProxyTestGeo{})
+}
+
+// UpdateProxyTestResultWithGeo also stores the structured egress location in
+// the same statement. Like test_timezone it is cleared by a failed test.
+func (db *DB) UpdateProxyTestResultWithGeo(ctx context.Context, id int64, expectedURL, status, ip, location, timezone string, latencyMs int, geo ProxyTestGeo) error {
 	switch status {
 	case ProxyTestStatusUntested, ProxyTestStatusSuccess, ProxyTestStatusError:
 	default:
@@ -4114,10 +4140,14 @@ func (db *DB) UpdateProxyTestResult(ctx context.Context, id int64, expectedURL, 
 		location = ""
 		timezone = ""
 		latencyMs = 0
+		geo = ProxyTestGeo{}
 	}
 	res, err := db.conn.ExecContext(ctx,
-		`UPDATE proxies SET test_status = $1, test_ip = $2, test_location = $3, test_latency_ms = $4, test_timezone = $5 WHERE id = $6 AND url = $7`,
-		status, ip, location, latencyMs, timezone, id, expectedURL)
+		`UPDATE proxies SET test_status = $1, test_ip = $2, test_location = $3, test_latency_ms = $4, test_timezone = $5,
+			test_country_code = $6, test_region = $7, test_city = $8 WHERE id = $9 AND url = $10`,
+		status, ip, location, latencyMs, timezone,
+		NormalizeProxyCountryCode(geo.CountryCode), NormalizeProxyLocationText(geo.Region), NormalizeProxyLocationText(geo.City),
+		id, expectedURL)
 	if err != nil {
 		return err
 	}

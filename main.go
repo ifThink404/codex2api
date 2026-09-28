@@ -440,6 +440,10 @@ func main() {
 	// 注册 Agent Identity task 确保函数（proxy 无 Store 引用，启动时注入）
 	proxy.EnsureCodexAgentIdentityTaskFunc = store.EnsureCodexAgentIdentityTask
 
+	// Web search 位置读取代理池同步维护的已保存出口地区（不查库、不联网）。
+	proxy.SetCodexProxyLocationResolver(store.ProxyLocation)
+	proxy.SetCodexWebSearchProxyLocation(db.GetCodexWebSearchProxyLocation())
+
 	// 上游 WS 空闲连接保活常驻任务（默认关闭：goroutine 常驻但仅在运行时开关开启时才发送 Ping）
 	wsKeepalive := wsrelay.NewKeepaliveTask(
 		wsrelay.GetManager(),

@@ -556,6 +556,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
+	// Web search 位置跟随实际出站代理（默认关闭）；WS/HTTP 共用同一出站代理口径。
+	requestBody = ApplyCodexWebSearchLocation(requestBody, account, codexOutboundProxyURL(account, proxyOverride))
 	// lite 信号收敛：签名在 payload 规则改写后采集（规则可注入/删除 WS 标记，改写
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
@@ -1111,6 +1113,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
+	requestBody = ApplyCodexWebSearchLocation(requestBody, account, proxyURL)
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
 	if sessionID != "" {

@@ -9507,6 +9507,7 @@ type settingsResponse struct {
 	CodexTurnStateVaultEnabled          bool                             `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        string                           `json:"usage_log_mode"`
 	UsageMeteringEnabled                bool                             `json:"usage_metering_enabled"`
+	CodexWebSearchProxyLocation         bool                             `json:"codex_web_search_proxy_location"`
 	UsageLogBatchSize                   int                              `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        int                              `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                   string                           `json:"stream_flush_policy"`
@@ -9686,6 +9687,7 @@ type updateSettingsReq struct {
 	CodexTurnStateVaultEnabled          *bool                            `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
 	UsageMeteringEnabled                *bool                            `json:"usage_metering_enabled"`
+	CodexWebSearchProxyLocation         *bool                            `json:"codex_web_search_proxy_location"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                   *string                          `json:"stream_flush_policy"`
@@ -10547,6 +10549,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
 		UsageMeteringEnabled:                h.db.GetUsageMeteringEnabled(),
+		CodexWebSearchProxyLocation:         h.db.GetCodexWebSearchProxyLocation(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
@@ -11794,6 +11797,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		}
 		log.Printf("设置已更新: usage_metering_enabled = %v", *req.UsageMeteringEnabled)
 	}
+	if req.CodexWebSearchProxyLocation != nil {
+		if err := h.db.SaveCodexWebSearchProxyLocation(c.Request.Context(), *req.CodexWebSearchProxyLocation); err != nil {
+			writeError(c, http.StatusInternalServerError, "保存 Web Search 代理地区设置失败，设置未生效")
+			return
+		}
+		proxy.SetCodexWebSearchProxyLocation(*req.CodexWebSearchProxyLocation)
+		log.Printf("设置已更新: codex_web_search_proxy_location = %v", *req.CodexWebSearchProxyLocation)
+	}
 	// Enable metering before dropping details, and apply the detail mode before
 	// disabling metering, so a combined change never opens an unmetered gap.
 	if req.UsageMeteringEnabled != nil && *req.UsageMeteringEnabled {
@@ -12497,6 +12508,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        usageLogMode,
 		UsageMeteringEnabled:                h.db.GetUsageMeteringEnabled(),
+		CodexWebSearchProxyLocation:         h.db.GetCodexWebSearchProxyLocation(),
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
@@ -13626,13 +13638,17 @@ func (h *Handler) CleanErrorProxies(c *gin.Context) {
 	})
 }
 
-func (h *Handler) persistProxyTestResult(ctx context.Context, id int64, expectedURL, status, ip, location, timezone string, latencyMs int) error {
+func (h *Handler) persistProxyTestResult(ctx context.Context, id int64, expectedURL, status, ip, location, timezone string, latencyMs int, geo ...database.ProxyTestGeo) error {
 	if id <= 0 {
 		return nil
 	}
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	if err := h.db.UpdateProxyTestResult(saveCtx, id, expectedURL, status, ip, location, timezone, latencyMs); err != nil {
+	var testGeo database.ProxyTestGeo
+	if len(geo) > 0 {
+		testGeo = geo[0]
+	}
+	if err := h.db.UpdateProxyTestResultWithGeo(saveCtx, id, expectedURL, status, ip, location, timezone, latencyMs, testGeo); err != nil {
 		return err
 	}
 	if status == database.ProxyTestStatusError {
@@ -13709,6 +13725,7 @@ func (h *Handler) TestProxy(c *gin.Context) {
 			result.Location,
 			result.Timezone,
 			result.LatencyMs,
+			proxyProbeGeoForStorage(result, req.Lang),
 		); err != nil {
 			respondProxyTestSaveError(c, err, result.Error)
 			return
