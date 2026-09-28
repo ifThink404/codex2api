@@ -16,6 +16,7 @@ import (
 	"github.com/codex2api/api"
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/gin-gonic/gin"
@@ -804,6 +805,11 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		if relayUpstreamWS {
 			useWebsocket = true
 		}
+		// 传输插件只走 HTTP：下游仍是 WS，上游改 HTTP（续写按 HTTP 降级展开）。
+		transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindResponses, rawBody)
+		if transportPlugin != nil {
+			useWebsocket = false
+		}
 		// WebSocket 上游下剥离自动注入的图片工具，防止模型自主生图卡死。
 		upstreamBody := codexBody
 		attemptReplay := turnReplay
@@ -842,6 +848,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			if account.OpenAIResponsesUsesUpstreamWebsocket() {
 				return ExecuteOpenAIResponsesRequest(upstreamCtx, account, upstreamBody, proxyURL, downstreamHeaders)
+			}
+			if transportPlugin != nil {
+				return transportPlugin.Execute(upstreamCtx, plugins.ReqEnv{Account: account, Model: effectiveModel, Body: upstreamBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
 			}
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})

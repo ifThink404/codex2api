@@ -54,13 +54,15 @@ func NewRegistry() *Registry {
 	return r
 }
 
-var defaultRegistry = NewRegistry()
+var defaultRegistry atomic.Pointer[Registry]
+
+func init() { defaultRegistry.Store(NewRegistry()) }
 
 // Default is the process-wide registry core uses.
-func Default() *Registry { return defaultRegistry }
+func Default() *Registry { return defaultRegistry.Load() }
 
 // Register adds a plugin to the default registry. Call it from init().
-func Register(p Plugin) { defaultRegistry.Register(p) }
+func Register(p Plugin) { Default().Register(p) }
 
 // Register adds a plugin and declares its override credential key to auth.
 // It panics on an invalid or duplicate ID (a programming error).
@@ -257,6 +259,16 @@ func (r *Registry) Resolve(ctx context.Context, req *Request, account *auth.Acco
 	return nil
 }
 
+// MarkNative records an attempt that core routed natively without asking the
+// plugins (e.g. relay accounts), so usage attribution stays per attempt.
+func (r *Registry) MarkNative(req *Request) {
+	if req == nil {
+		return
+	}
+	req.beginAttempt()
+	req.setServed(database.TransportNative)
+}
+
 // Route is one attempt served by a plugin.
 type Route struct {
 	registry *Registry
@@ -303,4 +315,10 @@ func (rt *Route) Execute(ctx context.Context, env ReqEnv) (*http.Response, error
 		}
 	}
 	return resp, nil
+}
+
+// SwapDefault replaces the process-wide registry and returns the previous
+// one. It exists for tests that exercise core wiring with test plugins.
+func SwapDefault(r *Registry) *Registry {
+	return defaultRegistry.Swap(r)
 }

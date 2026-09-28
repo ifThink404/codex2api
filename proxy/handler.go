@@ -27,6 +27,7 @@ import (
 	"github.com/codex2api/cache"
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -1596,6 +1597,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	h.populateUsageTurnState(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
+	populateTransportPluginUsage(c, input)
 	populateCapacityShedFromErrorMessage(input)
 	h.observeSessionAutoLock(c, input)
 	markCyberPolicyUsageKind(input)
@@ -4070,6 +4072,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindResponses, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
@@ -4248,7 +4251,8 @@ func (h *Handler) Responses(c *gin.Context) {
 		// BPS is an HTTP-only account transport. Keep the existing native
 		// executor untouched and route only opted-in Codex accounts here.
 		useBPS := account.CodexBPSEnabled()
-		if useBPS {
+		transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindResponses, rawBody)
+		if useBPS || transportPlugin != nil {
 			useWebsocket = false
 		}
 		// 生图请求强制走 HTTP：WebSocket 传输大体积图片数据会卡死（issue #220）；
@@ -5139,6 +5143,9 @@ func (h *Handler) Responses(c *gin.Context) {
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			if useBPS {
 				return executeCodexBPS(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, false)
+			}
+			if transportPlugin != nil {
+				return transportPlugin.Execute(upstreamCtx, plugins.ReqEnv{Account: account, Model: attemptEffectiveModel, Body: upstreamBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
 			}
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
@@ -6172,6 +6179,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	}
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	accountFilter = h.applyTransportPluginFilter(c, effectiveModel, plugins.KindResponsesCompact, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
@@ -6582,6 +6590,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		var reqErr error
 		codexBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, codexBody)
 		bpsEnabled := account.CodexBPSEnabled()
+		transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindResponsesCompact, rawBody)
 		if compactViaResponses {
 			upstreamEndpointLabel = "/v1/responses"
 		}
@@ -6591,12 +6600,18 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				if account.CodexBPSEnabled() {
 					return executeCodexBPS(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, false)
 				}
+				if transportPlugin != nil {
+					return transportPlugin.Execute(c.Request.Context(), plugins.ReqEnv{Account: account, Model: effectiveModel, Body: appendCompactionTriggerToResponsesBody(codexBody), Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
+				}
 				return ExecuteRequest(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, false)
 			})
 		} else {
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
 				if account.CodexBPSEnabled() {
 					return executeCodexBPS(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, true)
+				}
+				if transportPlugin != nil {
+					return transportPlugin.Execute(c.Request.Context(), plugins.ReqEnv{Account: account, Model: effectiveModel, Body: codexBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey, Compact: true})
 				}
 				return ExecuteCompactRequest(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders)
 			})
