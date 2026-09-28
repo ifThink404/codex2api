@@ -4172,6 +4172,8 @@
     }
   },
   "settings": {
+    "usageMeteringEnabled": "Lightweight metering",
+    "usageMeteringEnabledDesc": "Recommended: keep billing, token statistics and window quotas when details are disabled. Stores small batched records without request diagnostics, IPs or UAs. Disabling this as well makes statistics and window quotas incomplete; cumulative charges still apply.",
     "sessionBalanceSession": "Sessions",
     "sessionBalanceWindow": "Slots",
     "sessionBalanceDefault": "Default",

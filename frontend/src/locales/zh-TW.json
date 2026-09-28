@@ -319,6 +319,8 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "usageMeteringEnabled": "輕量計量（保留計費與 Token）",
+    "usageMeteringEnabledDesc": "建議開啟：關閉明細或只記錄錯誤時，仍保留計費、Token 統計和視窗額度。批次儲存精簡記錄，不儲存請求診斷、IP 和 UA。同時關閉會導致統計及視窗額度漏算，累計金額仍會扣除。",
     "bpsRoundConvergenceLimit": "每個 task 的模型呼叫次數",
     "bpsRoundConvergenceLimitDesc": "僅適用於「task_id 輪次」，預設 100，範圍 1–1000000。依實際上游帳號、模型與思考等級獨立計數；每批 task_id 固定，未切換帳號時 turn_id 固定，agent_iteration 遞增。切換使用目標帳號目前批次、建立新 turn_id 並繼續計數。工具續接計入，同帳號重試不重複計數。達到上限或設定的固定有效期後換批，序號歸 1。修改次數或週期從下一批生效，並行依資料庫分配順序編號。",
     "bpsRoundTaskLifetimeHours": "task_id 有效期（小時）",

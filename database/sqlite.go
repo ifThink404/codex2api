@@ -967,7 +967,7 @@ func (db *DB) sqliteTableColumns(ctx context.Context, table string) (map[string]
 func (db *DB) getTrafficSnapshotSQLite(ctx context.Context) (*TrafficSnapshot, error) {
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT created_at, total_tokens
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 	`, db.timeArg(time.Now().Add(-5*time.Minute)))
@@ -1037,7 +1037,7 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 			COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cached_tokens), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND created_at < $2
 		  AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
@@ -1073,7 +1073,7 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 	}
 
 	modelQuery := `SELECT COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown'), COUNT(*)
-		FROM usage_logs WHERE created_at >= $1 AND created_at < $2 AND status_code <> 499
+		FROM usage_metered_events AS usage_logs WHERE created_at >= $1 AND created_at < $2 AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''`
 	modelArgs := []interface{}{startArg, endArg}
 	if channel != "" {
@@ -1196,7 +1196,7 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context, rangeStart, rangeEnd time
 		COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN created_at >= $2 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN created_at >= $2 THEN total_tokens ELSE 0 END), 0)
-	FROM usage_logs WHERE created_at >= $1 AND status_code <> 499
+	FROM usage_metered_events AS usage_logs WHERE created_at >= $1 AND status_code <> 499
 	  AND TRIM(COALESCE(internal_reason, '')) = ''`
 	args := []interface{}{db.timeArg(rangeStart), db.timeArg(minuteAgo)}
 	if !rangeEnd.IsZero() {

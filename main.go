@@ -112,6 +112,7 @@ func main() {
 			ClientCompatMode:                  proxy.ClientCompatModePreserve,
 			CodexMinCLIVersion:                "0.153.3",
 			UsageLogMode:                      database.UsageLogModeFull,
+			UsageMeteringEnabled:              true,
 			UsageLogBatchSize:                 200,
 			UsageLogFlushIntervalSeconds:      5,
 			StreamFlushPolicy:                 proxy.StreamFlushPolicyImmediate,
@@ -164,6 +165,7 @@ func main() {
 			ClientCompatMode:                  proxy.ClientCompatModePreserve,
 			CodexMinCLIVersion:                "0.153.3",
 			UsageLogMode:                      database.UsageLogModeFull,
+			UsageMeteringEnabled:              true,
 			UsageLogBatchSize:                 200,
 			UsageLogFlushIntervalSeconds:      5,
 			StreamFlushPolicy:                 proxy.StreamFlushPolicyImmediate,
@@ -282,6 +284,7 @@ func main() {
 		db.SetMaxOpenConns(settings.PgMaxConns)
 		log.Printf("%s 连接池: max_conns=%d", cfg.Database.Label(), settings.PgMaxConns)
 	}
+	db.SetUsageMeteringEnabled(settings.UsageMeteringEnabled)
 	db.SetUsageLogConfig(settings.UsageLogMode, settings.UsageLogBatchSize, settings.UsageLogFlushIntervalSeconds)
 	if overrides, perr := database.ParseModelPricingOverridesJSON(settings.ModelPricingOverrides); perr == nil {
 		database.SetModelPricingOverrides(overrides)

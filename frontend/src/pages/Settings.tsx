@@ -2282,6 +2282,7 @@ export default function Settings() {
     codex_cli_version_sync_interval_hours: 12,
     codex_user_agent_config: '{}',
     usage_log_mode: 'full',
+    usage_metering_enabled: true,
     usage_log_batch_size: 200,
     usage_log_flush_interval_seconds: 5,
     stream_flush_policy: 'immediate',
@@ -5649,6 +5650,12 @@ export default function Settings() {
                         value={settingsForm.usage_log_mode}
                         onValueChange={(value) => autoSaveStringField('usage_log_mode', value)}
                         options={usageLogModeOptions}
+                      />
+                    </SettingField>
+                    <SettingField layout="switch" label={t('settings.usageMeteringEnabled')} description={t('settings.usageMeteringEnabledDesc')}>
+                      <Switch
+                        checked={settingsForm.usage_metering_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('usage_metering_enabled', checked)}
                       />
                     </SettingField>
                     <SettingField label={t('settings.usageLogBatchSize')} description={t('settings.usageLogBatchSizeDesc')}>

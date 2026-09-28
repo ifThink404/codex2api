@@ -4173,6 +4173,8 @@
     }
   },
   "settings": {
+    "usageMeteringEnabled": "轻量计量（保留计费与 Token）",
+    "usageMeteringEnabledDesc": "建议开启：关闭明细或只记录错误时，仍保留计费、Token 统计和窗口额度。批量保存精简记录，不保存请求诊断、IP 和 UA。同时关闭会导致统计及窗口额度漏算，累计金额仍会扣除。",
     "sessionBalanceSession": "会话",
     "sessionBalanceWindow": "窗口",
     "sessionBalanceDefault": "默认",

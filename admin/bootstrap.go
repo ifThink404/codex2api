@@ -378,6 +378,7 @@ func defaultBootstrapSettings() *database.SystemSettings {
 		ClientCompatMode:                  proxy.ClientCompatModePreserve,
 		CodexMinCLIVersion:                "0.153.3",
 		UsageLogMode:                      database.UsageLogModeFull,
+		UsageMeteringEnabled:              true,
 		UsageLogBatchSize:                 200,
 		UsageLogFlushIntervalSeconds:      5,
 		StreamFlushPolicy:                 proxy.StreamFlushPolicyImmediate,

@@ -9719,6 +9719,7 @@ type settingsResponse struct {
 	CodexUserAgentConfig               string                           `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled              bool                             `json:"codex_telemetry_enabled"`
 	UsageLogMode                       string                           `json:"usage_log_mode"`
+	UsageMeteringEnabled               bool                             `json:"usage_metering_enabled"`
 	UsageLogBatchSize                  int                              `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds       int                              `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                  string                           `json:"stream_flush_policy"`
@@ -9905,6 +9906,7 @@ type updateSettingsReq struct {
 	CodexUserAgentConfig                *string                          `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled               *bool                            `json:"codex_telemetry_enabled"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
+	UsageMeteringEnabled                *bool                            `json:"usage_metering_enabled"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                   *string                          `json:"stream_flush_policy"`
@@ -10768,6 +10770,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
+		UsageMeteringEnabled:                h.db.GetUsageMeteringEnabled(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
@@ -11231,6 +11234,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		(req.AutoResetCreditsBeforeExpiryMin != nil && *req.AutoResetCreditsBeforeExpiryMin != persistedAutoResetCreditsBeforeExpiryMin)
 	autoActivate5hChanged := req.AutoActivate5hWindowEnabled != nil && *req.AutoActivate5hWindowEnabled != persistedAutoActivate5hWindowEnabled
 	usageLogMode := h.db.GetUsageLogMode()
+	usageMeteringEnabled := h.db.GetUsageMeteringEnabled()
+	if existingSettings != nil {
+		usageMeteringEnabled = existingSettings.UsageMeteringEnabled
+	}
+	if req.UsageMeteringEnabled != nil {
+		usageMeteringEnabled = *req.UsageMeteringEnabled
+	}
 	usageLogBatchSize := h.db.GetUsageLogBatchSize()
 	usageLogFlushIntervalSeconds := h.db.GetUsageLogFlushIntervalSeconds()
 
@@ -12074,12 +12084,6 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		usageLogChanged = true
 		log.Printf("设置已更新: usage_log_flush_interval_seconds = %d", usageLogFlushIntervalSeconds)
 	}
-	if usageLogChanged {
-		h.db.SetUsageLogConfig(usageLogMode, usageLogBatchSize, usageLogFlushIntervalSeconds)
-		usageLogMode = h.db.GetUsageLogMode()
-		usageLogBatchSize = h.db.GetUsageLogBatchSize()
-		usageLogFlushIntervalSeconds = h.db.GetUsageLogFlushIntervalSeconds()
-	}
 
 	promptFilterCfg := h.store.GetPromptFilterConfig()
 	promptFilterAdvancedRaw := h.store.GetPromptFilterAdvancedConfig()
@@ -12392,6 +12396,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		UsageLogMode:                        usageLogMode,
+		UsageMeteringEnabled:                usageMeteringEnabled,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
@@ -12418,6 +12423,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ModelPricingSyncURL:                 modelPricingSyncURL,
 	})
 	if err != nil {
+		if req.UsageMeteringEnabled != nil || usageLogChanged {
+			writeError(c, http.StatusInternalServerError, "保存日志与计量设置失败，设置未生效")
+			return
+		}
 		log.Printf("无法持久化保存设置: %v", err)
 		if req.BPSRoundTaskLifetimeHours != nil || req.BPSRoundConvergenceLimit != nil || req.BPSTurnTaskLifetimeHours != nil || req.BPSTurnRoundLimit != nil {
 			writeError(c, http.StatusInternalServerError, "保存轮次收敛设置失败，设置未生效")
@@ -12462,6 +12471,17 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	} else {
+		// Publish only persisted values. Enable metering before dropping details,
+		// and enable details before disabling metering, avoiding an unmetered gap.
+		if usageMeteringEnabled {
+			h.db.SetUsageMeteringEnabled(true)
+		}
+		if usageLogChanged {
+			h.db.SetUsageLogConfig(usageLogMode, usageLogBatchSize, usageLogFlushIntervalSeconds)
+		}
+		if !usageMeteringEnabled {
+			h.db.SetUsageMeteringEnabled(false)
+		}
 		if req.SessionSlotBufferSeconds != nil {
 			h.store.SetSessionSlotBuffer(time.Duration(sessionSlotBufferSeconds) * time.Second)
 			log.Printf("设置已更新: session_slot_buffer_seconds = %d", sessionSlotBufferSeconds)
@@ -12768,6 +12788,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		UsageLogMode:                        usageLogMode,
+		UsageMeteringEnabled:                usageMeteringEnabled,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,

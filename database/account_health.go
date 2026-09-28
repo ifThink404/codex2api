@@ -25,7 +25,7 @@ const accountHealthOverloaded500SQL = `CASE WHEN ` + accountHealthOverloaded500P
 
 func (db *DB) GetAccountsWithOverload500(ctx context.Context, start, end time.Time) (map[int64]struct{}, error) {
 	startArg, endArg := db.timeRangeArgs(start, end)
-	rows, err := db.conn.QueryContext(ctx, `SELECT DISTINCT account_id FROM usage_logs
+	rows, err := db.conn.QueryContext(ctx, `SELECT DISTINCT account_id FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND created_at <= $2 AND account_id > 0
 		AND `+accountHealthOverloaded500Predicate+` AND `+db.endUserUsageLogPredicate(), startArg, endArg)
 	if err != nil {
@@ -73,7 +73,7 @@ func (db *DB) GetAccountsHealthBucketsByIDs(ctx context.Context, ids []int64, no
 
 	query := `
 		SELECT account_id, created_at, status_code, ` + accountHealthOverloaded500SQL + ` AS overloaded_500
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND created_at <= $2
 		  AND status_code <> 499
 		  AND account_id > 0
@@ -162,7 +162,7 @@ func (db *DB) getPostgresAccountHealthBuckets(ctx context.Context, ids []int64, 
 				GREATEST(0, LEAST($3 - 1,
 					FLOOR((EXTRACT(EPOCH FROM created_at) - EXTRACT(EPOCH FROM $1::timestamptz)) / $4)::integer
 				)) AS bucket_index
-			FROM usage_logs
+			FROM usage_metered_events AS usage_logs
 			WHERE created_at >= $1 AND created_at <= $2
 			  AND status_code <> 499 AND account_id > 0
 			  AND ` + db.endUserUsageLogPredicate() + idFilter + `
