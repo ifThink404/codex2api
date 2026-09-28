@@ -153,7 +153,7 @@ func TestBPSImageLadderIgnoresUnrelatedRefusals(t *testing.T) {
 		got, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		require.Equal(t, tc.status, resp.StatusCode)
-		require.Equal(t, tc.body, string(got), "the refusal body stays readable")
+		require.Equal(t, bpsScrubbedErrorMessage, gjson.GetBytes(got, "error.message").String(), "the refusal body stays readable")
 		require.Len(t, u.responses, 1)
 	}
 	// Bodies without images are never retried.

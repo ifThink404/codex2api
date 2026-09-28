@@ -396,7 +396,8 @@ func bpsInboundEndpoint(kind plugins.RequestKind) string {
 
 // Response transformer: projectBPSResponse on every JSON body and SSE frame
 // (before usage extraction, so the fixed runtime-overhead billing applies to
-// the extracted usage), plus provenance recording for the sticky domain.
+// the extracted usage), provider error scrubbing, plus provenance recording
+// for the sticky domain.
 
 func (bpsPlugin) FilterHeaders(_ *plugins.ReqEnv, header http.Header) {
 	for name := range header {
@@ -411,7 +412,10 @@ func bpsEnvProjectionContext(env *plugins.ReqEnv) context.Context {
 }
 
 func (bpsPlugin) TransformJSON(env *plugins.ReqEnv, status int, body []byte) ([]byte, error) {
-	if status >= 400 || bpsAttemptDiagnostic(env) == nil {
+	if status >= 400 {
+		return scrubBPSErrorBody(status, body), nil
+	}
+	if bpsAttemptDiagnostic(env) == nil {
 		return body, nil
 	}
 	projected, err := projectBPSResponse(bpsEnvProjectionContext(env), body)
@@ -431,6 +435,9 @@ func (bpsPlugin) TransformSSEFrame(env *plugins.ReqEnv, event string, data []byt
 		d.Timing.event(time.Now(), isFirstTokenResult(gjson.ParseBytes(data)))
 	}
 	projected, err := projectBPSResponse(bpsEnvProjectionContext(env), data)
+	if err == nil {
+		projected, err = scrubBPSTerminalEvent(projected)
+	}
 	if err != nil {
 		return nil, err
 	}
