@@ -13,6 +13,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/internal/upstreamprivacy"
 	"github.com/codex2api/proxy/plugins"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -414,7 +415,7 @@ func (bpsPlugin) TransformJSON(env *plugins.ReqEnv, status int, body []byte) ([]
 		return nil, err
 	}
 	bpsRecordProvenance(env, projected)
-	return projected, nil
+	return upstreamprivacy.Bytes(projected), nil
 }
 
 func (bpsPlugin) TransformSSEFrame(env *plugins.ReqEnv, event string, data []byte) ([]plugins.SSEFrame, error) {
@@ -430,7 +431,26 @@ func (bpsPlugin) TransformSSEFrame(env *plugins.ReqEnv, event string, data []byt
 		return nil, err
 	}
 	bpsRecordProvenance(env, projected)
-	return []plugins.SSEFrame{{Event: event, Data: projected}}, nil
+	return bpsAttemptRedactor(env).push(event, projected)
+}
+
+// FinishSSE releases frames the redactor still holds when the stream ends.
+func (bpsPlugin) FinishSSE(env *plugins.ReqEnv) ([]plugins.SSEFrame, error) {
+	if bpsAttemptDiagnostic(env) == nil {
+		return nil, nil
+	}
+	return bpsAttemptRedactor(env).finish()
+}
+
+const bpsAttemptRedactorKey = "bps_stream_redactor"
+
+func bpsAttemptRedactor(env *plugins.ReqEnv) *bpsStreamRedactor {
+	if r, _ := env.State(bpsAttemptRedactorKey).(*bpsStreamRedactor); r != nil {
+		return r
+	}
+	r := newBPSStreamRedactor()
+	env.SetState(bpsAttemptRedactorKey, r)
+	return r
 }
 
 // Sticky domain: response IDs and compaction contents BPS produced, keyed in

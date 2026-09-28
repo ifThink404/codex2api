@@ -89,7 +89,8 @@ func newBPSHandlerFixture(t *testing.T, credentials map[string]any) *bpsHandlerF
 		default:
 			f.native.Add(1)
 		}
-		sse := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n" +
+		sse := "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"m\",\"delta\":\"OK from Basis Po\"}\n\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"m\",\"delta\":\"ints\"}\n\n" +
 			"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}}\n\n" +
 			"data: " + bpsFixtureCompleted + "\n\n"
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sse)), Request: r}, nil
@@ -131,6 +132,7 @@ func TestBPSPluginServesLegacyEnabledAccountThroughResponses(t *testing.T) {
 	require.EqualValues(t, 1, f.bps.Load())
 	require.Zero(t, f.native.Load())
 	require.NotContains(t, body, "Basis Points")
+	require.NotContains(t, body, "Basis Po", "a provider name split across deltas is redacted too")
 	require.NotContains(t, body, "bps_tools_version_id")
 	require.Contains(t, body, "Caller instructions", "response instructions project back to the caller's")
 	sent := *f.lastBody.Load()
