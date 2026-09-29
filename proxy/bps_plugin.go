@@ -68,6 +68,11 @@ type BPSConfig struct {
 	// (conversation-prefix) seeds in the database, shared by every replica.
 	// Absent means on, as in fj-server; off keeps them in a local LRU.
 	PersistHeuristicAffinity *bool `json:"persist_heuristic_affinity,omitempty"`
+	// Capture retention windows in hours (read by the plugin framework, see
+	// plugins.ParseCaptureRetention): other captures default 6 (1-12), error
+	// captures default and at most 12.
+	CaptureRetentionHours      int `json:"capture_retention_hours,omitempty"`
+	CaptureErrorRetentionHours int `json:"capture_error_retention_hours,omitempty"`
 }
 
 // PersistsHeuristicAffinity reports whether heuristic seeds are bound in the
@@ -201,6 +206,9 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 		if d, err := time.ParseDuration(strings.TrimSpace(tier)); err != nil || d < time.Second || d > 24*time.Hour {
 			return BPSConfig{}, fmt.Errorf("invalid bps_policy_cooldown_ladder tier %q (use durations such as 2m or 2h, 1s to 24h)", tier)
 		}
+	}
+	if _, err := plugins.ParseCaptureRetention(raw); err != nil {
+		return BPSConfig{}, err
 	}
 	if cfg.WordUserAgent != "" && (len(cfg.WordUserAgent) > 2048 || strings.ContainsAny(cfg.WordUserAgent, "\r\n\x00")) {
 		return BPSConfig{}, fmt.Errorf("word_user_agent must be a single header value of at most 2048 bytes")
@@ -767,6 +775,7 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	header, _ := env.State(bpsAttemptHeadersKey).(http.Header)
 	bpsSetUsageMeta(env, "error_headers", bpsCompactHeaders(header))
 	if hint, ok := bpsOrgRetryable(bpsErrorMessageOf(bpsErrorBodySource(gjson.ParseBytes(body)))); ok {
+		env.ClassifyCapture("bps_org_rate_limited")
 		// Organization-wide limit (retries exhausted, or output already
 		// streamed): not the account's fault, so no cooldown or strike.
 		bpsSetUsageMeta(env, "rate_limit_scope", "org")
@@ -777,6 +786,7 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	class, record := recordBPSFailure(context.Background(), state.cache(), env.Account.ID(), env.Model, status, header, body)
 	if class != "" {
 		bpsSetUsageMeta(env, "bps_failure", class)
+		env.ClassifyCapture(class)
 	}
 	if class == BPSRateLimitedReason {
 		bpsSetUsageMeta(env, "rate_limit_scope", "account")

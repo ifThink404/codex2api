@@ -244,6 +244,19 @@ type ReqEnv struct {
 	// upstreamCapture records the outbound upstream request (see
 	// CaptureUpstreamRequest); nil when the attempt is not sampled.
 	upstreamCapture func(header http.Header, body []byte)
+	// captureClassify marks the attempt's captures as errors (see
+	// ClassifyCapture); nil when the attempt is not sampled.
+	captureClassify func(kind string)
+}
+
+// ClassifyCapture marks this attempt's captures still to be written (the
+// response capture) with an error kind, for failures only the plugin can see,
+// such as a usage-policy block inside a 200 stream. Error captures follow the
+// longer error retention window.
+func (env *ReqEnv) ClassifyCapture(kind string) {
+	if env != nil && env.captureClassify != nil {
+		env.captureClassify(kind)
+	}
 }
 
 // CaptureUpstreamRequest records the request the plugin actually sends

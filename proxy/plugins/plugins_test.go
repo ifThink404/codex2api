@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -403,28 +404,151 @@ func TestCaptureMaskingAndTruncation(t *testing.T) {
 	}
 }
 
-func TestCaptureRetentionPurge(t *testing.T) {
+// retentionPurger records whether a vacuum followed the purge.
+type retentionPurger struct {
+	*database.DB
+	vacuums int
+}
+
+func (p *retentionPurger) VacuumPluginCaptures(ctx context.Context) error {
+	p.vacuums++
+	return p.DB.VacuumPluginCaptures(ctx)
+}
+
+func TestCaptureRetentionWindows(t *testing.T) {
 	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "retention.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	reg := NewRegistry()
+	reg.Register(&testPlugin{id: "retplug", kinds: []RequestKind{KindResponses}})
+	reg.Register(&testPlugin{id: "shortplug", kinds: []RequestKind{KindResponses}})
+	reg.applyStates([]database.TransportPluginState{{ID: "shortplug", Config: []byte(`{"capture_retention_hours":2,"capture_error_retention_hours":3}`)}})
 	now := time.Now()
-	err = db.InsertPluginCaptures(context.Background(), []database.PluginCapture{
-		{Plugin: "retplug", Direction: "request", CreatedAt: now.Add(-PluginCaptureRetention - time.Hour)},
-		{Plugin: "retplug", Direction: "request", CreatedAt: now.Add(-PluginCaptureRetention + time.Hour)},
-	})
+	ago := func(h float64) time.Time { return now.Add(-time.Duration(h * float64(time.Hour))) }
+	rows := []database.PluginCapture{
+		{Plugin: "retplug", RequestID: "normal-old", Attempt: 1, Direction: "request", CreatedAt: ago(7)},             // > 6h: gone
+		{Plugin: "retplug", RequestID: "normal-new", Attempt: 1, Direction: "request", CreatedAt: ago(5)},             // kept
+		{Plugin: "retplug", RequestID: "err", Attempt: 1, Direction: "response", Status: 403, CreatedAt: ago(11)},     // error < 12h: kept
+		{Plugin: "retplug", RequestID: "err", Attempt: 1, Direction: "upstream_request", CreatedAt: ago(11)},          // same attempt: kept
+		{Plugin: "retplug", RequestID: "err", Attempt: 2, Direction: "request", CreatedAt: ago(11)},                   // other attempt: gone
+		{Plugin: "retplug", RequestID: "classified", Attempt: 1, Direction: "response", Status: 200, ErrorKind: "bps_policy_blocked", CreatedAt: ago(9)}, // kept
+		{Plugin: "retplug", RequestID: "err-old", Attempt: 1, Direction: "error", CreatedAt: ago(13)},                 // > 12h: gone
+		{Plugin: "shortplug", RequestID: "s-normal", Attempt: 1, Direction: "request", CreatedAt: ago(2.5)},           // > 2h: gone
+		{Plugin: "shortplug", RequestID: "s-error", Attempt: 1, Direction: "response", Status: 500, CreatedAt: ago(2.5)}, // < 3h: kept
+		{Plugin: "shortplug", RequestID: "s-error-old", Attempt: 1, Direction: "response", Status: 500, CreatedAt: ago(4)}, // > 3h: gone
+		{Plugin: "removedplug", RequestID: "orphan", Attempt: 1, Direction: "request", CreatedAt: ago(13)},            // global 12h cap: gone
+		{Plugin: "removedplug", RequestID: "orphan-new", Attempt: 1, Direction: "request", CreatedAt: ago(1)},         // kept
+	}
+	if err := db.InsertPluginCaptures(context.Background(), rows); err != nil {
+		t.Fatal(err)
+	}
+	purger := &retentionPurger{DB: db}
+	result, err := reg.PurgeExpiredCaptures(context.Background(), purger, now)
+	if err != nil || result.Deleted != 6 {
+		t.Fatalf("purge = %+v, %v", result, err)
+	}
+	if purger.vacuums != 0 {
+		t.Fatal("a small purge must not vacuum")
+	}
+	kept := map[string]bool{}
+	for _, plugin := range []string{"retplug", "shortplug", "removedplug"} {
+		page, err := db.ListPluginCaptures(context.Background(), database.PluginCaptureFilter{Plugin: plugin, PageSize: 200})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range page.Captures {
+			kept[fmt.Sprintf("%s/%d/%s", c.RequestID, c.Attempt, c.Direction)] = true
+		}
+	}
+	want := []string{"normal-new/1/request", "err/1/response", "err/1/upstream_request", "classified/1/response", "s-error/1/response", "orphan-new/1/request"}
+	if len(kept) != len(want) {
+		t.Fatalf("kept = %v, want %v", kept, want)
+	}
+	for _, key := range want {
+		if !kept[key] {
+			t.Fatalf("kept = %v, missing %s", kept, key)
+		}
+	}
+}
+
+func TestCaptureRetentionVacuumsAfterALargePurge(t *testing.T) {
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "vacuum.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := PurgeExpiredCaptures(context.Background(), db, now)
-	if err != nil || result.Deleted != 1 {
+	defer db.Close()
+	old := time.Now().Add(-13 * time.Hour)
+	rows := make([]database.PluginCapture, database.PluginCaptureVacuumThreshold)
+	for i := range rows {
+		rows[i] = database.PluginCapture{Plugin: "bigplug", RequestID: fmt.Sprintf("r%d", i), Direction: "request", CreatedAt: old}
+	}
+	if err := db.InsertPluginCaptures(context.Background(), rows); err != nil {
+		t.Fatal(err)
+	}
+	purger := &retentionPurger{DB: db}
+	result, err := NewRegistry().PurgeExpiredCaptures(context.Background(), purger, time.Now())
+	if err != nil || result.Deleted != int64(len(rows)) || result.Batches < 2 {
 		t.Fatalf("purge = %+v, %v", result, err)
 	}
-	page, err := db.ListPluginCaptures(context.Background(), database.PluginCaptureFilter{Plugin: "retplug"})
-	if err != nil || page.Total != 1 {
-		t.Fatalf("remaining = %+v, %v", page, err)
+	if purger.vacuums != 1 {
+		t.Fatalf("vacuums = %d, want 1 after a large purge", purger.vacuums)
 	}
+}
+
+func TestCaptureRetentionConfigValidation(t *testing.T) {
+	retention, err := ParseCaptureRetention(nil)
+	if err != nil || retention.Normal != 6*time.Hour || retention.Error != 12*time.Hour {
+		t.Fatalf("defaults = %+v, %v", retention, err)
+	}
+	retention, err = ParseCaptureRetention([]byte(`{"capture_retention_hours":1,"capture_error_retention_hours":12}`))
+	if err != nil || retention.Normal != time.Hour || retention.Error != 12*time.Hour {
+		t.Fatalf("bounds = %+v, %v", retention, err)
+	}
+	if retention, err := ParseCaptureRetention([]byte(`{"capture_retention_hours":0,"capture_error_retention_hours":0}`)); err != nil || retention.Normal != 6*time.Hour || retention.Error != 12*time.Hour {
+		t.Fatalf("0 means the default: %+v, %v", retention, err)
+	}
+	for _, bad := range []string{`{"capture_retention_hours":-1}`, `{"capture_retention_hours":13}`, `{"capture_error_retention_hours":24}`, `{"capture_error_retention_hours":-3}`} {
+		if _, err := ParseCaptureRetention([]byte(bad)); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "retention-config.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	reg := NewRegistry()
+	reg.Register(&testPlugin{id: "cfgplug", kinds: []RequestKind{KindResponses}})
+	if err := reg.Attach(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Save(context.Background(), database.TransportPluginState{ID: "cfgplug", Config: []byte(`{"capture_error_retention_hours":48}`)}); err == nil {
+		t.Fatal("saving a retention window above 12h must fail")
+	}
+	if err := reg.Save(context.Background(), database.TransportPluginState{ID: "cfgplug", Config: []byte(`{"capture_retention_hours":3}`)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClassifyCaptureMarksTheResponseCapture(t *testing.T) {
+	rec := &captureRecorder{w: newCaptureWriter()}
+	env := &ReqEnv{captureClassify: rec.classify}
+	env.ClassifyCapture("bps_policy_blocked")
+	tee := &captureTee{src: io.NopCloser(strings.NewReader("data: {}\n\n")), rec: rec, capture: database.PluginCapture{Direction: "response", Status: 200}}
+	_, _ = io.Copy(io.Discard, tee)
+	select {
+	case c := <-rec.w.queue:
+		if c.ErrorKind != "bps_policy_blocked" {
+			t.Fatalf("response capture error kind = %q", c.ErrorKind)
+		}
+	default:
+		t.Fatal("no capture emitted")
+	}
+	var unsampled *ReqEnv
+	unsampled.ClassifyCapture("x")
+	(&ReqEnv{}).ClassifyCapture("x")
 }
 
 func TestUpstreamRequestCaptureJoinsItsAttempt(t *testing.T) {

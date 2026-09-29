@@ -30,8 +30,6 @@ const (
 	captureBatchSize    = 100
 	captureFlushEvery   = time.Second
 	captureWriteTimeout = 10 * time.Second
-	// PluginCaptureRetention is how long capture rows are kept.
-	PluginCaptureRetention = time.Duration(database.DefaultPluginCaptureRetentionDays) * 24 * time.Hour
 )
 
 // CaptureSink persists capture batches (implemented by *database.DB).
@@ -219,6 +217,27 @@ func captureHeaders(header http.Header, maskValues bool) string {
 type captureRecorder struct {
 	w    *captureWriter
 	base database.PluginCapture
+	// classified is an error kind the plugin assigned to the attempt (e.g. a
+	// failure inside a 200 stream); captures still to be emitted carry it.
+	classified atomic.Pointer[string]
+}
+
+// classify marks the attempt's remaining captures as errors of kind.
+func (rec *captureRecorder) classify(kind string) {
+	if rec != nil && kind != "" {
+		rec.classified.Store(&kind)
+	}
+}
+
+// errorKind is kind, or the plugin's classification when kind is empty.
+func (rec *captureRecorder) errorKind(kind string) string {
+	if kind != "" {
+		return kind
+	}
+	if classified := rec.classified.Load(); classified != nil {
+		return *classified
+	}
+	return ""
 }
 
 func (w *captureWriter) begin(state database.TransportPluginState, env *ReqEnv) *captureRecorder {
@@ -344,6 +363,7 @@ func (t *captureTee) Close() error {
 func (t *captureTee) finish() {
 	t.once.Do(func() {
 		c := t.capture
+		c.ErrorKind = t.rec.errorKind(c.ErrorKind)
 		var truncated bool
 		c.Body, truncated = maskCaptureBody(t.buf)
 		c.Truncated = truncated || t.over

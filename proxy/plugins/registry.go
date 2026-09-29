@@ -199,6 +199,9 @@ func (r *Registry) Save(ctx context.Context, state database.TransportPluginState
 	if err := database.NormalizeTransportPluginState(&state); err != nil {
 		return err
 	}
+	if _, err := ParseCaptureRetention(state.Config); err != nil {
+		return err
+	}
 	if v, ok := p.(ConfigValidator); ok {
 		if err := v.ValidateConfig(state.Config); err != nil {
 			return err
@@ -426,6 +429,7 @@ func (rt *Route) Execute(ctx context.Context, env ReqEnv) (*http.Response, error
 	rec.request(&env)
 	if rec != nil {
 		env.upstreamCapture = rec.upstreamRequest
+		env.captureClassify = rec.classify
 	}
 	resp, err := rt.plugin.Execute(ctx, &env)
 	if err != nil {

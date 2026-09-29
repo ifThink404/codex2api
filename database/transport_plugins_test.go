@@ -201,7 +201,7 @@ func TestPluginCapturesListGetAndRetention(t *testing.T) {
 			ctx := context.Background()
 			plugin := fmt.Sprintf("cap%d", time.Now().UnixNano()%1_000_000_000)
 			now := time.Now()
-			old := now.Add(-time.Duration(DefaultPluginCaptureRetentionDays+1) * 24 * time.Hour)
+			old := now.Add(-PluginCaptureMaxRetention - time.Hour)
 			rows := []PluginCapture{
 				{Plugin: plugin, RequestID: "r-old", AccountID: 7, Attempt: 1, Direction: PluginCaptureDirectionRequest, Headers: "{}", Body: "old", CreatedAt: old},
 				{Plugin: plugin, RequestID: "r-new", AccountID: 7, Attempt: 1, Direction: PluginCaptureDirectionRequest, Headers: "{}", Body: "hello", CreatedAt: now},
@@ -230,7 +230,7 @@ func TestPluginCapturesListGetAndRetention(t *testing.T) {
 			if err != nil || page.Total != 2 {
 				t.Fatalf("time filter = %+v, %v", page, err)
 			}
-			cutoff := now.Add(-time.Duration(DefaultPluginCaptureRetentionDays) * 24 * time.Hour)
+			cutoff := now.Add(-PluginCaptureMaxRetention)
 			result, err := db.PurgePluginCaptures(ctx, cutoff, 1)
 			if err != nil {
 				t.Fatal(err)

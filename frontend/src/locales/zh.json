@@ -7435,7 +7435,9 @@
       "bps_models": "走 BPS 的模型",
       "bps_only_models": "仅 BPS 可用的模型",
       "bps_policy_cooldown_ladder": "用量策略冷却阶梯",
-      "image_trim_default": "默认精简历史附件"
+      "image_trim_default": "默认精简历史附件",
+      "capture_retention_hours": "抓包保留时长（小时）",
+      "capture_error_retention_hours": "错误抓包保留时长（小时）"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7455,7 +7457,9 @@
       "bps_models": "逗号分隔的通配符；其余模型走原生。留空使用默认值。",
       "bps_only_models": "原生无法服务的模型：调度优先选择可走 BPS 的账号。留空使用默认值。",
       "bps_policy_cooldown_ladder": "上游未给出明确冷却时，每次触发（10 分钟内 3 次拦截）依次使用的冷却时长；2 小时无拦截降一档，24 小时无拦截清零。填 2m、2h 这类时长。",
-      "image_trim_default": "用于没有单独设置的 BPS 账号；默认开启，与 fj-server 一致。"
+      "image_trim_default": "用于没有单独设置的 BPS 账号；默认开启，与 fj-server 一致。",
+      "capture_retention_hours": "无错误的抓包：1–12 小时，填 0 使用默认值（6）。",
+      "capture_error_retention_hours": "错误抓包及同一次尝试的其余抓包：1–12 小时，填 0 使用默认值（12）。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {

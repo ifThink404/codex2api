@@ -7438,7 +7438,9 @@
       "bps_models": "Models served by BPS",
       "bps_only_models": "BPS-only models",
       "bps_policy_cooldown_ladder": "Usage-policy cooldown ladder",
-      "image_trim_default": "Default attachment history trim"
+      "image_trim_default": "Default attachment history trim",
+      "capture_retention_hours": "Capture retention (hours)",
+      "capture_error_retention_hours": "Error capture retention (hours)"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7458,7 +7460,9 @@
       "bps_models": "Comma-separated globs. Other models are served natively. Empty uses the default.",
       "bps_only_models": "Models native cannot serve: scheduling tries BPS-capable accounts first. Empty uses the default.",
       "bps_policy_cooldown_ladder": "Cooldown per trigger (3 blocks in 10 min) when the upstream gives no explicit cooldown: 1st, 2nd, 3rd… trigger. A tier is forgiven per 2h without a block, all after 24h. Durations like 2m, 2h.",
-      "image_trim_default": "Applies to BPS accounts without their own setting. On by default, as in fj-server."
+      "image_trim_default": "Applies to BPS accounts without their own setting. On by default, as in fj-server.",
+      "capture_retention_hours": "Captures without an error: 1–12 hours, 0 uses the default (6).",
+      "capture_error_retention_hours": "Error captures and the rest of their attempt: 1–12 hours, 0 uses the default (12)."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {

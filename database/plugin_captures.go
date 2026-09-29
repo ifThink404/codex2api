@@ -11,12 +11,21 @@ import (
 
 // Plugin capture store: sampled, masked request/response snapshots taken
 // around transport plugin execution (see proxy/plugins/capture.go). Rows are
-// diagnostics only and expire after DefaultPluginCaptureRetentionDays; they
-// join usage_logs by request_id.
+// diagnostics only; they join usage_logs by request_id. Retention has two
+// windows per plugin: error captures (and the other captures of the same
+// attempt) are kept up to PluginCaptureMaxRetention, other captures for a
+// shorter, configurable window.
 
 const (
-	DefaultPluginCaptureRetentionDays = 3
-	DefaultPluginCapturePurgeBatch    = 5000
+	DefaultPluginCaptureRetention      = 6 * time.Hour
+	DefaultPluginCaptureErrorRetention = 12 * time.Hour
+	// PluginCaptureMaxRetention caps both windows; nothing is kept longer.
+	PluginCaptureMaxRetention      = 12 * time.Hour
+	PluginCaptureMinRetention      = time.Hour
+	DefaultPluginCapturePurgeBatch = 5000
+	// PluginCaptureVacuumThreshold: a purge deleting at least this many rows
+	// is followed by VACUUM on PostgreSQL to return the space for reuse.
+	PluginCaptureVacuumThreshold = 5000
 	// PluginCaptureBodyLimit caps the stored body (bytes). Writers truncate
 	// before insert and set Truncated.
 	PluginCaptureBodyLimit = 64 * 1024
@@ -223,4 +232,130 @@ func (db *DB) PurgePluginCaptures(ctx context.Context, cutoff time.Time, batchSi
 			return result, nil
 		}
 	}
+}
+
+// Error captures are rows with an HTTP error status, a classified error kind
+// (set by the plugin, e.g. a usage-policy block inside a 200 stream) or an
+// execute error: status >= 400 OR error_kind <> '' OR direction = 'error'.
+
+// deletePluginCapturesBatched deletes the rows matching where (with args,
+// placeholders $1..$n) in batches, releasing the write lock between batches.
+func (db *DB) deletePluginCapturesBatched(ctx context.Context, where string, args []interface{}, batchSize int) (PluginCapturePurgeResult, error) {
+	var result PluginCapturePurgeResult
+	if db == nil || db.conn == nil {
+		return result, nil
+	}
+	if batchSize <= 0 {
+		batchSize = DefaultPluginCapturePurgeBatch
+	}
+	query := fmt.Sprintf(`DELETE FROM plugin_captures WHERE id IN (
+		SELECT id FROM plugin_captures c WHERE %s ORDER BY id LIMIT $%d)`, where, len(args)+1)
+	for {
+		if ctx.Err() != nil {
+			result.Interrupted = true
+			return result, nil
+		}
+		var affected int64
+		err := db.withWriteTx(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx, query, append(append([]interface{}{}, args...), batchSize)...)
+			if err != nil {
+				return err
+			}
+			affected, err = res.RowsAffected()
+			return err
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				result.Interrupted = true
+				return result, nil
+			}
+			return result, err
+		}
+		result.Batches++
+		result.Deleted += affected
+		if affected < int64(batchSize) {
+			return result, nil
+		}
+	}
+}
+
+// PurgePluginCaptureWindows applies one plugin's two retention windows: every
+// row older than errorCutoff goes, and a row older than normalCutoff goes
+// unless it is an error capture or belongs to an attempt that has one.
+func (db *DB) PurgePluginCaptureWindows(ctx context.Context, plugin string, normalCutoff, errorCutoff time.Time, batchSize int) (PluginCapturePurgeResult, error) {
+	total, err := db.deletePluginCapturesBatched(ctx, "c.plugin = $1 AND c.created_at < $2",
+		[]interface{}{plugin, db.timeArg(errorCutoff.UTC())}, batchSize)
+	if err != nil || total.Interrupted {
+		return total, err
+	}
+	normal, err := db.deletePluginCapturesBatched(ctx, `c.plugin = $1 AND c.created_at < $2 AND NOT (c.status >= 400 OR c.error_kind <> '' OR c.direction = 'error') AND NOT EXISTS (
+			SELECT 1 FROM plugin_captures e WHERE e.request_id = c.request_id AND e.request_id <> '' AND e.attempt = c.attempt AND e.plugin = c.plugin
+				AND (e.status >= 400 OR e.error_kind <> '' OR e.direction = 'error'))`,
+		[]interface{}{plugin, db.timeArg(normalCutoff.UTC())}, batchSize)
+	total.Deleted += normal.Deleted
+	total.Batches += normal.Batches
+	total.Interrupted = normal.Interrupted
+	return total, err
+}
+
+// Manual capture purge modes.
+const (
+	PluginCapturePurgeAll        = "all"
+	PluginCapturePurgeErrorsOnly = "errors_only"
+	PluginCapturePurgeOlderThan  = "older_than"
+)
+
+// PurgePluginCapturesByMode deletes one plugin's captures: all of them, only
+// error captures, or those older than cutoff (older_than).
+func (db *DB) PurgePluginCapturesByMode(ctx context.Context, plugin, mode string, cutoff time.Time) (PluginCapturePurgeResult, error) {
+	switch mode {
+	case PluginCapturePurgeAll:
+		return db.deletePluginCapturesBatched(ctx, "c.plugin = $1", []interface{}{plugin}, 0)
+	case PluginCapturePurgeErrorsOnly:
+		return db.deletePluginCapturesBatched(ctx, "c.plugin = $1 AND (c.status >= 400 OR c.error_kind <> '' OR c.direction = 'error')", []interface{}{plugin}, 0)
+	case PluginCapturePurgeOlderThan:
+		if cutoff.IsZero() {
+			return PluginCapturePurgeResult{}, errors.New("older_than requires a cutoff")
+		}
+		return db.deletePluginCapturesBatched(ctx, "c.plugin = $1 AND c.created_at < $2", []interface{}{plugin, db.timeArg(cutoff.UTC())}, 0)
+	}
+	return PluginCapturePurgeResult{}, fmt.Errorf("unknown purge mode %q", mode)
+}
+
+// VacuumPluginCaptures returns freed space to PostgreSQL after a large purge
+// (plain VACUUM, never FULL, so it takes no exclusive lock). SQLite: no-op.
+func (db *DB) VacuumPluginCaptures(ctx context.Context) error {
+	if db == nil || db.conn == nil || db.isSQLite() {
+		return nil
+	}
+	_, err := db.conn.ExecContext(ctx, `VACUUM (ANALYZE) plugin_captures`)
+	return err
+}
+
+// PluginCaptureStats describes one plugin's stored captures.
+type PluginCaptureStats struct {
+	Rows       int64 `json:"rows"`
+	ErrorRows  int64 `json:"error_rows"`
+	BodyBytes  int64 `json:"body_bytes"`
+	TableBytes int64 `json:"table_bytes"`
+}
+
+// PluginCaptureStats counts one plugin's rows and stored payload bytes;
+// TableBytes is the whole table's on-disk size (PostgreSQL only, else 0).
+func (db *DB) PluginCaptureStats(ctx context.Context, plugin string) (PluginCaptureStats, error) {
+	var stats PluginCaptureStats
+	if db == nil || db.conn == nil {
+		return stats, nil
+	}
+	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*),
+			COALESCE(SUM(CASE WHEN status >= 400 OR error_kind <> '' OR direction = 'error' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(LENGTH(body) + LENGTH(headers)), 0)
+		FROM plugin_captures WHERE plugin = $1`, plugin).Scan(&stats.Rows, &stats.ErrorRows, &stats.BodyBytes)
+	if err != nil {
+		return stats, err
+	}
+	if !db.isSQLite() {
+		_ = db.conn.QueryRowContext(ctx, `SELECT pg_total_relation_size('plugin_captures')`).Scan(&stats.TableBytes)
+	}
+	return stats, nil
 }
