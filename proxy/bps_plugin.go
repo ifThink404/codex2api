@@ -347,8 +347,32 @@ type bpsRequest struct {
 	// blocked: the usage policy blocked this request or its conversation, so
 	// no account may serve it through BPS.
 	blocked          bool
+	orgRetries       int
 	conversationKeys []string
 	servable         map[string]map[int64]bool
+}
+
+// takeOrgRetry spends one of the request's organization rate-limit retries.
+func (s *bpsRequest) takeOrgRetry() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.orgRetries >= bpsOrgRetryLimit {
+		return false
+	}
+	s.orgRetries++
+	return true
+}
+
+func (s *bpsRequest) orgRetryCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.orgRetries
 }
 
 // bpsStateCache is the runtime cache behind the plugin's account state.
@@ -568,7 +592,28 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		endpoint += "/compact"
 	}
 	env.Request.SetUsageUpstreamEndpoint(BPSPluginID, endpoint)
-	resp, err := executeCodexBPS(ctx, pluginServices(env), env.Account, env.Body, env.CacheKey, env.ProxyURL, env.APIKey, deviceCfg, env.Header, env.Compact)
+	var resp *http.Response
+	var err error
+	for {
+		resp, err = executeCodexBPS(ctx, pluginServices(env), env.Account, env.Body, env.CacheKey, env.ProxyURL, env.APIKey, deviceCfg, env.Header, env.Compact)
+		if err != nil || resp == nil || env.Compact {
+			break
+		}
+		hint, org := bpsPeekOrgRateLimit(resp)
+		if !org || !state.takeOrgRetry() {
+			break
+		}
+		// An organization-wide limit: wait it out on the same account; it is
+		// neither an account failure nor a strike.
+		wait := bpsOrgJitter(bpsOrgPauses.observe(env.Model, hint, time.Now()))
+		bpsSetUsageMeta(env, "rate_limit_scope", "org")
+		bpsSetUsageMeta(env, "rate_limit_hint_ms", strconv.FormatInt(hint.Milliseconds(), 10))
+		bpsSetUsageMeta(env, "org_retries", strconv.Itoa(state.orgRetryCount()))
+		resp.Body.Close()
+		if err = bpsSleep(ctx, wait); err != nil {
+			return nil, err
+		}
+	}
 	if err == nil && resp != nil && resp.StatusCode == http.StatusOK && !env.Compact && bpsStreamIsEventStream(resp.Header.Get("Content-Type")) {
 		request := env.Request
 		resp.Body = newBPSStreamGuard(resp.Body, func() { request.SetUsageErrorKind(BPSPluginID, BPSCutoffCompletedKind) })
@@ -721,10 +766,20 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	}
 	header, _ := env.State(bpsAttemptHeadersKey).(http.Header)
 	bpsSetUsageMeta(env, "error_headers", bpsCompactHeaders(header))
+	if hint, ok := bpsOrgRetryable(bpsErrorMessageOf(bpsErrorBodySource(gjson.ParseBytes(body)))); ok {
+		// Organization-wide limit (retries exhausted, or output already
+		// streamed): not the account's fault, so no cooldown or strike.
+		bpsSetUsageMeta(env, "rate_limit_scope", "org")
+		bpsSetUsageMeta(env, "rate_limit_hint_ms", strconv.FormatInt(hint.Milliseconds(), 10))
+		return
+	}
 	state := bpsRequestState(env.Request)
 	class, record := recordBPSFailure(context.Background(), state.cache(), env.Account.ID(), env.Model, status, header, body)
 	if class != "" {
 		bpsSetUsageMeta(env, "bps_failure", class)
+	}
+	if class == BPSRateLimitedReason {
+		bpsSetUsageMeta(env, "rate_limit_scope", "account")
 	}
 	if record.active(time.Now()) && (class == BPSRateLimitedReason || class == BPSPolicyBlockedKind) {
 		bpsSetUsageMeta(env, "bps_cooling_until", record.Until.UTC().Format(time.RFC3339))
