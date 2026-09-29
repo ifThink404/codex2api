@@ -843,7 +843,13 @@ func ExecuteCodexConnectionTest(ctx context.Context, account *auth.Account, payl
 	req := plugins.NewRequest(NewUpstreamSessionUUID(), plugins.KindResponses, payload, nil, 0)
 	registry := plugins.Default()
 	var route *plugins.Route
-	if mode, _ := ctx.Value(codexTestModeKey{}).(string); mode == "bps" {
+	mode, _ := ctx.Value(codexTestModeKey{}).(string)
+	if mode == "codex" {
+		if err := ValidateCodexTestMode(ctx, account); err != nil {
+			return nil, bpsError(http.StatusBadRequest, "codex_test_mode_unsupported", "%s", err.Error())
+		}
+	}
+	if mode == "bps" {
 		if err := ValidateCodexTestMode(ctx, account); err != nil {
 			return nil, bpsError(http.StatusBadRequest, "codex_test_mode_unsupported", "%s", err.Error())
 		}

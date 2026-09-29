@@ -286,6 +286,19 @@ func TestExecuteCodexConnectionTestModes(t *testing.T) {
 	f.store.ApplyAccountTransportPluginOverride(f.account.ID(), BPSPluginID, &on)
 	run("auto")
 	require.EqualValues(t, 2, f.bps.Load())
+	// Native (codex) mode is refused for an account BPS owns...
+	ctx, err := WithCodexTestMode(context.Background(), "codex")
+	require.NoError(t, err)
+	require.ErrorContains(t, ValidateCodexTestMode(ctx, f.account), "未开启原生路由")
+	_, err = ExecuteCodexConnectionTest(ctx, f.account, payload, "")
+	var refusal *Error
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, http.StatusBadRequest, refusal.HTTPStatus)
+	require.EqualValues(t, 1, f.native.Load(), "no native request was sent")
+	// ...and allowed once its native route is explicitly enabled.
+	native := true
+	f.account.SetCodexBPSOptions(auth.CodexBPSAccountOptions{Native: &native})
+	require.NoError(t, ValidateCodexTestMode(ctx, f.account))
 	run("codex")
 	require.EqualValues(t, 2, f.native.Load(), "explicit Codex mode stays native")
 }
