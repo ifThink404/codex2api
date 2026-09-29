@@ -53,6 +53,7 @@ func errorLogBackups() int {
 	}
 	return defaultErrorLogBackups
 }
+
 const upstreamErrorLogBodyMaxBytes = 8 * 1024
 
 func upstreamErrorLogBody(body []byte) string {
