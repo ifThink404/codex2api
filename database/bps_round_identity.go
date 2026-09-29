@@ -64,19 +64,23 @@ func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey st
 	if !ValidSessionOperationKey(accountKey) || !ValidSessionOperationKey(stepKey) || limit < 1 || limit > MaxBPSRoundConvergenceLimit {
 		return identity, false, errors.New("invalid BPS round convergence scope or limit")
 	}
-	err = db.conn.QueryRowContext(ctx, `SELECT generation,iteration,round_limit,lifetime_hours FROM bps_round_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit, &identity.LifetimeHours)
+	var updatedAt int64
+	err = db.conn.QueryRowContext(ctx, `SELECT generation,iteration,round_limit,lifetime_hours,updated_at FROM bps_round_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit, &identity.LifetimeHours, &updatedAt)
 	if err == nil {
+		db.touchBPSIdentity(ctx, updatedAt, `UPDATE bps_round_steps SET updated_at=$3 WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey)
+		db.touchBPSIdentity(ctx, updatedAt, `UPDATE bps_round_tasks SET updated_at=$2 WHERE account_key=$1`, accountKey)
 		return identity, true, nil
 	}
+	stamp := now().Unix()
 	if !errors.Is(err, sql.ErrNoRows) {
 		return identity, false, err
 	}
 	err = db.withWriteTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO bps_round_tasks(account_key,generation,iteration,round_limit,lifetime_hours) VALUES($1,0,0,$2,$3) ON CONFLICT(account_key) DO NOTHING`, accountKey, limit, lifetimeHours); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bps_round_tasks(account_key,generation,iteration,round_limit,lifetime_hours,updated_at) VALUES($1,0,0,$2,$3,$4) ON CONFLICT(account_key) DO NOTHING`, accountKey, limit, lifetimeHours, stamp); err != nil {
 			return err
 		}
 		// Serialize allocation across processes, not only goroutines.
-		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET iteration=iteration WHERE account_key=$1`, accountKey); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET iteration=iteration, updated_at=$2 WHERE account_key=$1`, accountKey, stamp); err != nil {
 			return err
 		}
 		err := tx.QueryRowContext(ctx, `SELECT generation,iteration,round_limit,lifetime_hours FROM bps_round_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.Iteration, &identity.RoundLimit, &identity.LifetimeHours)
@@ -117,7 +121,7 @@ func (db *DB) resolveBPSRoundCounter(ctx context.Context, accountKey, stepKey st
 		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET generation=$2,iteration=$3,round_limit=$4,lifetime_hours=$5 WHERE account_key=$1`, accountKey, identity.Generation, identity.Iteration, identity.RoundLimit, identity.LifetimeHours); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO bps_round_steps(account_key,step_key,generation,iteration,round_limit,lifetime_hours) VALUES($1,$2,$3,$4,$5,$6)`, accountKey, stepKey, identity.Generation, identity.Iteration, identity.RoundLimit, identity.LifetimeHours)
+		_, err = tx.ExecContext(ctx, `INSERT INTO bps_round_steps(account_key,step_key,generation,iteration,round_limit,lifetime_hours,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, accountKey, stepKey, identity.Generation, identity.Iteration, identity.RoundLimit, identity.LifetimeHours, stamp)
 		return err
 	})
 	return
@@ -137,12 +141,12 @@ func (db *DB) touchBPSRoundIdentity(ctx context.Context, accountKey string, gene
 	err = db.withWriteTx(ctx, func(tx *sql.Tx) error {
 		// Use the same cross-process lock as allocation so expiry decisions see
 		// the first send. Older concurrent sends cannot move activity back.
-		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET iteration=iteration WHERE account_key=$1`, accountKey); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE bps_round_tasks SET iteration=iteration, updated_at=$2 WHERE account_key=$1`, accountKey, now.Unix()); err != nil {
 			return err
 		}
-		return tx.QueryRowContext(ctx, `INSERT INTO bps_round_batches(account_key,generation,started_at_unix_ms,last_sent_at_unix_ms) VALUES($1,$2,$3,$3)
-			ON CONFLICT(account_key,generation) DO UPDATE SET last_sent_at_unix_ms=CASE WHEN EXCLUDED.last_sent_at_unix_ms > bps_round_batches.last_sent_at_unix_ms THEN EXCLUDED.last_sent_at_unix_ms ELSE bps_round_batches.last_sent_at_unix_ms END
-			RETURNING started_at_unix_ms,last_sent_at_unix_ms`, accountKey, generation, now.UnixMilli()).Scan(&activity.StartedAtMS, &activity.LastSentAtMS)
+		return tx.QueryRowContext(ctx, `INSERT INTO bps_round_batches(account_key,generation,started_at_unix_ms,last_sent_at_unix_ms,updated_at) VALUES($1,$2,$3,$3,$4)
+			ON CONFLICT(account_key,generation) DO UPDATE SET last_sent_at_unix_ms=CASE WHEN EXCLUDED.last_sent_at_unix_ms > bps_round_batches.last_sent_at_unix_ms THEN EXCLUDED.last_sent_at_unix_ms ELSE bps_round_batches.last_sent_at_unix_ms END, updated_at=EXCLUDED.updated_at
+			RETURNING started_at_unix_ms,last_sent_at_unix_ms`, accountKey, generation, now.UnixMilli(), now.Unix()).Scan(&activity.StartedAtMS, &activity.LastSentAtMS)
 	})
 	return activity, err
 }

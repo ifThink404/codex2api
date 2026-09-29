@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path"
 	"sort"
@@ -288,6 +289,26 @@ func (bpsPlugin) ValidateConfig(raw json.RawMessage) error {
 
 // SparesNativeHealth follows exclude_failures_from_native_health.
 func (bpsPlugin) SparesNativeHealth() bool { return currentBPSConfig().SparesNativeHealth() }
+
+// bpsIdentityRetention is how long an untouched identity row is kept: the
+// longest configured round/turn task lifetime, and at least 30 days.
+func bpsIdentityRetention(cfg BPSConfig) time.Duration {
+	retention := database.BPSIdentityMinRetention
+	for _, hours := range []int{cfg.RoundTaskLifetimeHours, cfg.TurnTaskLifetimeHours} {
+		retention = max(retention, time.Duration(hours)*time.Hour)
+	}
+	return retention
+}
+
+// Maintain prunes BPS identity rows untouched for bpsIdentityRetention.
+func (bpsPlugin) Maintain(ctx context.Context, db *database.DB, now time.Time) error {
+	retention := bpsIdentityRetention(currentBPSConfig())
+	deleted, err := db.PruneBPSIdentity(ctx, now.Add(-retention))
+	if deleted > 0 {
+		log.Printf("[bps] pruned %d identity rows untouched for %s", deleted, retention)
+	}
+	return err
+}
 
 func (bpsPlugin) Migrate(ctx context.Context, db *database.DB) error {
 	return db.MigrateBPSPlugin(ctx)

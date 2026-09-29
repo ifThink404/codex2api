@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -148,6 +149,12 @@ type ExecuteErrorHandler interface {
 // Core falls back to every admissible account when no preferred one is free.
 type AccountPreferenceFilter interface {
 	PreferredAccounts(ctx context.Context, req *Request, model string) func(*auth.Account) bool
+}
+
+// Maintainer is optionally implemented by plugins that own data needing
+// periodic cleanup; the capture retention job calls it every 10 minutes.
+type Maintainer interface {
+	Maintain(ctx context.Context, db *database.DB, now time.Time) error
 }
 
 // NativeHealthPolicy is optionally implemented by plugins whose failures

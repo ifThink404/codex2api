@@ -95,8 +95,20 @@ func (r *Registry) PurgeExpiredCaptures(ctx context.Context, purger CapturePurge
 	return total, err
 }
 
+// RunMaintenance runs every plugin's Maintainer (e.g. BPS identity pruning).
+func (r *Registry) RunMaintenance(ctx context.Context, db *database.DB, now time.Time) {
+	for _, p := range r.Plugins() {
+		if m, ok := p.(Maintainer); ok {
+			if err := m.Maintain(ctx, db, now); err != nil {
+				log.Printf("[transport-plugin] %s maintenance failed: %v", p.ID(), err)
+			}
+		}
+	}
+}
+
 // StartPluginCaptureRetention purges expired plugin captures every 10 minutes
-// (first run after a short delay) until ctx ends.
+// (first run after a short delay) until ctx ends, and runs the plugins'
+// maintenance in the same pass.
 func StartPluginCaptureRetention(ctx context.Context, purger CapturePurger) {
 	if purger == nil {
 		return
@@ -107,10 +119,12 @@ func StartPluginCaptureRetention(ctx context.Context, purger CapturePurger) {
 			result, err := Default().PurgeExpiredCaptures(ctx, purger, start)
 			if err != nil {
 				log.Printf("[transport-plugin] capture retention purge failed: %v", err)
-				return
 			}
 			if result.Deleted > 0 {
 				log.Printf("[transport-plugin] capture retention purged %d rows in %d batches (%s)", result.Deleted, result.Batches, time.Since(start).Round(time.Millisecond))
+			}
+			if db, ok := purger.(*database.DB); ok {
+				Default().RunMaintenance(ctx, db, start)
 			}
 		}
 		select {

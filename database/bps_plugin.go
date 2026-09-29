@@ -88,6 +88,9 @@ func (db *DB) MigrateBPSPlugin(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := db.migrateBPSIdentityUpdatedAt(ctx); err != nil {
+		return err
+	}
 	return db.migrateLegacyBPSSwitch(ctx)
 }
 

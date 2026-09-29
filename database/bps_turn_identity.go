@@ -44,19 +44,23 @@ func (db *DB) resolveBPSTurnTaskIdentity(ctx context.Context, accountKey, stepKe
 	if !ValidSessionOperationKey(accountKey) || !ValidSessionOperationKey(stepKey) || hours < 1 || hours > MaxBPSTurnTaskLifetimeHours {
 		return identity, false, errors.New("invalid BPS turn task scope or lifetime")
 	}
-	err = db.conn.QueryRowContext(ctx, `SELECT generation,lifetime_hours FROM bps_turn_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.LifetimeHours)
+	var updatedAt int64
+	err = db.conn.QueryRowContext(ctx, `SELECT generation,lifetime_hours,updated_at FROM bps_turn_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.LifetimeHours, &updatedAt)
 	if err == nil {
+		db.touchBPSIdentity(ctx, updatedAt, `UPDATE bps_turn_steps SET updated_at=$3 WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey)
+		db.touchBPSIdentity(ctx, updatedAt, `UPDATE bps_turn_tasks SET updated_at=$2 WHERE account_key=$1`, accountKey)
 		return identity, true, nil
 	}
+	stamp := now().Unix()
 	if !errors.Is(err, sql.ErrNoRows) {
 		return identity, false, err
 	}
 	err = db.withWriteTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO bps_turn_tasks(account_key,generation,lifetime_hours) VALUES($1,0,$2) ON CONFLICT(account_key) DO NOTHING`, accountKey, hours); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bps_turn_tasks(account_key,generation,lifetime_hours,updated_at) VALUES($1,0,$2,$3) ON CONFLICT(account_key) DO NOTHING`, accountKey, hours, stamp); err != nil {
 			return err
 		}
 		// The same row lock is used for allocation and the first-send timer.
-		if _, err := tx.ExecContext(ctx, `UPDATE bps_turn_tasks SET generation=generation WHERE account_key=$1`, accountKey); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE bps_turn_tasks SET generation=generation, updated_at=$2 WHERE account_key=$1`, accountKey, stamp); err != nil {
 			return err
 		}
 		err := tx.QueryRowContext(ctx, `SELECT generation,lifetime_hours FROM bps_turn_steps WHERE account_key=$1 AND step_key=$2`, accountKey, stepKey).Scan(&identity.Generation, &identity.LifetimeHours)
@@ -87,7 +91,7 @@ func (db *DB) resolveBPSTurnTaskIdentity(ctx context.Context, accountKey, stepKe
 				return err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO bps_turn_steps(account_key,step_key,generation,lifetime_hours) VALUES($1,$2,$3,$4)`, accountKey, stepKey, identity.Generation, identity.LifetimeHours)
+		_, err = tx.ExecContext(ctx, `INSERT INTO bps_turn_steps(account_key,step_key,generation,lifetime_hours,updated_at) VALUES($1,$2,$3,$4,$5)`, accountKey, stepKey, identity.Generation, identity.LifetimeHours, stamp)
 		return err
 	})
 	return
@@ -102,13 +106,13 @@ func (db *DB) touchBPSTurnTaskIdentity(ctx context.Context, accountKey string, g
 		return activity, errors.New("invalid BPS turn task generation")
 	}
 	err = db.withWriteTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE bps_turn_tasks SET generation=generation WHERE account_key=$1`, accountKey); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE bps_turn_tasks SET generation=generation, updated_at=$2 WHERE account_key=$1`, accountKey, now.Unix()); err != nil {
 			return err
 		}
 		// Activity is observable, but never extends the first-send deadline.
-		return tx.QueryRowContext(ctx, `INSERT INTO bps_turn_batches(account_key,generation,started_at_unix_ms,last_sent_at_unix_ms) VALUES($1,$2,$3,$3)
-			ON CONFLICT(account_key,generation) DO UPDATE SET last_sent_at_unix_ms=CASE WHEN EXCLUDED.last_sent_at_unix_ms > bps_turn_batches.last_sent_at_unix_ms THEN EXCLUDED.last_sent_at_unix_ms ELSE bps_turn_batches.last_sent_at_unix_ms END
-			RETURNING started_at_unix_ms,last_sent_at_unix_ms`, accountKey, generation, now.UnixMilli()).Scan(&activity.StartedAtMS, &activity.LastSentAtMS)
+		return tx.QueryRowContext(ctx, `INSERT INTO bps_turn_batches(account_key,generation,started_at_unix_ms,last_sent_at_unix_ms,updated_at) VALUES($1,$2,$3,$3,$4)
+			ON CONFLICT(account_key,generation) DO UPDATE SET last_sent_at_unix_ms=CASE WHEN EXCLUDED.last_sent_at_unix_ms > bps_turn_batches.last_sent_at_unix_ms THEN EXCLUDED.last_sent_at_unix_ms ELSE bps_turn_batches.last_sent_at_unix_ms END, updated_at=EXCLUDED.updated_at
+			RETURNING started_at_unix_ms,last_sent_at_unix_ms`, accountKey, generation, now.UnixMilli(), now.Unix()).Scan(&activity.StartedAtMS, &activity.LastSentAtMS)
 	})
 	return
 }

@@ -21,7 +21,11 @@ func (db *DB) ResolveCodexIdentityUUIDv7(ctx context.Context, key, entropy strin
 	candidate[6] = candidate[6]&0x0f | 0x70
 	candidate[8] = candidate[8]&0x3f | 0x80
 	var stored string
-	err = db.conn.QueryRowContext(ctx, `SELECT value FROM codex_identity_uuid7_values WHERE identity_key=$1`, key).Scan(&stored)
+	var updatedAt int64
+	err = db.conn.QueryRowContext(ctx, `SELECT value, updated_at FROM codex_identity_uuid7_values WHERE identity_key=$1`, key).Scan(&stored, &updatedAt)
+	if err == nil {
+		db.touchBPSIdentity(ctx, updatedAt, `UPDATE codex_identity_uuid7_values SET updated_at=$2 WHERE identity_key=$1`, key)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		milliseconds := time.Now().UTC().UnixMilli()
 		if milliseconds <= 0 || milliseconds >= 1<<48 {
@@ -32,7 +36,7 @@ func (db *DB) ResolveCodexIdentityUUIDv7(ctx context.Context, key, entropy strin
 			milliseconds >>= 8
 		}
 		err = db.withWriteTx(ctx, func(transaction *sql.Tx) error {
-			if _, err := transaction.ExecContext(ctx, `INSERT INTO codex_identity_uuid7_values(identity_key,value) VALUES ($1,$2) ON CONFLICT DO NOTHING`, key, candidate.String()); err != nil {
+			if _, err := transaction.ExecContext(ctx, `INSERT INTO codex_identity_uuid7_values(identity_key,value,updated_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, key, candidate.String(), time.Now().Unix()); err != nil {
 				return err
 			}
 			if err := transaction.QueryRowContext(ctx, `SELECT value FROM codex_identity_uuid7_values WHERE identity_key=$1`, key).Scan(&stored); errors.Is(err, sql.ErrNoRows) {
