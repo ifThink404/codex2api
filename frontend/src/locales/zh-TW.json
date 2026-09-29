@@ -2722,7 +2722,9 @@
     "activityLastRequestColumn": "最後請求",
     "activityCoolingUntil": "冷卻至 {{time}}",
     "dashDisabled": "已停用（不計入）",
-    "accountDisabled": "帳號已停用，不參與 BPS"
+    "accountDisabled": "帳號已停用，不參與 BPS",
+    "dashInvalid": "失效（不計入）",
+    "accountInvalid": "憑證失效（401 / 錯誤），不參與 BPS"
   },
   "logAgent": {
     "title": "AI 日誌分析",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,6 +70,10 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 	}
 	store.AddAccount(&auth.Account{DBID: 53, Email: "disabled@example.com", AccessToken: "at", Status: auth.StatusReady, DispatchPaused: 1})
 	store.ApplyAccountTransportPluginOverride(53, proxy.BPSPluginID, &on)
+	store.AddAccount(&auth.Account{DBID: 54, Email: "unauthorized@example.com", AccessToken: "at", Status: auth.StatusReady, Disabled: 1})
+	store.ApplyAccountTransportPluginOverride(54, proxy.BPSPluginID, &on)
+	store.AddAccount(&auth.Account{DBID: 55, Email: "error@example.com", AccessToken: "at", Status: auth.StatusError})
+	store.ApplyAccountTransportPluginOverride(55, proxy.BPSPluginID, &on)
 	h := &Handler{db: db, store: store}
 	router := gin.New()
 	h.registerTransportPluginRoutes(router.Group("/api/admin"))
@@ -119,6 +124,7 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 	var summary struct {
 		Total     int  `json:"total"`
 		Disabled  int  `json:"disabled"`
+		Invalid   int  `json:"invalid"`
 		Usable    int  `json:"usable"`
 		MinUsable int  `json:"min_usable"`
 		Warning   bool `json:"warning"`
@@ -126,8 +132,8 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
 	_ = json.Unmarshal(raw["summary"], &summary)
-	if summary.Total != 1 || summary.Usable != 1 || summary.Disabled != 1 || summary.MinUsable != 2 || !summary.Warning {
-		t.Fatalf("summary = %+v (only the enabled BPS account counts, the disabled one only as disabled; 1 usable <= floor 2 warns)", summary)
+	if summary.Total != 1 || summary.Usable != 1 || summary.Disabled != 1 || summary.Invalid != 2 || summary.MinUsable != 2 || !summary.Warning {
+		t.Fatalf("summary = %+v (only the enabled, working BPS account counts; disabled and 401/error ones only as such; 1 usable <= floor 2 warns)", summary)
 	}
 	if len(out.Accounts) != 1 || out.Accounts[0].AccountID != 51 || out.Accounts[0].State != bpsStateActive {
 		t.Fatalf("accounts = %+v", out.Accounts)
@@ -199,6 +205,8 @@ func TestBPSActivityEndpoint(t *testing.T) {
 	store.AddAccount(&auth.Account{DBID: 72, Email: "native@example.com", AccessToken: "at", Status: auth.StatusReady})
 	store.AddAccount(&auth.Account{DBID: 73, Email: "disabled@example.com", AccessToken: "at", Status: auth.StatusReady, DispatchPaused: 1})
 	store.ApplyAccountTransportPluginOverride(73, proxy.BPSPluginID, &on)
+	store.AddAccount(&auth.Account{DBID: 74, Email: "unauthorized@example.com", AccessToken: "at", Status: auth.StatusReady, Disabled: 1})
+	store.ApplyAccountTransportPluginOverride(74, proxy.BPSPluginID, &on)
 	h := &Handler{db: db, store: store}
 	router := gin.New()
 	h.registerTransportPluginRoutes(router.Group("/api/admin"))
@@ -240,5 +248,9 @@ func TestCodexBPSActiveNeedsEnabledAccount(t *testing.T) {
 	}
 	if codexBPSAccountViewFromRow(&database.AccountRow{ID: 81, Enabled: false}, live).Active {
 		t.Fatal("a disabled account is not served by BPS")
+	}
+	atomic.StoreInt32(&live.Disabled, 1)
+	if view := codexBPSAccountViewFromRow(&database.AccountRow{ID: 81, Enabled: true}, live); view.Active || !view.CredentialInvalid {
+		t.Fatalf("a 401 account is not served by BPS and is flagged invalid: %+v", view)
 	}
 }

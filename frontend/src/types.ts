@@ -441,6 +441,8 @@ export interface AccountRow {
   codex_bps_enabled?: boolean | null
   /** Whether BPS currently serves this account (override, group, global switch or Excel flag). */
   codex_bps_active?: boolean
+  /** A 401 / banned / error credential keeps the account out of the BPS pool. */
+  codex_bps_credential_invalid?: boolean
   codex_bps_eligible?: boolean
   codex_native_enabled?: boolean | null
   codex_native_models?: string[] | null
@@ -3893,7 +3895,7 @@ export interface BPSTrafficPoint {
 
 // GET /plugins/bps/dashboard
 export interface BPSDashboard {
-  summary: { total: number; usable: number; disabled?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
+  summary: { total: number; usable: number; disabled?: number; invalid?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
   accounts: Array<{
     account_id: number
     name: string

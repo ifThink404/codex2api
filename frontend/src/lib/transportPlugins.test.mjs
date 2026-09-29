@@ -275,13 +275,14 @@ test('zero timestamps are unset, not cooldowns', () => {
   assert.ok(server.includes('`json:"cooling_until,omitzero"`'), 'the server omits unset cooling times')
 })
 
-test('disabled accounts are not usable BPS accounts', () => {
+test('disabled and invalid-credential accounts are not usable BPS accounts', () => {
   const page = read('pages/Plugins.tsx')
-  assert.ok(page.includes("account.enabled === false ? t('plugins.accountDisabled')"), 'the account list labels disabled accounts')
-  assert.ok(page.includes('{account.enabled !== false && <PluginAccountStatusLine'), 'and shows them no BPS status')
-  assert.ok(page.includes("t('plugins.dashDisabled')"), 'the hero counts them apart from usable')
+  assert.ok(page.includes("if (account.enabled === false) return t('plugins.accountDisabled')"), 'the account list labels disabled accounts')
+  assert.ok(page.includes("if (account.codex_bps_credential_invalid) return t('plugins.accountInvalid')"), 'and invalid-credential ones')
+  assert.ok(page.includes('{account.enabled !== false && !account.codex_bps_credential_invalid && <PluginAccountStatusLine'), 'and shows them no BPS status')
+  assert.ok(page.includes("t('plugins.dashDisabled')") && page.includes("t('plugins.dashInvalid')"), 'the hero counts them apart from usable')
   const server = readFileSync(srcRoot + '../../admin/bps_dashboard.go', 'utf8')
-  assert.ok(server.includes('if !account.IsEnabled() {'), 'the dashboard pool skips disabled accounts')
+  assert.ok(server.includes('case !account.IsEnabled():') && server.includes('case account.CredentialInvalid():'), 'the dashboard pool skips disabled and invalid accounts')
   assert.ok(readFileSync(srcRoot + '../../admin/codex_bps_account.go', 'utf8').includes('view.Eligible && row.Enabled &&'), 'codex_bps_active needs an enabled account')
 })
 

@@ -158,8 +158,11 @@ type codexBPSAccountView struct {
 	Override *bool `json:"codex_bps_enabled"`
 	// Active reports whether BPS currently serves the account (override,
 	// account group, global switch or the upstream Excel flag); never for a
-	// disabled account.
+	// disabled account or one whose credential is invalid.
 	Active bool `json:"codex_bps_active"`
+	// CredentialInvalid: a 401 / banned / error credential keeps the account
+	// out of the BPS pool.
+	CredentialInvalid bool `json:"codex_bps_credential_invalid,omitempty"`
 	auth.CodexBPSAccountSettings
 	Eligible bool `json:"codex_bps_eligible"`
 }
@@ -171,8 +174,9 @@ func codexBPSAccountViewFromRow(row *database.AccountRow, live *auth.Account) co
 	}
 	if live != nil {
 		view.Eligible = live.CodexBPSEligible()
+		view.CredentialInvalid = view.Eligible && live.CredentialInvalid()
 		if p, ok := plugins.Default().Get(proxy.BPSPluginID); ok {
-			view.Active = view.Eligible && row.Enabled && plugins.Default().EnabledFor(p, live)
+			view.Active = view.Eligible && row.Enabled && !view.CredentialInvalid && plugins.Default().EnabledFor(p, live)
 		}
 	}
 	return view

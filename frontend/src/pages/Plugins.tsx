@@ -478,6 +478,7 @@ function BPSDashboardPanel({ plugin }: { plugin: TransportPlugin }) {
           <div className="flex flex-wrap gap-2 lg:max-w-2xl lg:justify-end">
             <RunwayChip label={t('plugins.dashFloor')} value={String(summary?.min_usable ?? '—')} />
             {Boolean(summary?.disabled) && <RunwayChip label={t('plugins.dashDisabled')} value={String(summary?.disabled)} />}
+            {Boolean(summary?.invalid) && <RunwayChip label={t('plugins.dashInvalid')} value={String(summary?.invalid)} emphasize />}
             <RunwayChip label={t('plugins.dashInFlightTotal')} value={String(inFlight)} emphasize={inFlight > 0} />
             <RunwayChip label={t('plugins.dashRequests1h')} value={String(data?.traffic['1h'].requests ?? 0)} />
             <RunwayChip label={t('plugins.dashSuccessRate1h')} value={data ? formatSuccessRate(data.traffic['1h'].success_rate, data.traffic['1h'].requests) : '—'} />
@@ -871,6 +872,14 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
     return () => { active = false }
   }, [plugin.id, eligibleIds])
 
+  // bpsAccountLabel: disabled and invalid-credential accounts are out of
+  // the BPS pool whatever their override says.
+  const bpsAccountLabel = (account: AccountRow) => {
+    if (account.enabled === false) return t('plugins.accountDisabled')
+    if (account.codex_bps_credential_invalid) return t('plugins.accountInvalid')
+    return account.codex_bps_active ? t('accounts.bps.activeNow') : t('accounts.bps.inactiveNow')
+  }
+
   const change = async (account: AccountRow, value: BPSTriState) => {
     setBusy(account.id)
     try {
@@ -902,9 +911,9 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
                   <span className="text-xs text-muted-foreground">
                     #{account.id}
                     {account.plan_type ? ` · ${account.plan_type}` : ''}
-                    {plugin.id === 'bps' && ` · ${account.enabled === false ? t('plugins.accountDisabled') : account.codex_bps_active ? t('accounts.bps.activeNow') : t('accounts.bps.inactiveNow')}`}
+                    {plugin.id === 'bps' && ` · ${bpsAccountLabel(account)}`}
                   </span>
-                  {account.enabled !== false && <PluginAccountStatusLine status={statuses.get(account.id)} />}
+                  {account.enabled !== false && !account.codex_bps_credential_invalid && <PluginAccountStatusLine status={statuses.get(account.id)} />}
                 </div>
                 <Select
                   className="w-full sm:w-44"

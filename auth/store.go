@@ -10147,6 +10147,22 @@ func (a *Account) IsEnabled() bool {
 	return a != nil && atomic.LoadInt32(&a.DispatchPaused) == 0
 }
 
+// CredentialInvalid reports whether the account's credential is known bad,
+// so routing to it only fails: a 401 (the Disabled flag, or a running
+// "unauthorized" cooldown), a banned health tier, or an error status such as
+// a dead refresh token or a deactivated workspace.
+func (a *Account) CredentialInvalid() bool {
+	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 {
+		return true
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.Status == StatusError || a.healthTierLocked() == HealthTierBanned {
+		return true
+	}
+	return a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || time.Now().Before(a.CooldownUtil))
+}
+
 func normalizeAccountErrorMessage(errorMsg string, fallback string) string {
 	errorMsg = strings.TrimSpace(errorMsg)
 	if errorMsg == "" {

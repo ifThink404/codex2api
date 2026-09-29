@@ -7602,7 +7602,9 @@
     "activityLastRequestColumn": "最后请求",
     "activityCoolingUntil": "冷却至 {{time}}",
     "dashDisabled": "已禁用（不计入）",
-    "accountDisabled": "账号已禁用，不参与 BPS"
+    "accountDisabled": "账号已禁用，不参与 BPS",
+    "dashInvalid": "失效（不计入）",
+    "accountInvalid": "凭据失效（401 / 错误），不参与 BPS"
   },
   "logAgent": {
     "title": "AI 日志分析",
