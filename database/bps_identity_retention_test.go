@@ -93,7 +93,9 @@ func TestBPSIdentityPruneAndBackfill(t *testing.T) {
 	for _, c := range []string{"a", "b"} {
 		_, _, err := db.ResolveBPSTurnTaskIdentity(ctx, bpsKey(c), bpsKey("3"), 24)
 		require.NoError(t, err)
-		_, err = db.ResolveCodexIdentityUUIDv7(ctx, bpsKey(c), strings.Repeat("ef", 32))
+		// Distinct entropy per key: identical entropy in the same millisecond
+		// yields the same UUID, which the UNIQUE value column rejects.
+		_, err = db.ResolveCodexIdentityUUIDv7(ctx, bpsKey(c), strings.Repeat(c+"e", 32))
 		require.NoError(t, err)
 	}
 	old := time.Now().Add(-40 * 24 * time.Hour).Unix()
