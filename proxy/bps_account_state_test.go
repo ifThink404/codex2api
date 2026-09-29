@@ -253,7 +253,7 @@ func TestBPSPluginPolicyBlockNeverRetriesTheSameAccount(t *testing.T) {
 	require.Contains(t, req.UsageErrorMessage(), "blocked by our usage policy", "and the provider's own text")
 	ok, reason := bpsPlugin{}.Admissible(ctx, account, "gpt-6-astra")
 	require.False(t, ok)
-	require.Equal(t, BPSPolicyBlockedKind, reason, "the blocked request stays off BPS")
+	require.Equal(t, "bps_account_refused", reason, "the request never retries the blocked account")
 
 	parsed, err := parseBPSConfig(nil)
 	require.NoError(t, err)

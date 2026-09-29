@@ -69,8 +69,9 @@ func TestBPSRequestBudgetVetoesAnExhaustedAccount(t *testing.T) {
 	_, err := bpsPlugin{}.Execute(lonelyCtx, &plugins.ReqEnv{Request: req, Account: account, Model: "gpt-6-sol"})
 	var refusal *Error
 	require.ErrorAs(t, err, &refusal)
-	require.Equal(t, http.StatusTooManyRequests, refusal.HTTPStatus)
-	require.Equal(t, "bps_budget_exhausted", refusal.Code)
+	require.Equal(t, http.StatusServiceUnavailable, refusal.HTTPStatus)
+	require.Equal(t, "bps_unavailable", refusal.Code)
+	require.Contains(t, refusal.Message, BPSBudgetExhaustedReason)
 
 	// Failed upstream requests do not count.
 	var resp *http.Response

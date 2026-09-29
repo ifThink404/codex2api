@@ -69,6 +69,10 @@ type BPSConfig struct {
 	// (conversation-prefix) seeds in the database, shared by every replica.
 	// Absent means on, as in fj-server; off keeps them in a local LRU.
 	PersistHeuristicAffinity *bool `json:"persist_heuristic_affinity,omitempty"`
+	// PolicyConversationMark marks the conversation of a usage-policy 403 so
+	// its later turns avoid BPS for 30 minutes. Off by default: the block is
+	// an account-level request quota, not a content verdict.
+	PolicyConversationMark bool `json:"bps_policy_conversation_mark,omitempty"`
 	// AccountMaxConcurrency caps BPS requests in flight per account on each
 	// replica (0 = off).
 	AccountMaxConcurrency int `json:"bps_account_max_concurrency,omitempty"`
@@ -453,7 +457,7 @@ func (bpsPlugin) BindRequest(req *plugins.Request) {
 	state.inferred = bindInferredBPSSession(c, req.Body, identity, root)
 	state.upload = host.handler.newBPSUploadRequest(c, req.Body, state.compact)
 	state.conversationKeys = bpsConversationKeys(req, state.inferred)
-	state.blocked = state.conversationBlocked(c.Request.Context())
+	state.blocked = currentBPSConfig().PolicyConversationMark && state.conversationBlocked(c.Request.Context())
 	req.SetState(BPSPluginID, state)
 }
 
@@ -864,9 +868,12 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	}
 	if class == BPSPolicyBlockedKind {
 		env.Request.SetUsageErrorKind(BPSPluginID, BPSPolicyBlockedKind)
-		// Hard stop: the blocked request is never replayed to another BPS
-		// account, and its conversation avoids BPS for a while.
-		state.markPolicyBlocked(context.Background())
+		// The block is an account-level request quota: the request fails over
+		// to another BPS account (never this one, see the exclusion above).
+		// Marking the conversation is opt-in.
+		if currentBPSConfig().PolicyConversationMark {
+			state.markConversationBlocked(context.Background())
+		}
 	}
 }
 

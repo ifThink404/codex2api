@@ -18,11 +18,11 @@ import (
 // upstream, so a BPS account never spills onto the native transport unless
 // its native route is explicitly enabled (codex_native_enabled=true). When
 // BPS cannot serve a request on an account (the model is not available on
-// BPS, the account is cooling, the request or its conversation was blocked by
-// the usage policy), the account is vetoed and the request goes to another
-// account. Only when no other account could serve it is the account admitted
-// anyway, and the attempt fails fast with a clear client error instead of
-// being sent anywhere.
+// BPS, the account is cooling or over budget, a marked conversation), the
+// account is vetoed and the request goes to another account. Only when no
+// other account could serve it is the account admitted anyway, and the
+// attempt fails fast without contacting any upstream: 503 bps_unavailable
+// (400 for a model not on BPS; a full account waits briefly for a slot).
 
 const (
 	bpsConversationBlockTTL = 30 * time.Minute
@@ -68,14 +68,14 @@ func (s *bpsRequest) policyBlocked() bool {
 	return s.blocked
 }
 
-// markPolicyBlocked stops this request from using BPS on any account and
-// marks its conversation, so follow-up turns avoid BPS for 30 minutes.
-func (s *bpsRequest) markPolicyBlocked(ctx context.Context) {
+// markConversationBlocked marks the request's conversation so its later turns
+// avoid BPS for 30 minutes (bps_policy_conversation_mark). The current
+// request still fails over to another BPS account.
+func (s *bpsRequest) markConversationBlocked(ctx context.Context) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	s.blocked = true
 	keys := append([]string(nil), s.conversationKeys...)
 	s.mu.Unlock()
 	now := time.Now()
@@ -183,17 +183,12 @@ func bpsRefusal(reason, model string, until time.Time) *Error {
 	switch reason {
 	case BPSModelUnavailable:
 		return bpsError(http.StatusBadRequest, "bps_model_unavailable", "model %s is not available on BPS for this account", model)
-	case BPSPolicyBlockedKind:
-		return bpsError(http.StatusForbidden, "bps_policy_blocked", "this conversation was blocked by the BPS usage policy; retry later")
-	case BPSBudgetExhaustedReason:
-		return bpsError(http.StatusTooManyRequests, "bps_budget_exhausted", "the BPS request budget of this account is used up for the current window")
 	case BPSConcurrencyFullReason:
 		return bpsError(http.StatusTooManyRequests, "bps_concurrency_limited", "every BPS account is at its concurrency limit; retry shortly")
-	case BPSRateLimitedReason:
-		if !until.IsZero() {
-			return bpsError(http.StatusTooManyRequests, "bps_rate_limited", "BPS is rate limited for this account until %s", until.UTC().Format(time.RFC3339))
-		}
-		return bpsError(http.StatusTooManyRequests, "bps_rate_limited", "BPS is rate limited for this account")
 	}
-	return bpsError(http.StatusServiceUnavailable, "bps_unavailable", "BPS cannot serve this request on any account")
+	// Cooling, blocked or over budget: no account is contacted.
+	if !until.IsZero() && until.After(time.Now()) {
+		return bpsError(http.StatusServiceUnavailable, "bps_unavailable", "no BPS account is available right now (%s until %s)", reason, until.UTC().Format(time.RFC3339))
+	}
+	return bpsError(http.StatusServiceUnavailable, "bps_unavailable", "no BPS account is available right now (%s)", reason)
 }

@@ -77,54 +77,73 @@ func TestBPSLastResortReturnsAClearClientError(t *testing.T) {
 	require.Contains(t, refusal.Message, "model gpt-5.5 is not available on BPS for this account")
 }
 
-func TestBPSUsagePolicyHardStop(t *testing.T) {
+func TestBPSUsagePolicyFailsOverToAnotherBPSAccount(t *testing.T) {
 	freshBPSAccountStates(t)
 	blocked := withBPSOverride(&auth.Account{DBID: 9121, AccountID: "blocked", AccessToken: "at"}, true)
 	otherBPS := withBPSOverride(&auth.Account{DBID: 9122, AccountID: "other-bps", AccessToken: "at"}, true)
-	explicitNative := withBPSOverride((&auth.Account{DBID: 9123, AccountID: "explicit-native", AccessToken: "at"}).SetCodexBPSOptions(auth.CodexBPSAccountOptions{Native: boolPtrForUpstreamModelTest(true)}), true)
-	handler := bpsRoutingHandler(t, blocked, otherBPS, explicitNative)
+	handler := bpsRoutingHandler(t, blocked, otherBPS)
 	const body = `{"model":"gpt-6-sol","prompt_cache_key":"conversation-a","input":"analyze this code"}`
-	req, _, ctx := bpsRoutingRequest(handler, body)
+	req, state, ctx := bpsRoutingRequest(handler, body)
 
 	env := &plugins.ReqEnv{Request: req, Account: blocked, Model: "gpt-6-sol"}
 	bpsPlugin{}.FilterHeaders(env, http.Header{})
 	_, err := bpsPlugin{}.TransformJSON(env, http.StatusForbidden, []byte(bpsPolicyBlockBody))
 	require.NoError(t, err)
 
-	// Never replayed to another BPS account.
-	ok, reason := bpsPlugin{}.Admissible(ctx, otherBPS, "gpt-6-sol")
+	// The block is an account quota: fail over like a 429, never to the same account.
+	ok, _ := bpsPlugin{}.Admissible(ctx, otherBPS, "gpt-6-sol")
+	require.True(t, ok, "another BPS account takes the request")
+	require.True(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: otherBPS, Model: "gpt-6-sol"}))
+	ok, reason := bpsPlugin{}.Admissible(ctx, blocked, "gpt-6-sol")
 	require.False(t, ok)
-	require.Equal(t, BPSPolicyBlockedKind, reason)
-	ok, _ = bpsPlugin{}.Admissible(ctx, blocked, "gpt-6-sol")
-	require.False(t, ok, "nor retried on the blocked account")
-	// Native only through an explicitly enabled native route.
-	ok, _ = bpsPlugin{}.Admissible(ctx, explicitNative, "gpt-6-sol")
-	require.True(t, ok)
-	require.False(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: explicitNative, Model: "gpt-6-sol"}))
+	require.Equal(t, "bps_account_refused", reason)
+	require.False(t, state.policyBlocked())
 
-	// Follow-up turns of the conversation avoid BPS for 30 minutes.
+	// With bps_policy_conversation_mark off (the default) no conversation is marked.
 	_, next, nextCtx := bpsRoutingRequest(handler, `{"model":"gpt-6-sol","prompt_cache_key":"conversation-a","input":"next turn"}`)
-	require.True(t, next.policyBlocked())
-	ok, reason = bpsPlugin{}.Admissible(nextCtx, otherBPS, "gpt-6-sol")
+	require.False(t, next.policyBlocked())
+	ok, _ = bpsPlugin{}.Admissible(nextCtx, otherBPS, "gpt-6-sol")
+	require.True(t, ok)
+	for _, key := range next.conversationKeys {
+		require.False(t, bpsAccountStateStore.load(context.Background(), nil, key, time.Now()).active(time.Now()))
+	}
+}
+
+func TestBPSPolicyConversationMarkIsOptIn(t *testing.T) {
+	freshBPSAccountStates(t)
+	updateBPSConfig(t, func(c BPSConfig) BPSConfig { c.PolicyConversationMark = true; return c })
+	blocked := withBPSOverride(&auth.Account{DBID: 9131, AccountID: "mark-blocked", AccessToken: "at"}, true)
+	otherBPS := withBPSOverride(&auth.Account{DBID: 9132, AccountID: "mark-other", AccessToken: "at"}, true)
+	handler := bpsRoutingHandler(t, blocked, otherBPS, &auth.Account{DBID: 9133, AccountID: "mark-native", AccessToken: "at"})
+	const body = `{"model":"gpt-6-sol","prompt_cache_key":"conversation-m","input":"hi"}`
+	req, state, ctx := bpsRoutingRequest(handler, body)
+	env := &plugins.ReqEnv{Request: req, Account: blocked, Model: "gpt-6-sol"}
+	bpsPlugin{}.FilterHeaders(env, http.Header{})
+	_, err := bpsPlugin{}.TransformJSON(env, http.StatusForbidden, []byte(bpsPolicyBlockBody))
+	require.NoError(t, err)
+	require.False(t, state.policyBlocked(), "the current request still fails over")
+	ok, _ := bpsPlugin{}.Admissible(ctx, otherBPS, "gpt-6-sol")
+	require.True(t, ok)
+
+	_, next, nextCtx := bpsRoutingRequest(handler, `{"model":"gpt-6-sol","prompt_cache_key":"conversation-m","input":"next"}`)
+	require.True(t, next.policyBlocked(), "with the switch on, later turns of the conversation avoid BPS")
+	ok, reason := bpsPlugin{}.Admissible(nextCtx, otherBPS, "gpt-6-sol")
 	require.False(t, ok)
 	require.Equal(t, BPSPolicyBlockedKind, reason)
-	record := bpsAccountStateStore.load(context.Background(), nil, next.conversationKeys[0], time.Now())
-	require.InDelta(t, (30 * time.Minute).Seconds(), time.Until(record.Until).Seconds(), 5)
-	// Another conversation, or the same cache key under another API key, is unaffected.
-	_, unrelated, _ := bpsRoutingRequest(handler, `{"model":"gpt-6-sol","prompt_cache_key":"conversation-b","input":"hi"}`)
-	require.False(t, unrelated.policyBlocked())
 	otherKey := plugins.NewRequest("r", plugins.KindResponses, []byte(body), http.Header{}, 8)
-	require.NotEqual(t, next.conversationKeys, bpsConversationKeys(otherKey, nil))
+	require.NotEqual(t, next.conversationKeys, bpsConversationKeys(otherKey, nil), "marks are scoped to the API key")
+}
 
-	// With no other account able to serve, the client gets the refusal.
-	lonely := withBPSOverride(&auth.Account{DBID: 9124, AccountID: "lonely", AccessToken: "at"}, true)
-	lonelyReq, lonelyState, lonelyCtx := bpsRoutingRequest(bpsRoutingHandler(t, lonely), body)
-	require.True(t, lonelyState.policyBlocked())
-	ok, _ = bpsPlugin{}.Admissible(lonelyCtx, lonely, "gpt-6-sol")
-	require.True(t, ok)
-	_, err = bpsPlugin{}.Execute(lonelyCtx, &plugins.ReqEnv{Request: lonelyReq, Account: lonely, Model: "gpt-6-sol"})
+func TestBPSNoAdmissibleAccountReturns503WithoutUpstream(t *testing.T) {
+	freshBPSAccountStates(t)
+	only := withBPSOverride(&auth.Account{DBID: 9141, AccountID: "only-cooling", AccessToken: "at"}, true)
+	recordBPSFailureClass(context.Background(), nil, only.ID(), "", http.StatusTooManyRequests, nil, nil)
+	req, _, ctx := bpsRoutingRequest(bpsRoutingHandler(t, only), `{"model":"gpt-6-sol","input":"hi"}`)
+	ok, _ := bpsPlugin{}.Admissible(ctx, only, "gpt-6-sol")
+	require.True(t, ok, "admitted only to return the refusal")
+	_, err := bpsPlugin{}.Execute(ctx, &plugins.ReqEnv{Request: req, Account: only, Model: "gpt-6-sol"})
 	var refusal *Error
 	require.ErrorAs(t, err, &refusal)
-	require.Equal(t, http.StatusForbidden, refusal.HTTPStatus)
-	require.Equal(t, "bps_policy_blocked", refusal.Code)
+	require.Equal(t, http.StatusServiceUnavailable, refusal.HTTPStatus)
+	require.Equal(t, "bps_unavailable", refusal.Code)
 }

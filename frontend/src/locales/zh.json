@@ -7440,7 +7440,8 @@
       "capture_error_retention_hours": "错误抓包保留时长（小时）",
       "bps_account_max_concurrency": "单账号 BPS 并发上限",
       "bps_account_request_budget": "单账号 BPS 请求预算",
-      "bps_account_budget_window": "BPS 预算窗口"
+      "bps_account_budget_window": "BPS 预算窗口",
+      "bps_policy_conversation_mark": "用量策略拦截后标记会话"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7465,7 +7466,8 @@
       "capture_error_retention_hours": "错误抓包及同一次尝试的其余抓包：1–12 小时，填 0 使用默认值（12）。",
       "bps_account_max_concurrency": "每个实例上单账号同时进行的 BPS 请求上限；超出的请求改走其他 BPS 账号或短暂排队。0 表示关闭。",
       "bps_account_request_budget": "窗口内单账号成功的 BPS 请求数，跨实例统计；达到预算后在窗口滚动前不再走 BPS。0 表示关闭。",
-      "bps_account_budget_window": "请求预算的滚动窗口，如 24h、12h（1h–720h）。留空为 24h。"
+      "bps_account_budget_window": "请求预算的滚动窗口，如 24h、12h（1h–720h）。留空为 24h。",
+      "bps_policy_conversation_mark": "默认关闭。开启后，触发 BPS 用量策略拦截的会话，其后续轮次 30 分钟内不走 BPS。拦截是账号级请求配额，当前请求始终会切换到其他 BPS 账号。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
