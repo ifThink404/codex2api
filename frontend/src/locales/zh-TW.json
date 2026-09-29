@@ -2550,9 +2550,9 @@
       "exclude_failures_from_native_health": "BPS 失敗不計入原生帳號健康",
       "persist_heuristic_affinity": "跨實例保留推斷會話的帳號親和",
       "policy_block_threshold": "停用 BPS 前的用量政策攔截次數（10 分鐘內）",
-      "policy_block_cooldown_hours": "用量政策攔截後的冷卻時長（小時）",
       "bps_models": "走 BPS 的模型",
-      "bps_only_models": "僅 BPS 可用的模型"
+      "bps_only_models": "僅 BPS 可用的模型",
+      "bps_policy_cooldown_ladder": "用量政策冷卻階梯"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2570,7 +2570,8 @@
       "exclude_failures_from_native_health": "開啟時，BPS 的 4xx/5xx、附件上傳、串流內失敗和限流不降低帳號原生健康度，也不觸發冷卻；憑證失效、帳號停用等帳號級訊號仍會上報。",
       "persist_heuristic_affinity": "開啟時，依對話開頭推斷的會話在所有實例上沿用同一帳號；關閉後只持久化用戶端 task_id，開頭相同的無關對話不會共用帳號，但失去跨實例黏性。",
       "bps_models": "逗號分隔的萬用字元；其餘模型走原生。留空使用預設值。",
-      "bps_only_models": "原生無法服務的模型：排程優先選擇可走 BPS 的帳號。留空使用預設值。"
+      "bps_only_models": "原生無法服務的模型：排程優先選擇可走 BPS 的帳號。留空使用預設值。",
+      "bps_policy_cooldown_ladder": "上游未提供明確冷卻時，每次觸發（10 分鐘內 3 次攔截）依序使用的冷卻時長；2 小時無攔截降一檔，24 小時無攔截歸零。填 2m、2h 這類時長。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2579,7 +2580,8 @@
       "bps_policy_blocked": "BPS 用量政策攔截"
     },
     "policyStrikes": "最近 10 分鐘 BPS 用量政策攔截：{{count}} 次",
-    "modelUnavailable": "此帳號在 BPS 上無法使用 {{model}}，{{time}} 前改走原生"
+    "modelUnavailable": "此帳號在 BPS 上無法使用 {{model}}，{{time}} 前改走原生",
+    "policyTier": "用量政策冷卻檔位 {{tier}}/{{tiers}}"
   },
   "logAgent": {
     "title": "AI 日誌分析",

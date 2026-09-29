@@ -7433,9 +7433,9 @@
       "exclude_failures_from_native_health": "Exclude BPS failures from native account health",
       "persist_heuristic_affinity": "Persist inferred-session affinity across replicas",
       "policy_block_threshold": "Usage-policy blocks before stopping BPS (10 min)",
-      "policy_block_cooldown_hours": "Usage-policy block cooldown (hours)",
       "bps_models": "Models served by BPS",
-      "bps_only_models": "BPS-only models"
+      "bps_only_models": "BPS-only models",
+      "bps_policy_cooldown_ladder": "Usage-policy cooldown ladder"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7453,7 +7453,8 @@
       "exclude_failures_from_native_health": "On: BPS 4xx/5xx, upload, stream and rate-limit failures do not lower the account's native health or start cooldowns. Revoked credentials and deactivated accounts are always reported.",
       "persist_heuristic_affinity": "On: sessions inferred from the conversation opening keep their account on every replica. Off: only client task IDs are stored, so unrelated conversations with the same opening never share an account, at the cost of cross-replica stickiness.",
       "bps_models": "Comma-separated globs. Other models are served natively. Empty uses the default.",
-      "bps_only_models": "Models native cannot serve: scheduling tries BPS-capable accounts first. Empty uses the default."
+      "bps_only_models": "Models native cannot serve: scheduling tries BPS-capable accounts first. Empty uses the default.",
+      "bps_policy_cooldown_ladder": "Cooldown per trigger (3 blocks in 10 min) when the upstream gives no explicit cooldown: 1st, 2nd, 3rd… trigger. A tier is forgiven per 2h without a block, all after 24h. Durations like 2m, 2h."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7462,7 +7463,8 @@
       "bps_policy_blocked": "BPS usage-policy block"
     },
     "policyStrikes": "BPS usage-policy blocks in the last 10 min: {{count}}",
-    "modelUnavailable": "{{model}} is not available on BPS for this account; served natively until {{time}}"
+    "modelUnavailable": "{{model}} is not available on BPS for this account; served natively until {{time}}",
+    "policyTier": "Usage-policy cooldown tier {{tier}}/{{tiers}}"
   },
   "logAgent": {
     "title": "AI log analysis",

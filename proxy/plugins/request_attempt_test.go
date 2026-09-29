@@ -1,6 +1,10 @@
 package plugins
 
-import "testing"
+import (
+	"net/http"
+	"strings"
+	"testing"
+)
 
 func TestUsageValuesApplyOnlyToTheirAttempt(t *testing.T) {
 	req := NewRequest("req-attempts", KindResponses, nil, nil, 0)
@@ -20,5 +24,13 @@ func TestUsageValuesApplyOnlyToTheirAttempt(t *testing.T) {
 	req.SetUsageErrorMessage("provider text of attempt 2")
 	if req.UsageErrorMessage() != "provider text of attempt 2" {
 		t.Fatal("attempt 2 records its own message")
+	}
+}
+
+func TestCaptureHeadersKeepResponseHeadersWhole(t *testing.T) {
+	header := http.Header{"Authorization": {"Bearer secret"}, "Set-Cookie": {"a=b"}, "X-Request-Id": {"req_0123456789abcdef0123456789abcdef"}}
+	response := captureHeaders(header, false)
+	if !strings.Contains(response, "req_0123456789abcdef0123456789abcdef") || strings.Contains(response, "secret") || strings.Contains(response, "a=b") {
+		t.Fatalf("response headers = %s", response)
 	}
 }

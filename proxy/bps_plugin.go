@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/upstreamprivacy"
 	"github.com/codex2api/proxy/plugins"
+	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -50,11 +53,14 @@ type BPSConfig struct {
 	// for them instead of trying native first.
 	BPSModels     []string `json:"bps_models,omitempty"`
 	BPSOnlyModels []string `json:"bps_only_models,omitempty"`
-	// PolicyBlockThreshold usage-policy blocks within 10 minutes stop BPS
-	// routing to an account for PolicyBlockCooldownHours (defaults 3 and 6).
-	PolicyBlockThreshold            int   `json:"policy_block_threshold,omitempty"`
-	PolicyBlockCooldownHours        int   `json:"policy_block_cooldown_hours,omitempty"`
-	ExcludeFailuresFromNativeHealth *bool `json:"exclude_failures_from_native_health,omitempty"`
+	// PolicyBlockThreshold usage-policy blocks within 10 minutes (default 3)
+	// trigger a BPS cooldown of the account. Without an explicit upstream
+	// hint the cooldown climbs PolicyCooldownLadder one tier per trigger
+	// (default 2m, 10m, 30m, 2h); a tier is forgiven per 2h without a block
+	// and all of them after 24h.
+	PolicyBlockThreshold            int      `json:"policy_block_threshold,omitempty"`
+	PolicyCooldownLadder            []string `json:"bps_policy_cooldown_ladder,omitempty"`
+	ExcludeFailuresFromNativeHealth *bool    `json:"exclude_failures_from_native_health,omitempty"`
 	// PersistHeuristicAffinity stores the task affinity of heuristic
 	// (conversation-prefix) seeds in the database, shared by every replica.
 	// Absent means on, as in fj-server; off keeps them in a local LRU.
@@ -65,6 +71,26 @@ type BPSConfig struct {
 // database.
 func (c BPSConfig) PersistsHeuristicAffinity() bool {
 	return c.PersistHeuristicAffinity == nil || *c.PersistHeuristicAffinity
+}
+
+var defaultBPSPolicyCooldownLadder = []string{"2m", "10m", "30m", "2h"}
+
+// PolicyLadder is the usage-policy cooldown per tier.
+func (c BPSConfig) PolicyLadder() []time.Duration {
+	tiers := c.PolicyCooldownLadder
+	if len(tiers) == 0 {
+		tiers = defaultBPSPolicyCooldownLadder
+	}
+	ladder := make([]time.Duration, 0, len(tiers))
+	for _, tier := range tiers {
+		if d, err := time.ParseDuration(strings.TrimSpace(tier)); err == nil && d > 0 {
+			ladder = append(ladder, d)
+		}
+	}
+	if len(ladder) == 0 {
+		ladder = []time.Duration{2 * time.Minute, 10 * time.Minute, 30 * time.Minute, 2 * time.Hour}
+	}
+	return ladder
 }
 
 var (
@@ -128,9 +154,7 @@ func (c BPSConfig) normalized() BPSConfig {
 	if c.PolicyBlockThreshold < 1 || c.PolicyBlockThreshold > 100 {
 		c.PolicyBlockThreshold = 3
 	}
-	if c.PolicyBlockCooldownHours < 1 || c.PolicyBlockCooldownHours > 168 {
-		c.PolicyBlockCooldownHours = 6
-	}
+
 	return c
 }
 
@@ -151,6 +175,14 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 			if _, err := path.Match(strings.ToLower(strings.TrimSpace(pattern)), ""); strings.TrimSpace(pattern) == "" || len(pattern) > 128 || err != nil {
 				return BPSConfig{}, fmt.Errorf("invalid model pattern %q", pattern)
 			}
+		}
+	}
+	if len(cfg.PolicyCooldownLadder) > 10 {
+		return BPSConfig{}, fmt.Errorf("bps_policy_cooldown_ladder holds at most 10 tiers")
+	}
+	for _, tier := range cfg.PolicyCooldownLadder {
+		if d, err := time.ParseDuration(strings.TrimSpace(tier)); err != nil || d < time.Second || d > 24*time.Hour {
+			return BPSConfig{}, fmt.Errorf("invalid bps_policy_cooldown_ladder tier %q (use durations such as 2m or 2h, 1s to 24h)", tier)
 		}
 	}
 	if cfg.WordUserAgent != "" && (len(cfg.WordUserAgent) > 2048 || strings.ContainsAny(cfg.WordUserAgent, "\r\n\x00")) {
@@ -505,12 +537,10 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		resp.Body = newBPSStreamGuard(resp.Body, func() { request.SetUsageErrorKind(BPSPluginID, BPSCutoffCompletedKind) })
 	}
 	if d := bpsAttemptDiagnostic(env); d != nil {
-		meta := map[string]string{"profile": string(d.Profile)}
+		bpsSetUsageMeta(env, "profile", string(d.Profile))
 		if d.AgentIteration != "" {
-			meta["agent_iteration"] = d.AgentIteration
+			bpsSetUsageMeta(env, "agent_iteration", d.AgentIteration)
 		}
-		encoded, _ := json.Marshal(meta)
-		env.Request.SetUsageMeta(BPSPluginID, string(encoded))
 	}
 	return resp, err
 }
@@ -545,10 +575,51 @@ func bpsInboundEndpoint(kind plugins.RequestKind) string {
 // the extracted usage), provider error scrubbing, plus provenance recording
 // for the sticky domain.
 
-const bpsAttemptRetryAfterKey = "bps_retry_after"
+const (
+	bpsAttemptHeadersKey = "bps_response_headers"
+	bpsAttemptMetaKey    = "bps_usage_meta"
+)
+
+// bpsSetUsageMeta sets one key of the attempt's usage_logs.plugin_meta.
+func bpsSetUsageMeta(env *plugins.ReqEnv, key, value string) {
+	meta, _ := env.State(bpsAttemptMetaKey).(map[string]string)
+	if meta == nil {
+		meta = map[string]string{}
+		env.SetState(bpsAttemptMetaKey, meta)
+	}
+	meta[key] = value
+	encoded, _ := json.Marshal(meta)
+	env.Request.SetUsageMeta(BPSPluginID, string(encoded))
+}
+
+// bpsRedactedResponseHeaders are the only response headers hidden in the
+// compact header record; everything else is kept for analysis.
+var bpsRedactedResponseHeaders = map[string]bool{"set-cookie": true, "cookie": true, "authorization": true, "proxy-authorization": true, "chatgpt-account-id": true, "openai-organization": true}
+
+// bpsCompactHeaders renders response headers as "Name: value; ..." sorted by
+// name, auth and cookie values redacted, capped at 2 KiB.
+func bpsCompactHeaders(header http.Header) string {
+	names := make([]string, 0, len(header))
+	for name := range header {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, name := range names {
+		value := strings.Join(header[name], ", ")
+		if bpsRedactedResponseHeaders[strings.ToLower(name)] {
+			value = "[REDACTED]"
+		}
+		if b.Len() > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(name + ": " + value)
+	}
+	return security.SafeTruncate(b.String(), 2048)
+}
 
 func (bpsPlugin) FilterHeaders(env *plugins.ReqEnv, header http.Header) {
-	env.SetState(bpsAttemptRetryAfterKey, header.Get("Retry-After"))
+	env.SetState(bpsAttemptHeadersKey, header.Clone())
 	for name := range header {
 		if bpsSourceField(name) || strings.EqualFold(name, "X-Codex-Turn-State") {
 			header.Del(name)
@@ -606,9 +677,20 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	if env.Account == nil {
 		return
 	}
-	retryAfter, _ := env.State(bpsAttemptRetryAfterKey).(string)
+	header, _ := env.State(bpsAttemptHeadersKey).(http.Header)
+	bpsSetUsageMeta(env, "error_headers", bpsCompactHeaders(header))
 	state := bpsRequestState(env.Request)
-	class := recordBPSFailure(context.Background(), state.cache(), env.Account.ID(), env.Model, status, retryAfter, body)
+	class, record := recordBPSFailure(context.Background(), state.cache(), env.Account.ID(), env.Model, status, header, body)
+	if class != "" {
+		bpsSetUsageMeta(env, "bps_failure", class)
+	}
+	if record.active(time.Now()) && (class == BPSRateLimitedReason || class == BPSPolicyBlockedKind) {
+		bpsSetUsageMeta(env, "bps_cooling_until", record.Until.UTC().Format(time.RFC3339))
+	}
+	if class == BPSPolicyBlockedKind {
+		bpsSetUsageMeta(env, "policy_tier", strconv.Itoa(record.PolicyTier))
+		bpsSetUsageMeta(env, "policy_strikes", strconv.Itoa(len(record.Strikes)))
+	}
 	if class != "" && class != BPSModelUnavailable {
 		// A model refusal only moves that model to native; the account stays.
 		bpsExcludeAccountForRequest(env.Request, env.Account)

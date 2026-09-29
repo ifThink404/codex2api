@@ -20,10 +20,14 @@ import (
 // failures never touch native health or cooldowns, so the plugin keeps its own
 // per-account state and enforces it through Select and the Admissible veto:
 //
-//   - rate limits (BPS 429): a cooldown that honors Retry-After / reset hints
-//     and otherwise backs off exponentially from 60s;
-//   - usage-policy blocks (403 "blocked by our usage policy"): after
-//     policy_block_threshold strikes within 10 minutes, a long cooldown;
+//   - rate limits (BPS 429): an explicit upstream hint (Retry-After,
+//     x-ratelimit-reset*, resets_at / resets_in_seconds, retry_after) is
+//     honored exactly; otherwise the cooldown backs off exponentially from 60s;
+//   - usage-policy blocks (403 "blocked by our usage policy"): every
+//     policy_block_threshold blocks within 10 minutes trigger a cooldown, the
+//     explicit upstream hint if there is one, else the next tier of
+//     bps_policy_cooldown_ladder (a tier is forgiven per 2h without a block,
+//     all of them after 24h);
 //   - model access (403 basispoints_model_access_changed): "model X is not on
 //     BPS for this account" for an hour, so that model is served natively.
 //
@@ -47,6 +51,8 @@ const (
 	bpsRateLimitMax       = 30 * time.Minute
 	bpsRateLimitDecay     = 30 * time.Minute
 	bpsPolicyStrikeWindow = 10 * time.Minute
+	bpsPolicyTierDecay    = 2 * time.Hour
+	bpsPolicyTierReset    = 24 * time.Hour
 )
 
 // bpsAccountRecord is the shared state of one account or (account, model).
@@ -58,6 +64,10 @@ type bpsAccountRecord struct {
 	LastStrike time.Time `json:"last_strike,omitempty"`
 	// Strikes are recent usage-policy blocks inside bpsPolicyStrikeWindow.
 	Strikes []time.Time `json:"strikes,omitempty"`
+	// PolicyTier is the usage-policy ladder tier reached; LastPolicyBlock
+	// dates the latest block, from which tiers are forgiven.
+	PolicyTier      int       `json:"policy_tier,omitempty"`
+	LastPolicyBlock time.Time `json:"last_policy_block,omitempty"`
 }
 
 func (r bpsAccountRecord) active(now time.Time) bool { return r.Until.After(now) }
@@ -127,6 +137,9 @@ func mergeBPSAccountRecords(local, remote bpsAccountRecord) bpsAccountRecord {
 	if remote.LastStrike.After(merged.LastStrike) {
 		merged.Level, merged.LastStrike = remote.Level, remote.LastStrike
 	}
+	if remote.LastPolicyBlock.After(merged.LastPolicyBlock) {
+		merged.PolicyTier, merged.LastPolicyBlock = remote.PolicyTier, remote.LastPolicyBlock
+	}
 	seen := make(map[int64]bool, len(merged.Strikes))
 	for _, strike := range merged.Strikes {
 		seen[strike.UnixNano()] = true
@@ -176,6 +189,9 @@ func (s *bpsAccountStates) update(ctx context.Context, store cache.TokenCache, k
 		if len(record.Strikes) > 0 || !record.LastStrike.IsZero() {
 			ttl = max(ttl, bpsRateLimitDecay)
 		}
+		if record.PolicyTier > 0 {
+			ttl = max(ttl, bpsPolicyTierReset)
+		}
 		if ttl > 0 {
 			raw, _ := json.Marshal(record)
 			writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bpsAttachmentCacheTimeout)
@@ -186,25 +202,56 @@ func (s *bpsAccountStates) update(ctx context.Context, store cache.TokenCache, k
 	return record
 }
 
-// bpsFailureHint is the upstream's own retry hint: Retry-After, or the
-// resets_in_seconds / resets_at fields of the error body.
-func bpsFailureHint(retryAfter string, body []byte, now time.Time) time.Duration {
-	if delay := parseRetryAfterHeaderAt(retryAfter, now); delay > 0 {
-		return delay
-	}
-	for _, path := range []string{"error.resets_in_seconds", "resets_in_seconds", "detail.error.resets_in_seconds"} {
-		if secs := gjson.GetBytes(body, path).Int(); secs > 0 {
-			return time.Duration(secs) * time.Second
+// bpsFailureHint is the upstream's own cooldown hint, from headers
+// (Retry-After, Retry-After-Ms, x-ratelimit-reset*) or the error body
+// (resets_in_seconds, resets_at, retry_after[_seconds]). The longest hint
+// wins; 0 means the upstream gave none.
+func bpsFailureHint(header http.Header, body []byte, now time.Time) time.Duration {
+	var hint time.Duration
+	take := func(d time.Duration) {
+		if d > 0 && d <= 7*24*time.Hour && d > hint {
+			hint = d
 		}
 	}
-	for _, path := range []string{"error.resets_at", "resets_at", "detail.error.resets_at"} {
-		if at := gjson.GetBytes(body, path).Int(); at > 0 {
-			if delay := time.Until(time.Unix(at, 0)); delay > 0 {
-				return delay
+	take(parseRetryAfterHeaderAt(header.Get("Retry-After"), now))
+	if ms, err := strconv.ParseInt(strings.TrimSpace(header.Get("Retry-After-Ms")), 10, 64); err == nil {
+		take(time.Duration(ms) * time.Millisecond)
+	}
+	for name, values := range header {
+		if !strings.HasPrefix(strings.ToLower(name), "x-ratelimit-reset") || len(values) == 0 {
+			continue
+		}
+		take(bpsResetValue(values[0], now))
+	}
+	root := gjson.ParseBytes(body)
+	for _, source := range []gjson.Result{root, root.Get("error"), root.Get("detail"), root.Get("detail.error"), root.Get("detail.error.error")} {
+		for _, key := range []string{"resets_in_seconds", "retry_after", "retry_after_seconds"} {
+			if secs := source.Get(key); secs.Type == gjson.Number && secs.Float() > 0 {
+				take(time.Duration(secs.Float() * float64(time.Second)))
 			}
 		}
+		if at := source.Get("resets_at").Int(); at > 0 {
+			take(time.Unix(at, 0).Sub(now))
+		}
 	}
-	return 0
+	return hint
+}
+
+// bpsResetValue reads an x-ratelimit-reset* value: a Go-style duration
+// ("6m0s", "1.5s", "20ms"), seconds, or a Unix timestamp.
+func bpsResetValue(raw string, now time.Time) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if d, err := time.ParseDuration(raw); err == nil {
+		return d
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	if value > 1e9 {
+		return time.Unix(int64(value), 0).Sub(now)
+	}
+	return time.Duration(value * float64(time.Second))
 }
 
 // bpsFailureClass classifies a BPS error for the plugin's own account state.
@@ -234,16 +281,17 @@ func bpsFailureClass(status int, body []byte) string {
 
 // recordBPSFailure updates the account state after a failed BPS attempt and
 // returns the failure class ("" for failures the plugin does not track).
-func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int64, model string, status int, retryAfter string, body []byte) string {
+func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int64, model string, status int, header http.Header, body []byte) (string, bpsAccountRecord) {
+	var record bpsAccountRecord
 	if accountID <= 0 {
-		return ""
+		return "", record
 	}
 	class := bpsFailureClass(status, body)
 	now := time.Now()
 	switch class {
 	case BPSRateLimitedReason:
-		hint := bpsFailureHint(retryAfter, body, now)
-		record := bpsAccountStateStore.update(ctx, store, bpsAccountStateKey(accountID), now, func(r *bpsAccountRecord) {
+		hint := bpsFailureHint(header, body, now)
+		record = bpsAccountStateStore.update(ctx, store, bpsAccountStateKey(accountID), now, func(r *bpsAccountRecord) {
 			if now.Sub(r.LastStrike) > bpsRateLimitDecay {
 				r.Level = 0
 			}
@@ -260,7 +308,19 @@ func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int
 		log.Printf("[bps] account=%d rate limited on BPS; BPS cooling until %s (level %d)", accountID, record.Until.Format(time.RFC3339), record.Level)
 	case BPSPolicyBlockedKind:
 		cfg := currentBPSConfig()
-		record := bpsAccountStateStore.update(ctx, store, bpsAccountStateKey(accountID), now, func(r *bpsAccountRecord) {
+		ladder := cfg.PolicyLadder()
+		hint := bpsFailureHint(header, body, now)
+		escalated := false
+		record = bpsAccountStateStore.update(ctx, store, bpsAccountStateKey(accountID), now, func(r *bpsAccountRecord) {
+			if !r.LastPolicyBlock.IsZero() {
+				clean := now.Sub(r.LastPolicyBlock)
+				if clean >= bpsPolicyTierReset {
+					r.PolicyTier = 0
+				} else {
+					r.PolicyTier = max(r.PolicyTier-int(clean/bpsPolicyTierDecay), 0)
+				}
+			}
+			r.LastPolicyBlock = now
 			kept := r.Strikes[:0]
 			for _, strike := range r.Strikes {
 				if now.Sub(strike) < bpsPolicyStrikeWindow {
@@ -268,29 +328,39 @@ func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int
 				}
 			}
 			r.Strikes = append(kept, now)
-			if len(r.Strikes) >= cfg.PolicyBlockThreshold {
-				until := now.Add(time.Duration(cfg.PolicyBlockCooldownHours) * time.Hour)
-				if until.After(r.Until) {
-					r.Until, r.Reason = until, BPSPolicyBlockedKind
-				}
-				r.Strikes = nil
+			if len(r.Strikes) < cfg.PolicyBlockThreshold {
+				return
 			}
+			r.PolicyTier = min(r.PolicyTier+1, len(ladder))
+			delay := hint
+			if delay <= 0 {
+				delay = ladder[r.PolicyTier-1]
+			}
+			if until := now.Add(delay); until.After(r.Until) || r.Reason != BPSPolicyBlockedKind {
+				r.Until, r.Reason = until, BPSPolicyBlockedKind
+			}
+			r.Strikes = nil
+			escalated = true
 		})
-		if record.Reason == BPSPolicyBlockedKind && record.active(now) && len(record.Strikes) == 0 {
-			log.Printf("[bps] account=%d blocked by the BPS usage policy %d times in %s; BPS disabled for this account until %s", accountID, cfg.PolicyBlockThreshold, bpsPolicyStrikeWindow, record.Until.Format(time.RFC3339))
+		if escalated {
+			source := "ladder"
+			if hint > 0 {
+				source = "upstream hint"
+			}
+			log.Printf("[bps] account=%d blocked by the BPS usage policy %d times in %s; policy tier %d/%d, BPS cooling until %s (%s)", accountID, cfg.PolicyBlockThreshold, bpsPolicyStrikeWindow, record.PolicyTier, len(ladder), record.Until.Format(time.RFC3339), source)
 		} else {
-			log.Printf("[bps] account=%d blocked by the BPS usage policy (%d/%d in %s)", accountID, len(record.Strikes), cfg.PolicyBlockThreshold, bpsPolicyStrikeWindow)
+			log.Printf("[bps] account=%d blocked by the BPS usage policy (%d/%d in %s, tier %d/%d)", accountID, len(record.Strikes), cfg.PolicyBlockThreshold, bpsPolicyStrikeWindow, record.PolicyTier, len(ladder))
 		}
 	case BPSModelUnavailable:
 		if strings.TrimSpace(model) == "" {
-			return class
+			return class, record
 		}
 		bpsAccountStateStore.update(ctx, store, bpsModelStateKey(accountID, model), now, func(r *bpsAccountRecord) {
 			r.Until, r.Reason = now.Add(bpsModelBlockTTL), BPSModelUnavailable
 		})
 		log.Printf("[bps] account=%d has no BPS access to model %s; serving it natively for %s", accountID, model, bpsModelBlockTTL)
 	}
-	return class
+	return class, record
 }
 
 // bpsAccountCooling returns the active BPS cooldown of an account, if any.
@@ -315,6 +385,9 @@ type BPSAccountStatus struct {
 	CoolingUntil  time.Time `json:"cooling_until,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
 	PolicyStrikes int       `json:"policy_strikes,omitempty"`
+	// PolicyTier is the usage-policy ladder tier reached, of PolicyTiers.
+	PolicyTier  int `json:"policy_tier,omitempty"`
+	PolicyTiers int `json:"policy_tiers"`
 	// ModelsUnavailable maps models BPS refused for this account to the time
 	// they are retried on BPS.
 	ModelsUnavailable map[string]time.Time `json:"models_unavailable,omitempty"`
@@ -333,6 +406,13 @@ func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs 
 		for _, strike := range record.Strikes {
 			if now.Sub(strike) < bpsPolicyStrikeWindow {
 				status.PolicyStrikes++
+			}
+		}
+		status.PolicyTiers = len(currentBPSConfig().PolicyLadder())
+		if !record.LastPolicyBlock.IsZero() {
+			clean := now.Sub(record.LastPolicyBlock)
+			if clean < bpsPolicyTierReset {
+				status.PolicyTier = max(record.PolicyTier-int(clean/bpsPolicyTierDecay), 0)
 			}
 		}
 		prefix := "model:" + strconv.FormatInt(id, 10) + ":"

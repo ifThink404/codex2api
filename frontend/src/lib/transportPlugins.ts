@@ -46,7 +46,7 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'bps_models', kind: 'list', defaultValue: ['gpt-5.6-*', 'gpt-6-*'], hint: true },
   { key: 'bps_only_models', kind: 'list', defaultValue: ['gpt-6-*'], hint: true },
   { key: 'policy_block_threshold', kind: 'number', min: 0, max: 100 },
-  { key: 'policy_block_cooldown_hours', kind: 'number', min: 0, max: 168 },
+  { key: 'bps_policy_cooldown_ladder', kind: 'list', defaultValue: ['2m', '10m', '30m', '2h'], hint: true },
   { key: 'attachment_429_fallback', kind: 'boolean' },
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },

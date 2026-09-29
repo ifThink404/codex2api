@@ -177,7 +177,12 @@ func maskCaptureBody(body []byte) (string, bool) {
 	return text, truncated || clamped
 }
 
-func maskCaptureHeaders(header http.Header) string {
+// maskCaptureHeaders records header with the credential headers redacted.
+// Request headers (from clients) also have sensitive-looking values masked;
+// upstream response headers are otherwise kept whole for analysis.
+func maskCaptureHeaders(header http.Header) string { return captureHeaders(header, true) }
+
+func captureHeaders(header http.Header, maskValues bool) string {
 	if len(header) == 0 {
 		return "{}"
 	}
@@ -194,7 +199,10 @@ func maskCaptureHeaders(header http.Header) string {
 		}
 		values := make([]string, len(header[key]))
 		for i, value := range header[key] {
-			values[i] = security.MaskSensitiveData(value)
+			if maskValues {
+				value = security.MaskSensitiveData(value)
+			}
+			values[i] = value
 		}
 		out[key] = values
 	}
@@ -269,7 +277,7 @@ func (rec *captureRecorder) response(resp *http.Response) {
 	c := rec.base
 	c.Direction = database.PluginCaptureDirectionResponse
 	c.Status = resp.StatusCode
-	c.Headers = maskCaptureHeaders(resp.Header)
+	c.Headers = captureHeaders(resp.Header, false)
 	if resp.StatusCode >= 400 {
 		c.ErrorKind = "http_" + http.StatusText(resp.StatusCode)
 		c.ErrorKind = strings.ToLower(strings.ReplaceAll(c.ErrorKind, " ", "_"))
