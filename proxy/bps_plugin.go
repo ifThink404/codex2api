@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,6 +44,12 @@ type BPSConfig struct {
 	// ExcludeFailuresFromNativeHealth keeps BPS failures out of native
 	// account health and cooldown. Absent means on, matching upstream's
 	// official BPS, which never reports its provider failures.
+	// BPSModels are the models BPS serves (globs; default gpt-5.6-*, gpt-6-*).
+	// Other models are served natively. BPSOnlyModels are models native
+	// cannot serve (default gpt-6-*): scheduling prefers BPS-capable accounts
+	// for them instead of trying native first.
+	BPSModels     []string `json:"bps_models,omitempty"`
+	BPSOnlyModels []string `json:"bps_only_models,omitempty"`
 	// PolicyBlockThreshold usage-policy blocks within 10 minutes stop BPS
 	// routing to an account for PolicyBlockCooldownHours (defaults 3 and 6).
 	PolicyBlockThreshold            int   `json:"policy_block_threshold,omitempty"`
@@ -58,6 +65,49 @@ type BPSConfig struct {
 // database.
 func (c BPSConfig) PersistsHeuristicAffinity() bool {
 	return c.PersistHeuristicAffinity == nil || *c.PersistHeuristicAffinity
+}
+
+var (
+	defaultBPSModels     = []string{"gpt-5.6-*", "gpt-6-*"}
+	defaultBPSOnlyModels = []string{"gpt-6-*"}
+)
+
+// bpsModelMatches reports whether model matches one of the globs.
+func bpsModelMatches(patterns []string, model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	for _, pattern := range patterns {
+		if ok, _ := path.Match(strings.ToLower(strings.TrimSpace(pattern)), model); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// ServesModel reports whether bps_models lets BPS serve model.
+func (c BPSConfig) ServesModel(model string) bool {
+	patterns := c.BPSModels
+	if len(patterns) == 0 {
+		patterns = defaultBPSModels
+	}
+	return bpsModelMatches(patterns, bpsWireModel(model))
+}
+
+// bpsWireModel is the model BPS is sent for a requested model
+// (prepareCodexBPSBodyForProfile maps codex-auto-review).
+func bpsWireModel(model string) string {
+	if strings.EqualFold(strings.TrimSpace(model), "codex-auto-review") {
+		return "gpt-5.6-luna"
+	}
+	return model
+}
+
+// BPSOnlyModel reports whether model is in bps_only_models.
+func (c BPSConfig) BPSOnlyModel(model string) bool {
+	patterns := c.BPSOnlyModels
+	if len(patterns) == 0 {
+		patterns = defaultBPSOnlyModels
+	}
+	return bpsModelMatches(patterns, model)
 }
 
 // SparesNativeHealth reports whether BPS failures stay out of native account
@@ -91,6 +141,16 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&cfg); err != nil {
 			return BPSConfig{}, fmt.Errorf("invalid BPS config: %w", err)
+		}
+	}
+	for _, list := range [][]string{cfg.BPSModels, cfg.BPSOnlyModels} {
+		if len(list) > 64 {
+			return BPSConfig{}, fmt.Errorf("model lists hold at most 64 patterns")
+		}
+		for _, pattern := range list {
+			if _, err := path.Match(strings.ToLower(strings.TrimSpace(pattern)), ""); strings.TrimSpace(pattern) == "" || len(pattern) > 128 || err != nil {
+				return BPSConfig{}, fmt.Errorf("invalid model pattern %q", pattern)
+			}
 		}
 	}
 	if cfg.WordUserAgent != "" && (len(cfg.WordUserAgent) > 2048 || strings.ContainsAny(cfg.WordUserAgent, "\r\n\x00")) {
@@ -192,7 +252,21 @@ func bpsServesAccount(account *auth.Account, model string) bool {
 	if p == nil {
 		return false
 	}
-	return account.CodexRouteAllows("bps", model, false, plugins.Default().EnabledFor(p, account))
+	return plugins.Default().EnabledFor(p, account) && bpsRouteAllows(context.Background(), nil, account, model, false)
+}
+
+// bpsRouteAllows reports whether BPS may serve model on account: the
+// account's BPS route, the plugin's bps_models, and no recent refusal of that
+// model by BPS for this account. Related (auxiliary) requests follow their
+// conversation regardless of the model lists.
+func bpsRouteAllows(ctx context.Context, store cache.TokenCache, account *auth.Account, model string, related bool) bool {
+	if !account.CodexRouteAllows("bps", model, related, true) {
+		return false
+	}
+	if related {
+		return true
+	}
+	return currentBPSConfig().ServesModel(model) && !bpsModelBlocked(ctx, store, account.ID(), model)
 }
 
 // bpsRequest is the plugin's per-inbound-request state.
@@ -265,7 +339,7 @@ func (bpsPlugin) Admissible(ctx context.Context, account *auth.Account, model st
 	if state == nil {
 		return true, ""
 	}
-	if state.pinned && !account.CodexRouteAllows("bps", model, state.related, true) {
+	if state.pinned && !bpsRouteAllows(ctx, state.cache(), account, model, state.related) {
 		return false, "bps_route_unavailable"
 	}
 	if state.accountExcluded(account) {
@@ -275,7 +349,7 @@ func (bpsPlugin) Admissible(ctx context.Context, account *auth.Account, model st
 	if record, cooling := bpsAccountCooling(ctx, state.cache(), account.ID()); cooling && (state.pinned || !account.CodexRouteAllows("native", model, state.related, true)) {
 		return false, record.Reason
 	}
-	if account.CodexRouteAllows("bps", model, state.related, true) && bpsUploadCooldownForAccount(context.WithValue(ctx, bpsUploadRequestKey{}, state.upload), account) {
+	if bpsRouteAllows(ctx, state.cache(), account, model, state.related) && bpsUploadCooldownForAccount(context.WithValue(ctx, bpsUploadRequestKey{}, state.upload), account) {
 		return false, bpsUploadCooldownReason
 	}
 	return true, ""
@@ -290,7 +364,7 @@ func (bpsPlugin) Select(ctx context.Context, attempt plugins.Attempt) bool {
 	if mode, _ := ctx.Value(codexTestModeKey{}).(string); mode == "bps" || mode == "codex" {
 		return mode == "bps"
 	}
-	if !attempt.Account.CodexRouteAllows("bps", attempt.Model, related, true) {
+	if !bpsRouteAllows(ctx, state.cache(), attempt.Account, attempt.Model, related) {
 		return false
 	}
 	if state != nil && state.pinned {
@@ -301,6 +375,25 @@ func (bpsPlugin) Select(ctx context.Context, attempt plugins.Attempt) bool {
 		return false
 	}
 	return !attempt.Account.CodexRouteAllows("native", attempt.Model, related, true)
+}
+
+// PreferredAccounts: for a BPS-only model (bps_only_models) scheduling tries
+// accounts BPS can serve it on first instead of native accounts that would
+// reject it.
+func (bpsPlugin) PreferredAccounts(ctx context.Context, req *plugins.Request, model string) func(*auth.Account) bool {
+	if !currentBPSConfig().BPSOnlyModel(model) {
+		return nil
+	}
+	state := bpsRequestState(req)
+	related := state != nil && state.related
+	p, _ := plugins.Default().Get(BPSPluginID)
+	return func(account *auth.Account) bool {
+		if p == nil || !plugins.Default().EnabledFor(p, account) || !bpsRouteAllows(ctx, state.cache(), account, model, related) {
+			return false
+		}
+		_, cooling := bpsAccountCooling(ctx, state.cache(), account.ID())
+		return !cooling
+	}
 }
 
 func (bpsPlugin) PreferredAccount(ctx context.Context, req *plugins.Request, model string) int64 {
@@ -516,7 +609,8 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	retryAfter, _ := env.State(bpsAttemptRetryAfterKey).(string)
 	state := bpsRequestState(env.Request)
 	class := recordBPSFailure(context.Background(), state.cache(), env.Account.ID(), env.Model, status, retryAfter, body)
-	if class != "" {
+	if class != "" && class != BPSModelUnavailable {
+		// A model refusal only moves that model to native; the account stays.
 		bpsExcludeAccountForRequest(env.Request, env.Account)
 	}
 	if class == BPSPolicyBlockedKind {

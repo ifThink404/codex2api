@@ -126,7 +126,7 @@ func (f *bpsHandlerFixture) usageRows(t *testing.T) []*database.UsageLog {
 // BPS: the credential key is the plugin's per-account override.
 func TestBPSPluginServesLegacyEnabledAccountThroughResponses(t *testing.T) {
 	f := newBPSHandlerFixture(t, map[string]any{auth.CodexBPSEnabledCredentialKey: true})
-	recorder := f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"input":"hi","instructions":"Caller instructions"}`)
+	recorder := f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"hi","instructions":"Caller instructions"}`)
 	body := recorder.Body.String()
 	require.Equal(t, http.StatusOK, recorder.Code, body)
 	require.EqualValues(t, 1, f.bps.Load())
@@ -153,19 +153,19 @@ func TestBPSPluginServesLegacyEnabledAccountThroughResponses(t *testing.T) {
 
 func TestBPSPluginDefaultOffGroupAndGlobalEnablement(t *testing.T) {
 	f := newBPSHandlerFixture(t, nil)
-	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"input":"hi"}`).Code)
+	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`).Code)
 	require.Zero(t, f.bps.Load(), "BPS is off by default")
 	require.EqualValues(t, 1, f.native.Load())
 
 	f.store.ApplyAccountGroups(f.account.ID(), []int64{41})
 	require.NoError(t, f.registry.Save(context.Background(), database.TransportPluginState{ID: BPSPluginID, GroupIDs: []int64{41}}))
-	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"input":"hi"}`).Code)
+	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`).Code)
 	require.EqualValues(t, 1, f.bps.Load(), "account group enables BPS")
 
 	off := false
 	f.store.ApplyAccountTransportPluginOverride(f.account.ID(), BPSPluginID, &off)
 	require.NoError(t, f.registry.Save(context.Background(), database.TransportPluginState{ID: BPSPluginID, Enabled: true}))
-	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"input":"hi"}`).Code)
+	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`).Code)
 	require.EqualValues(t, 1, f.bps.Load(), "an explicit override wins over the global switch")
 	require.EqualValues(t, 2, f.native.Load())
 }
@@ -174,7 +174,7 @@ func TestBPSPluginDefaultOffGroupAndGlobalEnablement(t *testing.T) {
 // upstream adapter branch never runs.
 func TestBPSPluginTakesOverUpstreamExcelFlag(t *testing.T) {
 	f := newBPSHandlerFixture(t, map[string]any{auth.ExcelBPSCredentialKey: true})
-	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"input":"hi"}`).Code)
+	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`).Code)
 	require.EqualValues(t, 1, f.bps.Load())
 	sent := *f.lastBody.Load()
 	require.True(t, strings.HasPrefix(gjson.GetBytes(sent, "metadata.bps_tools_version_id").String(), "tools-excel-"))
@@ -185,14 +185,14 @@ func TestBPSPluginTakesOverUpstreamExcelFlag(t *testing.T) {
 // Continuations of BPS-produced responses are pinned to BPS.
 func TestBPSPluginPinsContinuationsOfBPSResponses(t *testing.T) {
 	f := newBPSHandlerFixture(t, map[string]any{auth.CodexBPSEnabledCredentialKey: true})
-	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"input":"hi"}`).Code)
+	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`).Code)
 	off := false
 	f.store.ApplyAccountTransportPluginOverride(f.account.ID(), BPSPluginID, &off)
-	recorder := f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"previous_response_id":"resp_bps_fixture","input":"next"}`)
+	recorder := f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"previous_response_id":"resp_bps_fixture","input":"next"}`)
 	require.NotEqual(t, http.StatusOK, recorder.Code, "a BPS continuation cannot fall back to native")
 	require.Zero(t, f.native.Load())
 	// An unrelated continuation is unaffected.
-	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.5","stream":true,"input":"fresh"}`).Code)
+	require.Equal(t, http.StatusOK, f.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"fresh"}`).Code)
 	require.EqualValues(t, 1, f.native.Load())
 }
 
@@ -207,7 +207,7 @@ func TestBPSPluginUploadFailureLogsAttemptAndCoolsDown(t *testing.T) {
 		bpsUploadCooldownState.mu.Unlock()
 	})
 	image := freshRetryImage(t)
-	body := `{"model":"gpt-5.5","stream":false,"input":[{"role":"user","content":[{"type":"input_image","image_url":"` + image + `"}]}]}`
+	body := `{"model":"gpt-5.6-sol","stream":false,"input":[{"role":"user","content":[{"type":"input_image","image_url":"` + image + `"}]}]}`
 	recorder := f.serve(t, "/v1/responses", body)
 	require.NotEqual(t, http.StatusOK, recorder.Code)
 	require.Zero(t, f.bps.Load(), "inference never runs without the attachment")
@@ -225,7 +225,7 @@ func TestBPSPluginUploadFailureLogsAttemptAndCoolsDown(t *testing.T) {
 
 func TestBPSPluginServesChatCompletions(t *testing.T) {
 	f := newBPSHandlerFixture(t, map[string]any{auth.CodexBPSEnabledCredentialKey: true})
-	recorder := f.serve(t, "/v1/chat/completions", `{"model":"gpt-5.5","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	recorder := f.serve(t, "/v1/chat/completions", `{"model":"gpt-5.6-sol","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.EqualValues(t, 1, f.bps.Load())
 	require.Zero(t, f.native.Load())
@@ -266,7 +266,7 @@ func TestBPSAttachmentFallbackRequiresOptInAndBinaries(t *testing.T) {
 // explicit mode otherwise, without changing the account.
 func TestExecuteCodexConnectionTestModes(t *testing.T) {
 	f := newBPSHandlerFixture(t, nil)
-	payload := []byte(`{"model":"gpt-5.5","stream":true,"input":"hi"}`)
+	payload := []byte(`{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`)
 	run := func(mode string) {
 		t.Helper()
 		ctx, err := WithCodexTestMode(context.Background(), mode)

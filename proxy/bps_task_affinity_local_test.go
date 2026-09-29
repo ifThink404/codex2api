@@ -15,7 +15,7 @@ func newBPSAffinityTestHandler(t *testing.T, id int64) (*Handler, *database.DB, 
 	db, err := newBPSProxyTestDB("sqlite", filepath.Join(t.TempDir(), "affinity.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.5", MaxRetries: 1})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.6-sol", MaxRetries: 1})
 	t.Cleanup(store.Stop)
 	account := withBPSOverride((&auth.Account{DBID: id, AccessToken: "at", AccountID: "affinity-account"}).SetCodexBPSOptions(auth.CodexBPSAccountOptions{Convergence: auth.CodexBPSConvergenceSession}), true)
 	store.AddAccount(account)
@@ -25,8 +25,8 @@ func newBPSAffinityTestHandler(t *testing.T, id int64) (*Handler, *database.DB, 
 func bindBPSAffinity(t *testing.T, h *Handler, seed string, heuristic bool, account *auth.Account) *inferredBPSSession {
 	t.Helper()
 	state := &inferredBPSSession{seed: seed, diagnostic: inferredBPSSessionDiagnostic{Result: "derived", Heuristic: heuristic}}
-	h.bpsPreferredTaskAccount(t.Context(), state, "gpt-5.5")
-	h.rememberBPSTaskAccount(t.Context(), state, account, "gpt-5.5")
+	h.bpsPreferredTaskAccount(t.Context(), state, "gpt-5.6-sol")
+	h.rememberBPSTaskAccount(t.Context(), state, account, "gpt-5.6-sol")
 	return state
 }
 
@@ -51,7 +51,7 @@ func TestBPSHeuristicAffinityPersistenceSwitch(t *testing.T) {
 			}
 			// The preference is found again either way on this replica.
 			next := &inferredBPSSession{seed: heuristicSeed, diagnostic: inferredBPSSessionDiagnostic{Heuristic: true}}
-			require.Equal(t, account.ID(), h.bpsPreferredTaskAccount(t.Context(), next, "gpt-5.5"))
+			require.Equal(t, account.ID(), h.bpsPreferredTaskAccount(t.Context(), next, "gpt-5.6-sol"))
 
 			// Client task IDs identify one conversation and always persist.
 			client := bindBPSAffinity(t, h, clientSeed, false, account)

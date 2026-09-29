@@ -16,7 +16,9 @@ import { isBPSAccount, type BPSTriState } from '../lib/bpsAccount'
 import {
   PLUGIN_VIEWS,
   bpsConfigFields,
+  normalizePluginConfig,
   pluginConfigBoolean,
+  pluginConfigListText,
   pluginCoolingReasonKey,
   captureIdFromEvidence,
   pluginCaptureAgentFilters,
@@ -187,7 +189,7 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
 
   const saveConfig = () => {
     if (typedFields) {
-      void save({ config })
+      void save({ config: normalizePluginConfig(config, typedFields) })
       return
     }
     const parsed = parsePluginConfigText(configText)
@@ -267,7 +269,7 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
         {typedFields ? (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {typedFields.map((field) => (
-              <Field key={field.key} label={t(`plugins.bpsConfig.${field.key}`)} help={field.kind === 'boolean' && field.hint ? t(`plugins.bpsConfigHints.${field.key}`) : undefined}>
+              <Field key={field.key} label={t(`plugins.bpsConfig.${field.key}`)} help={field.hint ? t(`plugins.bpsConfigHints.${field.key}`) : undefined}>
                 {field.kind === 'number' ? (
                   <DraftNumberInput
                     value={typeof config[field.key] === 'number' ? (config[field.key] as number) : 0}
@@ -287,6 +289,14 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
                       aria-label={t(`plugins.bpsConfig.${field.key}`)}
                     />
                   </div>
+                ) : field.kind === 'list' ? (
+                  <Input
+                    value={pluginConfigListText(config, field.key)}
+                    onChange={(event) => setConfig((prev) => ({ ...prev, [field.key]: event.target.value }))}
+                    placeholder={field.defaultValue.join(', ')}
+                    disabled={saving}
+                    aria-label={t(`plugins.bpsConfig.${field.key}`)}
+                  />
                 ) : (
                   <Input
                     value={typeof config[field.key] === 'string' ? (config[field.key] as string) : ''}
@@ -404,12 +414,20 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
 // PluginAccountStatusLine shows an account's plugin-scoped cooldown.
 function PluginAccountStatusLine({ status }: { status?: PluginAccountStatus }) {
   const { t } = useTranslation()
-  if (!status?.cooling_until && !status?.policy_strikes) return null
+  const models = Object.entries(status?.models_unavailable ?? {})
+  if (!status || (!status.cooling_until && !status.policy_strikes && models.length === 0)) return null
   return (
-    <span className="mt-1 block text-xs text-amber-600 dark:text-amber-400">
-      {status.cooling_until
-        ? t('plugins.coolingUntil', { time: formatBeijingTime(status.cooling_until), reason: t(pluginCoolingReasonKey(status.reason), { defaultValue: status.reason ?? '' }) })
-        : t('plugins.policyStrikes', { count: status.policy_strikes })}
+    <span className="mt-1 block space-y-0.5 text-xs text-amber-600 dark:text-amber-400">
+      {Boolean(status.cooling_until || status.policy_strikes) && (
+        <span className="block">
+          {status.cooling_until
+            ? t('plugins.coolingUntil', { time: formatBeijingTime(status.cooling_until), reason: t(pluginCoolingReasonKey(status.reason), { defaultValue: status.reason ?? '' }) })
+            : t('plugins.policyStrikes', { count: status.policy_strikes })}
+        </span>
+      )}
+      {models.map(([model, until]) => (
+        <span key={model} className="block break-all">{t('plugins.modelUnavailable', { model, time: formatBeijingTime(until) })}</span>
+      ))}
     </span>
   )
 }

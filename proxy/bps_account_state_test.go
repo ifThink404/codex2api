@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,4 +196,88 @@ func TestBPSPluginPolicyBlockNeverRetriesTheSameAccount(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 3, parsed.PolicyBlockThreshold)
 	require.Equal(t, 6, parsed.PolicyBlockCooldownHours)
+}
+
+const bpsModelAccessBody = `{"error":{"message":"You no longer have access to this model on Basispoints.","type":"invalid_request_error","code":"basispoints_model_access_changed"}}`
+
+func TestBPSModelAccessRefusalRoutesThatModelNatively(t *testing.T) {
+	freshBPSAccountStates(t)
+	shared := sharedMemoryCache{cache.NewMemory(1)}
+	account := withBPSOverride(&auth.Account{DBID: 9051, AccountID: "model-access", AccessToken: "at"}, true)
+	updateBPSConfig(t, func(c BPSConfig) BPSConfig { c.BPSModels = []string{"*"}; return c })
+	handler := &Handler{cache: shared}
+	req := plugins.NewRequest("req-model", plugins.KindResponses, nil, nil, 0)
+	req.SetState(BPSPluginID, &bpsRequest{handler: handler})
+	ctx := plugins.WithRequest(context.Background(), req)
+	attempt := func(model string) plugins.Attempt {
+		return plugins.Attempt{Request: req, Account: account, Model: model}
+	}
+	require.True(t, bpsPlugin{}.Select(ctx, attempt("gpt-5.5")))
+
+	require.Equal(t, BPSModelUnavailable, bpsFailureClass(http.StatusForbidden, []byte(bpsModelAccessBody)))
+	env := &plugins.ReqEnv{Request: req, Account: account, Model: "gpt-5.5"}
+	bpsPlugin{}.FilterHeaders(env, http.Header{})
+	_, err := bpsPlugin{}.TransformJSON(env, http.StatusForbidden, []byte(bpsModelAccessBody))
+	require.NoError(t, err)
+
+	require.False(t, bpsPlugin{}.Select(ctx, attempt("gpt-5.5")), "the refused model is served natively")
+	require.True(t, bpsPlugin{}.Select(ctx, attempt("gpt-6-sol")), "other models stay on BPS")
+	ok, _ := bpsPlugin{}.Admissible(ctx, account, "gpt-5.5")
+	require.True(t, ok, "a model refusal does not take the account out of scheduling")
+	_, cooling := bpsAccountCooling(ctx, shared, account.ID())
+	require.False(t, cooling)
+
+	statuses := BPSAccountStatuses(ctx, shared, []int64{account.ID()})
+	require.InDelta(t, time.Hour.Seconds(), time.Until(statuses[0].ModelsUnavailable["gpt-5.5"]).Seconds(), 5)
+
+	freshBPSAccountStates(t)
+	require.True(t, bpsModelBlocked(ctx, shared, account.ID(), "GPT-5.5"), "every replica sees the refusal")
+}
+
+func TestBPSModelsConfigDecidesWhichModelsBPSServes(t *testing.T) {
+	cfg, err := parseBPSConfig(nil)
+	require.NoError(t, err)
+	for model, want := range map[string]bool{
+		"gpt-6-sol": true, "gpt-5.6-sol": true, "GPT-5.6-luna": true, "codex-auto-review": true,
+		"gpt-5.5": false, "gpt-5.3-codex-spark": false, "gpt-6": false,
+	} {
+		require.Equal(t, want, cfg.ServesModel(model), model)
+	}
+	require.True(t, cfg.BPSOnlyModel("gpt-6-sol"))
+	require.False(t, cfg.BPSOnlyModel("gpt-5.6-sol"))
+
+	custom, err := parseBPSConfig([]byte(`{"bps_models":["*"],"bps_only_models":["gpt-6-sol"]}`))
+	require.NoError(t, err)
+	require.True(t, custom.ServesModel("gpt-5.5"))
+	require.False(t, custom.BPSOnlyModel("gpt-6-luna"))
+	for _, bad := range []string{`{"bps_models":["["]}`, `{"bps_models":[""]}`, `{"bps_only_models":["` + strings.Repeat("x", 200) + `"]}`} {
+		_, err := parseBPSConfig([]byte(bad))
+		require.Error(t, err, bad)
+	}
+
+	freshBPSAccountStates(t)
+	account := withBPSOverride(&auth.Account{DBID: 9061, AccountID: "models", AccessToken: "at"}, true)
+	req := plugins.NewRequest("req-models", plugins.KindResponses, nil, nil, 0)
+	req.SetState(BPSPluginID, &bpsRequest{})
+	ctx := plugins.WithRequest(context.Background(), req)
+	require.False(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: account, Model: "gpt-5.3-codex-spark"}), "models outside bps_models go native")
+	require.True(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: account, Model: "gpt-6-sol"}))
+}
+
+func TestBPSOnlyModelsPreferBPSCapableAccounts(t *testing.T) {
+	freshBPSAccountStates(t)
+	bpsAccount := withBPSOverride(&auth.Account{DBID: 9071, AccountID: "bps", AccessToken: "at"}, true)
+	nativeAccount := &auth.Account{DBID: 9072, AccountID: "native", AccessToken: "at"}
+	req := plugins.NewRequest("req-prefer", plugins.KindResponses, nil, nil, 0)
+	req.SetState(BPSPluginID, &bpsRequest{})
+	ctx := plugins.WithRequest(context.Background(), req)
+
+	require.Nil(t, bpsPlugin{}.PreferredAccounts(ctx, req, "gpt-5.6-sol"), "native serves gpt-5.6-*: no preference")
+	prefer := bpsPlugin{}.PreferredAccounts(ctx, req, "gpt-6-sol")
+	require.NotNil(t, prefer)
+	require.True(t, prefer(bpsAccount))
+	require.False(t, prefer(nativeAccount), "native accounts would reject a BPS-only model")
+	recordBPSFailure(ctx, nil, bpsAccount.ID(), "", http.StatusTooManyRequests, "", nil)
+	require.False(t, prefer(bpsAccount), "a cooling BPS account is not preferred")
+	require.NotNil(t, plugins.Default().PreferenceFilter(ctx, req, "gpt-6-sol"), "the registry exposes the preference")
 }

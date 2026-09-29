@@ -311,6 +311,34 @@ func (r *Registry) PreferredAccount(ctx context.Context, req *Request, model str
 	return 0
 }
 
+// PreferenceFilter combines the account preferences of the plugins supporting
+// req.Kind (an account is preferred when any plugin prefers it), or returns
+// nil when no plugin has one for this request.
+func (r *Registry) PreferenceFilter(ctx context.Context, req *Request, model string) func(*auth.Account) bool {
+	if req == nil {
+		return nil
+	}
+	var filters []func(*auth.Account) bool
+	for _, p := range r.Plugins() {
+		if pref, ok := p.(AccountPreferenceFilter); ok && supportsKind(p, req.Kind) {
+			if filter := pref.PreferredAccounts(ctx, req, model); filter != nil {
+				filters = append(filters, filter)
+			}
+		}
+	}
+	if len(filters) == 0 {
+		return nil
+	}
+	return func(account *auth.Account) bool {
+		for _, filter := range filters {
+			if filter(account) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // AccountSelected tells every AccountPreferrer supporting req.Kind which
 // account scheduling chose.
 func (r *Registry) AccountSelected(ctx context.Context, req *Request, account *auth.Account, model string) {

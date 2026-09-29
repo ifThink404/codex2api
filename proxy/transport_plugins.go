@@ -101,6 +101,13 @@ func (h *Handler) nextAccountWithTransportPlugins(ctx context.Context, affinityK
 			return account, account.GetProxyURL(), auth.SessionAffinityGuard{}
 		}
 	}
+	if prefer := registry.PreferenceFilter(ctx, req, req.Model); prefer != nil {
+		preferred := func(account *auth.Account) bool { return (filter == nil || filter(account)) && prefer(account) }
+		if account, proxyURL, guard := h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, preferred, policy); account != nil {
+			registry.AccountSelected(ctx, req, account, req.Model)
+			return account, proxyURL, guard
+		}
+	}
 	account, proxyURL, guard := h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy)
 	if account != nil {
 		registry.AccountSelected(ctx, req, account, req.Model)

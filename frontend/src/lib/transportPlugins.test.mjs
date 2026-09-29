@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, bpsConfigFields, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -108,4 +108,20 @@ test('the BPS account list shows plugin cooldowns with their reason', () => {
   assert.equal(pluginCoolingReasonKey(undefined), 'plugins.coolingReasons.unknown')
   const server = readFileSync(srcRoot + '../../proxy/bps_account_state.go', 'utf8')
   for (const reason of PLUGIN_COOLING_REASONS) assert.ok(server.includes(`"${reason}"`), `server reports ${reason}`)
+})
+
+test('model list fields edit as comma-separated text and save as arrays with server defaults', () => {
+  const models = bpsConfigFields.find(field => field.key === 'bps_models')
+  const only = bpsConfigFields.find(field => field.key === 'bps_only_models')
+  assert.deepEqual(models.defaultValue, ['gpt-5.6-*', 'gpt-6-*'])
+  assert.deepEqual(only.defaultValue, ['gpt-6-*'])
+  const server = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
+  assert.ok(server.includes('defaultBPSModels     = []string{"gpt-5.6-*", "gpt-6-*"}'), 'defaults match the server')
+  assert.ok(server.includes('defaultBPSOnlyModels = []string{"gpt-6-*"}'))
+  assert.equal(pluginConfigListText({ bps_models: ['gpt-6-*', 'gpt-5.6-*'] }, 'bps_models'), 'gpt-6-*, gpt-5.6-*')
+  assert.equal(pluginConfigListText({ bps_models: 'gpt-6-*,' }, 'bps_models'), 'gpt-6-*,', 'drafts keep the typed text')
+  assert.deepEqual(normalizePluginConfig({ bps_models: ' gpt-6-* , ,gpt-5.6-sol ', bps_only_models: '  ', word_user_agent: 'x' }, bpsConfigFields), { bps_models: ['gpt-6-*', 'gpt-5.6-sol'], word_user_agent: 'x' })
+  const page = read('pages/Plugins.tsx')
+  assert.ok(page.includes('normalizePluginConfig(config, typedFields)'))
+  assert.ok(page.includes("t('plugins.modelUnavailable'"))
 })

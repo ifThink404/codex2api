@@ -38,6 +38,10 @@ const (
 
 	BPSRateLimitedReason = "bps_rate_limited"
 	BPSPolicyBlockedKind = "bps_policy_blocked"
+	BPSModelUnavailable  = "bps_model_unavailable"
+
+	bpsModelAccessChanged = "basispoints_model_access_changed"
+	bpsModelBlockTTL      = time.Hour
 
 	bpsRateLimitBase      = 60 * time.Second
 	bpsRateLimitMax       = 30 * time.Minute
@@ -71,6 +75,10 @@ type bpsAccountStates struct {
 var bpsAccountStateStore = &bpsAccountStates{}
 
 func bpsAccountStateKey(accountID int64) string { return "account:" + strconv.FormatInt(accountID, 10) }
+
+func bpsModelStateKey(accountID int64, model string) string {
+	return "model:" + strconv.FormatInt(accountID, 10) + ":" + strings.ToLower(strings.TrimSpace(model))
+}
 
 func bpsSharedAccountStore(store cache.TokenCache) cache.TokenCache {
 	store = bpsGuardedCache(store)
@@ -209,7 +217,13 @@ func bpsFailureClass(status int, body []byte) string {
 	if source.Type == gjson.String {
 		message += " " + strings.ToLower(source.String())
 	}
+	code := strings.TrimSpace(source.Get("code").String())
+	if code == "" {
+		code = strings.TrimSpace(root.Get("code").String())
+	}
 	switch {
+	case code == bpsModelAccessChanged || strings.Contains(message, bpsModelAccessChanged):
+		return BPSModelUnavailable
 	case status == http.StatusForbidden && strings.Contains(message, "blocked by our usage policy"):
 		return BPSPolicyBlockedKind
 	case status == http.StatusTooManyRequests:
@@ -267,6 +281,14 @@ func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int
 		} else {
 			log.Printf("[bps] account=%d blocked by the BPS usage policy (%d/%d in %s)", accountID, len(record.Strikes), cfg.PolicyBlockThreshold, bpsPolicyStrikeWindow)
 		}
+	case BPSModelUnavailable:
+		if strings.TrimSpace(model) == "" {
+			return class
+		}
+		bpsAccountStateStore.update(ctx, store, bpsModelStateKey(accountID, model), now, func(r *bpsAccountRecord) {
+			r.Until, r.Reason = now.Add(bpsModelBlockTTL), BPSModelUnavailable
+		})
+		log.Printf("[bps] account=%d has no BPS access to model %s; serving it natively for %s", accountID, model, bpsModelBlockTTL)
 	}
 	return class
 }
@@ -278,12 +300,24 @@ func bpsAccountCooling(ctx context.Context, store cache.TokenCache, accountID in
 	return record, record.active(now)
 }
 
+// bpsModelBlocked reports whether BPS refused model for this account recently.
+func bpsModelBlocked(ctx context.Context, store cache.TokenCache, accountID int64, model string) bool {
+	if strings.TrimSpace(model) == "" {
+		return false
+	}
+	now := time.Now()
+	return bpsAccountStateStore.load(ctx, store, bpsModelStateKey(accountID, model), now).active(now)
+}
+
 // BPSAccountStatus is the admin view of one account's BPS state.
 type BPSAccountStatus struct {
 	AccountID     int64     `json:"account_id"`
 	CoolingUntil  time.Time `json:"cooling_until,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
 	PolicyStrikes int       `json:"policy_strikes,omitempty"`
+	// ModelsUnavailable maps models BPS refused for this account to the time
+	// they are retried on BPS.
+	ModelsUnavailable map[string]time.Time `json:"models_unavailable,omitempty"`
 }
 
 // BPSAccountStatuses reports the BPS cooldowns and model blocks of accounts.
@@ -301,6 +335,17 @@ func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs 
 				status.PolicyStrikes++
 			}
 		}
+		prefix := "model:" + strconv.FormatInt(id, 10) + ":"
+		bpsAccountStateStore.mu.Lock()
+		for key, entry := range bpsAccountStateStore.entries {
+			if strings.HasPrefix(key, prefix) && entry.record.active(now) {
+				if status.ModelsUnavailable == nil {
+					status.ModelsUnavailable = map[string]time.Time{}
+				}
+				status.ModelsUnavailable[strings.TrimPrefix(key, prefix)] = entry.record.Until
+			}
+		}
+		bpsAccountStateStore.mu.Unlock()
 		out = append(out, status)
 	}
 	return out

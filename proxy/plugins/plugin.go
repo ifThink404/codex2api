@@ -142,6 +142,14 @@ type ExecuteErrorHandler interface {
 	OnExecuteError(ctx context.Context, env *ReqEnv, err error)
 }
 
+// AccountPreferenceFilter is optionally implemented by plugins that want
+// scheduling to try a subset of accounts first for a request (e.g. accounts
+// able to serve a model only the plugin can serve). nil means no preference.
+// Core falls back to every admissible account when no preferred one is free.
+type AccountPreferenceFilter interface {
+	PreferredAccounts(ctx context.Context, req *Request, model string) func(*auth.Account) bool
+}
+
 // NativeHealthPolicy is optionally implemented by plugins whose failures
 // should stay out of the native account health score and cooldowns. Core
 // still reports account-level signals (revoked credentials, deactivated

@@ -29,9 +29,10 @@ export function parsePluginConfigText(text: string): Record<string, unknown> | n
 
 // BPS plugin config (proxy BPSConfig). 0 / empty means the server default.
 export type PluginConfigField =
-  | { key: string; kind: 'number'; min: number; max: number }
+  | { key: string; kind: 'number'; min: number; max: number; hint?: boolean }
   | { key: string; kind: 'boolean'; defaultValue?: boolean; hint?: boolean }
-  | { key: string; kind: 'text' }
+  | { key: string; kind: 'text'; hint?: boolean }
+  | { key: string; kind: 'list'; defaultValue: string[]; hint?: boolean }
 
 export const bpsConfigFields: PluginConfigField[] = [
   { key: 'word_user_agent', kind: 'text' },
@@ -42,12 +43,35 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'attachment_request_concurrency', kind: 'number', min: 0, max: 64 },
   { key: 'attachment_instance_concurrency', kind: 'number', min: 0, max: 1024 },
   { key: 'attachment_account_concurrency', kind: 'number', min: 0, max: 1024 },
+  { key: 'bps_models', kind: 'list', defaultValue: ['gpt-5.6-*', 'gpt-6-*'], hint: true },
+  { key: 'bps_only_models', kind: 'list', defaultValue: ['gpt-6-*'], hint: true },
   { key: 'policy_block_threshold', kind: 'number', min: 0, max: 100 },
   { key: 'policy_block_cooldown_hours', kind: 'number', min: 0, max: 168 },
   { key: 'attachment_429_fallback', kind: 'boolean' },
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
 ]
+
+// pluginConfigListText is a list field's editable text: saved lists are
+// comma-joined, a draft string is shown as typed.
+export function pluginConfigListText(config: Record<string, unknown>, key: string): string {
+  const value = config[key]
+  if (typeof value === 'string') return value
+  return Array.isArray(value) ? value.join(', ') : ''
+}
+
+// normalizePluginConfig turns list drafts into arrays before saving; an empty
+// list is omitted so the server default applies.
+export function normalizePluginConfig(config: Record<string, unknown>, fields: PluginConfigField[]): Record<string, unknown> {
+  const out = { ...config }
+  for (const field of fields) {
+    if (field.kind !== 'list') continue
+    const items = pluginConfigListText(out, field.key).split(',').map((item) => item.trim()).filter(Boolean)
+    if (items.length) out[field.key] = items
+    else delete out[field.key]
+  }
+  return out
+}
 
 // pluginConfigBoolean is a boolean field's effective value: absent means the
 // server default.

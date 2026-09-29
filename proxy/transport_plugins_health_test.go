@@ -1,11 +1,13 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/proxy/plugins"
 )
 
@@ -134,5 +136,31 @@ func TestTransportPluginUsageErrorKindOverridesCoreKind(t *testing.T) {
 	invokeTracedResponses(t, handler, `{"model":"gpt-5.5","stream":false,"input":"hi"}`)
 	if row := onlyUsageLog(t, db); row.UpstreamErrorKind != "bps_policy_blocked" {
 		t.Fatalf("usage upstream_error_kind = %q, want the plugin's classification", row.UpstreamErrorKind)
+	}
+}
+
+func TestTransportPluginPreferenceFilterIsTriedFirst(t *testing.T) {
+	handler, _, plugin, _ := newTransportPluginTestHandler(t, true)
+	handler.store.AddAccount(&auth.Account{DBID: 2, AccessToken: "at-2", PlanType: "pro", AccountID: "acct-2"})
+	req := plugins.NewRequest("req-prefer", plugins.KindResponses, nil, nil, 0)
+	ctx := plugins.WithRequest(context.Background(), req)
+	pick := func() int64 {
+		account, _, _ := handler.nextAccountWithTransportPlugins(ctx, "", 0, nil, nil, auth.DispatchPolicyStandard)
+		if account == nil {
+			t.Fatal("no account scheduled")
+		}
+		handler.store.Release(account)
+		return account.ID()
+	}
+	plugin.prefer.Store(2)
+	for range 5 {
+		if got := pick(); got != 2 {
+			t.Fatalf("preferred account not tried first: got %d", got)
+		}
+	}
+	// A preferred account that is excluded falls back to the others.
+	account, _, _ := handler.nextAccountWithTransportPlugins(ctx, "", 0, map[int64]bool{2: true}, nil, auth.DispatchPolicyStandard)
+	if account == nil || account.ID() != 1 {
+		t.Fatalf("fallback account = %v, want 1", account)
 	}
 }

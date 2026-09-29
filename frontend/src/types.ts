@@ -3812,6 +3812,8 @@ export interface PluginAccountStatus {
   cooling_until?: string
   reason?: string
   policy_strikes?: number
+  // models BPS refused for this account, mapped to when BPS is retried
+  models_unavailable?: Record<string, string>
 }
 
 export interface TransportPlugin {

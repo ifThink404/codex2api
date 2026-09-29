@@ -39,6 +39,16 @@ type wiringPlugin struct {
 	failEvent  string
 	// failMessage is recorded as the attempt's usage error message.
 	failMessage string
+	// prefer, when set, is the account the plugin asks scheduling to try first.
+	prefer atomic.Int64
+}
+
+func (p *wiringPlugin) PreferredAccounts(context.Context, *plugins.Request, string) func(*auth.Account) bool {
+	id := p.prefer.Load()
+	if id == 0 {
+		return nil
+	}
+	return func(account *auth.Account) bool { return account.ID() == id }
 }
 
 func (p *wiringPlugin) SparesNativeHealth() bool { return p.spare.Load() }
