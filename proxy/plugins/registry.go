@@ -314,6 +314,22 @@ func (r *Registry) PreferredAccount(ctx context.Context, req *Request, model str
 	return 0
 }
 
+// RetryAccount returns the account a plugin wants the next attempt of req to
+// retry on another transport, or 0.
+func (r *Registry) RetryAccount(ctx context.Context, req *Request) int64 {
+	if req == nil {
+		return 0
+	}
+	for _, p := range r.Plugins() {
+		if retrier, ok := p.(SameAccountRetrier); ok && supportsKind(p, req.Kind) {
+			if id := retrier.RetryAccount(ctx, req); id > 0 {
+				return id
+			}
+		}
+	}
+	return 0
+}
+
 // PreferenceFilter combines the account preferences of the plugins supporting
 // req.Kind (an account is preferred when any plugin prefers it), or returns
 // nil when no plugin has one for this request.
@@ -363,6 +379,9 @@ func (r *Registry) Resolve(ctx context.Context, req *Request, account *auth.Acco
 	}
 	index, prior := req.beginAttempt()
 	attempt := Attempt{Request: req, Account: account, Model: model, Kind: kind, Index: index, Prior: prior}
+	// Native usage metadata (a plugin's reason for handing the attempt to the
+	// native route) is per attempt.
+	req.SetUsageMeta(database.TransportNative, "")
 	for _, p := range r.Plugins() {
 		if !supportsKind(p, kind) || !r.EnabledFor(p, account) {
 			continue

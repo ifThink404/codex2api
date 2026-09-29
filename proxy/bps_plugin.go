@@ -92,6 +92,46 @@ type BPSConfig struct {
 	// captures default and at most 12.
 	CaptureRetentionHours      int `json:"capture_retention_hours,omitempty"`
 	CaptureErrorRetentionHours int `json:"capture_error_retention_hours,omitempty"`
+	// Native route breaker of dual-route accounts (BPS enabled and
+	// codex_native_enabled=true): NativeDegradeThreshold upstream model
+	// mismatches (default 2) within NativeDegradeWindow (default 10m), or
+	// one native 403, open the account's native route; BPS serves it until a
+	// background native probe reports the requested model again. The
+	// cooldown climbs NativeCooldownLadder (default: the policy ladder).
+	// NativeDegradeBreakerEnabled absent means on.
+	NativeDegradeBreakerEnabled *bool    `json:"native_degrade_breaker_enabled,omitempty"`
+	NativeDegradeThreshold      int      `json:"native_degrade_threshold,omitempty"`
+	NativeDegradeWindow         string   `json:"native_degrade_window,omitempty"`
+	NativeCooldownLadder        []string `json:"native_cooldown_ladder,omitempty"`
+}
+
+// NativeBreakerEnabled reports whether the native route breaker is on.
+func (c BPSConfig) NativeBreakerEnabled() bool {
+	return c.NativeDegradeBreakerEnabled == nil || *c.NativeDegradeBreakerEnabled
+}
+
+// NativeThreshold is how many model mismatches open the native route.
+func (c BPSConfig) NativeThreshold() int {
+	if c.NativeDegradeThreshold < 1 {
+		return 2
+	}
+	return c.NativeDegradeThreshold
+}
+
+// NativeWindow is the window the model mismatches are counted in.
+func (c BPSConfig) NativeWindow() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(c.NativeDegradeWindow)); err == nil && d > 0 {
+		return d
+	}
+	return 10 * time.Minute
+}
+
+// NativeLadder is the native route cooldown per tier.
+func (c BPSConfig) NativeLadder() []time.Duration {
+	if len(c.NativeCooldownLadder) == 0 {
+		return c.PolicyLadder()
+	}
+	return BPSConfig{PolicyCooldownLadder: c.NativeCooldownLadder}.PolicyLadder()
 }
 
 // PersistsHeuristicAffinity reports whether heuristic seeds are bound in the
@@ -232,12 +272,22 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 			return BPSConfig{}, fmt.Errorf("invalid bps_account_budget_window %q (use a duration such as 24h, 1h to 720h)", cfg.AccountBudgetWindow)
 		}
 	}
-	if len(cfg.PolicyCooldownLadder) > 10 {
-		return BPSConfig{}, fmt.Errorf("bps_policy_cooldown_ladder holds at most 10 tiers")
+	for name, ladder := range map[string][]string{"bps_policy_cooldown_ladder": cfg.PolicyCooldownLadder, "native_cooldown_ladder": cfg.NativeCooldownLadder} {
+		if len(ladder) > 10 {
+			return BPSConfig{}, fmt.Errorf("%s holds at most 10 tiers", name)
+		}
+		for _, tier := range ladder {
+			if d, err := time.ParseDuration(strings.TrimSpace(tier)); err != nil || d < time.Second || d > 24*time.Hour {
+				return BPSConfig{}, fmt.Errorf("invalid %s tier %q (use durations such as 2m or 2h, 1s to 24h)", name, tier)
+			}
+		}
 	}
-	for _, tier := range cfg.PolicyCooldownLadder {
-		if d, err := time.ParseDuration(strings.TrimSpace(tier)); err != nil || d < time.Second || d > 24*time.Hour {
-			return BPSConfig{}, fmt.Errorf("invalid bps_policy_cooldown_ladder tier %q (use durations such as 2m or 2h, 1s to 24h)", tier)
+	if cfg.NativeDegradeThreshold < 0 || cfg.NativeDegradeThreshold > 20 {
+		return BPSConfig{}, fmt.Errorf("native_degrade_threshold must be between 0 (default) and 20")
+	}
+	if window := strings.TrimSpace(cfg.NativeDegradeWindow); window != "" {
+		if d, err := time.ParseDuration(window); err != nil || d < time.Minute || d > 24*time.Hour {
+			return BPSConfig{}, fmt.Errorf("invalid native_degrade_window %q (use a duration such as 10m, 1m to 24h)", cfg.NativeDegradeWindow)
 		}
 	}
 	if _, err := plugins.ParseCaptureRetention(raw); err != nil {
@@ -376,7 +426,12 @@ func bpsServesAccount(account *auth.Account, model string) bool {
 // probes, detectors) must use the BPS transport for such an account, or skip
 // it; native Codex traffic gets accounts marked as degraded upstream.
 func BPSOwnsAccount(account *auth.Account) bool {
-	if account == nil || !account.CodexBPSEligible() || account.CodexNativeRouteExplicit() {
+	if account == nil || !account.CodexBPSEligible() {
+		return false
+	}
+	// A dual-route account whose native route breaker is open is owned by
+	// BPS until the breaker's own native probe closes it.
+	if account.CodexNativeRouteExplicit() && !nativeRouteOpen(context.Background(), nil, account) {
 		return false
 	}
 	p, ok := plugins.Default().Get(BPSPluginID)
@@ -420,6 +475,53 @@ type bpsRequest struct {
 	probeClass       string
 	conversationKeys []string
 	servable         map[string]map[int64]bool
+	// nativeRetry: accounts whose BPS attempt the usage policy refused and
+	// whose native route retries the request (true once the retry took the
+	// account).
+	nativeRetry map[int64]bool
+}
+
+// queueNativeRetry asks for the next attempt to retry account natively, once.
+func (s *bpsRequest) queueNativeRetry(accountID int64) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, seen := s.nativeRetry[accountID]; seen {
+		return false
+	}
+	if s.nativeRetry == nil {
+		s.nativeRetry = map[int64]bool{}
+	}
+	s.nativeRetry[accountID] = false
+	return true
+}
+
+// pendingNativeRetry is the account waiting for its native retry, or 0.
+func (s *bpsRequest) pendingNativeRetry() int64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, taken := range s.nativeRetry {
+		if !taken {
+			return id
+		}
+	}
+	return 0
+}
+
+func (s *bpsRequest) takeNativeRetry(accountID int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if taken, ok := s.nativeRetry[accountID]; ok && !taken {
+		s.nativeRetry[accountID] = true
+	}
 }
 
 // takeOrgRetry spends one of the request's organization rate-limit retries.
@@ -511,7 +613,7 @@ func (bpsPlugin) Admissible(ctx context.Context, account *auth.Account, model st
 		}
 		return true, ""
 	}
-	if !state.pinned && bpsNativeExplicit(account, model, state.related) {
+	if !state.pinned && bpsNativeExplicit(account, model, state.related) && !nativeRouteOpen(ctx, state.cache(), account) {
 		return true, ""
 	}
 	if reason != "bps_account_refused" && !state.servableElsewhere(ctx, account, model) {
@@ -532,11 +634,21 @@ func (bpsPlugin) Select(ctx context.Context, attempt plugins.Attempt) bool {
 		return mode == "bps"
 	}
 	pinned := state != nil && state.pinned
-	native := !pinned && bpsNativeExplicit(attempt.Account, attempt.Model, related)
-	if state.blockReason(ctx, attempt.Account, attempt.Model) != "" {
+	native := !pinned && bpsNativeExplicit(attempt.Account, attempt.Model, related) && !nativeRouteOpen(ctx, state.cache(), attempt.Account)
+	if reason := state.blockReason(ctx, attempt.Account, attempt.Model); reason != "" {
+		if native {
+			// BPS is broken for this account: its native route serves.
+			attempt.Request.SetUsageMeta(database.TransportNative, bpsRouteReasonMeta(reason))
+		}
 		return !native
 	}
 	return pinned || !native
+}
+
+// bpsRouteReasonMeta is the plugin_meta of an attempt a breaker rerouted.
+func bpsRouteReasonMeta(reason string) string {
+	raw, _ := json.Marshal(map[string]string{"route_reason": reason})
+	return string(raw)
 }
 
 // PreferredAccounts: for a BPS-only model (bps_only_models) scheduling tries
@@ -555,14 +667,27 @@ func (bpsPlugin) PreferredAccounts(ctx context.Context, req *plugins.Request, mo
 
 func (bpsPlugin) PreferredAccount(ctx context.Context, req *plugins.Request, model string) int64 {
 	state := bpsRequestState(req)
+	if id := state.pendingNativeRetry(); id > 0 {
+		return id
+	}
 	if state == nil || state.handler == nil {
 		return 0
 	}
 	return state.handler.bpsPreferredTaskAccount(ctx, state.inferred, model)
 }
 
+// RetryAccount: after the usage policy refused an account whose native route
+// is explicitly on (and healthy), the request retries that account natively
+// before any other account.
+func (bpsPlugin) RetryAccount(_ context.Context, req *plugins.Request) int64 {
+	return bpsRequestState(req).pendingNativeRetry()
+}
+
 func (bpsPlugin) AccountSelected(ctx context.Context, req *plugins.Request, account *auth.Account, model string) {
 	state := bpsRequestState(req)
+	if account != nil {
+		state.takeNativeRetry(account.ID())
+	}
 	if state == nil || state.handler == nil || state.inferred == nil {
 		return
 	}
@@ -648,6 +773,9 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 				ctx = context.WithValue(ctx, bpsIdentityStoreKey{}, handler.db)
 			}
 		}
+	}
+	if state != nil && bpsNativeExplicit(env.Account, env.Model, state.related) && nativeRouteOpen(ctx, state.cache(), env.Account) {
+		bpsSetUsageMeta(env, "route_reason", "native_breaker_open")
 	}
 	ctx = withBPSTurnQuestionInput(ctx, env.Account, env.Header, env.Body)
 	ctx = context.WithValue(ctx, bpsAttemptEnvKey{}, env)
@@ -908,6 +1036,12 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	if class != "" && class != BPSModelUnavailable {
 		// A model refusal only moves that model to native; the account stays.
 		bpsExcludeAccountForRequest(env.Request, env.Account)
+	}
+	if class == BPSPolicyBlockedKind && state != nil && !state.pinned && bpsNativeExplicit(env.Account, env.Model, state.related) &&
+		!nativeRouteOpen(context.Background(), state.cache(), env.Account) && state.queueNativeRetry(env.Account.ID()) {
+		// Break only BPS: the account's healthy native route retries the
+		// request before any other account.
+		bpsSetUsageMeta(env, "native_retry", "same_account")
 	}
 	if class == BPSPolicyBlockedKind {
 		env.Request.SetUsageErrorKind(BPSPluginID, BPSPolicyBlockedKind)

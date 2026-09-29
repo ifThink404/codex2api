@@ -3897,7 +3897,7 @@ export interface BPSTrafficPoint {
 
 // GET /plugins/bps/dashboard
 export interface BPSDashboard {
-  summary: { total: number; usable: number; disabled?: number; invalid?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
+  summary: { total: number; usable: number; disabled?: number; invalid?: number; native_degraded?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
   accounts: Array<{
     account_id: number
     name: string
@@ -3937,6 +3937,15 @@ export interface BPSActivityAccount {
   elapsed_seconds?: number
   next_probe_at?: string
   last_request_at?: string
+  /** Native route breaker of a dual-route account (BPS + explicit native). */
+  native_route?: BPSNativeRoute
+}
+
+export interface BPSNativeRoute {
+  state: 'ok' | 'open'
+  until?: string
+  trigger?: 'native_403' | 'model_mismatch' | string
+  detail?: string
 }
 
 export interface BPSActivity {
@@ -3947,9 +3956,15 @@ export interface BPSActivity {
 }
 
 // One BPS usage-policy block event (GET /plugins/bps/policy-blocks).
+// A broken transport of an account: bps (usage policy) or native (the
+// native route breaker of a dual-route account).
+export type BPSRoute = 'bps' | 'native'
+
 export interface BPSPolicyBlock {
   id: number
   account_id: number
+  route?: BPSRoute
+  detail?: string
   name: string
   blocked_at: string
   tier: number
@@ -3965,6 +3980,7 @@ export interface BPSPolicyBlock {
 
 export interface BPSPolicyBlockTotals {
   account_id: number
+  route?: BPSRoute
   name: string
   times_blocked: number
   total_blocked_seconds: number

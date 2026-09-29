@@ -136,6 +136,15 @@ type AccountPreferrer interface {
 	AccountSelected(ctx context.Context, req *Request, account *auth.Account, model string)
 }
 
+// SameAccountRetrier is optionally implemented by plugins that can hand a
+// failed attempt back to the same account on another transport (e.g. BPS
+// refusing the account, whose native route then serves the retry). Core
+// lifts that account's retry exclusion for the next selection, once;
+// PreferredAccount should then offer it.
+type SameAccountRetrier interface {
+	RetryAccount(ctx context.Context, req *Request) int64
+}
+
 // ExecuteErrorHandler is told about every error Execute returns, while the
 // attempt's account and trace are still current (e.g. to log a zero-token
 // preparation failure or start an upload cooldown).

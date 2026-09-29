@@ -7472,7 +7472,11 @@
       "bps_account_budget_window": "BPS budget window",
       "bps_policy_conversation_mark": "Mark conversations after a usage-policy block",
       "bps_probe_model": "Usage-policy probe model",
-      "bps_min_usable_accounts": "Usable-account warning floor"
+      "bps_min_usable_accounts": "Usable-account warning floor",
+      "native_degrade_breaker_enabled": "Native route breaker (degraded)",
+      "native_degrade_threshold": "Model mismatches that open the native route",
+      "native_degrade_window": "Model mismatch window",
+      "native_cooldown_ladder": "Native route cooldown ladder"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7503,7 +7507,11 @@
       "bps_min_usable_accounts": "The BPS health panel warns when usable accounts drop to this number or below.",
       "policy_block_threshold": "Usage-policy blocks within 10 minutes that trigger a cooldown.",
       "word_user_agent": "User-Agent of the Word profile; empty uses the built-in one.",
-      "attachment_429_fallback": "When uploads hit 429, convert attachments locally (needs pdftotext/libreoffice)."
+      "attachment_429_fallback": "When uploads hit 429, convert attachments locally (needs pdftotext/libreoffice).",
+      "native_degrade_breaker_enabled": "Only for accounts with BPS and an explicit native route: when native replies report another model than requested (degraded) or return 403, only that account's native route breaks and BPS serves it; a background native probe that gets the requested model back restores it. With both routes broken the account is skipped.",
+      "native_degrade_threshold": "This many model mismatches within the window open the native route; one native 403 opens it at once. Replies without an upstream-reported model do not count.",
+      "native_degrade_window": "How long model mismatches are counted, e.g. 10m (1m to 24h). Empty means 10m.",
+      "native_cooldown_ladder": "The cooldown per breaker trigger; after it a background probe decides. Empty reuses the usage-policy ladder."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7534,7 +7542,7 @@
     "probePending": "Usage-policy tier expired: waiting for a background probe (no real traffic until it succeeds)",
     "lastProbe": "Last probe {{time}}: {{result}}",
     "policyBlocks": "Usage-policy blocks",
-    "policyBlocksDesc": "Accounts the BPS usage policy is blocking, how long each block lasts, and when accounts recover (a background probe clears them).",
+    "policyBlocksDesc": "Accounts blocked by the BPS usage policy, how long each block lasted and when it cleared (by a background probe); native route breaks of dual-route accounts (degraded / native 403) are listed too, the route column tells them apart.",
     "policyBlocksActive": "Blocked now ({{count}})",
     "policyBlocksNone": "No account is blocked right now.",
     "policyAccount": "Account",
@@ -7637,7 +7645,14 @@
     "accountInvalid": "credential invalid (401 / error), not served by BPS",
     "groupsMembers": "{{groups}} groups enabled, {{count}} members",
     "groupsNoneEnabled": "No group is enabled yet",
-    "groupsAddAccounts": "Add accounts to a group →"
+    "groupsAddAccounts": "Add accounts to a group →",
+    "dashNativeDegraded": "Native degraded (on BPS)",
+    "nativeTriggerModel": "model mismatch ({{detail}})",
+    "nativeRouteOk": "native route ok",
+    "nativeRouteOpen": "native broken",
+    "routeBps": "BPS",
+    "routeNative": "Native",
+    "policyRoute": "Route"
   },
   "logAgent": {
     "title": "AI log analysis",

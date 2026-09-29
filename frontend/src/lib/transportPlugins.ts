@@ -61,6 +61,10 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'image_trim_default', kind: 'boolean', defaultValue: true, hint: true },
+  { key: 'native_degrade_breaker_enabled', kind: 'boolean', defaultValue: true, hint: true },
+  { key: 'native_degrade_threshold', kind: 'number', min: 0, max: 20, hint: true, defaultValue: 2, zeroMeans: 'default' },
+  { key: 'native_degrade_window', kind: 'text', hint: true, placeholder: '10m' },
+  { key: 'native_cooldown_ladder', kind: 'list', defaultValue: ['2m', '10m', '30m', '2h'], hint: true },
 ]
 
 // bpsConfigGroups lays the BPS config form out in labeled cards; every field
@@ -72,6 +76,7 @@ export const bpsConfigGroups: Array<{ key: string; fields: string[] }> = [
     fields: [
       'bps_account_max_concurrency', 'bps_account_request_budget', 'bps_account_budget_window', 'bps_min_usable_accounts',
       'policy_block_threshold', 'bps_policy_cooldown_ladder', 'bps_policy_conversation_mark', 'exclude_failures_from_native_health',
+      'native_degrade_breaker_enabled', 'native_degrade_threshold', 'native_degrade_window', 'native_cooldown_ladder',
     ],
   },
   { key: 'attachments', fields: ['attachment_request_concurrency', 'attachment_instance_concurrency', 'attachment_account_concurrency', 'attachment_429_fallback', 'image_trim_default'] },

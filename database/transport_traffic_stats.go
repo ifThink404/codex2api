@@ -110,12 +110,12 @@ func (db *DB) TransportTrafficTimeline(ctx context.Context, transport string, si
 }
 
 // BPSPolicyBlockDurations returns the durations (seconds) of the kept
-// cleared blocks, for recovery statistics.
+// cleared BPS-route blocks, for recovery statistics.
 func (db *DB) BPSPolicyBlockDurations(ctx context.Context) ([]int64, error) {
 	if db == nil || db.conn == nil {
 		return nil, nil
 	}
-	rows, err := db.conn.QueryContext(ctx, `SELECT duration_seconds FROM bps_policy_blocks WHERE cleared_at IS NOT NULL ORDER BY duration_seconds`)
+	rows, err := db.conn.QueryContext(ctx, `SELECT duration_seconds FROM bps_policy_blocks WHERE cleared_at IS NOT NULL AND route = 'bps' ORDER BY duration_seconds`)
 	if err != nil {
 		return nil, err
 	}

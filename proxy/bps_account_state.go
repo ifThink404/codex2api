@@ -77,6 +77,12 @@ type bpsAccountRecord struct {
 	NextProbe       time.Time `json:"next_probe,omitempty"`
 	LastProbe       time.Time `json:"last_probe,omitzero"`
 	LastProbeResult string    `json:"last_probe_result,omitempty"`
+	// Trigger and Detail describe what opened a native route breaker
+	// (native_403 / model_mismatch; "requested → reported"); ProbeModel is
+	// the model its recovery probe asks for.
+	Trigger    string `json:"trigger,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	ProbeModel string `json:"probe_model,omitempty"`
 	// Changed dates the last change of the cooldown fields, so a cleared
 	// cooldown replaces an older active one across replicas.
 	Changed time.Time `json:"changed,omitempty"`
@@ -154,6 +160,8 @@ func mergeBPSAccountRecords(local, remote bpsAccountRecord) bpsAccountRecord {
 		merged.Until, merged.Reason, merged.Changed = remote.Until, remote.Reason, remote.Changed
 		merged.NeedsProbe, merged.NextProbe = remote.NeedsProbe, remote.NextProbe
 		merged.LastProbe, merged.LastProbeResult = remote.LastProbe, remote.LastProbeResult
+		merged.Trigger, merged.Detail, merged.ProbeModel = remote.Trigger, remote.Detail, remote.ProbeModel
+		merged.BlockStarted = remote.BlockStarted
 	case remote.Changed.Equal(local.Changed) && remote.Until.After(merged.Until):
 		merged.Until, merged.Reason = remote.Until, remote.Reason
 	}
@@ -183,7 +191,7 @@ func (s *bpsAccountStates) put(key string, record bpsAccountRecord, now time.Tim
 	}
 	if _, exists := s.entries[key]; !exists && len(s.entries) >= bpsAccountStateLimit {
 		for k, e := range s.entries {
-			if !e.record.blocksBPS(now) && len(e.record.Strikes) == 0 {
+			if !e.record.blocksBPS(now) && !e.record.NeedsProbe && len(e.record.Strikes) == 0 {
 				delete(s.entries, k)
 			}
 		}
@@ -475,10 +483,31 @@ type BPSAccountStatus struct {
 	// ModelsUnavailable maps models BPS refused for this account to the time
 	// they are retried on BPS.
 	ModelsUnavailable map[string]time.Time `json:"models_unavailable,omitempty"`
+	// NativeRoute is the native route breaker of a dual-route account ("" =
+	// no native route to break, ok, open). While open, NativeUntil is when
+	// the next native probe is due, NativeTrigger what opened it
+	// (native_403 / model_mismatch) and NativeDetail "requested → reported".
+	NativeRoute           string    `json:"native_route,omitempty"`
+	NativeUntil           time.Time `json:"native_until,omitzero"`
+	NativeTrigger         string    `json:"native_trigger,omitempty"`
+	NativeDetail          string    `json:"native_detail,omitempty"`
+	NativeLastProbeResult string    `json:"native_last_probe_result,omitempty"`
 }
 
 // BPSAccountStatuses reports the BPS cooldowns and model blocks of accounts.
 func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs []int64) []BPSAccountStatus {
+	return BPSAccountStatusesWith(ctx, store, accountIDs, nil)
+}
+
+// BPSAccountStatusesWith is BPSAccountStatuses plus the native route breaker
+// of the accounts lookup finds with an explicit native route.
+func BPSAccountStatusesWith(ctx context.Context, store cache.TokenCache, accountIDs []int64, lookup func(int64) *auth.Account) []BPSAccountStatus {
+	bpsStatusAccount := func(id int64) *auth.Account {
+		if lookup == nil {
+			return nil
+		}
+		return lookup(id)
+	}
 	now := time.Now()
 	out := make([]BPSAccountStatus, 0, len(accountIDs))
 	for _, id := range accountIDs {
@@ -521,6 +550,18 @@ func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs 
 			}
 		}
 		bpsAccountStateStore.mu.Unlock()
+		if account := bpsStatusAccount(id); account != nil && account.CodexNativeRouteExplicit() {
+			native := bpsAccountStateStore.load(ctx, store, nativeRouteStateKey(id), now)
+			status.NativeRoute = "ok"
+			if native.open(now) {
+				status.NativeRoute, status.NativeTrigger, status.NativeDetail = "open", native.Trigger, native.Detail
+				status.NativeUntil = native.Until
+				if native.NextProbe.After(status.NativeUntil) {
+					status.NativeUntil = native.NextProbe
+				}
+			}
+			status.NativeLastProbeResult = native.LastProbeResult
+		}
 		out = append(out, status)
 	}
 	return out

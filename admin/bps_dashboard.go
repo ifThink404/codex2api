@@ -27,9 +27,12 @@ type bpsDashboardSummary struct {
 	// Total BPS accounts in the pool; Disabled (accounts.enabled off) and
 	// Invalid (401 / banned / error credential) ones are left out of the
 	// pool and only counted.
-	Total           int  `json:"total"`
-	Disabled        int  `json:"disabled"`
-	Invalid         int  `json:"invalid"`
+	Total    int `json:"total"`
+	Disabled int `json:"disabled"`
+	Invalid  int `json:"invalid"`
+	// NativeDegraded dual-route accounts have their native route broken
+	// (BPS serves them meanwhile).
+	NativeDegraded  int  `json:"native_degraded"`
 	Usable          int  `json:"usable"`
 	PolicyBlocked   int  `json:"policy_blocked"`
 	RateCooling     int  `json:"rate_cooling"`
@@ -161,13 +164,14 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
+	active = bpsRouteBlocks(active, database.BPSRouteBPS)
 	activeByAccount := map[int64]database.BPSPolicyBlock{}
 	for _, block := range active {
 		activeByAccount[block.AccountID] = block
 	}
 	summary := bpsDashboardSummary{Total: len(accounts), Disabled: disabled, Invalid: invalid, MinUsable: minUsable}
 	rows := make([]bpsDashboardAccount, 0, len(accounts))
-	for i, status := range proxy.BPSAccountStatuses(ctx, h.cache, ids) {
+	for i, status := range proxy.BPSAccountStatusesWith(ctx, h.cache, ids, h.findAccount) {
 		account := accounts[i]
 		account.Mu().RLock()
 		name := account.Email
@@ -176,6 +180,9 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 			AccountID: status.AccountID, Name: name, State: bpsDashboardState(status, now),
 			InFlight: status.InFlight, MaxConcurrency: status.MaxConcurrency,
 			BudgetUsed: status.BudgetUsed, Budget: status.Budget, BudgetWindowSeconds: int64(window / time.Second),
+		}
+		if status.NativeRoute == "open" {
+			summary.NativeDegraded++
 		}
 		switch row.State {
 		case bpsStateActive:
@@ -236,6 +243,45 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 	})
 }
 
+// bpsRouteBlocks keeps the block events of one route.
+func bpsRouteBlocks(blocks []database.BPSPolicyBlock, route string) []database.BPSPolicyBlock {
+	out := make([]database.BPSPolicyBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Route == route || block.Route == "" && route == database.BPSRouteBPS {
+			out = append(out, block)
+		}
+	}
+	return out
+}
+
+// findAccount is the runtime account with id, or nil.
+func (h *Handler) findAccount(id int64) *auth.Account {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	return h.store.FindByID(id)
+}
+
+// bpsNativeRouteView is a dual-route account's native route breaker.
+type bpsNativeRouteView struct {
+	State   string     `json:"state"`
+	Until   *time.Time `json:"until,omitempty"`
+	Trigger string     `json:"trigger,omitempty"`
+	Detail  string     `json:"detail,omitempty"`
+}
+
+func bpsNativeRoute(status proxy.BPSAccountStatus) *bpsNativeRouteView {
+	if status.NativeRoute == "" {
+		return nil
+	}
+	view := &bpsNativeRouteView{State: status.NativeRoute, Trigger: status.NativeTrigger, Detail: status.NativeDetail}
+	if !status.NativeUntil.IsZero() {
+		until := status.NativeUntil
+		view.Until = &until
+	}
+	return view
+}
+
 // bpsActivityRow is one account on the live activity panel.
 type bpsActivityRow struct {
 	AccountID      int64      `json:"account_id"`
@@ -252,6 +298,8 @@ type bpsActivityRow struct {
 	ElapsedSeconds int64      `json:"elapsed_seconds,omitempty"`
 	NextProbeAt    *time.Time `json:"next_probe_at,omitempty"`
 	LastRequestAt  *time.Time `json:"last_request_at,omitempty"`
+	// NativeRoute is the native route breaker of a dual-route account.
+	NativeRoute *bpsNativeRouteView `json:"native_route,omitempty"`
 }
 
 // sortBPSActivity puts accounts with requests in flight first (most first),
@@ -294,11 +342,11 @@ func (h *Handler) GetTransportPluginActivity(c *gin.Context) {
 		return
 	}
 	blockedAt := map[int64]database.BPSPolicyBlock{}
-	for _, block := range active {
+	for _, block := range bpsRouteBlocks(active, database.BPSRouteBPS) {
 		blockedAt[block.AccountID] = block
 	}
 	rows := make([]bpsActivityRow, 0, len(accounts))
-	for i, status := range proxy.BPSAccountStatuses(ctx, h.cache, ids) {
+	for i, status := range proxy.BPSAccountStatusesWith(ctx, h.cache, ids, h.findAccount) {
 		account := accounts[i]
 		account.Mu().RLock()
 		name := account.Email
@@ -307,6 +355,7 @@ func (h *Handler) GetTransportPluginActivity(c *gin.Context) {
 			AccountID: status.AccountID, Name: name, State: bpsDashboardState(status, now),
 			InFlight: status.InFlight, MaxConcurrency: status.MaxConcurrency,
 			Succeeded: status.BudgetUsed, Attempts: status.Attempts, Budget: status.Budget,
+			NativeRoute: bpsNativeRoute(status),
 		}
 		if status.CoolingUntil.After(now) {
 			until := status.CoolingUntil

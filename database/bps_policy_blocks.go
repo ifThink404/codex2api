@@ -9,6 +9,9 @@ import (
 
 // BPS usage-policy block history: one row per block event of an account,
 // from the first strike of the cooldown until a background probe clears it.
+// Route says which transport of the account was broken: bps (usage-policy
+// blocks) or native (the native route breaker of dual-route accounts; Detail
+// records its trigger and the requested / upstream-reported models).
 // It makes block frequency and recovery time measurable. Cleared rows are
 // pruned after BPSPolicyBlockRetention.
 
@@ -38,13 +41,35 @@ func (db *DB) migrateBPSPolicyBlocks(ctx context.Context) error {
 			return err
 		}
 	}
+	for _, column := range []struct{ name, def string }{
+		{"route", "TEXT NOT NULL DEFAULT 'bps'"},
+		{"detail", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if db.isSQLite() {
+			if err := db.ensureSQLiteColumn(ctx, "bps_policy_blocks", column.name, column.def); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := db.conn.ExecContext(ctx, `ALTER TABLE bps_policy_blocks ADD COLUMN IF NOT EXISTS `+column.name+` `+column.def); err != nil {
+			return err
+		}
+	}
 	return nil
 }
+
+// Broken-route kinds of the block history.
+const (
+	BPSRouteBPS    = "bps"
+	BPSRouteNative = "native"
+)
 
 // BPSPolicyBlock is one block event. ClearedAt is nil while it is active.
 type BPSPolicyBlock struct {
 	ID              int64      `json:"id"`
 	AccountID       int64      `json:"account_id"`
+	Route           string     `json:"route"`
+	Detail          string     `json:"detail,omitempty"`
 	BlockedAt       time.Time  `json:"blocked_at"`
 	Tier            int        `json:"tier"`
 	ClearedAt       *time.Time `json:"cleared_at,omitempty"`
@@ -71,21 +96,27 @@ func (b BPSPolicyBlock) Elapsed(now time.Time) time.Duration {
 // tier: a new row when none is active (blockedAt is the first strike), else
 // the active row's tier is raised.
 func (db *DB) OpenBPSPolicyBlock(ctx context.Context, accountID int64, blockedAt time.Time, tier int) error {
+	return db.OpenRouteBlock(ctx, accountID, BPSRouteBPS, blockedAt, tier, "")
+}
+
+// OpenRouteBlock is OpenBPSPolicyBlock for one route of the account; detail
+// describes a new event (kept on an already active one).
+func (db *DB) OpenRouteBlock(ctx context.Context, accountID int64, route string, blockedAt time.Time, tier int, detail string) error {
 	if db == nil || db.conn == nil || accountID <= 0 {
 		return nil
 	}
 	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE bps_policy_blocks SET tier=$2 WHERE account_id=$1 AND cleared_at IS NULL AND tier < $2`, accountID, tier); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE bps_policy_blocks SET tier=$2 WHERE account_id=$1 AND route=$3 AND cleared_at IS NULL AND tier < $2`, accountID, tier, route); err != nil {
 			return err
 		}
 		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM bps_policy_blocks WHERE account_id=$1 AND cleared_at IS NULL`, accountID).Scan(&active); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM bps_policy_blocks WHERE account_id=$1 AND route=$2 AND cleared_at IS NULL`, accountID, route).Scan(&active); err != nil {
 			return err
 		}
 		if active > 0 {
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO bps_policy_blocks(account_id,blocked_at,tier) VALUES($1,$2,$3)`, accountID, blockedAt.Unix(), tier)
+		_, err := tx.ExecContext(ctx, `INSERT INTO bps_policy_blocks(account_id,blocked_at,tier,route,detail) VALUES($1,$2,$3,$4,$5)`, accountID, blockedAt.Unix(), tier, route, clampUsageLogText(detail, 300))
 		return err
 	})
 }
@@ -93,12 +124,17 @@ func (db *DB) OpenBPSPolicyBlock(ctx context.Context, accountID int64, blockedAt
 // RecordBPSPolicyProbe notes a probe of the account's active block (and the
 // tier it left the account at).
 func (db *DB) RecordBPSPolicyProbe(ctx context.Context, accountID int64, at time.Time, result string, tier int) error {
+	return db.RecordRouteProbe(ctx, accountID, BPSRouteBPS, at, result, tier)
+}
+
+// RecordRouteProbe is RecordBPSPolicyProbe for one route of the account.
+func (db *DB) RecordRouteProbe(ctx context.Context, accountID int64, route string, at time.Time, result string, tier int) error {
 	if db == nil || db.conn == nil || accountID <= 0 {
 		return nil
 	}
 	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE bps_policy_blocks SET probe_count=probe_count+1, last_probe_result=$2, last_probe_at=$3,
-			tier=CASE WHEN tier < $4 THEN $4 ELSE tier END WHERE account_id=$1 AND cleared_at IS NULL`, accountID, clampUsageLogText(result, 120), at.Unix(), tier)
+			tier=CASE WHEN tier < $4 THEN $4 ELSE tier END WHERE account_id=$1 AND route=$5 AND cleared_at IS NULL`, accountID, clampUsageLogText(result, 120), at.Unix(), tier, route)
 		return err
 	})
 }
@@ -106,6 +142,11 @@ func (db *DB) RecordBPSPolicyProbe(ctx context.Context, accountID int64, at time
 // ClearBPSPolicyBlock closes the account's active block at clearedAt and
 // returns how long it lasted (false when none was active).
 func (db *DB) ClearBPSPolicyBlock(ctx context.Context, accountID int64, clearedAt time.Time) (time.Duration, bool, error) {
+	return db.ClearRouteBlock(ctx, accountID, BPSRouteBPS, clearedAt)
+}
+
+// ClearRouteBlock is ClearBPSPolicyBlock for one route of the account.
+func (db *DB) ClearRouteBlock(ctx context.Context, accountID int64, route string, clearedAt time.Time) (time.Duration, bool, error) {
 	if db == nil || db.conn == nil || accountID <= 0 {
 		return 0, false, nil
 	}
@@ -113,7 +154,7 @@ func (db *DB) ClearBPSPolicyBlock(ctx context.Context, accountID int64, clearedA
 	var found bool
 	err := db.withWriteTx(ctx, func(tx *sql.Tx) error {
 		var id, blockedAt int64
-		err := tx.QueryRowContext(ctx, `SELECT id, blocked_at FROM bps_policy_blocks WHERE account_id=$1 AND cleared_at IS NULL ORDER BY id DESC LIMIT 1`, accountID).Scan(&id, &blockedAt)
+		err := tx.QueryRowContext(ctx, `SELECT id, blocked_at FROM bps_policy_blocks WHERE account_id=$1 AND route=$2 AND cleared_at IS NULL ORDER BY id DESC LIMIT 1`, accountID, route).Scan(&id, &blockedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -122,7 +163,7 @@ func (db *DB) ClearBPSPolicyBlock(ctx context.Context, accountID int64, clearedA
 		}
 		seconds := max(clearedAt.Unix()-blockedAt, 0)
 		duration, found = time.Duration(seconds)*time.Second, true
-		_, err = tx.ExecContext(ctx, `UPDATE bps_policy_blocks SET cleared_at=$2, duration_seconds=$3 WHERE account_id=$1 AND cleared_at IS NULL`, accountID, clearedAt.Unix(), seconds)
+		_, err = tx.ExecContext(ctx, `UPDATE bps_policy_blocks SET cleared_at=$2, duration_seconds=$3 WHERE account_id=$1 AND route=$4 AND cleared_at IS NULL`, accountID, clearedAt.Unix(), seconds, route)
 		return err
 	})
 	return duration, found, err
@@ -148,7 +189,7 @@ func (db *DB) ListBPSPolicyBlocks(ctx context.Context, limit int) (active, histo
 			var b BPSPolicyBlock
 			var blockedAt, lastProbe int64
 			var clearedAt sql.NullInt64
-			if err := rows.Scan(&b.ID, &b.AccountID, &blockedAt, &b.Tier, &clearedAt, &b.DurationSeconds, &b.ProbeCount, &b.LastProbeResult, &lastProbe); err != nil {
+			if err := rows.Scan(&b.ID, &b.AccountID, &blockedAt, &b.Tier, &clearedAt, &b.DurationSeconds, &b.ProbeCount, &b.LastProbeResult, &lastProbe, &b.Route, &b.Detail); err != nil {
 				return nil, err
 			}
 			b.BlockedAt = time.Unix(blockedAt, 0).UTC()
@@ -164,7 +205,7 @@ func (db *DB) ListBPSPolicyBlocks(ctx context.Context, limit int) (active, histo
 		}
 		return out, rows.Err()
 	}
-	const columns = `SELECT id, account_id, blocked_at, tier, cleared_at, duration_seconds, probe_count, last_probe_result, last_probe_at FROM bps_policy_blocks`
+	const columns = `SELECT id, account_id, blocked_at, tier, cleared_at, duration_seconds, probe_count, last_probe_result, last_probe_at, route, detail FROM bps_policy_blocks`
 	if active, err = scan(columns + ` WHERE cleared_at IS NULL ORDER BY blocked_at`); err != nil {
 		return nil, nil, err
 	}
@@ -174,11 +215,12 @@ func (db *DB) ListBPSPolicyBlocks(ctx context.Context, limit int) (active, histo
 
 // BPSPolicyBlockTotals summarizes one account's blocks in the kept history.
 type BPSPolicyBlockTotals struct {
-	AccountID           int64 `json:"account_id"`
-	TimesBlocked        int   `json:"times_blocked"`
-	TotalBlockedSeconds int64 `json:"total_blocked_seconds"`
-	LongestBlockSeconds int64 `json:"longest_block_seconds"`
-	Recovered           int   `json:"recovered"`
+	AccountID           int64  `json:"account_id"`
+	Route               string `json:"route"`
+	TimesBlocked        int    `json:"times_blocked"`
+	TotalBlockedSeconds int64  `json:"total_blocked_seconds"`
+	LongestBlockSeconds int64  `json:"longest_block_seconds"`
+	Recovered           int    `json:"recovered"`
 }
 
 // BPSPolicyBlockTotalsAt sums every kept block per account; an active block
@@ -191,7 +233,7 @@ func (db *DB) BPSPolicyBlockTotalsAt(ctx context.Context, now time.Time) ([]BPSP
 			SUM(CASE WHEN cleared_at IS NULL THEN $1 - blocked_at ELSE duration_seconds END),
 			MAX(CASE WHEN cleared_at IS NULL THEN $1 - blocked_at ELSE duration_seconds END),
 			SUM(CASE WHEN cleared_at IS NULL THEN 0 ELSE 1 END)
-		FROM bps_policy_blocks GROUP BY account_id ORDER BY account_id`, now.Unix())
+		, route FROM bps_policy_blocks GROUP BY account_id, route ORDER BY account_id, route`, now.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +241,7 @@ func (db *DB) BPSPolicyBlockTotalsAt(ctx context.Context, now time.Time) ([]BPSP
 	out := []BPSPolicyBlockTotals{}
 	for rows.Next() {
 		var t BPSPolicyBlockTotals
-		if err := rows.Scan(&t.AccountID, &t.TimesBlocked, &t.TotalBlockedSeconds, &t.LongestBlockSeconds, &t.Recovered); err != nil {
+		if err := rows.Scan(&t.AccountID, &t.TimesBlocked, &t.TotalBlockedSeconds, &t.LongestBlockSeconds, &t.Recovered, &t.Route); err != nil {
 			return nil, err
 		}
 		t.TotalBlockedSeconds, t.LongestBlockSeconds = max(t.TotalBlockedSeconds, 0), max(t.LongestBlockSeconds, 0)

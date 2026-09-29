@@ -137,6 +137,10 @@ func populateTransportPluginUsage(c *gin.Context, input *database.UsageLogInput)
 // served it.
 func applyTransportPluginUsage(req *plugins.Request, input *database.UsageLogInput) {
 	transport, meta := req.Transport()
+	if transport == database.TransportNative && meta != "" && input.PluginMeta == "" {
+		// A plugin handed this attempt to the native route (its reason).
+		input.PluginMeta = meta
+	}
 	if transport == "" || transport == database.TransportNative {
 		return
 	}

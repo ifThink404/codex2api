@@ -200,7 +200,7 @@ func (h *Handler) GetTransportPluginAccountStatus(c *gin.Context) {
 	}
 	statuses := []proxy.BPSAccountStatus{}
 	if p.ID() == proxy.BPSPluginID && len(ids) > 0 {
-		statuses = proxy.BPSAccountStatuses(c.Request.Context(), h.cache, ids)
+		statuses = proxy.BPSAccountStatusesWith(c.Request.Context(), h.cache, ids, h.findAccount)
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": statuses})
 }
@@ -406,13 +406,18 @@ func (h *Handler) GetTransportPluginPolicyBlocks(c *gin.Context) {
 		ids = append(ids, block.AccountID)
 	}
 	live := map[int64]proxy.BPSAccountStatus{}
-	for _, status := range proxy.BPSAccountStatuses(c.Request.Context(), h.cache, ids) {
+	for _, status := range proxy.BPSAccountStatusesWith(c.Request.Context(), h.cache, ids, h.findAccount) {
 		live[status.AccountID] = status
 	}
 	activeViews := make([]bpsPolicyBlockView, 0, len(active))
 	for _, block := range active {
 		view := bpsPolicyBlockView{BPSPolicyBlock: block, Name: name(block.AccountID), ElapsedSeconds: int64(block.Elapsed(now) / time.Second)}
-		if status, ok := live[block.AccountID]; ok {
+		if status, ok := live[block.AccountID]; ok && block.Route == database.BPSRouteNative {
+			if !status.NativeUntil.IsZero() {
+				next := status.NativeUntil
+				view.NextProbeAt = &next
+			}
+		} else if ok {
 			view.Tiers = status.PolicyTiers
 			if status.PolicyTier > view.Tier {
 				view.Tier = status.PolicyTier

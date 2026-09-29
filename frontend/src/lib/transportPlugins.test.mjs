@@ -312,3 +312,26 @@ test('BPS traffic charts: full bucket grid, health strip, shared chart theme', (
   assert.ok(read('components/DashboardUsageCharts.tsx').includes("from '../lib/chartTheme'"), 'dashboard charts share the theme constants')
   assert.ok(read('components/PoolRunwayCard.tsx').includes("import { riskPalette } from '../lib/riskPalette'"), 'the runway card shares the palette')
 })
+
+test('dual-route breakers: config fields, route states and route history', () => {
+  const protection = bpsConfigGroups.find((group) => group.key === 'protection').fields
+  for (const key of ['native_degrade_breaker_enabled', 'native_degrade_threshold', 'native_degrade_window', 'native_cooldown_ladder']) {
+    assert.ok(protection.includes(key), `${key} is in the 账号保护 card`)
+    assert.ok(bpsConfigFields.some((field) => field.key === key), key)
+  }
+  assert.equal(bpsConfigFields.find((field) => field.key === 'native_degrade_threshold').defaultValue, 2)
+  assert.equal(bpsConfigFields.find((field) => field.key === 'native_degrade_breaker_enabled').defaultValue, true)
+  const page = read('pages/Plugins.tsx')
+  for (const needle of [
+    '<NativeRouteLine route={account.native_route} now={now} />', "t('plugins.nativeTriggerModel', { detail: detail ?? '' })", "if (trigger === 'native_403') return '403'",
+    '<RouteBadge route={block.route} />', '<RouteBadge route={total.route} />', "t('plugins.dashNativeDegraded')",
+  ]) assert.ok(page.includes(needle), needle)
+  const server = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
+  assert.ok(server.includes('`json:"native_degrade_threshold,omitempty"`') && server.includes('`json:"native_cooldown_ladder,omitempty"`'), 'the server knows the fields')
+  for (const name of ['zh', 'en', 'zh-TW']) {
+    const locale = JSON.parse(read(`locales/${name}.json`))
+    for (const key of ['dashNativeDegraded', 'nativeTriggerModel', 'nativeRouteOk', 'nativeRouteOpen', 'routeBps', 'routeNative', 'policyRoute']) {
+      assert.equal(typeof locale.plugins[key], 'string', `${name} ${key}`)
+    }
+  }
+})

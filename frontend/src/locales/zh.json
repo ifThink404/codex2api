@@ -7469,7 +7469,11 @@
       "bps_account_budget_window": "BPS 预算窗口",
       "bps_policy_conversation_mark": "用量策略拦截后标记会话",
       "bps_probe_model": "用量策略探测模型",
-      "bps_min_usable_accounts": "可用账号告警线"
+      "bps_min_usable_accounts": "可用账号告警线",
+      "native_degrade_breaker_enabled": "原生路由熔断（降智）",
+      "native_degrade_threshold": "触发原生熔断的模型不一致次数",
+      "native_degrade_window": "模型不一致计数窗口",
+      "native_cooldown_ladder": "原生熔断冷却阶梯"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7500,7 +7504,11 @@
       "bps_min_usable_accounts": "可用 BPS 账号降到此数或更少时，健康面板告警。",
       "policy_block_threshold": "10 分钟内达到此次数的用量策略拦截即触发冷却。",
       "word_user_agent": "Word 类型使用的 User-Agent；留空使用内置值。",
-      "attachment_429_fallback": "附件上传遇到 429 时在本地转换附件（需要 pdftotext/libreoffice）。"
+      "attachment_429_fallback": "附件上传遇到 429 时在本地转换附件（需要 pdftotext/libreoffice）。",
+      "native_degrade_breaker_enabled": "仅对同时启用 BPS 且显式开启原生路由的账号生效：原生响应的上游自报模型与请求模型不一致（降智）或原生 403 时，只熔断该账号的原生路由，改由 BPS 服务；后台原生探测拿回请求模型后恢复。两条路由都熔断时该账号被跳过。",
+      "native_degrade_threshold": "窗口内达到此次数的模型不一致即熔断原生路由；一次原生 403 立即熔断。上游未自报模型的响应不计。",
+      "native_degrade_window": "统计模型不一致的时间窗口，如 10m（1m–24h）。留空为 10m。",
+      "native_cooldown_ladder": "原生熔断每次触发依次使用的冷却时长，冷却结束后由后台探测决定是否恢复。留空时沿用用量策略冷却阶梯。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -7531,7 +7539,7 @@
     "probePending": "用量策略冷却已到期，等待后台探测（探测成功前不接真实流量）",
     "lastProbe": "最近探测 {{time}}：{{result}}",
     "policyBlocks": "策略拦截",
-    "policyBlocksDesc": "被 BPS 用量策略拦截的账号、每次拦截持续多久，以及何时恢复（由后台探测解除）。",
+    "policyBlocksDesc": "被 BPS 用量策略拦截的账号、每次拦截持续多久、何时恢复（由后台探测解除）；双路由账号的原生熔断（降智 / 原生 403）也记在这里，路由列区分 BPS 与原生。",
     "policyBlocksActive": "当前拦截（{{count}}）",
     "policyBlocksNone": "当前没有被拦截的账号。",
     "policyAccount": "账号",
@@ -7634,7 +7642,14 @@
     "accountInvalid": "凭据失效（401 / 错误），不参与 BPS",
     "groupsMembers": "已启用 {{groups}} 个分组，共 {{count}} 个成员",
     "groupsNoneEnabled": "尚未启用任何分组",
-    "groupsAddAccounts": "去账号管理加入分组 →"
+    "groupsAddAccounts": "去账号管理加入分组 →",
+    "dashNativeDegraded": "原生降智（BPS 顶上）",
+    "nativeTriggerModel": "模型不一致（{{detail}}）",
+    "nativeRouteOk": "原生路由正常",
+    "nativeRouteOpen": "原生熔断",
+    "routeBps": "BPS",
+    "routeNative": "原生",
+    "policyRoute": "路由"
   },
   "logAgent": {
     "title": "AI 日志分析",

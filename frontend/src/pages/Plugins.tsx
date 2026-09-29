@@ -64,7 +64,7 @@ import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
 import { SETTINGS_FIELD_GRID, SETTINGS_ROW_LIST, SettingField, SettingsCard } from '../components/SettingsLayout'
-import type { AccountGroup, AccountRow, BPSActivity, BPSActivityAccount, BPSDashboard, BPSPolicyBlocksResponse, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
+import type { AccountGroup, AccountRow, BPSActivity, BPSActivityAccount, BPSDashboard, BPSPolicyBlocksResponse, BPSNativeRoute, BPSRoute, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -510,6 +510,7 @@ function BPSDashboardPanel({ plugin }: { plugin: TransportPlugin }) {
             <RunwayChip label={t('plugins.dashFloor')} value={String(summary?.min_usable ?? '—')} />
             {Boolean(summary?.disabled) && <RunwayChip label={t('plugins.dashDisabled')} value={String(summary?.disabled)} />}
             {Boolean(summary?.invalid) && <RunwayChip label={t('plugins.dashInvalid')} value={String(summary?.invalid)} emphasize />}
+            {Boolean(summary?.native_degraded) && <RunwayChip label={t('plugins.dashNativeDegraded')} value={String(summary?.native_degraded)} emphasize />}
             <RunwayChip label={t('plugins.dashInFlightTotal')} value={String(inFlight)} emphasize={inFlight > 0} />
             <RunwayChip label={t('plugins.dashRequests1h')} value={String(data?.traffic['1h'].requests ?? 0)} />
             <RunwayChip label={t('plugins.dashSuccessRate1h')} value={data ? formatSuccessRate(data.traffic['1h'].success_rate, data.traffic['1h'].requests) : '—'} />
@@ -726,6 +727,7 @@ function BPSActivityPanel({ plugin }: { plugin: TransportPlugin }) {
                           {account.state === 'rate_cooling' && activeUntil(account.cooling_until, now) && (
                             <span>{t('plugins.activityCoolingUntil', { time: formatBeijingTime(account.cooling_until).slice(5) })}</span>
                           )}
+                          {account.native_route && <NativeRouteLine route={account.native_route} now={now} />}
                           {hasTime(account.next_probe_at) && <span>{nextProbe > 0 ? t('plugins.activityNextProbe', { in: formatBlockDuration(nextProbe) }) : t('plugins.policyProbeDue')}</span>}
                         </div>
                       </TableCell>
@@ -758,6 +760,44 @@ function BPSActivityPanel({ plugin }: { plugin: TransportPlugin }) {
       )}
     </div>
   )
+}
+
+// nativeTriggerLabel names what opened a native route breaker.
+function useNativeTriggerLabel() {
+  const { t } = useTranslation()
+  return (trigger: string | undefined, detail: string | undefined) => {
+    if (trigger === 'native_403') return '403'
+    if (trigger === 'model_mismatch') return t('plugins.nativeTriggerModel', { detail: detail ?? '' })
+    return detail || trigger || ''
+  }
+}
+
+// NativeRouteLine is a dual-route account's native route: ok, or broken
+// (why, and until when its probe is due).
+function NativeRouteLine({ route, now }: { route: BPSNativeRoute; now: number }) {
+  const { t } = useTranslation()
+  const triggerLabel = useNativeTriggerLabel()
+  if (route.state !== 'open') {
+    return <span>{t('plugins.nativeRouteOk')}</span>
+  }
+  const left = secondsUntil(route.until, now)
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      <Badge variant="outline" className="border-transparent bg-rose-500/12 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">
+        {t('plugins.nativeRouteOpen')}
+      </Badge>
+      <span>{triggerLabel(route.trigger, route.detail)}</span>
+      <span>· {left > 0 ? t('plugins.activityNextProbe', { in: formatBlockDuration(left) }) : t('plugins.policyProbeDue')}</span>
+    </span>
+  )
+}
+
+// RouteBadge marks which transport of the account a block event broke.
+function RouteBadge({ route }: { route?: BPSRoute }) {
+  const { t } = useTranslation()
+  return route === 'native'
+    ? <Badge variant="outline" className="border-transparent bg-rose-500/12 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">{t('plugins.routeNative')}</Badge>
+    : <Badge variant="outline" className="border-transparent bg-primary/10 text-primary">{t('plugins.routeBps')}</Badge>
 }
 
 // PolicyBlocks shows which accounts the BPS usage policy is blocking, for how
@@ -794,6 +834,7 @@ function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>{t('plugins.policyAccount')}</TableHead>
+                  <TableHead>{t('plugins.policyRoute')}</TableHead>
                   <TableHead>{t('plugins.policyBlockedSince')}</TableHead>
                   <TableHead>{t('plugins.policyElapsed')}</TableHead>
                   <TableHead>{t('plugins.policyTierColumn')}</TableHead>
@@ -807,6 +848,12 @@ function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
                   return (
                     <TableRow key={block.id}>
                       <TableCell className="text-sm">{accountLabel(block.account_id, block.name)}</TableCell>
+                      <TableCell className="text-xs">
+                        <div className="flex flex-col items-start gap-1">
+                          <RouteBadge route={block.route} />
+                          {block.detail && <span className="text-muted-foreground">{block.detail}</span>}
+                        </div>
+                      </TableCell>
                       <TableCell className="whitespace-nowrap text-xs">{hasTime(block.blocked_at) ? formatBeijingTime(block.blocked_at) : '—'}</TableCell>
                       <TableCell className="whitespace-nowrap font-mono text-xs">{hasTime(block.blocked_at) ? formatBlockDuration(liveElapsedSeconds(block.elapsed_seconds, fetchedAt, now)) : '—'}</TableCell>
                       <TableCell className="text-xs">{block.tiers ? `${block.tier}/${block.tiers}` : block.tier}</TableCell>
@@ -828,6 +875,7 @@ function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>{t('plugins.policyAccount')}</TableHead>
+                  <TableHead>{t('plugins.policyRoute')}</TableHead>
                   <TableHead>{t('plugins.policyTimesBlocked')}</TableHead>
                   <TableHead>{t('plugins.policyTotalBlocked')}</TableHead>
                   <TableHead>{t('plugins.policyLongest')}</TableHead>
@@ -836,8 +884,9 @@ function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
               </TableHeader>
               <TableBody>
                 {data.totals.map((total) => (
-                  <TableRow key={total.account_id}>
+                  <TableRow key={`${total.account_id}-${total.route ?? "bps"}`}>
                     <TableCell className="text-sm">{accountLabel(total.account_id, total.name)}</TableCell>
+                    <TableCell><RouteBadge route={total.route} /></TableCell>
                     <TableCell className="text-xs">{total.times_blocked}</TableCell>
                     <TableCell className="font-mono text-xs">{formatBlockDuration(total.total_blocked_seconds)}</TableCell>
                     <TableCell className="font-mono text-xs">{formatBlockDuration(total.longest_block_seconds)}</TableCell>
@@ -855,7 +904,11 @@ function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
           <ul className="divide-y divide-border text-xs">
             {data.history.map((block) => (
               <li key={block.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span className="text-sm">{accountLabel(block.account_id, block.name)}</span>
+                <span className="flex flex-wrap items-center gap-2 text-sm">
+                  {accountLabel(block.account_id, block.name)}
+                  <RouteBadge route={block.route} />
+                  {block.detail && <span className="text-xs text-muted-foreground">{block.detail}</span>}
+                </span>
                 <span className="text-muted-foreground">
                   {t('plugins.policyHistoryEntry', {
                     blocked: formatBeijingTime(block.blocked_at),

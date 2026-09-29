@@ -1609,6 +1609,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCapacityShedFromErrorMessage(input)
 	h.observeSessionAutoLock(c, input)
 	markCyberPolicyUsageKind(input)
+	h.observeNativeRouteHealth(c, input)
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
 		return

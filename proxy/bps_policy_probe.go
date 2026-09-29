@@ -70,20 +70,22 @@ func (h *Handler) runBPSPolicyProbes(ctx context.Context, now time.Time) {
 		if record.Reason != BPSPolicyBlockedKind || !record.NeedsProbe || record.active(now) || record.NextProbe.After(now) {
 			continue
 		}
-		if release, ok := h.claimBPSProbe(ctx, account.ID()); ok {
+		if release, ok := h.claimRouteProbe(ctx, fmt.Sprintf("account:%d", account.ID())); ok {
 			h.probeBPSPolicyAccount(ctx, account)
 			release()
 		}
 	}
+	h.runNativeRouteProbes(ctx, now)
 }
 
-// claimBPSProbe takes a short lease so only one replica probes an account.
-func (h *Handler) claimBPSProbe(ctx context.Context, accountID int64) (func(), bool) {
+// claimRouteProbe takes a short lease so only one replica probes a route
+// (key: account:<id> for BPS, native:<id> for the native route).
+func (h *Handler) claimRouteProbe(ctx context.Context, key string) (func(), bool) {
 	shared := bpsSharedAccountStore(h.bpsCache())
 	if shared == nil {
 		return func() {}, true
 	}
-	key, owner := fmt.Sprintf("account:%d", accountID), NewUpstreamSessionUUID()
+	owner := NewUpstreamSessionUUID()
 	leaseCtx, cancel := context.WithTimeout(ctx, bpsAttachmentCacheTimeout)
 	acquired, err := shared.AcquireLease(leaseCtx, bpsProbeNamespace, key, owner, bpsProbeTimeout+10*time.Second)
 	cancel()
