@@ -3818,6 +3818,9 @@ export interface PluginAccountStatus {
   max_concurrency?: number
   budget_used?: number
   budget?: number
+  probe_pending?: boolean
+  last_probe?: string
+  last_probe_result?: string
   // models BPS refused for this account, mapped to when BPS is retried
   models_unavailable?: Record<string, string>
 }

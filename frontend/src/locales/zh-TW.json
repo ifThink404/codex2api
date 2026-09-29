@@ -2561,7 +2561,8 @@
       "bps_account_max_concurrency": "單帳號 BPS 併發上限",
       "bps_account_request_budget": "單帳號 BPS 請求預算",
       "bps_account_budget_window": "BPS 預算視窗",
-      "bps_policy_conversation_mark": "用量政策攔截後標記會話"
+      "bps_policy_conversation_mark": "用量政策攔截後標記會話",
+      "bps_probe_model": "用量政策探測模型"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2587,7 +2588,8 @@
       "bps_account_max_concurrency": "每個實例上單帳號同時進行的 BPS 請求上限；超出的請求改走其他 BPS 帳號或短暫排隊。0 表示關閉。",
       "bps_account_request_budget": "視窗內單帳號成功的 BPS 請求數，跨實例統計；達到預算後在視窗滾動前不再走 BPS。0 表示關閉。",
       "bps_account_budget_window": "請求預算的滾動視窗，如 24h、12h（1h–720h）。留空為 24h。",
-      "bps_policy_conversation_mark": "預設關閉。開啟後，觸發 BPS 用量政策攔截的會話，其後續輪次 30 分鐘內不走 BPS。攔截是帳號級請求配額，當前請求始終會切換到其他 BPS 帳號。"
+      "bps_policy_conversation_mark": "預設關閉。開啟後，觸發 BPS 用量政策攔截的會話，其後續輪次 30 分鐘內不走 BPS。攔截是帳號級請求配額，當前請求始終會切換到其他 BPS 帳號。",
+      "bps_probe_model": "用量政策冷卻到期後，背景探測使用的模型。留空時使用連線測試模型（需走 BPS），否則為 gpt-6-sol。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2614,7 +2616,9 @@
     "purgeConfirm_all": "刪除此外掛的全部封包，操作無法復原。",
     "purged": "已刪除 {{count}} 筆封包",
     "inFlight": "BPS 併發 {{current}}/{{max}}",
-    "budgetUsed": "BPS 請求 {{used}}/{{budget}}（視窗內）"
+    "budgetUsed": "BPS 請求 {{used}}/{{budget}}（視窗內）",
+    "probePending": "用量政策冷卻已到期，等待背景探測（探測成功前不接真實流量）",
+    "lastProbe": "最近探測 {{time}}：{{result}}"
   },
   "logAgent": {
     "title": "AI 日誌分析",

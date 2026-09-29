@@ -418,7 +418,7 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
 function PluginAccountStatusLine({ status }: { status?: PluginAccountStatus }) {
   const { t } = useTranslation()
   const models = Object.entries(status?.models_unavailable ?? {})
-  const capped = Boolean(status?.max_concurrency) || Boolean(status?.budget)
+  const capped = Boolean(status?.max_concurrency) || Boolean(status?.budget) || Boolean(status?.probe_pending) || Boolean(status?.last_probe_result)
   if (!status || (!status.cooling_until && !status.policy_strikes && !status.policy_tier && models.length === 0 && !capped)) return null
   return (
     <span className="mt-1 block space-y-0.5 text-xs text-amber-600 dark:text-amber-400">
@@ -430,6 +430,10 @@ function PluginAccountStatusLine({ status }: { status?: PluginAccountStatus }) {
         </span>
       )}
       {Boolean(status.policy_tier) && <span className="block">{t('plugins.policyTier', { tier: status.policy_tier, tiers: status.policy_tiers })}</span>}
+      {status.probe_pending && !status.cooling_until && <span className="block">{t('plugins.probePending')}</span>}
+      {status.last_probe_result && status.last_probe && (
+        <span className="block text-muted-foreground">{t('plugins.lastProbe', { time: formatBeijingTime(status.last_probe), result: status.last_probe_result })}</span>
+      )}
       {Boolean(status.max_concurrency) && <span className="block text-muted-foreground">{t('plugins.inFlight', { current: status.in_flight ?? 0, max: status.max_concurrency })}</span>}
       {Boolean(status.budget) && (
         <span className={(status.budget_used ?? 0) >= (status.budget ?? 0) ? 'block' : 'block text-muted-foreground'}>

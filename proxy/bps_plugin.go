@@ -73,6 +73,9 @@ type BPSConfig struct {
 	// its later turns avoid BPS for 30 minutes. Off by default: the block is
 	// an account-level request quota, not a content verdict.
 	PolicyConversationMark bool `json:"bps_policy_conversation_mark,omitempty"`
+	// ProbeModel is the model of the background usage-policy probe; empty
+	// uses the connection-test model when BPS serves it, else gpt-6-sol.
+	ProbeModel string `json:"bps_probe_model,omitempty"`
 	// AccountMaxConcurrency caps BPS requests in flight per account on each
 	// replica (0 = off).
 	AccountMaxConcurrency int `json:"bps_account_max_concurrency,omitempty"`
@@ -397,8 +400,12 @@ type bpsRequest struct {
 	excluded map[int64]bool
 	// blocked: the usage policy blocked this request or its conversation, so
 	// no account may serve it through BPS.
-	blocked          bool
-	orgRetries       int
+	blocked    bool
+	orgRetries int
+	// probe marks a background usage-policy probe: failures are reported in
+	// probeClass instead of changing the account state.
+	probe            bool
+	probeClass       string
 	conversationKeys []string
 	servable         map[string]map[int64]bool
 }
@@ -838,6 +845,17 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	}
 	header, _ := env.State(bpsAttemptHeadersKey).(http.Header)
 	bpsSetUsageMeta(env, "error_headers", bpsCompactHeaders(header))
+	if state := bpsRequestState(env.Request); state != nil && state.probe {
+		state.mu.Lock()
+		if state.probeClass == "" {
+			state.probeClass = bpsFailureClass(status, body)
+			if state.probeClass == "" {
+				state.probeClass = "error"
+			}
+		}
+		state.mu.Unlock()
+		return
+	}
 	if hint, ok := bpsOrgRetryable(bpsErrorMessageOf(bpsErrorBodySource(gjson.ParseBytes(body)))); ok {
 		env.ClassifyCapture("bps_org_rate_limited")
 		// Organization-wide limit (retries exhausted, or output already

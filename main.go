@@ -416,6 +416,8 @@ func main() {
 	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
 	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
 	handler.SetRuntimeCache(tc)
+	// BPS usage-policy cooldowns end only after a background probe succeeds.
+	handler.StartBPSPolicyProber(backgroundCtx)
 
 	r.Use(api.RecoveryMiddleware())
 	r.Use(api.RequestContextMiddleware())

@@ -46,6 +46,7 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'bps_models', kind: 'list', defaultValue: ['gpt-5.6-*', 'gpt-6-*'], hint: true },
   { key: 'bps_only_models', kind: 'list', defaultValue: ['gpt-6-*'], hint: true },
   { key: 'bps_policy_conversation_mark', kind: 'boolean', defaultValue: false, hint: true },
+  { key: 'bps_probe_model', kind: 'text', hint: true },
   { key: 'bps_account_max_concurrency', kind: 'number', min: 0, max: 100, hint: true },
   { key: 'bps_account_request_budget', kind: 'number', min: 0, max: 10000000, hint: true },
   { key: 'bps_account_budget_window', kind: 'text', hint: true },

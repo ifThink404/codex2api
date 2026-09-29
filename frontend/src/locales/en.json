@@ -7444,7 +7444,8 @@
       "bps_account_max_concurrency": "BPS concurrency per account",
       "bps_account_request_budget": "BPS request budget per account",
       "bps_account_budget_window": "BPS budget window",
-      "bps_policy_conversation_mark": "Mark conversations after a usage-policy block"
+      "bps_policy_conversation_mark": "Mark conversations after a usage-policy block",
+      "bps_probe_model": "Usage-policy probe model"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7470,7 +7471,8 @@
       "bps_account_max_concurrency": "Most BPS requests in flight per account on each replica; extra requests go to another BPS account or wait briefly. 0 = off.",
       "bps_account_request_budget": "Successful BPS requests per account within the window, counted across replicas; an account at its budget is not used for BPS until the window rolls. 0 = off.",
       "bps_account_budget_window": "Rolling window for the request budget, such as 24h or 12h (1h–720h). Empty uses 24h.",
-      "bps_policy_conversation_mark": "Off by default. When on, later turns of a conversation that hit a BPS usage-policy block avoid BPS for 30 minutes. The block is an account-level request quota, so the request itself always fails over to another BPS account."
+      "bps_policy_conversation_mark": "Off by default. When on, later turns of a conversation that hit a BPS usage-policy block avoid BPS for 30 minutes. The block is an account-level request quota, so the request itself always fails over to another BPS account.",
+      "bps_probe_model": "Model of the background probe that clears an account after its usage-policy cooldown. Empty uses the connection-test model when BPS serves it, else gpt-6-sol."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7497,7 +7499,9 @@
     "purgeConfirm_all": "Delete ALL captures of this plugin. This cannot be undone.",
     "purged": "Deleted {{count}} captures",
     "inFlight": "BPS in flight {{current}}/{{max}}",
-    "budgetUsed": "BPS requests {{used}}/{{budget}} in window"
+    "budgetUsed": "BPS requests {{used}}/{{budget}} in window",
+    "probePending": "Usage-policy tier expired: waiting for a background probe (no real traffic until it succeeds)",
+    "lastProbe": "Last probe {{time}}: {{result}}"
   },
   "logAgent": {
     "title": "AI log analysis",

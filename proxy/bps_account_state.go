@@ -68,9 +68,25 @@ type bpsAccountRecord struct {
 	// dates the latest block, from which tiers are forgiven.
 	PolicyTier      int       `json:"policy_tier,omitempty"`
 	LastPolicyBlock time.Time `json:"last_policy_block,omitempty"`
+	// NeedsProbe: a usage-policy cooldown ends only when a background probe
+	// succeeds, never by expiring into real traffic. NextProbe delays a probe
+	// retry after a transient probe error.
+	NeedsProbe      bool      `json:"needs_probe,omitempty"`
+	NextProbe       time.Time `json:"next_probe,omitempty"`
+	LastProbe       time.Time `json:"last_probe,omitempty"`
+	LastProbeResult string    `json:"last_probe_result,omitempty"`
+	// Changed dates the last change of the cooldown fields, so a cleared
+	// cooldown replaces an older active one across replicas.
+	Changed time.Time `json:"changed,omitempty"`
 }
 
 func (r bpsAccountRecord) active(now time.Time) bool { return r.Until.After(now) }
+
+// blocksBPS reports whether the account must not serve BPS: an active
+// cooldown, or a usage-policy cooldown still waiting for its probe.
+func (r bpsAccountRecord) blocksBPS(now time.Time) bool {
+	return r.active(now) || r.Reason == BPSPolicyBlockedKind && r.NeedsProbe
+}
 
 type bpsAccountEntry struct {
 	record  bpsAccountRecord
@@ -131,7 +147,12 @@ func (s *bpsAccountStates) load(ctx context.Context, store cache.TokenCache, key
 // mergeBPSAccountRecords keeps the later cooldown and the union of strikes.
 func mergeBPSAccountRecords(local, remote bpsAccountRecord) bpsAccountRecord {
 	merged := local
-	if remote.Until.After(merged.Until) {
+	switch {
+	case remote.Changed.After(local.Changed):
+		merged.Until, merged.Reason, merged.Changed = remote.Until, remote.Reason, remote.Changed
+		merged.NeedsProbe, merged.NextProbe = remote.NeedsProbe, remote.NextProbe
+		merged.LastProbe, merged.LastProbeResult = remote.LastProbe, remote.LastProbeResult
+	case remote.Changed.Equal(local.Changed) && remote.Until.After(merged.Until):
 		merged.Until, merged.Reason = remote.Until, remote.Reason
 	}
 	if remote.LastStrike.After(merged.LastStrike) {
@@ -160,7 +181,7 @@ func (s *bpsAccountStates) put(key string, record bpsAccountRecord, now time.Tim
 	}
 	if _, exists := s.entries[key]; !exists && len(s.entries) >= bpsAccountStateLimit {
 		for k, e := range s.entries {
-			if !e.record.active(now) && len(e.record.Strikes) == 0 {
+			if !e.record.blocksBPS(now) && len(e.record.Strikes) == 0 {
 				delete(s.entries, k)
 			}
 		}
@@ -183,6 +204,7 @@ func (s *bpsAccountStates) update(ctx context.Context, store cache.TokenCache, k
 	s.mu.Unlock()
 	record := s.load(ctx, store, key, now)
 	change(&record)
+	record.Changed = now
 	s.put(key, record, now)
 	if shared := bpsSharedAccountStore(store); shared != nil {
 		ttl := time.Until(record.Until)
@@ -191,6 +213,9 @@ func (s *bpsAccountStates) update(ctx context.Context, store cache.TokenCache, k
 		}
 		if record.PolicyTier > 0 {
 			ttl = max(ttl, bpsPolicyTierReset)
+		}
+		if record.NeedsProbe {
+			ttl = max(ttl, 7*24*time.Hour)
 		}
 		if ttl > 0 {
 			raw, _ := json.Marshal(record)
@@ -367,6 +392,7 @@ func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int
 			if until := now.Add(delay); until.After(r.Until) || r.Reason != BPSPolicyBlockedKind {
 				r.Until, r.Reason = until, BPSPolicyBlockedKind
 			}
+			r.NeedsProbe, r.NextProbe = true, time.Time{}
 			r.Strikes = nil
 			escalated = true
 		})
@@ -395,7 +421,7 @@ func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int
 func bpsAccountCooling(ctx context.Context, store cache.TokenCache, accountID int64) (bpsAccountRecord, bool) {
 	now := time.Now()
 	record := bpsAccountStateStore.load(ctx, store, bpsAccountStateKey(accountID), now)
-	return record, record.active(now)
+	return record, record.blocksBPS(now)
 }
 
 // bpsModelBlocked reports whether BPS refused model for this account recently.
@@ -416,6 +442,11 @@ type BPSAccountStatus struct {
 	// PolicyTier is the usage-policy ladder tier reached, of PolicyTiers.
 	PolicyTier  int `json:"policy_tier,omitempty"`
 	PolicyTiers int `json:"policy_tiers"`
+	// ProbePending: a usage-policy cooldown that ends only after a background
+	// probe succeeds (LastProbe / LastProbeResult: ok, blocked, error: ...).
+	ProbePending    bool      `json:"probe_pending,omitempty"`
+	LastProbe       time.Time `json:"last_probe,omitempty"`
+	LastProbeResult string    `json:"last_probe_result,omitempty"`
 	// InFlight BPS requests on this replica, of MaxConcurrency (0 = no cap).
 	InFlight       int `json:"in_flight"`
 	MaxConcurrency int `json:"max_concurrency"`
@@ -438,6 +469,8 @@ func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs 
 		if record.active(now) {
 			status.CoolingUntil, status.Reason = record.Until, record.Reason
 		}
+		status.ProbePending = record.Reason == BPSPolicyBlockedKind && record.NeedsProbe
+		status.LastProbe, status.LastProbeResult = record.LastProbe, record.LastProbeResult
 		for _, strike := range record.Strikes {
 			if now.Sub(strike) < bpsPolicyStrikeWindow {
 				status.PolicyStrikes++

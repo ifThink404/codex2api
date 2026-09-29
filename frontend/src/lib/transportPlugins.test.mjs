@@ -154,3 +154,9 @@ test('BPS account list shows concurrency and request budget usage', () => {
     assert.ok(bpsConfigFields.some(field => field.key === key && field.hint), key)
   }
 })
+
+test('the BPS account list shows usage-policy probe state', () => {
+  const page = read('pages/Plugins.tsx')
+  assert.ok(page.includes("t('plugins.probePending')"))
+  assert.ok(page.includes("t('plugins.lastProbe', { time: formatBeijingTime(status.last_probe), result: status.last_probe_result })"))
+})
