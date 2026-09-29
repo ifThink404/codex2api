@@ -2700,7 +2700,15 @@
       }
     },
     "zeroMeansDefault": "填 0 使用預設值（{{value}}）。",
-    "zeroMeansOff": "0 表示關閉。"
+    "zeroMeansOff": "0 表示關閉。",
+    "activityTitle": "即時活動",
+    "activityNote": "進行中為本實例 · 成功請求依每 {{window}} 統計",
+    "activityInFlight": "進行中",
+    "activityRequests": "成功請求（共 {{attempts}} 次嘗試）",
+    "activityLastRequest": "{{ago}}前有請求",
+    "activityNoRequest": "暫無請求",
+    "activityBlockedFor": "已攔截 {{elapsed}}",
+    "activityNextProbe": "{{in}}後探測"
   },
   "logAgent": {
     "title": "AI 日誌分析",

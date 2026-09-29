@@ -7580,7 +7580,15 @@
       }
     },
     "zeroMeansDefault": "填 0 使用默认值（{{value}}）。",
-    "zeroMeansOff": "0 表示关闭。"
+    "zeroMeansOff": "0 表示关闭。",
+    "activityTitle": "实时活动",
+    "activityNote": "进行中为本实例 · 成功请求按每 {{window}} 统计",
+    "activityInFlight": "进行中",
+    "activityRequests": "成功请求（共 {{attempts}} 次尝试）",
+    "activityLastRequest": "{{ago}}前有请求",
+    "activityNoRequest": "暂无请求",
+    "activityBlockedFor": "已拦截 {{elapsed}}",
+    "activityNextProbe": "{{in}}后探测"
   },
   "logAgent": {
     "title": "AI 日志分析",

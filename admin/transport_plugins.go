@@ -29,6 +29,7 @@ func (h *Handler) registerTransportPluginRoutes(api *gin.RouterGroup) {
 	api.GET("/plugins/:plugin/capture-stats", h.GetTransportPluginCaptureStats)
 	api.GET("/plugins/:plugin/policy-blocks", h.GetTransportPluginPolicyBlocks)
 	api.GET("/plugins/:plugin/dashboard", h.GetTransportPluginDashboard)
+	api.GET("/plugins/:plugin/activity", h.GetTransportPluginActivity)
 	api.POST("/plugins/:plugin/captures/purge", h.PurgeTransportPluginCaptures)
 }
 

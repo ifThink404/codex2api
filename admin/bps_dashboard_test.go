@@ -142,3 +142,61 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 		t.Fatalf("unknown plugin: %d", rec.Code)
 	}
 }
+
+func TestBPSActivitySortPutsBusyAccountsFirst(t *testing.T) {
+	rows := []bpsActivityRow{
+		{AccountID: 1, InFlight: 0, Succeeded: 900},
+		{AccountID: 2, InFlight: 3, Succeeded: 10},
+		{AccountID: 3, InFlight: 0, Succeeded: 1200},
+		{AccountID: 4, InFlight: 7, Succeeded: 5},
+		{AccountID: 5, InFlight: 0, Succeeded: 900},
+	}
+	sortBPSActivity(rows)
+	var order []int64
+	for _, row := range rows {
+		order = append(order, row.AccountID)
+	}
+	want := []int64{4, 2, 3, 1, 5}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v (in flight desc, then successes desc, then id)", order, want)
+		}
+	}
+}
+
+func TestBPSActivityEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	if err := db.MigrateBPSPlugin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	on := true
+	store.AddAccount(&auth.Account{DBID: 71, Email: "live@example.com", AccessToken: "at", Status: auth.StatusReady})
+	store.ApplyAccountTransportPluginOverride(71, proxy.BPSPluginID, &on)
+	store.AddAccount(&auth.Account{DBID: 72, Email: "native@example.com", AccessToken: "at", Status: auth.StatusReady})
+	h := &Handler{db: db, store: store}
+	router := gin.New()
+	h.registerTransportPluginRoutes(router.Group("/api/admin"))
+	rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/bps/activity", "")
+	var out struct {
+		Accounts []struct {
+			AccountID int64  `json:"account_id"`
+			Name      string `json:"name"`
+			State     string `json:"state"`
+			InFlight  int    `json:"in_flight"`
+		} `json:"accounts"`
+		WindowSeconds      int64 `json:"window_seconds"`
+		InFlightPerReplica bool  `json:"in_flight_per_replica"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+		t.Fatalf("activity: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(out.Accounts) != 1 || out.Accounts[0].AccountID != 71 || out.Accounts[0].Name != "live@example.com" || out.Accounts[0].State != bpsStateActive {
+		t.Fatalf("accounts = %+v", out.Accounts)
+	}
+	if out.WindowSeconds != 24*3600 || !out.InFlightPerReplica {
+		t.Fatalf("window = %d per-replica = %v", out.WindowSeconds, out.InFlightPerReplica)
+	}
+}

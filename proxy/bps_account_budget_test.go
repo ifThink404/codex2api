@@ -15,9 +15,11 @@ import (
 // freshBPSBudgets gives a test its own local budget view (a new replica).
 func freshBPSBudgets(t *testing.T) {
 	t.Helper()
-	previousCounter, previousLocal := bpsBudgets, bpsLocalBudgetCache
-	bpsBudgets, bpsLocalBudgetCache = &bpsBudgetCounter{}, cache.NewMemory(1)
-	t.Cleanup(func() { bpsBudgets, bpsLocalBudgetCache = previousCounter, previousLocal })
+	previousCounter, previousAttempts, previousLocal := bpsBudgets, bpsAttempts, bpsLocalBudgetCache
+	bpsBudgets, bpsAttempts, bpsLocalBudgetCache = &bpsBudgetCounter{namespace: bpsBudgetNamespace}, &bpsBudgetCounter{namespace: bpsAttemptsNamespace}, cache.NewMemory(1)
+	t.Cleanup(func() {
+		bpsBudgets, bpsAttempts, bpsLocalBudgetCache = previousCounter, previousAttempts, previousLocal
+	})
 }
 
 func TestBPSRequestBudgetCountsAndRollsOver(t *testing.T) {
@@ -29,13 +31,13 @@ func TestBPSRequestBudgetCountsAndRollsOver(t *testing.T) {
 		bpsBudgets.record(ctx, store, 9701, window)
 	}
 	now := time.Now()
-	require.Equal(t, 3, readBPSBudget(ctx, bpsGuardedCache(store), 9701, window, now))
-	require.Equal(t, 0, readBPSBudget(ctx, bpsGuardedCache(store), 9702, window, now), "per account")
+	require.Equal(t, 3, readBPSBudget(ctx, bpsGuardedCache(store), bpsBudgetNamespace, 9701, window, now))
+	require.Equal(t, 0, readBPSBudget(ctx, bpsGuardedCache(store), bpsBudgetNamespace, 9702, window, now), "per account")
 	bucket, _ := bpsBudgetBucket(window, now)
 	require.Equal(t, 10*time.Minute, bucket, "24 buckets per window")
 	// Still counted just before the window rolls past them, gone after.
-	require.Equal(t, 3, readBPSBudget(ctx, bpsGuardedCache(store), 9701, window, now.Add(window-2*bucket)))
-	require.Equal(t, 0, readBPSBudget(ctx, bpsGuardedCache(store), 9701, window, now.Add(window+bucket)), "the window rolled")
+	require.Equal(t, 3, readBPSBudget(ctx, bpsGuardedCache(store), bpsBudgetNamespace, 9701, window, now.Add(window-2*bucket)))
+	require.Equal(t, 0, readBPSBudget(ctx, bpsGuardedCache(store), bpsBudgetNamespace, 9701, window, now.Add(window+bucket)), "the window rolled")
 }
 
 func TestBPSRequestBudgetVetoesAnExhaustedAccount(t *testing.T) {

@@ -22,9 +22,10 @@ import (
 const (
 	BPSBudgetExhaustedReason = "bps_budget_exhausted"
 
-	bpsBudgetNamespace = "bps-request-budget-v1"
-	bpsBudgetBuckets   = 24
-	bpsBudgetRefresh   = 5 * time.Second
+	bpsBudgetNamespace   = "bps-request-budget-v1"
+	bpsAttemptsNamespace = "bps-request-attempts-v1"
+	bpsBudgetBuckets     = 24
+	bpsBudgetRefresh     = 5 * time.Second
 )
 
 var defaultBPSBudgetWindow = 24 * time.Hour
@@ -46,12 +47,20 @@ type bpsBudgetEntry struct {
 	fetched time.Time
 }
 
+// bpsBudgetCounter counts per-account BPS requests in rolling buckets in one
+// runtime-cache namespace.
 type bpsBudgetCounter struct {
-	mu      sync.Mutex
-	entries map[int64]bpsBudgetEntry
+	namespace string
+	mu        sync.Mutex
+	entries   map[int64]bpsBudgetEntry
 }
 
-var bpsBudgets = &bpsBudgetCounter{}
+// bpsBudgets counts successful BPS requests (the budget); bpsAttempts counts
+// every BPS upstream attempt, for the activity panel. Both are always kept.
+var (
+	bpsBudgets  = &bpsBudgetCounter{namespace: bpsBudgetNamespace}
+	bpsAttempts = &bpsBudgetCounter{namespace: bpsAttemptsNamespace}
+)
 
 func bpsBudgetStore(store cache.TokenCache) cache.TokenCache {
 	if store = bpsGuardedCache(store); store != nil {
@@ -73,14 +82,14 @@ func bpsBudgetKey(accountID int64, window time.Duration, now time.Time) (key, pr
 }
 
 // readBPSBudget sums the account's successful requests inside the window.
-func readBPSBudget(ctx context.Context, store cache.TokenCache, accountID int64, window time.Duration, now time.Time) int {
+func readBPSBudget(ctx context.Context, store cache.TokenCache, namespace string, accountID int64, window time.Duration, now time.Time) int {
 	bucket, current := bpsBudgetBucket(window, now)
 	oldest := current - int64(window/bucket) + 1
 	key, previous := bpsBudgetKey(accountID, window, now)
 	total := 0.0
 	for _, k := range []string{key, previous} {
 		readCtx, cancel := context.WithTimeout(ctx, bpsAttachmentCacheTimeout)
-		counters, err := store.GetRuntimeCounters(readCtx, bpsBudgetNamespace, k)
+		counters, err := store.GetRuntimeCounters(readCtx, namespace, k)
 		cancel()
 		if err != nil {
 			continue
@@ -103,7 +112,7 @@ func (b *bpsBudgetCounter) used(ctx context.Context, store cache.TokenCache, acc
 	if ok && now.Sub(entry.fetched) < bpsBudgetRefresh {
 		return entry.used
 	}
-	used := readBPSBudget(ctx, bpsBudgetStore(store), accountID, window, now)
+	used := readBPSBudget(ctx, bpsBudgetStore(store), b.namespace, accountID, window, now)
 	b.mu.Lock()
 	if b.entries == nil {
 		b.entries = map[int64]bpsBudgetEntry{}
@@ -119,7 +128,7 @@ func (b *bpsBudgetCounter) record(ctx context.Context, store cache.TokenCache, a
 	_, index := bpsBudgetBucket(window, now)
 	key, _ := bpsBudgetKey(accountID, window, now)
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bpsAttachmentCacheTimeout)
-	_ = bpsBudgetStore(store).IncrRuntimeCounters(writeCtx, bpsBudgetNamespace, key, map[string]float64{strconv.FormatInt(index, 10): 1}, 2*window)
+	_ = bpsBudgetStore(store).IncrRuntimeCounters(writeCtx, b.namespace, key, map[string]float64{strconv.FormatInt(index, 10): 1}, 2*window)
 	cancel()
 	b.mu.Lock()
 	if entry, ok := b.entries[accountID]; ok {
@@ -141,8 +150,6 @@ func bpsBudgetExhausted(ctx context.Context, store cache.TokenCache, account *au
 // bpsBudgetUsage is the admin view of an account's budget and concurrency.
 func bpsBudgetUsage(ctx context.Context, store cache.TokenCache, accountID int64) (used, budget, inflight, limit int) {
 	cfg := currentBPSConfig()
-	if cfg.AccountRequestBudget > 0 {
-		used = bpsBudgets.used(ctx, store, accountID, cfg.BudgetWindow())
-	}
+	used = bpsBudgets.used(ctx, store, accountID, cfg.BudgetWindow())
 	return used, cfg.AccountRequestBudget, bpsInflightRequests.current(accountID), cfg.AccountMaxConcurrency
 }

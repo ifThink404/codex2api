@@ -3904,6 +3904,31 @@ export interface BPSDashboard {
   now?: string
 }
 
+// GET /plugins/bps/activity (polled every few seconds).
+export interface BPSActivityAccount {
+  account_id: number
+  name: string
+  state: BPSAccountState
+  tier?: number
+  tiers?: number
+  in_flight: number
+  max_concurrency: number
+  succeeded: number
+  attempts: number
+  budget: number
+  cooling_until?: string
+  elapsed_seconds?: number
+  next_probe_at?: string
+  last_request_at?: string
+}
+
+export interface BPSActivity {
+  accounts: BPSActivityAccount[]
+  window_seconds: number
+  in_flight_per_replica: boolean
+  now?: string
+}
+
 // One BPS usage-policy block event (GET /plugins/bps/policy-blocks).
 export interface BPSPolicyBlock {
   id: number

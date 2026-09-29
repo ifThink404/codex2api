@@ -114,3 +114,17 @@ func (b *bpsReleasingBody) Close() error {
 	defer b.release()
 	return b.ReadCloser.Close()
 }
+
+// bpsLastRequest remembers when each account last started a BPS request on
+// this replica.
+var bpsLastRequest sync.Map
+
+func bpsNoteRequest(accountID int64, at time.Time) { bpsLastRequest.Store(accountID, at) }
+
+// bpsLastRequestAt is the account's last BPS request start on this replica.
+func bpsLastRequestAt(accountID int64) time.Time {
+	if at, ok := bpsLastRequest.Load(accountID); ok {
+		return at.(time.Time)
+	}
+	return time.Time{}
+}

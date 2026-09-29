@@ -464,9 +464,13 @@ type BPSAccountStatus struct {
 	// InFlight BPS requests on this replica, of MaxConcurrency (0 = no cap).
 	InFlight       int `json:"in_flight"`
 	MaxConcurrency int `json:"max_concurrency"`
-	// BudgetUsed successful BPS requests in the window, of Budget (0 = off).
-	BudgetUsed int `json:"budget_used"`
-	Budget     int `json:"budget"`
+	// BudgetUsed successful BPS requests in the window, of Budget (0 = off);
+	// Attempts is every BPS upstream attempt in the window. Both are counted
+	// across replicas; InFlight and LastRequestAt are this replica's.
+	BudgetUsed    int       `json:"budget_used"`
+	Budget        int       `json:"budget"`
+	Attempts      int       `json:"attempts"`
+	LastRequestAt time.Time `json:"last_request_at,omitempty"`
 	// ModelsUnavailable maps models BPS refused for this account to the time
 	// they are retried on BPS.
 	ModelsUnavailable map[string]time.Time `json:"models_unavailable,omitempty"`
@@ -479,6 +483,8 @@ func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs 
 	for _, id := range accountIDs {
 		status := BPSAccountStatus{AccountID: id}
 		status.BudgetUsed, status.Budget, status.InFlight, status.MaxConcurrency = bpsBudgetUsage(ctx, store, id)
+		status.Attempts = bpsAttempts.used(ctx, store, id, currentBPSConfig().BudgetWindow())
+		status.LastRequestAt = bpsLastRequestAt(id)
 		record := bpsAccountStateStore.load(ctx, store, bpsAccountStateKey(id), now)
 		if record.active(now) {
 			status.CoolingUntil, status.Reason = record.Until, record.Reason

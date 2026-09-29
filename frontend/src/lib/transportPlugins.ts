@@ -178,6 +178,14 @@ export function formatBlockDuration(seconds: number): string {
   return `${secs}s`
 }
 
+// formatWindowLabel renders a counter window: whole hours as "24h", anything
+// else like formatBlockDuration.
+export function formatWindowLabel(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds || 0))
+  if (total > 0 && total % 3600 === 0) return `${total / 3600}h`
+  return formatBlockDuration(total)
+}
+
 // liveElapsedSeconds advances a server-computed elapsed time by the time
 // passed since it was fetched.
 export function liveElapsedSeconds(elapsedSeconds: number, fetchedAtMs: number, nowMs: number): number {
@@ -198,4 +206,45 @@ export const BPS_ACCOUNT_STATES = ['active', 'policy_blocked', 'rate_cooling', '
 export function formatSuccessRate(rate: number, requests: number): string {
   if (!requests) return '—'
   return `${(Math.round(rate * 1000) / 10).toFixed(1)}%`
+}
+
+// Activity bars: the fill (0-100) of value against its limit, or against the
+// busiest account when there is no limit.
+export function activityBarPercent(value: number, limit: number, busiest: number): number {
+  const scale = limit > 0 ? limit : Math.max(busiest, 1)
+  return Math.max(0, Math.min(100, Math.round((value / scale) * 100)))
+}
+
+export type ActivityTone = 'idle' | 'normal' | 'near' | 'limit'
+
+// activityBarTone colors a bar: red at the limit or when the account cannot
+// serve BPS, amber from 80% of the limit, neutral without a limit.
+export function activityBarTone(value: number, limit: number, available: boolean): ActivityTone {
+  if (!available) return 'limit'
+  if (limit <= 0) return value > 0 ? 'normal' : 'idle'
+  const ratio = value / limit
+  if (ratio >= 1) return 'limit'
+  if (ratio >= 0.8) return 'near'
+  return value > 0 ? 'normal' : 'idle'
+}
+
+export const ACTIVITY_TONE_CLASSES: Record<ActivityTone, string> = {
+  idle: 'bg-muted-foreground/30',
+  normal: 'bg-emerald-500',
+  near: 'bg-amber-500',
+  limit: 'bg-red-500',
+}
+
+// BPS_STATE_BADGE_CLASSES tints the account state badge: amber while the
+// account waits out a rate limit or its budget window.
+export const BPS_STATE_BADGE_CLASSES: Partial<Record<(typeof BPS_ACCOUNT_STATES)[number], string>> = {
+  rate_cooling: 'border-transparent bg-amber-500/14 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
+  budget_exhausted: 'border-transparent bg-amber-500/14 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
+}
+
+// secondsSince is the whole seconds since iso (undefined when unset).
+export function secondsSince(iso: string | undefined, nowMs: number): number | undefined {
+  if (!iso) return undefined
+  const at = Date.parse(iso)
+  return Number.isFinite(at) ? Math.max(0, Math.floor((nowMs - at) / 1000)) : undefined
 }

@@ -21,7 +21,14 @@ import {
   type PluginConfigField,
   CAPTURE_PURGE_MODES,
   formatBlockDuration,
+  ACTIVITY_TONE_CLASSES,
+  BPS_STATE_BADGE_CLASSES,
+  formatWindowLabel,
+  activityBarPercent,
+  activityBarTone,
+  type ActivityTone,
   formatCaptureBytes,
+  secondsSince,
   formatSuccessRate,
   liveElapsedSeconds,
   secondsUntil,
@@ -44,7 +51,7 @@ import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
 import { SETTINGS_FIELD_GRID, SETTINGS_ROW_LIST, SettingField, SettingsCard } from '../components/SettingsLayout'
-import type { AccountGroup, AccountRow, BPSDashboard, BPSPolicyBlocksResponse, BPSTrafficStats, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
+import type { AccountGroup, AccountRow, BPSActivity, BPSActivityAccount, BPSDashboard, BPSPolicyBlocksResponse, BPSTrafficStats, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -495,47 +502,112 @@ function BPSDashboardPanel({ plugin }: { plugin: TransportPlugin }) {
         </div>
       </div>
 
-      <div className="space-y-2">
-        <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.dashAccounts')}</h3>
-        {data && data.accounts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t('plugins.dashNoAccounts')}</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t('plugins.policyAccount')}</TableHead>
-                  <TableHead>{t('plugins.dashState')}</TableHead>
-                  <TableHead>{t('plugins.dashInFlight')}</TableHead>
-                  <TableHead>{t('plugins.dashBudget')}</TableHead>
-                  <TableHead>{t('plugins.policyElapsed')}</TableHead>
-                  <TableHead>{t('plugins.policyNextProbe')}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(data?.accounts ?? []).map((account) => {
-                  const next = secondsUntil(account.next_probe_at, now)
-                  return (
-                    <TableRow key={account.account_id}>
-                      <TableCell className="text-sm">{account.name || `#${account.account_id}`}</TableCell>
-                      <TableCell>
-                        <Badge variant={account.state === 'active' ? 'secondary' : account.state === 'policy_blocked' ? 'destructive' : 'outline'}>{stateLabel(account)}</Badge>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">{account.max_concurrency ? `${account.in_flight}/${account.max_concurrency}` : account.in_flight}</TableCell>
-                      <TableCell className="whitespace-nowrap font-mono text-xs">
-                        {account.budget ? t('plugins.dashBudgetValue', { used: account.budget_used, budget: account.budget, window: formatBlockDuration(account.budget_window_seconds) }) : '—'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap font-mono text-xs">{account.blocked_at ? formatBlockDuration(liveElapsedSeconds(account.elapsed_seconds ?? 0, fetchedAt, now)) : '—'}</TableCell>
-                      <TableCell className="whitespace-nowrap text-xs">{account.next_probe_at ? (next > 0 ? formatBlockDuration(next) : t('plugins.policyProbeDue')) : '—'}</TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </div>
+      <BPSActivityPanel plugin={plugin} />
     </Section>
+  )
+}
+
+const BPS_ACTIVITY_REFRESH_MS = 2_500
+
+// ActivityBar is one horizontal CSS bar with its label.
+function ActivityBar({ label, value, percent, tone }: { label: string; value: string; percent: number; tone: ActivityTone }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <div className="flex items-baseline justify-between gap-2 text-[11px] text-muted-foreground">
+        <span className="truncate">{label}</span>
+        <span className="shrink-0 font-mono tabular-nums text-foreground">{value}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-muted" role="meter" aria-label={label} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+        <div className={cn('h-full rounded-full transition-[width] duration-500', ACTIVITY_TONE_CLASSES[tone])} style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  )
+}
+
+// BPSActivityPanel is the live per-account activity view: requests in flight
+// against the cap and successful requests against the budget, as bars, busy
+// accounts first. It polls a light endpoint every 2.5 seconds.
+function BPSActivityPanel({ plugin }: { plugin: TransportPlugin }) {
+  const { t } = useTranslation()
+  const [data, setData] = useState<BPSActivity | null>(null)
+  const [fetchedAt, setFetchedAt] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    let active = true
+    const load = () => api.getBPSActivity(plugin.id)
+      .then((res) => { if (active) { setData(res); setFetchedAt(Date.now()) } })
+      .catch(() => undefined)
+    void load()
+    const refresh = window.setInterval(() => void load(), BPS_ACTIVITY_REFRESH_MS)
+    const tick = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => { active = false; window.clearInterval(refresh); window.clearInterval(tick) }
+  }, [plugin.id])
+  const accounts = data?.accounts ?? []
+  const busiestInFlight = Math.max(0, ...accounts.map((account) => account.in_flight))
+  const busiestSucceeded = Math.max(0, ...accounts.map((account) => account.succeeded))
+  const windowLabel = data ? formatWindowLabel(data.window_seconds) : ''
+
+  const stateLabel = (account: BPSActivityAccount) => {
+    switch (account.state) {
+      case 'policy_blocked':
+        return account.tiers ? t('plugins.dashStatePolicyTier', { tier: account.tier, tiers: account.tiers }) : t('plugins.dashStates.policy_blocked')
+      case 'rate_cooling':
+        return account.cooling_until ? t('plugins.dashStateRateUntil', { time: formatBeijingTime(account.cooling_until) }) : t('plugins.dashStates.rate_cooling')
+      default:
+        return t(`plugins.dashStates.${account.state}`)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.activityTitle')}</h3>
+        <span className="text-[11px] text-muted-foreground">{t('plugins.activityNote', { window: windowLabel })}</span>
+      </div>
+      {data && accounts.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t('plugins.dashNoAccounts')}</p>
+      ) : (
+        <ul className="divide-y divide-border rounded-lg border border-border/60">
+          {accounts.map((account) => {
+            const available = account.state === 'active'
+            // Bars turn red when the account cannot serve BPS (budget: by ratio).
+            const barAvailable = available || account.state === 'budget_exhausted'
+            const last = secondsSince(account.last_request_at, now)
+            const nextProbe = secondsUntil(account.next_probe_at, now)
+            return (
+              <li key={account.account_id} className="grid gap-3 p-3 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_minmax(0,1fr)] sm:items-center">
+                <div className="min-w-0 space-y-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-sm font-medium">{account.name || `#${account.account_id}`}</span>
+                    {account.in_flight > 0 && <span className="size-2 shrink-0 animate-pulse rounded-full bg-emerald-500" aria-hidden />}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <Badge variant={available ? 'secondary' : account.state === 'policy_blocked' ? 'destructive' : 'outline'} className={BPS_STATE_BADGE_CLASSES[account.state]}>{stateLabel(account)}</Badge>
+                    <span>{last === undefined ? t('plugins.activityNoRequest') : t('plugins.activityLastRequest', { ago: formatBlockDuration(last) })}</span>
+                    {account.state === 'policy_blocked' && account.elapsed_seconds !== undefined && (
+                      <span>{t('plugins.activityBlockedFor', { elapsed: formatBlockDuration(liveElapsedSeconds(account.elapsed_seconds, fetchedAt, now)) })}</span>
+                    )}
+                    {account.next_probe_at && <span>{nextProbe > 0 ? t('plugins.activityNextProbe', { in: formatBlockDuration(nextProbe) }) : t('plugins.policyProbeDue')}</span>}
+                  </div>
+                </div>
+                <ActivityBar
+                  label={t('plugins.activityInFlight')}
+                  value={account.max_concurrency ? `${account.in_flight}/${account.max_concurrency}` : String(account.in_flight)}
+                  percent={activityBarPercent(account.in_flight, account.max_concurrency, busiestInFlight)}
+                  tone={activityBarTone(account.in_flight, account.max_concurrency, barAvailable)}
+                />
+                <ActivityBar
+                  label={t('plugins.activityRequests', { attempts: account.attempts })}
+                  value={account.budget ? `${account.succeeded}/${account.budget}` : String(account.succeeded)}
+                  percent={activityBarPercent(account.succeeded, account.budget, busiestSucceeded)}
+                  tone={activityBarTone(account.succeeded, account.budget, barAvailable)}
+                />
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
   )
 }
 

@@ -193,3 +193,112 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 		"now":      now.UTC(),
 	})
 }
+
+// bpsActivityRow is one account on the live activity panel.
+type bpsActivityRow struct {
+	AccountID      int64      `json:"account_id"`
+	Name           string     `json:"name"`
+	State          string     `json:"state"`
+	Tier           int        `json:"tier,omitempty"`
+	Tiers          int        `json:"tiers,omitempty"`
+	InFlight       int        `json:"in_flight"`
+	MaxConcurrency int        `json:"max_concurrency"`
+	Succeeded      int        `json:"succeeded"`
+	Attempts       int        `json:"attempts"`
+	Budget         int        `json:"budget"`
+	CoolingUntil   *time.Time `json:"cooling_until,omitempty"`
+	ElapsedSeconds int64      `json:"elapsed_seconds,omitempty"`
+	NextProbeAt    *time.Time `json:"next_probe_at,omitempty"`
+	LastRequestAt  *time.Time `json:"last_request_at,omitempty"`
+}
+
+// sortBPSActivity puts accounts with requests in flight first (most first),
+// then the busiest by successful requests in the window.
+func sortBPSActivity(rows []bpsActivityRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].InFlight != rows[j].InFlight {
+			return rows[i].InFlight > rows[j].InFlight
+		}
+		if rows[i].Succeeded != rows[j].Succeeded {
+			return rows[i].Succeeded > rows[j].Succeeded
+		}
+		return rows[i].AccountID < rows[j].AccountID
+	})
+}
+
+// GetTransportPluginActivity is the light, frequently polled live view of
+// every BPS account: in-flight requests (this replica), successful and total
+// requests in the budget window (all replicas), state and last request.
+func (h *Handler) GetTransportPluginActivity(c *gin.Context) {
+	p, ok := transportPluginFromParam(c)
+	if !ok {
+		return
+	}
+	if p.ID() != proxy.BPSPluginID {
+		writeError(c, http.StatusNotFound, "该插件没有活动面板")
+		return
+	}
+	ctx := c.Request.Context()
+	now := time.Now()
+	_, window := proxy.BPSDashboardSettings()
+	var accounts []*auth.Account
+	if h.store != nil {
+		for _, account := range h.store.Accounts() {
+			if account.CodexBPSEligible() && plugins.Default().EnabledFor(p, account) {
+				accounts = append(accounts, account)
+			}
+		}
+	}
+	ids := make([]int64, len(accounts))
+	for i, account := range accounts {
+		ids[i] = account.ID()
+	}
+	active, _, err := h.db.ListBPSPolicyBlocks(ctx, 1)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	blockedAt := map[int64]database.BPSPolicyBlock{}
+	for _, block := range active {
+		blockedAt[block.AccountID] = block
+	}
+	rows := make([]bpsActivityRow, 0, len(accounts))
+	for i, status := range proxy.BPSAccountStatuses(ctx, h.cache, ids) {
+		account := accounts[i]
+		account.Mu().RLock()
+		name := account.Email
+		account.Mu().RUnlock()
+		row := bpsActivityRow{
+			AccountID: status.AccountID, Name: name, State: bpsDashboardState(status, now),
+			InFlight: status.InFlight, MaxConcurrency: status.MaxConcurrency,
+			Succeeded: status.BudgetUsed, Attempts: status.Attempts, Budget: status.Budget,
+		}
+		if status.CoolingUntil.After(now) {
+			until := status.CoolingUntil
+			row.CoolingUntil = &until
+		}
+		if !status.LastRequestAt.IsZero() {
+			last := status.LastRequestAt
+			row.LastRequestAt = &last
+		}
+		if row.State == bpsStatePolicyBlocked {
+			row.Tier, row.Tiers = status.PolicyTier, status.PolicyTiers
+			if !status.NextProbeAt.IsZero() {
+				next := status.NextProbeAt
+				row.NextProbeAt = &next
+			}
+			if block, ok := blockedAt[status.AccountID]; ok {
+				row.ElapsedSeconds = int64(block.Elapsed(now) / time.Second)
+				row.Tier = max(row.Tier, block.Tier)
+			}
+		}
+		rows = append(rows, row)
+	}
+	sortBPSActivity(rows)
+	c.JSON(http.StatusOK, gin.H{
+		"accounts":              rows,
+		"window_seconds":        int64(window / time.Second),
+		"in_flight_per_replica": true,
+		"now":                   now.UTC(),
+	})
+}

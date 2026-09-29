@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -106,4 +107,37 @@ func TestBPSConcurrencyCapOffByDefault(t *testing.T) {
 	body := &bpsReleasingBody{ReadCloser: io.NopCloser(strings.NewReader("x")), release: func() {}}
 	_, _ = io.ReadAll(body)
 	require.NoError(t, body.Close())
+}
+
+func TestBPSActivityIsTrackedWithoutLimits(t *testing.T) {
+	freshBPSAccountStates(t)
+	freshBPSInflight(t)
+	freshBPSBudgets(t)
+	account := bpsOrgAccount(9651)
+	status := http.StatusOK
+	u := &bpsOrgUpstream{respond: func(int32) (int, string, string) {
+		if status != http.StatusOK {
+			return status, "application/json", `{"error":{"message":"boom"}}`
+		}
+		return http.StatusOK, "text/event-stream", bpsOrgSSE(bpsOrgStreamCreated, bpsOrgStreamComplete)
+	}}
+	installBPSOrgUpstream(t, account, u)
+	started := time.Now()
+	resp, _, err := runBPSOrgExecute(t, account)
+	require.NoError(t, err)
+	require.Equal(t, 1, bpsInflightRequests.current(account.ID()), "in flight while the response is open, with no cap set")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	require.Zero(t, bpsInflightRequests.current(account.ID()))
+	require.False(t, bpsLastRequestAt(account.ID()).Before(started), "last request time recorded")
+
+	status = http.StatusInternalServerError
+	resp, _, err = runBPSOrgExecute(t, account)
+	require.NoError(t, err)
+	resp.Body.Close()
+	got := BPSAccountStatuses(context.Background(), nil, []int64{account.ID()})[0]
+	require.Equal(t, 1, got.BudgetUsed, "successes are counted with no budget set")
+	require.Equal(t, 2, got.Attempts, "every attempt is counted")
+	require.Zero(t, got.Budget)
+	require.Zero(t, got.MaxConcurrency)
 }

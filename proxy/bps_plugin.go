@@ -663,9 +663,11 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		endpoint += "/compact"
 	}
 	env.Request.SetUsageUpstreamEndpoint(BPSPluginID, endpoint)
+	// In-flight requests are always tracked (the activity panel); the cap
+	// only applies when bps_account_max_concurrency is set.
 	release := func() {}
-	if limit := currentBPSConfig().AccountMaxConcurrency; limit > 0 && env.Account != nil {
-		slot, ok := bpsInflightRequests.acquire(ctx, env.Account.ID(), limit, bpsConcurrencyWait)
+	if env.Account != nil {
+		slot, ok := bpsInflightRequests.acquire(ctx, env.Account.ID(), currentBPSConfig().AccountMaxConcurrency, bpsConcurrencyWait)
 		if !ok {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -673,6 +675,7 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 			return nil, bpsRefusal(BPSConcurrencyFullReason, env.Model, time.Time{})
 		}
 		release = slot
+		bpsNoteRequest(env.Account.ID(), time.Now())
 	}
 	var resp *http.Response
 	var err error
@@ -696,8 +699,12 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 			return nil, err
 		}
 	}
-	if err == nil && resp != nil && resp.StatusCode < 300 && currentBPSConfig().AccountRequestBudget > 0 && env.Account != nil {
-		bpsBudgets.record(ctx, state.cache(), env.Account.ID(), currentBPSConfig().BudgetWindow())
+	if env.Account != nil && (err == nil || resp != nil) {
+		window := currentBPSConfig().BudgetWindow()
+		bpsAttempts.record(ctx, state.cache(), env.Account.ID(), window)
+		if err == nil && resp != nil && resp.StatusCode < 300 {
+			bpsBudgets.record(ctx, state.cache(), env.Account.ID(), window)
+		}
 	}
 	if err != nil || resp == nil || resp.Body == nil {
 		release()

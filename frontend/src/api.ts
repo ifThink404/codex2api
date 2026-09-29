@@ -6,6 +6,7 @@ import type {
   PluginAccountStatus,
   BPSPolicyBlocksResponse,
   BPSDashboard,
+  BPSActivity,
   PluginCapturePage,
   PluginCapturePurgeMode,
   PluginCapturePurgeResult,
@@ -1503,6 +1504,7 @@ export const api = {
 		const qs = search.toString()
 		return request<PluginCapturePage>(`/plugins/${encodeURIComponent(id)}/captures${qs ? `?${qs}` : ''}`)
 	},
+	getBPSActivity: (id: string) => request<BPSActivity>(`/plugins/${encodeURIComponent(id)}/activity`),
 	getBPSDashboard: (id: string) => request<BPSDashboard>(`/plugins/${encodeURIComponent(id)}/dashboard`),
 	getPluginPolicyBlocks: (id: string) => request<BPSPolicyBlocksResponse>(`/plugins/${encodeURIComponent(id)}/policy-blocks`),
 	getPluginCaptureStats: (id: string) => request<PluginCaptureStats>(`/plugins/${encodeURIComponent(id)}/capture-stats`),

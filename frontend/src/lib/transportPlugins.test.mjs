@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { BPS_ACCOUNT_STATES, bpsConfigGroups, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { BPS_ACCOUNT_STATES, BPS_STATE_BADGE_CLASSES, formatWindowLabel, activityBarPercent, activityBarTone, secondsSince, bpsConfigGroups, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -170,6 +170,11 @@ test('policy block durations and live elapsed math', () => {
   assert.equal(formatBlockDuration(4 * 3600 + 32 * 60), '4h 32m')
   assert.equal(formatBlockDuration(2 * 86400 + 5 * 3600), '2d 5h')
   assert.equal(formatBlockDuration(-5), '0s')
+  assert.equal(formatWindowLabel(86400), '24h')
+  assert.equal(formatWindowLabel(3600), '1h')
+  assert.equal(formatWindowLabel(90), '1m 30s')
+  assert.match(BPS_STATE_BADGE_CLASSES.budget_exhausted, /amber/)
+  assert.equal(BPS_STATE_BADGE_CLASSES.active, undefined)
   assert.equal(liveElapsedSeconds(5400, 1_000_000, 1_000_000 + 61_500), 5461, 'elapsed ticks forward from the fetch')
   assert.equal(liveElapsedSeconds(5400, 1_000_000, 999_000), 5400, 'never backwards')
   const now = Date.parse('2026-09-29T10:00:00Z')
@@ -228,4 +233,27 @@ test('BPS config form is grouped into labeled cards with every field exactly onc
   for (const [key, value] of Object.entries(want)) {
     assert.equal(bpsConfigFields.find(field => field.key === key).defaultValue, value, `${key} default matches the server`)
   }
+})
+
+test('live activity panel: bars, tones, sorting source and polling', () => {
+  assert.equal(activityBarPercent(3, 10, 99), 30, 'against the cap')
+  assert.equal(activityBarPercent(12, 10, 99), 100, 'clamped')
+  assert.equal(activityBarPercent(5, 0, 10), 50, 'against the busiest account without a cap')
+  assert.equal(activityBarPercent(0, 0, 0), 0)
+  assert.equal(activityBarTone(5, 10, true), 'normal')
+  assert.equal(activityBarTone(8, 10, true), 'near')
+  assert.equal(activityBarTone(10, 10, true), 'limit')
+  assert.equal(activityBarTone(0, 10, true), 'idle')
+  assert.equal(activityBarTone(3, 0, true), 'normal', 'no limit: neutral fill')
+  assert.equal(activityBarTone(0, 10, false), 'limit', 'cooling or blocked is red')
+  const now = Date.parse('2026-09-29T10:00:00Z')
+  assert.equal(secondsSince('2026-09-29T09:59:30Z', now), 30)
+  assert.equal(secondsSince(undefined, now), undefined)
+  const page = read('pages/Plugins.tsx')
+  for (const needle of [
+    '<BPSActivityPanel plugin={plugin} />', 'api.getBPSActivity(plugin.id)', 'const BPS_ACTIVITY_REFRESH_MS = 2_500',
+    'role="meter"', 'ACTIVITY_TONE_CLASSES[tone]',
+  ]) assert.ok(page.includes(needle), needle)
+  const server = readFileSync(srcRoot + '../../admin/bps_dashboard.go', 'utf8')
+  assert.ok(server.includes('return rows[i].InFlight > rows[j].InFlight'), 'server sorts busy accounts first')
 })

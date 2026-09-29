@@ -7583,7 +7583,15 @@
       }
     },
     "zeroMeansDefault": "0 uses the default ({{value}}).",
-    "zeroMeansOff": "0 = off."
+    "zeroMeansOff": "0 = off.",
+    "activityTitle": "Live activity",
+    "activityNote": "in flight on this server · successful requests per {{window}}",
+    "activityInFlight": "In flight",
+    "activityRequests": "Successful ({{attempts}} attempts)",
+    "activityLastRequest": "last request {{ago}} ago",
+    "activityNoRequest": "no request yet",
+    "activityBlockedFor": "blocked for {{elapsed}}",
+    "activityNextProbe": "probe in {{in}}"
   },
   "logAgent": {
     "title": "AI log analysis",
