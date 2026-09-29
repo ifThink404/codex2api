@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -313,6 +314,11 @@ func (bpsPlugin) Maintain(ctx context.Context, db *database.DB, now time.Time) e
 	deleted, err := db.PruneBPSIdentity(ctx, now.Add(-retention))
 	if deleted > 0 {
 		log.Printf("[bps] pruned %d identity rows untouched for %s", deleted, retention)
+	}
+	if blocks, pruneErr := db.PruneBPSPolicyBlocks(ctx, now.Add(-database.BPSPolicyBlockRetention)); pruneErr != nil {
+		err = errors.Join(err, pruneErr)
+	} else if blocks > 0 {
+		log.Printf("[bps] pruned %d policy-block history rows older than %s", blocks, database.BPSPolicyBlockRetention)
 	}
 	return err
 }
@@ -879,6 +885,12 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	if class == BPSPolicyBlockedKind {
 		bpsSetUsageMeta(env, "policy_tier", strconv.Itoa(record.PolicyTier))
 		bpsSetUsageMeta(env, "policy_strikes", strconv.Itoa(len(record.Strikes)))
+		if record.NeedsProbe && len(record.Strikes) == 0 && state != nil && state.handler != nil && state.handler.db != nil {
+			// This strike put the account into a cooldown: record the block event.
+			if err := state.handler.db.OpenBPSPolicyBlock(context.Background(), env.Account.ID(), record.BlockStarted, record.PolicyTier); err != nil {
+				log.Printf("[bps] account=%d record policy block: %v", env.Account.ID(), err)
+			}
+		}
 	}
 	if class != "" && class != BPSModelUnavailable {
 		// A model refusal only moves that model to native; the account stays.

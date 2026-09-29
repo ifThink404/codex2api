@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { CAPTURE_PURGE_MODES, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatCaptureBytes, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { CAPTURE_PURGE_MODES, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -159,4 +159,26 @@ test('the BPS account list shows usage-policy probe state', () => {
   const page = read('pages/Plugins.tsx')
   assert.ok(page.includes("t('plugins.probePending')"))
   assert.ok(page.includes("t('plugins.lastProbe', { time: formatBeijingTime(status.last_probe), result: status.last_probe_result })"))
+})
+
+test('policy block durations and live elapsed math', () => {
+  assert.equal(formatBlockDuration(42), '42s')
+  assert.equal(formatBlockDuration(303), '5m 03s')
+  assert.equal(formatBlockDuration(4 * 3600 + 32 * 60), '4h 32m')
+  assert.equal(formatBlockDuration(2 * 86400 + 5 * 3600), '2d 5h')
+  assert.equal(formatBlockDuration(-5), '0s')
+  assert.equal(liveElapsedSeconds(5400, 1_000_000, 1_000_000 + 61_500), 5461, 'elapsed ticks forward from the fetch')
+  assert.equal(liveElapsedSeconds(5400, 1_000_000, 999_000), 5400, 'never backwards')
+  const now = Date.parse('2026-09-29T10:00:00Z')
+  assert.equal(secondsUntil('2026-09-29T10:02:00Z', now), 120)
+  assert.equal(secondsUntil('2026-09-29T09:00:00Z', now), 0)
+  assert.equal(secondsUntil(undefined, now), 0)
+})
+
+test('BPS overview has the usage-policy blocks section', () => {
+  const page = read('pages/Plugins.tsx')
+  for (const needle of [
+    "{plugin.id === 'bps' && <PolicyBlocks plugin={plugin} />}", 'api.getPluginPolicyBlocks(plugin.id)',
+    'liveElapsedSeconds(block.elapsed_seconds, fetchedAt, now)', 'window.setInterval(() => setNow(Date.now()), 1000)',
+  ]) assert.ok(page.includes(needle), needle)
 })

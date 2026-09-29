@@ -71,7 +71,9 @@ type bpsAccountRecord struct {
 	// NeedsProbe: a usage-policy cooldown ends only when a background probe
 	// succeeds, never by expiring into real traffic. NextProbe delays a probe
 	// retry after a transient probe error.
-	NeedsProbe      bool      `json:"needs_probe,omitempty"`
+	NeedsProbe bool `json:"needs_probe,omitempty"`
+	// BlockStarted is the first strike of the current block event.
+	BlockStarted    time.Time `json:"block_started,omitempty"`
 	NextProbe       time.Time `json:"next_probe,omitempty"`
 	LastProbe       time.Time `json:"last_probe,omitempty"`
 	LastProbeResult string    `json:"last_probe_result,omitempty"`
@@ -384,6 +386,15 @@ func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int
 			if len(r.Strikes) < cfg.PolicyBlockThreshold {
 				return
 			}
+			if !r.NeedsProbe {
+				// A new block event starts at its first strike.
+				r.BlockStarted = now
+				for _, strike := range r.Strikes {
+					if strike.Before(r.BlockStarted) {
+						r.BlockStarted = strike
+					}
+				}
+			}
 			r.PolicyTier = min(r.PolicyTier+1, len(ladder))
 			delay := hint
 			if delay <= 0 {
@@ -444,7 +455,10 @@ type BPSAccountStatus struct {
 	PolicyTiers int `json:"policy_tiers"`
 	// ProbePending: a usage-policy cooldown that ends only after a background
 	// probe succeeds (LastProbe / LastProbeResult: ok, blocked, error: ...).
-	ProbePending    bool      `json:"probe_pending,omitempty"`
+	ProbePending bool `json:"probe_pending,omitempty"`
+	// NextProbeAt: when the pending probe runs (the tier's end, or the retry
+	// time after an inconclusive probe).
+	NextProbeAt     time.Time `json:"next_probe_at,omitempty"`
 	LastProbe       time.Time `json:"last_probe,omitempty"`
 	LastProbeResult string    `json:"last_probe_result,omitempty"`
 	// InFlight BPS requests on this replica, of MaxConcurrency (0 = no cap).
@@ -470,6 +484,12 @@ func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs 
 			status.CoolingUntil, status.Reason = record.Until, record.Reason
 		}
 		status.ProbePending = record.Reason == BPSPolicyBlockedKind && record.NeedsProbe
+		if status.ProbePending {
+			status.NextProbeAt = record.Until
+			if record.NextProbe.After(status.NextProbeAt) {
+				status.NextProbeAt = record.NextProbe
+			}
+		}
 		status.LastProbe, status.LastProbeResult = record.LastProbe, record.LastProbeResult
 		for _, strike := range record.Strikes {
 			if now.Sub(strike) < bpsPolicyStrikeWindow {

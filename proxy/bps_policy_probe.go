@@ -128,6 +128,7 @@ func (h *Handler) probeBPSPolicyAccount(ctx context.Context, account *auth.Accou
 			r.NextProbe = now.Add(bpsProbeRetryDelay)
 		}
 	})
+	h.recordBPSProbeHistory(ctx, account.ID(), now, result, record)
 	switch result {
 	case bpsProbeOK:
 		log.Printf("[bps] account=%d usage-policy probe succeeded; the account serves BPS again (tier %d kept for decay)", account.ID(), record.PolicyTier)
@@ -184,4 +185,29 @@ func truncateProbeText(text string) string {
 		return text[:120]
 	}
 	return text
+}
+
+// recordBPSProbeHistory updates the account's block history row: every probe
+// is counted, and the first successful probe closes the block and records how
+// long it lasted (the recovery time).
+func (h *Handler) recordBPSProbeHistory(ctx context.Context, accountID int64, now time.Time, result string, record bpsAccountRecord) {
+	if h == nil || h.db == nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := h.db.RecordBPSPolicyProbe(writeCtx, accountID, now, result, record.PolicyTier); err != nil {
+		log.Printf("[bps] account=%d record policy probe: %v", accountID, err)
+	}
+	if result != bpsProbeOK {
+		return
+	}
+	duration, found, err := h.db.ClearBPSPolicyBlock(writeCtx, accountID, now)
+	if err != nil {
+		log.Printf("[bps] account=%d close policy block: %v", accountID, err)
+		return
+	}
+	if found {
+		log.Printf("[bps] account=%d RECOVERED from the usage-policy block after %s", accountID, duration.Round(time.Second))
+	}
 }

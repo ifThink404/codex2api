@@ -3866,6 +3866,39 @@ export interface PluginCapture {
   created_at: string
 }
 
+// One BPS usage-policy block event (GET /plugins/bps/policy-blocks).
+export interface BPSPolicyBlock {
+  id: number
+  account_id: number
+  name: string
+  blocked_at: string
+  tier: number
+  tiers?: number
+  cleared_at?: string
+  duration_seconds: number
+  elapsed_seconds: number
+  probe_count: number
+  last_probe_result: string
+  last_probe_at?: string
+  next_probe_at?: string
+}
+
+export interface BPSPolicyBlockTotals {
+  account_id: number
+  name: string
+  times_blocked: number
+  total_blocked_seconds: number
+  longest_block_seconds: number
+  recovered: number
+}
+
+export interface BPSPolicyBlocksResponse {
+  active: BPSPolicyBlock[]
+  history: BPSPolicyBlock[]
+  totals: BPSPolicyBlockTotals[]
+  now?: string
+}
+
 // Stored captures of one plugin (GET /plugins/:id/capture-stats).
 export interface PluginCaptureStats {
   rows: number

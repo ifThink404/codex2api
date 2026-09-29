@@ -146,3 +146,29 @@ export function formatCaptureBytes(bytes: number): string {
   }
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
 }
+
+// formatBlockDuration renders seconds as "2d 4h", "4h 32m", "5m 03s" or "42s".
+export function formatBlockDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds || 0))
+  const days = Math.floor(total / 86400)
+  const hours = Math.floor((total % 86400) / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const secs = total % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`
+  if (minutes > 0) return `${minutes}m ${String(secs).padStart(2, '0')}s`
+  return `${secs}s`
+}
+
+// liveElapsedSeconds advances a server-computed elapsed time by the time
+// passed since it was fetched.
+export function liveElapsedSeconds(elapsedSeconds: number, fetchedAtMs: number, nowMs: number): number {
+  return elapsedSeconds + Math.max(0, Math.floor((nowMs - fetchedAtMs) / 1000))
+}
+
+// secondsUntil is the whole seconds from now until iso (0 when past or unset).
+export function secondsUntil(iso: string | undefined, nowMs: number): number {
+  if (!iso) return 0
+  const at = Date.parse(iso)
+  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - nowMs) / 1000)) : 0
+}

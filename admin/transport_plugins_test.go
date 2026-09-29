@@ -293,3 +293,66 @@ func TestTransportPluginCaptureAdminRoutesRequireAuthorization(t *testing.T) {
 		}
 	}
 }
+
+func TestBPSPolicyBlocksEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	if err := db.MigrateBPSPlugin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	store.AddAccount(&auth.Account{DBID: 41, Email: "blocked@example.com", AccessToken: "at", Status: auth.StatusReady})
+	h := &Handler{db: db, store: store}
+	router := gin.New()
+	h.registerTransportPluginRoutes(router.Group("/api/admin"))
+	ctx := context.Background()
+	now := time.Now()
+	if err := db.OpenBPSPolicyBlock(ctx, 41, now.Add(-90*time.Minute), 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.OpenBPSPolicyBlock(ctx, 42, now.Add(-5*time.Hour), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.ClearBPSPolicyBlock(ctx, 42, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/bps/policy-blocks", "")
+	var out struct {
+		Active []struct {
+			AccountID      int64  `json:"account_id"`
+			Name           string `json:"name"`
+			Tier           int    `json:"tier"`
+			ElapsedSeconds int64  `json:"elapsed_seconds"`
+		} `json:"active"`
+		History []struct {
+			AccountID       int64 `json:"account_id"`
+			DurationSeconds int64 `json:"duration_seconds"`
+			ElapsedSeconds  int64 `json:"elapsed_seconds"`
+		} `json:"history"`
+		Totals []struct {
+			AccountID           int64 `json:"account_id"`
+			TimesBlocked        int   `json:"times_blocked"`
+			TotalBlockedSeconds int64 `json:"total_blocked_seconds"`
+			LongestBlockSeconds int64 `json:"longest_block_seconds"`
+		} `json:"totals"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+		t.Fatalf("policy blocks: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(out.Active) != 1 || out.Active[0].AccountID != 41 || out.Active[0].Name != "blocked@example.com" || out.Active[0].Tier != 2 {
+		t.Fatalf("active = %+v", out.Active)
+	}
+	if elapsed := out.Active[0].ElapsedSeconds; elapsed < 5395 || elapsed > 5410 {
+		t.Fatalf("active elapsed = %ds, want ~5400", elapsed)
+	}
+	if len(out.History) != 1 || out.History[0].DurationSeconds != 4*3600 || out.History[0].ElapsedSeconds != 4*3600 {
+		t.Fatalf("history = %+v", out.History)
+	}
+	if len(out.Totals) != 2 || out.Totals[1].AccountID != 42 || out.Totals[1].TotalBlockedSeconds != 4*3600 || out.Totals[1].LongestBlockSeconds != 4*3600 || out.Totals[0].TimesBlocked != 1 {
+		t.Fatalf("totals = %+v", out.Totals)
+	}
+	if rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/missing/policy-blocks", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown plugin: %d", rec.Code)
+	}
+}

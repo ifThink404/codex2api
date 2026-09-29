@@ -27,6 +27,7 @@ func (h *Handler) registerTransportPluginRoutes(api *gin.RouterGroup) {
 	api.GET("/plugins/:plugin/captures", h.ListTransportPluginCaptures)
 	api.GET("/plugins/:plugin/captures/:captureId", h.GetTransportPluginCapture)
 	api.GET("/plugins/:plugin/capture-stats", h.GetTransportPluginCaptureStats)
+	api.GET("/plugins/:plugin/policy-blocks", h.GetTransportPluginPolicyBlocks)
 	api.POST("/plugins/:plugin/captures/purge", h.PurgeTransportPluginCaptures)
 }
 
@@ -341,4 +342,94 @@ func (h *Handler) PurgeTransportPluginCaptures(c *gin.Context) {
 	}
 	log.Printf("[transport-plugin] %s captures purged manually: mode=%s hours=%d deleted=%d", p.ID(), req.Mode, req.Hours, result.Deleted)
 	c.JSON(http.StatusOK, result)
+}
+
+// bpsPolicyBlockView is one block event for the plugin page.
+type bpsPolicyBlockView struct {
+	database.BPSPolicyBlock
+	Name           string     `json:"name"`
+	ElapsedSeconds int64      `json:"elapsed_seconds"`
+	Tiers          int        `json:"tiers,omitempty"`
+	NextProbeAt    *time.Time `json:"next_probe_at,omitempty"`
+}
+
+type bpsPolicyBlockTotalsView struct {
+	database.BPSPolicyBlockTotals
+	Name string `json:"name"`
+}
+
+// GetTransportPluginPolicyBlocks returns the BPS usage-policy blocks: active
+// ones (elapsed so far, tier, next probe), recent cleared ones (?limit=,
+// default 100) with their durations, and per-account totals.
+func (h *Handler) GetTransportPluginPolicyBlocks(c *gin.Context) {
+	p, ok := transportPluginFromParam(c)
+	if !ok {
+		return
+	}
+	out := gin.H{"active": []bpsPolicyBlockView{}, "history": []bpsPolicyBlockView{}, "totals": []bpsPolicyBlockTotalsView{}}
+	if p.ID() != proxy.BPSPluginID {
+		c.JSON(http.StatusOK, out)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	now := time.Now()
+	active, history, err := h.db.ListBPSPolicyBlocks(c.Request.Context(), limit)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	totals, err := h.db.BPSPolicyBlockTotalsAt(c.Request.Context(), now)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	names := map[int64]string{}
+	name := func(id int64) string {
+		if cached, ok := names[id]; ok {
+			return cached
+		}
+		label := ""
+		if h.store != nil {
+			if account := h.store.FindByID(id); account != nil {
+				account.Mu().RLock()
+				label = account.Email
+				account.Mu().RUnlock()
+			}
+		}
+		names[id] = label
+		return label
+	}
+	ids := make([]int64, 0, len(active))
+	for _, block := range active {
+		ids = append(ids, block.AccountID)
+	}
+	live := map[int64]proxy.BPSAccountStatus{}
+	for _, status := range proxy.BPSAccountStatuses(c.Request.Context(), h.cache, ids) {
+		live[status.AccountID] = status
+	}
+	activeViews := make([]bpsPolicyBlockView, 0, len(active))
+	for _, block := range active {
+		view := bpsPolicyBlockView{BPSPolicyBlock: block, Name: name(block.AccountID), ElapsedSeconds: int64(block.Elapsed(now) / time.Second)}
+		if status, ok := live[block.AccountID]; ok {
+			view.Tiers = status.PolicyTiers
+			if status.PolicyTier > view.Tier {
+				view.Tier = status.PolicyTier
+			}
+			if !status.NextProbeAt.IsZero() {
+				next := status.NextProbeAt
+				view.NextProbeAt = &next
+			}
+		}
+		activeViews = append(activeViews, view)
+	}
+	historyViews := make([]bpsPolicyBlockView, 0, len(history))
+	for _, block := range history {
+		historyViews = append(historyViews, bpsPolicyBlockView{BPSPolicyBlock: block, Name: name(block.AccountID), ElapsedSeconds: int64(block.Elapsed(now) / time.Second)})
+	}
+	totalViews := make([]bpsPolicyBlockTotalsView, 0, len(totals))
+	for _, total := range totals {
+		totalViews = append(totalViews, bpsPolicyBlockTotalsView{BPSPolicyBlockTotals: total, Name: name(total.AccountID)})
+	}
+	out["active"], out["history"], out["totals"], out["now"] = activeViews, historyViews, totalViews, now.UTC()
+	c.JSON(http.StatusOK, out)
 }

@@ -4,6 +4,7 @@ import type {
   BuiltinPromptRuleFields,
   PluginCapture,
   PluginAccountStatus,
+  BPSPolicyBlocksResponse,
   PluginCapturePage,
   PluginCapturePurgeMode,
   PluginCapturePurgeResult,
@@ -1501,6 +1502,7 @@ export const api = {
 		const qs = search.toString()
 		return request<PluginCapturePage>(`/plugins/${encodeURIComponent(id)}/captures${qs ? `?${qs}` : ''}`)
 	},
+	getPluginPolicyBlocks: (id: string) => request<BPSPolicyBlocksResponse>(`/plugins/${encodeURIComponent(id)}/policy-blocks`),
 	getPluginCaptureStats: (id: string) => request<PluginCaptureStats>(`/plugins/${encodeURIComponent(id)}/capture-stats`),
 	purgePluginCaptures: (id: string, mode: PluginCapturePurgeMode, hours?: number) =>
 		request<PluginCapturePurgeResult>(`/plugins/${encodeURIComponent(id)}/captures/purge`, { method: 'POST', body: JSON.stringify(mode === 'older_than' ? { mode, hours } : { mode }) }),

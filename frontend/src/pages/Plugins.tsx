@@ -18,7 +18,10 @@ import {
   PLUGIN_VIEWS,
   bpsConfigFields,
   CAPTURE_PURGE_MODES,
+  formatBlockDuration,
   formatCaptureBytes,
+  liveElapsedSeconds,
+  secondsUntil,
   normalizePluginConfig,
   pluginConfigBoolean,
   pluginConfigListText,
@@ -37,7 +40,7 @@ import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
-import type { AccountGroup, AccountRow, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
+import type { AccountGroup, AccountRow, BPSPolicyBlocksResponse, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -323,7 +326,124 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
       </Section>
 
       <PluginAccounts plugin={plugin} onChanged={onChanged} />
+      {plugin.id === 'bps' && <PolicyBlocks plugin={plugin} />}
     </div>
+  )
+}
+
+const POLICY_BLOCKS_REFRESH_MS = 30_000
+
+// PolicyBlocks shows which accounts the BPS usage policy is blocking, for how
+// long (ticking live), their tier and probes, plus the block history and
+// per-account totals, including recovery times.
+function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
+  const { t } = useTranslation()
+  const [data, setData] = useState<BPSPolicyBlocksResponse | null>(null)
+  const [fetchedAt, setFetchedAt] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    const load = () => api.getPluginPolicyBlocks(plugin.id)
+      .then((res) => { if (active) { setData(res); setFetchedAt(Date.now()); setError('') } })
+      .catch((err) => { if (active) setError(getErrorMessage(err)) })
+    void load()
+    const refresh = window.setInterval(() => void load(), POLICY_BLOCKS_REFRESH_MS)
+    const tick = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => { active = false; window.clearInterval(refresh); window.clearInterval(tick) }
+  }, [plugin.id])
+  const accountLabel = (id: number, name: string) => name || `#${id}`
+
+  return (
+    <Section title={t('plugins.policyBlocks')} description={t('plugins.policyBlocksDesc')}>
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      <div className="space-y-2">
+        <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.policyBlocksActive', { count: data?.active.length ?? 0 })}</h3>
+        {data && data.active.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t('plugins.policyBlocksNone')}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('plugins.policyAccount')}</TableHead>
+                  <TableHead>{t('plugins.policyBlockedSince')}</TableHead>
+                  <TableHead>{t('plugins.policyElapsed')}</TableHead>
+                  <TableHead>{t('plugins.policyTierColumn')}</TableHead>
+                  <TableHead>{t('plugins.policyLastProbe')}</TableHead>
+                  <TableHead>{t('plugins.policyNextProbe')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(data?.active ?? []).map((block) => {
+                  const next = secondsUntil(block.next_probe_at, now)
+                  return (
+                    <TableRow key={block.id}>
+                      <TableCell className="text-sm">{accountLabel(block.account_id, block.name)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">{formatBeijingTime(block.blocked_at)}</TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs">{formatBlockDuration(liveElapsedSeconds(block.elapsed_seconds, fetchedAt, now))}</TableCell>
+                      <TableCell className="text-xs">{block.tiers ? `${block.tier}/${block.tiers}` : block.tier}</TableCell>
+                      <TableCell className="text-xs">{block.last_probe_result ? t('plugins.policyProbeCount', { result: block.last_probe_result, count: block.probe_count }) : '—'}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">{block.next_probe_at ? (next > 0 ? formatBlockDuration(next) : t('plugins.policyProbeDue')) : '—'}</TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+      {data && data.totals.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.policyTotals')}</h3>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('plugins.policyAccount')}</TableHead>
+                  <TableHead>{t('plugins.policyTimesBlocked')}</TableHead>
+                  <TableHead>{t('plugins.policyTotalBlocked')}</TableHead>
+                  <TableHead>{t('plugins.policyLongest')}</TableHead>
+                  <TableHead>{t('plugins.policyRecovered')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.totals.map((total) => (
+                  <TableRow key={total.account_id}>
+                    <TableCell className="text-sm">{accountLabel(total.account_id, total.name)}</TableCell>
+                    <TableCell className="text-xs">{total.times_blocked}</TableCell>
+                    <TableCell className="font-mono text-xs">{formatBlockDuration(total.total_blocked_seconds)}</TableCell>
+                    <TableCell className="font-mono text-xs">{formatBlockDuration(total.longest_block_seconds)}</TableCell>
+                    <TableCell className="text-xs">{total.recovered}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+      {data && data.history.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.policyHistory')}</h3>
+          <ul className="divide-y divide-border text-xs">
+            {data.history.map((block) => (
+              <li key={block.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span className="text-sm">{accountLabel(block.account_id, block.name)}</span>
+                <span className="text-muted-foreground">
+                  {t('plugins.policyHistoryEntry', {
+                    blocked: formatBeijingTime(block.blocked_at),
+                    cleared: block.cleared_at ? formatBeijingTime(block.cleared_at) : '—',
+                    duration: formatBlockDuration(block.duration_seconds),
+                    probes: block.probe_count,
+                    tier: block.tier,
+                  })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Section>
   )
 }
 
