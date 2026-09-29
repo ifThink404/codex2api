@@ -428,18 +428,18 @@ func TestCaptureRetentionWindows(t *testing.T) {
 	now := time.Now()
 	ago := func(h float64) time.Time { return now.Add(-time.Duration(h * float64(time.Hour))) }
 	rows := []database.PluginCapture{
-		{Plugin: "retplug", RequestID: "normal-old", Attempt: 1, Direction: "request", CreatedAt: ago(7)},             // > 6h: gone
-		{Plugin: "retplug", RequestID: "normal-new", Attempt: 1, Direction: "request", CreatedAt: ago(5)},             // kept
-		{Plugin: "retplug", RequestID: "err", Attempt: 1, Direction: "response", Status: 403, CreatedAt: ago(11)},     // error < 12h: kept
-		{Plugin: "retplug", RequestID: "err", Attempt: 1, Direction: "upstream_request", CreatedAt: ago(11)},          // same attempt: kept
-		{Plugin: "retplug", RequestID: "err", Attempt: 2, Direction: "request", CreatedAt: ago(11)},                   // other attempt: gone
+		{Plugin: "retplug", RequestID: "normal-old", Attempt: 1, Direction: "request", CreatedAt: ago(7)},                                                // > 6h: gone
+		{Plugin: "retplug", RequestID: "normal-new", Attempt: 1, Direction: "request", CreatedAt: ago(5)},                                                // kept
+		{Plugin: "retplug", RequestID: "err", Attempt: 1, Direction: "response", Status: 403, CreatedAt: ago(11)},                                        // error < 12h: kept
+		{Plugin: "retplug", RequestID: "err", Attempt: 1, Direction: "upstream_request", CreatedAt: ago(11)},                                             // same attempt: kept
+		{Plugin: "retplug", RequestID: "err", Attempt: 2, Direction: "request", CreatedAt: ago(11)},                                                      // other attempt: gone
 		{Plugin: "retplug", RequestID: "classified", Attempt: 1, Direction: "response", Status: 200, ErrorKind: "bps_policy_blocked", CreatedAt: ago(9)}, // kept
-		{Plugin: "retplug", RequestID: "err-old", Attempt: 1, Direction: "error", CreatedAt: ago(13)},                 // > 12h: gone
-		{Plugin: "shortplug", RequestID: "s-normal", Attempt: 1, Direction: "request", CreatedAt: ago(2.5)},           // > 2h: gone
-		{Plugin: "shortplug", RequestID: "s-error", Attempt: 1, Direction: "response", Status: 500, CreatedAt: ago(2.5)}, // < 3h: kept
-		{Plugin: "shortplug", RequestID: "s-error-old", Attempt: 1, Direction: "response", Status: 500, CreatedAt: ago(4)}, // > 3h: gone
-		{Plugin: "removedplug", RequestID: "orphan", Attempt: 1, Direction: "request", CreatedAt: ago(13)},            // global 12h cap: gone
-		{Plugin: "removedplug", RequestID: "orphan-new", Attempt: 1, Direction: "request", CreatedAt: ago(1)},         // kept
+		{Plugin: "retplug", RequestID: "err-old", Attempt: 1, Direction: "error", CreatedAt: ago(13)},                                                    // > 12h: gone
+		{Plugin: "shortplug", RequestID: "s-normal", Attempt: 1, Direction: "request", CreatedAt: ago(2.5)},                                              // > 2h: gone
+		{Plugin: "shortplug", RequestID: "s-error", Attempt: 1, Direction: "response", Status: 500, CreatedAt: ago(2.5)},                                 // < 3h: kept
+		{Plugin: "shortplug", RequestID: "s-error-old", Attempt: 1, Direction: "response", Status: 500, CreatedAt: ago(4)},                               // > 3h: gone
+		{Plugin: "removedplug", RequestID: "orphan", Attempt: 1, Direction: "request", CreatedAt: ago(13)},                                               // global 12h cap: gone
+		{Plugin: "removedplug", RequestID: "orphan-new", Attempt: 1, Direction: "request", CreatedAt: ago(1)},                                            // kept
 	}
 	if err := db.InsertPluginCaptures(context.Background(), rows); err != nil {
 		t.Fatal(err)
