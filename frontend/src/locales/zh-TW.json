@@ -618,13 +618,13 @@
       "description": "在伺服器之間遷移已儲存的系統設定。請先儲存目前頁面的修改再操作。",
       "export": "匯出設定",
       "import": "匯入設定",
-      "exportHint": "匯出已儲存的設定；檔案包含服務金鑰，請妥善保存。未儲存的修改需先儲存。",
+      "exportHint": "匯出已儲存的設定，不含服務金鑰（權杖、API Key、OAuth client secret）。請先儲存本頁未儲存的修改。",
       "importHint": "匯入其他伺服器的設定 JSON；未儲存的修改需先儲存。",
-      "scope": "匯入會覆寫檔案中的設定。管理員登入金鑰、帳號、API 金鑰、日誌、獨立規則頁的自訂 Prompt 規則與內建規則修改不會遷移；服務設定金鑰包含在檔案中。背景圖等本機檔案需另行遷移。",
+      "scope": "匯入會覆蓋檔案中包含的設定項。管理員登入金鑰、帳號、API Key、日誌、規則頁的自訂提示詞規則和內建規則修改不會遷移。只有開啟「包含金鑰」才會匯出服務金鑰；不含金鑰的檔案匯入後保留目標伺服器原有金鑰。背景圖等本機檔案需另行複製。",
       "summary": "通用設定 {{count}} 項；其他設定：{{sections}}。",
       "confirm": "匯入並覆寫",
       "importing": "正在匯入…",
-      "exported": "設定已匯出，請妥善保存包含服務金鑰的檔案。",
+      "exported": "設定已匯出（不含服務金鑰）。",
       "imported": "設定匯入完成",
       "refresh": "重新整理頁面查看設定",
       "tooLarge": "設定檔不能超過 10 MB。",
@@ -640,7 +640,15 @@
         "channel_tests": "渠道測連",
         "invite_guide": "邀請引導",
         "visible_channels": "可見渠道"
-      }
+      },
+      "exportHintSecrets": "匯出已儲存的設定，包含服務金鑰，請妥善保管檔案。請先儲存本頁未儲存的修改。",
+      "exportedWithSecrets": "設定已匯出（含服務金鑰），請妥善保管檔案。",
+      "includeSecrets": "包含金鑰",
+      "secretsWarningTitle": "匯出時包含服務金鑰？",
+      "secretsWarning": "檔案將以明文包含 GitHub 權杖、提示詞複審 API Key、圖片儲存金鑰和 OAuth client secret，取得檔案的人都能使用它們。請僅透過私密管道傳輸，匯入後刪除檔案。",
+      "secretsWarningConfirm": "包含金鑰",
+      "fileHasSecrets": "此檔案包含服務金鑰，匯入會取代目標伺服器的金鑰。",
+      "fileWithoutSecrets": "此檔案不含服務金鑰，目標伺服器保留原有金鑰。"
     },
     "nav": {
       "codexTransport": "連線與傳輸",

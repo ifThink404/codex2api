@@ -16,7 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestSettingsExportCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
+func TestSettingsExportWithSecretsCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
 	resetAntigravityOAuthSettingsEnv(t)
 	// Imports carry image_storage_* fields; keep the local backend in a writable dir.
 	t.Setenv("IMAGE_ASSET_DIR", t.TempDir())
@@ -50,7 +50,7 @@ func TestSettingsExportCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
 
 	r := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(r)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/settings/export", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/settings/export?include_secrets=true", nil)
 	h.ExportSettings(c)
 	if r.Code != http.StatusOK {
 		t.Fatalf("export status = %d: %s", r.Code, r.Body.String())
@@ -59,14 +59,15 @@ func TestSettingsExportCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 	var backup struct {
-		Format   string                     `json:"format"`
-		Version  int                        `json:"version"`
-		Settings map[string]json.RawMessage `json:"settings"`
+		Format          string                     `json:"format"`
+		Version         int                        `json:"version"`
+		SecretsIncluded bool                       `json:"secrets_included"`
+		Settings        map[string]json.RawMessage `json:"settings"`
 	}
 	if err := json.Unmarshal(r.Body.Bytes(), &backup); err != nil {
 		t.Fatalf("decode export: %v", err)
 	}
-	if backup.Format != "codex2api.settings" || backup.Version != 1 {
+	if backup.Format != "codex2api.settings" || backup.Version != 1 || !backup.SecretsIncluded {
 		t.Fatalf("format/version = %q/%d", backup.Format, backup.Version)
 	}
 	for _, field := range []string{"admin_secret", "admin_auth_source", "response_cache_config_generation", "prompt_filter_custom_patterns", "database_driver", "codex_effective_cli_version"} {
@@ -139,5 +140,112 @@ func TestSettingsExportCanBeImportedWithoutReplacingAdminOrRules(t *testing.T) {
 	}
 	if !reflect.DeepEqual(restored, oauth) {
 		t.Fatalf("OAuth clients = %+v, want %+v", restored, oauth)
+	}
+}
+
+func TestSettingsExportOmitsSecretsByDefaultAndImportKeepsTargetSecrets(t *testing.T) {
+	resetAntigravityOAuthSettingsEnv(t)
+	t.Setenv("IMAGE_ASSET_DIR", t.TempDir())
+	previous := proxy.CurrentRuntimeSettings()
+	t.Cleanup(func() { proxy.ApplyRuntimeSettings(previous) })
+	db := newTestAdminDB(t)
+	memory := cache.NewMemory(4)
+	t.Cleanup(func() { _ = memory.Close() })
+	ctx := context.Background()
+	s := defaultBootstrapSettings()
+	s.GithubToken = "source-service-test-only"
+	s.PromptFilterReviewAPIKey = "source-review-test-only"
+	s.GlobalRPM = 321
+	if err := db.UpdateSystemSettings(ctx, s); err != nil {
+		t.Fatalf("UpdateSystemSettings: %v", err)
+	}
+	oauth := auth.AntigravityOAuthSettings{ActiveKey: "migrate", Clients: []auth.AntigravityOAuthClientConfig{{Key: "migrate", ClientID: "source-client-test-only", ClientSecret: "source-client-secret-test-only"}}}
+	oauthRaw, err := auth.EncodeAntigravityOAuthSettings(oauth)
+	if err != nil {
+		t.Fatalf("EncodeAntigravityOAuthSettings: %v", err)
+	}
+	if err := db.SaveAntigravityOAuthConfig(ctx, oauthRaw); err != nil {
+		t.Fatalf("SaveAntigravityOAuthConfig: %v", err)
+	}
+	auth.SetConfiguredAntigravityOAuth(oauth)
+	proxy.ApplyRuntimeSettingsFromSystem(s)
+	store := auth.NewStore(db, memory, s)
+	t.Cleanup(store.Stop)
+	h := NewHandler(store, db, memory, proxy.NewRateLimiter(s.GlobalRPM), "admin-secret")
+
+	for _, query := range []string{"", "?include_secrets=false", "?include_secrets=nonsense"} {
+		r := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(r)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/settings/export"+query, nil)
+		h.ExportSettings(c)
+		if r.Code != http.StatusOK {
+			t.Fatalf("export%s status = %d: %s", query, r.Code, r.Body.String())
+		}
+		body := r.Body.String()
+		for _, secret := range []string{"source-service-test-only", "source-review-test-only", "source-client-secret-test-only"} {
+			if strings.Contains(body, secret) {
+				t.Fatalf("export%s leaked %q", query, secret)
+			}
+		}
+		var backup struct {
+			SecretsIncluded *bool                      `json:"secrets_included"`
+			Settings        map[string]json.RawMessage `json:"settings"`
+		}
+		if err := json.Unmarshal(r.Body.Bytes(), &backup); err != nil {
+			t.Fatalf("decode export: %v", err)
+		}
+		if backup.SecretsIncluded == nil || *backup.SecretsIncluded {
+			t.Fatalf("export%s secrets_included = %v, want false", query, backup.SecretsIncluded)
+		}
+		for _, field := range settingsExportSecretFields {
+			if _, ok := backup.Settings[field]; ok {
+				t.Fatalf("export%s must not contain %q", query, field)
+			}
+		}
+		if clients := string(backup.Settings["antigravity_oauth_clients"]); !strings.Contains(clients, "source-client-test-only") {
+			t.Fatalf("non-secret OAuth client fields must still be exported: %s", clients)
+		}
+		if query != "" {
+			continue
+		}
+
+		// Importing a secret-free file into a server keeps that server's secrets.
+		target := defaultBootstrapSettings()
+		target.GithubToken = "target-service-test-only"
+		target.PromptFilterReviewAPIKey = "target-review-test-only"
+		target.GlobalRPM = 42
+		if err := db.UpdateSystemSettings(ctx, target); err != nil {
+			t.Fatalf("UpdateSystemSettings target: %v", err)
+		}
+		h.store.SetGithubToken(target.GithubToken)
+		targetOAuth := auth.AntigravityOAuthSettings{ActiveKey: "migrate", Clients: []auth.AntigravityOAuthClientConfig{{Key: "migrate", ClientID: "target-client-test-only", ClientSecret: "target-client-secret-test-only"}}}
+		targetRaw, _ := auth.EncodeAntigravityOAuthSettings(targetOAuth)
+		if err := db.SaveAntigravityOAuthConfig(ctx, targetRaw); err != nil {
+			t.Fatalf("SaveAntigravityOAuthConfig target: %v", err)
+		}
+		auth.SetConfiguredAntigravityOAuth(targetOAuth)
+		encoded, _ := json.Marshal(backup.Settings)
+		r = httptest.NewRecorder()
+		c, _ = gin.CreateTestContext(r)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/admin/settings", bytes.NewReader(encoded))
+		c.Request.Header.Set("Content-Type", "application/json")
+		h.UpdateSettings(c)
+		if r.Code != http.StatusOK {
+			t.Fatalf("import status = %d: %s", r.Code, r.Body.String())
+		}
+		persisted, err := db.GetSystemSettings(ctx)
+		if err != nil {
+			t.Fatalf("GetSystemSettings: %v", err)
+		}
+		if persisted.GlobalRPM != 321 {
+			t.Fatalf("imported global_rpm = %d, want 321", persisted.GlobalRPM)
+		}
+		if persisted.GithubToken != "target-service-test-only" || persisted.PromptFilterReviewAPIKey != "target-review-test-only" {
+			t.Fatalf("import replaced target secrets: github=%q review=%q", persisted.GithubToken, persisted.PromptFilterReviewAPIKey)
+		}
+		restored := auth.ConfiguredAntigravityOAuth()
+		if len(restored.Clients) != 1 || restored.Clients[0].ClientID != "source-client-test-only" || restored.Clients[0].ClientSecret != "target-client-secret-test-only" {
+			t.Fatalf("OAuth clients after import = %+v", restored.Clients)
+		}
 	}
 }

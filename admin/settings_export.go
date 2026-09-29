@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,9 +56,22 @@ func portableSettings(snapshot *settingsResponse) (map[string]json.RawMessage, e
 	return values, nil
 }
 
-// Export only through the authenticated administrator route. This file may
-// contain service credentials, so neither browser nor intermediary may cache it.
+// settingsExportSecretFields are the service credentials a backup carries only
+// on explicit opt-in. Import treats a missing key as "keep the target's value",
+// so a backup without them never clears the target server's credentials.
+var settingsExportSecretFields = []string{"github_token", "prompt_filter_review_api_key", "image_s3_access_key", "image_s3_secret_key"}
+
+// settingsExportIncludesSecrets reads the include_secrets opt-in.
+func settingsExportIncludesSecrets(c *gin.Context) bool {
+	value, _ := strconv.ParseBool(strings.TrimSpace(c.Query("include_secrets")))
+	return value
+}
+
+// Export only through the authenticated administrator route. With
+// include_secrets the file contains service credentials, so neither browser
+// nor intermediary may cache it.
 func (h *Handler) ExportSettings(c *gin.Context) {
+	includeSecrets := settingsExportIncludesSecrets(c)
 	snapshot, err := h.settingsSnapshot(c.Request.Context())
 	if err != nil {
 		writeError(c, http.StatusInternalServerError, err.Error())
@@ -73,7 +87,7 @@ func (h *Handler) ExportSettings(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "读取设置失败")
 		return
 	}
-	if stored != nil {
+	if stored != nil && includeSecrets {
 		// These write-only fields are intentionally absent from ordinary GET.
 		values["github_token"], _ = json.Marshal(stored.GithubToken)
 		values["prompt_filter_review_api_key"], _ = json.Marshal(stored.PromptFilterReviewAPIKey)
@@ -93,12 +107,21 @@ func (h *Handler) ExportSettings(c *gin.Context) {
 	if oauth.Clients == nil {
 		oauth.Clients = []auth.AntigravityOAuthClientConfig{}
 	}
+	if !includeSecrets {
+		// An empty client_secret keeps the target's saved secret for that key.
+		for i := range oauth.Clients {
+			oauth.Clients[i].ClientSecret = ""
+		}
+		for _, name := range settingsExportSecretFields {
+			delete(values, name)
+		}
+	}
 	values["antigravity_oauth_clients"], _ = json.Marshal(oauth.Clients)
 	values["antigravity_oauth_client_key"], _ = json.Marshal(oauth.ActiveKey)
 	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Disposition", `attachment; filename="codex2api-settings.json"`)
 	c.JSON(http.StatusOK, gin.H{
 		"format": "codex2api.settings", "version": 1, "exported_at": time.Now().UTC(),
-		"settings": values,
+		"secrets_included": includeSecrets, "settings": values,
 	})
 }

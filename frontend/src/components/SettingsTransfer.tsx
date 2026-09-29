@@ -5,12 +5,14 @@ import { api } from '../api'
 import { useToast } from '../hooks/useToast'
 import { getErrorMessage } from '../utils/error'
 import { parseSettingsBackup, SETTINGS_BACKUP_MAX_BYTES, SettingsImportError, type SettingsBackup } from '../lib/settingsTransfer'
+import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { Button } from './ui/button'
+import { Switch } from './ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 
-async function readSettingsBackup(): Promise<SettingsBackup> {
+async function readSettingsBackup(includeSecrets = false): Promise<SettingsBackup> {
   const [main, claude, antigravity, tests, invite, visible] = await Promise.all([
-    api.exportSettings(), api.getClaudeConfig(), api.getAntigravitySettings(),
+    api.exportSettings(includeSecrets), api.getClaudeConfig(), api.getAntigravitySettings(),
     api.getChannelTestSettings(), api.getInviteGuideSettings(), api.getVisibleChannels(),
   ])
   const { synced_cli_version: _synced, builtin_cli_version: _builtin, effective_cli_version: _effective, ...claudeWritable } = claude
@@ -32,11 +34,22 @@ export default function SettingsTransfer({ disabled }: { disabled: boolean }) {
   const [error, setError] = useState('')
   const [applied, setApplied] = useState<string[]>([])
   const [complete, setComplete] = useState(false)
+  // Secrets stay out of exports unless the operator opts in after a warning.
+  const [includeSecrets, setIncludeSecrets] = useState(false)
+  const { confirm, confirmDialog } = useConfirmDialog()
+
+  const toggleIncludeSecrets = async (next: boolean) => {
+    if (next && !await confirm({
+      title: t('settings.transfer.secretsWarningTitle'), description: t('settings.transfer.secretsWarning'),
+      confirmText: t('settings.transfer.secretsWarningConfirm'), tone: 'warning',
+    })) return
+    setIncludeSecrets(next)
+  }
 
   const exportSettings = async () => {
     setBusy(true)
     try {
-      const backup = await readSettingsBackup()
+      const backup = await readSettingsBackup(includeSecrets)
       const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }))
       const link = document.createElement('a')
       link.href = url
@@ -45,7 +58,7 @@ export default function SettingsTransfer({ disabled }: { disabled: boolean }) {
       link.click()
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      showToast(t('settings.transfer.exported'), 'success')
+      showToast(t(includeSecrets ? 'settings.transfer.exportedWithSecrets' : 'settings.transfer.exported'), 'success')
     } catch (cause) { showToast(getErrorMessage(cause), 'error') }
     finally { setBusy(false) }
   }
@@ -97,13 +110,18 @@ export default function SettingsTransfer({ disabled }: { disabled: boolean }) {
   return <>
     <input ref={input} type="file" accept=".json,application/json" className="hidden" aria-label={t('settings.transfer.import')}
       onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void readFile(file) }} />
-    <Button variant="outline" size="sm" disabled={disabled || busy} onClick={() => void exportSettings()} title={t('settings.transfer.exportHint')}><Download className="size-4" />{t('settings.transfer.export')}</Button>
+    <label className="flex items-center gap-2 text-sm">
+      <Switch checked={includeSecrets} onCheckedChange={(next) => void toggleIncludeSecrets(next)} disabled={disabled || busy} aria-label={t('settings.transfer.includeSecrets')} />
+      {t('settings.transfer.includeSecrets')}
+    </label>
+    <Button variant="outline" size="sm" disabled={disabled || busy} onClick={() => void exportSettings()} title={t(includeSecrets ? 'settings.transfer.exportHintSecrets' : 'settings.transfer.exportHint')}><Download className="size-4" />{t('settings.transfer.export')}</Button>
     <Button variant="outline" size="sm" disabled={disabled || busy} onClick={() => input.current?.click()} title={t('settings.transfer.importHint')}><Upload className="size-4" />{t('settings.transfer.import')}</Button>
     <Dialog open={pending !== null} onOpenChange={(open) => { if (!open && !busy) { if (applied.length) window.location.reload(); else setPending(null) } }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{t(complete ? 'settings.transfer.imported' : 'settings.transfer.import')}</DialogTitle>
           <DialogDescription>{pending?.name}</DialogDescription></DialogHeader>
         <p className="text-sm text-muted-foreground">{t('settings.transfer.scope')}</p>
+        {pending && <p className="text-sm">{t(pending.backup.secrets_included ? 'settings.transfer.fileHasSecrets' : 'settings.transfer.fileWithoutSecrets')}</p>}
         {pending && <p className="text-sm">{t('settings.transfer.summary', { count: Object.keys(pending.backup.settings).length, sections: Object.keys(pending.backup.sections ?? {}).map((name) => t(`settings.transfer.sections.${name}`)).join('、') || '—' })}</p>}
         {applied.length > 0 && <p className="text-sm">{t('settings.transfer.applied', { sections: applied.map((name) => t(`settings.transfer.sections.${name}`)).join('、') })}</p>}
         {error && <p role="alert" className="text-sm text-destructive break-words">{error}</p>}
@@ -113,5 +131,6 @@ export default function SettingsTransfer({ disabled }: { disabled: boolean }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    {confirmDialog}
   </>
 }
