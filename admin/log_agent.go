@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/codex2api/database"
@@ -28,16 +28,17 @@ import (
 const (
 	logAgentInternalReasonPrefix = "log_agent:"
 	logAgentFetchTimeout         = 15 * time.Second
-	logAgentPurgeInterval        = time.Hour
-	logAgentMaxRefs              = 50
-	logAgentMaxFocusRunes        = 500
+	// logAgentPurgeInterval: expired runs are purged every 10 minutes, with
+	// the other log retention jobs, whether or not new analyses run.
+	logAgentPurgeInterval = 10 * time.Minute
+	logAgentMaxRefs       = 50
+	logAgentMaxFocusRunes = 500
 )
 
 // logAgentState 挂在 Handler 上，惰性初始化，测试可替换 newLLM。
 type logAgentState struct {
-	once      sync.Once
-	builtins  *logagent.Registry
-	lastPurge atomic.Int64
+	once     sync.Once
+	builtins *logagent.Registry
 	// newLLM 为 nil 时使用号池实现。
 	newLLM func(h *Handler, key *database.APIKeyRow, source string, timeout time.Duration) logagent.LLM
 }
@@ -255,7 +256,6 @@ func (h *Handler) AnalyzeLogAgent(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	h.maybePurgeLogAgentRuns(persistCtx, cfg.RetentionDays)
 	if analyzeErr != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": run.ErrorMessage, "run": run})
 		return
@@ -324,17 +324,52 @@ func clampRunesText(text string, limit int) string {
 	return string(runes[:limit])
 }
 
-// maybePurgeLogAgentRuns 每小时至多清理一次过期分析记录；失败不影响本次分析结果。
-func (h *Handler) maybePurgeLogAgentRuns(ctx context.Context, retentionDays int) {
-	now := time.Now()
-	last := h.logAgent.lastPurge.Load()
-	if now.UnixNano()-last < int64(logAgentPurgeInterval) || !h.logAgent.lastPurge.CompareAndSwap(last, now.UnixNano()) {
-		return
+// purgeExpiredLogAgentRuns 按日志分析设置的保留天数分批清理过期分析记录。
+func (h *Handler) purgeExpiredLogAgentRuns(ctx context.Context, now time.Time) (int64, error) {
+	cfg, err := h.db.LoadLogAgentConfig(ctx)
+	if err != nil {
+		return 0, err
 	}
+	retentionDays := cfg.RetentionDays
 	if retentionDays <= 0 {
 		retentionDays = database.DefaultLogAgentRetentionDays
 	}
-	_, _ = h.db.PurgeLogAgentRuns(ctx, now.Add(-time.Duration(retentionDays)*24*time.Hour))
+	return h.db.PurgeLogAgentRuns(ctx, now.Add(-time.Duration(retentionDays)*24*time.Hour))
+}
+
+// StartLogAgentRetention 每 10 分钟清理一次过期分析记录（首次在启动后短暂延迟），
+// 不再依赖有新分析请求时才顺带清理。
+func (h *Handler) StartLogAgentRetention(ctx context.Context) {
+	if h == nil || h.db == nil {
+		return
+	}
+	go func() {
+		run := func() {
+			runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			if deleted, err := h.purgeExpiredLogAgentRuns(runCtx, time.Now()); err != nil {
+				log.Printf("[log-agent] 清理过期分析记录失败: %v", err)
+			} else if deleted > 0 {
+				log.Printf("[log-agent] 已清理 %d 条过期分析记录", deleted)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Minute):
+			run()
+		}
+		ticker := time.NewTicker(logAgentPurgeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
 }
 
 func (h *Handler) ListLogAgentRuns(c *gin.Context) {

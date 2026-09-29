@@ -388,6 +388,8 @@ func main() {
 	pluginAttachCancel()
 	plugins.Default().StartCaptureWriter(backgroundCtx)
 	plugins.StartPluginCaptureRetention(backgroundCtx, db)
+	// 日志分析记录按其保留天数每 10 分钟清理。
+	adminHandler.StartLogAgentRetention(backgroundCtx)
 	// Responses API 渠道监控按账号启用，健康检查和倍率探测分别调度。
 	adminHandler.StartChannelMonitor(backgroundCtx)
 
