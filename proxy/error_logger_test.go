@@ -63,3 +63,42 @@ func TestUsageLogErrorMessageExtractsStringAndValidationDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestErrorLogRotatesBySize(t *testing.T) {
+	t.Setenv("LOG_DISABLED", "false")
+	dir := t.TempDir()
+	t.Setenv("LOG_DIR", dir)
+	t.Setenv("LOG_MAX_SIZE_MB", "1")
+	t.Setenv("LOG_MAX_BACKUPS", "2")
+	logger := &fileLogger{path: "server_error.log"}
+	t.Cleanup(logger.close)
+	body := []byte(`{"error":{"message":"` + strings.Repeat("x", 4000) + `"}}`)
+	for range 1000 { // ~4.1 MB: rotates several times
+		logger.writeEntry("/v1/responses", 500, "gpt-6-sol", 1, body)
+	}
+	base := filepath.Join(dir, "server_error.log")
+	for _, name := range []string{base, base + ".1", base + ".2"} {
+		info, err := os.Stat(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if info.Size() > 1<<20 {
+			t.Fatalf("%s is %d bytes, above the 1 MB cap", name, info.Size())
+		}
+	}
+	if _, err := os.Stat(base + ".3"); !os.IsNotExist(err) {
+		t.Fatalf("only LOG_MAX_BACKUPS backups are kept: %v", err)
+	}
+	data, err := os.ReadFile(base + ".1")
+	if err != nil || !strings.HasPrefix(string(data), "========== ") {
+		t.Fatalf("rotated file does not start at an entry boundary: %v", err)
+	}
+	if errorLogMaxBytes() != 1<<20 || errorLogBackups() != 2 {
+		t.Fatal("env overrides not applied")
+	}
+	t.Setenv("LOG_MAX_SIZE_MB", "0")
+	t.Setenv("LOG_MAX_BACKUPS", "99")
+	if errorLogMaxBytes() != defaultErrorLogMaxMB<<20 || errorLogBackups() != defaultErrorLogBackups {
+		t.Fatal("invalid overrides must fall back to the defaults")
+	}
+}
