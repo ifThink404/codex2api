@@ -7487,7 +7487,8 @@
       "degrade_probe_model": "Degradation probe model",
       "degrade_probe_interval": "Scheduled probe interval",
       "degrade_probe_max_concurrent": "Max concurrent probes",
-      "degrade_cooldown_ladder": "Degradation cooldown ladder"
+      "degrade_cooldown_ladder": "Degradation cooldown ladder",
+      "dual_route_preference": "Dual-route preference"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7524,7 +7525,8 @@
       "degrade_probe_model": "The model the pelican probe asks for; empty means gpt-6-astra (the threshold is calibrated on it).",
       "degrade_probe_interval": "Periodic probe of every account route, e.g. 6h (10m to 168h); empty is off. Native routes are probed only when explicitly on.",
       "degrade_probe_max_concurrent": "Pelican probes in flight per replica, manual and batch included.",
-      "degrade_cooldown_ladder": "The cooldown per break; afterwards a pelican probe decides. Empty reuses the usage-policy ladder."
+      "degrade_cooldown_ladder": "The cooldown per break; afterwards a pelican probe decides. Empty reuses the usage-policy ladder.",
+      "dual_route_preference": "Which route an account with BPS and an explicit native route uses while both are healthy; the other is the fallback (breakers, and a same-account retry after a usage-policy block). Native first by default."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7707,7 +7709,13 @@
       "scheduled": "Scheduled",
       "recovery": "Recovery"
     },
-    "nativeTriggerPelican": "pelican judge ({{detail}})"
+    "nativeTriggerPelican": "pelican judge ({{detail}})",
+    "bpsConfigChoices": {
+      "dual_route_preference": {
+        "native": "Native first",
+        "bps": "BPS first"
+      }
+    }
   },
   "logAgent": {
     "title": "AI log analysis",

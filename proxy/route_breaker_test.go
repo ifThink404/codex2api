@@ -389,3 +389,37 @@ func TestDegradeQueueRespectsMaxConcurrency(t *testing.T) {
 	_, ok = rt.takeDegradeJob(2)
 	require.True(t, ok, "a finished probe frees a slot")
 }
+
+// dual_route_preference switches which healthy route a dual-route account
+// uses first; with bps first, a usage-policy 403 on BPS is retried on the
+// same account's native route, end to end.
+func TestDualRoutePreference(t *testing.T) {
+	f := dualRouteFixture(t, func([]byte) (int, string) {
+		return http.StatusForbidden, bpsPolicyBlockBody
+	}, func(body []byte) (int, string) { return 200, nativeSSE(gjson.GetBytes(body, "model").String()) })
+	req, _, ctx := bpsRoutingRequest(f.handler, `{"model":"gpt-6-sol","input":"hi"}`)
+	require.False(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: f.account, Model: "gpt-6-sol"}), "native first by default")
+
+	updateBPSConfig(t, func(c BPSConfig) BPSConfig { c.DualRoutePreference = DualRouteBPS; return c })
+	require.True(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: f.account, Model: "gpt-6-sol"}), "bps first when configured")
+	f.handler.breakRoute(context.Background(), f.account, RouteBPS, degradeBreakTriggerPelican, "score 90 < 187", "")
+	require.False(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: f.account, Model: "gpt-6-sol"}), "a broken BPS route falls back to native")
+	freshBPSAccountStates(t)
+
+	recorder := f.serve(t, "/v1/responses", `{"model":"gpt-6-sol","stream":true,"input":"hi"}`)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.EqualValues(t, 1, f.bps.Load(), "BPS first")
+	require.EqualValues(t, 1, f.native.Load(), "the policy 403 is retried on the same account's native route")
+	var native *database.UsageLog
+	for _, row := range f.usageRows(t) {
+		if row.Transport == database.TransportNative && row.StatusCode == 200 {
+			native = row
+		}
+	}
+	require.NotNil(t, native)
+	require.Equal(t, f.account.ID(), native.AccountID)
+	require.Equal(t, "bps_account_refused", gjson.Get(native.PluginMeta, "route_reason").String())
+
+	_, err := parseBPSConfig([]byte(`{"dual_route_preference":"both"}`))
+	require.Error(t, err)
+}

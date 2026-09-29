@@ -35,6 +35,7 @@ export type PluginConfigField =
   | { key: string; kind: 'boolean'; defaultValue?: boolean; hint?: boolean }
   | { key: string; kind: 'text'; hint?: boolean; placeholder?: string }
   | { key: string; kind: 'list'; defaultValue: string[]; hint?: boolean }
+  | { key: string; kind: 'choice'; options: string[]; defaultValue: string; hint?: boolean }
 
 export const bpsConfigFields: PluginConfigField[] = [
   { key: 'word_user_agent', kind: 'text', hint: true },
@@ -61,6 +62,7 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'image_trim_default', kind: 'boolean', defaultValue: true, hint: true },
+  { key: 'dual_route_preference', kind: 'choice', options: ['native', 'bps'], defaultValue: 'native', hint: true },
   { key: 'degrade_breaker_enabled', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'degrade_score_threshold', kind: 'number', min: 0, max: 10000, hint: true, defaultValue: 187, zeroMeans: 'default' },
   { key: 'degrade_probe_model', kind: 'text', hint: true, placeholder: 'gpt-6-astra' },
@@ -78,7 +80,7 @@ export const bpsConfigGroups: Array<{ key: string; fields: string[] }> = [
     fields: [
       'bps_account_max_concurrency', 'bps_account_request_budget', 'bps_account_budget_window', 'bps_min_usable_accounts',
       'policy_block_threshold', 'bps_policy_cooldown_ladder', 'bps_policy_conversation_mark', 'exclude_failures_from_native_health',
-      'degrade_breaker_enabled', 'degrade_score_threshold', 'degrade_probe_model', 'degrade_probe_interval', 'degrade_probe_max_concurrent', 'degrade_cooldown_ladder',
+      'dual_route_preference', 'degrade_breaker_enabled', 'degrade_score_threshold', 'degrade_probe_model', 'degrade_probe_interval', 'degrade_probe_max_concurrent', 'degrade_cooldown_ladder',
     ],
   },
   { key: 'attachments', fields: ['attachment_request_concurrency', 'attachment_instance_concurrency', 'attachment_account_concurrency', 'attachment_429_fallback', 'image_trim_default'] },

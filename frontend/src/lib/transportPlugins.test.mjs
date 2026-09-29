@@ -346,3 +346,18 @@ test('dual-route breakers and the pelican judge: config, route states, probes an
     assert.equal(typeof locale.plugins.dashStates.bps_degraded, 'string')
   }
 })
+
+test('dual_route_preference is a one-line switch in the config form', () => {
+  const field = bpsConfigFields.find((item) => item.key === 'dual_route_preference')
+  assert.equal(field.kind, 'choice')
+  assert.deepEqual(field.options, ['native', 'bps'])
+  assert.equal(field.defaultValue, 'native')
+  assert.ok(bpsConfigGroups.find((group) => group.key === 'protection').fields.includes('dual_route_preference'))
+  assert.ok(read('pages/Plugins.tsx').includes("case 'choice':"), 'rendered with the shared Select')
+  const server = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
+  assert.ok(server.includes('return pinned || !native || currentBPSConfig().PrefersBPS()'))
+  for (const name of ['zh', 'en', 'zh-TW']) {
+    const locale = JSON.parse(read(`locales/${name}.json`))
+    for (const value of ['native', 'bps']) assert.equal(typeof locale.plugins.bpsConfigChoices.dual_route_preference[value], 'string')
+  }
+})

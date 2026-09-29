@@ -108,7 +108,20 @@ type BPSConfig struct {
 	DegradeProbeInterval      string   `json:"degrade_probe_interval,omitempty"`
 	DegradeProbeMaxConcurrent int      `json:"degrade_probe_max_concurrent,omitempty"`
 	DegradeCooldownLadder     []string `json:"degrade_cooldown_ladder,omitempty"`
+	// DualRoutePreference picks the route a dual-route account (BPS and an
+	// explicit native route) uses while both are healthy: native (default,
+	// as in fj-server) or bps. The other route is the fallback.
+	DualRoutePreference string `json:"dual_route_preference,omitempty"`
 }
+
+// Dual-route preferences.
+const (
+	DualRouteNative = "native"
+	DualRouteBPS    = "bps"
+)
+
+// PrefersBPS reports whether dual-route accounts use BPS first.
+func (c BPSConfig) PrefersBPS() bool { return c.DualRoutePreference == DualRouteBPS }
 
 // DegradeEnabled reports whether the degradation breaker is on.
 func (c BPSConfig) DegradeEnabled() bool {
@@ -303,6 +316,11 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 				return BPSConfig{}, fmt.Errorf("invalid %s tier %q (use durations such as 2m or 2h, 1s to 24h)", name, tier)
 			}
 		}
+	}
+	switch cfg.DualRoutePreference {
+	case "", DualRouteNative, DualRouteBPS:
+	default:
+		return BPSConfig{}, fmt.Errorf("dual_route_preference must be native or bps")
 	}
 	if cfg.DegradeScoreThreshold < 0 || cfg.DegradeScoreThreshold > 10000 {
 		return BPSConfig{}, fmt.Errorf("degrade_score_threshold must be between 0 (default 187) and 10000")
@@ -656,8 +674,9 @@ func (bpsPlugin) Admissible(ctx context.Context, account *auth.Account, model st
 }
 
 // Select: BPS serves the attempt when it can, unless the account's native
-// route is explicitly on (native keeps precedence there, as in fj-server) and
-// the conversation is not pinned to BPS. An account BPS cannot serve goes
+// route is explicitly on and healthy (native keeps precedence there, as in
+// fj-server, unless dual_route_preference=bps) and the conversation is not
+// pinned to BPS. An account BPS cannot serve goes
 // native only through that explicit route; otherwise BPS keeps the attempt
 // and Execute returns the refusal.
 func (bpsPlugin) Select(ctx context.Context, attempt plugins.Attempt) bool {
@@ -675,7 +694,8 @@ func (bpsPlugin) Select(ctx context.Context, attempt plugins.Attempt) bool {
 		}
 		return !native
 	}
-	return pinned || !native
+	// Both routes healthy: dual_route_preference decides (native by default).
+	return pinned || !native || currentBPSConfig().PrefersBPS()
 }
 
 // bpsRouteReasonMeta is the plugin_meta of an attempt a breaker rerouted.

@@ -2591,7 +2591,8 @@
       "degrade_probe_model": "降智檢測模型",
       "degrade_probe_interval": "定時抽檢間隔",
       "degrade_probe_max_concurrent": "檢測並發上限",
-      "degrade_cooldown_ladder": "降智熔斷冷卻階梯"
+      "degrade_cooldown_ladder": "降智熔斷冷卻階梯",
+      "dual_route_preference": "雙路由帳號優先路由"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2628,7 +2629,8 @@
       "degrade_probe_model": "鵜鶘檢測請求的模型，留空為 gpt-6-astra（閾值按它校準）。",
       "degrade_probe_interval": "每個帳號每條路由的定時抽檢間隔，如 6h（10m–168h）；留空關閉。原生路由僅在顯式開啟時抽檢。",
       "degrade_probe_max_concurrent": "每個實例同時進行的鵜鶘檢測上限（含手動與批次）。",
-      "degrade_cooldown_ladder": "降智熔斷每次觸發依次使用的冷卻時長，冷卻結束後由鵜鶘檢測決定是否恢復。留空沿用用量策略冷卻階梯。"
+      "degrade_cooldown_ladder": "降智熔斷每次觸發依次使用的冷卻時長，冷卻結束後由鵜鶘檢測決定是否恢復。留空沿用用量策略冷卻階梯。",
+      "dual_route_preference": "同時啟用 BPS 與原生路由（codex_native_enabled=true）的帳號在兩條路由都正常時先走哪條；另一條作為回退（熔斷、策略攔截後同帳號重試）。預設原生優先。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2811,7 +2813,13 @@
       "scheduled": "定時抽檢",
       "recovery": "恢復探測"
     },
-    "nativeTriggerPelican": "降智檢測低分（{{detail}}）"
+    "nativeTriggerPelican": "降智檢測低分（{{detail}}）",
+    "bpsConfigChoices": {
+      "dual_route_preference": {
+        "native": "原生優先",
+        "bps": "BPS 優先"
+      }
+    }
   },
   "logAgent": {
     "title": "AI 日誌分析",

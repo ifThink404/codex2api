@@ -259,6 +259,16 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
   }
   const renderConfigInput = (field: PluginConfigField) => {
     switch (field.kind) {
+      case 'choice':
+        return (
+          <Select
+            value={typeof config[field.key] === 'string' && field.options.includes(config[field.key] as string) ? (config[field.key] as string) : field.defaultValue}
+            onValueChange={(value) => setConfig((prev) => ({ ...prev, [field.key]: value }))}
+            options={field.options.map((value) => ({ value, label: t(`plugins.bpsConfigChoices.${field.key}.${value}`) }))}
+            disabled={saving}
+            aria-label={t(`plugins.bpsConfig.${field.key}`)}
+          />
+        )
       case 'number':
         return (
           <DraftNumberInput

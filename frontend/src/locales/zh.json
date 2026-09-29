@@ -7484,7 +7484,8 @@
       "degrade_probe_model": "降智检测模型",
       "degrade_probe_interval": "定时抽检间隔",
       "degrade_probe_max_concurrent": "检测并发上限",
-      "degrade_cooldown_ladder": "降智熔断冷却阶梯"
+      "degrade_cooldown_ladder": "降智熔断冷却阶梯",
+      "dual_route_preference": "双路由账号优先路由"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7521,7 +7522,8 @@
       "degrade_probe_model": "鹈鹕检测请求的模型，留空为 gpt-6-astra（阈值按它校准）。",
       "degrade_probe_interval": "每个账号每条路由的定时抽检间隔，如 6h（10m–168h）；留空关闭。原生路由仅在显式开启时抽检。",
       "degrade_probe_max_concurrent": "每个实例同时进行的鹈鹕检测上限（含手动与批量）。",
-      "degrade_cooldown_ladder": "降智熔断每次触发依次使用的冷却时长，冷却结束后由鹈鹕检测决定是否恢复。留空沿用用量策略冷却阶梯。"
+      "degrade_cooldown_ladder": "降智熔断每次触发依次使用的冷却时长，冷却结束后由鹈鹕检测决定是否恢复。留空沿用用量策略冷却阶梯。",
+      "dual_route_preference": "同时启用 BPS 与原生路由（codex_native_enabled=true）的账号在两条路由都正常时先走哪条；另一条作为回退（熔断、策略拦截后同账号重试）。默认原生优先。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -7704,7 +7706,13 @@
       "scheduled": "定时抽检",
       "recovery": "恢复探测"
     },
-    "nativeTriggerPelican": "降智检测低分（{{detail}}）"
+    "nativeTriggerPelican": "降智检测低分（{{detail}}）",
+    "bpsConfigChoices": {
+      "dual_route_preference": {
+        "native": "原生优先",
+        "bps": "BPS 优先"
+      }
+    }
   },
   "logAgent": {
     "title": "AI 日志分析",
