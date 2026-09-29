@@ -7428,7 +7428,9 @@
       "attachment_account_concurrency": "附件上传：单账号并发",
       "attachment_429_fallback": "附件 429 本地降级（需 pdftotext/libreoffice）",
       "exclude_failures_from_native_health": "BPS 失败不计入原生账号健康",
-      "persist_heuristic_affinity": "跨实例保留推断会话的账号亲和"
+      "persist_heuristic_affinity": "跨实例保留推断会话的账号亲和",
+      "policy_block_threshold": "停用 BPS 前的用量策略拦截次数（10 分钟内）",
+      "policy_block_cooldown_hours": "用量策略拦截后的冷却时长（小时）"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7449,8 +7451,10 @@
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
       "bps_rate_limited": "BPS 限流",
-      "unknown": "原因未知"
-    }
+      "unknown": "原因未知",
+      "bps_policy_blocked": "BPS 用量策略拦截"
+    },
+    "policyStrikes": "最近 10 分钟 BPS 用量策略拦截：{{count}} 次"
   },
   "logAgent": {
     "title": "AI 日志分析",

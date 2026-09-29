@@ -125,3 +125,14 @@ func TestTransportPluginUsageErrorMessageReplacesTheClientMessage(t *testing.T) 
 		t.Fatal("message must apply to its own attempt")
 	}
 }
+
+func TestTransportPluginUsageErrorKindOverridesCoreKind(t *testing.T) {
+	handler, db, plugin, _ := newTransportPluginTestHandler(t, true)
+	plugin.spare.Store(true)
+	plugin.failStatus, plugin.failBody = http.StatusForbidden, `{"error":{"message":"blocked"}}`
+	plugin.errorKind = "bps_policy_blocked"
+	invokeTracedResponses(t, handler, `{"model":"gpt-5.5","stream":false,"input":"hi"}`)
+	if row := onlyUsageLog(t, db); row.UpstreamErrorKind != "bps_policy_blocked" {
+		t.Fatalf("usage upstream_error_kind = %q, want the plugin's classification", row.UpstreamErrorKind)
+	}
+}

@@ -404,10 +404,12 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
 // PluginAccountStatusLine shows an account's plugin-scoped cooldown.
 function PluginAccountStatusLine({ status }: { status?: PluginAccountStatus }) {
   const { t } = useTranslation()
-  if (!status?.cooling_until) return null
+  if (!status?.cooling_until && !status?.policy_strikes) return null
   return (
     <span className="mt-1 block text-xs text-amber-600 dark:text-amber-400">
-      {t('plugins.coolingUntil', { time: formatBeijingTime(status.cooling_until), reason: t(pluginCoolingReasonKey(status.reason), { defaultValue: status.reason ?? '' }) })}
+      {status.cooling_until
+        ? t('plugins.coolingUntil', { time: formatBeijingTime(status.cooling_until), reason: t(pluginCoolingReasonKey(status.reason), { defaultValue: status.reason ?? '' }) })
+        : t('plugins.policyStrikes', { count: status.policy_strikes })}
     </span>
   )
 }

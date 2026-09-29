@@ -2548,7 +2548,9 @@
       "attachment_account_concurrency": "附件上傳：單一帳號並行",
       "attachment_429_fallback": "附件 429 本機降級（需 pdftotext/libreoffice）",
       "exclude_failures_from_native_health": "BPS 失敗不計入原生帳號健康",
-      "persist_heuristic_affinity": "跨實例保留推斷會話的帳號親和"
+      "persist_heuristic_affinity": "跨實例保留推斷會話的帳號親和",
+      "policy_block_threshold": "停用 BPS 前的用量政策攔截次數（10 分鐘內）",
+      "policy_block_cooldown_hours": "用量政策攔截後的冷卻時長（小時）"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2569,8 +2571,10 @@
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
       "bps_rate_limited": "BPS 限流",
-      "unknown": "原因未知"
-    }
+      "unknown": "原因未知",
+      "bps_policy_blocked": "BPS 用量政策攔截"
+    },
+    "policyStrikes": "最近 10 分鐘 BPS 用量政策攔截：{{count}} 次"
   },
   "logAgent": {
     "title": "AI 日誌分析",

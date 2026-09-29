@@ -119,3 +119,80 @@ func TestBPSPluginRoutesAroundCoolingAccounts(t *testing.T) {
 	require.InDelta(t, 120, time.Until(statuses[0].CoolingUntil).Seconds(), 2)
 	require.True(t, statuses[2].CoolingUntil.IsZero())
 }
+
+const bpsPolicyBlockBody = `{"error":{"message":"This request was blocked by our usage policy.","type":"server_error","param":null,"code":null}}`
+
+func TestBPSFailureClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "usage policy block", status: http.StatusForbidden, body: bpsPolicyBlockBody, want: BPSPolicyBlockedKind},
+		{name: "usage policy block in detail", status: http.StatusForbidden, body: `{"detail":"This request was blocked by our usage policy."}`, want: BPSPolicyBlockedKind},
+		{name: "other forbidden", status: http.StatusForbidden, body: `{"error":{"message":"Forbidden"}}`},
+		{name: "policy text on another status", status: http.StatusBadRequest, body: bpsPolicyBlockBody},
+		{name: "rate limit", status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit exceeded"}}`, want: BPSRateLimitedReason},
+		{name: "server error", status: http.StatusInternalServerError, body: `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, bpsFailureClass(tc.status, []byte(tc.body)))
+		})
+	}
+}
+
+func TestBPSPolicyBlocksStopBPSRoutingAfterThreshold(t *testing.T) {
+	freshBPSAccountStates(t)
+	ctx := context.Background()
+	for strike := 1; strike <= 2; strike++ {
+		require.Equal(t, BPSPolicyBlockedKind, recordBPSFailure(ctx, nil, 9031, "", http.StatusForbidden, "", []byte(bpsPolicyBlockBody)))
+		_, cooling := bpsAccountCooling(ctx, nil, 9031)
+		require.False(t, cooling, "strike %d stays below the threshold", strike)
+		require.Equal(t, strike, BPSAccountStatuses(ctx, nil, []int64{9031})[0].PolicyStrikes)
+	}
+	recordBPSFailure(ctx, nil, 9031, "", http.StatusForbidden, "", []byte(bpsPolicyBlockBody))
+	record, cooling := bpsAccountCooling(ctx, nil, 9031)
+	require.True(t, cooling)
+	require.Equal(t, BPSPolicyBlockedKind, record.Reason)
+	require.InDelta(t, (6 * time.Hour).Seconds(), time.Until(record.Until).Seconds(), 5, "default long cooldown")
+	require.Zero(t, BPSAccountStatuses(ctx, nil, []int64{9031})[0].PolicyStrikes)
+
+	// Strikes older than the window do not count.
+	bpsAccountStateStore.update(ctx, nil, bpsAccountStateKey(9032), time.Now(), func(r *bpsAccountRecord) {
+		r.Strikes = []time.Time{time.Now().Add(-11 * time.Minute), time.Now().Add(-12 * time.Minute)}
+	})
+	recordBPSFailure(ctx, nil, 9032, "", http.StatusForbidden, "", []byte(bpsPolicyBlockBody))
+	_, cooling = bpsAccountCooling(ctx, nil, 9032)
+	require.False(t, cooling)
+
+	// Threshold and cooldown are configurable.
+	updateBPSConfig(t, func(c BPSConfig) BPSConfig { c.PolicyBlockThreshold, c.PolicyBlockCooldownHours = 1, 2; return c })
+	recordBPSFailure(ctx, nil, 9033, "", http.StatusForbidden, "", []byte(bpsPolicyBlockBody))
+	record, cooling = bpsAccountCooling(ctx, nil, 9033)
+	require.True(t, cooling)
+	require.InDelta(t, (2 * time.Hour).Seconds(), time.Until(record.Until).Seconds(), 5)
+}
+
+func TestBPSPluginPolicyBlockNeverRetriesTheSameAccount(t *testing.T) {
+	freshBPSAccountStates(t)
+	account := withBPSOverride(&auth.Account{DBID: 9041, AccountID: "policy", AccessToken: "at"}, true)
+	req := plugins.NewRequest("req-policy", plugins.KindResponses, nil, nil, 0)
+	req.SetState(BPSPluginID, &bpsRequest{})
+	ctx := plugins.WithRequest(context.Background(), req)
+	env := &plugins.ReqEnv{Request: req, Account: account, Model: "gpt-6-astra"}
+	bpsPlugin{}.FilterHeaders(env, http.Header{})
+	out, err := bpsPlugin{}.TransformJSON(env, http.StatusForbidden, []byte(bpsPolicyBlockBody))
+	require.NoError(t, err)
+	require.NotContains(t, string(out), "usage policy", "the client still gets the scrubbed error")
+	require.Equal(t, BPSPolicyBlockedKind, req.UsageErrorKind(BPSPluginID), "the usage row records the classification")
+	require.Contains(t, req.UsageErrorMessage(), "blocked by our usage policy", "and the provider's own text")
+	ok, reason := bpsPlugin{}.Admissible(ctx, account, "gpt-6-astra")
+	require.False(t, ok)
+	require.Equal(t, "bps_account_refused", reason)
+
+	parsed, err := parseBPSConfig(nil)
+	require.NoError(t, err)
+	require.Equal(t, 3, parsed.PolicyBlockThreshold)
+	require.Equal(t, 6, parsed.PolicyBlockCooldownHours)
+}

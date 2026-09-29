@@ -130,8 +130,8 @@ func populateTransportPluginUsage(c *gin.Context, input *database.UsageLogInput)
 	if input.PluginMeta == "" {
 		input.PluginMeta = meta
 	}
-	if input.UpstreamErrorKind == "" {
-		input.UpstreamErrorKind = req.UsageErrorKind(transport)
+	if kind := req.UsageErrorKind(transport); kind != "" {
+		input.UpstreamErrorKind = kind
 	}
 	if message := req.UsageErrorMessage(); message != "" && input.ErrorMessage != "" {
 		input.ErrorMessage = message

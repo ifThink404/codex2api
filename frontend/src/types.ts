@@ -3811,6 +3811,7 @@ export interface PluginAccountStatus {
   account_id: number
   cooling_until?: string
   reason?: string
+  policy_strikes?: number
 }
 
 export interface TransportPlugin {

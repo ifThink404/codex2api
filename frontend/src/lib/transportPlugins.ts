@@ -42,6 +42,8 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'attachment_request_concurrency', kind: 'number', min: 0, max: 64 },
   { key: 'attachment_instance_concurrency', kind: 'number', min: 0, max: 1024 },
   { key: 'attachment_account_concurrency', kind: 'number', min: 0, max: 1024 },
+  { key: 'policy_block_threshold', kind: 'number', min: 0, max: 100 },
+  { key: 'policy_block_cooldown_hours', kind: 'number', min: 0, max: 168 },
   { key: 'attachment_429_fallback', kind: 'boolean' },
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
@@ -91,7 +93,7 @@ export function pluginCaptureAgentFilters(filters: { requestId: string; accountI
 }
 
 // Cooldown reasons the BPS plugin reports (proxy/bps_account_state.go).
-export const PLUGIN_COOLING_REASONS = ['bps_rate_limited'] as const
+export const PLUGIN_COOLING_REASONS = ['bps_rate_limited', 'bps_policy_blocked'] as const
 
 export function pluginCoolingReasonKey(reason: string | undefined): string {
   return `plugins.coolingReasons.${reason || 'unknown'}`

@@ -28,7 +28,7 @@ type Request struct {
 	state     map[string]any
 	usageMeta map[string]string
 	usageEnd  map[string]string
-	usageKind map[string]string
+	usageKind map[string]attemptValue
 	// usageMsg is the error message a plugin recorded for one attempt.
 	usageMsg   string
 	usageMsgAt int
@@ -92,9 +92,10 @@ func (r *Request) SetUsageUpstreamEndpoint(pluginID, endpoint string) {
 	r.usageEnd[pluginID] = endpoint
 }
 
-// SetUsageErrorKind records usage_logs.upstream_error_kind for rows logged
-// while pluginID serves this request and core recorded no error kind (e.g. a
-// successful response the plugin had to complete itself).
+// SetUsageErrorKind records usage_logs.upstream_error_kind for the row of
+// the current attempt while pluginID serves it (e.g. a successful response
+// the plugin had to complete itself, or a failure the plugin classified). It
+// replaces the kind core derived; later attempts do not inherit it.
 func (r *Request) SetUsageErrorKind(pluginID, kind string) {
 	if r == nil {
 		return
@@ -102,19 +103,29 @@ func (r *Request) SetUsageErrorKind(pluginID, kind string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.usageKind == nil {
-		r.usageKind = map[string]string{}
+		r.usageKind = map[string]attemptValue{}
 	}
-	r.usageKind[pluginID] = kind
+	r.usageKind[pluginID] = attemptValue{value: kind, attempt: r.attempts}
 }
 
-// UsageErrorKind returns the kind set with SetUsageErrorKind.
+// UsageErrorKind returns the kind set with SetUsageErrorKind for the current
+// attempt.
 func (r *Request) UsageErrorKind(pluginID string) string {
 	if r == nil {
 		return ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.usageKind[pluginID]
+	if v := r.usageKind[pluginID]; v.attempt == r.attempts {
+		return v.value
+	}
+	return ""
+}
+
+// attemptValue is a value recorded for one attempt.
+type attemptValue struct {
+	value   string
+	attempt int
 }
 
 // SetUsageErrorMessage records the usage_logs.error_message for the failed

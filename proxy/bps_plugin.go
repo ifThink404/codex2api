@@ -43,6 +43,10 @@ type BPSConfig struct {
 	// ExcludeFailuresFromNativeHealth keeps BPS failures out of native
 	// account health and cooldown. Absent means on, matching upstream's
 	// official BPS, which never reports its provider failures.
+	// PolicyBlockThreshold usage-policy blocks within 10 minutes stop BPS
+	// routing to an account for PolicyBlockCooldownHours (defaults 3 and 6).
+	PolicyBlockThreshold            int   `json:"policy_block_threshold,omitempty"`
+	PolicyBlockCooldownHours        int   `json:"policy_block_cooldown_hours,omitempty"`
 	ExcludeFailuresFromNativeHealth *bool `json:"exclude_failures_from_native_health,omitempty"`
 	// PersistHeuristicAffinity stores the task affinity of heuristic
 	// (conversation-prefix) seeds in the database, shared by every replica.
@@ -71,6 +75,12 @@ func (c BPSConfig) normalized() BPSConfig {
 	c.AttachmentRequestConcurrency = database.NormalizeBPSAttachmentRequestConcurrency(c.AttachmentRequestConcurrency)
 	c.AttachmentInstanceConcurrency = database.NormalizeBPSAttachmentInstanceConcurrency(c.AttachmentInstanceConcurrency)
 	c.AttachmentAccountConcurrency = database.NormalizeBPSAttachmentAccountConcurrency(c.AttachmentAccountConcurrency)
+	if c.PolicyBlockThreshold < 1 || c.PolicyBlockThreshold > 100 {
+		c.PolicyBlockThreshold = 3
+	}
+	if c.PolicyBlockCooldownHours < 1 || c.PolicyBlockCooldownHours > 168 {
+		c.PolicyBlockCooldownHours = 6
+	}
 	return c
 }
 
@@ -508,6 +518,9 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	class := recordBPSFailure(context.Background(), state.cache(), env.Account.ID(), env.Model, status, retryAfter, body)
 	if class != "" {
 		bpsExcludeAccountForRequest(env.Request, env.Account)
+	}
+	if class == BPSPolicyBlockedKind {
+		env.Request.SetUsageErrorKind(BPSPluginID, BPSPolicyBlockedKind)
 	}
 }
 

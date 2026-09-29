@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,7 @@ const (
 	bpsAccountStateLimit     = 8192
 
 	BPSRateLimitedReason = "bps_rate_limited"
+	BPSPolicyBlockedKind = "bps_policy_blocked"
 
 	bpsRateLimitBase      = 60 * time.Second
 	bpsRateLimitMax       = 30 * time.Minute
@@ -198,8 +200,19 @@ func bpsFailureHint(retryAfter string, body []byte, now time.Time) time.Duration
 }
 
 // bpsFailureClass classifies a BPS error for the plugin's own account state.
-func bpsFailureClass(status int, _ []byte) string {
-	if status == http.StatusTooManyRequests {
+// Usage-policy blocks are matched on the raw provider message (they arrive as
+// type server_error with no code).
+func bpsFailureClass(status int, body []byte) string {
+	root := gjson.ParseBytes(body)
+	source := bpsErrorBodySource(root)
+	message := strings.ToLower(source.Get("message").String() + " " + root.Get("message").String())
+	if source.Type == gjson.String {
+		message += " " + strings.ToLower(source.String())
+	}
+	switch {
+	case status == http.StatusForbidden && strings.Contains(message, "blocked by our usage policy"):
+		return BPSPolicyBlockedKind
+	case status == http.StatusTooManyRequests:
 		return BPSRateLimitedReason
 	}
 	return ""
@@ -231,6 +244,29 @@ func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int
 			}
 		})
 		log.Printf("[bps] account=%d rate limited on BPS; BPS cooling until %s (level %d)", accountID, record.Until.Format(time.RFC3339), record.Level)
+	case BPSPolicyBlockedKind:
+		cfg := currentBPSConfig()
+		record := bpsAccountStateStore.update(ctx, store, bpsAccountStateKey(accountID), now, func(r *bpsAccountRecord) {
+			kept := r.Strikes[:0]
+			for _, strike := range r.Strikes {
+				if now.Sub(strike) < bpsPolicyStrikeWindow {
+					kept = append(kept, strike)
+				}
+			}
+			r.Strikes = append(kept, now)
+			if len(r.Strikes) >= cfg.PolicyBlockThreshold {
+				until := now.Add(time.Duration(cfg.PolicyBlockCooldownHours) * time.Hour)
+				if until.After(r.Until) {
+					r.Until, r.Reason = until, BPSPolicyBlockedKind
+				}
+				r.Strikes = nil
+			}
+		})
+		if record.Reason == BPSPolicyBlockedKind && record.active(now) && len(record.Strikes) == 0 {
+			log.Printf("[bps] account=%d blocked by the BPS usage policy %d times in %s; BPS disabled for this account until %s", accountID, cfg.PolicyBlockThreshold, bpsPolicyStrikeWindow, record.Until.Format(time.RFC3339))
+		} else {
+			log.Printf("[bps] account=%d blocked by the BPS usage policy (%d/%d in %s)", accountID, len(record.Strikes), cfg.PolicyBlockThreshold, bpsPolicyStrikeWindow)
+		}
 	}
 	return class
 }
