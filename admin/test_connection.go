@@ -1656,7 +1656,7 @@ func (h *Handler) emitBatchTestProgress(
 	onProgress(event)
 }
 
-func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (string, string) {
+func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (status, msg string) {
 	testCtx, cancel := context.WithTimeout(ctx, batchTestAccountTimeout)
 	defer cancel()
 	if acc == nil {
@@ -1698,6 +1698,8 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	securityCfg := h.store.ClaudeSecurityConfig()
 	payload := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, securityCfg)
 	start := time.Now()
+	testCtx, usageRow := h.beginBatchConnectionTestUsage(testCtx, acc, testModel, payload, start)
+	defer func() { usageRow.finish(status, msg) }()
 
 	var resp *http.Response
 	var err error
@@ -1720,6 +1722,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		h.store.MarkError(acc, "批量测试请求失败: "+err.Error())
 		return "failed", err.Error()
 	}
+	usageRow.observe(resp)
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
@@ -1840,7 +1843,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 // runRecycleBinSingleTest 测试单个回收站账号的连通性。账号是临时对象，
 // 全程不调用任何会回写账号/调度状态的方法（MarkError/MarkCooldown/
 // RecordManualTestSuccess 等），测试结果仅用于展示。
-func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account) (string, string) {
+func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account) (status, msg string) {
 	testCtx, cancel := context.WithTimeout(ctx, batchTestAccountTimeout)
 	defer cancel()
 	if acc == nil {
@@ -1863,6 +1866,8 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	}
 	claudeSecurityCfg := h.store.ClaudeSecurityConfig()
 	payload := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, claudeSecurityCfg)
+	testCtx, usageRow := h.beginBatchConnectionTestUsage(testCtx, acc, testModel, payload, time.Now())
+	defer func() { usageRow.finish(status, msg) }()
 
 	var resp *http.Response
 	var err error
@@ -1882,6 +1887,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 		}
 		return "failed", err.Error()
 	}
+	usageRow.observe(resp)
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
