@@ -94,8 +94,19 @@ func bpsRecoveryStats(active []database.BPSPolicyBlock, durations []int64, now t
 	return out
 }
 
+// bpsDashboardRanges are the dashboard's traffic ranges and their chart
+// buckets (the frontend's 1h / 24h bucket grid: 60 x 1m, 48 x 30m).
+var bpsDashboardRanges = map[string]struct {
+	window        time.Duration
+	bucketMinutes int
+}{
+	"1h":  {window: time.Hour, bucketMinutes: 1},
+	"24h": {window: 24 * time.Hour, bucketMinutes: 30},
+}
+
 // GetTransportPluginDashboard returns the BPS dashboard: account health
-// summary, per-account state, traffic for the last 1h and 24h, and recovery.
+// summary, per-account state, traffic totals and time-bucketed traffic for
+// the last 1h and 24h, and recovery.
 func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 	p, ok := transportPluginFromParam(c)
 	if !ok {
@@ -172,13 +183,20 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 	summary.Warning = summary.Usable <= summary.MinUsable
 
 	traffic := map[string]database.TransportTrafficStats{}
-	for label, span := range map[string]time.Duration{"1h": time.Hour, "24h": 24 * time.Hour} {
-		stats, err := h.db.TransportTrafficStatsSince(ctx, proxy.BPSPluginID, now.Add(-span))
+	timeline := map[string][]database.TransportTrafficPoint{}
+	for label, span := range bpsDashboardRanges {
+		stats, err := h.db.TransportTrafficStatsSince(ctx, proxy.BPSPluginID, now.Add(-span.window))
 		if err != nil {
 			writeInternalError(c, err)
 			return
 		}
 		traffic[label] = stats
+		points, err := h.db.TransportTrafficTimeline(ctx, proxy.BPSPluginID, now.Add(-span.window), span.bucketMinutes)
+		if err != nil {
+			writeInternalError(c, err)
+			return
+		}
+		timeline[label] = points
 	}
 	durations, err := h.db.BPSPolicyBlockDurations(ctx)
 	if err != nil {
@@ -189,6 +207,7 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 		"summary":  summary,
 		"accounts": rows,
 		"traffic":  traffic,
+		"timeline": timeline,
 		"recovery": bpsRecoveryStats(active, durations, now),
 		"now":      now.UTC(),
 	})

@@ -102,7 +102,8 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 			AccountID int64  `json:"account_id"`
 			State     string `json:"state"`
 		} `json:"accounts"`
-		Traffic  map[string]database.TransportTrafficStats `json:"traffic"`
+		Traffic  map[string]database.TransportTrafficStats   `json:"traffic"`
+		Timeline map[string][]database.TransportTrafficPoint `json:"timeline"`
 		Recovery struct {
 			Blocked              int   `json:"blocked"`
 			LongestActiveSeconds int64 `json:"longest_active_seconds"`
@@ -134,6 +135,23 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 	}
 	if out.Traffic["1h"].Requests != 5 || day.SuccessRate < 0.39 || day.SuccessRate > 0.41 {
 		t.Fatalf("1h traffic = %+v / rate %v", out.Traffic["1h"], day.SuccessRate)
+	}
+	for _, label := range []string{"1h", "24h"} {
+		var sum database.TransportTrafficPoint
+		for _, point := range out.Timeline[label] {
+			if _, err := time.Parse(time.RFC3339, point.Bucket); err != nil {
+				t.Fatalf("%s bucket %q: %v", label, point.Bucket, err)
+			}
+			sum.Requests += point.Requests
+			sum.Succeeded += point.Succeeded
+			sum.Errors4xx += point.Errors4xx
+			sum.OrgRateLimited += point.OrgRateLimited
+			sum.RateLimited += point.RateLimited
+			sum.PolicyBlocked += point.PolicyBlocked
+		}
+		if sum.Requests != 5 || sum.Succeeded != 2 || sum.Errors4xx != 3 || sum.OrgRateLimited != 1 || sum.RateLimited != 1 || sum.PolicyBlocked != 1 {
+			t.Fatalf("%s timeline sums to %+v (client rows only, like the totals)", label, sum)
+		}
 	}
 	if out.Recovery.Blocked != 1 || out.Recovery.LongestActiveSeconds < 3*3600-5 || out.Recovery.Recovered != 1 || out.Recovery.MedianSeconds != 3600 {
 		t.Fatalf("recovery = %+v", out.Recovery)

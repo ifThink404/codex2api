@@ -54,6 +54,61 @@ func (db *DB) TransportTrafficStatsSince(ctx context.Context, transport string, 
 	return stats, nil
 }
 
+// TransportTrafficPoint is one time bucket of a transport's client traffic.
+type TransportTrafficPoint struct {
+	Bucket         string `json:"bucket"`
+	Requests       int64  `json:"requests"`
+	Succeeded      int64  `json:"succeeded"`
+	Errors4xx      int64  `json:"errors_4xx"`
+	Errors5xx      int64  `json:"errors_5xx"`
+	OrgRateLimited int64  `json:"org_rate_limited"`
+	RateLimited    int64  `json:"rate_limited"`
+	PolicyBlocked  int64  `json:"policy_blocked"`
+}
+
+// TransportTrafficTimeline buckets the transport's client usage rows since
+// since into bucketMinutes-wide buckets (UTC epoch aligned, RFC 3339 bucket
+// starts), counted like TransportTrafficStatsSince. Empty buckets are left
+// out.
+func (db *DB) TransportTrafficTimeline(ctx context.Context, transport string, since time.Time, bucketMinutes int) ([]TransportTrafficPoint, error) {
+	out := []TransportTrafficPoint{}
+	if db == nil || db.conn == nil {
+		return out, nil
+	}
+	if bucketMinutes < 1 {
+		bucketMinutes = 1
+	}
+	bucket := `CAST(FLOOR(EXTRACT(EPOCH FROM created_at) / $3) * $3 AS BIGINT)`
+	if db.isSQLite() {
+		bucket = `(CAST(strftime('%s', created_at) AS INTEGER) / $3) * $3`
+	}
+	const success = `status_code < 400 AND COALESCE(upstream_error_kind, '') = ''`
+	rows, err := db.conn.QueryContext(ctx, `SELECT `+bucket+` AS bucket,
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN `+success+` THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN plugin_meta LIKE '%"rate_limit_scope":"org"%' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN plugin_meta LIKE '%"rate_limit_scope":"account"%' OR (status_code = 429 AND plugin_meta NOT LIKE '%"rate_limit_scope":%') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN upstream_error_kind = 'bps_policy_blocked' THEN 1 ELSE 0 END), 0)
+		FROM usage_logs WHERE transport = $1 AND created_at >= $2 AND COALESCE(internal_reason, '') = ''
+		GROUP BY 1 ORDER BY 1`, transport, db.timeArg(since.UTC()), bucketMinutes*60)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var epoch int64
+		var point TransportTrafficPoint
+		if err := rows.Scan(&epoch, &point.Requests, &point.Succeeded, &point.Errors4xx, &point.Errors5xx, &point.OrgRateLimited, &point.RateLimited, &point.PolicyBlocked); err != nil {
+			return nil, err
+		}
+		point.Bucket = time.Unix(epoch, 0).UTC().Format(time.RFC3339)
+		out = append(out, point)
+	}
+	return out, rows.Err()
+}
+
 // BPSPolicyBlockDurations returns the durations (seconds) of the kept
 // cleared blocks, for recovery statistics.
 func (db *DB) BPSPolicyBlockDurations(ctx context.Context) ([]int64, error) {

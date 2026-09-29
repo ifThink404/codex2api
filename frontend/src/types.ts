@@ -3879,6 +3879,18 @@ export interface BPSTrafficStats {
   internal_requests: number
 }
 
+// One time bucket of BPS client traffic (database.TransportTrafficPoint).
+export interface BPSTrafficPoint {
+  bucket: string
+  requests: number
+  succeeded: number
+  errors_4xx: number
+  errors_5xx: number
+  org_rate_limited: number
+  rate_limited: number
+  policy_blocked: number
+}
+
 // GET /plugins/bps/dashboard
 export interface BPSDashboard {
   summary: { total: number; usable: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
@@ -3900,6 +3912,7 @@ export interface BPSDashboard {
     last_probe_result?: string
   }>
   traffic: Record<'1h' | '24h', BPSTrafficStats>
+  timeline?: Record<'1h' | '24h', BPSTrafficPoint[]>
   recovery: { blocked: number; longest_active_seconds: number; recovered: number; min_seconds: number; median_seconds: number; max_seconds: number }
   now?: string
 }

@@ -57,9 +57,11 @@ interface Props {
   chartData: ChartAggregation | null
   timeRange: TimeRangeKey
   loading?: boolean
+  // title 覆盖默认的「系统健康」标题（如插件页的 BPS 成功率条）。
+  title?: string
 }
 
-export default function SystemHealthBar({ chartData, timeRange, loading = false }: Props) {
+export default function SystemHealthBar({ chartData, timeRange, loading = false, title }: Props) {
   const { t } = useTranslation()
   const [activeTooltip, setActiveTooltip] = useState<number | null>(null)
   const blocksRef = useRef<HTMLDivElement>(null)
@@ -184,7 +186,7 @@ export default function SystemHealthBar({ chartData, timeRange, loading = false 
           <div className="flex items-center gap-2">
             <Activity className="size-4 text-primary" />
             <h3 className="text-sm font-semibold text-foreground">
-              {t('dashboard.systemHealthTitle')}
+              {title ?? t('dashboard.systemHealthTitle')}
             </h3>
           </div>
           <span
@@ -195,7 +197,7 @@ export default function SystemHealthBar({ chartData, timeRange, loading = false 
         </div>
 
         {loading && !hasData ? (
-          <div className="flex gap-1">
+          <div className="flex gap-0.5 sm:gap-1">
             {Array.from({ length: bucketCount }).map((_, i) => (
               <div
                 key={i}
@@ -205,14 +207,14 @@ export default function SystemHealthBar({ chartData, timeRange, loading = false 
             ))}
           </div>
         ) : (
-          <div className="relative flex gap-1 items-center" ref={blocksRef}>
+          <div className="relative flex gap-0.5 items-center sm:gap-1" ref={blocksRef}>
             {blocks.map((block, idx) => {
               const isIdle = block.rate === -1
               const isActive = activeTooltip === idx
               return (
                 <div
                   key={idx}
-                  className="group relative min-w-[3px] flex-1 cursor-pointer py-1"
+                  className="group relative min-w-[2px] flex-1 cursor-pointer py-1"
                   onPointerEnter={(e) => handlePointerEnter(e, idx)}
                   onPointerLeave={handlePointerLeave}
                   onPointerDown={(e) => handlePointerDown(e, idx)}

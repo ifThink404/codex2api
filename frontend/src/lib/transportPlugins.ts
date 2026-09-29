@@ -1,4 +1,5 @@
 // Transport plugin page helpers (pure, unit-tested).
+import type { BPSTrafficPoint } from '../types'
 
 export const PLUGIN_VIEWS = ['overview', 'captures', 'logs', 'errors', 'agent'] as const
 export type PluginView = typeof PLUGIN_VIEWS[number]
@@ -215,24 +216,101 @@ export function activityBarPercent(value: number, limit: number, busiest: number
   return Math.max(0, Math.min(100, Math.round((value / scale) * 100)))
 }
 
-export type ActivityTone = 'idle' | 'normal' | 'near' | 'limit'
+export type CapacityFill = 'idle' | 'live' | 'over'
 
-// activityBarTone colors a bar: red at the limit or when the account cannot
-// serve BPS, amber from 80% of the limit, neutral without a limit.
-export function activityBarTone(value: number, limit: number, available: boolean): ActivityTone {
-  if (!available) return 'limit'
-  if (limit <= 0) return value > 0 ? 'normal' : 'idle'
-  const ratio = value / limit
-  if (ratio >= 1) return 'limit'
-  if (ratio >= 0.8) return 'near'
-  return value > 0 ? 'normal' : 'idle'
+// capacityFill is how a capacity bar (in flight against the cap, budget used
+// against the limit) fills: 'over' at or past a set limit (destructive),
+// 'live' while in use, 'idle' at zero.
+export function capacityFill(value: number, limit: number): CapacityFill {
+  if (limit > 0 && value >= limit) return 'over'
+  return value > 0 ? 'live' : 'idle'
 }
 
-export const ACTIVITY_TONE_CLASSES: Record<ActivityTone, string> = {
-  idle: 'bg-muted-foreground/30',
-  normal: 'bg-emerald-500',
-  near: 'bg-amber-500',
-  limit: 'bg-red-500',
+// hasTime reports whether iso is a real timestamp: set, parseable and after
+// the Unix epoch (Go's zero time 0001-01-01 is "unset", not a date).
+export function hasTime(iso: string | undefined | null): iso is string {
+  if (!iso) return false
+  const at = Date.parse(iso)
+  return Number.isFinite(at) && at > 0
+}
+
+// activeUntil reports whether iso is a real time still in the future, i.e.
+// a cooldown that is actually running.
+export function activeUntil(iso: string | undefined | null, nowMs: number): iso is string {
+  return hasTime(iso) && Date.parse(iso) > nowMs
+}
+
+// BPS traffic chart ranges and their bucket grids (lib/timeRange; the
+// server buckets the same way, admin/bps_dashboard.go).
+export const BPS_TRAFFIC_RANGES = ['1h', '24h'] as const
+export type BPSTrafficRange = (typeof BPS_TRAFFIC_RANGES)[number]
+
+export interface BPSTrafficSeriesPoint {
+  bucket: string
+  label: string
+  fullLabel: string
+  requests: number
+  succeeded: number
+  errors4xx: number
+  errors5xx: number
+  org429: number
+  account429: number
+  policyBlocked: number
+}
+
+const BPS_TRAFFIC_BUCKETS: Record<BPSTrafficRange, { bucketMinutes: number; bucketCount: number }> = {
+  '1h': { bucketMinutes: 1, bucketCount: 60 },
+  '24h': { bucketMinutes: 30, bucketCount: 48 },
+}
+
+// bpsTrafficSeries lays server buckets onto the range's full grid ending at
+// nowMs (empty buckets are zero), so the chart shows gaps as gaps.
+export function bpsTrafficSeries(points: readonly BPSTrafficPoint[], range: BPSTrafficRange, nowMs: number): BPSTrafficSeriesPoint[] {
+  const { bucketMinutes, bucketCount } = BPS_TRAFFIC_BUCKETS[range]
+  const size = bucketMinutes * 60_000
+  const last = Math.floor(nowMs / size) * size
+  const first = last - (bucketCount - 1) * size
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const series = Array.from({ length: bucketCount }, (_, i): BPSTrafficSeriesPoint => {
+    const at = new Date(first + i * size)
+    const clock = `${pad(at.getHours())}:${pad(at.getMinutes())}`
+    return {
+      bucket: at.toISOString(), label: clock, fullLabel: `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${clock}`,
+      requests: 0, succeeded: 0, errors4xx: 0, errors5xx: 0, org429: 0, account429: 0, policyBlocked: 0,
+    }
+  })
+  for (const point of points) {
+    const at = Date.parse(point.bucket)
+    if (!Number.isFinite(at)) continue
+    const index = Math.floor((at - first) / size)
+    if (index < 0 || index >= bucketCount) continue
+    const slot = series[index]
+    slot.requests += point.requests
+    slot.succeeded += point.succeeded
+    slot.errors4xx += point.errors_4xx
+    slot.errors5xx += point.errors_5xx
+    slot.org429 += point.org_rate_limited
+    slot.account429 += point.rate_limited
+    slot.policyBlocked += point.policy_blocked
+  }
+  return series
+}
+
+// bpsHealthTimeline adapts BPS buckets to SystemHealthBar's timeline, which
+// rates success as requests minus 4xx and 5xx: failures that are neither
+// (in-stream errors on a 2xx) fold into 5xx so the strip matches Succeeded.
+export function bpsHealthTimeline(points: readonly BPSTrafficPoint[]) {
+  return points.map((point) => ({
+    bucket: point.bucket,
+    requests: point.requests,
+    avg_latency: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+    cached_tokens: 0,
+    errors_4xx: point.errors_4xx,
+    errors_5xx: Math.max(0, point.requests - point.succeeded - point.errors_4xx),
+  }))
 }
 
 // BPS_STATE_BADGE_CLASSES tints the account state badge: amber while the
