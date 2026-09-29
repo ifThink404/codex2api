@@ -23,4 +23,7 @@ func TestBPSOwnsAccountKeepsNativeTrafficOffBPSAccounts(t *testing.T) {
 	require.False(t, imageCapableAccountFilter(bpsAccount))
 	require.True(t, imageCapableAccountFilter(explicitNative))
 	require.True(t, imageCapableAccountFilter(nativeOnly))
+	// Live is native-only too.
+	require.False(t, liveAccountFilter(bpsAccount))
+	require.True(t, liveAccountFilter(explicitNative))
 }
