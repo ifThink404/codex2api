@@ -29,6 +29,8 @@ type testPlugin struct {
 	body      string
 	execErr   error
 	transform bool
+	// upstream, when set, is captured as the outbound upstream request.
+	upstream []byte
 }
 
 func (p *testPlugin) ID() string { return p.id }
@@ -45,6 +47,10 @@ func (p *testPlugin) Select(_ context.Context, a Attempt) bool { return p.select
 func (p *testPlugin) BindRequest(req *Request)                 { p.binds.Add(1); req.SetState(p.id, "bound") }
 func (p *testPlugin) Execute(_ context.Context, env *ReqEnv) (*http.Response, error) {
 	p.executes.Add(1)
+	if p.upstream != nil {
+		env.CaptureUpstreamRequest(http.Header{"Authorization": {"Bearer at-secret"}, "Chatgpt-Account-Id": {"acct-secret"}, "X-Openai-Account-Id": {"acct-secret"},
+			"Session-Id": {"0199a0d4-7b39-7c2b-9a41-5c4f3bb0d001"}, "X-Openai-Internal-Basispoints-Tools-Version-Id": {"tools-word-core"}}, p.upstream)
+	}
 	if p.execErr != nil {
 		return nil, p.execErr
 	}
@@ -418,5 +424,62 @@ func TestCaptureRetentionPurge(t *testing.T) {
 	page, err := db.ListPluginCaptures(context.Background(), database.PluginCaptureFilter{Plugin: "retplug"})
 	if err != nil || page.Total != 1 {
 		t.Fatalf("remaining = %+v, %v", page, err)
+	}
+}
+
+func TestUpstreamRequestCaptureJoinsItsAttempt(t *testing.T) {
+	reg := NewRegistry()
+	base := &testPlugin{id: "upplug", kinds: []RequestKind{KindResponses}, selectAll: true, status: 403, ctype: "application/json", body: `{"error":"blocked"}`,
+		upstream: []byte(`{"metadata":{"task_id":"task_0199a0d47b397c2b","turn_id":"turn_abc","agent_iteration":"2"},"input":[{"type":"input_image","file_id":"file-AbC123"}],"api_key":"sk-abcdefghijklmnopqrstuvwxyz"}`)}
+	reg.Register(base)
+	reg.applyStates([]database.TransportPluginState{{ID: base.id, Enabled: true, CaptureEnabled: true, CaptureSampleRate: 1}})
+	sink := &memorySink{mu: make(chan struct{}, 1)}
+	reg.capture.setSink(sink)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg.StartCaptureWriter(ctx)
+
+	req := NewRequest("req-up", KindResponses, nil, nil, 0)
+	for range 2 {
+		route := reg.Resolve(context.Background(), req, &auth.Account{DBID: 5}, "m", KindResponses)
+		resp, err := route.Execute(context.Background(), ReqEnv{Body: []byte(`{"input":"hi"}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	waitFor(t, func() bool { return len(sink.snapshot()) == 6 })
+	perAttempt := map[int]map[string]database.PluginCapture{}
+	for _, c := range sink.snapshot() {
+		if perAttempt[c.Attempt] == nil {
+			perAttempt[c.Attempt] = map[string]database.PluginCapture{}
+		}
+		perAttempt[c.Attempt][c.Direction] = c
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		got := perAttempt[attempt]
+		for _, dir := range []string{database.PluginCaptureDirectionRequest, database.PluginCaptureDirectionUpstreamRequest, database.PluginCaptureDirectionResponse} {
+			if got[dir].RequestID != "req-up" {
+				t.Fatalf("attempt %d lacks a %s capture joined by request id and attempt: %+v", attempt, dir, got)
+			}
+		}
+		up := got[database.PluginCaptureDirectionUpstreamRequest]
+		for _, clear := range []string{"task_0199a0d47b397c2b", "turn_abc", `"agent_iteration":"2"`, "file-AbC123"} {
+			if !strings.Contains(up.Body, clear) {
+				t.Fatalf("upstream body must keep %s readable: %s", clear, up.Body)
+			}
+		}
+		if strings.Contains(up.Body, "abcdefghijklmnopqrstuvwxyz") {
+			t.Fatalf("upstream body leaked a credential: %s", up.Body)
+		}
+		for _, clear := range []string{"0199a0d4-7b39-7c2b-9a41-5c4f3bb0d001", "tools-word-core"} {
+			if !strings.Contains(up.Headers, clear) {
+				t.Fatalf("upstream headers must keep %s readable: %s", clear, up.Headers)
+			}
+		}
+		if strings.Contains(up.Headers, "at-secret") || strings.Contains(up.Headers, "acct-secret") {
+			t.Fatalf("upstream headers leaked credentials or the account id: %s", up.Headers)
+		}
 	}
 }

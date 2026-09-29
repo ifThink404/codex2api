@@ -241,6 +241,17 @@ type ReqEnv struct {
 	Services Services
 
 	state map[string]any
+	// upstreamCapture records the outbound upstream request (see
+	// CaptureUpstreamRequest); nil when the attempt is not sampled.
+	upstreamCapture func(header http.Header, body []byte)
+}
+
+// CaptureUpstreamRequest records the request the plugin actually sends
+// upstream, linked to this attempt, when the attempt is sampled for capture.
+func (env *ReqEnv) CaptureUpstreamRequest(header http.Header, body []byte) {
+	if env != nil && env.upstreamCapture != nil {
+		env.upstreamCapture(header, body)
+	}
 }
 
 // State returns per-attempt plugin state stored with SetState.

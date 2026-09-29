@@ -384,6 +384,9 @@ func executeCodexBPS(ctx context.Context, svc plugins.Services, account *auth.Ac
 			preparationFailed("bps_turn_activity")
 			return nil, ErrInternalError("记录 BPS 任务发送时间失败", err)
 		}
+		if env, _ := ctx.Value(bpsAttemptEnvKey{}).(*plugins.ReqEnv); env != nil {
+			env.CaptureUpstreamRequest(req.Header, projected)
+		}
 		// BPS timing (fj recorded it inside its transport observer).
 		diagnostic.Timing.startInference(time.Now())
 		traced, network := traceBPSHTTP(req)

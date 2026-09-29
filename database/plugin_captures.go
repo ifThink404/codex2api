@@ -26,6 +26,9 @@ const (
 	PluginCaptureDirectionRequest  = "request"
 	PluginCaptureDirectionResponse = "response"
 	PluginCaptureDirectionError    = "error"
+	// PluginCaptureDirectionUpstreamRequest is the request a plugin actually
+	// sent upstream (after its own transformation).
+	PluginCaptureDirectionUpstreamRequest = "upstream_request"
 )
 
 type PluginCapture struct {

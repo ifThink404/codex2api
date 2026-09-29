@@ -7396,7 +7396,8 @@
     "directions": {
       "request": "请求",
       "response": "响应",
-      "error": "错误"
+      "error": "错误",
+      "upstream_request": "上游请求"
     },
     "capturesEmpty": "该时间范围内没有抓包",
     "colTime": "时间",

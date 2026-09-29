@@ -185,14 +185,21 @@ func MaskSensitiveData(input string) string {
 		return input
 	}
 
+	// Mask UUID-like patterns that might be tokens
+	return uuidPattern.ReplaceAllString(MaskCredentials(input), "****UUID-MASKED****")
+}
+
+// MaskCredentials masks credentials (URL userinfo, tokens, API keys,
+// secrets, passwords) but, unlike MaskSensitiveData, keeps identifiers such
+// as UUIDs readable.
+func MaskCredentials(input string) string {
+	if input == "" {
+		return input
+	}
 	result := MaskURLCredentials(input)
 	for _, pattern := range sensitivePatterns {
 		result = pattern.ReplaceAllString(result, "${1}****MASKED****")
 	}
-
-	// Mask UUID-like patterns that might be tokens
-	result = uuidPattern.ReplaceAllString(result, "****UUID-MASKED****")
-
 	return result
 }
 

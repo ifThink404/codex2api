@@ -48,6 +48,7 @@ var redactedCaptureHeaders = map[string]struct{}{
 	"x-api-key":           {},
 	"api-key":             {},
 	"chatgpt-account-id":  {},
+	"x-openai-account-id": {},
 	"openai-organization": {},
 	"x-codex-turn-state":  {},
 }
@@ -251,6 +252,23 @@ func (rec *captureRecorder) request(env *ReqEnv) {
 	c.Direction = database.PluginCaptureDirectionRequest
 	c.Headers = maskCaptureHeaders(env.Header)
 	c.Body, c.Truncated = maskCaptureBody(env.Body)
+	rec.emit(c)
+}
+
+// upstreamRequest records the request the plugin sent upstream: headers
+// with credential and account headers redacted, the body with credentials
+// masked but identifiers (task/turn ids, file ids, UUIDs) kept readable.
+func (rec *captureRecorder) upstreamRequest(header http.Header, body []byte) {
+	if rec == nil {
+		return
+	}
+	c := rec.base
+	c.Direction = database.PluginCaptureDirectionUpstreamRequest
+	c.Headers = captureHeaders(header, false)
+	text, truncated := truncateCapture(string(body), database.PluginCaptureBodyLimit)
+	text = security.MaskCredentials(text)
+	text, clamped := truncateCapture(text, database.PluginCaptureBodyLimit)
+	c.Body, c.Truncated = text, truncated || clamped
 	rec.emit(c)
 }
 

@@ -7399,7 +7399,8 @@
     "directions": {
       "request": "Request",
       "response": "Response",
-      "error": "Error"
+      "error": "Error",
+      "upstream_request": "Upstream request"
     },
     "capturesEmpty": "No captures in this time range",
     "colTime": "Time",

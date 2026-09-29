@@ -511,6 +511,7 @@ function PluginCaptures({ plugin }: { plugin: TransportPlugin }) {
               options={[
                 { value: '', label: t('plugins.directionAll') },
                 { value: 'request', label: t('plugins.directions.request') },
+                { value: 'upstream_request', label: t('plugins.directions.upstream_request') },
                 { value: 'response', label: t('plugins.directions.response') },
                 { value: 'error', label: t('plugins.directions.error') },
               ]}

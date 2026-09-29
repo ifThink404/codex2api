@@ -2516,7 +2516,8 @@
     "directions": {
       "request": "請求",
       "response": "回應",
-      "error": "錯誤"
+      "error": "錯誤",
+      "upstream_request": "上游請求"
     },
     "capturesEmpty": "此時間範圍內沒有封包",
     "colTime": "時間",

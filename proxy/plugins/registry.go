@@ -424,6 +424,9 @@ func (rt *Route) Execute(ctx context.Context, env ReqEnv) (*http.Response, error
 	}
 	rec := rt.registry.capture.begin(rt.state, &env)
 	rec.request(&env)
+	if rec != nil {
+		env.upstreamCapture = rec.upstreamRequest
+	}
 	resp, err := rt.plugin.Execute(ctx, &env)
 	if err != nil {
 		rec.failure(err)

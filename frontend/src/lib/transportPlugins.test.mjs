@@ -66,7 +66,7 @@ test('plugin i18n keys exist in zh, en and zh-TW', () => {
   const page = read('pages/Plugins.tsx')
   const used = new Set([...page.matchAll(/t\('plugins\.([a-zA-Z.]+)'/g)].map(match => match[1]))
   for (const view of PLUGIN_VIEWS) used.add(`views.${view}`)
-  for (const dir of ['request', 'response', 'error']) used.add(`directions.${dir}`)
+  for (const dir of ['request', 'upstream_request', 'response', 'error']) used.add(`directions.${dir}`)
   for (const reason of [...PLUGIN_COOLING_REASONS, 'unknown']) used.add(`coolingReasons.${reason}`)
   for (const field of bpsConfigFields) {
     used.add(`bpsConfig.${field.key}`)
