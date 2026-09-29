@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_VIEWS, bpsConfigFields, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, bpsConfigFields, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -67,6 +67,7 @@ test('plugin i18n keys exist in zh, en and zh-TW', () => {
   const used = new Set([...page.matchAll(/t\('plugins\.([a-zA-Z.]+)'/g)].map(match => match[1]))
   for (const view of PLUGIN_VIEWS) used.add(`views.${view}`)
   for (const dir of ['request', 'response', 'error']) used.add(`directions.${dir}`)
+  for (const reason of [...PLUGIN_COOLING_REASONS, 'unknown']) used.add(`coolingReasons.${reason}`)
   for (const field of bpsConfigFields) {
     used.add(`bpsConfig.${field.key}`)
     if (field.hint) used.add(`bpsConfigHints.${field.key}`)
@@ -97,4 +98,14 @@ test('plugin log-agent wiring', () => {
   assert.ok(page.includes('source="ops_errors"') && page.includes('filters={{ transport: plugin.id }}'), 'agent view analyses the plugin errors')
   assert.ok(page.includes('refs={[detail.request_id]}'), 'capture detail analyses one request')
   assert.ok(read('lib/logAgent.ts').includes('transport: params.transport'), 'embedded errors view passes its transport to the agent')
+})
+
+test('the BPS account list shows plugin cooldowns with their reason', () => {
+  const page = read('pages/Plugins.tsx')
+  assert.ok(page.includes('api.getPluginAccountStatus(plugin.id'))
+  assert.ok(page.includes('<PluginAccountStatusLine status={statuses.get(account.id)} />'))
+  assert.equal(pluginCoolingReasonKey('bps_rate_limited'), 'plugins.coolingReasons.bps_rate_limited')
+  assert.equal(pluginCoolingReasonKey(undefined), 'plugins.coolingReasons.unknown')
+  const server = readFileSync(srcRoot + '../../proxy/bps_account_state.go', 'utf8')
+  for (const reason of PLUGIN_COOLING_REASONS) assert.ok(server.includes(`"${reason}"`), `server reports ${reason}`)
 })

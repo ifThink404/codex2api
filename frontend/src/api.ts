@@ -3,6 +3,7 @@ import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter
 import type {
   BuiltinPromptRuleFields,
   PluginCapture,
+  PluginAccountStatus,
   PluginCapturePage,
   PluginCaptureQuery,
   TransportPlugin,
@@ -1482,6 +1483,8 @@ export const api = {
 			`/plugins/${encodeURIComponent(id)}/accounts/${accountId}`,
 			{ method: 'PUT', body: JSON.stringify({ enabled }) },
 		),
+	getPluginAccountStatus: (id: string, accountIds: number[]) =>
+		request<{ accounts: PluginAccountStatus[] }>(`/plugins/${encodeURIComponent(id)}/account-status?ids=${accountIds.join(',')}`),
 	getPluginCaptures: (id: string, query: PluginCaptureQuery = {}) => {
 		const search = new URLSearchParams()
 		if (query.requestId) search.set('request_id', query.requestId)

@@ -17,6 +17,7 @@ import {
   PLUGIN_VIEWS,
   bpsConfigFields,
   pluginConfigBoolean,
+  pluginCoolingReasonKey,
   captureIdFromEvidence,
   pluginCaptureAgentFilters,
   pluginCaptureSource,
@@ -31,7 +32,7 @@ import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
-import type { AccountGroup, AccountRow, PluginCapture, TransportPlugin, UsageLog } from '../types'
+import type { AccountGroup, AccountRow, PluginAccountStatus, PluginCapture, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -328,6 +329,19 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
   const { data, loading, error, reload } = useDataLoader<{ accounts: AccountRow[]; total: number }>({ initialData: { accounts: [], total: 0 }, load })
   const overrides = useMemo(() => new Map((plugin.overrides ?? []).map((item) => [item.account_id, item.enabled])), [plugin.overrides])
   const eligible = plugin.id === 'bps' ? data.accounts.filter(isBPSAccount) : data.accounts
+  const [statuses, setStatuses] = useState<Map<number, PluginAccountStatus>>(new Map())
+  const eligibleIds = eligible.map((account) => account.id).join(',')
+  useEffect(() => {
+    if (plugin.id !== 'bps' || !eligibleIds) {
+      setStatuses(new Map())
+      return
+    }
+    let active = true
+    api.getPluginAccountStatus(plugin.id, eligibleIds.split(',').map(Number))
+      .then((res) => { if (active) setStatuses(new Map((res.accounts ?? []).map((item) => [item.account_id, item]))) })
+      .catch(() => { if (active) setStatuses(new Map()) })
+    return () => { active = false }
+  }, [plugin.id, eligibleIds])
 
   const change = async (account: AccountRow, value: BPSTriState) => {
     setBusy(account.id)
@@ -362,6 +376,7 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
                     {account.plan_type ? ` · ${account.plan_type}` : ''}
                     {plugin.id === 'bps' && ` · ${account.codex_bps_active ? t('accounts.bps.activeNow') : t('accounts.bps.inactiveNow')}`}
                   </span>
+                  <PluginAccountStatusLine status={statuses.get(account.id)} />
                 </div>
                 <Select
                   className="w-full sm:w-44"
@@ -383,6 +398,17 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
       </StateShell>
       <Pagination page={page} totalPages={Math.ceil(data.total / OVERRIDE_PAGE_SIZE)} onPageChange={setPage} totalItems={data.total} pageSize={OVERRIDE_PAGE_SIZE} />
     </Section>
+  )
+}
+
+// PluginAccountStatusLine shows an account's plugin-scoped cooldown.
+function PluginAccountStatusLine({ status }: { status?: PluginAccountStatus }) {
+  const { t } = useTranslation()
+  if (!status?.cooling_until) return null
+  return (
+    <span className="mt-1 block text-xs text-amber-600 dark:text-amber-400">
+      {t('plugins.coolingUntil', { time: formatBeijingTime(status.cooling_until), reason: t(pluginCoolingReasonKey(status.reason), { defaultValue: status.reason ?? '' }) })}
+    </span>
   )
 }
 

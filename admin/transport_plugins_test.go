@@ -183,3 +183,23 @@ func TestOpsErrorsFilterParsesTransport(t *testing.T) {
 		t.Fatalf("filter = %+v ok=%v", filter, ok)
 	}
 }
+
+func TestTransportPluginAdminAccountStatus(t *testing.T) {
+	router, _, _, accountID := newTransportPluginAdminRouter(t)
+	id := strconv.FormatInt(accountID, 10)
+	rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/adminplug/account-status?ids="+id, "")
+	var out struct {
+		Accounts []json.RawMessage `json:"accounts"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Accounts == nil || len(out.Accounts) != 0 {
+		t.Fatalf("non-BPS plugin account status: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, bad := range []string{"?ids=x", "?ids=0", "?ids=" + strings.Repeat("1,", 201)} {
+		if rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/adminplug/account-status"+bad, ""); rec.Code != http.StatusBadRequest {
+			t.Fatalf("bad ids %s: %d", bad[:min(len(bad), 20)], rec.Code)
+		}
+	}
+	if rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/missing/account-status?ids=1", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown plugin: %d", rec.Code)
+	}
+}

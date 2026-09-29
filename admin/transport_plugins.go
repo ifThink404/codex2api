@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/proxy/plugins"
 	"github.com/gin-gonic/gin"
 )
@@ -21,6 +22,7 @@ func (h *Handler) registerTransportPluginRoutes(api *gin.RouterGroup) {
 	api.GET("/plugins/:plugin", h.GetTransportPlugin)
 	api.PUT("/plugins/:plugin", h.UpdateTransportPlugin)
 	api.PUT("/plugins/:plugin/accounts/:id", h.SetTransportPluginAccountOverride)
+	api.GET("/plugins/:plugin/account-status", h.GetTransportPluginAccountStatus)
 	api.GET("/plugins/:plugin/captures", h.ListTransportPluginCaptures)
 	api.GET("/plugins/:plugin/captures/:captureId", h.GetTransportPluginCapture)
 }
@@ -165,6 +167,36 @@ func (h *Handler) SetTransportPluginAccountOverride(c *gin.Context) {
 	}
 	h.store.ApplyAccountTransportPluginOverride(accountID, p.ID(), req.Enabled)
 	c.JSON(http.StatusOK, gin.H{"account_id": accountID, "plugin": p.ID(), "enabled": req.Enabled})
+}
+
+// GetTransportPluginAccountStatus returns the plugin-scoped state (BPS
+// cooldowns and their reasons) of the accounts in ?ids=1,2,3 (at most 200).
+func (h *Handler) GetTransportPluginAccountStatus(c *gin.Context) {
+	p, ok := transportPluginFromParam(c)
+	if !ok {
+		return
+	}
+	var ids []int64
+	for _, raw := range strings.Split(c.Query("ids"), ",") {
+		if raw = strings.TrimSpace(raw); raw == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			writeError(c, http.StatusBadRequest, "无效的账号 ID")
+			return
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) > 200 {
+		writeError(c, http.StatusBadRequest, "一次最多查询 200 个账号")
+		return
+	}
+	statuses := []proxy.BPSAccountStatus{}
+	if p.ID() == proxy.BPSPluginID && len(ids) > 0 {
+		statuses = proxy.BPSAccountStatuses(c.Request.Context(), h.cache, ids)
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": statuses})
 }
 
 func parseTransportPluginTime(c *gin.Context, name string) (time.Time, bool) {

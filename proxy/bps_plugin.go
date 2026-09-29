@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/upstreamprivacy"
 	"github.com/codex2api/proxy/plugins"
@@ -193,6 +194,18 @@ type bpsRequest struct {
 	pinned   bool
 	inferred *inferredBPSSession
 	upload   *bpsUploadRequest
+
+	mu sync.Mutex
+	// excluded are accounts whose BPS attempt this request must not retry.
+	excluded map[int64]bool
+}
+
+// bpsStateCache is the runtime cache behind the plugin's account state.
+func (s *bpsRequest) cache() cache.TokenCache {
+	if s == nil {
+		return nil
+	}
+	return s.handler.bpsCache()
 }
 
 func bpsRequestState(req *plugins.Request) *bpsRequest {
@@ -245,6 +258,13 @@ func (bpsPlugin) Admissible(ctx context.Context, account *auth.Account, model st
 	if state.pinned && !account.CodexRouteAllows("bps", model, state.related, true) {
 		return false, "bps_route_unavailable"
 	}
+	if state.accountExcluded(account) {
+		return false, "bps_account_refused"
+	}
+	// A BPS cooldown vetoes the account unless native can serve this request.
+	if record, cooling := bpsAccountCooling(ctx, state.cache(), account.ID()); cooling && (state.pinned || !account.CodexRouteAllows("native", model, state.related, true)) {
+		return false, record.Reason
+	}
 	if account.CodexRouteAllows("bps", model, state.related, true) && bpsUploadCooldownForAccount(context.WithValue(ctx, bpsUploadRequestKey{}, state.upload), account) {
 		return false, bpsUploadCooldownReason
 	}
@@ -265,6 +285,10 @@ func (bpsPlugin) Select(ctx context.Context, attempt plugins.Attempt) bool {
 	}
 	if state != nil && state.pinned {
 		return true
+	}
+	if _, cooling := bpsAccountCooling(ctx, state.cache(), attempt.Account.ID()); cooling {
+		// Admissible only admits a cooling account when native can serve it.
+		return false
 	}
 	return !attempt.Account.CodexRouteAllows("native", attempt.Model, related, true)
 }
@@ -418,7 +442,10 @@ func bpsInboundEndpoint(kind plugins.RequestKind) string {
 // the extracted usage), provider error scrubbing, plus provenance recording
 // for the sticky domain.
 
-func (bpsPlugin) FilterHeaders(_ *plugins.ReqEnv, header http.Header) {
+const bpsAttemptRetryAfterKey = "bps_retry_after"
+
+func (bpsPlugin) FilterHeaders(env *plugins.ReqEnv, header http.Header) {
+	env.SetState(bpsAttemptRetryAfterKey, header.Get("Retry-After"))
 	for name := range header {
 		if bpsSourceField(name) || strings.EqualFold(name, "X-Codex-Turn-State") {
 			header.Del(name)
@@ -432,6 +459,7 @@ func bpsEnvProjectionContext(env *plugins.ReqEnv) context.Context {
 
 func (bpsPlugin) TransformJSON(env *plugins.ReqEnv, status int, body []byte) ([]byte, error) {
 	if status >= 400 {
+		bpsRecordAttemptFailure(env, status, body)
 		env.Request.SetUsageErrorMessage(bpsOriginalErrorMessage(bpsErrorBodySource(gjson.ParseBytes(body)), body))
 		return scrubBPSErrorBody(status, body), nil
 	}
@@ -466,6 +494,21 @@ func (bpsPlugin) TransformSSEFrame(env *plugins.ReqEnv, event string, data []byt
 	}
 	bpsRecordProvenance(env, projected)
 	return bpsAttemptRedactor(env).push(event, projected)
+}
+
+// bpsRecordAttemptFailure updates the plugin's account state after a failed
+// BPS attempt; an account-level refusal also keeps this request off that
+// account.
+func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
+	if env.Account == nil {
+		return
+	}
+	retryAfter, _ := env.State(bpsAttemptRetryAfterKey).(string)
+	state := bpsRequestState(env.Request)
+	class := recordBPSFailure(context.Background(), state.cache(), env.Account.ID(), env.Model, status, retryAfter, body)
+	if class != "" {
+		bpsExcludeAccountForRequest(env.Request, env.Account)
+	}
 }
 
 // FinishSSE releases frames the redactor still holds when the stream ends.

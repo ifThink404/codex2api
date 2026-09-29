@@ -3806,6 +3806,13 @@ export interface TransportPluginAccountOverride {
   enabled: boolean
 }
 
+// Plugin-scoped account state (GET /plugins/:id/account-status).
+export interface PluginAccountStatus {
+  account_id: number
+  cooling_until?: string
+  reason?: string
+}
+
 export interface TransportPlugin {
   id: string
   meta: TransportPluginMeta

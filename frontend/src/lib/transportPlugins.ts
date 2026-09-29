@@ -89,3 +89,10 @@ export function pluginCaptureAgentFilters(filters: { requestId: string; accountI
   if (filters.direction) out.direction = filters.direction
   return out
 }
+
+// Cooldown reasons the BPS plugin reports (proxy/bps_account_state.go).
+export const PLUGIN_COOLING_REASONS = ['bps_rate_limited'] as const
+
+export function pluginCoolingReasonKey(reason: string | undefined): string {
+  return `plugins.coolingReasons.${reason || 'unknown'}`
+}

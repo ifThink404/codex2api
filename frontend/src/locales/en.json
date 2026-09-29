@@ -7448,6 +7448,11 @@
     "bpsConfigHints": {
       "exclude_failures_from_native_health": "On: BPS 4xx/5xx, upload, stream and rate-limit failures do not lower the account's native health or start cooldowns. Revoked credentials and deactivated accounts are always reported.",
       "persist_heuristic_affinity": "On: sessions inferred from the conversation opening keep their account on every replica. Off: only client task IDs are stored, so unrelated conversations with the same opening never share an account, at the cost of cross-replica stickiness."
+    },
+    "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
+    "coolingReasons": {
+      "bps_rate_limited": "BPS rate limit",
+      "unknown": "unknown reason"
     }
   },
   "logAgent": {

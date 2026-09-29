@@ -7445,6 +7445,11 @@
     "bpsConfigHints": {
       "exclude_failures_from_native_health": "开启时，BPS 的 4xx/5xx、附件上传、流内失败和限流不降低账号原生健康度，也不触发冷却；凭证失效、账号停用等账号级信号仍会上报。",
       "persist_heuristic_affinity": "开启时，按对话开头推断的会话在所有实例上沿用同一账号；关闭后只持久化客户端 task_id，开头相同的无关对话不会共用账号，但失去跨实例粘性。"
+    },
+    "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
+    "coolingReasons": {
+      "bps_rate_limited": "BPS 限流",
+      "unknown": "原因未知"
     }
   },
   "logAgent": {
