@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -101,5 +102,26 @@ func TestBPSPluginNativeHealthPolicyFollowsConfig(t *testing.T) {
 	parsed, err := parseBPSConfig([]byte(`{"exclude_failures_from_native_health":false}`))
 	if err != nil || parsed.SparesNativeHealth() {
 		t.Fatalf("parsed false spares=%v err=%v", parsed.SparesNativeHealth(), err)
+	}
+}
+
+func TestTransportPluginUsageErrorMessageReplacesTheClientMessage(t *testing.T) {
+	handler, db, plugin, _ := newTransportPluginTestHandler(t, true)
+	plugin.spare.Store(true)
+	plugin.failStatus, plugin.failBody = http.StatusBadRequest, `{"error":{"message":"scrubbed for the client"}}`
+	plugin.failMessage = "provider original text"
+	recorder := invokeTracedResponses(t, handler, `{"model":"gpt-5.5","stream":false,"input":"hi"}`)
+	if !strings.Contains(recorder.Body.String(), "scrubbed for the client") || strings.Contains(recorder.Body.String(), "provider original text") {
+		t.Fatalf("client body = %s", recorder.Body.String())
+	}
+	row := onlyUsageLog(t, db)
+	if row.ErrorMessage != "provider original text" {
+		t.Fatalf("usage error_message = %q, want the provider original", row.ErrorMessage)
+	}
+
+	req := plugins.NewRequest("r", plugins.KindResponses, nil, nil, 0)
+	req.SetUsageErrorMessage("attempt one")
+	if req.UsageErrorMessage() != "attempt one" {
+		t.Fatal("message must apply to its own attempt")
 	}
 }

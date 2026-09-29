@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/codex2api/proxy/plugins"
 	"github.com/stretchr/testify/require"
@@ -79,15 +81,46 @@ func TestBPSTerminalEventsAreScrubbed(t *testing.T) {
 }
 
 func TestBPSPluginScrubsProviderErrorsInBothTransforms(t *testing.T) {
-	env := &plugins.ReqEnv{}
+	req := plugins.NewRequest("req-scrub", plugins.KindResponses, nil, nil, 0)
+	env := &plugins.ReqEnv{Request: req}
 	out, err := bpsPlugin{}.TransformJSON(env, 400, []byte(`{"error":{"message":"`+bpsLeakyProviderText+`","code":"invalid_request_error"}}`))
 	require.NoError(t, err)
-	require.NotContains(t, string(out), "secret-arg")
+	require.NotContains(t, string(out), "secret-arg", "the client sees the scrubbed message")
 	require.Equal(t, "invalid_request_error", gjson.GetBytes(out, "error.code").String())
+	require.Equal(t, "invalid_request_error · "+bpsLeakyProviderText, req.UsageErrorMessage(), "the usage log keeps the provider's original text, unmasked")
 
 	body := "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"" + bpsLeakyProviderText + "\"}}}\n\n"
 	streamed, err := bpsTransformTestBody(bpsProjectionContext(t), body, true)
 	require.NoError(t, err)
 	require.NotContains(t, string(streamed), "secret-arg")
 	require.Contains(t, string(streamed), bpsScrubbedErrorMessage)
+}
+
+func TestBPSOriginalErrorMessageForUsageLogs(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{name: "openai envelope", body: `{"error":{"message":"` + bpsLeakyProviderText + `","type":"usage_limit_reached","code":"rate_limit_exceeded"}}`, want: "rate_limit_exceeded · usage_limit_reached · " + bpsLeakyProviderText},
+		{name: "detail envelope", body: `{"detail":{"error":{"message":"` + bpsLeakyProviderText + `","code":"context_length_exceeded"}}}`, want: "context_length_exceeded · " + bpsLeakyProviderText},
+		{name: "plain detail", body: `{"detail":"` + bpsLeakyProviderText + `"}`, want: bpsLeakyProviderText},
+		{name: "non-json", body: bpsLeakyProviderText, want: bpsLeakyProviderText},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bpsOriginalErrorMessage(bpsErrorBodySource(gjson.Parse(tc.body)), []byte(tc.body))
+			require.Equal(t, tc.want, got)
+		})
+	}
+	long := strings.Repeat("é", usageLogErrorMessageMaxRunes+50)
+	got := bpsOriginalErrorMessage(gjson.Parse(`{"message":"`+long+`"}`), nil)
+	require.Equal(t, usageLogErrorMessageMaxRunes, utf8.RuneCountInString(got), "capped by the usage-log error-message limit")
+
+	req := plugins.NewRequest("req-stream", plugins.KindResponses, nil, nil, 0)
+	env := &plugins.ReqEnv{Request: req}
+	env.SetState(bpsAttemptDiagnosticKey, bpsDiagnosticFromContext(bpsProjectionContext(t)))
+	frames, err := bpsPlugin{}.TransformSSEFrame(env, "response.failed", []byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_error","message":"`+bpsLeakyProviderText+`"}}}`))
+	require.NoError(t, err)
+	for _, frame := range frames {
+		require.NotContains(t, string(frame.Data), "secret-arg")
+	}
+	require.Equal(t, "server_error · "+bpsLeakyProviderText, req.UsageErrorMessage())
 }

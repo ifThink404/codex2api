@@ -37,6 +37,8 @@ type wiringPlugin struct {
 	failStatus int
 	failBody   string
 	failEvent  string
+	// failMessage is recorded as the attempt's usage error message.
+	failMessage string
 }
 
 func (p *wiringPlugin) SparesNativeHealth() bool { return p.spare.Load() }
@@ -55,6 +57,9 @@ func (p *wiringPlugin) Execute(_ context.Context, env *plugins.ReqEnv) (*http.Re
 	env.Request.SetUsageMeta(p.ID(), `{"profile":"test"}`)
 	if p.errorKind != "" {
 		env.Request.SetUsageErrorKind(p.ID(), p.errorKind)
+	}
+	if p.failMessage != "" {
+		env.Request.SetUsageErrorMessage(p.failMessage)
 	}
 	if p.failStatus != 0 {
 		return &http.Response{StatusCode: p.failStatus, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(p.failBody))}, nil

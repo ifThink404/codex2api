@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/codex2api/security"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -68,13 +69,7 @@ func bpsErrorShape(source gjson.Result, size int) string {
 // envelope that keeps the status-bearing fields core classifies by.
 func scrubBPSErrorBody(status int, body []byte) []byte {
 	root := gjson.ParseBytes(body)
-	source := root.Get("error")
-	if !source.IsObject() {
-		source = root.Get("detail.error.error")
-	}
-	if !source.IsObject() {
-		source = root.Get("detail.error")
-	}
+	source := bpsErrorBodySource(root)
 	if !source.IsObject() {
 		source = root
 	}
@@ -136,4 +131,63 @@ func bpsEventErrorSource(event gjson.Result) gjson.Result {
 		return source
 	}
 	return event
+}
+
+// bpsOriginalErrorMessage is the provider's own error text for the usage log:
+// code, type and message of the error object, or the raw body when it has no
+// message. It is never sent to the client.
+func bpsOriginalErrorMessage(source gjson.Result, raw []byte) string {
+	parts := make([]string, 0, 3)
+	code, kind := strings.TrimSpace(source.Get("code").String()), strings.TrimSpace(source.Get("type").String())
+	if code != "" {
+		parts = append(parts, code)
+	}
+	if kind != "" && kind != code && kind != "error" {
+		parts = append(parts, kind)
+	}
+	message := strings.TrimSpace(source.Get("message").String())
+	if message == "" && source.Type == gjson.String {
+		message = strings.TrimSpace(source.String())
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(raw))
+	}
+	if message != "" {
+		parts = append(parts, message)
+	}
+	return security.SafeTruncate(strings.Join(parts, " · "), usageLogErrorMessageMaxRunes)
+}
+
+// bpsErrorBodySource is the error object of a non-2xx BPS body.
+func bpsErrorBodySource(root gjson.Result) gjson.Result {
+	for _, path := range []string{"error", "detail.error.error", "detail.error"} {
+		if source := root.Get(path); source.IsObject() {
+			return source
+		}
+	}
+	if detail := root.Get("detail"); detail.Type == gjson.String {
+		return detail
+	}
+	return root
+}
+
+// bpsTerminalEventSource returns the error object of a failed, incomplete or
+// error stream event, and false for any other event.
+func bpsTerminalEventSource(event gjson.Result) (gjson.Result, bool) {
+	kind := event.Get("type").String()
+	status := strings.ToLower(strings.TrimSpace(event.Get("response.status").String()))
+	switch {
+	case kind == "error":
+		return bpsEventErrorSource(event), true
+	case kind == "response.failed" || kind == "response.incomplete" || kind == "response.completed" && (status == "failed" || status == "incomplete"):
+		response := event.Get("response")
+		if source := response.Get("error"); source.IsObject() {
+			return source, true
+		}
+		if source := response.Get("status_details.error"); source.IsObject() {
+			return source, true
+		}
+		return response.Get("incomplete_details"), true
+	}
+	return gjson.Result{}, false
 }

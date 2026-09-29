@@ -29,8 +29,11 @@ type Request struct {
 	usageMeta map[string]string
 	usageEnd  map[string]string
 	usageKind map[string]string
-	served    string
-	attempts  int
+	// usageMsg is the error message a plugin recorded for one attempt.
+	usageMsg   string
+	usageMsgAt int
+	served     string
+	attempts   int
 }
 
 // NewRequest builds a Request. Core calls it once per inbound request.
@@ -112,6 +115,31 @@ func (r *Request) UsageErrorKind(pluginID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.usageKind[pluginID]
+}
+
+// SetUsageErrorMessage records the usage_logs.error_message for the failed
+// row of the current attempt, replacing the message core derived from the
+// (possibly rewritten) response. Later attempts do not inherit it.
+func (r *Request) SetUsageErrorMessage(message string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.usageMsg, r.usageMsgAt = message, r.attempts
+}
+
+// UsageErrorMessage returns the message set for the current attempt.
+func (r *Request) UsageErrorMessage() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.usageMsgAt != r.attempts {
+		return ""
+	}
+	return r.usageMsg
 }
 
 // Transport returns the transport of the latest resolved attempt ("" before

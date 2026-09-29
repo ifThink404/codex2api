@@ -432,6 +432,7 @@ func bpsEnvProjectionContext(env *plugins.ReqEnv) context.Context {
 
 func (bpsPlugin) TransformJSON(env *plugins.ReqEnv, status int, body []byte) ([]byte, error) {
 	if status >= 400 {
+		env.Request.SetUsageErrorMessage(bpsOriginalErrorMessage(bpsErrorBodySource(gjson.ParseBytes(body)), body))
 		return scrubBPSErrorBody(status, body), nil
 	}
 	if bpsAttemptDiagnostic(env) == nil {
@@ -452,6 +453,9 @@ func (bpsPlugin) TransformSSEFrame(env *plugins.ReqEnv, event string, data []byt
 	}
 	if d.Timing != nil {
 		d.Timing.event(time.Now(), isFirstTokenResult(gjson.ParseBytes(data)))
+	}
+	if source, failed := bpsTerminalEventSource(gjson.ParseBytes(data)); failed {
+		env.Request.SetUsageErrorMessage(bpsOriginalErrorMessage(source, nil))
 	}
 	projected, err := projectBPSResponse(bpsEnvProjectionContext(env), data)
 	if err == nil {

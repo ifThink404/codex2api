@@ -806,8 +806,11 @@ func usageLogErrorMessageImpl(statusCode int, body []byte, trustedText bool) str
 		parts = append(parts, errType)
 	}
 	parts = append(parts, message)
-	return security.SafeTruncate(security.SanitizeLog(strings.Join(parts, " · ")), 600)
+	return security.SafeTruncate(security.SanitizeLog(strings.Join(parts, " · ")), usageLogErrorMessageMaxRunes)
 }
+
+// usageLogErrorMessageMaxRunes caps usage_logs.error_message.
+const usageLogErrorMessageMaxRunes = 600
 
 var grokDownstreamResponseHeaders = map[string]struct{}{
 	"cache-control": {}, "content-language": {}, "content-type": {},
