@@ -125,3 +125,19 @@ export const PLUGIN_COOLING_REASONS = ['bps_rate_limited', 'bps_policy_blocked']
 export function pluginCoolingReasonKey(reason: string | undefined): string {
   return `plugins.coolingReasons.${reason || 'unknown'}`
 }
+
+// Manual capture purge modes (POST /plugins/:id/captures/purge).
+export const CAPTURE_PURGE_MODES = ['older_than', 'errors_only', 'all'] as const
+
+// formatCaptureBytes renders a byte count as B / KB / MB / GB.
+export function formatCaptureBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, Math.round(bytes || 0))} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
+}

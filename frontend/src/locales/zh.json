@@ -7469,7 +7469,22 @@
     },
     "policyStrikes": "最近 10 分钟 BPS 用量策略拦截：{{count}} 次",
     "modelUnavailable": "该账号在 BPS 上无法使用 {{model}}，{{time}} 前改走原生",
-    "policyTier": "用量策略冷却档位 {{tier}}/{{tiers}}"
+    "policyTier": "用量策略冷却档位 {{tier}}/{{tiers}}",
+    "captureStats": "已存抓包：{{rows}} 条（错误 {{errors}} 条），{{size}}",
+    "captureStatsLoading": "正在读取抓包占用…",
+    "purge": "清理日志",
+    "purgeTitle": "清理抓包？",
+    "purgeMode": "清理方式",
+    "purgeHours": "早于（小时）",
+    "purgeModes": {
+      "older_than": "早于 N 小时",
+      "errors_only": "仅错误抓包",
+      "all": "全部抓包"
+    },
+    "purgeConfirmOlder": "删除该插件早于 {{hours}} 小时的所有抓包，操作不可撤销。",
+    "purgeConfirm_errors_only": "删除该插件的所有错误抓包，操作不可撤销。",
+    "purgeConfirm_all": "删除该插件的全部抓包，操作不可撤销。",
+    "purged": "已删除 {{count}} 条抓包"
   },
   "logAgent": {
     "title": "AI 日志分析",

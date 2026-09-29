@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,6 +26,8 @@ func (h *Handler) registerTransportPluginRoutes(api *gin.RouterGroup) {
 	api.GET("/plugins/:plugin/account-status", h.GetTransportPluginAccountStatus)
 	api.GET("/plugins/:plugin/captures", h.ListTransportPluginCaptures)
 	api.GET("/plugins/:plugin/captures/:captureId", h.GetTransportPluginCapture)
+	api.GET("/plugins/:plugin/capture-stats", h.GetTransportPluginCaptureStats)
+	api.POST("/plugins/:plugin/captures/purge", h.PurgeTransportPluginCaptures)
 }
 
 type transportPluginAccountOverride struct {
@@ -275,4 +278,67 @@ func (h *Handler) GetTransportPluginCapture(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, capture)
+}
+
+// GetTransportPluginCaptureStats returns the plugin's stored capture rows,
+// error rows, payload bytes and (PostgreSQL) the table's on-disk size.
+func (h *Handler) GetTransportPluginCaptureStats(c *gin.Context) {
+	p, ok := transportPluginFromParam(c)
+	if !ok {
+		return
+	}
+	stats, err := h.db.PluginCaptureStats(c.Request.Context(), p.ID())
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
+// purgeTransportPluginCapturesRequest: mode all, errors_only, or older_than
+// with hours (1 to 720).
+type purgeTransportPluginCapturesRequest struct {
+	Mode  string `json:"mode"`
+	Hours int    `json:"hours"`
+}
+
+// PurgeTransportPluginCaptures deletes the plugin's captures in batches, then
+// vacuums the table on PostgreSQL after a large purge.
+func (h *Handler) PurgeTransportPluginCaptures(c *gin.Context) {
+	p, ok := transportPluginFromParam(c)
+	if !ok {
+		return
+	}
+	var req purgeTransportPluginCapturesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	var cutoff time.Time
+	switch req.Mode {
+	case database.PluginCapturePurgeAll, database.PluginCapturePurgeErrorsOnly:
+	case database.PluginCapturePurgeOlderThan:
+		if req.Hours < 1 || req.Hours > 720 {
+			writeError(c, http.StatusBadRequest, "hours 必须在 1 到 720 之间")
+			return
+		}
+		cutoff = time.Now().Add(-time.Duration(req.Hours) * time.Hour)
+	default:
+		writeError(c, http.StatusBadRequest, "mode 必须是 all、errors_only 或 older_than")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+	defer cancel()
+	result, err := h.db.PurgePluginCapturesByMode(ctx, p.ID(), req.Mode, cutoff)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	if result.Deleted >= database.PluginCaptureVacuumThreshold {
+		if err := h.db.VacuumPluginCaptures(ctx); err != nil {
+			log.Printf("[transport-plugin] capture vacuum after manual purge failed: %v", err)
+		}
+	}
+	log.Printf("[transport-plugin] %s captures purged manually: mode=%s hours=%d deleted=%d", p.ID(), req.Mode, req.Hours, result.Deleted)
+	c.JSON(http.StatusOK, result)
 }

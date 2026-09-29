@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy/plugins"
 	"github.com/gin-gonic/gin"
@@ -201,5 +202,94 @@ func TestTransportPluginAdminAccountStatus(t *testing.T) {
 	}
 	if rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/missing/account-status?ids=1", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown plugin: %d", rec.Code)
+	}
+}
+
+func TestTransportPluginCapturePurgeModesAndStats(t *testing.T) {
+	router, db, _, _ := newTransportPluginAdminRouter(t)
+	now := time.Now()
+	seed := func() {
+		t.Helper()
+		for _, plugin := range []string{"adminplug", "otherplug"} {
+			if _, err := db.PurgePluginCapturesByMode(context.Background(), plugin, database.PluginCapturePurgeAll, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := db.InsertPluginCaptures(context.Background(), []database.PluginCapture{
+			{Plugin: "adminplug", RequestID: "ok-new", Direction: "request", Body: "aaaa", CreatedAt: now},
+			{Plugin: "adminplug", RequestID: "ok-old", Direction: "request", Body: "bb", CreatedAt: now.Add(-5 * time.Hour)},
+			{Plugin: "adminplug", RequestID: "err-new", Direction: "response", Status: 403, Body: "c", CreatedAt: now},
+			{Plugin: "adminplug", RequestID: "classified", Direction: "response", Status: 200, ErrorKind: "bps_policy_blocked", CreatedAt: now},
+			{Plugin: "otherplug", RequestID: "other", Direction: "request", CreatedAt: now.Add(-5 * time.Hour)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats := func() database.PluginCaptureStats {
+		t.Helper()
+		rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/adminplug/capture-stats", "")
+		var out database.PluginCaptureStats
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Fatalf("stats: %d %s", rec.Code, rec.Body.String())
+		}
+		return out
+	}
+	seed()
+	if got := stats(); got.Rows != 4 || got.ErrorRows != 2 || got.BodyBytes < 7 {
+		t.Fatalf("stats = %+v", got)
+	}
+	for _, tc := range []struct {
+		body    string
+		deleted int64
+		left    int64
+	}{
+		{body: `{"mode":"errors_only"}`, deleted: 2, left: 2},
+		{body: `{"mode":"older_than","hours":2}`, deleted: 1, left: 3},
+		{body: `{"mode":"all"}`, deleted: 4, left: 0},
+	} {
+		seed()
+		rec := doTransportPluginRequest(t, router, http.MethodPost, "/api/admin/plugins/adminplug/captures/purge", tc.body)
+		var result database.PluginCapturePurgeResult
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &result) != nil || result.Deleted != tc.deleted {
+			t.Fatalf("purge %s: %d %s", tc.body, rec.Code, rec.Body.String())
+		}
+		if got := stats(); got.Rows != tc.left {
+			t.Fatalf("after %s: rows = %d, want %d", tc.body, got.Rows, tc.left)
+		}
+		other, _ := db.ListPluginCaptures(context.Background(), database.PluginCaptureFilter{Plugin: "otherplug"})
+		if other.Total != 1 {
+			t.Fatalf("purge %s touched another plugin's captures", tc.body)
+		}
+	}
+	for _, bad := range []string{`{"mode":"everything"}`, `{"mode":"older_than"}`, `{"mode":"older_than","hours":1000}`, `not json`} {
+		if rec := doTransportPluginRequest(t, router, http.MethodPost, "/api/admin/plugins/adminplug/captures/purge", bad); rec.Code != http.StatusBadRequest {
+			t.Fatalf("bad purge %s: %d", bad, rec.Code)
+		}
+	}
+	if rec := doTransportPluginRequest(t, router, http.MethodPost, "/api/admin/plugins/missing/captures/purge", `{"mode":"all"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown plugin purge: %d", rec.Code)
+	}
+}
+
+func TestTransportPluginCaptureAdminRoutesRequireAuthorization(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	tokenCache := cache.NewMemory(4)
+	t.Cleanup(func() { _ = tokenCache.Close() })
+	store := auth.NewStore(db, tokenCache, nil)
+	t.Cleanup(store.Stop)
+	handler := NewHandler(store, db, tokenCache, nil, "admin-secret")
+	router := gin.New()
+	handler.RegisterRoutes(router)
+	for _, route := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/admin/plugins/bps/captures/purge", `{"mode":"all"}`},
+		{http.MethodGet, "/api/admin/plugins/bps/capture-stats", ""},
+	} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(route.method, route.path, strings.NewReader(route.body)))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without admin credentials: %d", route.method, route.path, rec.Code)
+		}
 	}
 }

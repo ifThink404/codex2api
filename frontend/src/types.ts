@@ -3859,6 +3859,23 @@ export interface PluginCapture {
   created_at: string
 }
 
+// Stored captures of one plugin (GET /plugins/:id/capture-stats).
+export interface PluginCaptureStats {
+  rows: number
+  error_rows: number
+  body_bytes: number
+  // PostgreSQL only: the whole plugin_captures table on disk.
+  table_bytes: number
+}
+
+export type PluginCapturePurgeMode = 'all' | 'errors_only' | 'older_than'
+
+export interface PluginCapturePurgeResult {
+  deleted: number
+  batches: number
+  interrupted: boolean
+}
+
 export interface PluginCapturePage {
   captures: PluginCapture[]
   total: number

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { CAPTURE_PURGE_MODES, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatCaptureBytes, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -68,6 +68,8 @@ test('plugin i18n keys exist in zh, en and zh-TW', () => {
   for (const view of PLUGIN_VIEWS) used.add(`views.${view}`)
   for (const dir of ['request', 'upstream_request', 'response', 'error']) used.add(`directions.${dir}`)
   for (const reason of [...PLUGIN_COOLING_REASONS, 'unknown']) used.add(`coolingReasons.${reason}`)
+  for (const mode of CAPTURE_PURGE_MODES) used.add(`purgeModes.${mode}`)
+  for (const mode of ['errors_only', 'all']) used.add(`purgeConfirm_${mode}`)
   for (const field of bpsConfigFields) {
     used.add(`bpsConfig.${field.key}`)
     if (field.hint) used.add(`bpsConfigHints.${field.key}`)
@@ -128,4 +130,18 @@ test('model list fields edit as comma-separated text and save as arrays with ser
   const page = read('pages/Plugins.tsx')
   assert.ok(page.includes('normalizePluginConfig(config, typedFields)'))
   assert.ok(page.includes("t('plugins.modelUnavailable'"))
+})
+
+test('captures page shows storage and purges with a mode and a confirmation', () => {
+  const page = read('pages/Plugins.tsx')
+  for (const needle of [
+    '<CaptureCleanup plugin={plugin}', 'api.getPluginCaptureStats(plugin.id)', 'api.purgePluginCaptures(plugin.id, mode',
+    "if (!await confirm({ title: t('plugins.purgeTitle')", "tone: 'destructive'",
+  ]) assert.ok(page.includes(needle), needle)
+  assert.deepEqual([...CAPTURE_PURGE_MODES].sort(), ['all', 'errors_only', 'older_than'])
+  const server = readFileSync(srcRoot + '../../database/plugin_captures.go', 'utf8')
+  for (const mode of CAPTURE_PURGE_MODES) assert.ok(server.includes(`= "${mode}"`), `server purge mode ${mode}`)
+  assert.equal(formatCaptureBytes(512), '512 B')
+  assert.equal(formatCaptureBytes(291 * 1024 * 1024), '291 MB')
+  assert.equal(formatCaptureBytes(1536), '1.5 KB')
 })

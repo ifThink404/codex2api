@@ -7472,7 +7472,22 @@
     },
     "policyStrikes": "BPS usage-policy blocks in the last 10 min: {{count}}",
     "modelUnavailable": "{{model}} is not available on BPS for this account; served natively until {{time}}",
-    "policyTier": "Usage-policy cooldown tier {{tier}}/{{tiers}}"
+    "policyTier": "Usage-policy cooldown tier {{tier}}/{{tiers}}",
+    "captureStats": "Stored captures: {{rows}} rows ({{errors}} errors), {{size}}",
+    "captureStatsLoading": "Loading capture storage…",
+    "purge": "Clean up logs",
+    "purgeTitle": "Clean up captures?",
+    "purgeMode": "Cleanup mode",
+    "purgeHours": "Older than (hours)",
+    "purgeModes": {
+      "older_than": "Older than N hours",
+      "errors_only": "Errors only",
+      "all": "All captures"
+    },
+    "purgeConfirmOlder": "Delete every capture of this plugin older than {{hours}} hours. This cannot be undone.",
+    "purgeConfirm_errors_only": "Delete every error capture of this plugin. This cannot be undone.",
+    "purgeConfirm_all": "Delete ALL captures of this plugin. This cannot be undone.",
+    "purged": "Deleted {{count}} captures"
   },
   "logAgent": {
     "title": "AI log analysis",

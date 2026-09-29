@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Cable, ChevronRight, RefreshCw, Save, Search } from 'lucide-react'
+import { Cable, ChevronRight, RefreshCw, Save, Search, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import AccountGroupMultiSelect from '../components/AccountGroupMultiSelect'
 import LogAgentPanel from '../components/LogAgentPanel'
@@ -11,11 +11,14 @@ import StateShell from '../components/StateShell'
 import { SegmentedTabs } from '../components/SegmentedTabs'
 import { StatTile } from '../components/StatTile'
 import { useDataLoader } from '../hooks/useDataLoader'
+import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { isBPSAccount, type BPSTriState } from '../lib/bpsAccount'
 import {
   PLUGIN_VIEWS,
   bpsConfigFields,
+  CAPTURE_PURGE_MODES,
+  formatCaptureBytes,
   normalizePluginConfig,
   pluginConfigBoolean,
   pluginConfigListText,
@@ -34,7 +37,7 @@ import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
-import type { AccountGroup, AccountRow, PluginAccountStatus, PluginCapture, TransportPlugin, UsageLog } from '../types'
+import type { AccountGroup, AccountRow, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -447,6 +450,79 @@ function TimeRangeTabs({ value, onChange }: { value: TimeRangeKey; onChange: (va
 
 const CAPTURE_PAGE_SIZE = 50
 
+// CaptureCleanup shows how much the plugin's captures take and purges them
+// on demand (older than N hours, errors only, or all) after confirmation.
+function CaptureCleanup({ plugin, onPurged }: { plugin: TransportPlugin; onPurged: () => void }) {
+  const { t } = useTranslation()
+  const { showToast } = useToast()
+  const { confirm, confirmDialog } = useConfirmDialog()
+  const [mode, setMode] = useState<PluginCapturePurgeMode>('older_than')
+  const [hours, setHours] = useState(6)
+  const [busy, setBusy] = useState(false)
+  const loadStats = useCallback(() => api.getPluginCaptureStats(plugin.id), [plugin.id])
+  const { data: stats, reload: reloadStats } = useDataLoader<PluginCaptureStats | null>({ initialData: null, load: loadStats })
+
+  const purge = async () => {
+    const description = mode === 'older_than' ? t('plugins.purgeConfirmOlder', { hours }) : t(`plugins.purgeConfirm_${mode}`)
+    if (!await confirm({ title: t('plugins.purgeTitle'), description, confirmText: t('plugins.purge'), tone: 'destructive', confirmVariant: 'destructive' })) return
+    setBusy(true)
+    try {
+      const result = await api.purgePluginCaptures(plugin.id, mode, mode === 'older_than' ? hours : undefined)
+      showToast(t('plugins.purged', { count: result.deleted }))
+      onPurged()
+      await reloadStats()
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+        <p className="text-sm text-muted-foreground">
+          {stats
+            ? t('plugins.captureStats', {
+              rows: stats.rows,
+              errors: stats.error_rows,
+              size: formatCaptureBytes(stats.table_bytes > 0 ? stats.table_bytes : stats.body_bytes),
+            })
+            : t('plugins.captureStatsLoading')}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            className="w-full sm:w-44"
+            compact
+            value={mode}
+            onValueChange={(value) => setMode(value as PluginCapturePurgeMode)}
+            options={CAPTURE_PURGE_MODES.map((value) => ({ value, label: t(`plugins.purgeModes.${value}`) }))}
+            disabled={busy}
+            aria-label={t('plugins.purgeMode')}
+          />
+          {mode === 'older_than' && (
+            <DraftNumberInput
+              className="w-24"
+              value={hours}
+              onValueChange={setHours}
+              min={1}
+              max={720}
+              integer
+              disabled={busy}
+              aria-label={t('plugins.purgeHours')}
+            />
+          )}
+          <Button variant="destructive" size="sm" onClick={() => void purge()} disabled={busy}>
+            <Trash2 className="size-3.5" />
+            {t('plugins.purge')}
+          </Button>
+        </div>
+      </CardContent>
+      {confirmDialog}
+    </Card>
+  )
+}
+
 function PluginCaptures({ plugin }: { plugin: TransportPlugin }) {
   const { t } = useTranslation()
   const [timeRange, setTimeRange] = useState<TimeRangeKey>('24h')
@@ -487,6 +563,7 @@ function PluginCaptures({ plugin }: { plugin: TransportPlugin }) {
 
   return (
     <div className="space-y-4">
+      <CaptureCleanup plugin={plugin} onPurged={() => { setPage(1); void reload() }} />
       {!plugin.state.capture_enabled && (
         <p role="status" className="rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           {t('plugins.captureDisabledHint')}

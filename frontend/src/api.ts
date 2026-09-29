@@ -5,6 +5,9 @@ import type {
   PluginCapture,
   PluginAccountStatus,
   PluginCapturePage,
+  PluginCapturePurgeMode,
+  PluginCapturePurgeResult,
+  PluginCaptureStats,
   PluginCaptureQuery,
   TransportPlugin,
   TransportPluginsResponse,
@@ -1498,6 +1501,9 @@ export const api = {
 		const qs = search.toString()
 		return request<PluginCapturePage>(`/plugins/${encodeURIComponent(id)}/captures${qs ? `?${qs}` : ''}`)
 	},
+	getPluginCaptureStats: (id: string) => request<PluginCaptureStats>(`/plugins/${encodeURIComponent(id)}/capture-stats`),
+	purgePluginCaptures: (id: string, mode: PluginCapturePurgeMode, hours?: number) =>
+		request<PluginCapturePurgeResult>(`/plugins/${encodeURIComponent(id)}/captures/purge`, { method: 'POST', body: JSON.stringify(mode === 'older_than' ? { mode, hours } : { mode }) }),
 	getPluginCapture: (id: string, captureId: number) =>
 		request<PluginCapture>(`/plugins/${encodeURIComponent(id)}/captures/${captureId}`),
 	updatePromptLogRetention: (retentionDays: number) =>
