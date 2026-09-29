@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -120,6 +121,10 @@ func TestBPSPluginRoutesAroundCoolingAccounts(t *testing.T) {
 	require.Equal(t, BPSRateLimitedReason, statuses[0].Reason)
 	require.InDelta(t, 120, time.Until(statuses[0].CoolingUntil).Seconds(), 2)
 	require.True(t, statuses[2].CoolingUntil.IsZero())
+	idle, err := json.Marshal(statuses[2])
+	require.NoError(t, err)
+	require.NotContains(t, string(idle), "0001-01-01", "unset times are omitted, not sent as the zero time")
+	require.NotContains(t, string(idle), "cooling_until")
 }
 
 const bpsPolicyBlockBody = `{"error":{"message":"This request was blocked by our usage policy.","type":"server_error","param":null,"code":null}}`

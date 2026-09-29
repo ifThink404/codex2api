@@ -75,7 +75,7 @@ type bpsAccountRecord struct {
 	// BlockStarted is the first strike of the current block event.
 	BlockStarted    time.Time `json:"block_started,omitempty"`
 	NextProbe       time.Time `json:"next_probe,omitempty"`
-	LastProbe       time.Time `json:"last_probe,omitempty"`
+	LastProbe       time.Time `json:"last_probe,omitzero"`
 	LastProbeResult string    `json:"last_probe_result,omitempty"`
 	// Changed dates the last change of the cooldown fields, so a cleared
 	// cooldown replaces an older active one across replicas.
@@ -444,10 +444,11 @@ func bpsModelBlocked(ctx context.Context, store cache.TokenCache, accountID int6
 	return bpsAccountStateStore.load(ctx, store, bpsModelStateKey(accountID, model), now).active(now)
 }
 
-// BPSAccountStatus is the admin view of one account's BPS state.
+// BPSAccountStatus is the admin view of one account's BPS state. Unset times
+// are omitted (omitzero), never sent as 0001-01-01.
 type BPSAccountStatus struct {
 	AccountID     int64     `json:"account_id"`
-	CoolingUntil  time.Time `json:"cooling_until,omitempty"`
+	CoolingUntil  time.Time `json:"cooling_until,omitzero"`
 	Reason        string    `json:"reason,omitempty"`
 	PolicyStrikes int       `json:"policy_strikes,omitempty"`
 	// PolicyTier is the usage-policy ladder tier reached, of PolicyTiers.
@@ -458,8 +459,8 @@ type BPSAccountStatus struct {
 	ProbePending bool `json:"probe_pending,omitempty"`
 	// NextProbeAt: when the pending probe runs (the tier's end, or the retry
 	// time after an inconclusive probe).
-	NextProbeAt     time.Time `json:"next_probe_at,omitempty"`
-	LastProbe       time.Time `json:"last_probe,omitempty"`
+	NextProbeAt     time.Time `json:"next_probe_at,omitzero"`
+	LastProbe       time.Time `json:"last_probe,omitzero"`
 	LastProbeResult string    `json:"last_probe_result,omitempty"`
 	// InFlight BPS requests on this replica, of MaxConcurrency (0 = no cap).
 	InFlight       int `json:"in_flight"`
@@ -470,7 +471,7 @@ type BPSAccountStatus struct {
 	BudgetUsed    int       `json:"budget_used"`
 	Budget        int       `json:"budget"`
 	Attempts      int       `json:"attempts"`
-	LastRequestAt time.Time `json:"last_request_at,omitempty"`
+	LastRequestAt time.Time `json:"last_request_at,omitzero"`
 	// ModelsUnavailable maps models BPS refused for this account to the time
 	// they are retried on BPS.
 	ModelsUnavailable map[string]time.Time `json:"models_unavailable,omitempty"`
