@@ -20,6 +20,7 @@ import {
   CAPTURE_PURGE_MODES,
   formatBlockDuration,
   formatCaptureBytes,
+  formatSuccessRate,
   liveElapsedSeconds,
   secondsUntil,
   normalizePluginConfig,
@@ -40,7 +41,7 @@ import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
-import type { AccountGroup, AccountRow, BPSPolicyBlocksResponse, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
+import type { AccountGroup, AccountRow, BPSDashboard, BPSPolicyBlocksResponse, BPSTrafficStats, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -208,6 +209,7 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
 
   return (
     <div className="space-y-4">
+      {plugin.id === 'bps' && <BPSDashboardPanel plugin={plugin} />}
       <div className="grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-4">
         <StatTile label={t('plugins.globalSwitch')} value={plugin.state.enabled ? t('plugins.globalOn') : t('plugins.globalOff')} icon={<Cable className="size-4" />} />
         <StatTile label={t('plugins.groupsCount')} value={String(plugin.state.group_ids?.length ?? 0)} />
@@ -336,6 +338,154 @@ const POLICY_BLOCKS_REFRESH_MS = 30_000
 // PolicyBlocks shows which accounts the BPS usage policy is blocking, for how
 // long (ticking live), their tier and probes, plus the block history and
 // per-account totals, including recovery times.
+const BPS_DASHBOARD_REFRESH_MS = 15_000
+
+// BPSDashboard is the BPS health dashboard: usable accounts against the
+// warning floor, per-account state, traffic and recovery. Elapsed times tick
+// every second; everything refreshes every 15s.
+function BPSDashboardPanel({ plugin }: { plugin: TransportPlugin }) {
+  const { t } = useTranslation()
+  const [data, setData] = useState<BPSDashboard | null>(null)
+  const [fetchedAt, setFetchedAt] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    const load = () => api.getBPSDashboard(plugin.id)
+      .then((res) => { if (active) { setData(res); setFetchedAt(Date.now()); setError('') } })
+      .catch((err) => { if (active) setError(getErrorMessage(err)) })
+    void load()
+    const refresh = window.setInterval(() => void load(), BPS_DASHBOARD_REFRESH_MS)
+    const tick = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => { active = false; window.clearInterval(refresh); window.clearInterval(tick) }
+  }, [plugin.id])
+  const summary = data?.summary
+
+  const stateLabel = (account: BPSDashboard['accounts'][number]) => {
+    switch (account.state) {
+      case 'policy_blocked':
+        return account.tiers ? t('plugins.dashStatePolicyTier', { tier: account.tier, tiers: account.tiers }) : t('plugins.dashStates.policy_blocked')
+      case 'rate_cooling':
+        return account.cooling_until ? t('plugins.dashStateRateUntil', { time: formatBeijingTime(account.cooling_until) }) : t('plugins.dashStates.rate_cooling')
+      default:
+        return t(`plugins.dashStates.${account.state}`)
+    }
+  }
+
+  return (
+    <Section title={t('plugins.dashTitle')} description={t('plugins.dashDesc')}>
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      <div className="grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-4">
+        <StatTile
+          label={t('plugins.dashUsable')}
+          value={summary ? `${summary.usable}/${summary.total}` : '—'}
+          sub={summary ? t(summary.warning ? 'plugins.dashUsableWarning' : 'plugins.dashUsableFloor', { floor: summary.min_usable }) : undefined}
+          tone={summary?.warning ? 'danger' : 'success'}
+          toneSurface
+        />
+        <StatTile label={t('plugins.dashPolicyBlocked')} value={String(summary?.policy_blocked ?? 0)} tone={summary?.policy_blocked ? 'warning' : 'neutral'} />
+        <StatTile label={t('plugins.dashRateCooling')} value={String(summary?.rate_cooling ?? 0)} tone={summary?.rate_cooling ? 'warning' : 'neutral'} />
+        <StatTile label={t('plugins.dashBudgetExhausted')} value={String(summary?.budget_exhausted ?? 0)} tone={summary?.budget_exhausted ? 'warning' : 'neutral'} />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+        <div className="space-y-2">
+          <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.dashTraffic')}</h3>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead />
+                  <TableHead>1h</TableHead>
+                  <TableHead>24h</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {([
+                  ['dashRequests', (s: BPSTrafficStats) => String(s.requests)],
+                  ['dashSuccessRate', (s: BPSTrafficStats) => formatSuccessRate(s.success_rate, s.requests)],
+                  ['dashOrg429', (s: BPSTrafficStats) => String(s.org_rate_limited)],
+                  ['dashAccount429', (s: BPSTrafficStats) => String(s.rate_limited)],
+                  ['dashPolicyBlocks', (s: BPSTrafficStats) => String(s.policy_blocked)],
+                  ['dashFirstToken', (s: BPSTrafficStats) => (s.avg_first_token_ms ? `${s.avg_first_token_ms} ms` : '—')],
+                ] as Array<[string, (s: BPSTrafficStats) => string]>).map(([key, render]) => (
+                  <TableRow key={key}>
+                    <TableCell className="text-xs">{t(`plugins.${key}`)}</TableCell>
+                    <TableCell className="font-mono text-xs">{data ? render(data.traffic['1h']) : '—'}</TableCell>
+                    <TableCell className="font-mono text-xs">{data ? render(data.traffic['24h']) : '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.dashRecovery')}</h3>
+          <div className="grid grid-cols-2 gap-2.5">
+            <StatTile
+              label={t('plugins.dashLongestActive')}
+              value={data?.recovery.blocked ? formatBlockDuration(liveElapsedSeconds(data.recovery.longest_active_seconds, fetchedAt, now)) : '—'}
+              sub={t('plugins.dashBlockedNow', { count: data?.recovery.blocked ?? 0 })}
+            />
+            <StatTile
+              label={t('plugins.dashRecovered')}
+              value={String(data?.recovery.recovered ?? 0)}
+              sub={data?.recovery.recovered
+                ? t('plugins.dashRecoveryRange', {
+                  min: formatBlockDuration(data.recovery.min_seconds),
+                  median: formatBlockDuration(data.recovery.median_seconds),
+                  max: formatBlockDuration(data.recovery.max_seconds),
+                })
+                : t('plugins.dashNoRecovery')}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-xs font-medium text-muted-foreground">{t('plugins.dashAccounts')}</h3>
+        {data && data.accounts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t('plugins.dashNoAccounts')}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('plugins.policyAccount')}</TableHead>
+                  <TableHead>{t('plugins.dashState')}</TableHead>
+                  <TableHead>{t('plugins.dashInFlight')}</TableHead>
+                  <TableHead>{t('plugins.dashBudget')}</TableHead>
+                  <TableHead>{t('plugins.policyElapsed')}</TableHead>
+                  <TableHead>{t('plugins.policyNextProbe')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(data?.accounts ?? []).map((account) => {
+                  const next = secondsUntil(account.next_probe_at, now)
+                  return (
+                    <TableRow key={account.account_id}>
+                      <TableCell className="text-sm">{account.name || `#${account.account_id}`}</TableCell>
+                      <TableCell>
+                        <Badge variant={account.state === 'active' ? 'secondary' : account.state === 'policy_blocked' ? 'destructive' : 'outline'}>{stateLabel(account)}</Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{account.max_concurrency ? `${account.in_flight}/${account.max_concurrency}` : account.in_flight}</TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs">
+                        {account.budget ? t('plugins.dashBudgetValue', { used: account.budget_used, budget: account.budget, window: formatBlockDuration(account.budget_window_seconds) }) : '—'}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs">{account.blocked_at ? formatBlockDuration(liveElapsedSeconds(account.elapsed_seconds ?? 0, fetchedAt, now)) : '—'}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">{account.next_probe_at ? (next > 0 ? formatBlockDuration(next) : t('plugins.policyProbeDue')) : '—'}</TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+    </Section>
+  )
+}
+
 function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
   const { t } = useTranslation()
   const [data, setData] = useState<BPSPolicyBlocksResponse | null>(null)

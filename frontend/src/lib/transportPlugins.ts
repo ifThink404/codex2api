@@ -47,6 +47,7 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'bps_only_models', kind: 'list', defaultValue: ['gpt-6-*'], hint: true },
   { key: 'bps_policy_conversation_mark', kind: 'boolean', defaultValue: false, hint: true },
   { key: 'bps_probe_model', kind: 'text', hint: true },
+  { key: 'bps_min_usable_accounts', kind: 'number', min: 0, max: 1000, hint: true },
   { key: 'bps_account_max_concurrency', kind: 'number', min: 0, max: 100, hint: true },
   { key: 'bps_account_request_budget', kind: 'number', min: 0, max: 10000000, hint: true },
   { key: 'bps_account_budget_window', kind: 'text', hint: true },
@@ -171,4 +172,13 @@ export function secondsUntil(iso: string | undefined, nowMs: number): number {
   if (!iso) return 0
   const at = Date.parse(iso)
   return Number.isFinite(at) ? Math.max(0, Math.ceil((at - nowMs) / 1000)) : 0
+}
+
+// BPS dashboard account states (admin/bps_dashboard.go).
+export const BPS_ACCOUNT_STATES = ['active', 'policy_blocked', 'rate_cooling', 'budget_exhausted'] as const
+
+// formatSuccessRate renders a 0..1 rate as a percentage ("—" without requests).
+export function formatSuccessRate(rate: number, requests: number): string {
+  if (!requests) return '—'
+  return `${(Math.round(rate * 1000) / 10).toFixed(1)}%`
 }

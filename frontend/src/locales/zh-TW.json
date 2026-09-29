@@ -2562,7 +2562,8 @@
       "bps_account_request_budget": "單帳號 BPS 請求預算",
       "bps_account_budget_window": "BPS 預算視窗",
       "bps_policy_conversation_mark": "用量政策攔截後標記會話",
-      "bps_probe_model": "用量政策探測模型"
+      "bps_probe_model": "用量政策探測模型",
+      "bps_min_usable_accounts": "可用帳號告警線"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2589,7 +2590,8 @@
       "bps_account_request_budget": "視窗內單帳號成功的 BPS 請求數，跨實例統計；達到預算後在視窗滾動前不再走 BPS。0 表示關閉。",
       "bps_account_budget_window": "請求預算的滾動視窗，如 24h、12h（1h–720h）。留空為 24h。",
       "bps_policy_conversation_mark": "預設關閉。開啟後，觸發 BPS 用量政策攔截的會話，其後續輪次 30 分鐘內不走 BPS。攔截是帳號級請求配額，當前請求始終會切換到其他 BPS 帳號。",
-      "bps_probe_model": "用量政策冷卻到期後，背景探測使用的模型。留空時使用連線測試模型（需走 BPS），否則為 gpt-6-sol。"
+      "bps_probe_model": "用量政策冷卻到期後，背景探測使用的模型。留空時使用連線測試模型（需走 BPS），否則為 gpt-6-sol。",
+      "bps_min_usable_accounts": "可用 BPS 帳號降到此數或更少時，健康面板告警。填 0 使用預設值（2）。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2637,7 +2639,42 @@
     "policyLongest": "最長一次",
     "policyRecovered": "已恢復",
     "policyHistory": "已恢復的攔截",
-    "policyHistoryEntry": "{{blocked}} → {{cleared}} · {{duration}} · 檔位 {{tier}} · 探測 {{probes}} 次"
+    "policyHistoryEntry": "{{blocked}} → {{cleared}} · {{duration}} · 檔位 {{tier}} · 探測 {{probes}} 次",
+    "dashTitle": "BPS 健康",
+    "dashDesc": "可用 BPS 帳號、各帳號狀態、流量，以及用量政策攔截的恢復情況；每 15 秒重新整理。",
+    "dashUsable": "可用帳號",
+    "dashUsableFloor": "≤ {{floor}} 時告警",
+    "dashUsableWarning": "已低於告警線 {{floor}}",
+    "dashPolicyBlocked": "政策攔截",
+    "dashRateCooling": "限流冷卻",
+    "dashBudgetExhausted": "預算用完",
+    "dashTraffic": "BPS 流量",
+    "dashRequests": "請求數",
+    "dashSuccessRate": "成功率",
+    "dashOrg429": "組織級 429",
+    "dashAccount429": "帳號級 429",
+    "dashPolicyBlocks": "用量政策攔截",
+    "dashFirstToken": "平均首字",
+    "dashRecovery": "恢復情況",
+    "dashLongestActive": "目前最長攔截",
+    "dashBlockedNow": "目前攔截 {{count}} 個",
+    "dashRecovered": "已恢復攔截",
+    "dashRecoveryRange": "最短 {{min}} · 中位 {{median}} · 最長 {{max}}",
+    "dashNoRecovery": "尚無恢復",
+    "dashAccounts": "帳號",
+    "dashNoAccounts": "沒有啟用 BPS 的帳號。",
+    "dashState": "狀態",
+    "dashInFlight": "進行中",
+    "dashBudget": "預算",
+    "dashBudgetValue": "{{used}}/{{budget}}（每 {{window}}）",
+    "dashStatePolicyTier": "政策攔截 檔位 {{tier}}/{{tiers}}",
+    "dashStateRateUntil": "限流冷卻至 {{time}}",
+    "dashStates": {
+      "active": "正常",
+      "policy_blocked": "政策攔截",
+      "rate_cooling": "限流冷卻",
+      "budget_exhausted": "預算用完"
+    }
   },
   "logAgent": {
     "title": "AI 日誌分析",

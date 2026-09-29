@@ -3866,6 +3866,44 @@ export interface PluginCapture {
   created_at: string
 }
 
+export type BPSAccountState = 'active' | 'policy_blocked' | 'rate_cooling' | 'budget_exhausted'
+
+export interface BPSTrafficStats {
+  requests: number
+  succeeded: number
+  success_rate: number
+  org_rate_limited: number
+  rate_limited: number
+  policy_blocked: number
+  avg_first_token_ms: number
+  internal_requests: number
+}
+
+// GET /plugins/bps/dashboard
+export interface BPSDashboard {
+  summary: { total: number; usable: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
+  accounts: Array<{
+    account_id: number
+    name: string
+    state: BPSAccountState
+    in_flight: number
+    max_concurrency: number
+    budget_used: number
+    budget: number
+    budget_window_seconds: number
+    tier?: number
+    tiers?: number
+    cooling_until?: string
+    blocked_at?: string
+    elapsed_seconds?: number
+    next_probe_at?: string
+    last_probe_result?: string
+  }>
+  traffic: Record<'1h' | '24h', BPSTrafficStats>
+  recovery: { blocked: number; longest_active_seconds: number; recovered: number; min_seconds: number; median_seconds: number; max_seconds: number }
+  now?: string
+}
+
 // One BPS usage-policy block event (GET /plugins/bps/policy-blocks).
 export interface BPSPolicyBlock {
   id: number

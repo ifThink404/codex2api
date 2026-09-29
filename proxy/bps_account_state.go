@@ -542,3 +542,14 @@ func (s *bpsRequest) accountExcluded(account *auth.Account) bool {
 	defer s.mu.Unlock()
 	return s.excluded[account.ID()]
 }
+
+// BPSDashboardSettings are the plugin settings the admin dashboard shows:
+// the usable-account warning floor (default 2) and the budget window.
+func BPSDashboardSettings() (minUsable int, budgetWindow time.Duration) {
+	cfg := currentBPSConfig()
+	minUsable = cfg.MinUsableAccounts
+	if minUsable <= 0 {
+		minUsable = 2
+	}
+	return minUsable, cfg.BudgetWindow()
+}

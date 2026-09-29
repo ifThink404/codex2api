@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { CAPTURE_PURGE_MODES, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { BPS_ACCOUNT_STATES, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -68,6 +68,8 @@ test('plugin i18n keys exist in zh, en and zh-TW', () => {
   for (const view of PLUGIN_VIEWS) used.add(`views.${view}`)
   for (const dir of ['request', 'upstream_request', 'response', 'error']) used.add(`directions.${dir}`)
   for (const reason of [...PLUGIN_COOLING_REASONS, 'unknown']) used.add(`coolingReasons.${reason}`)
+  for (const state of BPS_ACCOUNT_STATES) used.add(`dashStates.${state}`)
+  for (const key of ['dashRequests', 'dashSuccessRate', 'dashOrg429', 'dashAccount429', 'dashPolicyBlocks', 'dashFirstToken']) used.add(key)
   for (const mode of CAPTURE_PURGE_MODES) used.add(`purgeModes.${mode}`)
   for (const mode of ['errors_only', 'all']) used.add(`purgeConfirm_${mode}`)
   for (const field of bpsConfigFields) {
@@ -181,4 +183,18 @@ test('BPS overview has the usage-policy blocks section', () => {
     "{plugin.id === 'bps' && <PolicyBlocks plugin={plugin} />}", 'api.getPluginPolicyBlocks(plugin.id)',
     'liveElapsedSeconds(block.elapsed_seconds, fetchedAt, now)', 'window.setInterval(() => setNow(Date.now()), 1000)',
   ]) assert.ok(page.includes(needle), needle)
+})
+
+test('BPS health dashboard: panels, states, live updates and the server contract', () => {
+  const page = read('pages/Plugins.tsx')
+  for (const needle of [
+    "{plugin.id === 'bps' && <BPSDashboardPanel plugin={plugin} />}", 'api.getBPSDashboard(plugin.id)',
+    "tone={summary?.warning ? 'danger' : 'success'}", "data.traffic['1h']", "data.traffic['24h']",
+    'liveElapsedSeconds(data.recovery.longest_active_seconds, fetchedAt, now)',
+  ]) assert.ok(page.includes(needle), needle)
+  const server = readFileSync(srcRoot + '../../admin/bps_dashboard.go', 'utf8')
+  for (const state of BPS_ACCOUNT_STATES) assert.ok(server.includes(`= "${state}"`), `server state ${state}`)
+  assert.equal(formatSuccessRate(0.4, 5), '40.0%')
+  assert.equal(formatSuccessRate(0.98765, 100), '98.8%')
+  assert.equal(formatSuccessRate(0, 0), '—')
 })

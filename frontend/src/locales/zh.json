@@ -7442,7 +7442,8 @@
       "bps_account_request_budget": "单账号 BPS 请求预算",
       "bps_account_budget_window": "BPS 预算窗口",
       "bps_policy_conversation_mark": "用量策略拦截后标记会话",
-      "bps_probe_model": "用量策略探测模型"
+      "bps_probe_model": "用量策略探测模型",
+      "bps_min_usable_accounts": "可用账号告警线"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7469,7 +7470,8 @@
       "bps_account_request_budget": "窗口内单账号成功的 BPS 请求数，跨实例统计；达到预算后在窗口滚动前不再走 BPS。0 表示关闭。",
       "bps_account_budget_window": "请求预算的滚动窗口，如 24h、12h（1h–720h）。留空为 24h。",
       "bps_policy_conversation_mark": "默认关闭。开启后，触发 BPS 用量策略拦截的会话，其后续轮次 30 分钟内不走 BPS。拦截是账号级请求配额，当前请求始终会切换到其他 BPS 账号。",
-      "bps_probe_model": "用量策略冷却到期后，后台探测使用的模型。留空时使用连接测试模型（需走 BPS），否则为 gpt-6-sol。"
+      "bps_probe_model": "用量策略冷却到期后，后台探测使用的模型。留空时使用连接测试模型（需走 BPS），否则为 gpt-6-sol。",
+      "bps_min_usable_accounts": "可用 BPS 账号降到此数或更少时，健康面板告警。填 0 使用默认值（2）。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -7517,7 +7519,42 @@
     "policyLongest": "最长一次",
     "policyRecovered": "已恢复",
     "policyHistory": "已恢复的拦截",
-    "policyHistoryEntry": "{{blocked}} → {{cleared}} · {{duration}} · 档位 {{tier}} · 探测 {{probes}} 次"
+    "policyHistoryEntry": "{{blocked}} → {{cleared}} · {{duration}} · 档位 {{tier}} · 探测 {{probes}} 次",
+    "dashTitle": "BPS 健康",
+    "dashDesc": "可用 BPS 账号、各账号状态、流量，以及用量策略拦截的恢复情况；每 15 秒刷新。",
+    "dashUsable": "可用账号",
+    "dashUsableFloor": "≤ {{floor}} 时告警",
+    "dashUsableWarning": "已低于告警线 {{floor}}",
+    "dashPolicyBlocked": "策略拦截",
+    "dashRateCooling": "限流冷却",
+    "dashBudgetExhausted": "预算用完",
+    "dashTraffic": "BPS 流量",
+    "dashRequests": "请求数",
+    "dashSuccessRate": "成功率",
+    "dashOrg429": "组织级 429",
+    "dashAccount429": "账号级 429",
+    "dashPolicyBlocks": "用量策略拦截",
+    "dashFirstToken": "平均首字",
+    "dashRecovery": "恢复情况",
+    "dashLongestActive": "当前最长拦截",
+    "dashBlockedNow": "当前拦截 {{count}} 个",
+    "dashRecovered": "已恢复拦截",
+    "dashRecoveryRange": "最短 {{min}} · 中位 {{median}} · 最长 {{max}}",
+    "dashNoRecovery": "尚无恢复",
+    "dashAccounts": "账号",
+    "dashNoAccounts": "没有启用 BPS 的账号。",
+    "dashState": "状态",
+    "dashInFlight": "进行中",
+    "dashBudget": "预算",
+    "dashBudgetValue": "{{used}}/{{budget}}（每 {{window}}）",
+    "dashStatePolicyTier": "策略拦截 档位 {{tier}}/{{tiers}}",
+    "dashStateRateUntil": "限流冷却至 {{time}}",
+    "dashStates": {
+      "active": "正常",
+      "policy_blocked": "策略拦截",
+      "rate_cooling": "限流冷却",
+      "budget_exhausted": "预算用完"
+    }
   },
   "logAgent": {
     "title": "AI 日志分析",

@@ -7445,7 +7445,8 @@
       "bps_account_request_budget": "BPS request budget per account",
       "bps_account_budget_window": "BPS budget window",
       "bps_policy_conversation_mark": "Mark conversations after a usage-policy block",
-      "bps_probe_model": "Usage-policy probe model"
+      "bps_probe_model": "Usage-policy probe model",
+      "bps_min_usable_accounts": "Usable-account warning floor"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7472,7 +7473,8 @@
       "bps_account_request_budget": "Successful BPS requests per account within the window, counted across replicas; an account at its budget is not used for BPS until the window rolls. 0 = off.",
       "bps_account_budget_window": "Rolling window for the request budget, such as 24h or 12h (1h–720h). Empty uses 24h.",
       "bps_policy_conversation_mark": "Off by default. When on, later turns of a conversation that hit a BPS usage-policy block avoid BPS for 30 minutes. The block is an account-level request quota, so the request itself always fails over to another BPS account.",
-      "bps_probe_model": "Model of the background probe that clears an account after its usage-policy cooldown. Empty uses the connection-test model when BPS serves it, else gpt-6-sol."
+      "bps_probe_model": "Model of the background probe that clears an account after its usage-policy cooldown. Empty uses the connection-test model when BPS serves it, else gpt-6-sol.",
+      "bps_min_usable_accounts": "The BPS health panel warns when usable accounts drop to this number or below. 0 uses the default (2)."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7520,7 +7522,42 @@
     "policyLongest": "Longest",
     "policyRecovered": "Recovered",
     "policyHistory": "Recovered blocks",
-    "policyHistoryEntry": "{{blocked}} → {{cleared}} · {{duration}} · tier {{tier}} · {{probes}} probes"
+    "policyHistoryEntry": "{{blocked}} → {{cleared}} · {{duration}} · tier {{tier}} · {{probes}} probes",
+    "dashTitle": "BPS health",
+    "dashDesc": "Usable BPS accounts, per-account state, traffic and recovery from usage-policy blocks. Refreshes every 15 seconds.",
+    "dashUsable": "Usable accounts",
+    "dashUsableFloor": "warning at ≤ {{floor}}",
+    "dashUsableWarning": "at or below the floor of {{floor}}",
+    "dashPolicyBlocked": "Policy-blocked",
+    "dashRateCooling": "Rate-cooling",
+    "dashBudgetExhausted": "Budget used up",
+    "dashTraffic": "BPS traffic",
+    "dashRequests": "Requests",
+    "dashSuccessRate": "Success rate",
+    "dashOrg429": "Org-level 429",
+    "dashAccount429": "Per-account 429",
+    "dashPolicyBlocks": "Usage-policy blocks",
+    "dashFirstToken": "Avg first token",
+    "dashRecovery": "Recovery",
+    "dashLongestActive": "Longest current block",
+    "dashBlockedNow": "{{count}} blocked now",
+    "dashRecovered": "Recovered blocks",
+    "dashRecoveryRange": "min {{min}} · median {{median}} · max {{max}}",
+    "dashNoRecovery": "no recovery yet",
+    "dashAccounts": "Accounts",
+    "dashNoAccounts": "No account has BPS enabled.",
+    "dashState": "State",
+    "dashInFlight": "In flight",
+    "dashBudget": "Budget",
+    "dashBudgetValue": "{{used}}/{{budget}} per {{window}}",
+    "dashStatePolicyTier": "policy tier {{tier}}/{{tiers}}",
+    "dashStateRateUntil": "rate-cooling until {{time}}",
+    "dashStates": {
+      "active": "active",
+      "policy_blocked": "policy-blocked",
+      "rate_cooling": "rate-cooling",
+      "budget_exhausted": "budget used up"
+    }
   },
   "logAgent": {
     "title": "AI log analysis",

@@ -77,6 +77,9 @@ type BPSConfig struct {
 	// ProbeModel is the model of the background usage-policy probe; empty
 	// uses the connection-test model when BPS serves it, else gpt-6-sol.
 	ProbeModel string `json:"bps_probe_model,omitempty"`
+	// MinUsableAccounts is the dashboard's warning floor for usable BPS
+	// accounts (0 = the default, 2).
+	MinUsableAccounts int `json:"bps_min_usable_accounts,omitempty"`
 	// AccountMaxConcurrency caps BPS requests in flight per account on each
 	// replica (0 = off).
 	AccountMaxConcurrency int `json:"bps_account_max_concurrency,omitempty"`
@@ -214,6 +217,9 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 				return BPSConfig{}, fmt.Errorf("invalid model pattern %q", pattern)
 			}
 		}
+	}
+	if cfg.MinUsableAccounts < 0 || cfg.MinUsableAccounts > 1000 {
+		return BPSConfig{}, fmt.Errorf("bps_min_usable_accounts must be between 0 (default) and 1000")
 	}
 	if cfg.AccountMaxConcurrency < 0 || cfg.AccountMaxConcurrency > 100 {
 		return BPSConfig{}, fmt.Errorf("bps_account_max_concurrency must be between 0 (off) and 100")

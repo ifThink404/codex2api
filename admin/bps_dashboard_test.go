@@ -1,0 +1,144 @@
+package admin
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
+	"github.com/gin-gonic/gin"
+)
+
+func TestBPSDashboardStateClassification(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name   string
+		status proxy.BPSAccountStatus
+		want   string
+	}{
+		{name: "active", status: proxy.BPSAccountStatus{}, want: bpsStateActive},
+		{name: "policy cooling", status: proxy.BPSAccountStatus{Reason: proxy.BPSPolicyBlockedKind, CoolingUntil: now.Add(time.Hour)}, want: bpsStatePolicyBlocked},
+		{name: "policy waiting for its probe", status: proxy.BPSAccountStatus{ProbePending: true}, want: bpsStatePolicyBlocked},
+		{name: "rate cooling", status: proxy.BPSAccountStatus{Reason: proxy.BPSRateLimitedReason, CoolingUntil: now.Add(time.Minute)}, want: bpsStateRateCooling},
+		{name: "rate cooldown over", status: proxy.BPSAccountStatus{Reason: proxy.BPSRateLimitedReason, CoolingUntil: now.Add(-time.Minute)}, want: bpsStateActive},
+		{name: "budget exhausted", status: proxy.BPSAccountStatus{Budget: 1250, BudgetUsed: 1250}, want: bpsStateBudgetExhausted},
+		{name: "budget left", status: proxy.BPSAccountStatus{Budget: 1250, BudgetUsed: 1249}, want: bpsStateActive},
+		{name: "policy wins over budget", status: proxy.BPSAccountStatus{ProbePending: true, Budget: 10, BudgetUsed: 10}, want: bpsStatePolicyBlocked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bpsDashboardState(tc.status, now); got != tc.want {
+				t.Fatalf("state = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBPSRecoveryStats(t *testing.T) {
+	now := time.Now()
+	active := []database.BPSPolicyBlock{{BlockedAt: now.Add(-2 * time.Hour)}, {BlockedAt: now.Add(-270 * time.Minute)}}
+	odd := bpsRecoveryStats(active, []int64{600, 60, 3600}, now)
+	if odd.Blocked != 2 || odd.LongestActiveSeconds < 270*60-1 || odd.Recovered != 3 || odd.MinSeconds != 60 || odd.MedianSeconds != 600 || odd.MaxSeconds != 3600 {
+		t.Fatalf("odd = %+v", odd)
+	}
+	even := bpsRecoveryStats(nil, []int64{100, 200, 300, 400}, now)
+	if even.MedianSeconds != 250 || even.LongestActiveSeconds != 0 {
+		t.Fatalf("even = %+v", even)
+	}
+	if empty := bpsRecoveryStats(nil, nil, now); empty.Recovered != 0 || empty.MedianSeconds != 0 {
+		t.Fatalf("empty = %+v", empty)
+	}
+}
+
+func TestBPSDashboardEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	if err := db.MigrateBPSPlugin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	db.SetUsageLogConfig(database.UsageLogModeFull, 100, 300)
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	on, off := true, false
+	for id, enabled := range map[int64]*bool{51: &on, 52: &off} {
+		store.AddAccount(&auth.Account{DBID: id, Email: "bps@example.com", AccessToken: "at", Status: auth.StatusReady})
+		store.ApplyAccountTransportPluginOverride(id, proxy.BPSPluginID, enabled)
+	}
+	h := &Handler{db: db, store: store}
+	router := gin.New()
+	h.registerTransportPluginRoutes(router.Group("/api/admin"))
+	ctx := context.Background()
+	for _, row := range []database.UsageLogInput{
+		{AccountID: 51, Transport: "bps", StatusCode: 200, FirstTokenMs: 800},
+		{AccountID: 51, Transport: "bps", StatusCode: 200, FirstTokenMs: 1200},
+		{AccountID: 51, Transport: "bps", StatusCode: 429, PluginMeta: `{"rate_limit_scope":"org"}`, UpstreamErrorKind: "rate_limited"},
+		{AccountID: 51, Transport: "bps", StatusCode: 429, PluginMeta: `{"rate_limit_scope":"account"}`, UpstreamErrorKind: "rate_limited"},
+		{AccountID: 51, Transport: "bps", StatusCode: 403, UpstreamErrorKind: "bps_policy_blocked"},
+		{AccountID: 51, Transport: "bps", StatusCode: 200, InternalReason: "connection_test"},
+		{AccountID: 52, Transport: "native", StatusCode: 200},
+	} {
+		input := row
+		if err := db.InsertUsageLog(ctx, &input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.FlushUsageLogs()
+	if err := db.OpenBPSPolicyBlock(ctx, 60, time.Now().Add(-3*time.Hour), 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.OpenBPSPolicyBlock(ctx, 61, time.Now().Add(-5*time.Hour), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.ClearBPSPolicyBlock(ctx, 61, time.Now().Add(-4*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/bps/dashboard", "")
+	var out struct {
+		Accounts []struct {
+			AccountID int64  `json:"account_id"`
+			State     string `json:"state"`
+		} `json:"accounts"`
+		Traffic  map[string]database.TransportTrafficStats `json:"traffic"`
+		Recovery struct {
+			Blocked              int   `json:"blocked"`
+			LongestActiveSeconds int64 `json:"longest_active_seconds"`
+			Recovered            int   `json:"recovered"`
+			MedianSeconds        int64 `json:"median_seconds"`
+		} `json:"recovery"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+		t.Fatalf("dashboard: %d %s", rec.Code, rec.Body.String())
+	}
+	var summary struct {
+		Total     int  `json:"total"`
+		Usable    int  `json:"usable"`
+		MinUsable int  `json:"min_usable"`
+		Warning   bool `json:"warning"`
+	}
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
+	_ = json.Unmarshal(raw["summary"], &summary)
+	if summary.Total != 1 || summary.Usable != 1 || summary.MinUsable != 2 || !summary.Warning {
+		t.Fatalf("summary = %+v (only the BPS-enabled account counts; 1 usable <= floor 2 warns)", summary)
+	}
+	if len(out.Accounts) != 1 || out.Accounts[0].AccountID != 51 || out.Accounts[0].State != bpsStateActive {
+		t.Fatalf("accounts = %+v", out.Accounts)
+	}
+	day := out.Traffic["24h"]
+	if day.Requests != 5 || day.Succeeded != 2 || day.OrgRateLimited != 1 || day.RateLimited != 1 || day.PolicyBlocked != 1 || day.AvgFirstTokenMs != 1000 || day.InternalRequests != 1 {
+		t.Fatalf("24h traffic = %+v", day)
+	}
+	if out.Traffic["1h"].Requests != 5 || day.SuccessRate < 0.39 || day.SuccessRate > 0.41 {
+		t.Fatalf("1h traffic = %+v / rate %v", out.Traffic["1h"], day.SuccessRate)
+	}
+	if out.Recovery.Blocked != 1 || out.Recovery.LongestActiveSeconds < 3*3600-5 || out.Recovery.Recovered != 1 || out.Recovery.MedianSeconds != 3600 {
+		t.Fatalf("recovery = %+v", out.Recovery)
+	}
+	if rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/plugins/missing/dashboard", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown plugin: %d", rec.Code)
+	}
+}
