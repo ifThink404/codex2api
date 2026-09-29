@@ -7600,7 +7600,9 @@
     "activityRemaining": "剩余 {{count}}",
     "activityAttempts": "尝试",
     "activityLastRequestColumn": "最后请求",
-    "activityCoolingUntil": "冷却至 {{time}}"
+    "activityCoolingUntil": "冷却至 {{time}}",
+    "dashDisabled": "已禁用（不计入）",
+    "accountDisabled": "账号已禁用，不参与 BPS"
   },
   "logAgent": {
     "title": "AI 日志分析",

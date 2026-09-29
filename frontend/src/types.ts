@@ -3893,7 +3893,7 @@ export interface BPSTrafficPoint {
 
 // GET /plugins/bps/dashboard
 export interface BPSDashboard {
-  summary: { total: number; usable: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
+  summary: { total: number; usable: number; disabled?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
   accounts: Array<{
     account_id: number
     name: string

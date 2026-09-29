@@ -10141,6 +10141,12 @@ func (s *Store) ApplyAccountEnabled(dbID int64, enabled bool) bool {
 	return true
 }
 
+// IsEnabled reports the account's administrative enabled flag (accounts.enabled):
+// a disabled account is kept in the pool but never selected for dispatch.
+func (a *Account) IsEnabled() bool {
+	return a != nil && atomic.LoadInt32(&a.DispatchPaused) == 0
+}
+
 func normalizeAccountErrorMessage(errorMsg string, fallback string) string {
 	errorMsg = strings.TrimSpace(errorMsg)
 	if errorMsg == "" {

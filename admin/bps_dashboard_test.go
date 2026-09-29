@@ -67,6 +67,8 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 		store.AddAccount(&auth.Account{DBID: id, Email: "bps@example.com", AccessToken: "at", Status: auth.StatusReady})
 		store.ApplyAccountTransportPluginOverride(id, proxy.BPSPluginID, enabled)
 	}
+	store.AddAccount(&auth.Account{DBID: 53, Email: "disabled@example.com", AccessToken: "at", Status: auth.StatusReady, DispatchPaused: 1})
+	store.ApplyAccountTransportPluginOverride(53, proxy.BPSPluginID, &on)
 	h := &Handler{db: db, store: store}
 	router := gin.New()
 	h.registerTransportPluginRoutes(router.Group("/api/admin"))
@@ -116,6 +118,7 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 	}
 	var summary struct {
 		Total     int  `json:"total"`
+		Disabled  int  `json:"disabled"`
 		Usable    int  `json:"usable"`
 		MinUsable int  `json:"min_usable"`
 		Warning   bool `json:"warning"`
@@ -123,8 +126,8 @@ func TestBPSDashboardEndpoint(t *testing.T) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
 	_ = json.Unmarshal(raw["summary"], &summary)
-	if summary.Total != 1 || summary.Usable != 1 || summary.MinUsable != 2 || !summary.Warning {
-		t.Fatalf("summary = %+v (only the BPS-enabled account counts; 1 usable <= floor 2 warns)", summary)
+	if summary.Total != 1 || summary.Usable != 1 || summary.Disabled != 1 || summary.MinUsable != 2 || !summary.Warning {
+		t.Fatalf("summary = %+v (only the enabled BPS account counts, the disabled one only as disabled; 1 usable <= floor 2 warns)", summary)
 	}
 	if len(out.Accounts) != 1 || out.Accounts[0].AccountID != 51 || out.Accounts[0].State != bpsStateActive {
 		t.Fatalf("accounts = %+v", out.Accounts)
@@ -194,6 +197,8 @@ func TestBPSActivityEndpoint(t *testing.T) {
 	store.AddAccount(&auth.Account{DBID: 71, Email: "live@example.com", AccessToken: "at", Status: auth.StatusReady})
 	store.ApplyAccountTransportPluginOverride(71, proxy.BPSPluginID, &on)
 	store.AddAccount(&auth.Account{DBID: 72, Email: "native@example.com", AccessToken: "at", Status: auth.StatusReady})
+	store.AddAccount(&auth.Account{DBID: 73, Email: "disabled@example.com", AccessToken: "at", Status: auth.StatusReady, DispatchPaused: 1})
+	store.ApplyAccountTransportPluginOverride(73, proxy.BPSPluginID, &on)
 	h := &Handler{db: db, store: store}
 	router := gin.New()
 	h.registerTransportPluginRoutes(router.Group("/api/admin"))
@@ -216,5 +221,24 @@ func TestBPSActivityEndpoint(t *testing.T) {
 	}
 	if out.WindowSeconds != 24*3600 || !out.InFlightPerReplica {
 		t.Fatalf("window = %d per-replica = %v", out.WindowSeconds, out.InFlightPerReplica)
+	}
+}
+
+func TestCodexBPSActiveNeedsEnabledAccount(t *testing.T) {
+	db := newTestAdminDB(t)
+	if err := db.MigrateBPSPlugin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	on := true
+	store.AddAccount(&auth.Account{DBID: 81, Email: "bps@example.com", AccessToken: "at", Status: auth.StatusReady})
+	store.ApplyAccountTransportPluginOverride(81, proxy.BPSPluginID, &on)
+	live := store.FindByID(81)
+	if !codexBPSAccountViewFromRow(&database.AccountRow{ID: 81, Enabled: true}, live).Active {
+		t.Fatal("an enabled account with BPS forced on is served by BPS")
+	}
+	if codexBPSAccountViewFromRow(&database.AccountRow{ID: 81, Enabled: false}, live).Active {
+		t.Fatal("a disabled account is not served by BPS")
 	}
 }

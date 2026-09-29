@@ -24,7 +24,10 @@ const (
 )
 
 type bpsDashboardSummary struct {
+	// Total BPS accounts in the pool; Disabled ones (accounts.enabled off)
+	// are left out of the pool and only counted.
 	Total           int  `json:"total"`
+	Disabled        int  `json:"disabled"`
 	Usable          int  `json:"usable"`
 	PolicyBlocked   int  `json:"policy_blocked"`
 	RateCooling     int  `json:"rate_cooling"`
@@ -94,6 +97,29 @@ func bpsRecoveryStats(active []database.BPSPolicyBlock, durations []int64, now t
 	return out
 }
 
+// bpsPoolAccounts returns the accounts BPS serves (eligible, plugin enabled
+// for them and not administratively disabled), by ID, and how many eligible
+// plugin-enabled accounts are disabled.
+func (h *Handler) bpsPoolAccounts(p plugins.Plugin) ([]*auth.Account, int) {
+	var accounts []*auth.Account
+	disabled := 0
+	if h.store == nil {
+		return accounts, disabled
+	}
+	for _, account := range h.store.Accounts() {
+		if !account.CodexBPSEligible() || !plugins.Default().EnabledFor(p, account) {
+			continue
+		}
+		if !account.IsEnabled() {
+			disabled++
+			continue
+		}
+		accounts = append(accounts, account)
+	}
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i].ID() < accounts[j].ID() })
+	return accounts, disabled
+}
+
 // bpsDashboardRanges are the dashboard's traffic ranges and their chart
 // buckets (the frontend's 1h / 24h bucket grid: 60 x 1m, 48 x 30m).
 var bpsDashboardRanges = map[string]struct {
@@ -120,15 +146,7 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 	now := time.Now()
 	minUsable, window := proxy.BPSDashboardSettings()
 
-	var accounts []*auth.Account
-	if h.store != nil {
-		for _, account := range h.store.Accounts() {
-			if account.CodexBPSEligible() && plugins.Default().EnabledFor(p, account) {
-				accounts = append(accounts, account)
-			}
-		}
-	}
-	sort.Slice(accounts, func(i, j int) bool { return accounts[i].ID() < accounts[j].ID() })
+	accounts, disabled := h.bpsPoolAccounts(p)
 	ids := make([]int64, len(accounts))
 	for i, account := range accounts {
 		ids[i] = account.ID()
@@ -142,7 +160,7 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 	for _, block := range active {
 		activeByAccount[block.AccountID] = block
 	}
-	summary := bpsDashboardSummary{Total: len(accounts), MinUsable: minUsable}
+	summary := bpsDashboardSummary{Total: len(accounts), Disabled: disabled, MinUsable: minUsable}
 	rows := make([]bpsDashboardAccount, 0, len(accounts))
 	for i, status := range proxy.BPSAccountStatuses(ctx, h.cache, ids) {
 		account := accounts[i]
@@ -260,14 +278,7 @@ func (h *Handler) GetTransportPluginActivity(c *gin.Context) {
 	ctx := c.Request.Context()
 	now := time.Now()
 	_, window := proxy.BPSDashboardSettings()
-	var accounts []*auth.Account
-	if h.store != nil {
-		for _, account := range h.store.Accounts() {
-			if account.CodexBPSEligible() && plugins.Default().EnabledFor(p, account) {
-				accounts = append(accounts, account)
-			}
-		}
-	}
+	accounts, _ := h.bpsPoolAccounts(p)
 	ids := make([]int64, len(accounts))
 	for i, account := range accounts {
 		ids[i] = account.ID()

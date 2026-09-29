@@ -275,6 +275,16 @@ test('zero timestamps are unset, not cooldowns', () => {
   assert.ok(server.includes('`json:"cooling_until,omitzero"`'), 'the server omits unset cooling times')
 })
 
+test('disabled accounts are not usable BPS accounts', () => {
+  const page = read('pages/Plugins.tsx')
+  assert.ok(page.includes("account.enabled === false ? t('plugins.accountDisabled')"), 'the account list labels disabled accounts')
+  assert.ok(page.includes('{account.enabled !== false && <PluginAccountStatusLine'), 'and shows them no BPS status')
+  assert.ok(page.includes("t('plugins.dashDisabled')"), 'the hero counts them apart from usable')
+  const server = readFileSync(srcRoot + '../../admin/bps_dashboard.go', 'utf8')
+  assert.ok(server.includes('if !account.IsEnabled() {'), 'the dashboard pool skips disabled accounts')
+  assert.ok(readFileSync(srcRoot + '../../admin/codex_bps_account.go', 'utf8').includes('view.Eligible && row.Enabled &&'), 'codex_bps_active needs an enabled account')
+})
+
 test('BPS traffic charts: full bucket grid, health strip, shared chart theme', () => {
   const now = Date.parse('2026-09-29T10:30:20Z')
   const hour = bpsTrafficSeries([

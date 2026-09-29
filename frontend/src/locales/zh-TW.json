@@ -2720,7 +2720,9 @@
     "activityRemaining": "剩餘 {{count}}",
     "activityAttempts": "嘗試",
     "activityLastRequestColumn": "最後請求",
-    "activityCoolingUntil": "冷卻至 {{time}}"
+    "activityCoolingUntil": "冷卻至 {{time}}",
+    "dashDisabled": "已停用（不計入）",
+    "accountDisabled": "帳號已停用，不參與 BPS"
   },
   "logAgent": {
     "title": "AI 日誌分析",

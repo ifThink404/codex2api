@@ -7603,7 +7603,9 @@
     "activityRemaining": "{{count}} left",
     "activityAttempts": "Attempts",
     "activityLastRequestColumn": "Last request",
-    "activityCoolingUntil": "Cooling until {{time}}"
+    "activityCoolingUntil": "Cooling until {{time}}",
+    "dashDisabled": "Disabled (excluded)",
+    "accountDisabled": "account disabled, not served by BPS"
   },
   "logAgent": {
     "title": "AI log analysis",
