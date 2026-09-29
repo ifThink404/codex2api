@@ -150,6 +150,17 @@ func (a *Account) CodexBPSEligible() bool {
 	return a != nil && !a.IsRelayStyle() && !a.IsCodexAgentIdentity() && !a.IsClaudeOAuth()
 }
 
+// CodexNativeRouteExplicit reports whether codex_native_enabled is
+// explicitly true. A BPS account uses the native transport only then.
+func (a *Account) CodexNativeRouteExplicit() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.codexBPS.Native != nil && *a.codexBPS.Native
+}
+
 // CodexBPSImageTrimOverride returns the account's explicit history-trim
 // setting; ok is false when the account follows the plugin default.
 func (a *Account) CodexBPSImageTrimOverride() (enabled, ok bool) {

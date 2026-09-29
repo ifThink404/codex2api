@@ -304,6 +304,19 @@ func bpsServesAccount(account *auth.Account, model string) bool {
 	return plugins.Default().EnabledFor(p, account) && bpsRouteAllows(context.Background(), nil, account, model, false)
 }
 
+// BPSOwnsAccount reports whether native inference is off limits for account:
+// the BPS plugin is enabled for it and its native route is not explicitly on.
+// Background jobs (usage probes, 5h-window activation, plan sync, model
+// probes, detectors) must use the BPS transport for such an account, or skip
+// it; native Codex traffic gets accounts marked as degraded upstream.
+func BPSOwnsAccount(account *auth.Account) bool {
+	if account == nil || !account.CodexBPSEligible() || account.CodexNativeRouteExplicit() {
+		return false
+	}
+	p, ok := plugins.Default().Get(BPSPluginID)
+	return ok && plugins.Default().EnabledFor(p, account)
+}
+
 // bpsRouteAllows reports whether BPS may serve model on account: the
 // account's BPS route, the plugin's bps_models, and no recent refusal of that
 // model by BPS for this account. Related (auxiliary) requests follow their

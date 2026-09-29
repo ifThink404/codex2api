@@ -231,7 +231,14 @@ func (h *Handler) probeAccountModel(ctx context.Context, account *auth.Account, 
 	defer cancel()
 
 	payload := buildConnectionTestPayload(h.store, model)
-	resp, err := proxy.ExecuteRequest(probeCtx, account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
+	var resp *http.Response
+	var err error
+	if proxy.BPSOwnsAccount(account) {
+		// BPS accounts are probed through BPS, never natively.
+		resp, err = proxy.ExecuteCodexConnectionTest(probeCtx, account, payload, h.store.ResolveProxyForAccount(account))
+	} else {
+		resp, err = proxy.ExecuteRequest(probeCtx, account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
+	}
 	if err != nil {
 		if msg, ok := batchTestContextFailure(probeCtx, err); ok {
 			return modelProbeError, msg

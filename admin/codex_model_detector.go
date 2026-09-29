@@ -213,6 +213,9 @@ func (h *Handler) executeModelDetectorProbe(ctx context.Context, account *auth.A
 	proxyURL := h.store.ResolveProxyForAccount(account)
 	if account.IsOpenAIResponsesAPI() {
 		response, requestErr = proxy.ExecuteOpenAIResponsesRequest(ctx, account, payload, proxyURL, nil)
+	} else if proxy.BPSOwnsAccount(account) {
+		// BPS accounts are probed through BPS, never natively.
+		response, requestErr = proxy.ExecuteCodexConnectionTest(ctx, account, payload, proxyURL)
 	} else {
 		// Repeated probes stay on HTTP because pooled WebSockets may be closed by
 		// an intermediary before response.completed arrives. Each challenge still
