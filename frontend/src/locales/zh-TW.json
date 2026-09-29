@@ -2501,7 +2501,6 @@
     "config": "外掛設定",
     "configDesc": "儲存後所有實例即時生效。",
     "configInvalid": "設定必須是 JSON 物件",
-    "configZeroDefault": "數值填 0、文字留空表示使用預設值。",
     "defaultValue": "預設",
     "accounts": "帳號設定",
     "accountsDesc": "單一帳號強制開啟、強制關閉或繼承（分組 / 全域開關）。",
@@ -2584,14 +2583,17 @@
       "bps_only_models": "原生無法服務的模型：排程優先選擇可走 BPS 的帳號。留空使用預設值。",
       "bps_policy_cooldown_ladder": "上游未提供明確冷卻時，每次觸發（10 分鐘內 3 次攔截）依序使用的冷卻時長；2 小時無攔截降一檔，24 小時無攔截歸零。填 2m、2h 這類時長。",
       "image_trim_default": "用於沒有個別設定的 BPS 帳號；預設開啟，與 fj-server 一致。",
-      "capture_retention_hours": "無錯誤的封包：1–12 小時，填 0 使用預設值（6）。",
-      "capture_error_retention_hours": "錯誤封包及同一次嘗試的其餘封包：1–12 小時，填 0 使用預設值（12）。",
-      "bps_account_max_concurrency": "每個實例上單帳號同時進行的 BPS 請求上限；超出的請求改走其他 BPS 帳號或短暫排隊。0 表示關閉。",
-      "bps_account_request_budget": "視窗內單帳號成功的 BPS 請求數，跨實例統計；達到預算後在視窗滾動前不再走 BPS。0 表示關閉。",
+      "capture_retention_hours": "無錯誤的封包：1–12 小時。",
+      "capture_error_retention_hours": "錯誤封包及同一次嘗試的其餘封包：1–12 小時。",
+      "bps_account_max_concurrency": "每個實例上單帳號同時進行的 BPS 請求上限；超出的請求改走其他 BPS 帳號或短暫排隊。",
+      "bps_account_request_budget": "視窗內單帳號成功的 BPS 請求數，跨實例統計；達到預算後在視窗滾動前不再走 BPS。",
       "bps_account_budget_window": "請求預算的滾動視窗，如 24h、12h（1h–720h）。留空為 24h。",
       "bps_policy_conversation_mark": "預設關閉。開啟後，觸發 BPS 用量政策攔截的會話，其後續輪次 30 分鐘內不走 BPS。攔截是帳號級請求配額，當前請求始終會切換到其他 BPS 帳號。",
       "bps_probe_model": "用量政策冷卻到期後，背景探測使用的模型。留空時使用連線測試模型（需走 BPS），否則為 gpt-6-sol。",
-      "bps_min_usable_accounts": "可用 BPS 帳號降到此數或更少時，健康面板告警。填 0 使用預設值（2）。"
+      "bps_min_usable_accounts": "可用 BPS 帳號降到此數或更少時，健康面板告警。",
+      "policy_block_threshold": "10 分鐘內達到此次數的用量政策攔截即觸發冷卻。",
+      "word_user_agent": "Word 類型使用的 User-Agent；留空使用內建值。",
+      "attachment_429_fallback": "附件上傳遇到 429 時在本機轉換附件（需要 pdftotext/libreoffice）。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2674,7 +2676,31 @@
       "policy_blocked": "政策攔截",
       "rate_cooling": "限流冷卻",
       "budget_exhausted": "預算用完"
-    }
+    },
+    "bpsConfigGroups": {
+      "routing": {
+        "title": "模型路由",
+        "description": "哪些模型走 BPS，以及探測使用的模型。"
+      },
+      "protection": {
+        "title": "帳號保護",
+        "description": "單帳號限額，以及用量政策攔截與限流的處理方式。"
+      },
+      "attachments": {
+        "title": "附件",
+        "description": "附件上傳併發與歷史附件的處理。"
+      },
+      "identity": {
+        "title": "身分與輪次",
+        "description": "Word 身分、task/turn 輪次收斂與會話親和。"
+      },
+      "captures": {
+        "title": "封包保留",
+        "description": "外掛封包的保留時長。"
+      }
+    },
+    "zeroMeansDefault": "填 0 使用預設值（{{value}}）。",
+    "zeroMeansOff": "0 表示關閉。"
   },
   "logAgent": {
     "title": "AI 日誌分析",

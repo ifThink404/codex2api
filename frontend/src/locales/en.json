@@ -7384,7 +7384,6 @@
     "config": "Plugin config",
     "configDesc": "Every replica applies it immediately after saving.",
     "configInvalid": "The config must be a JSON object",
-    "configZeroDefault": "0 for numbers and empty text mean the default.",
     "defaultValue": "Default",
     "accounts": "Account settings",
     "accountsDesc": "Force on, force off, or inherit (groups / global switch) per account.",
@@ -7467,14 +7466,17 @@
       "bps_only_models": "Models native cannot serve: scheduling tries BPS-capable accounts first. Empty uses the default.",
       "bps_policy_cooldown_ladder": "Cooldown per trigger (3 blocks in 10 min) when the upstream gives no explicit cooldown: 1st, 2nd, 3rd… trigger. A tier is forgiven per 2h without a block, all after 24h. Durations like 2m, 2h.",
       "image_trim_default": "Applies to BPS accounts without their own setting. On by default, as in fj-server.",
-      "capture_retention_hours": "Captures without an error: 1–12 hours, 0 uses the default (6).",
-      "capture_error_retention_hours": "Error captures and the rest of their attempt: 1–12 hours, 0 uses the default (12).",
-      "bps_account_max_concurrency": "Most BPS requests in flight per account on each replica; extra requests go to another BPS account or wait briefly. 0 = off.",
-      "bps_account_request_budget": "Successful BPS requests per account within the window, counted across replicas; an account at its budget is not used for BPS until the window rolls. 0 = off.",
+      "capture_retention_hours": "Captures without an error: 1–12 hours.",
+      "capture_error_retention_hours": "Error captures and the rest of their attempt: 1–12 hours.",
+      "bps_account_max_concurrency": "Most BPS requests in flight per account on each replica; extra requests go to another BPS account or wait briefly.",
+      "bps_account_request_budget": "Successful BPS requests per account within the window, counted across replicas; an account at its budget is not used for BPS until the window rolls.",
       "bps_account_budget_window": "Rolling window for the request budget, such as 24h or 12h (1h–720h). Empty uses 24h.",
       "bps_policy_conversation_mark": "Off by default. When on, later turns of a conversation that hit a BPS usage-policy block avoid BPS for 30 minutes. The block is an account-level request quota, so the request itself always fails over to another BPS account.",
       "bps_probe_model": "Model of the background probe that clears an account after its usage-policy cooldown. Empty uses the connection-test model when BPS serves it, else gpt-6-sol.",
-      "bps_min_usable_accounts": "The BPS health panel warns when usable accounts drop to this number or below. 0 uses the default (2)."
+      "bps_min_usable_accounts": "The BPS health panel warns when usable accounts drop to this number or below.",
+      "policy_block_threshold": "Usage-policy blocks within 10 minutes that trigger a cooldown.",
+      "word_user_agent": "User-Agent of the Word profile; empty uses the built-in one.",
+      "attachment_429_fallback": "When uploads hit 429, convert attachments locally (needs pdftotext/libreoffice)."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7557,7 +7559,31 @@
       "policy_blocked": "policy-blocked",
       "rate_cooling": "rate-cooling",
       "budget_exhausted": "budget used up"
-    }
+    },
+    "bpsConfigGroups": {
+      "routing": {
+        "title": "Model routing",
+        "description": "Which models go through BPS and which model probes use."
+      },
+      "protection": {
+        "title": "Account protection",
+        "description": "Per-account limits and how usage-policy blocks and rate limits are handled."
+      },
+      "attachments": {
+        "title": "Attachments",
+        "description": "Upload concurrency and how attachment history is handled."
+      },
+      "identity": {
+        "title": "Identity and rounds",
+        "description": "Word identity, task/turn round convergence and session affinity."
+      },
+      "captures": {
+        "title": "Capture retention",
+        "description": "How long plugin captures are kept."
+      }
+    },
+    "zeroMeansDefault": "0 uses the default ({{value}}).",
+    "zeroMeansOff": "0 = off."
   },
   "logAgent": {
     "title": "AI log analysis",

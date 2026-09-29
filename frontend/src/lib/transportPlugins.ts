@@ -28,37 +28,54 @@ export function parsePluginConfigText(text: string): Record<string, unknown> | n
 }
 
 // BPS plugin config (proxy BPSConfig). 0 / empty means the server default.
+// Number fields say what 0 means: the server default (defaultValue) or off.
 export type PluginConfigField =
-  | { key: string; kind: 'number'; min: number; max: number; hint?: boolean }
+  | { key: string; kind: 'number'; min: number; max: number; hint?: boolean; defaultValue?: number; zeroMeans?: 'default' | 'off' }
   | { key: string; kind: 'boolean'; defaultValue?: boolean; hint?: boolean }
-  | { key: string; kind: 'text'; hint?: boolean }
+  | { key: string; kind: 'text'; hint?: boolean; placeholder?: string }
   | { key: string; kind: 'list'; defaultValue: string[]; hint?: boolean }
 
 export const bpsConfigFields: PluginConfigField[] = [
-  { key: 'word_user_agent', kind: 'text' },
-  { key: 'round_convergence_limit', kind: 'number', min: 0, max: 1000000 },
-  { key: 'round_task_lifetime_hours', kind: 'number', min: 0, max: 8760 },
-  { key: 'turn_round_limit', kind: 'number', min: 0, max: 1000000 },
-  { key: 'turn_task_lifetime_hours', kind: 'number', min: 0, max: 8760 },
-  { key: 'attachment_request_concurrency', kind: 'number', min: 0, max: 64 },
-  { key: 'attachment_instance_concurrency', kind: 'number', min: 0, max: 1024 },
-  { key: 'attachment_account_concurrency', kind: 'number', min: 0, max: 1024 },
+  { key: 'word_user_agent', kind: 'text', hint: true },
+  { key: 'round_convergence_limit', kind: 'number', min: 0, max: 1000000, defaultValue: 100, zeroMeans: 'default' },
+  { key: 'round_task_lifetime_hours', kind: 'number', min: 0, max: 8760, defaultValue: 24, zeroMeans: 'default' },
+  { key: 'turn_round_limit', kind: 'number', min: 0, max: 1000000, defaultValue: 100, zeroMeans: 'default' },
+  { key: 'turn_task_lifetime_hours', kind: 'number', min: 0, max: 8760, defaultValue: 24, zeroMeans: 'default' },
+  { key: 'attachment_request_concurrency', kind: 'number', min: 0, max: 64, defaultValue: 15, zeroMeans: 'default' },
+  { key: 'attachment_instance_concurrency', kind: 'number', min: 0, max: 1024, defaultValue: 64, zeroMeans: 'default' },
+  { key: 'attachment_account_concurrency', kind: 'number', min: 0, max: 1024, defaultValue: 15, zeroMeans: 'default' },
   { key: 'bps_models', kind: 'list', defaultValue: ['gpt-5.6-*', 'gpt-6-*'], hint: true },
   { key: 'bps_only_models', kind: 'list', defaultValue: ['gpt-6-*'], hint: true },
   { key: 'bps_policy_conversation_mark', kind: 'boolean', defaultValue: false, hint: true },
-  { key: 'bps_probe_model', kind: 'text', hint: true },
-  { key: 'bps_min_usable_accounts', kind: 'number', min: 0, max: 1000, hint: true },
-  { key: 'bps_account_max_concurrency', kind: 'number', min: 0, max: 100, hint: true },
-  { key: 'bps_account_request_budget', kind: 'number', min: 0, max: 10000000, hint: true },
-  { key: 'bps_account_budget_window', kind: 'text', hint: true },
-  { key: 'policy_block_threshold', kind: 'number', min: 0, max: 100 },
+  { key: 'bps_probe_model', kind: 'text', hint: true, placeholder: 'gpt-6-sol' },
+  { key: 'bps_min_usable_accounts', kind: 'number', min: 0, max: 1000, hint: true, defaultValue: 2, zeroMeans: 'default' },
+  { key: 'bps_account_max_concurrency', kind: 'number', min: 0, max: 100, hint: true, zeroMeans: 'off' },
+  { key: 'bps_account_request_budget', kind: 'number', min: 0, max: 10000000, hint: true, zeroMeans: 'off' },
+  { key: 'bps_account_budget_window', kind: 'text', hint: true, placeholder: '24h' },
+  { key: 'policy_block_threshold', kind: 'number', min: 0, max: 100, hint: true, defaultValue: 3, zeroMeans: 'default' },
   { key: 'bps_policy_cooldown_ladder', kind: 'list', defaultValue: ['2m', '10m', '30m', '2h'], hint: true },
-  { key: 'capture_retention_hours', kind: 'number', min: 0, max: 12, hint: true },
-  { key: 'capture_error_retention_hours', kind: 'number', min: 0, max: 12, hint: true },
-  { key: 'attachment_429_fallback', kind: 'boolean' },
+  { key: 'capture_retention_hours', kind: 'number', min: 0, max: 12, hint: true, defaultValue: 6, zeroMeans: 'default' },
+  { key: 'capture_error_retention_hours', kind: 'number', min: 0, max: 12, hint: true, defaultValue: 12, zeroMeans: 'default' },
+  { key: 'attachment_429_fallback', kind: 'boolean', hint: true },
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'image_trim_default', kind: 'boolean', defaultValue: true, hint: true },
+]
+
+// bpsConfigGroups lays the BPS config form out in labeled cards; every field
+// of bpsConfigFields belongs to exactly one group.
+export const bpsConfigGroups: Array<{ key: string; fields: string[] }> = [
+  { key: 'routing', fields: ['bps_models', 'bps_only_models', 'bps_probe_model'] },
+  {
+    key: 'protection',
+    fields: [
+      'bps_account_max_concurrency', 'bps_account_request_budget', 'bps_account_budget_window', 'bps_min_usable_accounts',
+      'policy_block_threshold', 'bps_policy_cooldown_ladder', 'bps_policy_conversation_mark', 'exclude_failures_from_native_health',
+    ],
+  },
+  { key: 'attachments', fields: ['attachment_request_concurrency', 'attachment_instance_concurrency', 'attachment_account_concurrency', 'attachment_429_fallback', 'image_trim_default'] },
+  { key: 'identity', fields: ['word_user_agent', 'round_convergence_limit', 'round_task_lifetime_hours', 'turn_round_limit', 'turn_task_lifetime_hours', 'persist_heuristic_affinity'] },
+  { key: 'captures', fields: ['capture_retention_hours', 'capture_error_retention_hours'] },
 ]
 
 // pluginConfigListText is a list field's editable text: saved lists are

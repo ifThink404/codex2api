@@ -88,7 +88,9 @@ test('shared settings cards declare which upstream channels they apply to', () =
   const badges = readFileSync(new URL('../components/ChannelScopeBadges.tsx', import.meta.url), 'utf8')
   assert.match(badges, /export const ALL_UPSTREAM_CHANNELS/)
   assert.match(badges, /data-channel-scope/)
-  assert.match(settings, /channels\?: readonly UpstreamChannel\[\]/)
+  // SettingsCard / SettingField live in components/SettingsLayout.tsx (shared with plugin pages).
+  const layout = readFileSync(new URL('../components/SettingsLayout.tsx', import.meta.url), 'utf8')
+  assert.match(layout, /channels\?: readonly UpstreamChannel\[\]/)
   // 通用 Tab 里每张跨渠道卡片都必须带 channels，避免再出现"看不出给谁用"的设置。
   for (const title of ['settings.trafficProtection', 'settings.schedulingStrategy', 'settings.runtimeOptimization', 'settings.autoCleanup']) {
     assert.match(settings, new RegExp(`title=\\{t\\('${title.replace('.', '\\.')}'\\)\\}[^\\n]*channels=\\{ALL_UPSTREAM_CHANNELS\\}`), title)

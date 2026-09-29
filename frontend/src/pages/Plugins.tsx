@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Cable, ChevronRight, RefreshCw, Save, Search, Trash2 } from 'lucide-react'
+import { Archive, Cable, ChevronRight, Fingerprint, Paperclip, RefreshCw, Route, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import AccountGroupMultiSelect from '../components/AccountGroupMultiSelect'
 import LogAgentPanel from '../components/LogAgentPanel'
@@ -17,6 +17,8 @@ import { isBPSAccount, type BPSTriState } from '../lib/bpsAccount'
 import {
   PLUGIN_VIEWS,
   bpsConfigFields,
+  bpsConfigGroups,
+  type PluginConfigField,
   CAPTURE_PURGE_MODES,
   formatBlockDuration,
   formatCaptureBytes,
@@ -41,8 +43,10 @@ import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
+import { SETTINGS_FIELD_GRID, SETTINGS_ROW_LIST, SettingField, SettingsCard } from '../components/SettingsLayout'
 import type { AccountGroup, AccountRow, BPSDashboard, BPSPolicyBlocksResponse, BPSTrafficStats, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -159,6 +163,15 @@ function Field({ label, help, children }: { label: string; help?: string; childr
   )
 }
 
+// Icons of the BPS config groups (bpsConfigGroups).
+const BPS_CONFIG_GROUP_ICONS: Record<string, ReactNode> = {
+  routing: <Route />,
+  protection: <ShieldCheck />,
+  attachments: <Paperclip />,
+  identity: <Fingerprint />,
+  captures: <Archive />,
+}
+
 function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChanged: () => void }) {
   const { t } = useTranslation()
   const { showToast } = useToast()
@@ -191,6 +204,51 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
       showToast(getErrorMessage(err), 'error')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // configFieldHint is the field's own hint plus, for numbers, what 0 means.
+  const configFieldHint = (field: PluginConfigField): string => {
+    const parts: string[] = []
+    if (field.hint) parts.push(t(`plugins.bpsConfigHints.${field.key}`))
+    if (field.kind === 'number' && field.zeroMeans === 'default' && field.defaultValue !== undefined) parts.push(t('plugins.zeroMeansDefault', { value: field.defaultValue }))
+    if (field.kind === 'number' && field.zeroMeans === 'off') parts.push(t('plugins.zeroMeansOff'))
+    return parts.join(' ')
+  }
+  const renderConfigInput = (field: PluginConfigField) => {
+    switch (field.kind) {
+      case 'number':
+        return (
+          <DraftNumberInput
+            value={typeof config[field.key] === 'number' ? (config[field.key] as number) : 0}
+            onValueChange={(value) => setConfig((prev) => ({ ...prev, [field.key]: value }))}
+            min={field.min}
+            max={field.max}
+            integer
+            disabled={saving}
+            aria-label={t(`plugins.bpsConfig.${field.key}`)}
+          />
+        )
+      case 'list':
+        return (
+          <Input
+            value={pluginConfigListText(config, field.key)}
+            onChange={(event) => setConfig((prev) => ({ ...prev, [field.key]: event.target.value }))}
+            placeholder={field.defaultValue.join(', ')}
+            disabled={saving}
+            aria-label={t(`plugins.bpsConfig.${field.key}`)}
+          />
+        )
+      default:
+        return (
+          <Input
+            value={typeof config[field.key] === 'string' ? (config[field.key] as string) : ''}
+            onChange={(event) => setConfig((prev) => ({ ...prev, [field.key]: event.target.value }))}
+            placeholder={field.kind === 'text' && field.placeholder ? field.placeholder : t('plugins.defaultValue')}
+            disabled={saving}
+            aria-label={t(`plugins.bpsConfig.${field.key}`)}
+          />
+        )
     }
   }
 
@@ -275,46 +333,45 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
         }
       >
         {typedFields ? (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {typedFields.map((field) => (
-              <Field key={field.key} label={t(`plugins.bpsConfig.${field.key}`)} help={field.hint ? t(`plugins.bpsConfigHints.${field.key}`) : undefined}>
-                {field.kind === 'number' ? (
-                  <DraftNumberInput
-                    value={typeof config[field.key] === 'number' ? (config[field.key] as number) : 0}
-                    onValueChange={(value) => setConfig((prev) => ({ ...prev, [field.key]: value }))}
-                    min={field.min}
-                    max={field.max}
-                    integer
-                    disabled={saving}
-                    aria-label={t(`plugins.bpsConfig.${field.key}`)}
-                  />
-                ) : field.kind === 'boolean' ? (
-                  <div className="flex h-9 items-center">
-                    <Switch
-                      checked={pluginConfigBoolean(config, field)}
-                      onCheckedChange={(value) => setConfig((prev) => ({ ...prev, [field.key]: value }))}
-                      disabled={saving}
-                      aria-label={t(`plugins.bpsConfig.${field.key}`)}
-                    />
-                  </div>
-                ) : field.kind === 'list' ? (
-                  <Input
-                    value={pluginConfigListText(config, field.key)}
-                    onChange={(event) => setConfig((prev) => ({ ...prev, [field.key]: event.target.value }))}
-                    placeholder={field.defaultValue.join(', ')}
-                    disabled={saving}
-                    aria-label={t(`plugins.bpsConfig.${field.key}`)}
-                  />
-                ) : (
-                  <Input
-                    value={typeof config[field.key] === 'string' ? (config[field.key] as string) : ''}
-                    onChange={(event) => setConfig((prev) => ({ ...prev, [field.key]: event.target.value }))}
-                    placeholder={t('plugins.defaultValue')}
-                    disabled={saving}
-                  />
-                )}
-              </Field>
-            ))}
+          <div className="space-y-4">
+            {bpsConfigGroups.map((group) => {
+              const fields = group.fields.map((key) => typedFields.find((field) => field.key === key)).filter((field): field is PluginConfigField => Boolean(field))
+              const inputs = fields.filter((field) => field.kind !== 'boolean')
+              const toggles = fields.filter((field) => field.kind === 'boolean')
+              return (
+                <SettingsCard
+                  key={group.key}
+                  title={t(`plugins.bpsConfigGroups.${group.key}.title`)}
+                  description={t(`plugins.bpsConfigGroups.${group.key}.description`)}
+                  icon={BPS_CONFIG_GROUP_ICONS[group.key]}
+                >
+                  {inputs.length > 0 && (
+                    <div className={SETTINGS_FIELD_GRID}>
+                      {inputs.map((field) => (
+                        <div key={field.key} className="flex min-w-0 flex-col gap-1.5">
+                          <SettingField label={t(`plugins.bpsConfig.${field.key}`)}>{renderConfigInput(field)}</SettingField>
+                          {configFieldHint(field) && <p className="text-xs leading-relaxed text-muted-foreground">{configFieldHint(field)}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {toggles.length > 0 && (
+                    <div className={cn(SETTINGS_ROW_LIST, inputs.length > 0 && 'mt-5 border-t border-border/60 pt-4')}>
+                      {toggles.map((field) => (
+                        <SettingField key={field.key} layout="row" label={t(`plugins.bpsConfig.${field.key}`)} description={configFieldHint(field)}>
+                          <Switch
+                            checked={pluginConfigBoolean(config, field)}
+                            onCheckedChange={(value) => setConfig((prev) => ({ ...prev, [field.key]: value }))}
+                            disabled={saving}
+                            aria-label={t(`plugins.bpsConfig.${field.key}`)}
+                          />
+                        </SettingField>
+                      ))}
+                    </div>
+                  )}
+                </SettingsCard>
+              )
+            })}
           </div>
         ) : (
           <textarea
@@ -324,7 +381,6 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
             aria-label={t('plugins.config')}
           />
         )}
-        {typedFields && <p className="text-xs text-muted-foreground">{t('plugins.configZeroDefault')}</p>}
       </Section>
 
       <PluginAccounts plugin={plugin} onChanged={onChanged} />
@@ -335,9 +391,6 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
 
 const POLICY_BLOCKS_REFRESH_MS = 30_000
 
-// PolicyBlocks shows which accounts the BPS usage policy is blocking, for how
-// long (ticking live), their tier and probes, plus the block history and
-// per-account totals, including recovery times.
 const BPS_DASHBOARD_REFRESH_MS = 15_000
 
 // BPSDashboard is the BPS health dashboard: usable accounts against the
@@ -486,6 +539,9 @@ function BPSDashboardPanel({ plugin }: { plugin: TransportPlugin }) {
   )
 }
 
+// PolicyBlocks shows which accounts the BPS usage policy is blocking, for how
+// long (ticking live), their tier and probes, plus the block history and
+// per-account totals, including recovery times.
 function PolicyBlocks({ plugin }: { plugin: TransportPlugin }) {
   const { t } = useTranslation()
   const [data, setData] = useState<BPSPolicyBlocksResponse | null>(null)

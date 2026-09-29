@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { BPS_ACCOUNT_STATES, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { BPS_ACCOUNT_STATES, bpsConfigGroups, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -68,6 +68,7 @@ test('plugin i18n keys exist in zh, en and zh-TW', () => {
   for (const view of PLUGIN_VIEWS) used.add(`views.${view}`)
   for (const dir of ['request', 'upstream_request', 'response', 'error']) used.add(`directions.${dir}`)
   for (const reason of [...PLUGIN_COOLING_REASONS, 'unknown']) used.add(`coolingReasons.${reason}`)
+  for (const group of bpsConfigGroups) used.add(`bpsConfigGroups.${group.key}.title`).add(`bpsConfigGroups.${group.key}.description`)
   for (const state of BPS_ACCOUNT_STATES) used.add(`dashStates.${state}`)
   for (const key of ['dashRequests', 'dashSuccessRate', 'dashOrg429', 'dashAccount429', 'dashPolicyBlocks', 'dashFirstToken']) used.add(key)
   for (const mode of CAPTURE_PURGE_MODES) used.add(`purgeModes.${mode}`)
@@ -197,4 +198,34 @@ test('BPS health dashboard: panels, states, live updates and the server contract
   assert.equal(formatSuccessRate(0.4, 5), '40.0%')
   assert.equal(formatSuccessRate(0.98765, 100), '98.8%')
   assert.equal(formatSuccessRate(0, 0), '—')
+})
+
+test('BPS config form is grouped into labeled cards with every field exactly once', () => {
+  const grouped = bpsConfigGroups.flatMap(group => group.fields)
+  assert.deepEqual([...grouped].sort(), bpsConfigFields.map(field => field.key).sort(), 'every field in a group')
+  assert.equal(new Set(grouped).size, grouped.length, 'no field in two groups')
+  const page = read('pages/Plugins.tsx')
+  for (const needle of [
+    "from '../components/SettingsLayout'", '<SettingsCard', 'className={SETTINGS_FIELD_GRID}', 'SETTINGS_ROW_LIST', 'layout="row"',
+    'BPS_CONFIG_GROUP_ICONS[group.key]', 'configFieldHint(field)',
+  ]) assert.ok(page.includes(needle), needle)
+  // Every number field says what 0 means, and the defaults match the server.
+  for (const field of bpsConfigFields.filter(field => field.kind === 'number')) {
+    assert.ok(field.zeroMeans, `${field.key} states what 0 means`)
+    if (field.zeroMeans === 'default') assert.equal(typeof field.defaultValue, 'number', field.key)
+  }
+  const db = ['bps_plugin.go', 'bps_round_identity.go', 'bps_turn_identity.go'].map(name => readFileSync(srcRoot + '../../database/' + name, 'utf8')).join('\n')
+  const serverDefault = name => Number(db.match(new RegExp(`${name}\\s*=\\s*(\\d+)`))[1])
+  const want = {
+    round_convergence_limit: serverDefault('DefaultBPSRoundConvergenceLimit'),
+    round_task_lifetime_hours: serverDefault('DefaultBPSRoundTaskLifetimeHours'),
+    turn_round_limit: serverDefault('DefaultBPSTurnRoundLimit'),
+    turn_task_lifetime_hours: serverDefault('DefaultBPSTurnTaskLifetimeHours'),
+    attachment_request_concurrency: serverDefault('DefaultBPSAttachmentRequestConcurrency'),
+    attachment_instance_concurrency: serverDefault('DefaultBPSAttachmentInstanceConcurrency'),
+    attachment_account_concurrency: serverDefault('DefaultBPSAttachmentAccountConcurrency'),
+  }
+  for (const [key, value] of Object.entries(want)) {
+    assert.equal(bpsConfigFields.find(field => field.key === key).defaultValue, value, `${key} default matches the server`)
+  }
 })
