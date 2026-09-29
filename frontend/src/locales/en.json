@@ -2114,6 +2114,20 @@
         "bps": "BPS"
       },
       "inheritImageTrim": "Inherit (plugin default)"
+    },
+    "batchGroupAdd": "Add to group",
+    "batchGroupAddTitle": "Add accounts to groups",
+    "batchGroupAddDesc": "Adds {{count}} accounts to the selected groups and keeps their current groups. Adding accounts to a group enabled on the BPS plugin puts them on BPS without the global switch.",
+    "batchGroupAddFieldHint": "Choose the groups to add (at least one)",
+    "batchBPS": {
+      "action": "Set BPS",
+      "title": "Batch BPS settings",
+      "desc": "Sets BPS for the {{count}} selected accounts. Every field starts as \"keep\"; only changed fields are applied. Accounts that cannot use BPS are skipped and counted as failed.",
+      "keep": "Keep unchanged",
+      "replaceScope": "Change {{field}}",
+      "scopeHint": "Turn a switch on to replace that model scope; leaving it empty clears the scope.",
+      "apply": "Apply {{count}} changes",
+      "done": "BPS settings updated: {{success}} succeeded, {{fail}} failed"
     }
   },
   "invite": {
@@ -7386,7 +7400,7 @@
     "enablement": "Enablement",
     "enablementDesc": "Precedence: account setting > account group > global switch. Off by default.",
     "groups": "Enabled account groups",
-    "groupsDesc": "Accounts in these groups use the plugin unless set otherwise.",
+    "groupsDesc": "Accounts in these groups use the plugin unless set per account; the global switch is not needed. Create a group here, then on Accounts select accounts → Add to group.",
     "groupsPlaceholder": "Select account groups",
     "saved": "Saved",
     "capture": "Packet capture",
@@ -7620,7 +7634,10 @@
     "dashDisabled": "Disabled (excluded)",
     "accountDisabled": "account disabled, not served by BPS",
     "dashInvalid": "Invalid (excluded)",
-    "accountInvalid": "credential invalid (401 / error), not served by BPS"
+    "accountInvalid": "credential invalid (401 / error), not served by BPS",
+    "groupsMembers": "{{groups}} groups enabled, {{count}} members",
+    "groupsNoneEnabled": "No group is enabled yet",
+    "groupsAddAccounts": "Add accounts to a group →"
   },
   "logAgent": {
     "title": "AI log analysis",

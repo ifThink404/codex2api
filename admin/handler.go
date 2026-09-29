@@ -6517,6 +6517,9 @@ type batchUpdateAccountsReq struct {
 	Selector *accountOperationSelector `json:"selector,omitempty"`
 	Enabled  *bool                     `json:"enabled"`
 	Locked   *bool                     `json:"locked"`
+	// AddGroupIDs adds the accounts to these groups and keeps their other
+	// groups (group_ids replaces them); the two cannot be combined.
+	AddGroupIDs *[]int64 `json:"add_group_ids"`
 }
 
 func (h *Handler) accountOperationIdentity(id int64) (string, string) {
@@ -6973,13 +6976,43 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 	}
 	enabled := optionalBoolFromPtr(req.Enabled)
 	locked := optionalBoolFromPtr(req.Locked)
-	if !enabled.Set && !locked.Set && !schedulerUpdate.hasChanges() {
+	var addGroupIDs []int64
+	if req.AddGroupIDs != nil {
+		addGroupIDs = uniqueAccountIDs(*req.AddGroupIDs)
+		if len(addGroupIDs) == 0 {
+			writeError(c, http.StatusBadRequest, "add_group_ids 不能为空")
+			return
+		}
+		if schedulerUpdate.GroupIDs.Set {
+			writeError(c, http.StatusBadRequest, "group_ids 与 add_group_ids 不能同时提供")
+			return
+		}
+	}
+	metadataChanges := enabled.Set || locked.Set || schedulerUpdate.hasChanges()
+	if !metadataChanges && len(addGroupIDs) == 0 {
 		writeError(c, http.StatusBadRequest, "请提供要更新的字段")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
+
+	// BPS fields only apply to accounts that can use BPS: the others in the
+	// selection are skipped and reported as failed.
+	requested := int64(len(ids))
+	if codexBPSFieldsChanged(schedulerUpdate.CredentialUpdates) {
+		eligible := make([]int64, 0, len(ids))
+		for _, id := range ids {
+			if h.validateCodexBPSAccountTarget(id, schedulerUpdate.CredentialUpdates) == nil {
+				eligible = append(eligible, id)
+			}
+		}
+		ids = eligible
+		if len(ids) == 0 {
+			c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("已更新 0 个账号，失败 %d 个（账号类型不支持 BPS）", requested), "success": 0, "failed": requested})
+			return
+		}
+	}
 
 	if schedulerUpdate.AllowedAPIKeyIDs.Set {
 		missingAPIKeyIDs, err := h.findMissingAPIKeyIDs(ctx, schedulerUpdate.AllowedAPIKeyIDs.Values)
@@ -6996,8 +7029,12 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 			return
 		}
 	}
-	if schedulerUpdate.GroupIDs.Set {
-		missingGroupIDs, err := h.db.VerifyAccountGroupIDs(ctx, schedulerUpdate.GroupIDs.Values)
+	groupTargets := schedulerUpdate.GroupIDs.Values
+	if len(addGroupIDs) > 0 {
+		groupTargets = addGroupIDs
+	}
+	if schedulerUpdate.GroupIDs.Set || len(addGroupIDs) > 0 {
+		missingGroupIDs, err := h.db.VerifyAccountGroupIDs(ctx, groupTargets)
 		if err != nil {
 			writeError(c, http.StatusInternalServerError, "校验账号分组失败: "+err.Error())
 			return
@@ -7010,7 +7047,7 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, "group_ids 包含不存在的分组 ID: "+strings.Join(values, ", "))
 			return
 		}
-		if len(schedulerUpdate.GroupIDs.Values) > 0 {
+		if len(groupTargets) > 0 {
 			rows, err := h.db.ListActive(ctx)
 			if err != nil {
 				writeError(c, http.StatusInternalServerError, "查询账号失败: "+err.Error())
@@ -7026,29 +7063,59 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 					targetRows = append(targetRows, row)
 				}
 			}
-			if err := h.validateGroupChannelForRows(ctx, targetRows, schedulerUpdate.GroupIDs.Values); err != nil {
+			if err := h.validateGroupChannelForRows(ctx, targetRows, groupTargets); err != nil {
 				writeError(c, http.StatusBadRequest, err.Error())
 				return
+			}
+			if len(addGroupIDs) > 0 {
+				// Only existing accounts are added to groups.
+				ids = ids[:0]
+				for _, row := range targetRows {
+					ids = append(ids, row.ID)
+				}
 			}
 		}
 	}
 
-	updatedIDs, err := h.db.BatchUpdateAccountMetadata(ctx, ids, database.BatchAccountMetadataUpdate{
-		Enabled:                 enabled,
-		Locked:                  locked,
-		ScoreBiasOverride:       schedulerUpdate.ScoreBiasOverride,
-		BaseConcurrencyOverride: schedulerUpdate.BaseConcurrencyOverride,
-		SkipWarmTier:            schedulerUpdate.SkipWarmTier,
-		Policies:                schedulerUpdate.accountPolicyUpdate(),
-		AllowedAPIKeyIDs:        schedulerUpdate.AllowedAPIKeyIDs,
-		Tags:                    database.OptionalStringSlice{Set: schedulerUpdate.Tags.Set, Values: schedulerUpdate.Tags.Values},
-		GroupIDs:                schedulerUpdate.GroupIDs,
-		ProxyURL:                schedulerUpdate.ProxyURL,
-		CredentialUpdates:       schedulerUpdate.CredentialUpdates,
-	})
-	if err != nil {
-		writeError(c, http.StatusInternalServerError, "批量更新账号失败: "+err.Error())
-		return
+	updatedIDs := ids
+	if metadataChanges {
+		updatedIDs, err = h.db.BatchUpdateAccountMetadata(ctx, ids, database.BatchAccountMetadataUpdate{
+			Enabled:                 enabled,
+			Locked:                  locked,
+			ScoreBiasOverride:       schedulerUpdate.ScoreBiasOverride,
+			BaseConcurrencyOverride: schedulerUpdate.BaseConcurrencyOverride,
+			SkipWarmTier:            schedulerUpdate.SkipWarmTier,
+			Policies:                schedulerUpdate.accountPolicyUpdate(),
+			AllowedAPIKeyIDs:        schedulerUpdate.AllowedAPIKeyIDs,
+			Tags:                    database.OptionalStringSlice{Set: schedulerUpdate.Tags.Set, Values: schedulerUpdate.Tags.Values},
+			GroupIDs:                schedulerUpdate.GroupIDs,
+			ProxyURL:                schedulerUpdate.ProxyURL,
+			CredentialUpdates:       schedulerUpdate.CredentialUpdates,
+		})
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "批量更新账号失败: "+err.Error())
+			return
+		}
+	}
+	if len(addGroupIDs) > 0 && len(updatedIDs) > 0 {
+		if err := h.db.AddAccountsToGroups(ctx, updatedIDs, addGroupIDs); err != nil {
+			writeError(c, http.StatusInternalServerError, "批量加入分组失败: "+err.Error())
+			return
+		}
+		if h.store != nil {
+			memberships, err := h.db.ListAccountGroupMembershipsByAccountIDs(ctx, updatedIDs)
+			if err == nil {
+				for _, id := range updatedIDs {
+					h.store.ApplyAccountGroups(id, memberships[id])
+				}
+			}
+		}
+	}
+	// BPS keys are not watched by the account outbox triggers; publish them.
+	if codexBPSFieldsChanged(schedulerUpdate.CredentialUpdates) {
+		for _, id := range updatedIDs {
+			_ = h.db.InsertSchedulerOutboxEvent(ctx, database.SchedulerEntityAccount, id, "updated")
+		}
 	}
 
 	if h.store != nil {
@@ -7074,7 +7141,7 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 	}
 
 	success := int64(len(updatedIDs))
-	failed := int64(len(ids)) - success
+	failed := requested - success
 	c.JSON(http.StatusOK, gin.H{
 		"message": fmt.Sprintf("已更新 %d 个账号，失败 %d 个", success, failed),
 		"success": success,

@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { formStateFromAccount, buildQuickConfigSavePayload } from './accountQuickConfig.ts'
-import { bpsFormFromAccount, bpsPayloadFromForm, isBPSAccount, parseRouteModels } from './bpsAccount.ts'
+import { batchBPSPayload, bpsFormFromAccount, bpsPayloadFromForm, emptyBatchBPSForm, isBPSAccount, parseRouteModels } from './bpsAccount.ts'
+import { buildBatchMetadataUpdate } from './accountBatchUpdate.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -57,4 +58,41 @@ test('BPS account controls use shared components, the scheduler API and i18n', (
     for (const mode of ['off', 'session', 'full', 'round', 'turn_round']) assert.ok(bps.convergenceModes[mode], `${lang} mode ${mode}`)
     for (const mode of ['auto', 'codex', 'bps']) assert.ok(bps.testModes[mode], `${lang} test mode ${mode}`)
   }
+})
+
+test('batch BPS sends only the changed fields', () => {
+  assert.deepEqual(batchBPSPayload(emptyBatchBPSForm()), {}, 'everything kept')
+  assert.deepEqual(batchBPSPayload({ ...emptyBatchBPSForm(), enabled: 'on', profile: 'excel', native: 'inherit', bpsModels: 'gpt-6-*, gpt-5.6-*', nativeModels: '' }), {
+    codex_bps_enabled: true, codex_native_enabled: null, codex_bps_profile: 'excel', codex_bps_models: ['gpt-6-*', 'gpt-5.6-*'], codex_native_models: [],
+  })
+  assert.deepEqual(batchBPSPayload({ ...emptyBatchBPSForm(), enabled: 'off', imageTrim: 'off', convergence: 'turn_round' }), {
+    codex_bps_enabled: false, codex_bps_image_trim_enabled: false, codex_bps_convergence: 'turn_round',
+  })
+})
+
+test('accounts page: batch BPS, add to group and the group enable path', () => {
+  const page = read('pages/Accounts.tsx')
+  for (const needle of ['<BatchBPSDialog', 'onClick={() => setShowBatchBPS(true)}', 't("accounts.batchBPS.action")', 'onClick={() => openBatchGroupEditor("addGroups")}', 'addGroups: batchMetaMode === "addGroups"']) {
+    assert.ok(page.includes(needle), needle)
+  }
+  assert.deepEqual(buildBatchMetadataUpdate({ ids: [1], updateTags: false, tags: [], updateGroups: true, groupIds: [7], addGroups: true, updateScoreBias: false, scoreBias: null, updateBaseConcurrency: false, baseConcurrency: null, updateSchedulerPriority: false, schedulerPriority: null }), { ids: [1], add_group_ids: [7] })
+  const dialog = read('components/BatchBPSDialog.tsx')
+  assert.ok(dialog.includes('api.batchUpdateAccounts({ ids, ...payload })'))
+  const plugins = read('pages/Plugins.tsx')
+  for (const needle of ['onCreateGroup={createGroup}', "t('plugins.groupsMembers'", '<Link to="/accounts"']) assert.ok(plugins.includes(needle), needle)
+  const server = readFileSync(srcRoot + '../../admin/handler.go', 'utf8')
+  assert.ok(server.includes('AddGroupIDs *[]int64 `json:"add_group_ids"`'))
+  for (const name of ['zh', 'en', 'zh-TW']) {
+    const locale = JSON.parse(read(`locales/${name}.json`))
+    for (const key of ['action', 'title', 'desc', 'keep', 'replaceScope', 'scopeHint', 'apply', 'done']) assert.equal(typeof locale.accounts.batchBPS[key], 'string', `${name} batchBPS.${key}`)
+    for (const key of ['batchGroupAdd', 'batchGroupAddTitle', 'batchGroupAddDesc', 'batchGroupAddFieldHint']) assert.equal(typeof locale.accounts[key], 'string', `${name} ${key}`)
+    for (const key of ['groupsMembers', 'groupsNoneEnabled', 'groupsAddAccounts']) assert.equal(typeof locale.plugins[key], 'string', `${name} ${key}`)
+  }
+})
+
+test('a manual Codex connection test is allowed on BPS accounts', () => {
+  const server = readFileSync(srcRoot + '../../proxy/codex_test_mode.go', 'utf8')
+  assert.ok(!server.includes('BPSOwnsAccount'), 'no BPS refusal for an explicit Codex test')
+  const modal = read('components/TestConnectionModal.tsx')
+  assert.ok(modal.includes('(["auto", "codex", "bps"] as CodexTestMode[])'), 'all three test paths are offered')
 })

@@ -1630,6 +1630,8 @@ export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerReques
   selector?: AccountOperationSelector
   enabled?: boolean
   locked?: boolean
+  /** Adds the accounts to these groups, keeping their other groups (group_ids replaces). */
+  add_group_ids?: number[]
 }
 
 export interface AccountGroup {

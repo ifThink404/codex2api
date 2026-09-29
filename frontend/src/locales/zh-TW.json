@@ -569,6 +569,20 @@
         "bps": "BPS"
       },
       "inheritImageTrim": "繼承（外掛預設）"
+    },
+    "batchGroupAdd": "加入分組",
+    "batchGroupAddTitle": "批次加入分組",
+    "batchGroupAddDesc": "把 {{count}} 個帳號加入所選分組，保留它們現有的分組。把帳號加入一個在 BPS 外掛裡啟用的分組，即可讓這些帳號走 BPS，無需打開全域開關。",
+    "batchGroupAddFieldHint": "選擇要加入的分組（至少一個）",
+    "batchBPS": {
+      "action": "批次設定 BPS",
+      "title": "批次設定 BPS",
+      "desc": "為所選 {{count}} 個帳號統一設定 BPS。每項預設「保持不變」，只修改改動過的項；不支援 BPS 的帳號會被略過並計為失敗。",
+      "keep": "保持不變",
+      "replaceScope": "修改{{field}}",
+      "scopeHint": "打開開關後替換模型範圍；開啟但留空會清空該範圍。",
+      "apply": "套用 {{count}} 項",
+      "done": "BPS 設定已更新：成功 {{success}} 個，失敗 {{fail}} 個"
     }
   },
   "runtime": {
@@ -2490,7 +2504,7 @@
     "enablement": "啟用範圍",
     "enablementDesc": "優先順序：單一帳號設定 > 帳號分組 > 全域開關。預設關閉。",
     "groups": "啟用的帳號分組",
-    "groupsDesc": "分組內帳號在未單獨設定時啟用外掛。",
+    "groupsDesc": "分組內帳號在未單獨設定時啟用外掛，無需打開全域開關。可在此新建分組，再到帳號管理多選帳號 →「加入分組」。",
     "groupsPlaceholder": "選擇帳號分組",
     "saved": "已儲存",
     "capture": "封包擷取",
@@ -2724,7 +2738,10 @@
     "dashDisabled": "已停用（不計入）",
     "accountDisabled": "帳號已停用，不參與 BPS",
     "dashInvalid": "失效（不計入）",
-    "accountInvalid": "憑證失效（401 / 錯誤），不參與 BPS"
+    "accountInvalid": "憑證失效（401 / 錯誤），不參與 BPS",
+    "groupsMembers": "已啟用 {{groups}} 個分組，共 {{count}} 個成員",
+    "groupsNoneEnabled": "尚未啟用任何分組",
+    "groupsAddAccounts": "去帳號管理加入分組 →"
   },
   "logAgent": {
     "title": "AI 日誌分析",

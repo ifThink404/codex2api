@@ -20,6 +20,7 @@ import {
   type ProxyBindingContext,
 } from "../lib/accountProxyBinding";
 import Modal from "../components/Modal";
+import BatchBPSDialog from "../components/BatchBPSDialog";
 import ChannelLogo from "../components/ChannelLogo";
 import { useVisibleChannels } from "../visibleChannels";
 import ModelLogo from "../components/ModelLogo";
@@ -172,7 +173,9 @@ import {
   BarChart3,
   Search,
   Fingerprint,
+  Cable,
   FolderOpen,
+  FolderPlus,
   Layers,
   Cloud,
   Lock,
@@ -2231,7 +2234,9 @@ export default function Accounts() {
   });
   const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [showBatchMetaEditor, setShowBatchMetaEditor] = useState(false);
-  const [batchMetaMode, setBatchMetaMode] = useState<"all" | "groups">("all");
+  // groups replaces the selected accounts' groups; addGroups adds to them.
+  const [batchMetaMode, setBatchMetaMode] = useState<"all" | "groups" | "addGroups">("all");
+  const [showBatchBPS, setShowBatchBPS] = useState(false);
   const [batchUpdateProbePolicy, setBatchUpdateProbePolicy] = useState(false);
   const [batchProbePolicy, setBatchProbePolicy] = useState(accountProbePolicyFromAccount);
   const [batchUpdateTags, setBatchUpdateTags] = useState(false);
@@ -5174,10 +5179,10 @@ export default function Accounts() {
     setShowBatchMetaEditor(true);
   };
 
-  const openBatchGroupEditor = () => {
+  const openBatchGroupEditor = (mode: "groups" | "addGroups" = "groups") => {
     setBatchUpdateProbePolicy(false);
     setBatchProbePolicy(accountProbePolicyFromAccount());
-    setBatchMetaMode("groups");
+    setBatchMetaMode(mode);
     setBatchUpdateTags(false);
     setBatchTags([]);
     setBatchUpdateGroups(true);
@@ -5429,9 +5434,9 @@ export default function Accounts() {
     batchUpdateSchedulerPriority &&
     isSchedulerPriorityInputInvalid(batchSchedulerPriorityInput);
   const batchMetaHasUpdates =
+    (batchMetaMode === "addGroups" ? batchGroupIds.length > 0 : batchUpdateGroups) ||
     batchUpdateProbePolicy ||
     batchUpdateTags ||
-    batchUpdateGroups ||
     batchUpdateScoreBias ||
     batchUpdateBaseConcurrency ||
     batchUpdateSchedulerPriority ||
@@ -5460,6 +5465,7 @@ export default function Accounts() {
           tags: batchTags,
           updateGroups: batchUpdateGroups,
           groupIds: batchGroupIds,
+          addGroups: batchMetaMode === "addGroups",
           updateScoreBias: batchUpdateScoreBias,
           scoreBias: batchScoreBiasValue,
           updateBaseConcurrency: batchUpdateBaseConcurrency,
@@ -7397,11 +7403,36 @@ export default function Accounts() {
                   variant="outline"
                   size="sm"
                   disabled={batchLoading || batchTesting}
-                  onClick={openBatchGroupEditor}
+                  onClick={() => openBatchGroupEditor("addGroups")}
+                  title={t("accounts.batchGroupAdd")}
+                >
+                  <FolderPlus className="size-3.5" />
+                  <span className="hidden sm:inline">
+                    {t("accounts.batchGroupAdd")}
+                  </span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={batchLoading || batchTesting}
+                  onClick={() => openBatchGroupEditor()}
+                  title={t("accounts.batchGroupEdit")}
                 >
                   <FolderOpen className="size-3.5" />
                   <span className="hidden sm:inline">
                     {t("accounts.batchGroupEdit")}
+                  </span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={batchLoading || batchTesting}
+                  onClick={() => setShowBatchBPS(true)}
+                  title={t("accounts.batchBPS.action")}
+                >
+                  <Cable className="size-3.5" />
+                  <span className="hidden sm:inline">
+                    {t("accounts.batchBPS.action")}
                   </span>
                 </Button>
                 <HeaderActionMenu
@@ -10611,9 +10642,11 @@ export default function Accounts() {
           <Modal
             show={showBatchMetaEditor}
             title={t(
-              batchMetaMode === "groups"
-                ? "accounts.batchGroupTitle"
-                : "accounts.batchMetaTitle",
+              batchMetaMode === "addGroups"
+                ? "accounts.batchGroupAddTitle"
+                : batchMetaMode === "groups"
+                  ? "accounts.batchGroupTitle"
+                  : "accounts.batchMetaTitle",
             )}
             contentClassName="sm:max-w-[760px]"
             onClose={() => {
@@ -10641,7 +10674,9 @@ export default function Accounts() {
                 >
                   {batchMetaSubmitting
                     ? t("common.saving")
-                    : batchMetaMode === "groups"
+                    : batchMetaMode === "addGroups"
+                      ? t("accounts.batchGroupAdd")
+                      : batchMetaMode === "groups"
                       ? batchGroupIds.length === 0
                         ? t("accounts.batchGroupClear")
                         : t("accounts.batchGroupReplace")
@@ -10653,9 +10688,11 @@ export default function Accounts() {
             <div className="space-y-4">
               <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
                 {t(
-                  batchMetaMode === "groups"
-                    ? "accounts.batchGroupDesc"
-                    : "accounts.batchMetaDesc",
+                  batchMetaMode === "addGroups"
+                    ? "accounts.batchGroupAddDesc"
+                    : batchMetaMode === "groups"
+                      ? "accounts.batchGroupDesc"
+                      : "accounts.batchMetaDesc",
                   { count: selected.size },
                 )}
               </div>
@@ -10894,9 +10931,11 @@ export default function Accounts() {
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {t(
-                        batchMetaMode === "groups"
-                          ? "accounts.batchGroupFieldHint"
-                          : "accounts.batchMetaFieldHint",
+                        batchMetaMode === "addGroups"
+                          ? "accounts.batchGroupAddFieldHint"
+                          : batchMetaMode === "groups"
+                            ? "accounts.batchGroupFieldHint"
+                            : "accounts.batchMetaFieldHint",
                       )}
                     </div>
                   </div>
@@ -10936,9 +10975,11 @@ export default function Accounts() {
                     value={batchGroupIds}
                     onChange={setBatchGroupIds}
                     allLabel={t(
-                      batchUpdateGroups
-                        ? "accounts.groupsUnbound"
-                        : "accounts.batchMetaFieldHint",
+                      batchMetaMode === "addGroups"
+                        ? "accounts.batchGroupAddFieldHint"
+                        : batchUpdateGroups
+                          ? "accounts.groupsUnbound"
+                          : "accounts.batchMetaFieldHint",
                     )}
                     selectedLabel={t("accounts.groupsSelected", {
                       count: batchGroupIds.length,
@@ -10967,6 +11008,23 @@ export default function Accounts() {
               </div>
             </div>
           </Modal>
+
+          <BatchBPSDialog
+            show={showBatchBPS}
+            ids={Array.from(selected)}
+            onClose={() => setShowBatchBPS(false)}
+            onDone={(result) => {
+              setShowBatchBPS(false);
+              showToast(
+                t("accounts.batchBPS.done", {
+                  success: result.success,
+                  fail: result.failed,
+                }),
+                result.failed > 0 ? "error" : "success",
+              );
+              void reload();
+            }}
+          />
 
           <Modal
             show={showBatchQuotaAutoPauseEditor}

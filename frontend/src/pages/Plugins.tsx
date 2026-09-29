@@ -5,6 +5,7 @@ import { Archive, Cable, ChevronRight, Fingerprint, Gauge, HeartPulse, Hourglass
 import { Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '../api'
 import AccountGroupMultiSelect from '../components/AccountGroupMultiSelect'
+import { ACCOUNT_GROUP_COLORS } from '../components/AccountGroupManagerModal'
 import LogAgentPanel from '../components/LogAgentPanel'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
@@ -210,9 +211,26 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
     setConfigText(JSON.stringify(plugin.state.config ?? {}, null, 2))
   }, [plugin])
 
-  useEffect(() => {
-    api.listAccountGroups().then((res) => setGroups((res.groups ?? []).filter((group) => group.channel === 'codex'))).catch(() => setGroups([]))
-  }, [])
+  const loadGroups = useCallback(() => api.listAccountGroups()
+    .then((res) => setGroups((res.groups ?? []).filter((group) => group.channel === 'codex')))
+    .catch(() => setGroups([])), [])
+  useEffect(() => { void loadGroups() }, [loadGroups])
+  // Accounts in the saved enabled groups (a member of several counts once
+  // per group).
+  const groupMembers = groups.filter((group) => plugin.state.group_ids?.includes(group.id)).reduce((sum, group) => sum + group.member_count, 0)
+  const groupsDirty = [...groupIds].sort().join(',') !== [...(plugin.state.group_ids ?? [])].sort().join(',')
+  const createGroup = async (name: string): Promise<number | null> => {
+    const trimmed = name.trim()
+    if (!trimmed) return null
+    try {
+      const res = await api.createAccountGroup({ name: trimmed, channel: 'codex', color: ACCOUNT_GROUP_COLORS[groups.length % ACCOUNT_GROUP_COLORS.length] })
+      await loadGroups()
+      return res.id
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error')
+      return null
+    }
+  }
 
   const save = async (update: Parameters<typeof api.updateTransportPlugin>[1]) => {
     setSaving(true)
@@ -315,12 +333,25 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
                   emptyLabel={t('accounts.groupsNone')}
                   selectedLabel={t('accounts.groupsSelected', { count: groupIds.length })}
                   disabled={saving}
+                  onCreateGroup={createGroup}
+                  createLabel={t('accounts.groupCreate')}
+                  createPlaceholder={t('accounts.groupNamePlaceholder')}
+                  creatingLabel={t('accounts.groupCreating')}
+                  createEmptyHint={t('accounts.groupCreateInlineEmptyHint')}
                 />
               </div>
-              <Button variant="outline" size="sm" disabled={saving} onClick={() => void save({ group_ids: groupIds })}>
+              <Button variant={groupsDirty ? 'default' : 'outline'} size="sm" disabled={saving || !groupsDirty} onClick={() => void save({ group_ids: groupIds })}>
                 <Save className="size-3.5" />
                 {t('common.save')}
               </Button>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>
+                {plugin.state.group_ids?.length
+                  ? t('plugins.groupsMembers', { groups: plugin.state.group_ids.length, count: groupMembers })
+                  : t('plugins.groupsNoneEnabled')}
+              </span>
+              <Link to="/accounts" className="font-medium text-primary hover:underline">{t('plugins.groupsAddAccounts')}</Link>
             </div>
           </Field>
         </Section>

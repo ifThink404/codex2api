@@ -415,6 +415,31 @@ func (db *DB) BatchSetAccountGroups(ctx context.Context, accountIDs []int64, gro
 	return nil
 }
 
+// AddAccountsToGroups adds every account to every group, keeping the groups
+// they already belong to (batch "add to group"; BatchSetAccountGroups
+// replaces instead).
+func (db *DB) AddAccountsToGroups(ctx context.Context, accountIDs []int64, groupIDs []int64) error {
+	accountIDs = normalizeIDSlice(accountIDs)
+	groupIDs = normalizeIDSlice(groupIDs)
+	if len(accountIDs) == 0 || len(groupIDs) == 0 {
+		return nil
+	}
+	insertQ := "INSERT INTO account_group_members (account_id, group_id) VALUES ($1, $2) ON CONFLICT (account_id, group_id) DO NOTHING"
+	if db.isSQLite() {
+		insertQ = "INSERT INTO account_group_members (account_id, group_id) VALUES (?, ?) ON CONFLICT (account_id, group_id) DO NOTHING"
+	}
+	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		for _, accountID := range accountIDs {
+			for _, groupID := range groupIDs {
+				if _, err := tx.ExecContext(ctx, insertQ, accountID, groupID); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
 func (db *DB) GetAccountGroupIDs(ctx context.Context, accountID int64) ([]int64, error) {
 	query := "SELECT group_id FROM account_group_members WHERE account_id = $1 ORDER BY group_id"
 	if db.isSQLite() {

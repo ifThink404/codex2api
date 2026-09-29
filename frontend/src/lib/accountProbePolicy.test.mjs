@@ -140,7 +140,7 @@ test("batch probe changes are opt-in and preserve explicit auto and inherited ze
   assert.match(page, /<Switch\s+checked=\{batchUpdateProbePolicy\}/);
   assert.match(page, /<AccountProbePolicyFields\s+value=\{batchProbePolicy\}/);
   for (const opener of ["openBatchMetaEditor", "openBatchGroupEditor"]) {
-    const body = page.split(`const ${opener} = () => {`)[1]?.split("\n  };")[0] ?? "";
+    const body = page.split(new RegExp(`const ${opener} = \\([^)]*\\) => \\{`))[1]?.split("\n  };")[0] ?? "";
     assert.match(body, /setBatchUpdateProbePolicy\(false\)/);
   }
 });

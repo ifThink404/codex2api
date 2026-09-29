@@ -2114,6 +2114,20 @@
         "bps": "BPS"
       },
       "inheritImageTrim": "继承（插件默认）"
+    },
+    "batchGroupAdd": "加入分组",
+    "batchGroupAddTitle": "批量加入分组",
+    "batchGroupAddDesc": "把 {{count}} 个账号加入所选分组，保留它们现有的分组。把账号加入一个在 BPS 插件里启用的分组，即可让这些账号走 BPS，无需打开全局开关。",
+    "batchGroupAddFieldHint": "选择要加入的分组（至少一个）",
+    "batchBPS": {
+      "action": "批量设置 BPS",
+      "title": "批量设置 BPS",
+      "desc": "为所选 {{count}} 个账号统一设置 BPS。每项默认「保持不变」，只修改改动过的项；不支持 BPS 的账号会被跳过并计为失败。",
+      "keep": "保持不变",
+      "replaceScope": "修改{{field}}",
+      "scopeHint": "打开开关后替换模型范围；开启但留空会清空该范围。",
+      "apply": "应用 {{count}} 项",
+      "done": "BPS 设置已更新：成功 {{success}} 个，失败 {{fail}} 个"
     }
   },
   "invite": {
@@ -7383,7 +7397,7 @@
     "enablement": "启用范围",
     "enablementDesc": "优先级：单账号设置 > 账号分组 > 全局开关。默认关闭。",
     "groups": "启用的账号分组",
-    "groupsDesc": "分组内账号在未单独设置时启用插件。",
+    "groupsDesc": "分组内账号在未单独设置时启用插件，无需打开全局开关。可在此新建分组，再到账号管理多选账号 →「加入分组」。",
     "groupsPlaceholder": "选择账号分组",
     "saved": "已保存",
     "capture": "抓包",
@@ -7617,7 +7631,10 @@
     "dashDisabled": "已禁用（不计入）",
     "accountDisabled": "账号已禁用，不参与 BPS",
     "dashInvalid": "失效（不计入）",
-    "accountInvalid": "凭据失效（401 / 错误），不参与 BPS"
+    "accountInvalid": "凭据失效（401 / 错误），不参与 BPS",
+    "groupsMembers": "已启用 {{groups}} 个分组，共 {{count}} 个成员",
+    "groupsNoneEnabled": "尚未启用任何分组",
+    "groupsAddAccounts": "去账号管理加入分组 →"
   },
   "logAgent": {
     "title": "AI 日志分析",

@@ -92,3 +92,36 @@ export function bpsPayloadFromForm(form: BPSAccountForm, overrideOnly = false): 
     codex_bps_convergence: form.convergence,
   }
 }
+
+// Batch BPS settings: every field starts as 'keep' (left unchanged); only the
+// fields set to a value are sent to the batch update.
+export const BATCH_KEEP = 'keep' as const
+export type BatchKeep = typeof BATCH_KEEP
+
+export interface BatchBPSForm {
+  enabled: BPSTriState | BatchKeep
+  native: BPSTriState | BatchKeep
+  imageTrim: BPSTriState | BatchKeep
+  profile: CodexBPSProfile | BatchKeep
+  convergence: CodexBPSConvergence | BatchKeep
+  // Route model scopes: null keeps them; a string (possibly empty, which
+  // clears the scope) replaces them.
+  bpsModels: string | null
+  nativeModels: string | null
+}
+
+export function emptyBatchBPSForm(): BatchBPSForm {
+  return { enabled: BATCH_KEEP, native: BATCH_KEEP, imageTrim: BATCH_KEEP, profile: BATCH_KEEP, convergence: BATCH_KEEP, bpsModels: null, nativeModels: null }
+}
+
+export function batchBPSPayload(form: BatchBPSForm): Partial<UpdateAccountSchedulerRequest> {
+  const payload: Partial<UpdateAccountSchedulerRequest> = {}
+  if (form.enabled !== BATCH_KEEP) payload.codex_bps_enabled = triStateValue(form.enabled)
+  if (form.native !== BATCH_KEEP) payload.codex_native_enabled = triStateValue(form.native)
+  if (form.imageTrim !== BATCH_KEEP) payload.codex_bps_image_trim_enabled = triStateValue(form.imageTrim)
+  if (form.profile !== BATCH_KEEP) payload.codex_bps_profile = form.profile
+  if (form.convergence !== BATCH_KEEP) payload.codex_bps_convergence = form.convergence
+  if (form.bpsModels !== null) payload.codex_bps_models = parseRouteModels(form.bpsModels)
+  if (form.nativeModels !== null) payload.codex_native_models = parseRouteModels(form.nativeModels)
+  return payload
+}
