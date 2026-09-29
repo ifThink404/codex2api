@@ -71,6 +71,10 @@ type BPSConfig struct {
 	// AccountMaxConcurrency caps BPS requests in flight per account on each
 	// replica (0 = off).
 	AccountMaxConcurrency int `json:"bps_account_max_concurrency,omitempty"`
+	// AccountRequestBudget caps successful BPS requests per account over
+	// AccountBudgetWindow (a duration, default 24h), across replicas (0 = off).
+	AccountRequestBudget int    `json:"bps_account_request_budget,omitempty"`
+	AccountBudgetWindow  string `json:"bps_account_budget_window,omitempty"`
 	// Capture retention windows in hours (read by the plugin framework, see
 	// plugins.ParseCaptureRetention): other captures default 6 (1-12), error
 	// captures default and at most 12.
@@ -204,6 +208,14 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 	}
 	if cfg.AccountMaxConcurrency < 0 || cfg.AccountMaxConcurrency > 100 {
 		return BPSConfig{}, fmt.Errorf("bps_account_max_concurrency must be between 0 (off) and 100")
+	}
+	if cfg.AccountRequestBudget < 0 || cfg.AccountRequestBudget > 10_000_000 {
+		return BPSConfig{}, fmt.Errorf("bps_account_request_budget must be between 0 (off) and 10000000")
+	}
+	if window := strings.TrimSpace(cfg.AccountBudgetWindow); window != "" {
+		if d, err := time.ParseDuration(window); err != nil || d < time.Hour || d > 30*24*time.Hour {
+			return BPSConfig{}, fmt.Errorf("invalid bps_account_budget_window %q (use a duration such as 24h, 1h to 720h)", cfg.AccountBudgetWindow)
+		}
 	}
 	if len(cfg.PolicyCooldownLadder) > 10 {
 		return BPSConfig{}, fmt.Errorf("bps_policy_cooldown_ladder holds at most 10 tiers")
@@ -639,6 +651,9 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		if err = bpsSleep(ctx, wait); err != nil {
 			return nil, err
 		}
+	}
+	if err == nil && resp != nil && resp.StatusCode < 300 && currentBPSConfig().AccountRequestBudget > 0 && env.Account != nil {
+		bpsBudgets.record(ctx, state.cache(), env.Account.ID(), currentBPSConfig().BudgetWindow())
 	}
 	if err != nil || resp == nil || resp.Body == nil {
 		release()

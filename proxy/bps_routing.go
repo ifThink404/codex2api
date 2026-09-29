@@ -50,6 +50,9 @@ func (s *bpsRequest) blockReason(ctx context.Context, account *auth.Account, mod
 	if !bpsRouteAllows(ctx, s.cache(), account, model, related) {
 		return BPSModelUnavailable
 	}
+	if bpsBudgetExhausted(ctx, s.cache(), account) {
+		return BPSBudgetExhaustedReason
+	}
 	if bpsConcurrencyFull(account) {
 		return BPSConcurrencyFullReason
 	}
@@ -182,6 +185,8 @@ func bpsRefusal(reason, model string, until time.Time) *Error {
 		return bpsError(http.StatusBadRequest, "bps_model_unavailable", "model %s is not available on BPS for this account", model)
 	case BPSPolicyBlockedKind:
 		return bpsError(http.StatusForbidden, "bps_policy_blocked", "this conversation was blocked by the BPS usage policy; retry later")
+	case BPSBudgetExhaustedReason:
+		return bpsError(http.StatusTooManyRequests, "bps_budget_exhausted", "the BPS request budget of this account is used up for the current window")
 	case BPSConcurrencyFullReason:
 		return bpsError(http.StatusTooManyRequests, "bps_concurrency_limited", "every BPS account is at its concurrency limit; retry shortly")
 	case BPSRateLimitedReason:

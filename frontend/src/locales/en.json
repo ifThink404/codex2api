@@ -7441,7 +7441,9 @@
       "image_trim_default": "Default attachment history trim",
       "capture_retention_hours": "Capture retention (hours)",
       "capture_error_retention_hours": "Error capture retention (hours)",
-      "bps_account_max_concurrency": "BPS concurrency per account"
+      "bps_account_max_concurrency": "BPS concurrency per account",
+      "bps_account_request_budget": "BPS request budget per account",
+      "bps_account_budget_window": "BPS budget window"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7464,7 +7466,9 @@
       "image_trim_default": "Applies to BPS accounts without their own setting. On by default, as in fj-server.",
       "capture_retention_hours": "Captures without an error: 1–12 hours, 0 uses the default (6).",
       "capture_error_retention_hours": "Error captures and the rest of their attempt: 1–12 hours, 0 uses the default (12).",
-      "bps_account_max_concurrency": "Most BPS requests in flight per account on each replica; extra requests go to another BPS account or wait briefly. 0 = off."
+      "bps_account_max_concurrency": "Most BPS requests in flight per account on each replica; extra requests go to another BPS account or wait briefly. 0 = off.",
+      "bps_account_request_budget": "Successful BPS requests per account within the window, counted across replicas; an account at its budget is not used for BPS until the window rolls. 0 = off.",
+      "bps_account_budget_window": "Rolling window for the request budget, such as 24h or 12h (1h–720h). Empty uses 24h."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7490,7 +7494,8 @@
     "purgeConfirm_errors_only": "Delete every error capture of this plugin. This cannot be undone.",
     "purgeConfirm_all": "Delete ALL captures of this plugin. This cannot be undone.",
     "purged": "Deleted {{count}} captures",
-    "inFlight": "BPS in flight {{current}}/{{max}}"
+    "inFlight": "BPS in flight {{current}}/{{max}}",
+    "budgetUsed": "BPS requests {{used}}/{{budget}} in window"
   },
   "logAgent": {
     "title": "AI log analysis",

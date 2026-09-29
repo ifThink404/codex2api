@@ -7438,7 +7438,9 @@
       "image_trim_default": "默认精简历史附件",
       "capture_retention_hours": "抓包保留时长（小时）",
       "capture_error_retention_hours": "错误抓包保留时长（小时）",
-      "bps_account_max_concurrency": "单账号 BPS 并发上限"
+      "bps_account_max_concurrency": "单账号 BPS 并发上限",
+      "bps_account_request_budget": "单账号 BPS 请求预算",
+      "bps_account_budget_window": "BPS 预算窗口"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7461,7 +7463,9 @@
       "image_trim_default": "用于没有单独设置的 BPS 账号；默认开启，与 fj-server 一致。",
       "capture_retention_hours": "无错误的抓包：1–12 小时，填 0 使用默认值（6）。",
       "capture_error_retention_hours": "错误抓包及同一次尝试的其余抓包：1–12 小时，填 0 使用默认值（12）。",
-      "bps_account_max_concurrency": "每个实例上单账号同时进行的 BPS 请求上限；超出的请求改走其他 BPS 账号或短暂排队。0 表示关闭。"
+      "bps_account_max_concurrency": "每个实例上单账号同时进行的 BPS 请求上限；超出的请求改走其他 BPS 账号或短暂排队。0 表示关闭。",
+      "bps_account_request_budget": "窗口内单账号成功的 BPS 请求数，跨实例统计；达到预算后在窗口滚动前不再走 BPS。0 表示关闭。",
+      "bps_account_budget_window": "请求预算的滚动窗口，如 24h、12h（1h–720h）。留空为 24h。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -7487,7 +7491,8 @@
     "purgeConfirm_errors_only": "删除该插件的所有错误抓包，操作不可撤销。",
     "purgeConfirm_all": "删除该插件的全部抓包，操作不可撤销。",
     "purged": "已删除 {{count}} 条抓包",
-    "inFlight": "BPS 并发 {{current}}/{{max}}"
+    "inFlight": "BPS 并发 {{current}}/{{max}}",
+    "budgetUsed": "BPS 请求 {{used}}/{{budget}}（窗口内）"
   },
   "logAgent": {
     "title": "AI 日志分析",

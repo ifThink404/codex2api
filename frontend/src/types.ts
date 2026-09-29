@@ -3816,6 +3816,8 @@ export interface PluginAccountStatus {
   policy_tiers?: number
   in_flight?: number
   max_concurrency?: number
+  budget_used?: number
+  budget?: number
   // models BPS refused for this account, mapped to when BPS is retried
   models_unavailable?: Record<string, string>
 }

@@ -145,3 +145,12 @@ test('captures page shows storage and purges with a mode and a confirmation', ()
   assert.equal(formatCaptureBytes(291 * 1024 * 1024), '291 MB')
   assert.equal(formatCaptureBytes(1536), '1.5 KB')
 })
+
+test('BPS account list shows concurrency and request budget usage', () => {
+  const page = read('pages/Plugins.tsx')
+  assert.ok(page.includes("t('plugins.inFlight'"))
+  assert.ok(page.includes("t('plugins.budgetUsed', { used: status.budget_used ?? 0, budget: status.budget })"))
+  for (const key of ['bps_account_max_concurrency', 'bps_account_request_budget', 'bps_account_budget_window']) {
+    assert.ok(bpsConfigFields.some(field => field.key === key && field.hint), key)
+  }
+})

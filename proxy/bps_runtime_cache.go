@@ -166,3 +166,18 @@ func (c *bpsRuntimeCache) supportsRuntimeOwner() bool {
 	_, ok := c.TokenCache.(cache.RuntimeOwnerStore)
 	return ok
 }
+
+func (c *bpsRuntimeCache) IncrRuntimeCounters(ctx context.Context, namespace, key string, deltas map[string]float64, ttl time.Duration) error {
+	if c.breaker.down() {
+		return errBPSRuntimeCacheDown
+	}
+	return c.breaker.observe(c.TokenCache.IncrRuntimeCounters(ctx, namespace, key, deltas, ttl))
+}
+
+func (c *bpsRuntimeCache) GetRuntimeCounters(ctx context.Context, namespace, key string) (map[string]float64, error) {
+	if c.breaker.down() {
+		return nil, errBPSRuntimeCacheDown
+	}
+	counters, err := c.TokenCache.GetRuntimeCounters(ctx, namespace, key)
+	return counters, c.breaker.observe(err)
+}
