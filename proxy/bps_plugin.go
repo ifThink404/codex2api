@@ -314,6 +314,11 @@ type bpsRequest struct {
 	mu sync.Mutex
 	// excluded are accounts whose BPS attempt this request must not retry.
 	excluded map[int64]bool
+	// blocked: the usage policy blocked this request or its conversation, so
+	// no account may serve it through BPS.
+	blocked          bool
+	conversationKeys []string
+	servable         map[string]map[int64]bool
 }
 
 // bpsStateCache is the runtime cache behind the plugin's account state.
@@ -346,6 +351,8 @@ func (bpsPlugin) BindRequest(req *plugins.Request) {
 	c.Request = c.Request.WithContext(withBPSCaller(c, c.Request.Context()))
 	state.inferred = bindInferredBPSSession(c, req.Body, identity, root)
 	state.upload = host.handler.newBPSUploadRequest(c, req.Body, state.compact)
+	state.conversationKeys = bpsConversationKeys(req, state.inferred)
+	state.blocked = state.conversationBlocked(c.Request.Context())
 	req.SetState(BPSPluginID, state)
 }
 
@@ -362,51 +369,50 @@ func (bpsPlugin) Pinned(_ context.Context, req *plugins.Request) bool {
 	return state != nil && state.pinned
 }
 
-// Admissible vetoes accounts during an active BPS upload cooldown for the
-// request's inline attachments, and accounts whose BPS route excludes the
-// model on a pinned request.
+// Admissible admits an account BPS can serve the request on (unless an
+// upload cooldown applies to the request's attachments). Otherwise it admits
+// the account only for its explicitly enabled native route, or as the last
+// resort when no other account could serve (the attempt then fails fast with
+// a clear error); a BPS account never spills onto native by default.
 func (bpsPlugin) Admissible(ctx context.Context, account *auth.Account, model string) (bool, string) {
 	req := plugins.RequestFromContext(ctx)
 	state := bpsRequestState(req)
 	if state == nil {
 		return true, ""
 	}
-	if state.pinned && !bpsRouteAllows(ctx, state.cache(), account, model, state.related) {
-		return false, "bps_route_unavailable"
+	reason := state.blockReason(ctx, account, model)
+	if reason == "" {
+		if bpsUploadCooldownForAccount(context.WithValue(ctx, bpsUploadRequestKey{}, state.upload), account) {
+			return false, bpsUploadCooldownReason
+		}
+		return true, ""
 	}
-	if state.accountExcluded(account) {
-		return false, "bps_account_refused"
+	if !state.pinned && bpsNativeExplicit(account, model, state.related) {
+		return true, ""
 	}
-	// A BPS cooldown vetoes the account unless native can serve this request.
-	if record, cooling := bpsAccountCooling(ctx, state.cache(), account.ID()); cooling && (state.pinned || !account.CodexRouteAllows("native", model, state.related, true)) {
-		return false, record.Reason
+	if reason != "bps_account_refused" && !state.servableElsewhere(ctx, account, model) {
+		return true, ""
 	}
-	if bpsRouteAllows(ctx, state.cache(), account, model, state.related) && bpsUploadCooldownForAccount(context.WithValue(ctx, bpsUploadRequestKey{}, state.upload), account) {
-		return false, bpsUploadCooldownReason
-	}
-	return true, ""
+	return false, reason
 }
 
-// Select: BPS serves the attempt when the account's BPS route allows the
-// model, or the request is pinned to BPS. Native keeps serving accounts whose
-// native route is still on unless the conversation is pinned.
+// Select: BPS serves the attempt when it can, unless the account's native
+// route is explicitly on (native keeps precedence there, as in fj-server) and
+// the conversation is not pinned to BPS. An account BPS cannot serve goes
+// native only through that explicit route; otherwise BPS keeps the attempt
+// and Execute returns the refusal.
 func (bpsPlugin) Select(ctx context.Context, attempt plugins.Attempt) bool {
 	state := bpsRequestState(attempt.Request)
 	related := state != nil && state.related
 	if mode, _ := ctx.Value(codexTestModeKey{}).(string); mode == "bps" || mode == "codex" {
 		return mode == "bps"
 	}
-	if !bpsRouteAllows(ctx, state.cache(), attempt.Account, attempt.Model, related) {
-		return false
+	pinned := state != nil && state.pinned
+	native := !pinned && bpsNativeExplicit(attempt.Account, attempt.Model, related)
+	if state.blockReason(ctx, attempt.Account, attempt.Model) != "" {
+		return !native
 	}
-	if state != nil && state.pinned {
-		return true
-	}
-	if _, cooling := bpsAccountCooling(ctx, state.cache(), attempt.Account.ID()); cooling {
-		// Admissible only admits a cooling account when native can serve it.
-		return false
-	}
-	return !attempt.Account.CodexRouteAllows("native", attempt.Model, related, true)
+	return pinned || !native
 }
 
 // PreferredAccounts: for a BPS-only model (bps_only_models) scheduling tries
@@ -417,14 +423,9 @@ func (bpsPlugin) PreferredAccounts(ctx context.Context, req *plugins.Request, mo
 		return nil
 	}
 	state := bpsRequestState(req)
-	related := state != nil && state.related
 	p, _ := plugins.Default().Get(BPSPluginID)
 	return func(account *auth.Account) bool {
-		if p == nil || !plugins.Default().EnabledFor(p, account) || !bpsRouteAllows(ctx, state.cache(), account, model, related) {
-			return false
-		}
-		_, cooling := bpsAccountCooling(ctx, state.cache(), account.ID())
-		return !cooling
+		return p != nil && plugins.Default().EnabledFor(p, account) && state.blockReason(ctx, account, model) == ""
 	}
 }
 
@@ -505,6 +506,12 @@ func bpsAttemptDiagnostic(env *plugins.ReqEnv) *CodexBPSDiagnostic {
 
 func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Response, error) {
 	state := bpsRequestState(env.Request)
+	if mode, _ := ctx.Value(codexTestModeKey{}).(string); state != nil && mode == "" {
+		if reason := state.blockReason(ctx, env.Account, env.Model); reason != "" {
+			record, _ := bpsAccountCooling(ctx, state.cache(), env.Account.ID())
+			return nil, bpsRefusal(reason, env.Model, record.Until)
+		}
+	}
 	var handler *Handler
 	if state != nil {
 		handler = state.handler
@@ -697,6 +704,9 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 	}
 	if class == BPSPolicyBlockedKind {
 		env.Request.SetUsageErrorKind(BPSPluginID, BPSPolicyBlockedKind)
+		// Hard stop: the blocked request is never replayed to another BPS
+		// account, and its conversation avoids BPS for a while.
+		state.markPolicyBlocked(context.Background())
 	}
 }
 

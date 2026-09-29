@@ -253,7 +253,7 @@ func TestBPSPluginPolicyBlockNeverRetriesTheSameAccount(t *testing.T) {
 	require.Contains(t, req.UsageErrorMessage(), "blocked by our usage policy", "and the provider's own text")
 	ok, reason := bpsPlugin{}.Admissible(ctx, account, "gpt-6-astra")
 	require.False(t, ok)
-	require.Equal(t, "bps_account_refused", reason)
+	require.Equal(t, BPSPolicyBlockedKind, reason, "the blocked request stays off BPS")
 
 	parsed, err := parseBPSConfig(nil)
 	require.NoError(t, err)
@@ -283,12 +283,20 @@ func TestBPSModelAccessRefusalRoutesThatModelNatively(t *testing.T) {
 	_, err := bpsPlugin{}.TransformJSON(env, http.StatusForbidden, []byte(bpsModelAccessBody))
 	require.NoError(t, err)
 
-	require.False(t, bpsPlugin{}.Select(ctx, attempt("gpt-5.5")), "the refused model is served natively")
-	require.True(t, bpsPlugin{}.Select(ctx, attempt("gpt-6-sol")), "other models stay on BPS")
-	ok, _ := bpsPlugin{}.Admissible(ctx, account, "gpt-5.5")
-	require.True(t, ok, "a model refusal does not take the account out of scheduling")
+	ok, reason := bpsPlugin{}.Admissible(ctx, account, "gpt-5.5")
+	require.False(t, ok, "native is off for this account: the refused model goes to another account")
+	require.Equal(t, BPSModelUnavailable, reason)
+	ok, _ = bpsPlugin{}.Admissible(ctx, account, "gpt-6-sol")
+	require.True(t, ok, "other models stay on BPS")
+	require.True(t, bpsPlugin{}.Select(ctx, attempt("gpt-6-sol")))
 	_, cooling := bpsAccountCooling(ctx, shared, account.ID())
 	require.False(t, cooling)
+
+	// With the native route explicitly on, the refused model is served natively there.
+	account.SetCodexBPSOptions(auth.CodexBPSAccountOptions{Native: boolPtrForUpstreamModelTest(true)})
+	ok, _ = bpsPlugin{}.Admissible(ctx, account, "gpt-5.5")
+	require.True(t, ok)
+	require.False(t, bpsPlugin{}.Select(ctx, attempt("gpt-5.5")))
 
 	statuses := BPSAccountStatuses(ctx, shared, []int64{account.ID()})
 	require.InDelta(t, time.Hour.Seconds(), time.Until(statuses[0].ModelsUnavailable["gpt-5.5"]).Seconds(), 5)
@@ -323,8 +331,12 @@ func TestBPSModelsConfigDecidesWhichModelsBPSServes(t *testing.T) {
 	req := plugins.NewRequest("req-models", plugins.KindResponses, nil, nil, 0)
 	req.SetState(BPSPluginID, &bpsRequest{})
 	ctx := plugins.WithRequest(context.Background(), req)
-	require.False(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: account, Model: "gpt-5.3-codex-spark"}), "models outside bps_models go native")
+	ok, reason := bpsPlugin{}.Admissible(ctx, account, "gpt-5.3-codex-spark")
+	require.False(t, ok, "models outside bps_models never spill onto this account's native route")
+	require.Equal(t, BPSModelUnavailable, reason)
 	require.True(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: account, Model: "gpt-6-sol"}))
+	native := withBPSOverride((&auth.Account{DBID: 9062, AccountID: "models-native", AccessToken: "at"}).SetCodexBPSOptions(auth.CodexBPSAccountOptions{Native: boolPtrForUpstreamModelTest(true)}), true)
+	require.False(t, bpsPlugin{}.Select(ctx, plugins.Attempt{Request: req, Account: native, Model: "gpt-5.3-codex-spark"}), "an explicit native route serves it natively")
 }
 
 func TestBPSOnlyModelsPreferBPSCapableAccounts(t *testing.T) {
