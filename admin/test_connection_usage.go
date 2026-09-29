@@ -7,6 +7,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -22,6 +23,9 @@ const (
 	connectionTestTransportStatus = 598
 
 	contextConnectionTestLastError = "connection_test_last_error"
+	// contextConnectionTestTransport holds the proxy.ConnectionTestUsage of a
+	// Codex connection test.
+	contextConnectionTestTransport = "connection_test_transport"
 )
 
 // connectionTestUsageInput 是探针收尾时从诊断对象抽出的记账字段。
@@ -224,6 +228,11 @@ func (h *Handler) logConnectionTestUsage(c *gin.Context, account *auth.Account, 
 		UpstreamErrorKind:    in.UpstreamErrorKind,
 	}
 	if c != nil {
+		if value, ok := c.Get(contextConnectionTestTransport); ok {
+			// A test served by a transport plugin records it like normal traffic.
+			usage, _ := value.(*proxy.ConnectionTestUsage)
+			usage.Apply(input)
+		}
 		input.ClientIP = strings.TrimSpace(c.ClientIP())
 		if c.Request != nil {
 			input.ClientUserAgent = strings.TrimSpace(c.Request.UserAgent())

@@ -129,6 +129,13 @@ func populateTransportPluginUsage(c *gin.Context, input *database.UsageLogInput)
 	if req == nil || req.ID != snapshotUpstreamTrace(c.Request.Context()).RequestID {
 		return
 	}
+	applyTransportPluginUsage(req, input)
+}
+
+// applyTransportPluginUsage stamps input with the transport, plugin metadata,
+// error details and upstream endpoint of req's latest attempt when a plugin
+// served it.
+func applyTransportPluginUsage(req *plugins.Request, input *database.UsageLogInput) {
 	transport, meta := req.Transport()
 	if transport == "" || transport == database.TransportNative {
 		return

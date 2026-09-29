@@ -226,7 +226,9 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else {
-		resp, reqErr = proxy.ExecuteCodexConnectionTest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account))
+		testCtx, usage := proxy.WithConnectionTestUsage(c.Request.Context())
+		c.Set(contextConnectionTestTransport, usage)
+		resp, reqErr = proxy.ExecuteCodexConnectionTest(testCtx, account, payload, h.store.ResolveProxyForAccount(account))
 	}
 	if reqErr != nil {
 		h.logConnectionTestTransportFailure(c, account, usageReason, usageEndpoint, testModel, usageEffort, start, reqErr)

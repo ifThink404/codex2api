@@ -302,3 +302,39 @@ func TestExecuteCodexConnectionTestModes(t *testing.T) {
 	run("codex")
 	require.EqualValues(t, 2, f.native.Load(), "explicit Codex mode stays native")
 }
+
+func TestConnectionTestUsageRecordsThePluginTransport(t *testing.T) {
+	f := newBPSHandlerFixture(t, nil)
+	payload := []byte(`{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`)
+	test := func() database.UsageLogInput {
+		t.Helper()
+		ctx, usage := WithConnectionTestUsage(context.Background())
+		resp, err := ExecuteCodexConnectionTest(ctx, f.account, payload, "")
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		input := database.UsageLogInput{Endpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", InternalReason: "connection_test"}
+		usage.Apply(&input)
+		return input
+	}
+	native := test()
+	require.EqualValues(t, 1, f.native.Load())
+	require.Empty(t, native.Transport, "a native test keeps the default transport")
+	require.Equal(t, "/v1/responses", native.UpstreamEndpoint)
+
+	on := true
+	f.store.ApplyAccountTransportPluginOverride(f.account.ID(), BPSPluginID, &on)
+	served := test()
+	require.EqualValues(t, 1, f.bps.Load())
+	require.Equal(t, BPSPluginID, served.Transport)
+	require.Equal(t, CodexBPSBaseURL+"/responses", served.UpstreamEndpoint)
+	require.Equal(t, "word", gjson.Get(served.PluginMeta, "profile").String())
+
+	// A nil or unused usage handle is a no-op.
+	var none *ConnectionTestUsage
+	none.Apply(&served)
+	_, unused := WithConnectionTestUsage(context.Background())
+	untouched := database.UsageLogInput{UpstreamEndpoint: "/v1/responses"}
+	unused.Apply(&untouched)
+	require.Empty(t, untouched.Transport)
+}

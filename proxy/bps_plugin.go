@@ -834,6 +834,29 @@ func (h *Handler) bpsStickyDomain(ctx context.Context, req *plugins.Request) boo
 	return false
 }
 
+type connectionTestUsageKey struct{}
+
+// ConnectionTestUsage carries the transport a connection test was served by,
+// so its usage row records it like a normal request's.
+type ConnectionTestUsage struct{ req *plugins.Request }
+
+// WithConnectionTestUsage lets ExecuteCodexConnectionTest report its
+// transport into the returned ConnectionTestUsage.
+func WithConnectionTestUsage(ctx context.Context) (context.Context, *ConnectionTestUsage) {
+	usage := &ConnectionTestUsage{}
+	return context.WithValue(ctx, connectionTestUsageKey{}, usage), usage
+}
+
+// Apply stamps a connection-test usage row with the plugin transport,
+// plugin_meta, error details and upstream endpoint when a plugin served the
+// test; native tests are left unchanged.
+func (u *ConnectionTestUsage) Apply(input *database.UsageLogInput) {
+	if u == nil || u.req == nil || input == nil {
+		return
+	}
+	applyTransportPluginUsage(u.req, input)
+}
+
 // UpstreamExcelBPSActive is the exported form of upstreamExcelBPSActive for
 // upstream's admin connection-test intercept sites.
 func UpstreamExcelBPSActive(account *auth.Account, model string) bool {
@@ -846,6 +869,10 @@ func UpstreamExcelBPSActive(account *auth.Account, model string) bool {
 func ExecuteCodexConnectionTest(ctx context.Context, account *auth.Account, payload []byte, proxyURL string) (*http.Response, error) {
 	model := gjson.GetBytes(payload, "model").String()
 	req := plugins.NewRequest(NewUpstreamSessionUUID(), plugins.KindResponses, payload, nil, 0)
+	req.Model = model
+	if usage, _ := ctx.Value(connectionTestUsageKey{}).(*ConnectionTestUsage); usage != nil {
+		usage.req = req
+	}
 	registry := plugins.Default()
 	var route *plugins.Route
 	mode, _ := ctx.Value(codexTestModeKey{}).(string)
