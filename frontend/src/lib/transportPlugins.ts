@@ -61,10 +61,12 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'image_trim_default', kind: 'boolean', defaultValue: true, hint: true },
-  { key: 'native_degrade_breaker_enabled', kind: 'boolean', defaultValue: true, hint: true },
-  { key: 'native_degrade_threshold', kind: 'number', min: 0, max: 20, hint: true, defaultValue: 2, zeroMeans: 'default' },
-  { key: 'native_degrade_window', kind: 'text', hint: true, placeholder: '10m' },
-  { key: 'native_cooldown_ladder', kind: 'list', defaultValue: ['2m', '10m', '30m', '2h'], hint: true },
+  { key: 'degrade_breaker_enabled', kind: 'boolean', defaultValue: true, hint: true },
+  { key: 'degrade_score_threshold', kind: 'number', min: 0, max: 10000, hint: true, defaultValue: 187, zeroMeans: 'default' },
+  { key: 'degrade_probe_model', kind: 'text', hint: true, placeholder: 'gpt-6-astra' },
+  { key: 'degrade_probe_interval', kind: 'text', hint: true, placeholder: '6h' },
+  { key: 'degrade_probe_max_concurrent', kind: 'number', min: 0, max: 16, hint: true, defaultValue: 2, zeroMeans: 'default' },
+  { key: 'degrade_cooldown_ladder', kind: 'list', defaultValue: ['2m', '10m', '30m', '2h'], hint: true },
 ]
 
 // bpsConfigGroups lays the BPS config form out in labeled cards; every field
@@ -76,7 +78,7 @@ export const bpsConfigGroups: Array<{ key: string; fields: string[] }> = [
     fields: [
       'bps_account_max_concurrency', 'bps_account_request_budget', 'bps_account_budget_window', 'bps_min_usable_accounts',
       'policy_block_threshold', 'bps_policy_cooldown_ladder', 'bps_policy_conversation_mark', 'exclude_failures_from_native_health',
-      'native_degrade_breaker_enabled', 'native_degrade_threshold', 'native_degrade_window', 'native_cooldown_ladder',
+      'degrade_breaker_enabled', 'degrade_score_threshold', 'degrade_probe_model', 'degrade_probe_interval', 'degrade_probe_max_concurrent', 'degrade_cooldown_ladder',
     ],
   },
   { key: 'attachments', fields: ['attachment_request_concurrency', 'attachment_instance_concurrency', 'attachment_account_concurrency', 'attachment_429_fallback', 'image_trim_default'] },
@@ -206,7 +208,7 @@ export function secondsUntil(iso: string | undefined, nowMs: number): number {
 }
 
 // BPS dashboard account states (admin/bps_dashboard.go).
-export const BPS_ACCOUNT_STATES = ['active', 'policy_blocked', 'rate_cooling', 'budget_exhausted'] as const
+export const BPS_ACCOUNT_STATES = ['active', 'policy_blocked', 'rate_cooling', 'budget_exhausted', 'bps_degraded'] as const
 
 // formatSuccessRate renders a 0..1 rate as a percentage ("—" without requests).
 export function formatSuccessRate(rate: number, requests: number): string {
@@ -323,6 +325,7 @@ export function bpsHealthTimeline(points: readonly BPSTrafficPoint[]) {
 export const BPS_STATE_BADGE_CLASSES: Partial<Record<(typeof BPS_ACCOUNT_STATES)[number], string>> = {
   rate_cooling: 'border-transparent bg-amber-500/14 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
   budget_exhausted: 'border-transparent bg-amber-500/14 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
+  bps_degraded: 'border-transparent bg-rose-500/12 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300',
 }
 
 // secondsSince is the whole seconds since iso (undefined when unset).
@@ -330,4 +333,21 @@ export function secondsSince(iso: string | undefined, nowMs: number): number | u
   if (!iso) return undefined
   const at = Date.parse(iso)
   return Number.isFinite(at) ? Math.max(0, Math.floor((nowMs - at) / 1000)) : undefined
+}
+
+// Pelican degradation judge verdicts (proxy/degradejudge): ok 不降智,
+// degraded 降智, invalid 无效样本 (no HTML; retried, never counts).
+export const DEGRADE_VERDICTS = ['ok', 'degraded', 'invalid'] as const
+export type DegradeVerdict = (typeof DEGRADE_VERDICTS)[number]
+export const DEGRADE_ROUTES = ['bps', 'native'] as const
+export type DegradeRoute = (typeof DEGRADE_ROUTES)[number]
+
+export const DEGRADE_VERDICT_BADGE_CLASSES: Record<DegradeVerdict, string> = {
+  ok: 'border-transparent bg-emerald-500/12 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300',
+  degraded: 'border-transparent bg-red-500/14 text-red-600 dark:bg-red-500/20 dark:text-red-300',
+  invalid: 'border-transparent bg-slate-500/14 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300',
+}
+
+export function degradeVerdictClass(verdict: string | undefined): string {
+  return DEGRADE_VERDICT_BADGE_CLASSES[(DEGRADE_VERDICTS as readonly string[]).includes(verdict ?? '') ? (verdict as DegradeVerdict) : 'invalid']
 }

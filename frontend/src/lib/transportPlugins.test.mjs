@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { BPS_ACCOUNT_STATES, BPS_STATE_BADGE_CLASSES, formatWindowLabel, activityBarPercent, activeUntil, bpsHealthTimeline, bpsTrafficSeries, capacityFill, hasTime, secondsSince, bpsConfigGroups, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
+import { BPS_ACCOUNT_STATES, degradeVerdictClass, BPS_STATE_BADGE_CLASSES, formatWindowLabel, activityBarPercent, activeUntil, bpsHealthTimeline, bpsTrafficSeries, capacityFill, hasTime, secondsSince, bpsConfigGroups, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
@@ -313,25 +313,36 @@ test('BPS traffic charts: full bucket grid, health strip, shared chart theme', (
   assert.ok(read('components/PoolRunwayCard.tsx').includes("import { riskPalette } from '../lib/riskPalette'"), 'the runway card shares the palette')
 })
 
-test('dual-route breakers: config fields, route states and route history', () => {
+test('dual-route breakers and the pelican judge: config, route states, probes and samples', () => {
   const protection = bpsConfigGroups.find((group) => group.key === 'protection').fields
-  for (const key of ['native_degrade_breaker_enabled', 'native_degrade_threshold', 'native_degrade_window', 'native_cooldown_ladder']) {
+  for (const key of ['degrade_breaker_enabled', 'degrade_score_threshold', 'degrade_probe_model', 'degrade_probe_interval', 'degrade_probe_max_concurrent', 'degrade_cooldown_ladder']) {
     assert.ok(protection.includes(key), `${key} is in the 账号保护 card`)
     assert.ok(bpsConfigFields.some((field) => field.key === key), key)
   }
-  assert.equal(bpsConfigFields.find((field) => field.key === 'native_degrade_threshold').defaultValue, 2)
-  assert.equal(bpsConfigFields.find((field) => field.key === 'native_degrade_breaker_enabled').defaultValue, true)
+  assert.equal(bpsConfigFields.find((field) => field.key === 'degrade_score_threshold').defaultValue, 187)
+  assert.equal(bpsConfigFields.find((field) => field.key === 'degrade_probe_max_concurrent').defaultValue, 2)
+  assert.ok(!bpsConfigFields.some((field) => field.key.startsWith('native_degrade')), 'the mismatch-count fields are gone')
+  assert.match(degradeVerdictClass('ok'), /emerald/)
+  assert.match(degradeVerdictClass('degraded'), /red/)
+  assert.match(degradeVerdictClass('bogus'), /slate/)
   const page = read('pages/Plugins.tsx')
   for (const needle of [
-    '<NativeRouteLine route={account.native_route} now={now} />', "t('plugins.nativeTriggerModel', { detail: detail ?? '' })", "if (trigger === 'native_403') return '403'",
-    '<RouteBadge route={block.route} />', '<RouteBadge route={total.route} />', "t('plugins.dashNativeDegraded')",
+    '<NativeRouteLine route={account.native_route} now={now} />', "if (trigger === 'pelican') return t('plugins.nativeTriggerPelican'", "if (trigger === 'native_403') return '403'",
+    '<RouteBadge route={block.route} />', '<RouteBadge route={total.route} />', "t('plugins.dashNativeDegraded')", "t('plugins.dashBPSDegraded')",
+    '<DegradeLine account={account} onProbe={() => setProbeTarget(account)} />', "{plugin.id === 'bps' && <DegradeProbesPanel plugin={plugin} />}",
+    'api.startDegradeProbes(plugin.id, [account.account_id], route)', "t('plugins.degradeCalibration'",
+    'sandbox=""', 'srcDoc={probe.html}',
   ]) assert.ok(page.includes(needle), needle)
+  assert.ok(!/sandbox="[^"]*allow-scripts/.test(page), 'samples never run scripts')
   const server = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
-  assert.ok(server.includes('`json:"native_degrade_threshold,omitempty"`') && server.includes('`json:"native_cooldown_ladder,omitempty"`'), 'the server knows the fields')
+  assert.ok(server.includes('`json:"degrade_score_threshold,omitempty"`') && server.includes('`json:"degrade_probe_max_concurrent,omitempty"`'), 'the server knows the fields')
   for (const name of ['zh', 'en', 'zh-TW']) {
     const locale = JSON.parse(read(`locales/${name}.json`))
-    for (const key of ['dashNativeDegraded', 'nativeTriggerModel', 'nativeRouteOk', 'nativeRouteOpen', 'routeBps', 'routeNative', 'policyRoute']) {
+    for (const key of ['dashNativeDegraded', 'dashBPSDegraded', 'nativeTriggerPelican', 'nativeRouteOk', 'nativeRouteOpen', 'routeBps', 'routeNative', 'policyRoute', 'degradeProbe', 'degradeCalibration', 'degradeViewSample', 'degradeHistory', 'degradeHistoryDesc', 'bpsDegradedDetail']) {
       assert.equal(typeof locale.plugins[key], 'string', `${name} ${key}`)
     }
+    for (const verdict of ['ok', 'degraded', 'invalid']) assert.equal(typeof locale.plugins.degradeVerdicts[verdict], 'string')
+    for (const trigger of ['manual', 'mismatch', 'scheduled', 'recovery']) assert.equal(typeof locale.plugins.degradeTriggers[trigger], 'string')
+    assert.equal(typeof locale.plugins.dashStates.bps_degraded, 'string')
   }
 })

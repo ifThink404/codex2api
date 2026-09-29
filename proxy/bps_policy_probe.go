@@ -37,6 +37,7 @@ func (h *Handler) StartBPSPolicyProber(ctx context.Context) {
 	if h == nil || h.store == nil {
 		return
 	}
+	h.startDegradeRuntime(ctx)
 	go func() {
 		ticker := time.NewTicker(bpsProbeInterval)
 		defer ticker.Stop()
@@ -75,7 +76,6 @@ func (h *Handler) runBPSPolicyProbes(ctx context.Context, now time.Time) {
 			release()
 		}
 	}
-	h.runNativeRouteProbes(ctx, now)
 }
 
 // claimRouteProbe takes a short lease so only one replica probes a route

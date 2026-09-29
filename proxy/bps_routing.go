@@ -47,6 +47,9 @@ func (s *bpsRequest) blockReason(ctx context.Context, account *auth.Account, mod
 	if record, cooling := bpsAccountCooling(ctx, s.cache(), account.ID()); cooling {
 		return record.Reason
 	}
+	if routeBreakerOpen(ctx, s.cache(), account, RouteBPS) {
+		return BPSDegradedReason
+	}
 	if !bpsRouteAllows(ctx, s.cache(), account, model, related) {
 		return BPSModelUnavailable
 	}

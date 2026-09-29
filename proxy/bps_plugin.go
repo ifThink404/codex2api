@@ -20,6 +20,7 @@ import (
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/upstreamprivacy"
+	"github.com/codex2api/proxy/degradejudge"
 	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
@@ -92,46 +93,67 @@ type BPSConfig struct {
 	// captures default and at most 12.
 	CaptureRetentionHours      int `json:"capture_retention_hours,omitempty"`
 	CaptureErrorRetentionHours int `json:"capture_error_retention_hours,omitempty"`
-	// Native route breaker of dual-route accounts (BPS enabled and
-	// codex_native_enabled=true): NativeDegradeThreshold upstream model
-	// mismatches (default 2) within NativeDegradeWindow (default 10m), or
-	// one native 403, open the account's native route; BPS serves it until a
-	// background native probe reports the requested model again. The
-	// cooldown climbs NativeCooldownLadder (default: the policy ladder).
-	// NativeDegradeBreakerEnabled absent means on.
-	NativeDegradeBreakerEnabled *bool    `json:"native_degrade_breaker_enabled,omitempty"`
-	NativeDegradeThreshold      int      `json:"native_degrade_threshold,omitempty"`
-	NativeDegradeWindow         string   `json:"native_degrade_window,omitempty"`
-	NativeCooldownLadder        []string `json:"native_cooldown_ladder,omitempty"`
+	// Degradation ("降智") breaker, per route of an account (see
+	// route_breaker.go). A pelican judge probe scoring below
+	// DegradeScoreThreshold (default 187, calibrated for gpt-6-astra at
+	// medium effort), or a native 403, breaks that route; an upstream model
+	// mismatch only schedules a confirming probe. DegradeProbeModel defaults
+	// to gpt-6-astra; DegradeProbeInterval enables periodic sampling ("" =
+	// off); DegradeProbeMaxConcurrent caps probes in flight per replica
+	// (default 2); the cooldown climbs DegradeCooldownLadder (default: the
+	// policy ladder). DegradeBreakerEnabled absent means on.
+	DegradeBreakerEnabled     *bool    `json:"degrade_breaker_enabled,omitempty"`
+	DegradeScoreThreshold     int      `json:"degrade_score_threshold,omitempty"`
+	DegradeProbeModel         string   `json:"degrade_probe_model,omitempty"`
+	DegradeProbeInterval      string   `json:"degrade_probe_interval,omitempty"`
+	DegradeProbeMaxConcurrent int      `json:"degrade_probe_max_concurrent,omitempty"`
+	DegradeCooldownLadder     []string `json:"degrade_cooldown_ladder,omitempty"`
 }
 
-// NativeBreakerEnabled reports whether the native route breaker is on.
-func (c BPSConfig) NativeBreakerEnabled() bool {
-	return c.NativeDegradeBreakerEnabled == nil || *c.NativeDegradeBreakerEnabled
+// DegradeEnabled reports whether the degradation breaker is on.
+func (c BPSConfig) DegradeEnabled() bool {
+	return c.DegradeBreakerEnabled == nil || *c.DegradeBreakerEnabled
 }
 
-// NativeThreshold is how many model mismatches open the native route.
-func (c BPSConfig) NativeThreshold() int {
-	if c.NativeDegradeThreshold < 1 {
+// DegradeThreshold is the pelican score at or above which a route is fine.
+func (c BPSConfig) DegradeThreshold() int {
+	if c.DegradeScoreThreshold <= 0 {
+		return degradejudge.DefaultThreshold
+	}
+	return c.DegradeScoreThreshold
+}
+
+// DegradeModel is the model the pelican probe asks for.
+func (c BPSConfig) DegradeModel() string {
+	if model := strings.TrimSpace(c.DegradeProbeModel); model != "" {
+		return model
+	}
+	return degradejudge.DefaultModel
+}
+
+// DegradeInterval is the periodic sampling interval (0 = off).
+func (c BPSConfig) DegradeInterval() time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(c.DegradeProbeInterval))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// DegradeMaxConcurrent caps pelican probes in flight per replica.
+func (c BPSConfig) DegradeMaxConcurrent() int {
+	if c.DegradeProbeMaxConcurrent <= 0 {
 		return 2
 	}
-	return c.NativeDegradeThreshold
+	return c.DegradeProbeMaxConcurrent
 }
 
-// NativeWindow is the window the model mismatches are counted in.
-func (c BPSConfig) NativeWindow() time.Duration {
-	if d, err := time.ParseDuration(strings.TrimSpace(c.NativeDegradeWindow)); err == nil && d > 0 {
-		return d
-	}
-	return 10 * time.Minute
-}
-
-// NativeLadder is the native route cooldown per tier.
-func (c BPSConfig) NativeLadder() []time.Duration {
-	if len(c.NativeCooldownLadder) == 0 {
+// DegradeLadder is the degradation breaker cooldown per tier.
+func (c BPSConfig) DegradeLadder() []time.Duration {
+	if len(c.DegradeCooldownLadder) == 0 {
 		return c.PolicyLadder()
 	}
-	return BPSConfig{PolicyCooldownLadder: c.NativeCooldownLadder}.PolicyLadder()
+	return BPSConfig{PolicyCooldownLadder: c.DegradeCooldownLadder}.PolicyLadder()
 }
 
 // PersistsHeuristicAffinity reports whether heuristic seeds are bound in the
@@ -272,7 +294,7 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 			return BPSConfig{}, fmt.Errorf("invalid bps_account_budget_window %q (use a duration such as 24h, 1h to 720h)", cfg.AccountBudgetWindow)
 		}
 	}
-	for name, ladder := range map[string][]string{"bps_policy_cooldown_ladder": cfg.PolicyCooldownLadder, "native_cooldown_ladder": cfg.NativeCooldownLadder} {
+	for name, ladder := range map[string][]string{"bps_policy_cooldown_ladder": cfg.PolicyCooldownLadder, "degrade_cooldown_ladder": cfg.DegradeCooldownLadder} {
 		if len(ladder) > 10 {
 			return BPSConfig{}, fmt.Errorf("%s holds at most 10 tiers", name)
 		}
@@ -282,12 +304,18 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 			}
 		}
 	}
-	if cfg.NativeDegradeThreshold < 0 || cfg.NativeDegradeThreshold > 20 {
-		return BPSConfig{}, fmt.Errorf("native_degrade_threshold must be between 0 (default) and 20")
+	if cfg.DegradeScoreThreshold < 0 || cfg.DegradeScoreThreshold > 10000 {
+		return BPSConfig{}, fmt.Errorf("degrade_score_threshold must be between 0 (default 187) and 10000")
 	}
-	if window := strings.TrimSpace(cfg.NativeDegradeWindow); window != "" {
-		if d, err := time.ParseDuration(window); err != nil || d < time.Minute || d > 24*time.Hour {
-			return BPSConfig{}, fmt.Errorf("invalid native_degrade_window %q (use a duration such as 10m, 1m to 24h)", cfg.NativeDegradeWindow)
+	if cfg.DegradeProbeMaxConcurrent < 0 || cfg.DegradeProbeMaxConcurrent > 16 {
+		return BPSConfig{}, fmt.Errorf("degrade_probe_max_concurrent must be between 0 (default 2) and 16")
+	}
+	if len(cfg.DegradeProbeModel) > 128 || strings.ContainsAny(cfg.DegradeProbeModel, " \r\n") {
+		return BPSConfig{}, fmt.Errorf("invalid degrade_probe_model %q", cfg.DegradeProbeModel)
+	}
+	if interval := strings.TrimSpace(cfg.DegradeProbeInterval); interval != "" {
+		if d, err := time.ParseDuration(interval); err != nil || d < 10*time.Minute || d > 7*24*time.Hour {
+			return BPSConfig{}, fmt.Errorf("invalid degrade_probe_interval %q (empty = off, or a duration such as 6h, 10m to 168h)", cfg.DegradeProbeInterval)
 		}
 	}
 	if _, err := plugins.ParseCaptureRetention(raw); err != nil {
@@ -375,6 +403,11 @@ func (bpsPlugin) Maintain(ctx context.Context, db *database.DB, now time.Time) e
 		err = errors.Join(err, pruneErr)
 	} else if blocks > 0 {
 		log.Printf("[bps] pruned %d policy-block history rows older than %s", blocks, database.BPSPolicyBlockRetention)
+	}
+	if probes, pruneErr := db.PruneDegradeProbes(ctx, now.Add(-database.DegradeProbeRetention)); pruneErr != nil {
+		err = errors.Join(err, pruneErr)
+	} else if probes > 0 {
+		log.Printf("[bps] pruned %d degrade probes older than %s", probes, database.DegradeProbeRetention)
 	}
 	return err
 }

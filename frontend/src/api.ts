@@ -1528,6 +1528,17 @@ export const api = {
 	getBPSActivity: (id: string) => request<BPSActivity>(`/plugins/${encodeURIComponent(id)}/activity`),
 	getBPSDashboard: (id: string) => request<BPSDashboard>(`/plugins/${encodeURIComponent(id)}/dashboard`),
 	getPluginPolicyBlocks: (id: string) => request<BPSPolicyBlocksResponse>(`/plugins/${encodeURIComponent(id)}/policy-blocks`),
+	listDegradeProbes: (id: string, filter: { accountId?: number; route?: string; verdict?: string; limit?: number } = {}) => {
+		const search = new URLSearchParams()
+		if (filter.accountId) search.set('account_id', String(filter.accountId))
+		if (filter.route) search.set('route', filter.route)
+		if (filter.verdict) search.set('verdict', filter.verdict)
+		if (filter.limit) search.set('limit', String(filter.limit))
+		return request<import('./types').DegradeProbesResponse>(`/plugins/${encodeURIComponent(id)}/degrade-probes?${search.toString()}`)
+	},
+	getDegradeProbe: (id: string, probeId: number) => request<import('./types').DegradeProbe>(`/plugins/${encodeURIComponent(id)}/degrade-probes/${probeId}`),
+	startDegradeProbes: (id: string, accountIds: number[], route: 'bps' | 'native') =>
+		request<import('./types').DegradeProbeStartResult>(`/plugins/${encodeURIComponent(id)}/degrade-probes`, { method: 'POST', body: JSON.stringify({ account_ids: accountIds, route }) }),
 	getPluginCaptureStats: (id: string) => request<PluginCaptureStats>(`/plugins/${encodeURIComponent(id)}/capture-stats`),
 	purgePluginCaptures: (id: string, mode: PluginCapturePurgeMode, hours?: number) =>
 		request<PluginCapturePurgeResult>(`/plugins/${encodeURIComponent(id)}/captures/purge`, { method: 'POST', body: JSON.stringify(mode === 'older_than' ? { mode, hours } : { mode }) }),

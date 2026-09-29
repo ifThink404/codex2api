@@ -485,13 +485,17 @@ type BPSAccountStatus struct {
 	ModelsUnavailable map[string]time.Time `json:"models_unavailable,omitempty"`
 	// NativeRoute is the native route breaker of a dual-route account ("" =
 	// no native route to break, ok, open). While open, NativeUntil is when
-	// the next native probe is due, NativeTrigger what opened it
-	// (native_403 / model_mismatch) and NativeDetail "requested → reported".
-	NativeRoute           string    `json:"native_route,omitempty"`
-	NativeUntil           time.Time `json:"native_until,omitzero"`
-	NativeTrigger         string    `json:"native_trigger,omitempty"`
-	NativeDetail          string    `json:"native_detail,omitempty"`
-	NativeLastProbeResult string    `json:"native_last_probe_result,omitempty"`
+	// the next pelican probe is due, NativeTrigger what broke it (pelican /
+	// native_403) and NativeDetail the score or the models.
+	NativeRoute   string    `json:"native_route,omitempty"`
+	NativeUntil   time.Time `json:"native_until,omitzero"`
+	NativeTrigger string    `json:"native_trigger,omitempty"`
+	NativeDetail  string    `json:"native_detail,omitempty"`
+	// BPSDegraded: the degradation breaker broke the account's BPS route
+	// (until the next pelican probe is due; detail says why).
+	BPSDegraded       bool      `json:"bps_degraded,omitempty"`
+	BPSDegradedUntil  time.Time `json:"bps_degraded_until,omitzero"`
+	BPSDegradedDetail string    `json:"bps_degraded_detail,omitempty"`
 }
 
 // BPSAccountStatuses reports the BPS cooldowns and model blocks of accounts.
@@ -550,17 +554,16 @@ func BPSAccountStatusesWith(ctx context.Context, store cache.TokenCache, account
 			}
 		}
 		bpsAccountStateStore.mu.Unlock()
-		if account := bpsStatusAccount(id); account != nil && account.CodexNativeRouteExplicit() {
-			native := bpsAccountStateStore.load(ctx, store, nativeRouteStateKey(id), now)
-			status.NativeRoute = "ok"
-			if native.open(now) {
-				status.NativeRoute, status.NativeTrigger, status.NativeDetail = "open", native.Trigger, native.Detail
-				status.NativeUntil = native.Until
-				if native.NextProbe.After(status.NativeUntil) {
-					status.NativeUntil = native.NextProbe
+		if account := bpsStatusAccount(id); account != nil {
+			if open, until, trigger, detail := DegradeRouteBrokenStatus(ctx, store, account, RouteBPS); open {
+				status.BPSDegraded, status.BPSDegradedUntil, status.BPSDegradedDetail = true, until, trigger+": "+detail
+			}
+			if account.CodexNativeRouteExplicit() {
+				status.NativeRoute = "ok"
+				if open, until, trigger, detail := DegradeRouteBrokenStatus(ctx, store, account, RouteNative); open {
+					status.NativeRoute, status.NativeUntil, status.NativeTrigger, status.NativeDetail = "open", until, trigger, detail
 				}
 			}
-			status.NativeLastProbeResult = native.LastProbeResult
 		}
 		out = append(out, status)
 	}

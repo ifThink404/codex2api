@@ -3870,7 +3870,7 @@ export interface PluginCapture {
   created_at: string
 }
 
-export type BPSAccountState = 'active' | 'policy_blocked' | 'rate_cooling' | 'budget_exhausted'
+export type BPSAccountState = 'active' | 'policy_blocked' | 'rate_cooling' | 'budget_exhausted' | 'bps_degraded'
 
 export interface BPSTrafficStats {
   requests: number
@@ -3897,7 +3897,7 @@ export interface BPSTrafficPoint {
 
 // GET /plugins/bps/dashboard
 export interface BPSDashboard {
-  summary: { total: number; usable: number; disabled?: number; invalid?: number; native_degraded?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
+  summary: { total: number; usable: number; disabled?: number; invalid?: number; native_degraded?: number; bps_degraded?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
   accounts: Array<{
     account_id: number
     name: string
@@ -3939,6 +3939,47 @@ export interface BPSActivityAccount {
   last_request_at?: string
   /** Native route breaker of a dual-route account (BPS + explicit native). */
   native_route?: BPSNativeRoute
+  /** Latest pelican verdict and probe in flight, per route. */
+  degrade?: Partial<Record<'bps' | 'native', BPSDegradeView>>
+  bps_degraded_until?: string
+  bps_degraded_detail?: string
+}
+
+export interface BPSDegradeView {
+  verdict?: 'ok' | 'degraded' | 'invalid'
+  score?: number
+  probe_id?: number
+  at?: string
+  pending?: 'queued' | 'running'
+}
+
+// One pelican degradation-judge probe (GET /plugins/bps/degrade-probes).
+export interface DegradeProbe {
+  id: number
+  account_id: number
+  name: string
+  route: 'bps' | 'native'
+  model: string
+  upstream_model?: string
+  score: number
+  bytes: number
+  verdict: 'ok' | 'degraded' | 'invalid'
+  trigger: 'manual' | 'mismatch' | 'scheduled' | 'recovery'
+  html?: string
+  error?: string
+  duration_ms: number
+  created_at: string
+}
+
+export interface DegradeProbesResponse {
+  probes: DegradeProbe[]
+  threshold: number
+  model: string
+}
+
+export interface DegradeProbeStartResult {
+  queued: number
+  skipped: Array<{ account_id: number; reason: string }>
 }
 
 export interface BPSNativeRoute {

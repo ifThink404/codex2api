@@ -2128,6 +2128,15 @@
       "scopeHint": "打开开关后替换模型范围；开启但留空会清空该范围。",
       "apply": "应用 {{count}} 项",
       "done": "BPS 设置已更新：成功 {{success}} 个，失败 {{fail}} 个"
+    },
+    "batchDegrade": {
+      "action": "降智检测",
+      "title": "批量降智检测",
+      "desc": "对所选 {{count}} 个账号的所选路由排队进行鹈鹕降智检测（每个约 1–4 分钟，按插件配置的并发上限执行）。原生路由仅在账号显式开启时检测；结果见传输插件 → BPS 概览的「降智检测记录」。",
+      "route": "检测路由",
+      "native": "原生",
+      "start": "检测 {{count}} 个账号",
+      "done": "已排队 {{queued}} 个降智检测，跳过 {{skipped}} 个"
     }
   },
   "invite": {
@@ -7470,10 +7479,12 @@
       "bps_policy_conversation_mark": "用量策略拦截后标记会话",
       "bps_probe_model": "用量策略探测模型",
       "bps_min_usable_accounts": "可用账号告警线",
-      "native_degrade_breaker_enabled": "原生路由熔断（降智）",
-      "native_degrade_threshold": "触发原生熔断的模型不一致次数",
-      "native_degrade_window": "模型不一致计数窗口",
-      "native_cooldown_ladder": "原生熔断冷却阶梯"
+      "degrade_breaker_enabled": "降智熔断",
+      "degrade_score_threshold": "降智判定阈值",
+      "degrade_probe_model": "降智检测模型",
+      "degrade_probe_interval": "定时抽检间隔",
+      "degrade_probe_max_concurrent": "检测并发上限",
+      "degrade_cooldown_ladder": "降智熔断冷却阶梯"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7505,10 +7516,12 @@
       "policy_block_threshold": "10 分钟内达到此次数的用量策略拦截即触发冷却。",
       "word_user_agent": "Word 类型使用的 User-Agent；留空使用内置值。",
       "attachment_429_fallback": "附件上传遇到 429 时在本地转换附件（需要 pdftotext/libreoffice）。",
-      "native_degrade_breaker_enabled": "仅对同时启用 BPS 且显式开启原生路由的账号生效：原生响应的上游自报模型与请求模型不一致（降智）或原生 403 时，只熔断该账号的原生路由，改由 BPS 服务；后台原生探测拿回请求模型后恢复。两条路由都熔断时该账号被跳过。",
-      "native_degrade_threshold": "窗口内达到此次数的模型不一致即熔断原生路由；一次原生 403 立即熔断。上游未自报模型的响应不计。",
-      "native_degrade_window": "统计模型不一致的时间窗口，如 10m（1m–24h）。留空为 10m。",
-      "native_cooldown_ladder": "原生熔断每次触发依次使用的冷却时长，冷却结束后由后台探测决定是否恢复。留空时沿用用量策略冷却阶梯。"
+      "degrade_breaker_enabled": "按路由熔断：鹈鹕检测低于阈值（或原生 403）只熔断该账号的对应路由，另一条路由继续服务；两条都熔断时跳过该账号。上游模型不一致只触发确认检测。",
+      "degrade_score_threshold": "得分 ≥ 此值判为不降智。187 按 gpt-6-astra（medium 推理）人工定档校准：连贯 196–242、降智 90–178；换模型需重新校准。",
+      "degrade_probe_model": "鹈鹕检测请求的模型，留空为 gpt-6-astra（阈值按它校准）。",
+      "degrade_probe_interval": "每个账号每条路由的定时抽检间隔，如 6h（10m–168h）；留空关闭。原生路由仅在显式开启时抽检。",
+      "degrade_probe_max_concurrent": "每个实例同时进行的鹈鹕检测上限（含手动与批量）。",
+      "degrade_cooldown_ladder": "降智熔断每次触发依次使用的冷却时长，冷却结束后由鹈鹕检测决定是否恢复。留空沿用用量策略冷却阶梯。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -7583,7 +7596,8 @@
       "active": "正常",
       "policy_blocked": "策略拦截",
       "rate_cooling": "限流冷却",
-      "budget_exhausted": "预算用完"
+      "budget_exhausted": "预算用完",
+      "bps_degraded": "BPS 降智"
     },
     "bpsConfigGroups": {
       "routing": {
@@ -7644,12 +7658,53 @@
     "groupsNoneEnabled": "尚未启用任何分组",
     "groupsAddAccounts": "去账号管理加入分组 →",
     "dashNativeDegraded": "原生降智（BPS 顶上）",
-    "nativeTriggerModel": "模型不一致（{{detail}}）",
     "nativeRouteOk": "原生路由正常",
     "nativeRouteOpen": "原生熔断",
     "routeBps": "BPS",
     "routeNative": "原生",
-    "policyRoute": "路由"
+    "policyRoute": "路由",
+    "degradeProbe": "降智检测",
+    "degradeProbeTitle": "降智检测 · {{name}}",
+    "degradeProbeDesc": "让该账号的所选路由画一只骑自行车的鹈鹕（内联 SVG），按图形复杂度打分判定是否降智；约 1–4 分钟，不计入客户流量。",
+    "degradeRoute": "检测路由",
+    "degradeCalibration": "阈值 {{threshold}} 按 {{model}}（medium 推理）人工定档校准；换模型或推理强度后分数不可比。",
+    "degradeRunning": "检测中…结果出来后自动显示（约 1–4 分钟）。",
+    "degradeScore": "得分 {{score}} / 阈值 {{threshold}}",
+    "degradeViewSample": "查看样本",
+    "degradeStart": "开始检测",
+    "degradeNotQueued": "未能加入检测队列",
+    "degradeSampleTitle": "检测样本 #{{id}}",
+    "degradeSampleDesc": "{{verdict}} · 得分 {{score}} · {{bytes}} 字符 · {{time}}（沙箱渲染，不执行脚本）",
+    "degradeNoSample": "该次检测没有保存样本。",
+    "degradeHistory": "降智检测记录",
+    "degradeHistoryDesc": "鹈鹕判定：得分 ≥ {{threshold}} 为不降智（{{model}}，medium 推理校准）；无 HTML 为无效样本，重试且不计入。模型不一致只触发确认检测，低分或原生 403 才熔断对应路由；保留 7 天。",
+    "degradeAllRoutes": "全部路由",
+    "degradeAllVerdicts": "全部判定",
+    "degradeVerdict": "判定",
+    "degradeNoProbes": "还没有降智检测记录。",
+    "degradeTime": "时间",
+    "degradeModel": "模型",
+    "degradeBytes": "字符数",
+    "degradeTrigger": "触发",
+    "degradeDuration": "耗时",
+    "dashBPSDegraded": "BPS 降智（原生顶上）",
+    "bpsDegradedDetail": "BPS 熔断：{{detail}}",
+    "degradeVerdicts": {
+      "ok": "不降智",
+      "degraded": "降智",
+      "invalid": "无效"
+    },
+    "degradePending": {
+      "queued": "排队中",
+      "running": "检测中"
+    },
+    "degradeTriggers": {
+      "manual": "手动",
+      "mismatch": "模型不一致确认",
+      "scheduled": "定时抽检",
+      "recovery": "恢复探测"
+    },
+    "nativeTriggerPelican": "降智检测低分（{{detail}}）"
   },
   "logAgent": {
     "title": "AI 日志分析",

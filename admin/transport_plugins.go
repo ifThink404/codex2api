@@ -30,6 +30,9 @@ func (h *Handler) registerTransportPluginRoutes(api *gin.RouterGroup) {
 	api.GET("/plugins/:plugin/policy-blocks", h.GetTransportPluginPolicyBlocks)
 	api.GET("/plugins/:plugin/dashboard", h.GetTransportPluginDashboard)
 	api.GET("/plugins/:plugin/activity", h.GetTransportPluginActivity)
+	api.GET("/plugins/:plugin/degrade-probes", h.ListDegradeProbes)
+	api.GET("/plugins/:plugin/degrade-probes/:probeId", h.GetDegradeProbe)
+	api.POST("/plugins/:plugin/degrade-probes", h.StartDegradeProbes)
 	api.POST("/plugins/:plugin/captures/purge", h.PurgeTransportPluginCaptures)
 }
 
@@ -412,9 +415,12 @@ func (h *Handler) GetTransportPluginPolicyBlocks(c *gin.Context) {
 	activeViews := make([]bpsPolicyBlockView, 0, len(active))
 	for _, block := range active {
 		view := bpsPolicyBlockView{BPSPolicyBlock: block, Name: name(block.AccountID), ElapsedSeconds: int64(block.Elapsed(now) / time.Second)}
-		if status, ok := live[block.AccountID]; ok && block.Route == database.BPSRouteNative {
-			if !status.NativeUntil.IsZero() {
-				next := status.NativeUntil
+		if status, ok := live[block.AccountID]; ok && block.Kind == database.RouteBlockDegrade {
+			next := status.NativeUntil
+			if block.Route == database.BPSRouteBPS {
+				next = status.BPSDegradedUntil
+			}
+			if !next.IsZero() {
 				view.NextProbeAt = &next
 			}
 		} else if ok {

@@ -21,6 +21,7 @@ import {
 } from "../lib/accountProxyBinding";
 import Modal from "../components/Modal";
 import BatchBPSDialog from "../components/BatchBPSDialog";
+import BatchDegradeProbeDialog from "../components/BatchDegradeProbeDialog";
 import ChannelLogo from "../components/ChannelLogo";
 import { useVisibleChannels } from "../visibleChannels";
 import ModelLogo from "../components/ModelLogo";
@@ -2237,6 +2238,7 @@ export default function Accounts() {
   // groups replaces the selected accounts' groups; addGroups adds to them.
   const [batchMetaMode, setBatchMetaMode] = useState<"all" | "groups" | "addGroups">("all");
   const [showBatchBPS, setShowBatchBPS] = useState(false);
+  const [showBatchDegrade, setShowBatchDegrade] = useState(false);
   const [batchUpdateProbePolicy, setBatchUpdateProbePolicy] = useState(false);
   const [batchProbePolicy, setBatchProbePolicy] = useState(accountProbePolicyFromAccount);
   const [batchUpdateTags, setBatchUpdateTags] = useState(false);
@@ -7470,6 +7472,13 @@ export default function Accounts() {
                       onSelect: openBatchQuotaAutoPauseEditor,
                     },
                     {
+                      key: "degrade-probe",
+                      label: t("accounts.batchDegrade.action"),
+                      icon: <FlaskConical className="size-3.5" />,
+                      disabled: batchLoading || batchTesting,
+                      onSelect: () => setShowBatchDegrade(true),
+                    },
+                    {
                       key: "reset-status",
                       label: t("accounts.batchResetStatus"),
                       icon: <RotateCcw className="size-3.5" />,
@@ -11008,6 +11017,22 @@ export default function Accounts() {
               </div>
             </div>
           </Modal>
+
+          <BatchDegradeProbeDialog
+            show={showBatchDegrade}
+            ids={Array.from(selected)}
+            onClose={() => setShowBatchDegrade(false)}
+            onDone={(result) => {
+              setShowBatchDegrade(false);
+              showToast(
+                t("accounts.batchDegrade.done", {
+                  queued: result.queued,
+                  skipped: result.skipped,
+                }),
+                result.queued === 0 ? "error" : "success",
+              );
+            }}
+          />
 
           <BatchBPSDialog
             show={showBatchBPS}

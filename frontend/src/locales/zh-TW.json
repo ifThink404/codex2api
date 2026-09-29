@@ -583,6 +583,15 @@
       "scopeHint": "打開開關後替換模型範圍；開啟但留空會清空該範圍。",
       "apply": "套用 {{count}} 項",
       "done": "BPS 設定已更新：成功 {{success}} 個，失敗 {{fail}} 個"
+    },
+    "batchDegrade": {
+      "action": "降智檢測",
+      "title": "批次降智檢測",
+      "desc": "對所選 {{count}} 個帳號的所選路由排隊進行鵜鶘降智檢測（每個約 1–4 分鐘，按外掛設定的並發上限執行）。原生路由僅在帳號顯式開啟時檢測；結果見傳輸外掛 → BPS 概覽的「降智檢測紀錄」。",
+      "route": "檢測路由",
+      "native": "原生",
+      "start": "檢測 {{count}} 個帳號",
+      "done": "已排隊 {{queued}} 個降智檢測，略過 {{skipped}} 個"
     }
   },
   "runtime": {
@@ -2577,10 +2586,12 @@
       "bps_policy_conversation_mark": "用量政策攔截後標記會話",
       "bps_probe_model": "用量政策探測模型",
       "bps_min_usable_accounts": "可用帳號告警線",
-      "native_degrade_breaker_enabled": "原生路由熔斷（降智）",
-      "native_degrade_threshold": "觸發原生熔斷的模型不一致次數",
-      "native_degrade_window": "模型不一致計數窗口",
-      "native_cooldown_ladder": "原生熔斷冷卻階梯"
+      "degrade_breaker_enabled": "降智熔斷",
+      "degrade_score_threshold": "降智判定閾值",
+      "degrade_probe_model": "降智檢測模型",
+      "degrade_probe_interval": "定時抽檢間隔",
+      "degrade_probe_max_concurrent": "檢測並發上限",
+      "degrade_cooldown_ladder": "降智熔斷冷卻階梯"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2612,10 +2623,12 @@
       "policy_block_threshold": "10 分鐘內達到此次數的用量政策攔截即觸發冷卻。",
       "word_user_agent": "Word 類型使用的 User-Agent；留空使用內建值。",
       "attachment_429_fallback": "附件上傳遇到 429 時在本機轉換附件（需要 pdftotext/libreoffice）。",
-      "native_degrade_breaker_enabled": "僅對同時啟用 BPS 且顯式開啟原生路由的帳號生效：原生回應的上游自報模型與請求模型不一致（降智）或原生 403 時，只熔斷該帳號的原生路由，改由 BPS 服務；背景原生探測拿回請求模型後恢復。兩條路由都熔斷時該帳號被跳過。",
-      "native_degrade_threshold": "窗口內達到此次數的模型不一致即熔斷原生路由；一次原生 403 立即熔斷。上游未自報模型的回應不計。",
-      "native_degrade_window": "統計模型不一致的時間窗口，如 10m（1m–24h）。留空為 10m。",
-      "native_cooldown_ladder": "原生熔斷每次觸發依次使用的冷卻時長，冷卻結束後由背景探測決定是否恢復。留空時沿用用量策略冷卻階梯。"
+      "degrade_breaker_enabled": "按路由熔斷：鵜鶘檢測低於閾值（或原生 403）只熔斷該帳號的對應路由，另一條路由繼續服務；兩條都熔斷時跳過該帳號。上游模型不一致只觸發確認檢測。",
+      "degrade_score_threshold": "得分 ≥ 此值判為不降智。187 按 gpt-6-astra（medium 推理）人工定檔校準：連貫 196–242、降智 90–178；換模型需重新校準。",
+      "degrade_probe_model": "鵜鶘檢測請求的模型，留空為 gpt-6-astra（閾值按它校準）。",
+      "degrade_probe_interval": "每個帳號每條路由的定時抽檢間隔，如 6h（10m–168h）；留空關閉。原生路由僅在顯式開啟時抽檢。",
+      "degrade_probe_max_concurrent": "每個實例同時進行的鵜鶘檢測上限（含手動與批次）。",
+      "degrade_cooldown_ladder": "降智熔斷每次觸發依次使用的冷卻時長，冷卻結束後由鵜鶘檢測決定是否恢復。留空沿用用量策略冷卻階梯。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2690,7 +2703,8 @@
       "active": "正常",
       "policy_blocked": "政策攔截",
       "rate_cooling": "限流冷卻",
-      "budget_exhausted": "預算用完"
+      "budget_exhausted": "預算用完",
+      "bps_degraded": "BPS 降智"
     },
     "bpsConfigGroups": {
       "routing": {
@@ -2751,12 +2765,53 @@
     "groupsNoneEnabled": "尚未啟用任何分組",
     "groupsAddAccounts": "去帳號管理加入分組 →",
     "dashNativeDegraded": "原生降智（BPS 頂上）",
-    "nativeTriggerModel": "模型不一致（{{detail}}）",
     "nativeRouteOk": "原生路由正常",
     "nativeRouteOpen": "原生熔斷",
     "routeBps": "BPS",
     "routeNative": "原生",
-    "policyRoute": "路由"
+    "policyRoute": "路由",
+    "degradeProbe": "降智檢測",
+    "degradeProbeTitle": "降智檢測 · {{name}}",
+    "degradeProbeDesc": "讓該帳號的所選路由畫一隻騎自行車的鵜鶘（內聯 SVG），按圖形複雜度打分判定是否降智；約 1–4 分鐘，不計入客戶流量。",
+    "degradeRoute": "檢測路由",
+    "degradeCalibration": "閾值 {{threshold}} 按 {{model}}（medium 推理）人工定檔校準；換模型或推理強度後分數不可比。",
+    "degradeRunning": "檢測中…結果出來後自動顯示（約 1–4 分鐘）。",
+    "degradeScore": "得分 {{score}} / 閾值 {{threshold}}",
+    "degradeViewSample": "查看樣本",
+    "degradeStart": "開始檢測",
+    "degradeNotQueued": "未能加入檢測佇列",
+    "degradeSampleTitle": "檢測樣本 #{{id}}",
+    "degradeSampleDesc": "{{verdict}} · 得分 {{score}} · {{bytes}} 字元 · {{time}}（沙箱渲染，不執行腳本）",
+    "degradeNoSample": "該次檢測沒有保存樣本。",
+    "degradeHistory": "降智檢測紀錄",
+    "degradeHistoryDesc": "鵜鶘判定：得分 ≥ {{threshold}} 為不降智（{{model}}，medium 推理校準）；無 HTML 為無效樣本，重試且不計入。模型不一致只觸發確認檢測，低分或原生 403 才熔斷對應路由；保留 7 天。",
+    "degradeAllRoutes": "全部路由",
+    "degradeAllVerdicts": "全部判定",
+    "degradeVerdict": "判定",
+    "degradeNoProbes": "還沒有降智檢測紀錄。",
+    "degradeTime": "時間",
+    "degradeModel": "模型",
+    "degradeBytes": "字元數",
+    "degradeTrigger": "觸發",
+    "degradeDuration": "耗時",
+    "dashBPSDegraded": "BPS 降智（原生頂上）",
+    "bpsDegradedDetail": "BPS 熔斷：{{detail}}",
+    "degradeVerdicts": {
+      "ok": "不降智",
+      "degraded": "降智",
+      "invalid": "無效"
+    },
+    "degradePending": {
+      "queued": "排隊中",
+      "running": "檢測中"
+    },
+    "degradeTriggers": {
+      "manual": "手動",
+      "mismatch": "模型不一致確認",
+      "scheduled": "定時抽檢",
+      "recovery": "恢復探測"
+    },
+    "nativeTriggerPelican": "降智檢測低分（{{detail}}）"
   },
   "logAgent": {
     "title": "AI 日誌分析",

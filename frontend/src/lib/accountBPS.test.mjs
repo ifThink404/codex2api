@@ -96,3 +96,14 @@ test('a manual Codex connection test is allowed on BPS accounts', () => {
   const modal = read('components/TestConnectionModal.tsx')
   assert.ok(modal.includes('(["auto", "codex", "bps"] as CodexTestMode[])'), 'all three test paths are offered')
 })
+
+test('accounts page: batch degradation check respects the server queue', () => {
+  const page = read('pages/Accounts.tsx')
+  for (const needle of ['<BatchDegradeProbeDialog', 'onSelect: () => setShowBatchDegrade(true)', 't("accounts.batchDegrade.done"']) assert.ok(page.includes(needle), needle)
+  const dialog = read('components/BatchDegradeProbeDialog.tsx')
+  assert.ok(dialog.includes("api.startDegradeProbes('bps', ids, route)"))
+  for (const name of ['zh', 'en', 'zh-TW']) {
+    const locale = JSON.parse(read(`locales/${name}.json`))
+    for (const key of ['action', 'title', 'desc', 'route', 'native', 'start', 'done']) assert.equal(typeof locale.accounts.batchDegrade[key], 'string', `${name} ${key}`)
+  }
+})

@@ -56,6 +56,10 @@ func upstreamErrorConsoleBody(body []byte) string {
 
 // Handler API 路由处理器
 type Handler struct {
+	// degrade is the per-route degradation breaker runtime (route_breaker.go).
+	degradeOnce sync.Once
+	degrade     *degradeRuntime
+
 	store           *auth.Store
 	configKeys      map[string]bool // 配置文件中的静态 key
 	db              *database.DB
@@ -1609,7 +1613,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCapacityShedFromErrorMessage(input)
 	h.observeSessionAutoLock(c, input)
 	markCyberPolicyUsageKind(input)
-	h.observeNativeRouteHealth(c, input)
+	h.observeRouteHealth(input)
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
 		return

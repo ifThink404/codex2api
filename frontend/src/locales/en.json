@@ -2128,6 +2128,15 @@
       "scopeHint": "Turn a switch on to replace that model scope; leaving it empty clears the scope.",
       "apply": "Apply {{count}} changes",
       "done": "BPS settings updated: {{success}} succeeded, {{fail}} failed"
+    },
+    "batchDegrade": {
+      "action": "Degradation check",
+      "title": "Batch degradation check",
+      "desc": "Queues a pelican degradation check of the chosen route for the {{count}} selected accounts (about 1–4 minutes each, run at the plugin's concurrency limit). Native routes are checked only where explicitly on; results appear under Transport plugins → BPS overview → Degradation checks.",
+      "route": "Route",
+      "native": "Native",
+      "start": "Check {{count}} accounts",
+      "done": "Queued {{queued}} degradation checks, skipped {{skipped}}"
     }
   },
   "invite": {
@@ -7473,10 +7482,12 @@
       "bps_policy_conversation_mark": "Mark conversations after a usage-policy block",
       "bps_probe_model": "Usage-policy probe model",
       "bps_min_usable_accounts": "Usable-account warning floor",
-      "native_degrade_breaker_enabled": "Native route breaker (degraded)",
-      "native_degrade_threshold": "Model mismatches that open the native route",
-      "native_degrade_window": "Model mismatch window",
-      "native_cooldown_ladder": "Native route cooldown ladder"
+      "degrade_breaker_enabled": "Degradation breaker",
+      "degrade_score_threshold": "Degradation score threshold",
+      "degrade_probe_model": "Degradation probe model",
+      "degrade_probe_interval": "Scheduled probe interval",
+      "degrade_probe_max_concurrent": "Max concurrent probes",
+      "degrade_cooldown_ladder": "Degradation cooldown ladder"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7508,10 +7519,12 @@
       "policy_block_threshold": "Usage-policy blocks within 10 minutes that trigger a cooldown.",
       "word_user_agent": "User-Agent of the Word profile; empty uses the built-in one.",
       "attachment_429_fallback": "When uploads hit 429, convert attachments locally (needs pdftotext/libreoffice).",
-      "native_degrade_breaker_enabled": "Only for accounts with BPS and an explicit native route: when native replies report another model than requested (degraded) or return 403, only that account's native route breaks and BPS serves it; a background native probe that gets the requested model back restores it. With both routes broken the account is skipped.",
-      "native_degrade_threshold": "This many model mismatches within the window open the native route; one native 403 opens it at once. Replies without an upstream-reported model do not count.",
-      "native_degrade_window": "How long model mismatches are counted, e.g. 10m (1m to 24h). Empty means 10m.",
-      "native_cooldown_ladder": "The cooldown per breaker trigger; after it a background probe decides. Empty reuses the usage-policy ladder."
+      "degrade_breaker_enabled": "Per route: a pelican score below the threshold (or a native 403) breaks only that route of the account and the other keeps serving; with both broken the account is skipped. An upstream model mismatch only triggers a confirm probe.",
+      "degrade_score_threshold": "Scores at or above this are not degraded. 187 is calibrated on hand-graded gpt-6-astra samples at medium effort (coherent 196–242, degraded 90–178); recalibrate for other models.",
+      "degrade_probe_model": "The model the pelican probe asks for; empty means gpt-6-astra (the threshold is calibrated on it).",
+      "degrade_probe_interval": "Periodic probe of every account route, e.g. 6h (10m to 168h); empty is off. Native routes are probed only when explicitly on.",
+      "degrade_probe_max_concurrent": "Pelican probes in flight per replica, manual and batch included.",
+      "degrade_cooldown_ladder": "The cooldown per break; afterwards a pelican probe decides. Empty reuses the usage-policy ladder."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7586,7 +7599,8 @@
       "active": "active",
       "policy_blocked": "policy-blocked",
       "rate_cooling": "rate-cooling",
-      "budget_exhausted": "budget used up"
+      "budget_exhausted": "budget used up",
+      "bps_degraded": "BPS degraded"
     },
     "bpsConfigGroups": {
       "routing": {
@@ -7647,12 +7661,53 @@
     "groupsNoneEnabled": "No group is enabled yet",
     "groupsAddAccounts": "Add accounts to a group →",
     "dashNativeDegraded": "Native degraded (on BPS)",
-    "nativeTriggerModel": "model mismatch ({{detail}})",
     "nativeRouteOk": "native route ok",
     "nativeRouteOpen": "native broken",
     "routeBps": "BPS",
     "routeNative": "Native",
-    "policyRoute": "Route"
+    "policyRoute": "Route",
+    "degradeProbe": "Degradation check",
+    "degradeProbeTitle": "Degradation check · {{name}}",
+    "degradeProbeDesc": "Asks the chosen route of this account to draw a pelican riding a bicycle (inline SVG) and scores its complexity to judge degradation; about 1–4 minutes, not client traffic.",
+    "degradeRoute": "Route",
+    "degradeCalibration": "The {{threshold}} threshold is calibrated on hand-graded {{model}} samples at medium reasoning effort; scores are not comparable for other models or efforts.",
+    "degradeRunning": "Probing… the verdict appears here when it lands (about 1–4 minutes).",
+    "degradeScore": "score {{score}} / threshold {{threshold}}",
+    "degradeViewSample": "View sample",
+    "degradeStart": "Start",
+    "degradeNotQueued": "Could not queue the probe",
+    "degradeSampleTitle": "Probe sample #{{id}}",
+    "degradeSampleDesc": "{{verdict}} · score {{score}} · {{bytes}} chars · {{time}} (sandboxed, no scripts)",
+    "degradeNoSample": "This probe saved no sample.",
+    "degradeHistory": "Degradation checks",
+    "degradeHistoryDesc": "Pelican judge: score ≥ {{threshold}} is not degraded (calibrated on {{model}}, medium effort); no HTML is an invalid sample, retried and never counted. A model mismatch only triggers a confirm probe; a low score or a native 403 breaks that route. Kept 7 days.",
+    "degradeAllRoutes": "All routes",
+    "degradeAllVerdicts": "All verdicts",
+    "degradeVerdict": "Verdict",
+    "degradeNoProbes": "No degradation checks yet.",
+    "degradeTime": "Time",
+    "degradeModel": "Model",
+    "degradeBytes": "Chars",
+    "degradeTrigger": "Trigger",
+    "degradeDuration": "Duration",
+    "dashBPSDegraded": "BPS degraded (on native)",
+    "bpsDegradedDetail": "BPS broken: {{detail}}",
+    "degradeVerdicts": {
+      "ok": "Not degraded",
+      "degraded": "Degraded",
+      "invalid": "Invalid"
+    },
+    "degradePending": {
+      "queued": "queued",
+      "running": "probing"
+    },
+    "degradeTriggers": {
+      "manual": "Manual",
+      "mismatch": "Mismatch confirm",
+      "scheduled": "Scheduled",
+      "recovery": "Recovery"
+    },
+    "nativeTriggerPelican": "pelican judge ({{detail}})"
   },
   "logAgent": {
     "title": "AI log analysis",

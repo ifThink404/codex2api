@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"time"
@@ -21,6 +22,8 @@ const (
 	bpsStatePolicyBlocked   = "policy_blocked"
 	bpsStateRateCooling     = "rate_cooling"
 	bpsStateBudgetExhausted = "budget_exhausted"
+	// bpsStateDegraded: the degradation breaker broke the BPS route.
+	bpsStateDegraded = "bps_degraded"
 )
 
 type bpsDashboardSummary struct {
@@ -33,6 +36,7 @@ type bpsDashboardSummary struct {
 	// NativeDegraded dual-route accounts have their native route broken
 	// (BPS serves them meanwhile).
 	NativeDegraded  int  `json:"native_degraded"`
+	BPSDegraded     int  `json:"bps_degraded"`
 	Usable          int  `json:"usable"`
 	PolicyBlocked   int  `json:"policy_blocked"`
 	RateCooling     int  `json:"rate_cooling"`
@@ -74,6 +78,8 @@ func bpsDashboardState(status proxy.BPSAccountStatus, now time.Time) string {
 	switch {
 	case status.ProbePending || status.Reason == proxy.BPSPolicyBlockedKind && status.CoolingUntil.After(now):
 		return bpsStatePolicyBlocked
+	case status.BPSDegraded:
+		return bpsStateDegraded
 	case status.Reason == proxy.BPSRateLimitedReason && status.CoolingUntil.After(now):
 		return bpsStateRateCooling
 	case status.Budget > 0 && status.BudgetUsed >= status.Budget:
@@ -203,6 +209,8 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 			summary.RateCooling++
 		case bpsStateBudgetExhausted:
 			summary.BudgetExhausted++
+		case bpsStateDegraded:
+			summary.BPSDegraded++
 		}
 		if status.CoolingUntil.After(now) {
 			until := status.CoolingUntil
@@ -244,12 +252,22 @@ func (h *Handler) GetTransportPluginDashboard(c *gin.Context) {
 }
 
 // bpsRouteBlocks keeps the block events of one route.
+// (legacy rows without a route are BPS usage-policy blocks; for the BPS
+// route only usage-policy events count, not degradation breaks).
 func bpsRouteBlocks(blocks []database.BPSPolicyBlock, route string) []database.BPSPolicyBlock {
 	out := make([]database.BPSPolicyBlock, 0, len(blocks))
 	for _, block := range blocks {
-		if block.Route == route || block.Route == "" && route == database.BPSRouteBPS {
-			out = append(out, block)
+		blockRoute := block.Route
+		if blockRoute == "" {
+			blockRoute = database.BPSRouteBPS
 		}
+		if blockRoute != route {
+			continue
+		}
+		if route == database.BPSRouteBPS && block.Kind != "" && block.Kind != database.RouteBlockPolicy {
+			continue
+		}
+		out = append(out, block)
 	}
 	return out
 }
@@ -300,6 +318,54 @@ type bpsActivityRow struct {
 	LastRequestAt  *time.Time `json:"last_request_at,omitempty"`
 	// NativeRoute is the native route breaker of a dual-route account.
 	NativeRoute *bpsNativeRouteView `json:"native_route,omitempty"`
+	// Degrade is the latest pelican verdict (and a queued / running probe)
+	// per route; BPSDegradedUntil / BPSDegradedDetail describe a broken BPS
+	// route.
+	Degrade           map[string]bpsDegradeView `json:"degrade,omitempty"`
+	BPSDegradedUntil  *time.Time                `json:"bps_degraded_until,omitempty"`
+	BPSDegradedDetail string                    `json:"bps_degraded_detail,omitempty"`
+}
+
+// bpsDegradeView is one route's latest pelican probe and pending state.
+type bpsDegradeView struct {
+	Verdict string     `json:"verdict,omitempty"`
+	Score   int        `json:"score,omitempty"`
+	ProbeID int64      `json:"probe_id,omitempty"`
+	At      *time.Time `json:"at,omitempty"`
+	Pending string     `json:"pending,omitempty"`
+}
+
+// bpsDegradeViews joins the latest probes with the probes in flight.
+func (h *Handler) bpsDegradeViews(ctx context.Context, accounts []*auth.Account) map[int64]map[string]bpsDegradeView {
+	out := map[int64]map[string]bpsDegradeView{}
+	latest, err := h.db.LatestDegradeProbes(ctx)
+	if err != nil {
+		return out
+	}
+	set := func(id int64, route string, change func(*bpsDegradeView)) {
+		if out[id] == nil {
+			out[id] = map[string]bpsDegradeView{}
+		}
+		view := out[id][route]
+		change(&view)
+		out[id][route] = view
+	}
+	for _, probe := range latest {
+		at := probe.CreatedAt
+		set(probe.AccountID, probe.Route, func(v *bpsDegradeView) {
+			v.Verdict, v.Score, v.ProbeID, v.At = probe.Verdict, probe.Score, probe.ID, &at
+		})
+	}
+	if h.authCacheProxy != nil {
+		for _, account := range accounts {
+			for _, route := range []string{proxy.RouteBPS, proxy.RouteNative} {
+				if pending := h.authCacheProxy.DegradeProbePending(account.ID(), route); pending != "" {
+					set(account.ID(), route, func(v *bpsDegradeView) { v.Pending = pending })
+				}
+			}
+		}
+	}
+	return out
 }
 
 // sortBPSActivity puts accounts with requests in flight first (most first),
@@ -345,6 +411,7 @@ func (h *Handler) GetTransportPluginActivity(c *gin.Context) {
 	for _, block := range bpsRouteBlocks(active, database.BPSRouteBPS) {
 		blockedAt[block.AccountID] = block
 	}
+	degrade := h.bpsDegradeViews(ctx, accounts)
 	rows := make([]bpsActivityRow, 0, len(accounts))
 	for i, status := range proxy.BPSAccountStatusesWith(ctx, h.cache, ids, h.findAccount) {
 		account := accounts[i]
@@ -356,6 +423,11 @@ func (h *Handler) GetTransportPluginActivity(c *gin.Context) {
 			InFlight: status.InFlight, MaxConcurrency: status.MaxConcurrency,
 			Succeeded: status.BudgetUsed, Attempts: status.Attempts, Budget: status.Budget,
 			NativeRoute: bpsNativeRoute(status),
+			Degrade:     degrade[status.AccountID],
+		}
+		if status.BPSDegraded {
+			until := status.BPSDegradedUntil
+			row.BPSDegradedUntil, row.BPSDegradedDetail = &until, status.BPSDegradedDetail
 		}
 		if status.CoolingUntil.After(now) {
 			until := status.CoolingUntil

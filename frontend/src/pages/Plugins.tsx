@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Archive, Cable, ChevronRight, Fingerprint, Gauge, HeartPulse, Hourglass, Paperclip, RefreshCw, Route, Save, Search, ShieldAlert, ShieldCheck, Timer, Trash2 } from 'lucide-react'
+import { Archive, Cable, ChevronRight, Fingerprint, FlaskConical, Gauge, HeartPulse, Hourglass, Paperclip, RefreshCw, Route, Save, Search, ShieldAlert, ShieldCheck, Timer, Trash2 } from 'lucide-react'
 import { Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '../api'
 import AccountGroupMultiSelect from '../components/AccountGroupMultiSelect'
@@ -31,6 +31,10 @@ import {
   CAPTURE_PURGE_MODES,
   formatBlockDuration,
   BPS_STATE_BADGE_CLASSES,
+  DEGRADE_ROUTES,
+  DEGRADE_VERDICTS,
+  type DegradeRoute,
+  degradeVerdictClass,
   BPS_TRAFFIC_RANGES,
   type BPSTrafficRange,
   activeUntil,
@@ -64,7 +68,7 @@ import { formatBeijingTime } from '../utils/time'
 import { getErrorMessage } from '../utils/error'
 import OperationsErrors from './OperationsErrors'
 import { SETTINGS_FIELD_GRID, SETTINGS_ROW_LIST, SettingField, SettingsCard } from '../components/SettingsLayout'
-import type { AccountGroup, AccountRow, BPSActivity, BPSActivityAccount, BPSDashboard, BPSPolicyBlocksResponse, BPSNativeRoute, BPSRoute, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
+import type { AccountGroup, AccountRow, BPSActivity, BPSActivityAccount, BPSDashboard, BPSPolicyBlocksResponse, BPSNativeRoute, BPSRoute, BPSDegradeView, DegradeProbe, DegradeProbesResponse, PluginAccountStatus, PluginCapture, PluginCapturePurgeMode, PluginCaptureStats, TransportPlugin, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -436,6 +440,7 @@ function PluginOverview({ plugin, onChanged }: { plugin: TransportPlugin; onChan
 
       <PluginAccounts plugin={plugin} onChanged={onChanged} />
       {plugin.id === 'bps' && <PolicyBlocks plugin={plugin} />}
+      {plugin.id === 'bps' && <DegradeProbesPanel plugin={plugin} />}
     </div>
   )
 }
@@ -511,6 +516,7 @@ function BPSDashboardPanel({ plugin }: { plugin: TransportPlugin }) {
             {Boolean(summary?.disabled) && <RunwayChip label={t('plugins.dashDisabled')} value={String(summary?.disabled)} />}
             {Boolean(summary?.invalid) && <RunwayChip label={t('plugins.dashInvalid')} value={String(summary?.invalid)} emphasize />}
             {Boolean(summary?.native_degraded) && <RunwayChip label={t('plugins.dashNativeDegraded')} value={String(summary?.native_degraded)} emphasize />}
+            {Boolean(summary?.bps_degraded) && <RunwayChip label={t('plugins.dashBPSDegraded')} value={String(summary?.bps_degraded)} emphasize />}
             <RunwayChip label={t('plugins.dashInFlightTotal')} value={String(inFlight)} emphasize={inFlight > 0} />
             <RunwayChip label={t('plugins.dashRequests1h')} value={String(data?.traffic['1h'].requests ?? 0)} />
             <RunwayChip label={t('plugins.dashSuccessRate1h')} value={data ? formatSuccessRate(data.traffic['1h'].success_rate, data.traffic['1h'].requests) : '—'} />
@@ -660,6 +666,7 @@ function BPSActivityPanel({ plugin }: { plugin: TransportPlugin }) {
   const [now, setNow] = useState(() => Date.now())
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = usePersistedPageSize('bps_activity', 20, DEFAULT_PAGE_SIZE_OPTIONS)
+  const [probeTarget, setProbeTarget] = useState<BPSActivityAccount | null>(null)
   useEffect(() => {
     let active = true
     const load = () => api.getBPSActivity(plugin.id)
@@ -728,6 +735,7 @@ function BPSActivityPanel({ plugin }: { plugin: TransportPlugin }) {
                             <span>{t('plugins.activityCoolingUntil', { time: formatBeijingTime(account.cooling_until).slice(5) })}</span>
                           )}
                           {account.native_route && <NativeRouteLine route={account.native_route} now={now} />}
+                          <DegradeLine account={account} onProbe={() => setProbeTarget(account)} />
                           {hasTime(account.next_probe_at) && <span>{nextProbe > 0 ? t('plugins.activityNextProbe', { in: formatBlockDuration(nextProbe) }) : t('plugins.policyProbeDue')}</span>}
                         </div>
                       </TableCell>
@@ -758,6 +766,7 @@ function BPSActivityPanel({ plugin }: { plugin: TransportPlugin }) {
           />
         </>
       )}
+      <DegradeProbeDialog plugin={plugin} account={probeTarget} onClose={() => setProbeTarget(null)} />
     </div>
   )
 }
@@ -767,7 +776,7 @@ function useNativeTriggerLabel() {
   const { t } = useTranslation()
   return (trigger: string | undefined, detail: string | undefined) => {
     if (trigger === 'native_403') return '403'
-    if (trigger === 'model_mismatch') return t('plugins.nativeTriggerModel', { detail: detail ?? '' })
+    if (trigger === 'pelican') return t('plugins.nativeTriggerPelican', { detail: detail ?? '' })
     return detail || trigger || ''
   }
 }
@@ -798,6 +807,270 @@ function RouteBadge({ route }: { route?: BPSRoute }) {
   return route === 'native'
     ? <Badge variant="outline" className="border-transparent bg-rose-500/12 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">{t('plugins.routeNative')}</Badge>
     : <Badge variant="outline" className="border-transparent bg-primary/10 text-primary">{t('plugins.routeBps')}</Badge>
+}
+
+const DEGRADE_POLL_MS = 5_000
+
+// degradeRoutesOf lists the routes of an activity account the pelican judge
+// can probe: BPS, plus native when it is explicitly on.
+function degradeRoutesOf(account: BPSActivityAccount): DegradeRoute[] {
+  return account.native_route ? ['bps', 'native'] : ['bps']
+}
+
+// DegradeVerdictBadge is one route's latest pelican verdict (e.g. "ok 214") or
+// its probe in flight.
+function DegradeVerdictBadge({ route, view }: { route: DegradeRoute; view?: BPSDegradeView }) {
+  const { t } = useTranslation()
+  const routeLabel = t(route === 'native' ? 'plugins.routeNative' : 'plugins.routeBps')
+  if (view?.pending) {
+    return <Badge variant="outline" className="border-transparent bg-blue-500/12 text-blue-600 dark:bg-blue-500/20 dark:text-blue-300">{routeLabel} · {t(`plugins.degradePending.${view.pending}`)}</Badge>
+  }
+  if (!view?.verdict) return null
+  return (
+    <Badge variant="outline" className={degradeVerdictClass(view.verdict)}>
+      {routeLabel} · {t(`plugins.degradeVerdicts.${view.verdict}`)}{view.verdict !== 'invalid' ? ` ${view.score ?? 0}` : ''}
+    </Badge>
+  )
+}
+
+// DegradeLine shows the account's latest verdict per route and the
+// degradation-check action.
+function DegradeLine({ account, onProbe }: { account: BPSActivityAccount; onProbe: () => void }) {
+  const { t } = useTranslation()
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {account.bps_degraded_detail && <span>{t('plugins.bpsDegradedDetail', { detail: account.bps_degraded_detail })}</span>}
+      {degradeRoutesOf(account).map((route) => <DegradeVerdictBadge key={route} route={route} view={account.degrade?.[route]} />)}
+      <Button type="button" variant="ghost" size="xs" onClick={onProbe}>
+        <FlaskConical className="size-3" />
+        {t('plugins.degradeProbe')}
+      </Button>
+    </span>
+  )
+}
+
+// DegradeProbeDialog runs the pelican judge on one route of an account and
+// shows the verdict when it lands (probes take minutes; the list is polled).
+function DegradeProbeDialog({ plugin, account, onClose }: { plugin: TransportPlugin; account: BPSActivityAccount | null; onClose: () => void }) {
+  const { t } = useTranslation()
+  const [route, setRoute] = useState<DegradeRoute>('bps')
+  const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [result, setResult] = useState<DegradeProbe | null>(null)
+  const [error, setError] = useState('')
+  const [sample, setSample] = useState<number | null>(null)
+  const [settings, setSettings] = useState<{ threshold: number; model: string } | null>(null)
+  const routes = account ? degradeRoutesOf(account) : []
+  useEffect(() => {
+    setRoute('bps')
+    setStartedAt(null)
+    setResult(null)
+    setError('')
+    if (account) {
+      api.listDegradeProbes(plugin.id, { limit: 1 }).then((res) => setSettings({ threshold: res.threshold, model: res.model })).catch(() => undefined)
+    }
+  }, [account, plugin.id])
+  useEffect(() => {
+    if (!account || startedAt === null || result) return
+    const timer = window.setInterval(() => {
+      api.listDegradeProbes(plugin.id, { accountId: account.account_id, route, limit: 1 })
+        .then((res) => {
+          const latest = res.probes[0]
+          if (latest && Date.parse(latest.created_at) >= startedAt - 1000) setResult(latest)
+        })
+        .catch(() => undefined)
+    }, DEGRADE_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [account, plugin.id, result, route, startedAt])
+
+  const start = async () => {
+    if (!account) return
+    setError('')
+    setResult(null)
+    try {
+      const res = await api.startDegradeProbes(plugin.id, [account.account_id], route)
+      if (res.queued === 0) {
+        setError(res.skipped[0]?.reason ?? t('plugins.degradeNotQueued'))
+        return
+      }
+      setStartedAt(Math.floor(Date.now() / 1000) * 1000)
+    } catch (err) {
+      setError(getErrorMessage(err))
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(account)} onOpenChange={(open) => { if (!open) onClose() }}>
+      {account ? (
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t('plugins.degradeProbeTitle', { name: account.name || `#${account.account_id}` })}</DialogTitle>
+            <DialogDescription>{t('plugins.degradeProbeDesc')}</DialogDescription>
+          </DialogHeader>
+          <SegmentedPillGroup
+            label={t('plugins.degradeRoute')}
+            value={route}
+            onChange={(value) => { setRoute(value); setStartedAt(null); setResult(null) }}
+            options={routes.map((value) => ({ value, label: t(value === 'native' ? 'plugins.routeNative' : 'plugins.routeBps') }))}
+            disabled={startedAt !== null && !result}
+          />
+          <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            {t('plugins.degradeCalibration', { threshold: settings?.threshold ?? 187, model: settings?.model ?? 'gpt-6-astra' })}
+          </p>
+          {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+          {startedAt !== null && !result && <p className="text-sm text-muted-foreground">{t('plugins.degradeRunning')}</p>}
+          {result && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border p-3 text-sm">
+              <Badge variant="outline" className={degradeVerdictClass(result.verdict)}>{t(`plugins.degradeVerdicts.${result.verdict}`)}</Badge>
+              <span className="font-mono tabular-nums">{t('plugins.degradeScore', { score: result.score, threshold: settings?.threshold ?? 187 })}</span>
+              {result.upstream_model && <span className="text-xs text-muted-foreground">{result.upstream_model}</span>}
+              {result.error && <span className="text-xs text-muted-foreground">{result.error}</span>}
+              {result.verdict !== 'invalid' && (
+                <Button type="button" variant="outline" size="xs" className="ml-auto" onClick={() => setSample(result.id)}>{t('plugins.degradeViewSample')}</Button>
+              )}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={onClose}>{t('common.close')}</Button>
+            <Button type="button" onClick={() => void start()} disabled={startedAt !== null && !result}>
+              <FlaskConical className="size-3.5" />
+              {t('plugins.degradeStart')}
+            </Button>
+          </div>
+          <DegradeSampleDialog plugin={plugin} probeId={sample} onClose={() => setSample(null)} />
+        </DialogContent>
+      ) : null}
+    </Dialog>
+  )
+}
+
+// DegradeSampleDialog renders a probe's saved HTML in a sandboxed iframe (no
+// scripts, no same origin) so the pelican can be eyeballed.
+function DegradeSampleDialog({ plugin, probeId, onClose }: { plugin: TransportPlugin; probeId: number | null; onClose: () => void }) {
+  const { t } = useTranslation()
+  const [probe, setProbe] = useState<DegradeProbe | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    setProbe(null)
+    setError('')
+    if (probeId === null) return
+    let active = true
+    api.getDegradeProbe(plugin.id, probeId)
+      .then((res) => { if (active) setProbe(res) })
+      .catch((err) => { if (active) setError(getErrorMessage(err)) })
+    return () => { active = false }
+  }, [plugin.id, probeId])
+  return (
+    <Dialog open={probeId !== null} onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>{t('plugins.degradeSampleTitle', { id: probeId ?? '' })}</DialogTitle>
+          <DialogDescription>
+            {probe ? t('plugins.degradeSampleDesc', { verdict: t(`plugins.degradeVerdicts.${probe.verdict}`), score: probe.score, bytes: probe.bytes, time: formatBeijingTime(probe.created_at) }) : t('common.loading')}
+          </DialogDescription>
+        </DialogHeader>
+        {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+        {probe?.html ? (
+          <iframe
+            title={t('plugins.degradeSampleTitle', { id: probe.id })}
+            sandbox=""
+            srcDoc={probe.html}
+            className="h-[60vh] w-full rounded-lg border border-border bg-white"
+          />
+        ) : probe ? <p className="text-sm text-muted-foreground">{t('plugins.degradeNoSample')}</p> : null}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// DegradeProbesPanel is the pelican probe history with filters and samples.
+function DegradeProbesPanel({ plugin }: { plugin: TransportPlugin }) {
+  const { t } = useTranslation()
+  const [route, setRoute] = useState('')
+  const [verdict, setVerdict] = useState('')
+  const [data, setData] = useState<DegradeProbesResponse | null>(null)
+  const [error, setError] = useState('')
+  const [sample, setSample] = useState<number | null>(null)
+  useEffect(() => {
+    let active = true
+    const load = () => api.listDegradeProbes(plugin.id, { route, verdict, limit: 100 })
+      .then((res) => { if (active) { setData(res); setError('') } })
+      .catch((err) => { if (active) setError(getErrorMessage(err)) })
+    void load()
+    const timer = window.setInterval(() => void load(), POLICY_BLOCKS_REFRESH_MS)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [plugin.id, route, verdict])
+  const probes = data?.probes ?? []
+  return (
+    <Section title={t('plugins.degradeHistory')} description={t('plugins.degradeHistoryDesc', { threshold: data?.threshold ?? 187, model: data?.model ?? 'gpt-6-astra' })}>
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Select
+          className="w-36"
+          compact
+          value={route}
+          onValueChange={setRoute}
+          aria-label={t('plugins.degradeRoute')}
+          options={[{ value: '', label: t('plugins.degradeAllRoutes') }, ...DEGRADE_ROUTES.map((value) => ({ value, label: t(value === 'native' ? 'plugins.routeNative' : 'plugins.routeBps') }))]}
+        />
+        <Select
+          className="w-36"
+          compact
+          value={verdict}
+          onValueChange={setVerdict}
+          aria-label={t('plugins.degradeVerdict')}
+          options={[{ value: '', label: t('plugins.degradeAllVerdicts') }, ...DEGRADE_VERDICTS.map((value) => ({ value, label: t(`plugins.degradeVerdicts.${value}`) }))]}
+        />
+      </div>
+      {data && probes.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t('plugins.degradeNoProbes')}</p>
+      ) : (
+        <div className="data-table-shell">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('plugins.degradeTime')}</TableHead>
+                <TableHead>{t('plugins.policyAccount')}</TableHead>
+                <TableHead>{t('plugins.policyRoute')}</TableHead>
+                <TableHead>{t('plugins.degradeVerdict')}</TableHead>
+                <TableHead>{t('plugins.degradeModel')}</TableHead>
+                <TableHead className="text-right">{t('plugins.degradeBytes')}</TableHead>
+                <TableHead>{t('plugins.degradeTrigger')}</TableHead>
+                <TableHead className="text-right">{t('plugins.degradeDuration')}</TableHead>
+                <TableHead>{t('common.actions')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {probes.map((probe) => (
+                <TableRow key={probe.id}>
+                  <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">{formatBeijingTime(probe.created_at)}</TableCell>
+                  <TableCell className="max-w-[14rem] truncate text-sm">{probe.name || `#${probe.account_id}`}</TableCell>
+                  <TableCell><RouteBadge route={probe.route} /></TableCell>
+                  <TableCell>
+                    <div className="flex flex-col items-start gap-0.5">
+                      <Badge variant="outline" className={degradeVerdictClass(probe.verdict)}>
+                        {t(`plugins.degradeVerdicts.${probe.verdict}`)}{probe.verdict !== 'invalid' ? ` ${probe.score}` : ''}
+                      </Badge>
+                      {probe.error && <span className="max-w-[16rem] truncate text-[11px] text-muted-foreground" title={probe.error}>{probe.error}</span>}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{probe.upstream_model && probe.upstream_model !== probe.model ? `${probe.model} → ${probe.upstream_model}` : probe.model}</TableCell>
+                  <TableCell className="text-right font-mono text-xs tabular-nums">{probe.bytes}</TableCell>
+                  <TableCell className="text-xs">{t(`plugins.degradeTriggers.${probe.trigger}`)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs tabular-nums">{formatBlockDuration(Math.round(probe.duration_ms / 1000))}</TableCell>
+                  <TableCell>
+                    <Button type="button" variant="outline" size="xs" disabled={probe.verdict === 'invalid'} onClick={() => setSample(probe.id)}>
+                      {t('plugins.degradeViewSample')}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+      <DegradeSampleDialog plugin={plugin} probeId={sample} onClose={() => setSample(null)} />
+    </Section>
+  )
 }
 
 // PolicyBlocks shows which accounts the BPS usage policy is blocking, for how

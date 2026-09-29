@@ -260,13 +260,13 @@ func TestBPSNativeRouteViewAndRouteBlocks(t *testing.T) {
 		t.Fatal("an account without a native route has no native view")
 	}
 	until := time.Now().Add(time.Minute)
-	view := bpsNativeRoute(proxy.BPSAccountStatus{NativeRoute: "open", NativeUntil: until, NativeTrigger: "model_mismatch", NativeDetail: "gpt-5.5 → gpt-5.4-mini"})
+	view := bpsNativeRoute(proxy.BPSAccountStatus{NativeRoute: "open", NativeUntil: until, NativeTrigger: "pelican", NativeDetail: "gpt-5.5 → gpt-5.4-mini"})
 	if view == nil || view.State != "open" || view.Until == nil || !view.Until.Equal(until) || view.Detail != "gpt-5.5 → gpt-5.4-mini" {
 		t.Fatalf("view = %+v", view)
 	}
-	blocks := []database.BPSPolicyBlock{{AccountID: 1, Route: database.BPSRouteBPS}, {AccountID: 2, Route: database.BPSRouteNative}, {AccountID: 3}}
+	blocks := []database.BPSPolicyBlock{{AccountID: 1, Route: database.BPSRouteBPS, Kind: database.RouteBlockPolicy}, {AccountID: 2, Route: database.BPSRouteNative, Kind: database.RouteBlockDegrade}, {AccountID: 3}, {AccountID: 4, Route: database.BPSRouteBPS, Kind: database.RouteBlockDegrade}}
 	if got := bpsRouteBlocks(blocks, database.BPSRouteBPS); len(got) != 2 || got[0].AccountID != 1 || got[1].AccountID != 3 {
-		t.Fatalf("bps blocks = %+v (legacy rows without a route are BPS)", got)
+		t.Fatalf("bps blocks = %+v (legacy rows are BPS policy blocks; degradation breaks are not)", got)
 	}
 	if got := bpsRouteBlocks(blocks, database.BPSRouteNative); len(got) != 1 || got[0].AccountID != 2 {
 		t.Fatalf("native blocks = %+v", got)

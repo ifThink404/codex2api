@@ -94,6 +94,9 @@ func (db *DB) MigrateBPSPlugin(ctx context.Context) error {
 	if err := db.migrateBPSPolicyBlocks(ctx); err != nil {
 		return err
 	}
+	if err := db.migrateDegradeProbes(ctx); err != nil {
+		return err
+	}
 	return db.migrateLegacyBPSSwitch(ctx)
 }
 
