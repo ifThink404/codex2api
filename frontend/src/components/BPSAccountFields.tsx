@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next'
 import { Cable } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import {
   BPS_CONVERGENCE_MODES,
   BPS_PROFILES,
@@ -94,12 +93,13 @@ export default function BPSAccountFields({
                 aria-label={t('accounts.bps.native')}
               />
             </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2">
+            <div className="space-y-1.5">
               <label htmlFor={`${id}-trim`} className="text-xs font-medium">{t('accounts.bps.imageTrim')}</label>
-              <Switch
+              <Select
                 id={`${id}-trim`}
-                checked={form.imageTrim}
-                onCheckedChange={imageTrim => onChange({ imageTrim })}
+                value={form.imageTrim}
+                onValueChange={value => onChange({ imageTrim: value as BPSTriState })}
+                options={triStateOptions(t('accounts.bps.inheritImageTrim'))}
                 disabled={disabled}
                 aria-label={t('accounts.bps.imageTrim')}
               />

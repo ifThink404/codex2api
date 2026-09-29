@@ -312,7 +312,7 @@ func bpsUploadCooldownForAccount(ctx context.Context, account *auth.Account) boo
 	if !until.After(now) {
 		return false
 	}
-	trim := account.CodexBPSImageTrimEnabled()
+	trim := bpsImageTrimEnabled(account)
 	parts := s.parts
 	if trim {
 		parts = bpsUploadParts(s.body, s.headers, s.compact, true)

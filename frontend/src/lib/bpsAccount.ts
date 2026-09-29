@@ -29,7 +29,7 @@ export interface BPSAccountSource {
   codex_native_enabled?: boolean | null
   codex_native_models?: string[] | null
   codex_bps_models?: string[] | null
-  codex_bps_image_trim_enabled?: boolean
+  codex_bps_image_trim_enabled?: boolean | null
   codex_bps_profile?: CodexBPSProfile | string
   codex_bps_convergence?: CodexBPSConvergence | string
 }
@@ -39,7 +39,7 @@ export interface BPSAccountForm {
   native: BPSTriState
   nativeModels: string
   bpsModels: string
-  imageTrim: boolean
+  imageTrim: BPSTriState
   profile: CodexBPSProfile
   convergence: CodexBPSConvergence
 }
@@ -68,7 +68,7 @@ export function bpsFormFromAccount(account: BPSAccountSource): BPSAccountForm {
     native: triState(account.codex_native_enabled),
     nativeModels: (account.codex_native_models ?? []).join(', '),
     bpsModels: (account.codex_bps_models ?? []).join(', '),
-    imageTrim: account.codex_bps_image_trim_enabled ?? false,
+    imageTrim: triState(account.codex_bps_image_trim_enabled),
     profile,
     convergence,
   }
@@ -87,7 +87,7 @@ export function bpsPayloadFromForm(form: BPSAccountForm, overrideOnly = false): 
     codex_native_enabled: triStateValue(form.native),
     codex_native_models: parseRouteModels(form.nativeModels),
     codex_bps_models: parseRouteModels(form.bpsModels),
-    codex_bps_image_trim_enabled: form.imageTrim,
+    codex_bps_image_trim_enabled: triStateValue(form.imageTrim),
     codex_bps_profile: form.profile,
     codex_bps_convergence: form.convergence,
   }

@@ -265,7 +265,7 @@ func executeCodexBPS(ctx context.Context, svc plugins.Services, account *auth.Ac
 	accessToken := account.GetAccessToken()
 	proxyURL := account.GetProxyURL()
 	profile := bpsProfile(account.EffectiveCodexBPSProfile())
-	trimImages := account.CodexBPSImageTrimEnabled()
+	trimImages := bpsImageTrimEnabled(account)
 	if accessToken == "" {
 		return nil, ErrNoAvailableAccount()
 	}

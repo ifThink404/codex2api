@@ -110,9 +110,11 @@ type codexBPSAccountConfig struct {
 	Native       *bool
 	NativeModels []string
 	BPSModels    []string
-	ImageTrim    bool
-	Profile      CodexBPSProfile
-	Convergence  string
+	// ImageTrim is the explicit codex_bps_image_trim_enabled; nil follows the
+	// BPS plugin's image_trim_default.
+	ImageTrim   *bool
+	Profile     CodexBPSProfile
+	Convergence string
 }
 
 func codexBPSAccountConfigFromRow(row *database.AccountRow) codexBPSAccountConfig {
@@ -120,7 +122,7 @@ func codexBPSAccountConfigFromRow(row *database.AccountRow) codexBPSAccountConfi
 		Native:       row.GetCredentialOptionalBool(CodexNativeEnabledCredentialKey),
 		NativeModels: row.GetCredentialStringSlice(CodexNativeModelsCredentialKey),
 		BPSModels:    row.GetCredentialStringSlice(CodexBPSModelsCredentialKey),
-		ImageTrim:    row.GetCredentialBool(CodexBPSImageTrimCredentialKey),
+		ImageTrim:    row.GetCredentialOptionalBool(CodexBPSImageTrimCredentialKey),
 		Profile:      NormalizeCodexBPSProfile(row.GetCredential(CodexBPSProfileCredentialKey)),
 		Convergence:  NormalizeCodexBPSConvergence(row.GetCredential(CodexBPSConvergenceCredentialKey)),
 	}
@@ -133,6 +135,10 @@ func (c codexBPSAccountConfig) clone() codexBPSAccountConfig {
 		v := *c.Native
 		out.Native = &v
 	}
+	if c.ImageTrim != nil {
+		v := *c.ImageTrim
+		out.ImageTrim = &v
+	}
 	out.NativeModels = slices.Clone(c.NativeModels)
 	out.BPSModels = slices.Clone(c.BPSModels)
 	return out
@@ -144,13 +150,25 @@ func (a *Account) CodexBPSEligible() bool {
 	return a != nil && !a.IsRelayStyle() && !a.IsCodexAgentIdentity() && !a.IsClaudeOAuth()
 }
 
-func (a *Account) CodexBPSImageTrimEnabled() bool {
+// CodexBPSImageTrimOverride returns the account's explicit history-trim
+// setting; ok is false when the account follows the plugin default.
+func (a *Account) CodexBPSImageTrimOverride() (enabled, ok bool) {
 	if !a.CodexBPSEligible() {
-		return false
+		return false, true
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.codexBPS.ImageTrim
+	if a.codexBPS.ImageTrim == nil {
+		return false, false
+	}
+	return *a.codexBPS.ImageTrim, true
+}
+
+// CodexBPSImageTrimEnabled is the explicit setting, false when unset (the
+// BPS plugin resolves unset accounts to its image_trim_default).
+func (a *Account) CodexBPSImageTrimEnabled() bool {
+	enabled, _ := a.CodexBPSImageTrimOverride()
+	return enabled
 }
 
 // EffectiveCodexBPSProfile is the profile BPS uses for this account. The
@@ -237,7 +255,7 @@ type CodexBPSAccountSettings struct {
 	Native       *bool           `json:"codex_native_enabled"`
 	NativeModels []string        `json:"codex_native_models"`
 	BPSModels    []string        `json:"codex_bps_models"`
-	ImageTrim    bool            `json:"codex_bps_image_trim_enabled"`
+	ImageTrim    *bool           `json:"codex_bps_image_trim_enabled"`
 	Profile      CodexBPSProfile `json:"codex_bps_profile"`
 	Convergence  string          `json:"codex_bps_convergence"`
 }
@@ -254,9 +272,10 @@ type CodexBPSAccountOptions struct {
 	Native       *bool
 	NativeModels []string
 	BPSModels    []string
-	ImageTrim    bool
-	Profile      CodexBPSProfile
-	Convergence  string
+	// ImageTrim is set explicitly (tests pin it either way).
+	ImageTrim   bool
+	Profile     CodexBPSProfile
+	Convergence string
 }
 
 // SetCodexBPSOptions replaces the account's BPS configuration.
@@ -265,7 +284,8 @@ func (a *Account) SetCodexBPSOptions(opts CodexBPSAccountOptions) *Account {
 		return a
 	}
 	a.mu.Lock()
-	a.codexBPS = codexBPSAccountConfig{Native: opts.Native, NativeModels: opts.NativeModels, BPSModels: opts.BPSModels, ImageTrim: opts.ImageTrim, Profile: NormalizeCodexBPSProfile(string(opts.Profile)), Convergence: NormalizeCodexBPSConvergence(opts.Convergence)}
+	imageTrim := opts.ImageTrim
+	a.codexBPS = codexBPSAccountConfig{Native: opts.Native, NativeModels: opts.NativeModels, BPSModels: opts.BPSModels, ImageTrim: &imageTrim, Profile: NormalizeCodexBPSProfile(string(opts.Profile)), Convergence: NormalizeCodexBPSConvergence(opts.Convergence)}
 	a.mu.Unlock()
 	return a
 }
@@ -290,7 +310,7 @@ func (s *Store) ApplyAccountCodexBPSCredentialUpdates(dbID int64, updates map[st
 		acc.codexBPS.BPSModels = row.GetCredentialStringSlice(CodexBPSModelsCredentialKey)
 	}
 	if _, ok := updates[CodexBPSImageTrimCredentialKey]; ok {
-		acc.codexBPS.ImageTrim = row.GetCredentialBool(CodexBPSImageTrimCredentialKey)
+		acc.codexBPS.ImageTrim = row.GetCredentialOptionalBool(CodexBPSImageTrimCredentialKey)
 	}
 	if _, ok := updates[CodexBPSProfileCredentialKey]; ok {
 		acc.codexBPS.Profile = NormalizeCodexBPSProfile(row.GetCredential(CodexBPSProfileCredentialKey))

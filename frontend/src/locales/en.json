@@ -2112,7 +2112,8 @@
         "auto": "Account setting",
         "codex": "Codex",
         "bps": "BPS"
-      }
+      },
+      "inheritImageTrim": "Inherit (plugin default)"
     }
   },
   "invite": {
@@ -7436,7 +7437,8 @@
       "policy_block_threshold": "Usage-policy blocks before stopping BPS (10 min)",
       "bps_models": "Models served by BPS",
       "bps_only_models": "BPS-only models",
-      "bps_policy_cooldown_ladder": "Usage-policy cooldown ladder"
+      "bps_policy_cooldown_ladder": "Usage-policy cooldown ladder",
+      "image_trim_default": "Default attachment history trim"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7455,7 +7457,8 @@
       "persist_heuristic_affinity": "On: sessions inferred from the conversation opening keep their account on every replica. Off: only client task IDs are stored, so unrelated conversations with the same opening never share an account, at the cost of cross-replica stickiness.",
       "bps_models": "Comma-separated globs. Other models are served natively. Empty uses the default.",
       "bps_only_models": "Models native cannot serve: scheduling tries BPS-capable accounts first. Empty uses the default.",
-      "bps_policy_cooldown_ladder": "Cooldown per trigger (3 blocks in 10 min) when the upstream gives no explicit cooldown: 1st, 2nd, 3rd… trigger. A tier is forgiven per 2h without a block, all after 24h. Durations like 2m, 2h."
+      "bps_policy_cooldown_ladder": "Cooldown per trigger (3 blocks in 10 min) when the upstream gives no explicit cooldown: 1st, 2nd, 3rd… trigger. A tier is forgiven per 2h without a block, all after 24h. Durations like 2m, 2h.",
+      "image_trim_default": "Applies to BPS accounts without their own setting. On by default, as in fj-server."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {

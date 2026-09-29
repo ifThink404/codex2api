@@ -182,3 +182,17 @@ func TestCodexBPSToggleReachesOtherReplica(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexBPSImageTrimIsTriState(t *testing.T) {
+	update, err := parseAccountSchedulerUpdate(updateAccountSchedulerReq{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{ImageTrim: json.RawMessage(`null`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := update.CredentialUpdates[auth.CodexBPSImageTrimCredentialKey]; !ok || value != nil {
+		t.Fatalf("null image trim must clear the key (inherit the plugin default), got %#v", value)
+	}
+	update, err = parseAccountSchedulerUpdate(updateAccountSchedulerReq{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{ImageTrim: json.RawMessage(`false`)}})
+	if err != nil || update.CredentialUpdates[auth.CodexBPSImageTrimCredentialKey] != false {
+		t.Fatalf("explicit false = %#v, err %v", update.CredentialUpdates, err)
+	}
+}

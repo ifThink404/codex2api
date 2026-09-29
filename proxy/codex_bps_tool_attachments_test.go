@@ -21,7 +21,8 @@ func TestBPSCustomToolImagesAndFilesKeepBatchAndHistory(t *testing.T) {
 	db, err := newBPSProxyTestDB("sqlite", filepath.Join(t.TempDir(), "mixed.db"))
 	require.NoError(t, err)
 	defer db.Close()
-	a := withBPSOverride(&auth.Account{DBID: 92101, AccountID: "mixed-media-account", AccessToken: "account-token"}, true)
+	// History trim is pinned off: this test checks every attachment is kept.
+	a := withBPSOverride((&auth.Account{DBID: 92101, AccountID: "mixed-media-account", AccessToken: "account-token"}).SetCodexBPSOptions(auth.CodexBPSAccountOptions{}), true)
 	image := "data:image/png;base64," + bpsTestPNG(t)
 	imagePart := map[string]any{"type": "input_image", "image_url": image, "detail": "original"}
 	textPart := func(text string) any { return map[string]string{"type": "input_text", "text": text} }

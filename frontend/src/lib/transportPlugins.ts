@@ -50,6 +50,7 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'attachment_429_fallback', kind: 'boolean' },
   { key: 'exclude_failures_from_native_health', kind: 'boolean', defaultValue: true, hint: true },
   { key: 'persist_heuristic_affinity', kind: 'boolean', defaultValue: true, hint: true },
+  { key: 'image_trim_default', kind: 'boolean', defaultValue: true, hint: true },
 ]
 
 // pluginConfigListText is a list field's editable text: saved lists are

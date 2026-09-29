@@ -61,6 +61,9 @@ type BPSConfig struct {
 	PolicyBlockThreshold            int      `json:"policy_block_threshold,omitempty"`
 	PolicyCooldownLadder            []string `json:"bps_policy_cooldown_ladder,omitempty"`
 	ExcludeFailuresFromNativeHealth *bool    `json:"exclude_failures_from_native_health,omitempty"`
+	// ImageTrimDefault is codex_bps_image_trim_enabled for accounts without
+	// an explicit value. Absent means on, as in fj-server.
+	ImageTrimDefault *bool `json:"image_trim_default,omitempty"`
 	// PersistHeuristicAffinity stores the task affinity of heuristic
 	// (conversation-prefix) seeds in the database, shared by every replica.
 	// Absent means on, as in fj-server; off keeps them in a local LRU.
@@ -134,6 +137,20 @@ func (c BPSConfig) BPSOnlyModel(model string) bool {
 		patterns = defaultBPSOnlyModels
 	}
 	return bpsModelMatches(patterns, model)
+}
+
+// TrimsImagesByDefault reports image_trim_default.
+func (c BPSConfig) TrimsImagesByDefault() bool {
+	return c.ImageTrimDefault == nil || *c.ImageTrimDefault
+}
+
+// bpsImageTrimEnabled resolves an account's history trim: its explicit
+// setting, else the plugin default.
+func bpsImageTrimEnabled(account *auth.Account) bool {
+	if enabled, ok := account.CodexBPSImageTrimOverride(); ok {
+		return enabled
+	}
+	return currentBPSConfig().TrimsImagesByDefault()
 }
 
 // SparesNativeHealth reports whether BPS failures stay out of native account

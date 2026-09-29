@@ -71,7 +71,8 @@ func runBPSLadderRequest(t *testing.T, account *auth.Account, body []byte) (*htt
 }
 
 func bpsLadderAccount(id int64) *auth.Account {
-	return withBPSOverride(&auth.Account{DBID: id, AccountID: fmt.Sprintf("ladder-account-%d", id), AccessToken: "token"}, true)
+	// History trim is pinned off so every history image reaches the ladder.
+	return withBPSOverride((&auth.Account{DBID: id, AccountID: fmt.Sprintf("ladder-account-%d", id), AccessToken: "token"}).SetCodexBPSOptions(auth.CodexBPSAccountOptions{}), true)
 }
 
 func TestBPSImageLadderReuploadsCachedHandlesThenSucceeds(t *testing.T) {

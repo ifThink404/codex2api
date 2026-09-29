@@ -61,13 +61,14 @@ func parseRouteModelsField(raw json.RawMessage, field string) ([]string, bool, e
 }
 
 // parseCodexBPSAccountFields validates the BPS fields into credential
-// updates. codex_bps_enabled and codex_native_enabled are tri-state: null
-// clears the explicit value (inherit).
+// updates. codex_bps_enabled, codex_native_enabled and
+// codex_bps_image_trim_enabled are tri-state: null clears the explicit value
+// (inherit; image trim then follows the plugin's image_trim_default).
 func parseCodexBPSAccountFields(req codexBPSAccountFieldsReq, updates map[string]interface{}) error {
 	for _, field := range []struct {
 		raw json.RawMessage
 		key string
-	}{{req.Enabled, auth.CodexBPSEnabledCredentialKey}, {req.Native, auth.CodexNativeEnabledCredentialKey}} {
+	}{{req.Enabled, auth.CodexBPSEnabledCredentialKey}, {req.Native, auth.CodexNativeEnabledCredentialKey}, {req.ImageTrim, auth.CodexBPSImageTrimCredentialKey}} {
 		value, err := parseOptionalNullableBoolField(field.raw, field.key)
 		if err != nil {
 			return err
@@ -79,13 +80,6 @@ func parseCodexBPSAccountFields(req codexBPSAccountFieldsReq, updates map[string
 				updates[field.key] = *value.Value
 			}
 		}
-	}
-	imageTrim, err := parseOptionalBoolField(req.ImageTrim, auth.CodexBPSImageTrimCredentialKey)
-	if err != nil {
-		return err
-	}
-	if imageTrim.Set {
-		updates[auth.CodexBPSImageTrimCredentialKey] = imageTrim.Value
 	}
 	profile, err := parseOptionalStringField(req.Profile, auth.CodexBPSProfileCredentialKey, auth.ValidateCodexBPSProfile)
 	if err != nil {

@@ -445,7 +445,7 @@ export interface AccountRow {
   codex_native_enabled?: boolean | null
   codex_native_models?: string[] | null
   codex_bps_models?: string[] | null
-  codex_bps_image_trim_enabled?: boolean
+  codex_bps_image_trim_enabled?: boolean | null
   codex_bps_profile?: CodexBPSProfile
   codex_bps_convergence?: CodexBPSConvergence
   model_observations?: AccountModelObservation[]
@@ -1588,7 +1588,7 @@ export interface UpdateAccountSchedulerRequest {
   codex_native_enabled?: boolean | null
   codex_native_models?: string[] | null
   codex_bps_models?: string[] | null
-  codex_bps_image_trim_enabled?: boolean
+  codex_bps_image_trim_enabled?: boolean | null
   codex_bps_profile?: CodexBPSProfile
   codex_bps_convergence?: CodexBPSConvergence
   api_auto_recovery_enabled?: boolean
