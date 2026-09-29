@@ -4027,6 +4027,16 @@ export interface OpsErrorSummary {
   avg_duration_ms: number
 }
 
+// GET /ops/errors/by-account: one account's errors under the ops filters.
+export interface OpsErrorAccountGroup {
+  account_id: number
+  account_name: string
+  account_email: string
+  total: number
+  kinds: Record<string, number>
+  last_error_at: string
+}
+
 export interface ChartTimelinePoint {
   bucket: string
   requests: number

@@ -145,6 +145,11 @@ func usageLogFilterFromLogAgentFilters(filters map[string]string) (database.Usag
 		case "stream":
 			stream := value == "true"
 			filter.StreamOnly = &stream
+		case "retry":
+			retry := value == "true"
+			filter.RetryOnly = &retry
+		case "timeout":
+			filter.TimeoutOnly = value == "true"
 		}
 	}
 	return filter, nil

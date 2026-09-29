@@ -1171,6 +1171,36 @@ func TestUsageErrorSummaryAndFilters(t *testing.T) {
 		t.Fatalf("summary = %+v, want one 5xx/401/499/timeout/retry", summary)
 	}
 
+	timeouts := filter
+	timeouts.TimeoutOnly = true
+	if page, err := db.ListUsageLogsByTimeRangePaged(ctx, timeouts); err != nil || page.Total != 1 || page.Logs[0].UpstreamErrorKind != "upstream_timeout" {
+		t.Fatalf("TimeoutOnly page = %+v, %v; want the one timeout row", page, err)
+	}
+	retried := true
+	retries := filter
+	retries.RetryOnly = &retried
+	if page, err := db.ListUsageLogsByTimeRangePaged(ctx, retries); err != nil || page.Total != 1 {
+		t.Fatalf("RetryOnly page = %+v, %v; want the one retried row", page, err)
+	}
+
+	groups, err := db.GetUsageErrorsByAccount(ctx, filter, 10)
+	if err != nil {
+		t.Fatalf("GetUsageErrorsByAccount 返回错误: %v", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("groups = %+v, want accounts 1, 2 and 3", groups)
+	}
+	byID := map[int64]UsageErrorAccountGroup{}
+	for _, group := range groups {
+		byID[group.AccountID] = group
+		if group.Total != 1 || group.LastErrorAt.IsZero() {
+			t.Fatalf("group %+v: want one error with a time", group)
+		}
+	}
+	if byID[1].Kinds["upstream_timeout"] != 1 || byID[2].Kinds["unauthorized"] != 1 || byID[3].Kinds["client_closed"] != 1 {
+		t.Fatalf("kinds = %+v / %+v / %+v (a row without a kind falls back to its status class)", byID[1].Kinds, byID[2].Kinds, byID[3].Kinds)
+	}
+
 	charts, err := db.GetChartAggregation(ctx, filter.Start, filter.End, 5, "")
 	if err != nil {
 		t.Fatalf("GetChartAggregation 返回错误: %v", err)

@@ -1293,6 +1293,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors", h.GetOpsErrorLogs)
 	api.GET("/ops/errors/export", h.ExportOpsErrorLogs)
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
+	api.GET("/ops/errors/by-account", h.GetOpsErrorsByAccount)
 	api.GET("/ops/service-errors", h.GetServiceErrorLogs)
 	h.registerLogAgentRoutes(api)
 	api.GET("/settings", h.GetSettings)
@@ -8073,6 +8074,12 @@ func parseOpsErrorLogFilter(c *gin.Context, withPaging bool) (database.UsageLogF
 		v := streamStr == "true"
 		filter.StreamOnly = &v
 	}
+	// retry=true/false: retried attempts only / first attempts only;
+	// timeout=true: timeout errors (the summary's timeouts count).
+	if filter.RetryOnly, ok = parseUsageLogBoolFilter(c, "retry"); !ok {
+		return database.UsageLogFilter{}, false
+	}
+	filter.TimeoutOnly = c.Query("timeout") == "true"
 
 	if withPaging {
 		if pageStr := c.Query("page"); pageStr != "" {
@@ -8549,6 +8556,26 @@ func (h *Handler) GetOpsErrorSummary(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// GetOpsErrorsByAccount groups the filtered error rows by account: per
+// account the total, a count per error kind and the latest error
+// (?limit=, default 200 accounts).
+func (h *Handler) GetOpsErrorsByAccount(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	filter, ok := parseOpsErrorLogFilter(c, false)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
+	groups, err := h.db.GetUsageErrorsByAccount(ctx, filter, limit)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": groups})
 }
 
 // GetUsageLogsErrorSummary 获取与请求记录筛选联动的错误摘要。

@@ -48,9 +48,15 @@ export function opsErrorLogAgentFilters(params: {
   stream?: string
   q?: string
   transport?: string
+  accountId?: string
+  retry?: string
+  timeout?: string
 }): Record<string, string> {
   return compactFilters({
     transport: params.transport,
+    account_id: params.accountId,
+    retry: params.retry,
+    timeout: params.timeout,
     status: params.status,
     error_kind: params.errorKind,
     endpoint: params.endpoint,

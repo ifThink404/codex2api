@@ -2799,6 +2799,19 @@
   "opsErrors": {
     "logAgentDesc": "分析目前篩選條件與時間範圍內的錯誤。",
     "logAgentRequestTitle": "分析此請求",
-    "logAgentRequestDesc": "分析此請求 ID 下記錄的全部嘗試。"
+    "logAgentRequestDesc": "分析此請求 ID 下記錄的全部嘗試。",
+    "viewIndividual": "逐條",
+    "viewByAccount": "按帳號歸集",
+    "allAccounts": "全部帳號",
+    "accountFilter": "按帳號篩選",
+    "accountsCount": "{{count}} 個帳號",
+    "byAccountHint": "按目前篩選歸集，錯誤最多的帳號在前（最多 200 個）；展開可看該帳號最近的錯誤。",
+    "accountErrors": "錯誤數",
+    "errorBreakdown": "錯誤類型分布",
+    "lastError": "最近錯誤",
+    "expand": "展開",
+    "collapse": "收起",
+    "filterAccount": "只看此帳號",
+    "recentErrors": "最近 {{count}} 筆錯誤"
   }
 }

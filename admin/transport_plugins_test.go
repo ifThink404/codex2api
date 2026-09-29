@@ -185,6 +185,58 @@ func TestOpsErrorsFilterParsesTransport(t *testing.T) {
 	}
 }
 
+func TestOpsErrorsFilterParsesRetryAndTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/ops/errors?retry=true&timeout=true&account_id=7", nil)
+	filter, ok := parseOpsErrorLogFilter(c, true)
+	if !ok || filter.RetryOnly == nil || !*filter.RetryOnly || !filter.TimeoutOnly || filter.AccountID == nil || *filter.AccountID != 7 {
+		t.Fatalf("filter = %+v ok=%v", filter, ok)
+	}
+	rec := httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/ops/errors?retry=maybe", nil)
+	if _, ok := parseOpsErrorLogFilter(c, true); ok || rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad retry value: ok=%v code=%d", ok, rec.Code)
+	}
+}
+
+func TestOpsErrorsByAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	db.SetUsageLogConfig(database.UsageLogModeFull, 100, 300)
+	ctx := context.Background()
+	for _, row := range []database.UsageLogInput{
+		{AccountID: 11, Transport: "bps", StatusCode: 429, UpstreamErrorKind: "bps_rate_limited"},
+		{AccountID: 11, Transport: "bps", StatusCode: 429, UpstreamErrorKind: "bps_rate_limited"},
+		{AccountID: 11, Transport: "bps", StatusCode: 403, UpstreamErrorKind: "bps_policy_blocked"},
+		{AccountID: 12, Transport: "bps", StatusCode: 502},
+		{AccountID: 13, Transport: "native", StatusCode: 500, UpstreamErrorKind: "server_error"},
+		{AccountID: 12, Transport: "bps", StatusCode: 200},
+	} {
+		input := row
+		if err := db.InsertUsageLog(ctx, &input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.FlushUsageLogs()
+	h := &Handler{db: db}
+	router := gin.New()
+	router.GET("/api/admin/ops/errors/by-account", h.GetOpsErrorsByAccount)
+	rec := doTransportPluginRequest(t, router, http.MethodGet, "/api/admin/ops/errors/by-account?transport=bps", "")
+	var out struct {
+		Accounts []database.UsageErrorAccountGroup `json:"accounts"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+		t.Fatalf("by-account: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(out.Accounts) != 2 || out.Accounts[0].AccountID != 11 || out.Accounts[0].Total != 3 ||
+		out.Accounts[0].Kinds["bps_rate_limited"] != 2 || out.Accounts[0].Kinds["bps_policy_blocked"] != 1 ||
+		out.Accounts[1].AccountID != 12 || out.Accounts[1].Kinds["server_error"] != 1 {
+		t.Fatalf("accounts = %+v (BPS errors only, most first; a kindless 502 is a server_error)", out.Accounts)
+	}
+}
+
 func TestTransportPluginAdminAccountStatus(t *testing.T) {
 	router, _, _, accountID := newTransportPluginAdminRouter(t)
 	id := strconv.FormatInt(accountID, 10)

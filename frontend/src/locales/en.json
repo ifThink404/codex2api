@@ -2552,7 +2552,20 @@
     "noErrorMessage": "No error message",
     "logAgentDesc": "Analyze the errors matching the current filters and time range.",
     "logAgentRequestTitle": "Analyze this request",
-    "logAgentRequestDesc": "Analyze every attempt recorded for this request ID."
+    "logAgentRequestDesc": "Analyze every attempt recorded for this request ID.",
+    "viewIndividual": "Individual",
+    "viewByAccount": "By account",
+    "allAccounts": "All accounts",
+    "accountFilter": "Filter by account",
+    "accountsCount": "{{count}} accounts",
+    "byAccountHint": "Grouped under the current filters, most errors first (up to 200 accounts); expand a row for that account's recent errors.",
+    "accountErrors": "Errors",
+    "errorBreakdown": "Error kinds",
+    "lastError": "Last error",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "filterAccount": "Only this account",
+    "recentErrors": "Latest {{count}} errors"
   },
   "scheduler": {
     "title": "Scheduler Board",

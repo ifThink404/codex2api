@@ -6425,6 +6425,9 @@ type UsageLogFilter struct {
 	UpstreamModelMismatchOnly *bool
 	// Transport 精确匹配 usage_logs.transport（native 或插件 ID），空=全部。
 	Transport string
+	// TimeoutOnly 只取超时类错误（与错误摘要 timeouts 同口径，见 usageErrorTimeoutSQL）。
+	// 属状态类条件，不算维度。
+	TimeoutOnly bool
 }
 
 // HasDimensionFilter 报告过滤条件里是否带有"维度"约束(账号/密钥/模型/端点/搜索词/形态开关等)。
@@ -6676,12 +6679,118 @@ func (db *DB) buildUsageLogWhere(f UsageLogFilter) (string, []interface{}) {
 		p := addArg(f.ErrorKind)
 		parts = append(parts, fmt.Sprintf(`COALESCE(u.upstream_error_kind, '') = %s`, p))
 	}
+	if f.TimeoutOnly {
+		parts = append(parts, usageErrorTimeoutSQL)
+	}
 	if channel := strings.TrimSpace(f.Channel); channel != "" {
 		p := addArg(channel)
 		parts = append(parts, fmt.Sprintf(`COALESCE(u.channel, '') = %s`, p))
 	}
 
 	return strings.Join(parts, " AND "), args
+}
+
+// usageErrorTimeoutSQL matches timeout errors: the summary's timeouts count
+// and the TimeoutOnly filter share it.
+const usageErrorTimeoutSQL = `(LOWER(COALESCE(u.upstream_error_kind, '')) LIKE '%timeout%'
+			OR LOWER(COALESCE(u.error_message, '')) LIKE '%timeout%'
+			OR LOWER(COALESCE(u.error_message, '')) LIKE '%deadline%')`
+
+// UsageErrorAccountGroup is one account's errors under an error-log filter:
+// the total, a count per error kind (the upstream error kind, or the status
+// class when none was recorded) and the latest error time.
+type UsageErrorAccountGroup struct {
+	AccountID    int64            `json:"account_id"`
+	AccountName  string           `json:"account_name"`
+	AccountEmail string           `json:"account_email"`
+	Total        int64            `json:"total"`
+	Kinds        map[string]int64 `json:"kinds"`
+	LastErrorAt  time.Time        `json:"last_error_at"`
+}
+
+// UsageErrorKindForStatus is the error kind of a row without an upstream
+// error kind, by status code (the ops errors page shows the same labels).
+func UsageErrorKindForStatus(status int) string {
+	switch {
+	case status == 401:
+		return "unauthorized"
+	case status == 403:
+		return "forbidden"
+	case status == 429:
+		return "rate_limit"
+	case status == 499:
+		return "client_closed"
+	case status >= 500:
+		return "server_error"
+	case status >= 400:
+		return "client_error"
+	}
+	return "error"
+}
+
+// GetUsageErrorsByAccount groups the error rows matching f by account and
+// error kind (GROUP BY account, kind, status) and returns up to limit
+// accounts, most errors first.
+func (db *DB) GetUsageErrorsByAccount(ctx context.Context, f UsageLogFilter, limit int) ([]UsageErrorAccountGroup, error) {
+	f.ErrorOnly = true
+	f.IncludeCanceled = true
+	if limit < 1 || limit > 1000 {
+		limit = 200
+	}
+	where, args := db.buildUsageLogWhere(f)
+	rows, err := db.conn.QueryContext(ctx, `SELECT u.account_id, COALESCE(u.upstream_error_kind, ''), u.status_code, COUNT(*), MAX(u.created_at),
+			MAX(COALESCE(a.name, '')), MAX(COALESCE(CAST(a.credentials AS TEXT), '{}'))
+		FROM usage_logs u
+		LEFT JOIN accounts a ON u.account_id = a.id
+		WHERE `+where+`
+		GROUP BY u.account_id, COALESCE(u.upstream_error_kind, ''), u.status_code`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := map[int64]*UsageErrorAccountGroup{}
+	for rows.Next() {
+		var accountID, count int64
+		var kind, name, credentials string
+		var status int
+		var last interface{}
+		if err := rows.Scan(&accountID, &kind, &status, &count, &last, &name, &credentials); err != nil {
+			return nil, err
+		}
+		group := groups[accountID]
+		if group == nil {
+			group = &UsageErrorAccountGroup{AccountID: accountID, AccountName: name, AccountEmail: accountEmailFromRawCredentials(credentials), Kinds: map[string]int64{}}
+			groups[accountID] = group
+		}
+		if kind == "" {
+			kind = UsageErrorKindForStatus(status)
+		}
+		group.Kinds[kind] += count
+		group.Total += count
+		if at, err := parseDBTimeValue(last); err == nil && at.After(group.LastErrorAt) {
+			group.LastErrorAt = at
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]UsageErrorAccountGroup, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, *group)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Total != out[j].Total {
+			return out[i].Total > out[j].Total
+		}
+		if !out[i].LastErrorAt.Equal(out[j].LastErrorAt) {
+			return out[i].LastErrorAt.After(out[j].LastErrorAt)
+		}
+		return out[i].AccountID < out[j].AccountID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 type UsageErrorSummary struct {
@@ -6707,11 +6816,7 @@ func (db *DB) GetUsageErrorSummary(ctx context.Context, f UsageLogFilter) (*Usag
 		COALESCE(SUM(CASE WHEN u.status_code = 401 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN u.status_code = 429 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN u.status_code = 499 THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN
-			LOWER(COALESCE(u.upstream_error_kind, '')) LIKE '%timeout%'
-			OR LOWER(COALESCE(u.error_message, '')) LIKE '%timeout%'
-			OR LOWER(COALESCE(u.error_message, '')) LIKE '%deadline%'
-		THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN ` + usageErrorTimeoutSQL + ` THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN COALESCE(u.is_retry_attempt, false) THEN 1 ELSE 0 END), 0),
 		COALESCE(AVG(u.duration_ms), 0)
 		FROM usage_logs u

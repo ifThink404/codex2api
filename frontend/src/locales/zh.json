@@ -2552,7 +2552,20 @@
     "noErrorMessage": "暂无错误信息",
     "logAgentDesc": "分析当前筛选条件与时间范围内的错误。",
     "logAgentRequestTitle": "分析此请求",
-    "logAgentRequestDesc": "分析该请求 ID 下记录的全部尝试。"
+    "logAgentRequestDesc": "分析该请求 ID 下记录的全部尝试。",
+    "viewIndividual": "逐条",
+    "viewByAccount": "按账号归集",
+    "allAccounts": "全部账号",
+    "accountFilter": "按账号筛选",
+    "accountsCount": "{{count}} 个账号",
+    "byAccountHint": "按当前筛选归集，错误最多的账号在前（最多 200 个）；展开可看该账号最近的错误。",
+    "accountErrors": "错误数",
+    "errorBreakdown": "错误类型分布",
+    "lastError": "最近错误",
+    "expand": "展开",
+    "collapse": "收起",
+    "filterAccount": "只看此账号",
+    "recentErrors": "最近 {{count}} 条错误"
   },
   "scheduler": {
     "title": "调度面板",

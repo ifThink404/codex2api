@@ -26,6 +26,7 @@ import { useToast } from '../hooks/useToast'
 import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import type { APIKeyRow, OpsErrorSummary, SystemSettings, UsageAPIKeyStat, UsageEndpointStat, UsageFeatureStats, UsageLog, UsageModelStat, UsageStats, PromptFilterLog, PromptPolicyIncidentDetailResponse } from '../types'
 import { cn, formatCompactEmail } from '../lib/utils'
+import { classifyStatus, ERROR_KIND_TONE_TEXT_CLASSES, errorKindTone } from '../lib/errorBadges'
 import { formatUsageNumber as formatTokens } from '../lib/usageFormat'
 import { buildModelShareData, formatSharePercent, type ModelShareMetric } from '../lib/usageInsights'
 import './usage-insights.css'
@@ -942,8 +943,8 @@ function UsageErrorSummaryCell({ log, mobile = false }: { log: UsageLog; mobile?
       )}
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />
-        <span className="truncate text-[11px] font-semibold text-foreground" title={errorKind || t('usage.unknownErrorKind')}>
+        <AlertTriangle className={cn('size-3.5 shrink-0', ERROR_KIND_TONE_TEXT_CLASSES[errorKindTone(errorKind || classifyStatus(log.status_code))])} />
+        <span className={cn('truncate text-[11px] font-semibold', errorKind ? ERROR_KIND_TONE_TEXT_CLASSES[errorKindTone(errorKind)] : 'text-foreground')} title={errorKind || t('usage.unknownErrorKind')}>
           {errorKind || t('usage.unknownErrorKind')}
         </span>
         {log.is_retry_attempt ? (

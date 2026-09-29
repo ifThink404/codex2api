@@ -117,6 +117,7 @@ import type {
   ClaudeImportBundleResponse,
   ClaudeAddAccountResponse,
   OpsErrorSummary,
+  OpsErrorAccountGroup,
   OpsOverviewResponse,
   PromptFilterLog,
   PromptFilterLogsResponse,
@@ -490,6 +491,9 @@ function buildOpsErrorSearchParams(params: {
   fast?: string
   q?: string
   transport?: string
+  accountId?: string
+  retry?: string
+  timeout?: string
   dedupe?: boolean
   excludeStatus?: string
 }) {
@@ -501,6 +505,9 @@ function buildOpsErrorSearchParams(params: {
   if (params.endpoint) search.set('endpoint', params.endpoint)
   if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
   if (params.transport) search.set('transport', params.transport)
+  if (params.accountId) search.set('account_id', params.accountId)
+  if (params.retry) search.set('retry', params.retry)
+  if (params.timeout) search.set('timeout', params.timeout)
   if (params.stream) search.set('stream', params.stream)
   if (params.fast) search.set('fast', params.fast)
   if (params.q) search.set('q', params.q)
@@ -1148,6 +1155,9 @@ export const api = {
     fast?: string
     q?: string
     transport?: string
+    accountId?: string
+    retry?: string
+    timeout?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     return request<OpsErrorSummary>(`/ops/errors/summary?${search.toString()}`)
@@ -1168,6 +1178,9 @@ export const api = {
     fast?: string
     q?: string
     transport?: string
+    accountId?: string
+    retry?: string
+    timeout?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     search.set('page', String(params.page))
@@ -1185,11 +1198,19 @@ export const api = {
     fast?: string
     q?: string
     transport?: string
+    accountId?: string
+    retry?: string
+    timeout?: string
     dedupe?: boolean
     excludeStatus?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     return requestBlob(`/ops/errors/export?${search.toString()}`)
+  },
+  // 按账号归集的错误：每个账号的错误总数、各错误类型计数与最近一次时间。
+  getOpsErrorsByAccount: (params: Parameters<typeof buildOpsErrorSearchParams>[0]) => {
+    const search = buildOpsErrorSearchParams(params)
+    return request<{ accounts: OpsErrorAccountGroup[] }>(`/ops/errors/by-account?${search.toString()}`)
   },
   getLogAgentConfig: () => request<import('./types').LogAgentConfigResponse>('/log-agent/config'),
   updateLogAgentConfig: (config: import('./types').LogAgentConfig) =>

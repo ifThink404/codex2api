@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   AlertCircle,
+  ChevronDown,
+  ChevronRight,
   Clock3,
+  Filter,
   Copy,
   Download,
   RefreshCw,
@@ -27,8 +30,9 @@ import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePer
 import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { opsErrorLogAgentFilters, usageLogIdFromEvidence } from '../lib/logAgent'
 import { formatCompactEmail } from '../lib/utils'
+import { errorKindBadgeClassName, errorKindLabel, errorStatusBadgeClassName } from '../lib/errorBadges'
 import { formatBeijingTime } from '../utils/time'
-import type { APIKeyRow, OpsErrorSummary, UsageLog } from '../types'
+import type { APIKeyRow, OpsErrorAccountGroup, OpsErrorSummary, UsageLog } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -57,6 +61,23 @@ const errorTableHeadClass = 'text-[12px] font-semibold'
 const errorTableTextClass = 'text-[14px]'
 const errorTableMonoClass = 'font-geist-mono text-[13px] tabular-nums'
 
+// Errors list views: one row per error, or one row per account.
+type ErrorsView = 'individual' | 'account'
+const ACCOUNT_ERROR_ROWS = 10
+
+// Quick filters behind the stat tiles; a tile toggles its filter and clears
+// the other tile filters.
+type QuickFilter = 'status5xx' | 'status401' | 'status429' | 'timeout' | 'retry'
+const QUICK_FILTER_STATUS: Partial<Record<QuickFilter, string>> = { status5xx: '5xx', status401: '401', status429: '429' }
+
+// activeQuickFilter reports which stat tile the current filters match.
+function activeQuickFilter(status: string, timeout: boolean, retry: string): QuickFilter | null {
+  if (timeout) return 'timeout'
+  if (retry === 'true') return 'retry'
+  const entry = Object.entries(QUICK_FILTER_STATUS).find(([, value]) => value === status)
+  return entry ? (entry[0] as QuickFilter) : null
+}
+
 // `transport` scopes every query to one usage-log transport (a plugin page
 // embeds this view); `embedded` drops the Ops page header and tabs.
 export default function OperationsErrors({ transport, embedded = false }: { transport?: string; embedded?: boolean } = {}) {
@@ -70,6 +91,13 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
   const [endpointFilter, setEndpointFilter] = useState('')
   const [apiKeyFilter, setApiKeyFilter] = useState('')
   const [streamFilter, setStreamFilter] = useState<'' | 'true' | 'false'>('')
+  const [accountFilter, setAccountFilter] = useState('')
+  const [retryFilter, setRetryFilter] = useState('')
+  const [timeoutFilter, setTimeoutFilter] = useState(false)
+  const [view, setView] = useState<ErrorsView>('individual')
+  const [accountPage, setAccountPage] = useState(1)
+  const [accountPageSize, setAccountPageSize] = usePersistedPageSize('ops_errors_accounts', 20, pageSizeOptions)
+  const [expandedAccount, setExpandedAccount] = useState<number | null>(null)
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [exportDedupe, setExportDedupe] = useState(true)
@@ -107,12 +135,17 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
       stream: streamFilter,
       q: searchQuery,
       transport,
+      accountId: accountFilter,
+      retry: retryFilter,
+      timeout: timeoutFilter ? 'true' : '',
     }
-  }, [apiKeyFilter, endpointFilter, errorKindFilter, searchQuery, statusFilter, streamFilter, timeRange, transport])
+  }, [accountFilter, apiKeyFilter, endpointFilter, errorKindFilter, retryFilter, searchQuery, statusFilter, streamFilter, timeRange, timeoutFilter, transport])
 
   const loadErrorData = useCallback(async () => {
     const baseParams = buildBaseParams()
-    const [summary, pageResult, apiKeysResult] = await Promise.all([
+    // The per-account groups ignore the account filter so the account
+    // picker keeps listing every account with errors.
+    const [summary, pageResult, apiKeysResult, byAccount] = await Promise.all([
       api.getOpsErrorSummary(baseParams),
       api.getOpsErrors({
         ...baseParams,
@@ -120,6 +153,7 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
         pageSize,
       }),
       api.getAPIKeys().catch(() => ({ keys: [] as APIKeyRow[] })),
+      api.getOpsErrorsByAccount({ ...baseParams, accountId: '' }).catch(() => ({ accounts: [] as OpsErrorAccountGroup[] })),
     ])
 
     return {
@@ -127,6 +161,7 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
       logs: pageResult.logs ?? [],
       total: pageResult.total ?? 0,
       apiKeys: apiKeysResult.keys ?? [],
+      accountGroups: byAccount.accounts ?? [],
     }
   }, [buildBaseParams, page, pageSize])
 
@@ -135,12 +170,14 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
     logs: UsageLog[]
     total: number
     apiKeys: APIKeyRow[]
+    accountGroups: OpsErrorAccountGroup[]
   }>({
     initialData: {
       summary: null,
       logs: [],
       total: 0,
       apiKeys: [],
+      accountGroups: [],
     },
     load: loadErrorData,
   })
@@ -153,7 +190,32 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
     return () => window.clearInterval(timer)
   }, [reloadSilently])
 
-  const hasActiveFilters = Boolean(statusFilter || errorKindFilter || endpointFilter || apiKeyFilter || streamFilter || searchQuery)
+  const hasActiveFilters = Boolean(statusFilter || errorKindFilter || endpointFilter || apiKeyFilter || streamFilter || searchQuery || accountFilter || retryFilter || timeoutFilter)
+  const quickFilter = activeQuickFilter(statusFilter, timeoutFilter, retryFilter)
+  const toggleQuickFilter = (next: QuickFilter) => {
+    const clear = quickFilter === next
+    setStatusFilter(clear ? '' : QUICK_FILTER_STATUS[next] ?? '')
+    setTimeoutFilter(!clear && next === 'timeout')
+    setRetryFilter(!clear && next === 'retry' ? 'true' : '')
+    setPage(1)
+    setAccountPage(1)
+  }
+  const accountGroups = accountFilter
+    ? data.accountGroups.filter((group) => String(group.account_id) === accountFilter)
+    : data.accountGroups
+  const accountTotalPages = Math.max(1, Math.ceil(accountGroups.length / accountPageSize))
+  const currentAccountPage = Math.min(accountPage, accountTotalPages)
+  const visibleAccountGroups = accountGroups.slice((currentAccountPage - 1) * accountPageSize, currentAccountPage * accountPageSize)
+  const accountOptions = useMemo(() => {
+    const options = [{ label: t('opsErrors.allAccounts'), value: '' }]
+    for (const group of data.accountGroups) {
+      options.push({ label: `${formatAccountLabel(group)} · ${group.total}`, value: String(group.account_id) })
+    }
+    if (accountFilter && !data.accountGroups.some((group) => String(group.account_id) === accountFilter)) {
+      options.push({ label: `ID ${accountFilter}`, value: accountFilter })
+    }
+    return options
+  }, [accountFilter, data.accountGroups, t])
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize))
   const currentPage = Math.min(page, totalPages)
   const apiKeyOptions = useMemo(() => [
@@ -178,6 +240,16 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
     setStreamFilter('')
     setSearchInput('')
     setSearchQuery('')
+    setAccountFilter('')
+    setRetryFilter('')
+    setTimeoutFilter(false)
+    setPage(1)
+    setAccountPage(1)
+  }
+
+  const filterToAccount = (accountId: number) => {
+    setAccountFilter(String(accountId))
+    setView('individual')
     setPage(1)
   }
 
@@ -270,36 +342,48 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
             value={formatNumber(data.summary?.total_errors ?? 0)}
             icon={<AlertCircle className="size-4" />}
             tone="danger"
+            active={!hasActiveFilters}
+            onClick={resetFilters}
           />
           <StatTile
             label="5xx"
             value={formatNumber(data.summary?.status_5xx ?? 0)}
             icon={<ServerCrash className="size-4" />}
             tone="danger"
+            active={quickFilter === 'status5xx'}
+            onClick={() => toggleQuickFilter('status5xx')}
           />
           <StatTile
             label="401"
             value={formatNumber(data.summary?.unauthorized ?? 0)}
             icon={<ShieldAlert className="size-4" />}
             tone="danger"
+            active={quickFilter === 'status401'}
+            onClick={() => toggleQuickFilter('status401')}
           />
           <StatTile
             label="429"
             value={formatNumber(data.summary?.rate_limited ?? 0)}
             icon={<TimerReset className="size-4" />}
             tone="warning"
+            active={quickFilter === 'status429'}
+            onClick={() => toggleQuickFilter('status429')}
           />
           <StatTile
             label={t('opsErrors.timeouts')}
             value={formatNumber(data.summary?.timeouts ?? 0)}
             icon={<Clock3 className="size-4" />}
             tone="warning"
+            active={quickFilter === 'timeout'}
+            onClick={() => toggleQuickFilter('timeout')}
           />
           <StatTile
             label={t('opsErrors.retryAttempts')}
             value={formatNumber(data.summary?.retry_attempts ?? 0)}
             icon={<RotateCcw className="size-4" />}
             tone="info"
+            active={quickFilter === 'retry'}
+            onClick={() => toggleQuickFilter('retry')}
           />
         </div>
 
@@ -323,15 +407,26 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
                 <h3 className="text-base font-semibold text-foreground">{t('opsErrors.tableTitle')}</h3>
                 <p className="mt-1 text-sm text-muted-foreground">{t('opsErrors.tableDesc')}</p>
               </div>
-              <SegmentedTabs
-                size="sm"
-                tabs={ERROR_TIME_RANGES.map((key) => ({
-                  value: key,
-                  label: t(`dashboard.timeRange${key.toUpperCase()}`),
-                }))}
-                value={timeRange}
-                onValueChange={(value) => { setTimeRange(value as TimeRangeKey); setPage(1) }}
-              />
+              <div className="flex flex-wrap items-center gap-2">
+                <SegmentedTabs
+                  size="sm"
+                  tabs={[
+                    { value: 'individual', label: t('opsErrors.viewIndividual') },
+                    { value: 'account', label: t('opsErrors.viewByAccount') },
+                  ]}
+                  value={view}
+                  onValueChange={(value) => { setView(value as ErrorsView); setExpandedAccount(null) }}
+                />
+                <SegmentedTabs
+                  size="sm"
+                  tabs={ERROR_TIME_RANGES.map((key) => ({
+                    value: key,
+                    label: t(`dashboard.timeRange${key.toUpperCase()}`),
+                  }))}
+                  value={timeRange}
+                  onValueChange={(value) => { setTimeRange(value as TimeRangeKey); setPage(1); setAccountPage(1) }}
+                />
+              </div>
             </div>
 
             <div className="toolbar-surface mb-4 flex flex-wrap items-center gap-2">
@@ -399,6 +494,15 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
                 options={apiKeyOptions}
               />
               <Select
+                className="w-60"
+                compact
+                value={accountFilter}
+                onValueChange={(value) => { setAccountFilter(value); setPage(1); setAccountPage(1) }}
+                placeholder={t('opsErrors.allAccounts')}
+                aria-label={t('opsErrors.accountFilter')}
+                options={accountOptions}
+              />
+              <Select
                 className="w-32"
                 compact
                 value={streamFilter}
@@ -443,26 +547,56 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
                 </button>
               )}
               <span className="ml-auto text-xs text-muted-foreground max-sm:ml-0">
-                {t('usage.recordsCount', { count: data.total })}
+                {view === 'account' ? t('opsErrors.accountsCount', { count: accountGroups.length }) : t('usage.recordsCount', { count: data.total })}
               </span>
             </div>
 
+            {view === 'account' ? (
+              <StateShell
+                variant="section"
+                isEmpty={accountGroups.length === 0}
+                emptyTitle={t('opsErrors.emptyTitle')}
+                emptyDescription={hasActiveFilters ? t('opsErrors.emptyFilteredDesc') : t('opsErrors.emptyDesc')}
+              >
+                <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('opsErrors.byAccountHint')}</p>
+                <AccountErrorGroups
+                  groups={visibleAccountGroups}
+                  expanded={expandedAccount}
+                  onToggle={(id) => setExpandedAccount((current) => (current === id ? null : id))}
+                  onFilter={filterToAccount}
+                  onOpenLog={setSelectedLog}
+                  baseParams={buildBaseParams}
+                />
+                <Pagination
+                  page={currentAccountPage}
+                  totalPages={accountTotalPages}
+                  onPageChange={setAccountPage}
+                  totalItems={accountGroups.length}
+                  pageSize={accountPageSize}
+                  pageSizeOptions={pageSizeOptions}
+                  onPageSizeChange={(nextPageSize) => {
+                    setAccountPageSize(nextPageSize)
+                    setAccountPage(1)
+                  }}
+                />
+              </StateShell>
+            ) : (
             <StateShell
               variant="section"
               isEmpty={data.logs.length === 0}
               emptyTitle={t('opsErrors.emptyTitle')}
               emptyDescription={hasActiveFilters ? t('opsErrors.emptyFilteredDesc') : t('opsErrors.emptyDesc')}
             >
-              <div className="grid gap-3 lg:hidden">
+              <div className="grid grid-cols-1 gap-3 lg:hidden">
                 {data.logs.map((log) => (
-                  <Card key={log.id} className="p-3.5 space-y-2.5">
+                  <Card key={log.id} className="min-w-0 p-3.5 space-y-2.5">
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                        <Badge variant="outline" className={`text-[12px] ${getStatusBadgeClassName(log.status_code)}`}>
+                        <Badge variant="outline" className={`text-[12px] ${errorStatusBadgeClassName(log.status_code)}`}>
                           {log.status_code}
                         </Badge>
-                        <Badge variant="outline" className="border-transparent bg-slate-500/10 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300 text-[12px]">
-                          {log.upstream_error_kind || classifyStatus(log.status_code)}
+                        <Badge variant="outline" className={`text-[12px] ${errorKindBadgeClassName(errorKindLabel(log))}`}>
+                          {errorKindLabel(log)}
                         </Badge>
                         <Badge variant="outline" className="text-[12px] truncate max-w-[140px]">{log.model || '-'}</Badge>
                       </div>
@@ -487,7 +621,7 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
                     </div>
 
                     {log.error_message ? (
-                      <div className="rounded-lg bg-destructive/5 border border-destructive/20 p-2 text-xs text-destructive line-clamp-3 leading-relaxed">
+                      <div className="rounded-lg bg-destructive/5 border border-destructive/20 p-2 text-xs text-destructive line-clamp-3 break-words leading-relaxed">
                         {log.error_message}
                       </div>
                     ) : null}
@@ -523,13 +657,13 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
                       <TableRow key={log.id}>
                         <TableCell className={`${errorTableMonoClass} text-muted-foreground`}>{formatBeijingTime(log.created_at)}</TableCell>
                         <TableCell>
-                          <Badge variant="outline" className={`text-[13px] ${getStatusBadgeClassName(log.status_code)}`}>
+                          <Badge variant="outline" className={`text-[13px] ${errorStatusBadgeClassName(log.status_code)}`}>
                             {log.status_code}
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="border-transparent bg-slate-500/10 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300">
-                            {log.upstream_error_kind || classifyStatus(log.status_code)}
+                          <Badge variant="outline" className={errorKindBadgeClassName(errorKindLabel(log))}>
+                            {errorKindLabel(log)}
                           </Badge>
                         </TableCell>
                         <TableCell>
@@ -590,6 +724,7 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
                 }}
               />
             </StateShell>
+            )}
           </CardContent>
         </Card>
 
@@ -601,10 +736,10 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
                 <DialogDescription>{formatBeijingTime(selectedLog.created_at)}</DialogDescription>
               </DialogHeader>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline" className={`text-[13px] ${getStatusBadgeClassName(selectedLog.status_code)}`}>
+                <Badge variant="outline" className={`text-[13px] ${errorStatusBadgeClassName(selectedLog.status_code)}`}>
                   HTTP {selectedLog.status_code}
                 </Badge>
-                <Badge variant="outline">{selectedLog.upstream_error_kind || classifyStatus(selectedLog.status_code)}</Badge>
+                <Badge variant="outline" className={errorKindBadgeClassName(errorKindLabel(selectedLog))}>{errorKindLabel(selectedLog)}</Badge>
                 {selectedLog.is_retry_attempt && (
                   <Badge variant="outline" className="border-transparent bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400">
                     {t('opsErrors.retryAttempt', { index: selectedLog.attempt_index })}
@@ -703,7 +838,9 @@ function formatAPIKeyLabel(log: UsageLog): string {
   return `${masked.slice(0, 4)}...${masked.slice(-4)}`
 }
 
-function formatAccountLabel(log: UsageLog): string {
+type AccountLabelSource = Pick<UsageLog, 'account_id' | 'account_name' | 'account_email'>
+
+function formatAccountLabel(log: AccountLabelSource): string {
   // 邮箱优先：身份账号一律显示邮箱，账号名仅作为无邮箱账号（如 relay API-key 账号）的兜底。
   // 避免 AT 导入未命名时的占位名（at-account-N 等）盖过真实邮箱身份。
   const accountEmail = log.account_email?.trim()
@@ -713,7 +850,7 @@ function formatAccountLabel(log: UsageLog): string {
   return log.account_id > 0 ? `ID ${log.account_id}` : '-'
 }
 
-function formatAccountTitle(log: UsageLog): string {
+function formatAccountTitle(log: AccountLabelSource): string {
   const accountEmail = log.account_email?.trim()
   const accountName = log.account_name?.trim()
   if (accountEmail && accountName && accountEmail !== accountName) {
@@ -783,25 +920,145 @@ function buildOpsErrorExportFilename(timeRange: TimeRangeKey, dedupe: boolean, e
   return `ops-errors-${timeRange}-${options}-${timestamp}.json`
 }
 
-function classifyStatus(statusCode: number): string {
-  if (statusCode === 401) return 'unauthorized'
-  if (statusCode === 403) return 'forbidden'
-  if (statusCode === 429) return 'rate_limit'
-  if (statusCode === 499) return 'client_closed'
-  if (statusCode >= 500) return 'server_error'
-  if (statusCode >= 400) return 'client_error'
-  return 'error'
+// AccountErrorGroups is the per-account errors view: per account the total,
+// a colored count per error kind and the latest error; expanding a row loads
+// that account's most recent errors under the same filters.
+function AccountErrorGroups({ groups, expanded, onToggle, onFilter, onOpenLog, baseParams }: {
+  groups: OpsErrorAccountGroup[]
+  expanded: number | null
+  onToggle: (accountId: number) => void
+  onFilter: (accountId: number) => void
+  onOpenLog: (log: UsageLog) => void
+  baseParams: () => Parameters<typeof api.getOpsErrorsByAccount>[0]
+}) {
+  const { t } = useTranslation()
+  const sortedKinds = (group: OpsErrorAccountGroup) => Object.entries(group.kinds).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const kindBadges = (group: OpsErrorAccountGroup) => sortedKinds(group).map(([kind, count]) => (
+    <Badge key={kind} variant="outline" className={`gap-1 text-[12px] ${errorKindBadgeClassName(kind)}`}>
+      {kind}
+      <span className="font-geist-mono tabular-nums opacity-80">×{count}</span>
+    </Badge>
+  ))
+  return (
+    <>
+    <div className="grid grid-cols-1 gap-3 lg:hidden">
+      {groups.map((group) => {
+        const open = expanded === group.account_id
+        return (
+          <Card key={group.account_id} className="min-w-0 space-y-2.5 p-3.5">
+            <div className="flex items-start justify-between gap-2">
+              <span className="min-w-0 truncate text-sm font-medium" title={formatAccountTitle(group)}>{formatAccountLabel(group)}</span>
+              <span className="shrink-0 font-geist-mono text-sm font-semibold tabular-nums">{formatNumber(group.total)}</span>
+            </div>
+            <div className="flex flex-wrap gap-1">{kindBadges(group)}</div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2 text-[11px] text-muted-foreground">
+              <span>{t('opsErrors.lastError')} {formatBeijingTime(group.last_error_at)}</span>
+              <div className="flex items-center gap-1.5">
+                <Button variant="outline" size="xs" aria-expanded={open} onClick={() => onToggle(group.account_id)}>
+                  {open ? t('opsErrors.collapse') : t('opsErrors.expand')}
+                </Button>
+                <Button variant="ghost" size="xs" onClick={() => onFilter(group.account_id)}>
+                  <Filter className="size-3" />
+                  {t('opsErrors.filterAccount')}
+                </Button>
+              </div>
+            </div>
+            {open && <AccountRecentErrors accountId={group.account_id} baseParams={baseParams} onOpenLog={onOpenLog} />}
+          </Card>
+        )
+      })}
+    </div>
+    <div className="data-table-shell hidden lg:block">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className={errorTableHeadClass}>{t('usage.tableAccount')}</TableHead>
+            <TableHead className={`${errorTableHeadClass} text-right`}>{t('opsErrors.accountErrors')}</TableHead>
+            <TableHead className={errorTableHeadClass}>{t('opsErrors.errorBreakdown')}</TableHead>
+            <TableHead className={errorTableHeadClass}>{t('opsErrors.lastError')}</TableHead>
+            <TableHead className={errorTableHeadClass}>{t('common.actions')}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {groups.map((group) => {
+            const open = expanded === group.account_id
+            return (
+              <Fragment key={group.account_id}>
+                <TableRow data-state={open ? 'selected' : undefined}>
+                  <TableCell className={`${errorTableTextClass} max-w-[220px]`}>
+                    <button
+                      type="button"
+                      className="flex min-w-0 items-center gap-1.5 text-left hover:text-primary"
+                      aria-expanded={open}
+                      onClick={() => onToggle(group.account_id)}
+                    >
+                      {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
+                      <span className="truncate" title={formatAccountTitle(group)}>{formatAccountLabel(group)}</span>
+                    </button>
+                  </TableCell>
+                  <TableCell className={`${errorTableMonoClass} text-right font-semibold`}>{formatNumber(group.total)}</TableCell>
+                  <TableCell className="min-w-[220px] whitespace-normal">
+                    <div className="flex flex-wrap gap-1">{kindBadges(group)}</div>
+                  </TableCell>
+                  <TableCell className={`${errorTableMonoClass} whitespace-nowrap text-muted-foreground`}>{formatBeijingTime(group.last_error_at)}</TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1.5">
+                      <Button variant="outline" size="xs" onClick={() => onToggle(group.account_id)}>
+                        {open ? t('opsErrors.collapse') : t('opsErrors.expand')}
+                      </Button>
+                      <Button variant="ghost" size="xs" onClick={() => onFilter(group.account_id)}>
+                        <Filter className="size-3" />
+                        {t('opsErrors.filterAccount')}
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                {open && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={5} className="bg-muted/20 p-3">
+                      <AccountRecentErrors accountId={group.account_id} baseParams={baseParams} onOpenLog={onOpenLog} />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
+            )
+          })}
+        </TableBody>
+      </Table>
+    </div>
+    </>
+  )
 }
 
-function getStatusBadgeClassName(statusCode: number): string {
-  if (statusCode === 401 || statusCode >= 500) {
-    return 'border-transparent bg-red-500/14 text-red-600 dark:bg-red-500/20 dark:text-red-300'
-  }
-  if (statusCode === 429) {
-    return 'border-transparent bg-amber-500/14 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300'
-  }
-  if (statusCode === 499) {
-    return 'border-transparent bg-slate-500/14 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300'
-  }
-  return 'border-transparent bg-amber-500/14 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300'
+// AccountRecentErrors lists one account's latest errors under the filters.
+function AccountRecentErrors({ accountId, baseParams, onOpenLog }: {
+  accountId: number
+  baseParams: () => Parameters<typeof api.getOpsErrorsByAccount>[0]
+  onOpenLog: (log: UsageLog) => void
+}) {
+  const { t } = useTranslation()
+  const load = useCallback(async () => {
+    const res = await api.getOpsErrors({ ...baseParams(), accountId: String(accountId), page: 1, pageSize: ACCOUNT_ERROR_ROWS })
+    return res.logs ?? []
+  }, [accountId, baseParams])
+  const { data: logs, loading, error } = useDataLoader<UsageLog[]>({ initialData: [], load })
+  if (loading && logs.length === 0) return <p className="text-xs text-muted-foreground">{t('common.loading')}</p>
+  if (error) return <p role="alert" className="text-xs text-destructive">{error}</p>
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[12px] font-semibold text-muted-foreground">{t('opsErrors.recentErrors', { count: logs.length })}</div>
+      <ul className="divide-y divide-border rounded-lg border border-border bg-card">
+        {logs.map((log) => (
+          <li key={log.id} className="flex min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-[13px]">
+            <span className={`${errorTableMonoClass} text-muted-foreground`}>{formatBeijingTime(log.created_at)}</span>
+            <Badge variant="outline" className={errorStatusBadgeClassName(log.status_code)}>{log.status_code}</Badge>
+            <Badge variant="outline" className={errorKindBadgeClassName(errorKindLabel(log))}>{errorKindLabel(log)}</Badge>
+            <span className="text-muted-foreground">{log.model || '-'}</span>
+            <span className="min-w-0 basis-full truncate text-muted-foreground sm:basis-0 sm:flex-1" title={log.error_message || ''}>{log.error_message || t('opsErrors.noErrorMessage')}</span>
+            <Button variant="outline" size="xs" onClick={() => onOpenLog(log)}>{t('opsErrors.details')}</Button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
 }
