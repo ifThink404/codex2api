@@ -695,6 +695,11 @@ func (bpsPlugin) TransformSSEFrame(env *plugins.ReqEnv, event string, data []byt
 	}
 	if source, failed := bpsTerminalEventSource(gjson.ParseBytes(data)); failed {
 		env.Request.SetUsageErrorMessage(bpsOriginalErrorMessage(source, nil))
+		// In-stream failures are classified like HTTP error bodies.
+		if status := bpsStreamFailureStatus(source); status != 0 {
+			bpsSetUsageMeta(env, "failure_source", "stream")
+			bpsRecordAttemptFailure(env, status, []byte(`{"error":`+bpsJSONObject(source)+`}`))
+		}
 	}
 	projected, err := projectBPSResponse(bpsEnvProjectionContext(env), data)
 	if err == nil {

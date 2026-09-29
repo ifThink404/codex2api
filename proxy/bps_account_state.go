@@ -279,6 +279,34 @@ func bpsFailureClass(status int, body []byte) string {
 	return ""
 }
 
+// bpsStreamFailureStatus maps the error object of a failed stream event to
+// the HTTP status its HTTP counterpart carries (403 usage-policy block or
+// model access, 429 rate limit), or 0 for failures the plugin does not track.
+func bpsStreamFailureStatus(source gjson.Result) int {
+	code := strings.ToLower(strings.TrimSpace(source.Get("code").String()))
+	kind := strings.ToLower(strings.TrimSpace(source.Get("type").String()))
+	message := strings.ToLower(source.Get("message").String())
+	if source.Type == gjson.String {
+		message = strings.ToLower(source.String())
+	}
+	switch {
+	case strings.Contains(message, "blocked by our usage policy"), code == bpsModelAccessChanged, strings.Contains(message, bpsModelAccessChanged):
+		return http.StatusForbidden
+	case code == "rate_limit_exceeded", kind == "rate_limit_error", kind == "usage_limit_reached", strings.Contains(message, "rate limit"):
+		return http.StatusTooManyRequests
+	}
+	return 0
+}
+
+// bpsJSONObject is source as a JSON object ({"message": ...} for a string).
+func bpsJSONObject(source gjson.Result) string {
+	if source.IsObject() {
+		return source.Raw
+	}
+	raw, _ := json.Marshal(map[string]string{"message": source.String()})
+	return string(raw)
+}
+
 // recordBPSFailure updates the account state after a failed BPS attempt and
 // returns the failure class ("" for failures the plugin does not track).
 func recordBPSFailure(ctx context.Context, store cache.TokenCache, accountID int64, model string, status int, header http.Header, body []byte) (string, bpsAccountRecord) {
