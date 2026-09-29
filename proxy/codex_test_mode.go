@@ -37,10 +37,10 @@ func ValidateCodexTestMode(ctx context.Context, account *auth.Account) error {
 	if !native || account.IsRelayStyle() || mode == "bps" && account.IsCodexAgentIdentity() {
 		return fmt.Errorf("该账号不支持所选测试路径，请使用按账号配置")
 	}
-	// Native traffic is never sent for an account BPS owns, tests included.
-	if mode == "codex" && BPSOwnsAccount(account) {
-		return fmt.Errorf("该账号已启用 BPS 且未开启原生路由，不能使用原生（Codex）路径测试")
-	}
+	// An explicit Codex (native) test is allowed on an account BPS owns: a
+	// manual connection test is a deliberate one-off, not business traffic,
+	// so the no-native rule for BPS accounts (routing, background jobs) does
+	// not apply to it.
 	return nil
 }
 
