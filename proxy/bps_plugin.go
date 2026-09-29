@@ -68,6 +68,9 @@ type BPSConfig struct {
 	// (conversation-prefix) seeds in the database, shared by every replica.
 	// Absent means on, as in fj-server; off keeps them in a local LRU.
 	PersistHeuristicAffinity *bool `json:"persist_heuristic_affinity,omitempty"`
+	// AccountMaxConcurrency caps BPS requests in flight per account on each
+	// replica (0 = off).
+	AccountMaxConcurrency int `json:"bps_account_max_concurrency,omitempty"`
 	// Capture retention windows in hours (read by the plugin framework, see
 	// plugins.ParseCaptureRetention): other captures default 6 (1-12), error
 	// captures default and at most 12.
@@ -198,6 +201,9 @@ func parseBPSConfig(raw json.RawMessage) (BPSConfig, error) {
 				return BPSConfig{}, fmt.Errorf("invalid model pattern %q", pattern)
 			}
 		}
+	}
+	if cfg.AccountMaxConcurrency < 0 || cfg.AccountMaxConcurrency > 100 {
+		return BPSConfig{}, fmt.Errorf("bps_account_max_concurrency must be between 0 (off) and 100")
 	}
 	if len(cfg.PolicyCooldownLadder) > 10 {
 		return BPSConfig{}, fmt.Errorf("bps_policy_cooldown_ladder holds at most 10 tiers")
@@ -569,7 +575,8 @@ func bpsAttemptDiagnostic(env *plugins.ReqEnv) *CodexBPSDiagnostic {
 func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Response, error) {
 	state := bpsRequestState(env.Request)
 	if mode, _ := ctx.Value(codexTestModeKey{}).(string); state != nil && mode == "" {
-		if reason := state.blockReason(ctx, env.Account, env.Model); reason != "" {
+		// A full account waits for a slot below instead of being refused.
+		if reason := state.blockReason(ctx, env.Account, env.Model); reason != "" && reason != BPSConcurrencyFullReason {
 			record, _ := bpsAccountCooling(ctx, state.cache(), env.Account.ID())
 			return nil, bpsRefusal(reason, env.Model, record.Until)
 		}
@@ -600,6 +607,17 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		endpoint += "/compact"
 	}
 	env.Request.SetUsageUpstreamEndpoint(BPSPluginID, endpoint)
+	release := func() {}
+	if limit := currentBPSConfig().AccountMaxConcurrency; limit > 0 && env.Account != nil {
+		slot, ok := bpsInflightRequests.acquire(ctx, env.Account.ID(), limit, bpsConcurrencyWait)
+		if !ok {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, bpsRefusal(BPSConcurrencyFullReason, env.Model, time.Time{})
+		}
+		release = slot
+	}
 	var resp *http.Response
 	var err error
 	for {
@@ -621,6 +639,12 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 		if err = bpsSleep(ctx, wait); err != nil {
 			return nil, err
 		}
+	}
+	if err != nil || resp == nil || resp.Body == nil {
+		release()
+	} else {
+		// The slot is held until the response body is fully read or closed.
+		resp.Body = &bpsReleasingBody{ReadCloser: resp.Body, release: release}
 	}
 	if err == nil && resp != nil && resp.StatusCode == http.StatusOK && !env.Compact && bpsStreamIsEventStream(resp.Header.Get("Content-Type")) {
 		request := env.Request

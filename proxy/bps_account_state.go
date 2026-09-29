@@ -416,6 +416,9 @@ type BPSAccountStatus struct {
 	// PolicyTier is the usage-policy ladder tier reached, of PolicyTiers.
 	PolicyTier  int `json:"policy_tier,omitempty"`
 	PolicyTiers int `json:"policy_tiers"`
+	// InFlight BPS requests on this replica, of MaxConcurrency (0 = no cap).
+	InFlight       int `json:"in_flight"`
+	MaxConcurrency int `json:"max_concurrency"`
 	// ModelsUnavailable maps models BPS refused for this account to the time
 	// they are retried on BPS.
 	ModelsUnavailable map[string]time.Time `json:"models_unavailable,omitempty"`
@@ -426,7 +429,7 @@ func BPSAccountStatuses(ctx context.Context, store cache.TokenCache, accountIDs 
 	now := time.Now()
 	out := make([]BPSAccountStatus, 0, len(accountIDs))
 	for _, id := range accountIDs {
-		status := BPSAccountStatus{AccountID: id}
+		status := BPSAccountStatus{AccountID: id, InFlight: bpsInflightRequests.current(id), MaxConcurrency: currentBPSConfig().AccountMaxConcurrency}
 		record := bpsAccountStateStore.load(ctx, store, bpsAccountStateKey(id), now)
 		if record.active(now) {
 			status.CoolingUntil, status.Reason = record.Until, record.Reason

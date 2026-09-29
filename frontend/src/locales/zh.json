@@ -7437,7 +7437,8 @@
       "bps_policy_cooldown_ladder": "用量策略冷却阶梯",
       "image_trim_default": "默认精简历史附件",
       "capture_retention_hours": "抓包保留时长（小时）",
-      "capture_error_retention_hours": "错误抓包保留时长（小时）"
+      "capture_error_retention_hours": "错误抓包保留时长（小时）",
+      "bps_account_max_concurrency": "单账号 BPS 并发上限"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7459,7 +7460,8 @@
       "bps_policy_cooldown_ladder": "上游未给出明确冷却时，每次触发（10 分钟内 3 次拦截）依次使用的冷却时长；2 小时无拦截降一档，24 小时无拦截清零。填 2m、2h 这类时长。",
       "image_trim_default": "用于没有单独设置的 BPS 账号；默认开启，与 fj-server 一致。",
       "capture_retention_hours": "无错误的抓包：1–12 小时，填 0 使用默认值（6）。",
-      "capture_error_retention_hours": "错误抓包及同一次尝试的其余抓包：1–12 小时，填 0 使用默认值（12）。"
+      "capture_error_retention_hours": "错误抓包及同一次尝试的其余抓包：1–12 小时，填 0 使用默认值（12）。",
+      "bps_account_max_concurrency": "每个实例上单账号同时进行的 BPS 请求上限；超出的请求改走其他 BPS 账号或短暂排队。0 表示关闭。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -7484,7 +7486,8 @@
     "purgeConfirmOlder": "删除该插件早于 {{hours}} 小时的所有抓包，操作不可撤销。",
     "purgeConfirm_errors_only": "删除该插件的所有错误抓包，操作不可撤销。",
     "purgeConfirm_all": "删除该插件的全部抓包，操作不可撤销。",
-    "purged": "已删除 {{count}} 条抓包"
+    "purged": "已删除 {{count}} 条抓包",
+    "inFlight": "BPS 并发 {{current}}/{{max}}"
   },
   "logAgent": {
     "title": "AI 日志分析",

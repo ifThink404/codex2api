@@ -45,6 +45,7 @@ export const bpsConfigFields: PluginConfigField[] = [
   { key: 'attachment_account_concurrency', kind: 'number', min: 0, max: 1024 },
   { key: 'bps_models', kind: 'list', defaultValue: ['gpt-5.6-*', 'gpt-6-*'], hint: true },
   { key: 'bps_only_models', kind: 'list', defaultValue: ['gpt-6-*'], hint: true },
+  { key: 'bps_account_max_concurrency', kind: 'number', min: 0, max: 100, hint: true },
   { key: 'policy_block_threshold', kind: 'number', min: 0, max: 100 },
   { key: 'bps_policy_cooldown_ladder', kind: 'list', defaultValue: ['2m', '10m', '30m', '2h'], hint: true },
   { key: 'capture_retention_hours', kind: 'number', min: 0, max: 12, hint: true },

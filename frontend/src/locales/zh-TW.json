@@ -2557,7 +2557,8 @@
       "bps_policy_cooldown_ladder": "用量政策冷卻階梯",
       "image_trim_default": "預設精簡歷史附件",
       "capture_retention_hours": "封包保留時長（小時）",
-      "capture_error_retention_hours": "錯誤封包保留時長（小時）"
+      "capture_error_retention_hours": "錯誤封包保留時長（小時）",
+      "bps_account_max_concurrency": "單帳號 BPS 併發上限"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2579,7 +2580,8 @@
       "bps_policy_cooldown_ladder": "上游未提供明確冷卻時，每次觸發（10 分鐘內 3 次攔截）依序使用的冷卻時長；2 小時無攔截降一檔，24 小時無攔截歸零。填 2m、2h 這類時長。",
       "image_trim_default": "用於沒有個別設定的 BPS 帳號；預設開啟，與 fj-server 一致。",
       "capture_retention_hours": "無錯誤的封包：1–12 小時，填 0 使用預設值（6）。",
-      "capture_error_retention_hours": "錯誤封包及同一次嘗試的其餘封包：1–12 小時，填 0 使用預設值（12）。"
+      "capture_error_retention_hours": "錯誤封包及同一次嘗試的其餘封包：1–12 小時，填 0 使用預設值（12）。",
+      "bps_account_max_concurrency": "每個實例上單帳號同時進行的 BPS 請求上限；超出的請求改走其他 BPS 帳號或短暫排隊。0 表示關閉。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2604,7 +2606,8 @@
     "purgeConfirmOlder": "刪除此外掛早於 {{hours}} 小時的所有封包，操作無法復原。",
     "purgeConfirm_errors_only": "刪除此外掛的所有錯誤封包，操作無法復原。",
     "purgeConfirm_all": "刪除此外掛的全部封包，操作無法復原。",
-    "purged": "已刪除 {{count}} 筆封包"
+    "purged": "已刪除 {{count}} 筆封包",
+    "inFlight": "BPS 併發 {{current}}/{{max}}"
   },
   "logAgent": {
     "title": "AI 日誌分析",
