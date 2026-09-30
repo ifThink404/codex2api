@@ -358,6 +358,18 @@ export interface SubscriptionRefreshResponse {
 }
 
 export type AccountProbeMode = 'auto' | 'off' | 'on'
+/** Excel Basispoints route health of one account (automatic 403 pause / 429 cooldown). */
+export interface ExcelBpsPauseView {
+  /** "account" pauses every model; "models" pauses only `models`. */
+  scope?: 'account' | 'models'
+  reason?: 'forbidden' | 'model_access' | string
+  models?: string[]
+  paused_at?: string
+  last_probe_at?: string
+  next_probe_at?: string
+  failures?: number
+  rate_limited_until?: string
+}
 
 export interface AccountRow {
   api_auto_recovery_enabled?: boolean
@@ -393,6 +405,14 @@ export interface AccountRow {
   claude_base_url?: string
   antigravity_auth_kind?: 'oauth' | 'api_key' | string
   agent_identity?: boolean
+  /** Account-level Excel Basispoints opt-in (forces BPS on). */
+  openai_excel_bps?: boolean
+  /** Excludes the account from the global Basispoints default. */
+  openai_excel_bps_opt_out?: boolean
+  /** Whether requests from this account currently use Basispoints. */
+  openai_excel_bps_effective?: boolean
+  /** Basispoints route health; absent when the route is healthy. */
+  bps_pause?: ExcelBpsPauseView
   grok_auth_kind?: string
   /** Safe, allowlisted User-Agent observed/generated for Claude upstream calls. */
   claude_user_agent?: string
@@ -657,6 +677,9 @@ export interface AccountLiveStateResponse {
   accounts: Record<string, {
     active_requests: number
     occupied_requests: number
+    // 调度器当前实际执行的并发上限与配置值；旧后端不返回时保留列表里的值。
+    dynamic_concurrency_limit?: number
+    base_concurrency_effective?: number
   }>
   session_slot_buffer_enabled: boolean
 }
@@ -704,7 +727,7 @@ export interface AccountsPageParams {
   proxyFilter?: 'all' | 'unbound' | 'this' | 'other'
   /** 订阅状态筛选(Codex 渠道),值见 SUBSCRIPTION_FILTER_OPTIONS。 */
   subscription?: SubscriptionFilter
-  sort?: 'requests' | 'today' | 'usage' | 'created_at' | 'updated_at' | 'scheduler_priority' | 'group' | 'risk' | 'dispatch_score' | 'latency_penalty' | 'unauthorized'
+  sort?: 'requests' | 'today' | 'usage' | 'created_at' | 'updated_at' | 'scheduler_priority' | 'group' | 'risk' | 'dispatch_score' | 'latency_penalty' | 'unauthorized' | 'id'
   order?: 'asc' | 'desc'
 }
 
@@ -1623,6 +1646,8 @@ export interface UpdateAccountSchedulerRequest {
   claude_client_version?: string | null
   timezone?: string | null
   account_href?: string | null
+  openai_excel_bps?: boolean
+  openai_excel_bps_opt_out?: boolean
 }
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {
@@ -2263,6 +2288,12 @@ export interface SystemSettings {
   codex_web_search_proxy_location: boolean
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
+  codex_basispoints_enabled: boolean
+  codex_basispoints_models: string
+  codex_basispoints_403_auto_pause: boolean
+  codex_basispoints_403_probe_interval_minutes: number
+  codex_basispoints_429_cooldown_seconds: number
+  codex_basispoints_cache_creation_as_input: boolean
   codex_ws_weak_network_mode: boolean
   codex_ws_keepalive_enabled: boolean
   codex_ws_keepalive_interval_sec: number
@@ -4717,7 +4748,9 @@ export interface CodexUserAgentCatalogKind {
   default_terminal: string
   app_names: CodexUserAgentCatalogOption[] | null
   terminals: CodexUserAgentCatalogOption[] | null
+  reference_terminals?: string[] | null
   platforms: CodexUserAgentCatalogPlatform[] | null
+  reference_platforms?: CodexUserAgentCatalogPlatform[] | null
   version_pairs: CodexUserAgentCatalogVersionPair[] | null
 }
 

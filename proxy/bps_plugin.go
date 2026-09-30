@@ -453,10 +453,12 @@ func upstreamExcelBPSFlag(account *auth.Account) bool {
 	return account.ExcelBPSEnabled
 }
 
-// upstreamExcelBPSActive replaces upstream's IsExcelBPSAvailableForModel at
-// its handler branch sites: the BPS plugin owns Excel BPS, so upstream's own
-// adapter branch never runs.
-func upstreamExcelBPSActive(*auth.Account, string) bool { return false }
+// upstreamExcelBPSActive is upstream's Excel Basispoints gate
+// (excelBPSRouteAvailable) at the admin test sites: it never opens, because
+// the BPS plugin owns Excel BPS.
+func upstreamExcelBPSActive(account *auth.Account, model string) bool {
+	return excelBPSRouteAvailable(account, model)
+}
 
 // bpsServesAccount reports whether BPS would serve a main-turn request for
 // model on this account: plugin enabled plus the per-account route switches.

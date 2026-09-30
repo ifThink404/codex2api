@@ -662,6 +662,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
 	var selectionErr error
+	// Per turn, not per connection: a pre-output fallback keeps only the
+	// remaining attempts of this turn on native Codex.
+	excelBPSFallback := ""
 	for attempt := 0; ; attempt++ {
 		if c.Request.Context().Err() != nil {
 			return errResponsesWSClientGone
@@ -809,7 +812,16 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 		// 传输插件只走 HTTP：下游仍是 WS，上游改 HTTP（续写按 HTTP 降级展开）。
 		transportPlugin := h.resolveTransportPlugin(c, account, effectiveModel, plugins.KindResponses, rawBody)
-		if transportPlugin != nil {
+		// Upstream's Excel Basispoints gate never opens here (the plugin owns BPS);
+		// its branch is kept only to stay close to upstream.
+		excelBPSRoute := transportPlugin == nil && excelBPSFallback == "" && excelBPSRouteAvailable(account, effectiveModel)
+		if excelBPSRoute {
+			if reason := excelBPSLiveWebSearchReason(rawBody); reason != "" {
+				excelBPSFallback, excelBPSRoute = reason, false
+				log.Printf("[excel-bps] account=%d native fallback reason=%s before_output=true endpoint=/v1/responses", account.ID(), reason)
+			}
+		}
+		if transportPlugin != nil || excelBPSRoute {
 			useWebsocket = false
 		}
 		// WebSocket 上游下剥离自动注入的图片工具，防止模型自主生图卡死。
@@ -853,6 +865,17 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 			if transportPlugin != nil {
 				return transportPlugin.Execute(upstreamCtx, plugins.ReqEnv{Account: account, Model: effectiveModel, Body: upstreamBody, Header: downstreamHeaders, CacheKey: upstreamSessionID, ProxyURL: proxyURL, APIKey: apiKey})
+			}
+			if excelBPSRoute {
+				bpsResp, served, bpsErr := h.openExcelBPSStream(upstreamCtx, c, account, upstreamBody, excelBPSIngress{
+					Endpoint: "/v1/responses", LogModel: logModel, EffectiveModel: effectiveModel,
+					ReasoningEffort: reasoningEffort, Scope: excelBPSIngressScope(account, apiKeyID, affinityKey),
+					ThreadKey: firstNonEmptyString(sessionIdentity.affinityID, affinityKey), ProxyURL: proxyURL,
+					PersistReplay: excelBPSConversationScoped(c.Request.Header, sessionIdentity), Fallback: &excelBPSFallback,
+				})
+				if served {
+					return bpsResp, bpsErr
+				}
 			}
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
@@ -1208,6 +1231,11 @@ func (h *Handler) streamResponsesWSUpstream(
 	options *responsesWSForwardOptions,
 	continuousRetryPolicy database.ContinuousRetryPolicy,
 ) error {
+	// Basispoints ignores the requested service tier; never bill it as priority.
+	upstreamEndpoint := upstreamEndpointForResponse(resp, "/v1/responses")
+	if isExcelBPSResponse(resp) {
+		serviceTier = ""
+	}
 	account.Mu().RLock()
 	c.Set("x-account-email", account.Email)
 	account.Mu().RUnlock()
@@ -1539,7 +1567,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
 			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: responseModelObserver.Model(),
-			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
+			InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 			CapacityShed: outcome.capacityShed,
@@ -1629,7 +1657,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		ReasoningEffort:        reasoningEffort,
 		UpstreamResponseModel:  responseModelObserver.Model(),
 		InboundEndpoint:        "/v1/responses",
-		UpstreamEndpoint:       "/v1/responses",
+		UpstreamEndpoint:       upstreamEndpoint,
 		Stream:                 true,
 		ViaWebsocket:           viaWebsocket,
 		ServiceTier:            usageTiers.ServiceTier,
