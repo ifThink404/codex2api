@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
-	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/proxy/plugins"
 	"github.com/tidwall/gjson"
@@ -97,42 +96,6 @@ func saveBPSPluginConfigKey(ctx context.Context, key string, value any, present 
 	}
 	log.Printf("[bps] plugin config %s set to %s through upstream settings", key, gjson.GetBytes(next, key).Raw)
 	return nil
-}
-
-// bpsPluginServes reports whether the plugin serves account (the upstream
-// "effective" flag).
-func bpsPluginServes(account *auth.Account) bool {
-	if account == nil || !account.CodexBPSEligible() || !account.IsEnabled() {
-		return false
-	}
-	p, ok := plugins.Default().Get(proxy.BPSPluginID)
-	return ok && plugins.Default().EnabledFor(p, account)
-}
-
-// excelBPSModeFlags is the upstream mode view of a row, read from the plugin
-// override: on when forced on, off when forced off.
-func excelBPSModeFlags(row *database.AccountRow) (enabled, optOut bool) {
-	if row == nil {
-		return false, false
-	}
-	switch override := row.GetCredentialOptionalBool(auth.CodexBPSEnabledCredentialKey); {
-	case override == nil:
-		return false, false
-	case *override:
-		return true, false
-	default:
-		return false, true
-	}
-}
-
-func excelBPSModeEnabled(row *database.AccountRow) bool {
-	enabled, _ := excelBPSModeFlags(row)
-	return enabled
-}
-
-func excelBPSModeOptOut(row *database.AccountRow) bool {
-	_, optOut := excelBPSModeFlags(row)
-	return optOut
 }
 
 // translateExcelBPSMode turns an upstream mode write into the plugin override

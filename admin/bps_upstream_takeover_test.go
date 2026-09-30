@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/codex2api/auth"
-	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/proxy/plugins"
 	"github.com/gin-gonic/gin"
 )
 
@@ -56,37 +56,6 @@ func TestExcelBPSModeIsThePluginOverride(t *testing.T) {
 	}
 }
 
-func TestExcelBPSModeViewFollowsThePluginOverride(t *testing.T) {
-	row := func(creds map[string]any) *database.AccountRow {
-		return &database.AccountRow{Credentials: creds}
-	}
-	for _, tc := range []struct {
-		creds           map[string]any
-		enabled, optOut bool
-	}{
-		{map[string]any{}, false, false},
-		{map[string]any{auth.CodexBPSEnabledCredentialKey: true}, true, false},
-		{map[string]any{auth.CodexBPSEnabledCredentialKey: false}, false, true},
-		{map[string]any{auth.ExcelBPSCredentialKey: true}, false, false}, // legacy key is not an input
-	} {
-		enabled, optOut := excelBPSModeFlags(row(tc.creds))
-		if enabled != tc.enabled || optOut != tc.optOut {
-			t.Fatalf("%v: mode = %v/%v", tc.creds, enabled, optOut)
-		}
-	}
-	if bpsPluginServes(nil) {
-		t.Fatal("nil account is never served")
-	}
-	on := true
-	store := auth.NewStore(nil, nil, nil)
-	t.Cleanup(store.Stop)
-	store.AddAccount(&auth.Account{DBID: 5, AccessToken: "at", Status: auth.StatusReady})
-	store.ApplyAccountTransportPluginOverride(5, proxy.BPSPluginID, &on)
-	if !bpsPluginServes(store.FindByID(5)) {
-		t.Fatal("the effective flag is the plugin serving the account")
-	}
-}
-
 // The BPS switch has one input per account: a leftover openai_excel_bps flag
 // no longer forces the plugin on over an explicit "off".
 func TestLegacyExcelFlagNoLongerOverridesThePluginSwitch(t *testing.T) {
@@ -95,7 +64,7 @@ func TestLegacyExcelFlagNoLongerOverridesThePluginSwitch(t *testing.T) {
 	t.Cleanup(store.Stop)
 	store.AddAccount(&auth.Account{DBID: 7, AccessToken: "at", Status: auth.StatusReady, ExcelBPSEnabled: true})
 	store.ApplyAccountTransportPluginOverride(7, proxy.BPSPluginID, &off)
-	if bpsPluginServes(store.FindByID(7)) {
+	if p, _ := plugins.Default().Get(proxy.BPSPluginID); plugins.Default().EnabledFor(p, store.FindByID(7)) {
 		t.Fatal("openai_excel_bps overrode the plugin's per-account off")
 	}
 }

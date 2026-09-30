@@ -6,6 +6,8 @@ import { BPS_ACCOUNT_STATES, degradeVerdictClass, BPS_STATE_BADGE_CLASSES, forma
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(srcRoot + path, 'utf8')
+// The Plugins page and the account status line it shares with Accounts.
+const readPluginsUI = () => read('pages/Plugins.tsx') + read('components/PluginAccountStatusLine.tsx')
 
 test('plugin views and helpers', () => {
   assert.deepEqual([...PLUGIN_VIEWS], ['overview', 'captures', 'logs', 'errors', 'agent'])
@@ -49,7 +51,7 @@ test('plugin pages are routed, in the nav, and use shared components and the plu
   const app = read('App.tsx')
   for (const route of ['path="/plugins"', 'path="/plugins/:id/:view"']) assert.ok(app.includes(route), route)
   assert.ok(read('components/Layout.tsx').includes("labelKey: 'nav.plugins'"))
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.doesNotMatch(page, /<select[\s>]|type="checkbox"|<input[\s>]/)
   assert.doesNotMatch(page, /[一-鿿]/, 'strings go through t()')
   for (const needle of [
@@ -63,7 +65,7 @@ test('plugin pages are routed, in the nav, and use shared components and the plu
 })
 
 test('plugin i18n keys exist in zh, en and zh-TW', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   const used = new Set([...page.matchAll(/t\('plugins\.([a-zA-Z.]+)'/g)].map(match => match[1]))
   for (const view of PLUGIN_VIEWS) used.add(`views.${view}`)
   for (const dir of ['request', 'upstream_request', 'response', 'error']) used.add(`directions.${dir}`)
@@ -98,7 +100,7 @@ test('plugin log-agent wiring', () => {
   assert.equal(captureIdFromEvidence('cap:42'), 42)
   assert.equal(captureIdFromEvidence('usage:42'), null)
   assert.deepEqual(pluginCaptureAgentFilters({ requestId: ' r1 ', accountId: 'x', status: '429', direction: 'error' }), { request_id: 'r1', status: '429', direction: 'error' })
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.ok(page.includes('source={pluginCaptureSource(plugin.id)}'), 'captures and agent views use the capture source')
   assert.ok(page.includes('source="ops_errors"') && page.includes('filters={{ transport: plugin.id }}'), 'agent view analyses the plugin errors')
   assert.ok(page.includes('refs={[detail.request_id]}'), 'capture detail analyses one request')
@@ -106,7 +108,7 @@ test('plugin log-agent wiring', () => {
 })
 
 test('the BPS account list shows plugin cooldowns with their reason', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.ok(page.includes('api.getPluginAccountStatus(plugin.id'))
   assert.ok(page.includes('<PluginAccountStatusLine status={statuses.get(account.id)} />'))
   assert.equal(pluginCoolingReasonKey('bps_rate_limited'), 'plugins.coolingReasons.bps_rate_limited')
@@ -126,17 +128,17 @@ test('model list fields edit as comma-separated text and save as arrays with ser
   const ladder = bpsConfigFields.find(field => field.key === 'bps_policy_cooldown_ladder')
   assert.deepEqual(ladder.defaultValue, ['2m', '10m', '30m', '2h'])
   assert.ok(server.includes('defaultBPSPolicyCooldownLadder = []string{"2m", "10m", "30m", "2h"}'), 'ladder default matches the server')
-  assert.ok(read('pages/Plugins.tsx').includes("t('plugins.policyTier'"))
+  assert.ok(readPluginsUI().includes("t('plugins.policyTier'"))
   assert.equal(pluginConfigListText({ bps_models: ['gpt-6-*', 'gpt-5.6-*'] }, 'bps_models'), 'gpt-6-*, gpt-5.6-*')
   assert.equal(pluginConfigListText({ bps_models: 'gpt-6-*,' }, 'bps_models'), 'gpt-6-*,', 'drafts keep the typed text')
   assert.deepEqual(normalizePluginConfig({ bps_models: ' gpt-6-* , ,gpt-5.6-sol ', bps_only_models: '  ', word_user_agent: 'x' }, bpsConfigFields), { bps_models: ['gpt-6-*', 'gpt-5.6-sol'], word_user_agent: 'x' })
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.ok(page.includes('normalizePluginConfig(config, typedFields)'))
   assert.ok(page.includes("t('plugins.modelUnavailable'"))
 })
 
 test('captures page shows storage and purges with a mode and a confirmation', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   for (const needle of [
     '<CaptureCleanup plugin={plugin}', 'api.getPluginCaptureStats(plugin.id)', 'api.purgePluginCaptures(plugin.id, mode',
     "if (!await confirm({ title: t('plugins.purgeTitle')", "tone: 'destructive'",
@@ -150,7 +152,7 @@ test('captures page shows storage and purges with a mode and a confirmation', ()
 })
 
 test('BPS account list shows concurrency and request budget usage', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.ok(page.includes("t('plugins.inFlight'"))
   assert.ok(page.includes("t('plugins.budgetUsed', { used: status.budget_used ?? 0, budget: status.budget })"))
   for (const key of ['bps_account_max_concurrency', 'bps_account_request_budget', 'bps_account_budget_window']) {
@@ -159,7 +161,7 @@ test('BPS account list shows concurrency and request budget usage', () => {
 })
 
 test('the BPS account list shows usage-policy probe state', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.ok(page.includes("t('plugins.probePending')"))
   assert.ok(page.includes("t('plugins.lastProbe', { time: formatBeijingTime(status.last_probe), result: status.last_probe_result })"))
 })
@@ -184,7 +186,7 @@ test('policy block durations and live elapsed math', () => {
 })
 
 test('BPS overview has the usage-policy blocks section', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   for (const needle of [
     "{plugin.id === 'bps' && <PolicyBlocks plugin={plugin} />}", 'api.getPluginPolicyBlocks(plugin.id)',
     'liveElapsedSeconds(block.elapsed_seconds, fetchedAt, now)', 'window.setInterval(() => setNow(Date.now()), 1000)',
@@ -192,7 +194,7 @@ test('BPS overview has the usage-policy blocks section', () => {
 })
 
 test('BPS health dashboard: panels, states, live updates and the server contract', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   for (const needle of [
     "{plugin.id === 'bps' && <BPSDashboardPanel plugin={plugin} />}", 'api.getBPSDashboard(plugin.id)',
     "if (summary.usable === 0) return 'high'", "return summary.warning ? 'medium' : 'low'", "data.traffic['1h']", 'data?.traffic[range]',
@@ -209,7 +211,7 @@ test('BPS config form is grouped into labeled cards with every field exactly onc
   const grouped = bpsConfigGroups.flatMap(group => group.fields)
   assert.deepEqual([...grouped].sort(), bpsConfigFields.map(field => field.key).sort(), 'every field in a group')
   assert.equal(new Set(grouped).size, grouped.length, 'no field in two groups')
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   for (const needle of [
     "from '../components/SettingsLayout'", '<SettingsCard', 'className={SETTINGS_FIELD_GRID}', 'SETTINGS_ROW_LIST', 'layout="row"',
     'BPS_CONFIG_GROUP_ICONS[group.key]', 'configFieldHint(field)',
@@ -248,7 +250,7 @@ test('live activity panel: capacity bars, pagination, sorting source and polling
   const now = Date.parse('2026-09-29T10:00:00Z')
   assert.equal(secondsSince('2026-09-29T09:59:30Z', now), 30)
   assert.equal(secondsSince(undefined, now), undefined)
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   for (const needle of [
     '<BPSActivityPanel plugin={plugin} />', 'api.getBPSActivity(plugin.id)', 'const BPS_ACTIVITY_REFRESH_MS = 2_500',
     'role="meter"', '<div className="data-table-shell">', "usePersistedPageSize('bps_activity', 20, DEFAULT_PAGE_SIZE_OPTIONS)",
@@ -267,7 +269,7 @@ test('zero timestamps are unset, not cooldowns', () => {
   assert.equal(activeUntil('0001-01-01T00:00:00Z', now), false)
   assert.equal(activeUntil('2026-09-29T09:59:59Z', now), false, 'a past cooldown is over')
   assert.equal(activeUntil('2026-09-29T10:05:00Z', now), true)
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.ok(page.includes('const cooling = activeUntil(status?.cooling_until, now) ? status?.cooling_until : undefined'), 'the cooling line needs a running cooldown')
   assert.ok(page.includes('hasTime(block.next_probe_at)'), 'next probe guarded')
   assert.ok(page.includes('hasTime(block.blocked_at) ? formatBlockDuration('), 'elapsed guarded')
@@ -276,7 +278,7 @@ test('zero timestamps are unset, not cooldowns', () => {
 })
 
 test('disabled and invalid-credential accounts are not usable BPS accounts', () => {
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   assert.ok(page.includes("if (account.enabled === false) return t('plugins.accountDisabled')"), 'the account list labels disabled accounts')
   assert.ok(page.includes("if (account.codex_bps_credential_invalid) return t('plugins.accountInvalid')"), 'and invalid-credential ones')
   assert.ok(page.includes('{account.enabled !== false && !account.codex_bps_credential_invalid && <PluginAccountStatusLine'), 'and shows them no BPS status')
@@ -304,7 +306,7 @@ test('BPS traffic charts: full bucket grid, health strip, shared chart theme', (
   assert.ok(day.every((point) => point.requests === 0), 'empty buckets are zero')
   const [strip] = bpsHealthTimeline([{ bucket: 'b', requests: 10, succeeded: 6, errors_4xx: 2, errors_5xx: 1, org_rate_limited: 0, rate_limited: 0, policy_blocked: 0 }])
   assert.equal(strip.requests - strip.errors_4xx - strip.errors_5xx, 6, 'the strip success matches Succeeded')
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   for (const needle of [
     '<ComposedChart data={series} margin={chartMargin}>', 'fill="url(#bps-request-gradient)"', '<SystemHealthBar chartData={healthData} timeRange={range}',
     '<SegmentedPillGroup', 'riskPalette(risk)', '<StatCard', 'stroke="hsl(var(--success))"', 'stroke="hsl(var(--warning))"', 'stroke="hsl(var(--info))"',
@@ -325,7 +327,7 @@ test('dual-route breakers and the pelican judge: config, route states, probes an
   assert.match(degradeVerdictClass('ok'), /emerald/)
   assert.match(degradeVerdictClass('degraded'), /red/)
   assert.match(degradeVerdictClass('bogus'), /slate/)
-  const page = read('pages/Plugins.tsx')
+  const page = readPluginsUI()
   for (const needle of [
     '<NativeRouteLine route={account.native_route} now={now} />', "if (trigger === 'pelican') return t('plugins.nativeTriggerPelican'", "if (trigger === 'native_403') return '403'",
     '<RouteBadge route={block.route} />', '<RouteBadge route={total.route} />', "t('plugins.dashNativeDegraded')", "t('plugins.dashBPSDegraded')",
@@ -353,7 +355,7 @@ test('dual_route_preference is a one-line switch in the config form', () => {
   assert.deepEqual(field.options, ['native', 'bps'])
   assert.equal(field.defaultValue, 'native')
   assert.ok(bpsConfigGroups.find((group) => group.key === 'protection').fields.includes('dual_route_preference'))
-  assert.ok(read('pages/Plugins.tsx').includes("case 'choice':"), 'rendered with the shared Select')
+  assert.ok(readPluginsUI().includes("case 'choice':"), 'rendered with the shared Select')
   const server = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
   assert.ok(server.includes('return pinned || !native || currentBPSConfig().PrefersBPS()'))
   for (const name of ['zh', 'en', 'zh-TW']) {
@@ -365,18 +367,16 @@ test('dual_route_preference is a one-line switch in the config form', () => {
 test('upstream Basispoints settings are views of the BPS plugin', () => {
   const settings = read('pages/Settings.tsx')
   assert.ok(settings.includes('<Link to="/plugins/bps/overview"'), 'the Basispoints card points at the plugin')
-  for (const dead of ['codex_basispoints_models', 'codex_basispoints_403_auto_pause', 'codex_basispoints_429_cooldown_seconds']) {
-    assert.ok(!settings.includes(`settingsForm.${dead}`), `${dead} (upstream adapter only) is not offered`)
-  }
+  assert.ok(!settings.includes('codex_basispoints_'), 'Settings edits no Basispoints field; the plugin owns them')
+  assert.ok(read('lib/settingsPayload.ts').includes('CODEX_BASISPOINTS_PREFIX'), 'a settings save never writes the plugin views back')
   const server = readFileSync(srcRoot + '../../admin/bps_upstream_takeover.go', 'utf8')
   assert.ok(server.includes('func translateExcelBPSMode') && server.includes('func saveBPSPluginGlobalEnabled'))
   assert.ok(server.includes('func saveBPSPluginCacheCreationAsInput') && server.includes('bpsCacheCreationConfigKey = "cache_creation_as_input"'), 'the cache-creation switch is the plugin config key')
-  assert.ok(settings.includes('settingsForm.codex_basispoints_cache_creation_as_input'), 'the Settings switch stays as a view')
   const field = bpsConfigFields.find((item) => item.key === 'cache_creation_as_input')
   assert.equal(field.kind, 'boolean')
   assert.equal(field.defaultValue, false)
   assert.ok(bpsConfigGroups.find((group) => group.key === 'billing').fields.includes('cache_creation_as_input'))
-  assert.ok(read('pages/Plugins.tsx').includes('billing: <Receipt />'))
+  assert.ok(readPluginsUI().includes('billing: <Receipt />'))
   const plugin = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
   assert.ok(plugin.includes('`json:"cache_creation_as_input,omitempty"`'), 'the server knows the field')
   const gate = readFileSync(srcRoot + '../../proxy/openai_excel_bps_route.go', 'utf8')
@@ -387,5 +387,34 @@ test('upstream Basispoints settings are views of the BPS plugin', () => {
     assert.equal(typeof locale.plugins.bpsConfig.cache_creation_as_input, 'string')
     assert.equal(typeof locale.plugins.bpsConfigHints.cache_creation_as_input, 'string')
     for (const part of ['title', 'description']) assert.equal(typeof locale.plugins.bpsConfigGroups.billing[part], 'string')
+  }
+})
+
+test('one BPS UI per concern', () => {
+  const exists = (path) => { try { read(path); return true } catch { return false } }
+  for (const gone of ['components/ExcelBpsBadge.tsx', 'lib/excelBpsStatus.ts', 'lib/excelBpsModels.ts']) assert.ok(!exists(gone), `${gone} is deleted`)
+  const accounts = read('pages/Accounts.tsx')
+  assert.ok(accounts.includes('<BPSAccountStatusProvider accounts={pagedAccounts}>'), 'Accounts loads the plugin account state')
+  assert.equal(accounts.split('<BPSAccountStatus accountId={account.id} />').length - 1, 2, 'row and card show the plugin state')
+  assert.equal(accounts.split('account.codex_bps_active && <span').length - 1, 2, 'one BPS pill per row and per card, from codex_bps_active')
+  assert.ok(read('pages/Plugins.tsx').includes("import { PluginAccountStatusLine } from '../components/PluginAccountStatusLine'"), 'Plugins and Accounts share the status line')
+  const types = read('types.ts')
+  for (const field of ['openai_excel_bps', 'bps_pause', 'ExcelBpsPauseView']) assert.ok(!types.includes(field), `${field} is gone from the client types`)
+  const sheet = read('components/AccountQuickConfigSheet.tsx')
+  assert.ok(!sheet.includes('excelBps') && !sheet.includes('clearAccountExcelBpsPause'), 'quick config has one BPS control')
+  assert.ok(sheet.includes('<BPSAccountFields compact'), 'quick config keeps the plugin tri-state')
+  assert.ok(read('lib/accountQuickConfig.ts').includes('form.bps.enabled !== form.initialBPSEnabled'), 'the switch is sent only when it changed')
+  const badges = read('lib/errorBadges.ts')
+  assert.ok(!badges.includes('basispoints_upstream_error') && !badges.includes('basispoints_transport_error'), 'no adapter-only error kinds')
+  assert.ok(badges.includes('basispoints_cutoff_completed') && badges.includes('basispoints_model_access_changed'))
+  const plugins = readFileSync(srcRoot + '../../admin/transport_plugins.go', 'utf8')
+  const scheduler = readFileSync(srcRoot + '../../admin/codex_bps_account.go', 'utf8')
+  const compat = readFileSync(srcRoot + '../../admin/bps_upstream_takeover.go', 'utf8')
+  for (const [name, source] of [['Plugins-page switch', plugins], ['scheduler/batch fields', scheduler], ['upstream compat', compat]]) {
+    assert.ok(source.includes('putBPSOverride('), `${name} writes the switch through putBPSOverride`)
+  }
+  for (const name of ['zh', 'en', 'zh-TW']) {
+    const locale = JSON.parse(read(`locales/${name}.json`))
+    assert.ok(!Object.keys(locale.accounts).some((key) => key.startsWith('excelBps')), `${name}: no Excel BPS account strings`)
   }
 })

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Archive, Cable, ChevronRight, Fingerprint, FlaskConical, Gauge, HeartPulse, Hourglass, Paperclip, Receipt, RefreshCw, Route, Save, Search, ShieldAlert, ShieldCheck, Timer, Trash2 } from 'lucide-react'
+import { PluginAccountStatusLine } from '../components/PluginAccountStatusLine'
 import { Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '../api'
 import AccountGroupMultiSelect from '../components/AccountGroupMultiSelect'
@@ -1303,43 +1304,6 @@ function PluginAccounts({ plugin, onChanged }: { plugin: TransportPlugin; onChan
       </StateShell>
       <Pagination page={page} totalPages={Math.ceil(data.total / OVERRIDE_PAGE_SIZE)} onPageChange={setPage} totalItems={data.total} pageSize={OVERRIDE_PAGE_SIZE} />
     </Section>
-  )
-}
-
-// PluginAccountStatusLine shows an account's plugin-scoped cooldown. Only a
-// real cooldown still running shows as one: paused or forced-off accounts
-// report no (or a zero) cooling time and get no cooling line.
-function PluginAccountStatusLine({ status }: { status?: PluginAccountStatus }) {
-  const { t } = useTranslation()
-  const now = Date.now()
-  const models = Object.entries(status?.models_unavailable ?? {}).filter(([, until]) => activeUntil(until, now))
-  const cooling = activeUntil(status?.cooling_until, now) ? status?.cooling_until : undefined
-  const capped = Boolean(status?.max_concurrency) || Boolean(status?.budget) || Boolean(status?.probe_pending) || Boolean(status?.last_probe_result)
-  if (!status || (!cooling && !status.policy_strikes && !status.policy_tier && models.length === 0 && !capped)) return null
-  return (
-    <span className="mt-1 block space-y-0.5 text-xs text-amber-600 dark:text-amber-400">
-      {Boolean(cooling || status.policy_strikes) && (
-        <span className="block">
-          {cooling
-            ? t('plugins.coolingUntil', { time: formatBeijingTime(cooling), reason: t(pluginCoolingReasonKey(status.reason), { defaultValue: status.reason ?? '' }) })
-            : t('plugins.policyStrikes', { count: status.policy_strikes })}
-        </span>
-      )}
-      {Boolean(status.policy_tier) && <span className="block">{t('plugins.policyTier', { tier: status.policy_tier, tiers: status.policy_tiers })}</span>}
-      {status.probe_pending && !cooling && <span className="block">{t('plugins.probePending')}</span>}
-      {status.last_probe_result && hasTime(status.last_probe) && (
-        <span className="block text-muted-foreground">{t('plugins.lastProbe', { time: formatBeijingTime(status.last_probe), result: status.last_probe_result })}</span>
-      )}
-      {Boolean(status.max_concurrency) && <span className="block text-muted-foreground">{t('plugins.inFlight', { current: status.in_flight ?? 0, max: status.max_concurrency })}</span>}
-      {Boolean(status.budget) && (
-        <span className={(status.budget_used ?? 0) >= (status.budget ?? 0) ? 'block' : 'block text-muted-foreground'}>
-          {t('plugins.budgetUsed', { used: status.budget_used ?? 0, budget: status.budget })}
-        </span>
-      )}
-      {models.map(([model, until]) => (
-        <span key={model} className="block break-all">{t('plugins.modelUnavailable', { model, time: formatBeijingTime(until) })}</span>
-      ))}
-    </span>
   )
 }
 

@@ -52,7 +52,7 @@ import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
 import StatusBadge from "../components/StatusBadge";
 import DaybreakBadge from "../components/DaybreakBadge";
-import { ExcelBpsStatus } from "../components/ExcelBpsBadge";
+import { BPSAccountStatus, BPSAccountStatusProvider } from "../components/PluginAccountStatusLine";
 import { useDataLoader, type LoadOptions } from "../hooks/useDataLoader";
 import {
   useConfirmDialog,
@@ -1584,7 +1584,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                         <AccountStatusCountdown account={account} />
                                       )}
                                       <AccountConcurrencyBadge account={account} />
-                                      <ExcelBpsStatus account={account} />
+                                      <BPSAccountStatus accountId={account.id} />
                                     </div>
                                     <AccountHealthBar
                                       buckets={healthBuckets}
@@ -7645,6 +7645,7 @@ export default function Accounts() {
           ) : null}
 
           <AccountModelAvailabilityToolbar accounts={accounts} onUpdated={() => void reloadSilently()} />
+          <BPSAccountStatusProvider accounts={pagedAccounts}>
           <Card className={shouldRenderMobileCards ? "codex-account-list" : undefined}>
             <CardContent className={shouldRenderMobileCards ? "p-0" : "p-3 sm:p-4"}>
               <StateShell
@@ -7987,6 +7988,7 @@ export default function Accounts() {
               </StateShell>
             </CardContent>
           </Card>
+          </BPSAccountStatusProvider>
 
           <Modal
             show={showAdd}
@@ -14392,7 +14394,7 @@ function AccountMobileCard({
                     <AccountStatusCountdown account={account} />
                   )}
                   <AccountConcurrencyBadge account={account} />
-                  <ExcelBpsStatus account={account} variant="card" />
+                  <BPSAccountStatus accountId={account.id} />
                 </>
               )}
               {isFullCard && resetCredits > 0 && (

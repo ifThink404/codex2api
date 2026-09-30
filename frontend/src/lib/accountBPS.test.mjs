@@ -11,7 +11,11 @@ const read = path => readFileSync(srcRoot + path, 'utf8')
 
 test('quick configuration round trips the tri-state BPS override', () => {
   for (const [value, expected] of [[true, true], [false, false], [null, null], [undefined, null]]) {
-    const form = formStateFromAccount({ id: 1, codex_bps_enabled: value })
+    // The loaded switch is left alone; a changed one is sent as the tri-state.
+    const loaded = formStateFromAccount({ id: 1, codex_bps_enabled: value })
+    assert.equal('codex_bps_enabled' in buildQuickConfigSavePayload(loaded, true).payload, false)
+    const other = formStateFromAccount({ id: 1, codex_bps_enabled: expected === true ? false : true })
+    const form = { ...other, bps: { ...other.bps, enabled: expected === true ? 'on' : expected === false ? 'off' : 'inherit' } }
     const payload = buildQuickConfigSavePayload(form, true).payload
     assert.equal(payload.codex_bps_enabled, expected)
     assert.equal('codex_bps_profile' in payload, false, 'quick configuration only sends the switch')

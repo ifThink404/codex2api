@@ -2507,12 +2507,6 @@ export default function Settings() {
     codex_web_search_proxy_location: false,
     codex_telemetry_timing_debug: false,
     codex_request_compression: true,
-    codex_basispoints_enabled: false,
-    codex_basispoints_models: '',
-    codex_basispoints_403_auto_pause: true,
-    codex_basispoints_403_probe_interval_minutes: 1,
-    codex_basispoints_429_cooldown_seconds: 5,
-    codex_basispoints_cache_creation_as_input: false,
     codex_ws_weak_network_mode: false,
     codex_ws_keepalive_enabled: false,
     codex_ws_keepalive_interval_sec: 60,
@@ -4177,29 +4171,11 @@ export default function Settings() {
                 </div>
               </SettingsCard>
 
-              <SettingsCard title={t('settings.codexBasispoints')} description={t('settings.codexBasispointsDesc')} icon={<Layers className="size-4" />}>
-                <div className="space-y-4">
-                  <div className={SETTINGS_SWITCH_ROW}>
-                    <SettingField label={t('settings.codexBasispointsEnabled')} description={t('settings.codexBasispointsEnabledDesc')} layout="switch">
-                      <Switch
-                        checked={settingsForm.codex_basispoints_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_basispoints_enabled', checked)}
-                      />
-                    </SettingField>
-                  </div>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {t('settings.codexBasispointsPluginNote')}{' '}
-                    <Link to="/plugins/bps/overview" className="font-medium text-primary hover:underline">{t('settings.codexBasispointsPluginLink')}</Link>
-                  </p>
-                  <div className={SETTINGS_SWITCH_ROW}>
-                    <SettingField label={t('settings.codexBasispointsCacheCreationAsInput')} description={t('settings.codexBasispointsCacheCreationAsInputDesc')} layout="switch">
-                      <Switch
-                        checked={settingsForm.codex_basispoints_cache_creation_as_input}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_basispoints_cache_creation_as_input', checked)}
-                      />
-                    </SettingField>
-                  </div>
-                </div>
+              <SettingsCard title={t('settings.codexBasispoints')} icon={<Layers className="size-4" />}>
+                <p className="text-sm text-muted-foreground">
+                  {t('settings.codexBasispointsPluginNote')}{' '}
+                  <Link to="/plugins/bps/overview" className="font-medium text-primary hover:underline">{t('settings.codexBasispointsPluginLink')}</Link>
+                </p>
               </SettingsCard>
 
               <SettingsCard title={t('settings.codexContinueThinking')} description={t('settings.codexContinueThinkingDesc')} icon={<Brain className="size-4" />}>

@@ -1708,9 +1708,6 @@ type accountResponse struct {
 	GrokAPI                      bool                        `json:"grok_api,omitempty"`
 	AntigravityAPI               bool                        `json:"antigravity_api,omitempty"`
 	ClaudeAPI                    bool                        `json:"claude_api,omitempty"`
-	ExcelBPSEnabled              bool                        `json:"openai_excel_bps,omitempty"`
-	ExcelBPSOptOut               bool                        `json:"openai_excel_bps_opt_out,omitempty"`
-	ExcelBPSEffective            bool                        `json:"openai_excel_bps_effective,omitempty"`
 	ClaudeAuthKind               string                      `json:"claude_auth_kind,omitempty"`
 	ClaudeBaseURL                string                      `json:"claude_base_url,omitempty"`
 	AntigravityAuthKind          string                      `json:"antigravity_auth_kind,omitempty"`
@@ -2152,9 +2149,6 @@ type accountLiteResponse struct {
 	ClaudeAPI              bool   `json:"claude_api"`
 	AgentIdentity          bool   `json:"agent_identity"`
 	GrokAuthKind           string `json:"grok_auth_kind,omitempty"`
-	ExcelBPSEnabled        bool   `json:"openai_excel_bps"`
-	ExcelBPSOptOut         bool   `json:"openai_excel_bps_opt_out"`
-	ExcelBPSEffective      bool   `json:"openai_excel_bps_effective"`
 }
 
 func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
@@ -2167,10 +2161,8 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 
 	// 运行时状态覆盖 DB 状态(与完整视图一致),其余富化一律跳过。
 	runtimeStatus := make(map[int64]string)
-	excelBPSEffective := make(map[int64]bool)
 	for _, acc := range h.store.Accounts() {
 		runtimeStatus[acc.DBID] = acc.RuntimeStatus()
-		excelBPSEffective[acc.DBID] = bpsPluginServes(acc)
 	}
 
 	accounts := make([]accountLiteResponse, 0, len(rows))
@@ -2216,9 +2208,6 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 			ClaudeAPI:              isClaudeAccount,
 			AgentIdentity:          isAgentIdentityCredentialRow(row),
 			GrokAuthKind:           grokAuthKind,
-			ExcelBPSEnabled:        excelBPSModeEnabled(row),
-			ExcelBPSOptOut:         excelBPSModeOptOut(row),
-			ExcelBPSEffective:      excelBPSEffective[row.ID],
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": accounts})

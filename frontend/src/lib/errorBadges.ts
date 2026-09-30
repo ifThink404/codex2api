@@ -32,8 +32,6 @@ const ERROR_KIND_TONE_MAP: Record<string, ErrorKindTone> = {
   upstream_error: 'error',
   upstream_timeout: 'error',
   transport_error: 'error',
-  basispoints_upstream_error: 'error',
-  basispoints_transport_error: 'error',
   unauthorized: 'error',
   client_error: 'error',
 }
