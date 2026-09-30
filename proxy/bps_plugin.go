@@ -866,6 +866,11 @@ func (bpsPlugin) Execute(ctx context.Context, env *plugins.ReqEnv) (*http.Respon
 			return nil, err
 		}
 	}
+	if bpsTransportFailure(ctx, err) {
+		// A transport failure before any output: the account's native route
+		// may retry the request, as upstream's Excel Basispoints did.
+		bpsQueueSameAccountNativeRetry(env, state)
+	}
 	if env.Account != nil && (err == nil || resp != nil) {
 		window := currentBPSConfig().BudgetWindow()
 		bpsAttempts.record(ctx, state.cache(), env.Account.ID(), window)
@@ -1076,11 +1081,8 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 		// A model refusal only moves that model to native; the account stays.
 		bpsExcludeAccountForRequest(env.Request, env.Account)
 	}
-	if class == BPSPolicyBlockedKind && state != nil && !state.pinned && bpsNativeExplicit(env.Account, env.Model, state.related) &&
-		!nativeRouteOpen(context.Background(), state.cache(), env.Account) && state.queueNativeRetry(env.Account.ID()) {
-		// Break only BPS: the account's healthy native route retries the
-		// request before any other account.
-		bpsSetUsageMeta(env, "native_retry", "same_account")
+	if bpsNativeFallbackFailure(class, status, body) {
+		bpsQueueSameAccountNativeRetry(env, state)
 	}
 	if class == BPSPolicyBlockedKind {
 		env.Request.SetUsageErrorKind(BPSPluginID, BPSPolicyBlockedKind)
@@ -1090,6 +1092,51 @@ func bpsRecordAttemptFailure(env *plugins.ReqEnv, status int, body []byte) {
 		if currentBPSConfig().PolicyConversationMark {
 			state.markConversationBlocked(context.Background())
 		}
+	}
+}
+
+// bpsTransportFailure: the BPS request never got a response (connection,
+// TLS, timeout), as opposed to a refusal or an input error of the plugin.
+func bpsTransportFailure(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		return true
+	}
+	return apiErr.Code == ErrorCodeUpstreamError && apiErr.HTTPStatus == 0 || apiErr.Code == ErrorCodeUpstreamTimeout
+}
+
+// bpsNativeFallbackFailure reports the BPS failures after which an account
+// whose native route is explicitly on retries the request natively: the
+// usage-policy 403, a 429, a model BPS no longer offers, a 5xx and encrypted
+// context BPS cannot verify, as upstream's Excel Basispoints adapter did. A 401
+// stays with the core credential handling (the account's token is invalid on
+// both routes).
+func bpsNativeFallbackFailure(class string, status int, body []byte) bool {
+	switch {
+	case class == BPSPolicyBlockedKind, class == BPSRateLimitedReason, class == BPSModelUnavailable:
+		return true
+	case status >= 500 && status <= 599:
+		return true
+	case status == http.StatusBadRequest:
+		return bpsErrorBodySource(gjson.ParseBytes(body)).Get("code").String() == "invalid_encrypted_content"
+	}
+	return false
+}
+
+// bpsQueueSameAccountNativeRetry breaks only BPS for this request: the
+// account's healthy, explicitly enabled native route retries it before any
+// other account, once. A conversation pinned to BPS output never moves.
+func bpsQueueSameAccountNativeRetry(env *plugins.ReqEnv, state *bpsRequest) {
+	if env.Account == nil || state == nil || state.pinned || !bpsNativeExplicit(env.Account, env.Model, state.related) ||
+		nativeRouteOpen(context.Background(), state.cache(), env.Account) {
+		return
+	}
+	bpsExcludeAccountForRequest(env.Request, env.Account)
+	if state.queueNativeRetry(env.Account.ID()) {
+		bpsSetUsageMeta(env, "native_retry", "same_account")
 	}
 }
 

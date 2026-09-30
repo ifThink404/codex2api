@@ -5204,6 +5204,9 @@ func (h *Handler) Responses(c *gin.Context) {
 			if retryable {
 				shouldRetry = shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
 			}
+			if pluginSameAccountRetry(c.Request.Context(), account) {
+				retryable, shouldRetry = true, true
+			}
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
@@ -5327,7 +5330,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
 			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, effectiveModel)
-			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) || pluginSameAccountRetry(c.Request.Context(), account)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),
@@ -6718,7 +6721,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				Transport: "http", StatusCode: resp.StatusCode, AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
 			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, effectiveModel)
-			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy) || pluginSameAccountRetry(c.Request.Context(), account)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),
@@ -7370,6 +7373,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if retryable {
 				shouldRetry = shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
 			}
+			if pluginSameAccountRetry(c.Request.Context(), account) {
+				retryable, shouldRetry = true, true
+			}
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
@@ -7464,7 +7470,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
 			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
-			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) || pluginSameAccountRetry(c.Request.Context(), account)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),

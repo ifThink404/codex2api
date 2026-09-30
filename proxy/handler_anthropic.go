@@ -879,6 +879,9 @@ func (h *Handler) Messages(c *gin.Context) {
 			if retryable {
 				shouldRetry = shouldRetryRequestError(reqErr, &generalRetries, maxRetries, continuousRetryPolicy)
 			}
+			if pluginSameAccountRetry(c.Request.Context(), account) {
+				retryable, shouldRetry = true, true
+			}
 			// Buffered transport retries stay on the same account without penalizing,
 			// unbinding, or excluding it (issue #331). Busy-acquire timeouts rotate
 			// because waiting again on the same key would repeat the queue (issue #413).
@@ -1026,7 +1029,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
 			decision := h.applyAttemptCooldown(c, account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
-			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) || pluginSameAccountRetry(c.Request.Context(), account)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),

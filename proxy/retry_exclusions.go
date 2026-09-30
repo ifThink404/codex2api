@@ -631,3 +631,11 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 func isFirstTokenTimeoutOutcome(outcome streamOutcome) bool {
 	return outcome.failureKind == "timeout"
 }
+
+// pluginSameAccountRetry reports that a transport plugin handed this failed
+// attempt back to the same account on another transport (a BPS failure its
+// native route retries). The failure is then retryable whatever its status;
+// the plugin grants it once per account and request.
+func pluginSameAccountRetry(ctx context.Context, account *auth.Account) bool {
+	return account != nil && plugins.Default().RetryAccount(ctx, plugins.RequestFromContext(ctx)) == account.ID()
+}
