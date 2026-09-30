@@ -2124,7 +2124,6 @@
       "nativeModels": "原生路径模型",
       "modelsPlaceholder": "留空表示全部模型；支持末尾 * 前缀",
       "routesHelp": "模型列表只约束主请求；压缩等关联请求沿用所属会话的路径。",
-      "badge": "BPS",
       "testMode": "测试路径",
       "testModes": {
         "auto": "按账号配置",
@@ -2155,6 +2154,16 @@
       "native": "原生",
       "start": "检测 {{count}} 个账号",
       "done": "已排队 {{queued}} 个降智检测，跳过 {{skipped}} 个"
+    },
+    "bpsBadge": {
+      "active": "BPS",
+      "cooling": "BPS 冷却中",
+      "coolingUntil": "BPS 冷却至 {{time}}",
+      "budget": "BPS 额度用尽",
+      "blocked": "BPS 拦截",
+      "blockedTier": "BPS 拦截 {{tier}}/{{tiers}}",
+      "degraded": "BPS 降智",
+      "title": "此账号由 BPS 传输插件服务"
     }
   },
   "invite": {

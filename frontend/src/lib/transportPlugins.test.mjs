@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { bpsBadgeView } from './bpsBadge.ts'
 import { BPS_ACCOUNT_STATES, degradeVerdictClass, BPS_STATE_BADGE_CLASSES, formatWindowLabel, activityBarPercent, activeUntil, bpsHealthTimeline, bpsTrafficSeries, capacityFill, hasTime, secondsSince, bpsConfigGroups, CAPTURE_PURGE_MODES, formatSuccessRate, PLUGIN_COOLING_REASONS, PLUGIN_VIEWS, formatBlockDuration, formatCaptureBytes, liveElapsedSeconds, secondsUntil, bpsConfigFields, normalizePluginConfig, pluginConfigListText, pluginCoolingReasonKey, captureIdFromEvidence, pluginConfigBoolean, pluginCaptureAgentFilters, pluginCaptureSource, normalizePluginView, parsePluginConfigText, pluginMetaSummary, sampleRateFromPercent, sampleRateToPercent } from './transportPlugins.ts'
 
 const srcRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -395,8 +396,13 @@ test('one BPS UI per concern', () => {
   for (const gone of ['components/ExcelBpsBadge.tsx', 'lib/excelBpsStatus.ts', 'lib/excelBpsModels.ts']) assert.ok(!exists(gone), `${gone} is deleted`)
   const accounts = read('pages/Accounts.tsx')
   assert.ok(accounts.includes('<BPSAccountStatusProvider accounts={pagedAccounts}>'), 'Accounts loads the plugin account state')
-  assert.equal(accounts.split('<BPSAccountStatus accountId={account.id} />').length - 1, 2, 'row and card show the plugin state')
-  assert.equal(accounts.split('account.codex_bps_active && <span').length - 1, 2, 'one BPS pill per row and per card, from codex_bps_active')
+  assert.ok(accounts.includes('<BPSStatusBadge accountId={account.id} active={account.codex_bps_active} />'), 'row: the BPS pill, from codex_bps_active')
+  assert.ok(accounts.includes('<BPSStatusBadge accountId={account.id} active={account.codex_bps_active} variant="card" />'), 'card: the same pill')
+  assert.equal(accounts.split('<BPSStatusBadge ').length - 1, 2, 'one BPS indicator per row and per card')
+  assert.ok(!accounts.includes('account.codex_bps_active && <span') && !accounts.includes('<BPSAccountStatus '), 'no second BPS pill or status line')
+  // Row: the pill sits right after the status badge, above the health bar.
+  const row = accounts.slice(accounts.indexOf('errorMessage={account.error_message}'))
+  assert.ok(row.indexOf('<BPSStatusBadge') < row.indexOf('<UsingCreditsBadge') && row.indexOf('<UsingCreditsBadge') < row.indexOf('<AccountHealthBar'), 'next to the status, above the health bar')
   assert.ok(read('pages/Plugins.tsx').includes("import { PluginAccountStatusLine } from '../components/PluginAccountStatusLine'"), 'Plugins and Accounts share the status line')
   const types = read('types.ts')
   for (const field of ['openai_excel_bps', 'bps_pause', 'ExcelBpsPauseView']) assert.ok(!types.includes(field), `${field} is gone from the client types`)
@@ -416,5 +422,29 @@ test('one BPS UI per concern', () => {
   for (const name of ['zh', 'en', 'zh-TW']) {
     const locale = JSON.parse(read(`locales/${name}.json`))
     assert.ok(!Object.keys(locale.accounts).some((key) => key.startsWith('excelBps')), `${name}: no Excel BPS account strings`)
+  }
+})
+
+test('the Accounts BPS pill is toned by the plugin state', () => {
+  const now = Date.parse('2026-10-01T08:00:00Z')
+  const later = '2026-10-01T09:30:00Z'
+  const past = '2026-10-01T07:00:00Z'
+  assert.deepEqual(bpsBadgeView(undefined, now), { tone: 'active' })
+  assert.deepEqual(bpsBadgeView({ account_id: 1, budget: 150, budget_used: 3 }, now), { tone: 'active' })
+  assert.deepEqual(bpsBadgeView({ account_id: 1, cooling_until: later, reason: 'bps_rate_limited' }, now), { tone: 'cooling', cause: 'cooldown', until: later })
+  assert.deepEqual(bpsBadgeView({ account_id: 1, cooling_until: past, reason: 'bps_rate_limited' }, now), { tone: 'active' }, 'an elapsed cooldown is normal')
+  assert.deepEqual(bpsBadgeView({ account_id: 1, budget: 150, budget_used: 150 }, now), { tone: 'cooling', cause: 'budget' })
+  assert.deepEqual(bpsBadgeView({ account_id: 1, cooling_until: later, reason: 'bps_policy_blocked', policy_tier: 2, policy_tiers: 4 }, now), { tone: 'blocked', until: later, tier: 2, tiers: 4 })
+  assert.equal(bpsBadgeView({ account_id: 1, probe_pending: true, policy_tier: 1, policy_tiers: 4 }, now).tone, 'blocked', 'still blocked until its probe clears it')
+  assert.deepEqual(bpsBadgeView({ account_id: 1, bps_degraded: true, bps_degraded_until: later }, now), { tone: 'degraded', until: later })
+  const badge = read('components/PluginAccountStatusLine.tsx')
+  for (const needle of ['<Layers ', 'BPS_BADGE_ICONS[view.tone]', '<TooltipContent', '<PluginAccountStatusLine status={status}', 'bg-emerald-50 text-emerald-700', 'bg-amber-50 text-amber-700', 'bg-rose-50 text-rose-700']) {
+    assert.ok(badge.includes(needle.replace('<Layers ', 'Layers')), needle)
+  }
+  for (const name of ['zh', 'en', 'zh-TW']) {
+    const locale = JSON.parse(read(`locales/${name}.json`))
+    for (const key of ['active', 'cooling', 'coolingUntil', 'budget', 'blocked', 'blockedTier', 'degraded', 'title']) {
+      assert.equal(typeof locale.accounts.bpsBadge[key], 'string', `${name} ${key}`)
+    }
   }
 })

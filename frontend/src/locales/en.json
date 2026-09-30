@@ -2124,7 +2124,6 @@
       "nativeModels": "Native route models",
       "modelsPlaceholder": "Empty means all models; a trailing * matches a prefix",
       "routesHelp": "Model lists only constrain main turns; related requests such as compaction follow their conversation's route.",
-      "badge": "BPS",
       "testMode": "Test path",
       "testModes": {
         "auto": "Account setting",
@@ -2155,6 +2154,16 @@
       "native": "Native",
       "start": "Check {{count}} accounts",
       "done": "Queued {{queued}} degradation checks, skipped {{skipped}}"
+    },
+    "bpsBadge": {
+      "active": "BPS",
+      "cooling": "BPS cooling",
+      "coolingUntil": "BPS cooling until {{time}}",
+      "budget": "BPS budget used up",
+      "blocked": "BPS blocked",
+      "blockedTier": "BPS blocked {{tier}}/{{tiers}}",
+      "degraded": "BPS degraded",
+      "title": "Served by the BPS transport plugin"
     }
   },
   "invite": {

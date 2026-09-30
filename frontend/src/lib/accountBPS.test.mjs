@@ -51,10 +51,10 @@ test('BPS account controls use shared components, the scheduler API and i18n', (
   assert.doesNotMatch(fields, /[一-鿿]/, 'no hard-coded Chinese; strings go through t()')
   const accounts = read('pages/Accounts.tsx')
   assert.ok(accounts.includes('bpsPayloadFromForm(editBPS)'), 'edit dialog saves BPS fields')
-  assert.ok(accounts.includes('account.codex_bps_active &&'), 'row badge shows effective BPS')
+  assert.ok(accounts.includes('active={account.codex_bps_active}'), 'row badge shows effective BPS')
   assert.ok(read('components/AccountQuickConfigSheet.tsx').includes('<BPSAccountFields compact'), 'quick config keeps the switch')
   assert.ok(read('components/TestConnectionModal.tsx').includes('params.set("test_mode", testMode)'), 'connection test path')
-  const keys = ['title', 'enabled', 'enabledHelp', 'on', 'off', 'inheritPlugin', 'inheritNative', 'activeNow', 'inactiveNow', 'profile', 'convergence', 'native', 'imageTrim', 'inheritImageTrim', 'bpsModels', 'nativeModels', 'modelsPlaceholder', 'routesHelp', 'badge', 'testMode']
+  const keys = ['title', 'enabled', 'enabledHelp', 'on', 'off', 'inheritPlugin', 'inheritNative', 'activeNow', 'inactiveNow', 'profile', 'convergence', 'native', 'imageTrim', 'inheritImageTrim', 'bpsModels', 'nativeModels', 'modelsPlaceholder', 'routesHelp', 'testMode']
   for (const lang of ['zh', 'en', 'zh-TW']) {
     const bps = JSON.parse(read(`locales/${lang}.json`)).accounts.bps
     for (const key of keys) assert.ok(bps[key], `${lang}: accounts.bps.${key}`)
