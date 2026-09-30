@@ -2,11 +2,13 @@ package admin
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -22,6 +24,9 @@ const (
 	connectionTestTransportStatus = 598
 
 	contextConnectionTestLastError = "connection_test_last_error"
+	// contextConnectionTestTransport holds the proxy.ConnectionTestUsage of a
+	// Codex connection test.
+	contextConnectionTestTransport = "connection_test_transport"
 )
 
 // connectionTestUsageInput 是探针收尾时从诊断对象抽出的记账字段。
@@ -44,6 +49,8 @@ type connectionTestUsageInput struct {
 	UpstreamRequestID string
 	ErrorMessage      string
 	UpstreamErrorKind string
+	// Transport, when set, is the transport report of a Codex test.
+	Transport *proxy.ConnectionTestUsage
 }
 
 func connectionTestReason(quality *qualityTestRequest) string {
@@ -223,7 +230,13 @@ func (h *Handler) logConnectionTestUsage(c *gin.Context, account *auth.Account, 
 		ErrorMessage:         in.ErrorMessage,
 		UpstreamErrorKind:    in.UpstreamErrorKind,
 	}
+	in.Transport.Apply(input)
 	if c != nil {
+		if value, ok := c.Get(contextConnectionTestTransport); ok {
+			// A test served by a transport plugin records it like normal traffic.
+			usage, _ := value.(*proxy.ConnectionTestUsage)
+			usage.Apply(input)
+		}
 		input.ClientIP = strings.TrimSpace(c.ClientIP())
 		if c.Request != nil {
 			input.ClientUserAgent = strings.TrimSpace(c.Request.UserAgent())
@@ -249,4 +262,48 @@ func (h *Handler) logConnectionTestTransportFailure(c *gin.Context, account *aut
 		ErrorMessage:      msg,
 		UpstreamErrorKind: "transport",
 	})
+}
+
+// batchConnectionTestUsage writes one batch or recycle-bin connection test
+// as a connection_test usage row when the test finishes, with the transport
+// that actually served it.
+type batchConnectionTestUsage struct {
+	h          *Handler
+	account    *auth.Account
+	model      string
+	effort     string
+	start      time.Time
+	httpStatus int
+	transport  *proxy.ConnectionTestUsage
+}
+
+func (h *Handler) beginBatchConnectionTestUsage(ctx context.Context, account *auth.Account, model string, payload []byte, start time.Time) (context.Context, *batchConnectionTestUsage) {
+	ctx, transport := proxy.WithConnectionTestUsage(ctx)
+	return ctx, &batchConnectionTestUsage{h: h, account: account, model: model, effort: connectionTestReasoningEffort(payload), start: start, transport: transport}
+}
+
+// observe records the upstream response status.
+func (u *batchConnectionTestUsage) observe(resp *http.Response) {
+	if u != nil && resp != nil {
+		u.httpStatus = resp.StatusCode
+	}
+}
+
+func (u *batchConnectionTestUsage) finish(status, msg string) {
+	if u == nil {
+		return
+	}
+	in := connectionTestUsageInput{
+		Reason: internalReasonConnectionTest, Endpoint: connectionTestEndpoint(u.account),
+		Model: u.model, EffectiveModel: u.model, ReasoningEffort: u.effort,
+		StatusCode: u.httpStatus, DurationMs: int(time.Since(u.start).Milliseconds()),
+		Transport: u.transport,
+	}
+	if status != "success" {
+		in.ErrorMessage = strings.TrimSpace(msg)
+		if u.httpStatus == 0 {
+			in.UpstreamErrorKind = "transport"
+		}
+	}
+	u.h.logConnectionTestUsage(nil, u.account, in)
 }

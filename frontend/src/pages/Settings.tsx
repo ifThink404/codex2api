@@ -1,16 +1,26 @@
-import type { ChangeEvent, FocusEvent, ReactNode } from 'react'
+import type { ChangeEvent, ComponentProps, FocusEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, resetAdminAuthState, setAdminKey } from '../api'
 import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
 import PageHeader from '../components/PageHeader'
-import BPSAccountSettings from '../components/BPSAccountSettings'
+import SettingsTransfer from '../components/SettingsTransfer'
+import {
+  SETTINGS_CARD_GRID_2,
+  SETTINGS_FIELD_GRID,
+  SETTINGS_FIELD_GRID_3,
+  SETTINGS_ROW_LIST,
+  SETTINGS_SWITCH_GRID,
+  SETTINGS_SWITCH_ROW,
+  SettingField as SharedSettingField,
+  SettingHelp as SharedSettingHelp,
+  SettingsCard as SharedSettingsCard,
+} from '../components/SettingsLayout'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
+import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, LogAgentConfig, LogAgentConfigResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
 import { ANTIGRAVITY_DEFAULT_MODELS } from '../lib/antigravityModels'
-import { EXCEL_BPS_KNOWN_MODELS, excelBpsModelOptions, formatExcelBpsModels, parseExcelBpsModels } from '../lib/excelBpsModels'
 import ChipInput from '../components/ChipInput'
 import { countPayloadRules, PAYLOAD_RULE_GROUPS } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
@@ -86,6 +96,7 @@ import {
   CircleHelp,
   Cloud,
   Database,
+  Download,
   ExternalLink,
   Eye,
   Fingerprint,
@@ -777,16 +788,7 @@ function ReasoningEffortModelsEditor({
   )
 }
 
-/** Shared form grids — explicit columns so col-span / alignment stay predictable. */
-const SETTINGS_FIELD_GRID = 'grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2'
-const SETTINGS_FIELD_GRID_3 = 'grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-3'
-const SETTINGS_SWITCH_GRID = 'grid grid-cols-1 gap-3 sm:grid-cols-2'
-// 卡片里只有一个开关时用整行，放进双列栅格会挤成半宽、标签折行。
-const SETTINGS_SWITCH_ROW = 'grid grid-cols-1 gap-3'
-// 一组只含开关的相关设置合并成一张卡，用 SettingField layout="row" 逐行排列，说明文字直接外显。
-const SETTINGS_ROW_LIST = 'divide-y divide-border/60'
-// 卡片级双列栅格：卡片高度不一，必须顶对齐，否则矮卡被拉高留下大片空白。
-const SETTINGS_CARD_GRID_2 = 'grid gap-4 lg:grid-cols-2 lg:items-stretch'
+/** Shared form grids — explicit columns so col-span / alignment stay predictable (defined in components/SettingsLayout). */
 
 // ClaudeCodeSettingsCard 是 ClaudeCode 全局配置卡片(独立读写 /settings/claude-config)。
 // 全体 Claude 账号默认遵守;个体账号可在「账号管理 → 编辑账号」里覆盖。
@@ -1294,70 +1296,8 @@ function ClaudeCodeSettingsCard() {
   )
 }
 
-function SettingsCard({
-  title,
-  description,
-  children,
-  className,
-  contentClassName,
-  footer,
-  icon,
-  badge,
-  channels,
-  tone = 'default',
-}: {
-  title: string
-  description?: string
-  children: ReactNode
-  className?: string
-  contentClassName?: string
-  footer?: ReactNode
-  icon?: ReactNode
-  badge?: ReactNode
-  channels?: readonly UpstreamChannel[]
-  tone?: 'default' | 'danger'
-}) {
-  return (
-    <Card
-      className={cn(
-        'gap-0 py-0 border-border/60 bg-card shadow-2xs',
-        tone === 'danger' && 'border-destructive/30 bg-destructive/[0.02]',
-        className,
-      )}
-    >
-      <CardContent className={cn('p-4.5 sm:p-5.5', contentClassName)}>
-        <div className="mb-4.5 flex shrink-0 items-start gap-3">
-          {icon ? (
-            <div
-              className={cn(
-                'flex size-8 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset',
-                tone === 'danger'
-                  ? 'bg-destructive/10 text-destructive ring-destructive/20'
-                  : 'bg-muted/70 text-muted-foreground ring-border/60',
-              )}
-              aria-hidden="true"
-            >
-              <span className="[&_svg]:size-4">{icon}</span>
-            </div>
-          ) : null}
-          <div className="min-w-0 flex-1 pt-0.5">
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-              <h3 className="text-sm font-semibold leading-snug tracking-tight text-foreground sm:text-[15px]">
-                {title}
-              </h3>
-              {badge}
-              {channels && channels.length > 0 ? <ChannelScopeBadges channels={channels} /> : null}
-            </div>
-            {description ? (
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground/90">{description}</p>
-            ) : null}
-          </div>
-        </div>
-        {children}
-        {footer ? <div className="mt-4.5 border-t border-border/60 pt-4 sm:mt-5">{footer}</div> : null}
-      </CardContent>
-    </Card>
-  )
+function SettingsCard(props: ComponentProps<typeof SharedSettingsCard>) {
+  return <SharedSettingsCard {...props} />
 }
 
 function SettingsCollapsibleNote({
@@ -1391,137 +1331,12 @@ function SettingsCollapsibleNote({
   )
 }
 
-function SettingHelp({ text }: { text: string }) {
-  return (
-    <TooltipProvider delayDuration={200}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={text}
-          >
-            <CircleHelp className="size-3.5" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent
-          side="top"
-          sideOffset={6}
-          className="max-w-[280px] bg-popover px-3 py-2 text-left text-xs leading-relaxed text-popover-foreground shadow-md"
-        >
-          {text}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
+function SettingHelp(props: ComponentProps<typeof SharedSettingHelp>) {
+  return <SharedSettingHelp {...props} />
 }
 
-function SettingField({
-  label,
-  description,
-  help,
-  warning,
-  children,
-  className,
-  layout = 'stack',
-  suffix,
-  channels,
-  stretch = false,
-}: {
-  label: string
-  description?: string
-  // row 布局下 description 直接外显，help 才进问号 tooltip；其他布局 help 与 description 合并进 tooltip。
-  help?: string
-  warning?: string
-  // stretch:stack 布局下让控件撑满剩余高度(等高卡片里的 textarea)。
-  stretch?: boolean
-  children: ReactNode
-  className?: string
-  layout?: 'stack' | 'switch' | 'row'
-  suffix?: string
-  channels?: readonly UpstreamChannel[]
-}) {
-  const scope = channels && channels.length > 0 ? <ChannelScopeBadges channels={channels} size="xs" /> : null
-  const control = suffix ? (
-    <div className="relative min-w-0">
-      <div className="[&_[data-slot=input]]:pr-11 [&_[data-slot=select-trigger]]:pr-11 [&_input]:pr-11">
-        {children}
-      </div>
-      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-medium tabular-nums text-muted-foreground">
-        {suffix}
-      </span>
-    </div>
-  ) : (
-    children
-  )
-
-  if (layout === 'row') {
-    return (
-      <div className={cn('flex min-w-0 items-start justify-between gap-4 py-4 first:pt-0 last:pb-0', className)}>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <label className="text-[13px] font-semibold leading-snug text-foreground sm:text-sm">{label}</label>
-            {help ? <SettingHelp text={help} /> : null}
-            {scope}
-          </div>
-          {description ? (
-            <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">{description}</p>
-          ) : null}
-          {warning ? (
-            <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">{warning}</p>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center pt-0.5">{control}</div>
-      </div>
-    )
-  }
-
-  const tooltip = [description, help].filter(Boolean).join(' ')
-
-  if (layout === 'switch') {
-    return (
-      <div
-        className={cn(
-          'flex min-h-[52px] min-w-0 items-center justify-between gap-3 rounded-xl border border-border/70 bg-card p-3.5 shadow-2xs transition-colors hover:border-border/90',
-          className,
-        )}
-      >
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="flex items-center gap-1.5">
-            <label className="block text-[13px] font-semibold leading-snug text-foreground sm:text-sm">
-              {label}
-            </label>
-            {tooltip ? <SettingHelp text={tooltip} /> : null}
-            {scope}
-          </div>
-          {warning ? (
-            <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">
-              {warning}
-            </p>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center self-center">{control}</div>
-      </div>
-    )
-  }
-
-  return (
-    <div className={cn('flex min-w-0 flex-col gap-1.5', stretch && 'flex-1', className)}>
-      <div className="flex min-h-5 items-center gap-1.5">
-        <label className="block text-[13px] font-semibold leading-none text-foreground sm:text-sm">
-          {label}
-        </label>
-        {tooltip ? <SettingHelp text={tooltip} /> : null}
-        {scope}
-      </div>
-      <div className={cn('min-w-0', stretch && 'flex flex-1 flex-col [&>*]:flex-1')}>{control}</div>
-      {warning ? (
-        <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">
-          {warning}
-        </p>
-      ) : null}
-    </div>
-  )
+function SettingField(props: ComponentProps<typeof SharedSettingField>) {
+  return <SharedSettingField {...props} />
 }
 
 function SettingsFieldGroup({
@@ -2185,6 +2000,145 @@ function VisibleChannelsPicker() {
   )
 }
 
+// LogAgentSettingsCard 是日志分析 Agent 的配置卡片(独立读写 /log-agent/config)：
+// 选择计费归属的网关 Key 与分析模型，以及上下文上限、超时与记录保留天数。
+function LogAgentSettingsCard({ models }: { models: string[] }) {
+  const { t } = useTranslation()
+  const { showToast } = useToast()
+  const [config, setConfig] = useState<LogAgentConfig | null>(null)
+  const [gatewayKeys, setGatewayKeys] = useState<LogAgentConfigResponse['gateway_keys']>([])
+  const [limits, setLimits] = useState<LogAgentConfigResponse['limits'] | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .getLogAgentConfig()
+      .then((result) => {
+        if (cancelled) return
+        setConfig(result.config)
+        setGatewayKeys(result.gateway_keys ?? [])
+        setLimits(result.limits)
+      })
+      .catch((error) => {
+        if (!cancelled) showToast(`${t('logAgent.settings.loadFailed')}: ${getErrorMessage(error)}`, 'error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [showToast, t])
+
+  const update = (patch: Partial<LogAgentConfig>) => setConfig((current) => (current ? { ...current, ...patch } : current))
+
+  const save = async () => {
+    if (!config) return
+    setSaving(true)
+    try {
+      const result = await api.updateLogAgentConfig(config)
+      setConfig(result.config)
+      showToast(t('logAgent.settings.saved'), 'success')
+    } catch (error) {
+      showToast(`${t('logAgent.settings.saveFailed')}: ${getErrorMessage(error)}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const keyOptions = useMemo(() => [
+    { value: '0', label: t('logAgent.settings.noKey') },
+    ...gatewayKeys.map((key) => ({
+      value: String(key.id),
+      label: key.status === 'active'
+        ? `${key.name || key.masked} · ${key.masked}`
+        : `${key.name || key.masked} · ${t(`logAgent.settings.keyStatus.${key.status === 'expired' ? 'expired' : 'quotaExhausted'}`)}`,
+    })),
+  ], [gatewayKeys, t])
+  const modelOptions = useMemo(() => {
+    const ids = config?.model && !models.includes(config.model) ? [config.model, ...models] : models
+    return [{ value: '', label: t('logAgent.settings.modelPlaceholder') }, ...ids.map((id) => ({ value: id, label: id }))]
+  }, [config?.model, models, t])
+
+  return (
+    <SettingsCard
+      title={t('logAgent.settings.title')}
+      description={t('logAgent.settings.description')}
+      icon={<Brain className="size-4" />}
+      channels={ALL_UPSTREAM_CHANNELS}
+      footer={
+        <div className="flex justify-end">
+          <Button onClick={() => void save()} disabled={!config || saving}>
+            {saving ? <RefreshCw className="size-3.5 animate-spin" /> : null}
+            {t('common.save')}
+          </Button>
+        </div>
+      }
+    >
+      {config ? (
+        <div className="space-y-4">
+          <div className={SETTINGS_SWITCH_ROW}>
+            <SettingField label={t('logAgent.settings.enabled')} description={t('logAgent.settings.enabledDesc')} layout="switch">
+              <Switch checked={config.enabled} onCheckedChange={(checked) => update({ enabled: checked })} />
+            </SettingField>
+          </div>
+          <div className={SETTINGS_FIELD_GRID}>
+            <SettingField label={t('logAgent.settings.apiKey')} description={t('logAgent.settings.apiKeyDesc')}>
+              <Select
+                value={String(config.api_key_id || 0)}
+                onValueChange={(value) => update({ api_key_id: Number(value) || 0 })}
+                options={keyOptions}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.model')} description={t('logAgent.settings.modelDesc')}>
+              <Select
+                value={config.model}
+                onValueChange={(value) => update({ model: value })}
+                options={modelOptions}
+                placeholder={t('logAgent.settings.modelPlaceholder')}
+              />
+            </SettingField>
+          </div>
+          <div className={SETTINGS_FIELD_GRID}>
+            <SettingField label={t('logAgent.settings.maxInput')} description={t('logAgent.settings.maxInputDesc')} suffix="KB">
+              <DraftNumberInput
+                min={Math.round((limits?.min_max_input_bytes ?? 4096) / 1024)}
+                max={Math.round((limits?.max_max_input_bytes ?? 524288) / 1024)}
+                value={Math.round(config.max_input_bytes / 1024)}
+                onValueChange={(value) => update({ max_input_bytes: value * 1024 })}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.maxRecords')} description={t('logAgent.settings.maxRecordsDesc')}>
+              <DraftNumberInput
+                min={1}
+                max={limits?.max_max_records ?? 1000}
+                value={config.max_records}
+                onValueChange={(value) => update({ max_records: value })}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.timeout')} description={t('logAgent.settings.timeoutDesc')} suffix="s">
+              <DraftNumberInput
+                min={limits?.min_timeout_seconds ?? 10}
+                max={limits?.max_timeout_seconds ?? 300}
+                value={config.timeout_seconds}
+                onValueChange={(value) => update({ timeout_seconds: value })}
+              />
+            </SettingField>
+            <SettingField label={t('logAgent.settings.retention')} description={t('logAgent.settings.retentionDesc')}>
+              <DraftNumberInput
+                min={1}
+                max={limits?.max_retention_days ?? 365}
+                value={config.retention_days}
+                onValueChange={(value) => update({ retention_days: value })}
+              />
+            </SettingField>
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">{t('common.loading')}</p>
+      )}
+    </SettingsCard>
+  )
+}
+
 // 页头保存状态：自动保存进行中 > 手动字段未保存 > 自动保存失败 > 已保存。
 function SaveStatusPill({
   autoSaveStatus,
@@ -2487,6 +2441,7 @@ export default function Settings() {
       ...cacheNormalized,
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
+      codex_web_search_proxy_location: cacheNormalized.codex_web_search_proxy_location ?? false,
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
       codex_turn_state_strict: cacheNormalized.codex_turn_state_strict ?? false,
       codex_session_no_borrow_enabled: cacheNormalized.codex_session_no_borrow_enabled ?? false,
@@ -2549,14 +2504,9 @@ export default function Settings() {
     auto_activate_5h_window_enabled: false,
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
+    codex_web_search_proxy_location: false,
     codex_telemetry_timing_debug: false,
     codex_request_compression: true,
-    codex_basispoints_enabled: false,
-    codex_basispoints_models: '',
-    codex_basispoints_403_auto_pause: true,
-    codex_basispoints_403_probe_interval_minutes: 1,
-    codex_basispoints_429_cooldown_seconds: 5,
-    codex_basispoints_cache_creation_as_input: false,
     codex_ws_weak_network_mode: false,
     codex_ws_keepalive_enabled: false,
     codex_ws_keepalive_interval_sec: 60,
@@ -2664,6 +2614,7 @@ export default function Settings() {
     codex_cli_version_sync_interval_hours: 12,
     codex_user_agent_config: '{}',
     usage_log_mode: 'full',
+    usage_metering_enabled: true,
     usage_log_batch_size: 200,
     usage_log_flush_interval_seconds: 5,
     stream_flush_policy: 'immediate',
@@ -2910,12 +2861,6 @@ export default function Settings() {
       [field]: value,
     } as Partial<SystemSettings>)
   }, [autoSaveSettingsPatch])
-
-  // BPS model chips save on every change, in the canonical stored form.
-  // autoSaveSettingsPatch applies the optimistic value and its rollback.
-  const saveExcelBpsModels = useCallback((models: string[]) => {
-    autoSaveStringField('codex_basispoints_models', formatExcelBpsModels(models))
-  }, [autoSaveStringField])
 
   // ===== Antigravity OAuth client 配置(草稿态 + 显式保存;secret 不回显,留空 = 沿用已保存值) =====
   const [agOAuthDraft, setAgOAuthDraft] = useState<{ rows: AntigravityOAuthClientSetting[]; activeKey: string } | null>(null)
@@ -4071,9 +4016,6 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-codex-transport" title={t('settings.nav.codexTransport')} description={t('settings.nav.codexTransportDesc')} icon={<Wifi className="size-4" />}>
-                <SettingsCard title="BPS 通道（账户级）" description="可选请求转发方式，可按账户随时开启或关闭。" icon={<Wifi className="size-4" />}>
-                  <BPSAccountSettings />
-                </SettingsCard>
               <SettingsCard title={t('settings.codexWebsocket')} description={t('settings.codexWebsocketDesc')} icon={<Wifi className="size-4" />}>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -4229,99 +4171,11 @@ export default function Settings() {
                 </div>
               </SettingsCard>
 
-              <SettingsCard title={t('settings.codexBasispoints')} description={t('settings.codexBasispointsDesc')} icon={<Layers className="size-4" />}>
-                <div className="space-y-4">
-                  <div className={SETTINGS_SWITCH_ROW}>
-                    <SettingField label={t('settings.codexBasispointsEnabled')} description={t('settings.codexBasispointsEnabledDesc')} layout="switch">
-                      <Switch
-                        checked={settingsForm.codex_basispoints_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_basispoints_enabled', checked)}
-                      />
-                    </SettingField>
-                  </div>
-                  <div className={SETTINGS_FIELD_GRID}>
-                    <SettingField label={t('settings.codexBasispointsModels')} description={t('settings.codexBasispointsModelsDesc')}>
-                      <div className="space-y-2">
-                        <ChipInput
-                          value={parseExcelBpsModels(settingsForm.codex_basispoints_models)}
-                          options={excelBpsModelOptions(modelList)}
-                          placeholder={t('settings.codexBasispointsModelsPlaceholder')}
-                          onChange={(models) => saveExcelBpsModels(models)}
-                        />
-                        <div className="flex flex-wrap gap-2">
-                          <Button type="button" variant="outline" size="sm" onClick={() => saveExcelBpsModels([...EXCEL_BPS_KNOWN_MODELS])}>
-                            {t('settings.codexBasispointsModelsFillKnown')}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={!settingsForm.codex_basispoints_models}
-                            onClick={() => saveExcelBpsModels([])}
-                          >
-                            {t('settings.codexBasispointsModelsClear')}
-                          </Button>
-                        </div>
-                      </div>
-                    </SettingField>
-                  </div>
-                  <div className={SETTINGS_SWITCH_ROW}>
-                    <SettingField label={t('settings.codexBasispoints403AutoPause')} description={t('settings.codexBasispoints403AutoPauseDesc')} layout="switch">
-                      <Switch
-                        checked={settingsForm.codex_basispoints_403_auto_pause}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_basispoints_403_auto_pause', checked)}
-                      />
-                    </SettingField>
-                  </div>
-                  <div className={SETTINGS_FIELD_GRID}>
-                    <SettingField
-                      label={t('settings.codexBasispoints403ProbeInterval')}
-                      description={t('settings.codexBasispoints403ProbeIntervalDesc')}
-                      className={cn(!settingsForm.codex_basispoints_403_auto_pause && 'opacity-60')}
-                    >
-                      <div className="relative">
-                        <DraftNumberInput
-                          min={1}
-                          max={10080}
-                          className="pr-14 tabular-nums"
-                          disabled={!settingsForm.codex_basispoints_403_auto_pause}
-                          value={settingsForm.codex_basispoints_403_probe_interval_minutes}
-                          onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_basispoints_403_probe_interval_minutes: value }))}
-                          onValueCommit={(value) => {
-                            if (!settingsForm.codex_basispoints_403_auto_pause) return
-                            void autoSaveSettingsPatch({ codex_basispoints_403_probe_interval_minutes: value })
-                          }}
-                        />
-                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
-                          {t('settings.codexBasispoints403ProbeIntervalUnit')}
-                        </span>
-                      </div>
-                    </SettingField>
-                    <SettingField label={t('settings.codexBasispoints429Cooldown')} description={t('settings.codexBasispoints429CooldownDesc')}>
-                      <div className="relative">
-                        <DraftNumberInput
-                          min={1}
-                          max={600}
-                          className="pr-14 tabular-nums"
-                          value={settingsForm.codex_basispoints_429_cooldown_seconds}
-                          onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_basispoints_429_cooldown_seconds: value }))}
-                          onValueCommit={(value) => void autoSaveSettingsPatch({ codex_basispoints_429_cooldown_seconds: value })}
-                        />
-                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
-                          {t('settings.codexBasispoints429CooldownUnit')}
-                        </span>
-                      </div>
-                    </SettingField>
-                  </div>
-                  <div className={SETTINGS_SWITCH_ROW}>
-                    <SettingField label={t('settings.codexBasispointsCacheCreationAsInput')} description={t('settings.codexBasispointsCacheCreationAsInputDesc')} layout="switch">
-                      <Switch
-                        checked={settingsForm.codex_basispoints_cache_creation_as_input}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_basispoints_cache_creation_as_input', checked)}
-                      />
-                    </SettingField>
-                  </div>
-                </div>
+              <SettingsCard title={t('settings.codexBasispoints')} icon={<Layers className="size-4" />}>
+                <p className="text-sm text-muted-foreground">
+                  {t('settings.codexBasispointsPluginNote')}{' '}
+                  <Link to="/plugins/bps/overview" className="font-medium text-primary hover:underline">{t('settings.codexBasispointsPluginLink')}</Link>
+                </p>
               </SettingsCard>
 
               <SettingsCard title={t('settings.codexContinueThinking')} description={t('settings.codexContinueThinkingDesc')} icon={<Brain className="size-4" />}>
@@ -4733,6 +4587,15 @@ export default function Settings() {
                         aria-label={t('settings.codexTelemetry')}
                         checked={settingsForm.codex_telemetry_enabled}
                         onCheckedChange={(checked) => autoSaveBooleanField('codex_telemetry_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.codexWebSearchProxyLocation')}
+                      description={t('settings.codexWebSearchProxyLocationDesc')}
+                    >
+                      <Switch
+                        checked={settingsForm.codex_web_search_proxy_location}
+                        onCheckedChange={(checked) => autoSaveBooleanField('codex_web_search_proxy_location', checked)}
                       />
                     </SettingField>
                     <SettingField
@@ -5742,6 +5605,12 @@ export default function Settings() {
               <SettingsCard title={t('settings.visibleChannelsTitle')} description={t('settings.visibleChannelsDesc')} icon={<Eye className="size-4" />}>
                 <VisibleChannelsPicker />
               </SettingsCard>
+              <SettingsCard title={t('settings.transfer.title')} description={t('settings.transfer.description')} icon={<Download className="size-4" />} channels={ALL_UPSTREAM_CHANNELS}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <SettingsTransfer disabled={savingSettings || autoSaveStatus === 'saving' || dirtyCount > 0} />
+                </div>
+                <p className="mt-3 text-xs text-muted-foreground">{t('settings.transfer.scope')}</p>
+              </SettingsCard>
               </SettingsSection>
 
               <SettingsSection id="settings-traffic" title={t('settings.nav.traffic')} description={t('settings.nav.trafficDesc')} icon={<Gauge className="size-4" />}>
@@ -6223,6 +6092,14 @@ export default function Settings() {
               <SettingsSection id="settings-runtime" title={t('settings.nav.runtime')} description={t('settings.nav.runtimeDesc')} icon={<Wrench className="size-4" />}>
               <SettingsCard title={t('settings.runtimeOptimization')} description={t('settings.runtimeOptimizationDesc')} icon={<Wrench className="size-4" />} channels={ALL_UPSTREAM_CHANNELS}>
                 <div className="space-y-4">
+                  <div className={SETTINGS_SWITCH_ROW}>
+                    <SettingField label={t('settings.usageMeteringEnabled')} description={t('settings.usageMeteringEnabledDesc')} layout="switch">
+                      <Switch
+                        checked={settingsForm.usage_metering_enabled}
+                        onCheckedChange={(checked) => autoSaveBooleanField('usage_metering_enabled', checked)}
+                      />
+                    </SettingField>
+                  </div>
                   <div className={SETTINGS_FIELD_GRID_3}>
                     <SettingField label={t('settings.usageLogMode')} description={t('settings.usageLogModeDesc')}>
                       <Select
@@ -6438,6 +6315,7 @@ export default function Settings() {
                   </div>
                 </div>
               </SettingsCard>
+              <LogAgentSettingsCard models={visibleModelItems.filter((model) => model.enabled).map((model) => model.id)} />
               </SettingsSection>
 
               <SettingsSection id="settings-storage" title={t('settings.nav.storage')} description={t('settings.nav.storageDesc')} icon={<ImageIcon className="size-4" />}>

@@ -354,3 +354,39 @@ test('adaptive model review is a single switch with an explicit low-latency safe
   assert.match(zh.promptFilter.adaptiveReview.description, /新用户先完整复核/)
   assert.match(zh.promptFilter.adaptiveReview.defaults, /\{\{minClean\}\} 次.*\{\{hours\}\} 小时.*\{\{sample\}\}%.*\{\{forceHours\}\} 小时/)
 })
+
+test('prompt audit controls use shared components, API params and three locales', () => {
+  const page = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
+  const apiSource = readFileSync(new URL('../api.ts', import.meta.url), 'utf8')
+  assert.match(page, /<Select value=\{config\.enforcement\.local_mode\}/)
+  assert.match(page, /<SwitchField label=\{t\('promptFilter\.auxiliaryHighConfidence'\)\}/)
+  assert.match(page, /local_mode: 'block', auxiliary_high_confidence_enabled: false/)
+  assert.match(page, /promptFilter\.searchScopes\./)
+  assert.match(page, /promptFilter\.auditSorts\./)
+  assert.match(apiSource, /search\.set\('search_scope', params\.searchScope\)/)
+  assert.match(apiSource, /search\.set\('sort', params\.sort\)/)
+  for (const locale of ['zh', 'en', 'zh-TW']) {
+    const messages = JSON.parse(readFileSync(new URL(`../locales/${locale}.json`, import.meta.url), 'utf8')).promptFilter
+    for (const key of ['localMode', 'localModeHint', 'auxiliaryHighConfidence', 'auxiliaryHighConfidenceHint', 'searchInField', 'auditSort']) {
+      assert.ok(messages[key], `${locale}: promptFilter.${key}`)
+    }
+    assert.deepEqual(Object.keys(messages.localModes).sort(), ['block', 'monitor', 'warn'])
+    assert.deepEqual(Object.keys(messages.auditSorts).sort(), ['audit_asc', 'audit_desc', 'newest'])
+    assert.equal(Object.keys(messages.searchScopes).length, 6)
+  }
+})
+
+test('prompt audit log grouping is wired through the API and three locales', () => {
+  const page = readFileSync(new URL('../pages/PromptFilter.tsx', import.meta.url), 'utf8')
+  const apiSource = readFileSync(new URL('../api.ts', import.meta.url), 'utf8')
+  assert.match(apiSource, /search\.set\('grouped', String\(params\.grouped\)\)/)
+  assert.match(apiSource, /search\.set\('group_id', String\(params\.groupId\)\)/)
+  assert.match(page, /function PromptAuditGroupDialog/)
+  assert.match(page, /grouped: false, groupId: log\.group_id/)
+  for (const locale of ['zh', 'en', 'zh-TW']) {
+    const messages = JSON.parse(readFileSync(new URL(`../locales/${locale}.json`, import.meta.url), 'utf8')).promptFilter
+    for (const key of ['groupDisplay', 'groupHint', 'groupTotal', 'groupDetailsTitle', 'groupDetailsHint']) {
+      assert.ok(messages[key], `${locale}: promptFilter.${key}`)
+    }
+  }
+})

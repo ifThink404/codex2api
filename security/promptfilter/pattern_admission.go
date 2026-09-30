@@ -106,7 +106,7 @@ func AuditPatternConfig(pattern PatternConfig) *PatternAdmissionError {
 	if pattern.MinMatches > len(pattern.AnyPatterns) {
 		return patternAdmissionIssue(PatternQuarantineInvalidDefinition, "min_matches 不能大于 any_patterns 数量")
 	}
-	conditionCount := boolInt(strings.TrimSpace(pattern.Pattern) != "") + len(pattern.AllPatterns) + len(pattern.AnyPatterns) + len(pattern.ExcludePatterns)
+	conditionCount := boolInt(strings.TrimSpace(pattern.Pattern) != "") + len(pattern.AllPatterns) + len(pattern.AnyPatterns) + len(pattern.ExcludePatterns) + len(pattern.AuthorizationExcludePatterns)
 	if conditionCount > maxCustomPatternConditions {
 		return patternAdmissionIssue(PatternQuarantineInvalidDefinition, "单条规则的正则条件不能超过 64 个")
 	}
@@ -419,6 +419,12 @@ func compileAdmissionPattern(pattern PatternConfig) (admissionCompiledPattern, *
 	}
 	positiveCount += len(compiled.any)
 	if compiled.exclude, issue = compileList("exclude_patterns", pattern.ExcludePatterns); issue != nil {
+		return compiled, issue
+	}
+	// Validate conditional exclusions even while the authorization setting is
+	// off. Do not apply them to admission: toggling the setting off later must
+	// not expose a rule whose positive conditions are otherwise over-broad.
+	if _, issue = compileList("authorization_exclude_patterns", pattern.AuthorizationExcludePatterns); issue != nil {
 		return compiled, issue
 	}
 	if positiveCount == 0 {

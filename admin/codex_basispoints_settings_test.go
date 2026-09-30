@@ -5,14 +5,39 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/proxy/plugins"
+	"github.com/tidwall/gjson"
 )
 
+// attachBPSPluginForTest gives the default registry a BPS plugin store on db.
+func attachBPSPluginForTest(t *testing.T, db *database.DB) {
+	t.Helper()
+	bps, ok := plugins.Default().Get(proxy.BPSPluginID)
+	if !ok {
+		t.Fatal("bps plugin not registered")
+	}
+	if err := db.MigrateBPSPlugin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	registry := plugins.NewRegistry()
+	registry.Register(bps)
+	if err := registry.Attach(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	previous := plugins.SwapDefault(registry)
+	t.Cleanup(func() { plugins.SwapDefault(previous) })
+}
+
+// codex_basispoints_enabled is the BPS plugin's global switch in this fork.
 func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 	h, db, _ := newImagesSettingsHandler(t)
+	attachBPSPluginForTest(t, db)
 	t.Cleanup(func() { proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings()) })
 	for _, tc := range []struct {
 		patch      map[string]any
@@ -35,8 +60,15 @@ func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 		}
 		got := decodeResponseCacheSettingsResponse(t, response)
 		runtime := proxy.CurrentRuntimeSettings()
-		if got.CodexBasispointsEnabled != tc.want || runtime.CodexBasispointsEnabled != tc.want || auth.ExcelBPSGlobalEnabled() != tc.want {
-			t.Fatalf("PUT/runtime/auth enabled mismatch for %v", tc.patch)
+		if got.CodexBasispointsEnabled != tc.want || plugins.Default().State(proxy.BPSPluginID).Enabled != tc.want {
+			t.Fatalf("PUT/plugin enabled mismatch for %v", tc.patch)
+		}
+		var pluginModels []string
+		for _, model := range gjson.GetBytes(plugins.Default().State(proxy.BPSPluginID).Config, "bps_models").Array() {
+			pluginModels = append(pluginModels, model.String())
+		}
+		if strings.Join(pluginModels, ",") != tc.wantModels {
+			t.Fatalf("plugin bps_models = %v, want %q (codex_basispoints_models is the plugin's bps_models)", pluginModels, tc.wantModels)
 		}
 		if got.CodexBasispointsModels != tc.wantModels || runtime.CodexBasispointsModels != tc.wantModels {
 			t.Fatalf("PUT/runtime models = %q/%q, want %q", got.CodexBasispointsModels, runtime.CodexBasispointsModels, tc.wantModels)
@@ -49,7 +81,7 @@ func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 		proxy.ApplyRuntimeSettingsFromSystem(saved)
 		get := invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)
 		reloaded := decodeResponseCacheSettingsResponse(t, get)
-		if get.Code != 200 || reloaded.CodexBasispointsEnabled != tc.want || reloaded.CodexBasispointsModels != tc.wantModels || auth.ExcelBPSGlobalEnabled() != tc.want {
+		if get.Code != 200 || reloaded.CodexBasispointsEnabled != tc.want || reloaded.CodexBasispointsModels != tc.wantModels {
 			t.Fatal("reload/GET mismatch")
 		}
 	}
@@ -57,6 +89,7 @@ func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 
 func TestBasispointsSettingsFailedSavePreservesRuntime(t *testing.T) {
 	h, db, path := newImagesSettingsHandler(t)
+	attachBPSPluginForTest(t, db)
 	t.Cleanup(func() { proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings()) })
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -71,7 +104,7 @@ func TestBasispointsSettingsFailedSavePreservesRuntime(t *testing.T) {
 		t.Fatalf("PUT status=%d", response.Code)
 	}
 	saved, err := db.GetSystemSettings(context.Background())
-	if err != nil || saved.CodexBasispointsEnabled || proxy.CurrentRuntimeSettings().CodexBasispointsEnabled || auth.ExcelBPSGlobalEnabled() {
+	if err != nil || saved.CodexBasispointsEnabled || proxy.CurrentRuntimeSettings().CodexBasispointsEnabled || plugins.Default().State(proxy.BPSPluginID).Enabled {
 		t.Fatal("failed save enabled routing")
 	}
 }
@@ -87,8 +120,11 @@ func TestParseAccountSchedulerUpdateExcelBPSOptOut(t *testing.T) {
 	if !update.hasChanges() || !update.ExcelBPSOptOut.Set || !update.ExcelBPSOptOut.Value {
 		t.Fatalf("opt-out update = %#v", update.ExcelBPSOptOut)
 	}
-	if value, ok := update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey].(bool); !ok || !value {
-		t.Fatalf("credential update = %#v", update.CredentialUpdates)
+	if value, ok := update.CredentialUpdates[auth.CodexBPSEnabledCredentialKey].(bool); !ok || value {
+		t.Fatalf("mode off is the plugin override off: %#v", update.CredentialUpdates)
+	}
+	if _, written := update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey]; written {
+		t.Fatalf("the legacy opt-out is translated, not stored: %#v", update.CredentialUpdates)
 	}
 	if _, err := parseAccountSchedulerUpdate(updateAccountSchedulerReq{ExcelBPSOptOut: json.RawMessage(`1`)}); err == nil {
 		t.Fatal("non-boolean opt-out was accepted")
@@ -171,9 +207,27 @@ func TestBasispointsRateLimitCooldownPersistValidateAndReload(t *testing.T) {
 	}
 }
 
+// codex_basispoints_cache_creation_as_input is the BPS plugin config key
+// cache_creation_as_input in this fork; other plugin config keys survive.
 func TestBasispointsCacheCreationAsInputPersistAndReload(t *testing.T) {
 	h, db, _ := newImagesSettingsHandler(t)
+	attachBPSPluginForTest(t, db)
 	t.Cleanup(func() { proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings()) })
+	state := plugins.Default().State(proxy.BPSPluginID)
+	state.Config = json.RawMessage(`{"bps_min_usable_accounts":5}`)
+	if err := plugins.Default().Save(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	pluginConfig := func() map[string]any {
+		var config map[string]any
+		if err := json.Unmarshal(plugins.Default().State(proxy.BPSPluginID).Config, &config); err != nil {
+			t.Fatal(err)
+		}
+		if config["bps_min_usable_accounts"] != float64(5) {
+			t.Fatalf("other plugin config keys lost: %v", config)
+		}
+		return config
+	}
 	if get := decodeResponseCacheSettingsResponse(t, invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)); get.CodexBasispointsCacheWriteAsInput {
 		t.Fatal("cache creation is billed as input by default")
 	}
@@ -181,14 +235,13 @@ func TestBasispointsCacheCreationAsInputPersistAndReload(t *testing.T) {
 	if response.Code != 200 {
 		t.Fatalf("PUT: %d %s", response.Code, response.Body.String())
 	}
-	if got := decodeResponseCacheSettingsResponse(t, response); !got.CodexBasispointsCacheWriteAsInput || !proxy.CurrentRuntimeSettings().CodexBasispointsCacheWriteAsInput {
-		t.Fatalf("PUT/runtime mismatch: %t/%t", got.CodexBasispointsCacheWriteAsInput, proxy.CurrentRuntimeSettings().CodexBasispointsCacheWriteAsInput)
+	if got := decodeResponseCacheSettingsResponse(t, response); !got.CodexBasispointsCacheWriteAsInput || pluginConfig()["cache_creation_as_input"] != true {
+		t.Fatalf("PUT/plugin mismatch: %t/%v", got.CodexBasispointsCacheWriteAsInput, pluginConfig())
 	}
-	saved, err := db.GetSystemSettings(context.Background())
-	if err != nil || !saved.CodexBasispointsCacheWriteAsInput {
+	if saved, err := db.GetSystemSettings(context.Background()); err != nil || !saved.CodexBasispointsCacheWriteAsInput {
 		t.Fatalf("persisted mismatch: %+v %v", saved, err)
 	}
-	// An unrelated update from a stale instance keeps the persisted value.
+	// An unrelated update from a stale instance keeps the plugin value.
 	proxy.UpdateRuntimeSettings(func(s proxy.RuntimeSettings) proxy.RuntimeSettings {
 		s.CodexBasispointsCacheWriteAsInput = false
 		return s
@@ -196,16 +249,14 @@ func TestBasispointsCacheCreationAsInputPersistAndReload(t *testing.T) {
 	if response := invokeResponseCacheSettingsAdmin(t, h, http.MethodPut, map[string]any{"site_name": "unrelated"}); response.Code != 200 {
 		t.Fatalf("unrelated PUT: %d", response.Code)
 	}
-	if saved, err := db.GetSystemSettings(context.Background()); err != nil || !saved.CodexBasispointsCacheWriteAsInput {
-		t.Fatalf("unrelated update overwrote the setting: %+v %v", saved, err)
+	if reloaded := decodeResponseCacheSettingsResponse(t, invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)); !reloaded.CodexBasispointsCacheWriteAsInput || pluginConfig()["cache_creation_as_input"] != true {
+		t.Fatal("unrelated update or GET lost the setting")
 	}
-	proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings())
-	proxy.ApplyRuntimeSettingsFromSystem(saved)
-	if reloaded := decodeResponseCacheSettingsResponse(t, invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)); !reloaded.CodexBasispointsCacheWriteAsInput {
-		t.Fatal("reload/GET lost the setting")
-	}
-	if response := invokeResponseCacheSettingsAdmin(t, h, http.MethodPut, map[string]any{"codex_basispoints_cache_creation_as_input": false}); response.Code != 200 || proxy.CurrentRuntimeSettings().CodexBasispointsCacheWriteAsInput {
+	if response := invokeResponseCacheSettingsAdmin(t, h, http.MethodPut, map[string]any{"codex_basispoints_cache_creation_as_input": false}); response.Code != 200 || decodeResponseCacheSettingsResponse(t, response).CodexBasispointsCacheWriteAsInput {
 		t.Fatalf("disable PUT: %d", response.Code)
+	}
+	if _, present := pluginConfig()["cache_creation_as_input"]; present {
+		t.Fatal("off removes the key so the plugin default applies")
 	}
 }
 

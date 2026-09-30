@@ -525,7 +525,14 @@ func (h *Handler) probeUsageViaGrokBilling(ctx context.Context, account *auth.Ac
 
 // probeUsageViaResponses 原有探针：发送最小 /responses 请求，
 // 通过响应头同步 Codex 用量状态。会真实消耗少量 token。
+// errBPSAccountNativeProbe: a native /responses probe is never sent for an
+// account the BPS plugin owns (see proxy.BPSOwnsAccount).
+var errBPSAccountNativeProbe = errors.New("BPS 账号未开启原生路由，跳过原生 /responses 探针")
+
 func (h *Handler) probeUsageViaResponses(ctx context.Context, account *auth.Account) error {
+	if proxy.BPSOwnsAccount(account) {
+		return errBPSAccountNativeProbe
+	}
 	probeStartedAt := time.Now()
 	payload := buildConnectionTestPayload(h.store, h.store.GetTestModel())
 	executeRequest := usageProbeRequestFunc(proxy.ExecuteRequest)

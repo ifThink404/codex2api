@@ -9,6 +9,8 @@ export interface BuildBatchMetadataUpdateOptions {
   tags: string[];
   updateGroups: boolean;
   groupIds: number[];
+  // addGroups adds the accounts to groupIds instead of replacing their groups.
+  addGroups?: boolean;
   updateScoreBias: boolean;
   scoreBias: number | null;
   updateBaseConcurrency: boolean;
@@ -29,6 +31,7 @@ export function buildBatchMetadataUpdate({
   tags,
   updateGroups,
   groupIds,
+  addGroups,
   updateScoreBias,
   scoreBias,
   updateBaseConcurrency,
@@ -47,7 +50,8 @@ export function buildBatchMetadataUpdate({
     payload.api_auto_recovery_enabled = probePolicy.api_auto_recovery_enabled;
   }
   if (updateTags) payload.tags = [...tags];
-  if (updateGroups) payload.group_ids = [...groupIds];
+  if (updateGroups && addGroups) payload.add_group_ids = [...groupIds];
+  else if (updateGroups) payload.group_ids = [...groupIds];
   if (updateScoreBias) payload.score_bias_override = scoreBias;
   if (updateBaseConcurrency)
     payload.base_concurrency_override = baseConcurrency;

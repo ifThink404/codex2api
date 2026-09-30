@@ -7,8 +7,8 @@ import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
-import BPSTransportField from '../components/BPSTransportField';
-import { isBPSAccount } from '../lib/bpsAccount';
+import BPSAccountFields from '../components/BPSAccountFields';
+import { bpsFormFromAccount, bpsPayloadFromForm, isBPSAccount, type BPSAccountForm } from '../lib/bpsAccount';
 import { AccountModelAvailabilityProvider, AccountModelAvailabilityToolbar, AccountModelAvailabilityBadge, AccountModelAvailabilityPanel } from '../components/AccountModelAvailability';
 import AccountHrefQuickEditor, {
   openAccountHref,
@@ -20,6 +20,8 @@ import {
   type ProxyBindingContext,
 } from "../lib/accountProxyBinding";
 import Modal from "../components/Modal";
+import BatchBPSDialog from "../components/BatchBPSDialog";
+import BatchDegradeProbeDialog from "../components/BatchDegradeProbeDialog";
 import ChannelLogo from "../components/ChannelLogo";
 import { useVisibleChannels } from "../visibleChannels";
 import ModelLogo from "../components/ModelLogo";
@@ -50,7 +52,7 @@ import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
 import StatusBadge from "../components/StatusBadge";
 import DaybreakBadge from "../components/DaybreakBadge";
-import { ExcelBpsStatus } from "../components/ExcelBpsBadge";
+import { BPSAccountStatus, BPSAccountStatusProvider } from "../components/PluginAccountStatusLine";
 import { useDataLoader, type LoadOptions } from "../hooks/useDataLoader";
 import {
   useConfirmDialog,
@@ -61,6 +63,7 @@ import {
   usePersistedPageSize,
 } from "../hooks/usePersistedPageSize";
 import { useToast } from "../hooks/useToast";
+import type { CodexTestMode } from "../types";
 import type {
   AccountRow,
   AccountHealthBucket,
@@ -187,7 +190,9 @@ import {
   BarChart3,
   Search,
   Fingerprint,
+  Cable,
   FolderOpen,
+  FolderPlus,
   Layers,
   Cloud,
   Lock,
@@ -998,6 +1003,11 @@ interface BatchOperationEvent {
   action: BatchOperationAction;
   status?: string;
   http_status?: number;
+  output?: string;
+  output_truncated?: boolean;
+  test_model?: string;
+  response_model?: string;
+  response_field_count?: number;
   current?: number;
   total?: number;
   success?: number;
@@ -1424,7 +1434,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                           {account.rate_limit_reset_credits ?? 0}
                                         </button>
                                       )}
-                                      {account.codex_bps_enabled && <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">BPS</span>}
+                                      {account.codex_bps_active && <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">{t("accounts.bps.badge")}</span>}
                                       <AccountModelAvailabilityBadge account={account} onClick={() => actions.openModelsEditor(account)} />
                                       {getCreditBalanceDisplay(account) !==
                                         null && (
@@ -1574,7 +1584,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                         <AccountStatusCountdown account={account} />
                                       )}
                                       <AccountConcurrencyBadge account={account} />
-                                      <ExcelBpsStatus account={account} />
+                                      <BPSAccountStatus accountId={account.id} />
                                     </div>
                                     <AccountHealthBar
                                       buckets={healthBuckets}
@@ -2217,7 +2227,9 @@ export default function Accounts() {
   const [modelsSyncing, setModelsSyncing] = useState(false);
   const [modelsProbing, setModelsProbing] = useState(false);
   const [modelsSaving, setModelsSaving] = useState(false);
-  const [editBPSEnabled, setEditBPSEnabled] = useState(false);
+  const [editBPS, setEditBPS] = useState<BPSAccountForm>(() => bpsFormFromAccount({}));
+  // Batch connection-test path; applies to that run only, never saved.
+  const [batchTestMode, setBatchTestMode] = useState<CodexTestMode>("auto");
   // 探测看板：逐模型的实时测试状态（pending→testing→结果）。
   const [probeBoard, setProbeBoard] = useState<ModelProbeItem[]>([]);
   const [tagFilter, setTagFilter] = useState<string>("");
@@ -2278,7 +2290,10 @@ export default function Accounts() {
   });
   const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [showBatchMetaEditor, setShowBatchMetaEditor] = useState(false);
-  const [batchMetaMode, setBatchMetaMode] = useState<"all" | "groups">("all");
+  // groups replaces the selected accounts' groups; addGroups adds to them.
+  const [batchMetaMode, setBatchMetaMode] = useState<"all" | "groups" | "addGroups">("all");
+  const [showBatchBPS, setShowBatchBPS] = useState(false);
+  const [showBatchDegrade, setShowBatchDegrade] = useState(false);
   const [batchUpdateProbePolicy, setBatchUpdateProbePolicy] = useState(false);
   const [batchProbePolicy, setBatchProbePolicy] = useState(accountProbePolicyFromAccount);
   const [batchUpdateTags, setBatchUpdateTags] = useState(false);
@@ -5255,10 +5270,10 @@ export default function Accounts() {
     setShowBatchMetaEditor(true);
   };
 
-  const openBatchGroupEditor = () => {
+  const openBatchGroupEditor = (mode: "groups" | "addGroups" = "groups") => {
     setBatchUpdateProbePolicy(false);
     setBatchProbePolicy(accountProbePolicyFromAccount());
-    setBatchMetaMode("groups");
+    setBatchMetaMode(mode);
     setBatchUpdateTags(false);
     setBatchTags([]);
     setBatchUpdateGroups(true);
@@ -5354,8 +5369,11 @@ export default function Accounts() {
       void reloadSilently();
       const fetched = result.models ?? [];
       setModelsDraft((current) => mergeModelLists(current, fetched));
+      const added = result.whitelist_added?.length ?? 0;
       showToast(
-        t("accounts.supportedModelsSyncDone", { count: fetched.length }),
+        added > 0
+          ? t("accounts.supportedModelsSyncDoneWithAutoAdded", { count: fetched.length, added })
+          : t("accounts.supportedModelsSyncDone", { count: fetched.length }),
       );
     } catch (error) {
       showToast(
@@ -5507,9 +5525,9 @@ export default function Accounts() {
     batchUpdateSchedulerPriority &&
     isSchedulerPriorityInputInvalid(batchSchedulerPriorityInput);
   const batchMetaHasUpdates =
+    (batchMetaMode === "addGroups" ? batchGroupIds.length > 0 : batchUpdateGroups) ||
     batchUpdateProbePolicy ||
     batchUpdateTags ||
-    batchUpdateGroups ||
     batchUpdateScoreBias ||
     batchUpdateBaseConcurrency ||
     batchUpdateSchedulerPriority ||
@@ -5538,6 +5556,7 @@ export default function Accounts() {
           tags: batchTags,
           updateGroups: batchUpdateGroups,
           groupIds: batchGroupIds,
+          addGroups: batchMetaMode === "addGroups",
           updateScoreBias: batchUpdateScoreBias,
           scoreBias: batchScoreBiasValue,
           updateBaseConcurrency: batchUpdateBaseConcurrency,
@@ -5624,9 +5643,10 @@ export default function Accounts() {
     if (!ids && data.total === 0) return;
     setBatchTesting(true);
     try {
+      const target = ids ? { ids } : { selector: currentAccountSelector };
       const result = await runStreamingAccountOperation(
         "/accounts/batch-test?stream=true",
-        ids ? { ids } : { selector: currentAccountSelector },
+        batchTestMode === "auto" ? target : { ...target, test_mode: batchTestMode },
         t("accounts.batchTestProgressTitle"),
       );
       showToast(
@@ -5804,7 +5824,7 @@ export default function Accounts() {
     setEditTimezoneCustom(
       Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
     );
-    setEditBPSEnabled(account.codex_bps_enabled ?? false);
+    setEditBPS(bpsFormFromAccount(account));
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
     setEditOpenAIForm({
@@ -6035,7 +6055,7 @@ export default function Accounts() {
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
               timezone: editTimezone.trim(),
-              ...(isBPSAccount(editingAccount) ? { codex_bps_enabled: editBPSEnabled } : {}),
+              ...(isBPSAccount(editingAccount) ? bpsPayloadFromForm(editBPS) : {}),
             }
           : {}),
       };
@@ -6590,6 +6610,18 @@ export default function Accounts() {
                         <Plus className="size-3.5" />
                         {t("accounts.addAccount")}
                       </Button>
+<Select
+                        className="w-32 shrink-0"
+                        compact
+                        value={batchTestMode}
+                        onValueChange={(value) => setBatchTestMode(value as CodexTestMode)}
+                        options={(["auto", "codex", "bps"] as CodexTestMode[]).map((value) => ({
+                          value,
+                          label: t(`accounts.bps.testModes.${value}`),
+                        }))}
+                        disabled={batchTesting}
+                        aria-label={t("accounts.bps.testMode")}
+                      />
                       <Button
                         variant="outline"
                         size="sm"
@@ -7502,11 +7534,36 @@ export default function Accounts() {
                   variant="outline"
                   size="sm"
                   disabled={batchLoading || batchTesting}
-                  onClick={openBatchGroupEditor}
+                  onClick={() => openBatchGroupEditor("addGroups")}
+                  title={t("accounts.batchGroupAdd")}
+                >
+                  <FolderPlus className="size-3.5" />
+                  <span className="hidden sm:inline">
+                    {t("accounts.batchGroupAdd")}
+                  </span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={batchLoading || batchTesting}
+                  onClick={() => openBatchGroupEditor()}
+                  title={t("accounts.batchGroupEdit")}
                 >
                   <FolderOpen className="size-3.5" />
                   <span className="hidden sm:inline">
                     {t("accounts.batchGroupEdit")}
+                  </span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={batchLoading || batchTesting}
+                  onClick={() => setShowBatchBPS(true)}
+                  title={t("accounts.batchBPS.action")}
+                >
+                  <Cable className="size-3.5" />
+                  <span className="hidden sm:inline">
+                    {t("accounts.batchBPS.action")}
                   </span>
                 </Button>
                 <HeaderActionMenu
@@ -7542,6 +7599,13 @@ export default function Accounts() {
                       icon: <Hourglass className="size-3.5" />,
                       disabled: batchLoading || batchTesting,
                       onSelect: openBatchQuotaAutoPauseEditor,
+                    },
+                    {
+                      key: "degrade-probe",
+                      label: t("accounts.batchDegrade.action"),
+                      icon: <FlaskConical className="size-3.5" />,
+                      disabled: batchLoading || batchTesting,
+                      onSelect: () => setShowBatchDegrade(true),
                     },
                     {
                       key: "reset-status",
@@ -7581,6 +7645,7 @@ export default function Accounts() {
           ) : null}
 
           <AccountModelAvailabilityToolbar accounts={accounts} onUpdated={() => void reloadSilently()} />
+          <BPSAccountStatusProvider accounts={pagedAccounts}>
           <Card className={shouldRenderMobileCards ? "codex-account-list" : undefined}>
             <CardContent className={shouldRenderMobileCards ? "p-0" : "p-3 sm:p-4"}>
               <StateShell
@@ -7923,6 +7988,7 @@ export default function Accounts() {
               </StateShell>
             </CardContent>
           </Card>
+          </BPSAccountStatusProvider>
 
           <Modal
             show={showAdd}
@@ -10325,7 +10391,7 @@ export default function Accounts() {
                         </div>
 
                         {/* 设备指纹收敛 */}
-                        {isBPSAccount(editingAccount) && <div className="md:col-span-2"><BPSTransportField checked={editBPSEnabled} onChange={setEditBPSEnabled} disabled={editSubmitting} /></div>}
+                        {isBPSAccount(editingAccount) && <div className="md:col-span-2"><BPSAccountFields form={editBPS} onChange={patch => setEditBPS(prev => ({ ...prev, ...patch }))} disabled={editSubmitting} active={editingAccount.codex_bps_active} /></div>}
                         {isCodexOfficialAccount(editingAccount) ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                             <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
@@ -10659,6 +10725,9 @@ export default function Accounts() {
                   </Button>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
+                  {t("accounts.supportedModelsSyncHint")}
+                </p>
+                <p className="mt-2 text-xs text-muted-foreground">
                   {t("accounts.supportedModelsProbeHint")}
                 </p>
                 {probeBoard.length > 0 && (
@@ -10736,9 +10805,11 @@ export default function Accounts() {
           <Modal
             show={showBatchMetaEditor}
             title={t(
-              batchMetaMode === "groups"
-                ? "accounts.batchGroupTitle"
-                : "accounts.batchMetaTitle",
+              batchMetaMode === "addGroups"
+                ? "accounts.batchGroupAddTitle"
+                : batchMetaMode === "groups"
+                  ? "accounts.batchGroupTitle"
+                  : "accounts.batchMetaTitle",
             )}
             contentClassName="sm:max-w-[760px]"
             onClose={() => {
@@ -10766,7 +10837,9 @@ export default function Accounts() {
                 >
                   {batchMetaSubmitting
                     ? t("common.saving")
-                    : batchMetaMode === "groups"
+                    : batchMetaMode === "addGroups"
+                      ? t("accounts.batchGroupAdd")
+                      : batchMetaMode === "groups"
                       ? batchGroupIds.length === 0
                         ? t("accounts.batchGroupClear")
                         : t("accounts.batchGroupReplace")
@@ -10778,9 +10851,11 @@ export default function Accounts() {
             <div className="space-y-4">
               <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
                 {t(
-                  batchMetaMode === "groups"
-                    ? "accounts.batchGroupDesc"
-                    : "accounts.batchMetaDesc",
+                  batchMetaMode === "addGroups"
+                    ? "accounts.batchGroupAddDesc"
+                    : batchMetaMode === "groups"
+                      ? "accounts.batchGroupDesc"
+                      : "accounts.batchMetaDesc",
                   { count: selected.size },
                 )}
               </div>
@@ -11019,9 +11094,11 @@ export default function Accounts() {
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {t(
-                        batchMetaMode === "groups"
-                          ? "accounts.batchGroupFieldHint"
-                          : "accounts.batchMetaFieldHint",
+                        batchMetaMode === "addGroups"
+                          ? "accounts.batchGroupAddFieldHint"
+                          : batchMetaMode === "groups"
+                            ? "accounts.batchGroupFieldHint"
+                            : "accounts.batchMetaFieldHint",
                       )}
                     </div>
                   </div>
@@ -11061,9 +11138,11 @@ export default function Accounts() {
                     value={batchGroupIds}
                     onChange={setBatchGroupIds}
                     allLabel={t(
-                      batchUpdateGroups
-                        ? "accounts.groupsUnbound"
-                        : "accounts.batchMetaFieldHint",
+                      batchMetaMode === "addGroups"
+                        ? "accounts.batchGroupAddFieldHint"
+                        : batchUpdateGroups
+                          ? "accounts.groupsUnbound"
+                          : "accounts.batchMetaFieldHint",
                     )}
                     selectedLabel={t("accounts.groupsSelected", {
                       count: batchGroupIds.length,
@@ -11092,6 +11171,39 @@ export default function Accounts() {
               </div>
             </div>
           </Modal>
+
+          <BatchDegradeProbeDialog
+            show={showBatchDegrade}
+            ids={Array.from(selected)}
+            onClose={() => setShowBatchDegrade(false)}
+            onDone={(result) => {
+              setShowBatchDegrade(false);
+              showToast(
+                t("accounts.batchDegrade.done", {
+                  queued: result.queued,
+                  skipped: result.skipped,
+                }),
+                result.queued === 0 ? "error" : "success",
+              );
+            }}
+          />
+
+          <BatchBPSDialog
+            show={showBatchBPS}
+            ids={Array.from(selected)}
+            onClose={() => setShowBatchBPS(false)}
+            onDone={(result) => {
+              setShowBatchBPS(false);
+              showToast(
+                t("accounts.batchBPS.done", {
+                  success: result.success,
+                  fail: result.failed,
+                }),
+                result.failed > 0 ? "error" : "success",
+              );
+              void reload();
+            }}
+          />
 
           <Modal
             show={showBatchQuotaAutoPauseEditor}
@@ -14253,7 +14365,7 @@ function AccountMobileCard({
               </span>
             )}
             <div className="codex-account-card__flags">
-              {account.codex_bps_enabled && <span className="codex-account-card__flag">BPS</span>}
+              {account.codex_bps_active && <span className="codex-account-card__flag">{t("accounts.bps.badge")}</span>}
               {onEditModels && <AccountModelAvailabilityBadge account={account} onClick={onEditModels} />}
               <SubscriptionBadge
                 accountId={account.id}
@@ -14282,7 +14394,7 @@ function AccountMobileCard({
                     <AccountStatusCountdown account={account} />
                   )}
                   <AccountConcurrencyBadge account={account} />
-                  <ExcelBpsStatus account={account} variant="card" />
+                  <BPSAccountStatus accountId={account.id} />
                 </>
               )}
               {isFullCard && resetCredits > 0 && (

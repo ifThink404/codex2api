@@ -251,3 +251,29 @@ func TestClearAccountProxyURLIfMatchesDoesNotOverwriteConcurrentRebind(t *testin
 		t.Fatalf("proxy URL after stale clear = %q, want %q", got, newURL)
 	}
 }
+
+func TestReloadProxyPoolPublishesStoredProxyLocations(t *testing.T) {
+	db := newProxyPoolReloadTestDB(t)
+	ctx := context.Background()
+	const proxyURL = "http://located.example:8080"
+	id, err := db.InsertProxy(ctx, proxyURL, "")
+	if err != nil {
+		t.Fatalf("InsertProxy: %v", err)
+	}
+	if err := db.UpdateProxyTestResultWithGeo(ctx, id, proxyURL, database.ProxyTestStatusSuccess, "1.2.3.4", "JP", "Asia/Tokyo", 10,
+		database.ProxyTestGeo{CountryCode: "JP", Region: "Tokyo", City: "Chiyoda"}); err != nil {
+		t.Fatalf("UpdateProxyTestResultWithGeo: %v", err)
+	}
+	store := NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	if err := store.ReloadProxyPool(); err != nil {
+		t.Fatalf("ReloadProxyPool: %v", err)
+	}
+	want := database.ProxyLocation{Country: "JP", Region: "Tokyo", City: "Chiyoda", Timezone: "Asia/Tokyo"}
+	if got := store.ProxyLocation(" " + proxyURL + " "); got != want {
+		t.Fatalf("ProxyLocation = %+v, want %+v", got, want)
+	}
+	if got := store.ProxyLocation("http://unknown.example:1"); got != (database.ProxyLocation{}) {
+		t.Fatalf("unknown proxy location = %+v, want empty", got)
+	}
+}

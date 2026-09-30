@@ -1,5 +1,20 @@
+import { serviceErrorSearchParams, type ServiceErrorPage, type ServiceErrorQuery } from './lib/serviceErrors.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
+  BuiltinPromptRuleFields,
+  PluginCapture,
+  PluginAccountStatus,
+  BPSPolicyBlocksResponse,
+  BPSDashboard,
+  BPSActivity,
+  PluginCapturePage,
+  PluginCapturePurgeMode,
+  PluginCapturePurgeResult,
+  PluginCaptureStats,
+  PluginCaptureQuery,
+  TransportPlugin,
+  TransportPluginsResponse,
+  TransportPluginUpdate,
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
   AccountPortalSubmitResponse,
@@ -102,6 +117,7 @@ import type {
   ClaudeImportBundleResponse,
   ClaudeAddAccountResponse,
   OpsErrorSummary,
+  OpsErrorAccountGroup,
   OpsOverviewResponse,
   PromptFilterLog,
   PromptFilterLogsResponse,
@@ -474,6 +490,10 @@ function buildOpsErrorSearchParams(params: {
   stream?: string
   fast?: string
   q?: string
+  transport?: string
+  accountId?: string
+  retry?: string
+  timeout?: string
   dedupe?: boolean
   excludeStatus?: string
 }) {
@@ -484,6 +504,10 @@ function buildOpsErrorSearchParams(params: {
   if (params.errorKind) search.set('error_kind', params.errorKind)
   if (params.endpoint) search.set('endpoint', params.endpoint)
   if (params.apiKeyId) search.set('api_key_id', params.apiKeyId)
+  if (params.transport) search.set('transport', params.transport)
+  if (params.accountId) search.set('account_id', params.accountId)
+  if (params.retry) search.set('retry', params.retry)
+  if (params.timeout) search.set('timeout', params.timeout)
   if (params.stream) search.set('stream', params.stream)
   if (params.fast) search.set('fast', params.fast)
   if (params.q) search.set('q', params.q)
@@ -522,6 +546,8 @@ export type UsageLogQueryParams = {
   turnStateEcho?: string
   /** true | false —— 代理有没有把客户端回带的 turn-state 剥掉。 */
   turnStateStripped?: string
+  /** native 或传输插件 ID。 */
+  transport?: string
 }
 
 export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
@@ -551,6 +577,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.turnStateLength) search.set('turn_state_length', params.turnStateLength)
   if (params.turnStateEcho) search.set('turn_state_echo', params.turnStateEcho)
   if (params.turnStateStripped) search.set('turn_state_stripped', params.turnStateStripped)
+  if (params.transport) search.set('transport', params.transport)
   return search
 }
 
@@ -923,14 +950,17 @@ export const api = {
   updateAccountScheduler: (id: number, data: UpdateAccountSchedulerRequest) =>
     request<MessageResponse>(`/accounts/${id}/scheduler`, { method: 'PATCH', body: JSON.stringify(data) }),
   // 立即恢复账号的 Excel BPS 路由(清除 403 自动暂停与 429 冷却)。
-  clearAccountExcelBpsPause: (id: number) =>
-    request<{ message: string; cleared: boolean }>(`/accounts/${id}/bps-pause/clear`, { method: 'POST' }),
   // 设置 OAuth 账号的支持模型白名单;空数组表示清空(该账号可调度所有模型)。返回归一化后的白名单。
   updateAccountModels: (id: number, models: string[]) =>
     request<{ models: string[] }>(`/accounts/${id}/models`, { method: 'PATCH', body: JSON.stringify({ models }) }),
   // 拉取并记录账号清单证据；白名单只在管理员保存后更新。
+  // 已有非空白名单会自动并入缺少的新模型，空白名单保持“全部放行”语义。
   syncAccountModelsUpstream: (id: number) =>
-    request<{ models: string[] }>(`/accounts/${id}/models/sync-upstream`, { method: 'POST' }),
+    request<{
+      models: string[]
+      whitelist?: string[]
+      whitelist_added?: string[]
+    }>(`/accounts/${id}/models/sync-upstream`, { method: 'POST' }),
   // 实测并记录账号模型证据，model 非空时只测该模型；不修改白名单/调度健康。
   probeAccountModels: (id: number, model?: string) =>
     request<{
@@ -1125,10 +1155,17 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
+    accountId?: string
+    retry?: string
+    timeout?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     return request<OpsErrorSummary>(`/ops/errors/summary?${search.toString()}`)
   },
+  // 网关本地拒绝/失败（鉴权、限流、校验、策略、调度），与上游错误日志分开。
+  getServiceErrors: (query: ServiceErrorQuery, signal?: AbortSignal) =>
+    request<ServiceErrorPage>(`/ops/service-errors?${serviceErrorSearchParams(query)}`, { signal }),
   getOpsErrors: (params: {
     start: string
     end: string
@@ -1141,6 +1178,10 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
+    accountId?: string
+    retry?: string
+    timeout?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     search.set('page', String(params.page))
@@ -1157,12 +1198,42 @@ export const api = {
     stream?: string
     fast?: string
     q?: string
+    transport?: string
+    accountId?: string
+    retry?: string
+    timeout?: string
     dedupe?: boolean
     excludeStatus?: string
   }) => {
     const search = buildOpsErrorSearchParams(params)
     return requestBlob(`/ops/errors/export?${search.toString()}`)
   },
+  // 按账号归集的错误：每个账号的错误总数、各错误类型计数与最近一次时间。
+  getOpsErrorsByAccount: (params: Parameters<typeof buildOpsErrorSearchParams>[0]) => {
+    const search = buildOpsErrorSearchParams(params)
+    return request<{ accounts: OpsErrorAccountGroup[] }>(`/ops/errors/by-account?${search.toString()}`)
+  },
+  getLogAgentConfig: () => request<import('./types').LogAgentConfigResponse>('/log-agent/config'),
+  updateLogAgentConfig: (config: import('./types').LogAgentConfig) =>
+    request<{ config: import('./types').LogAgentConfig }>('/log-agent/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+  // 后端按配置的超时(最长 300s)同步分析,客户端多留余量给取日志与落库。
+  analyzeLogAgent: (data: import('./types').LogAgentAnalyzeRequest) =>
+    request<{ run: import('./types').LogAgentRun }>('/log-agent/analyze', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 330_000,
+    }),
+  listLogAgentRuns: (params: { source?: string; beforeId?: number; limit?: number } = {}) => {
+    const search = new URLSearchParams()
+    if (params.source) search.set('source', params.source)
+    if (params.beforeId) search.set('before_id', String(params.beforeId))
+    if (params.limit) search.set('limit', String(params.limit))
+    return request<{ runs: import('./types').LogAgentRun[] }>(`/log-agent/runs?${search.toString()}`)
+  },
+  getLogAgentRun: (id: number) => request<{ run: import('./types').LogAgentRun }>(`/log-agent/runs/${id}`),
   // 区间统计卡片可携带与 /usage/logs 同一套维度筛选(账号/密钥/模型/端点/搜索等),
   // 后端会忽略状态类参数;累计字段始终全局。
   getUsageStats: (params: Partial<Omit<UsageLogQueryParams, 'start' | 'end'>> & {
@@ -1215,6 +1286,14 @@ export const api = {
     searchParams.set('page', String(params.page))
     if (params.pageSize) searchParams.set('page_size', String(params.pageSize))
     return request<UsageLogsPagedResponse>(`/usage/logs?${searchParams.toString()}`)
+  },
+  // 确认后下载使用日志 JSON：filtered 复用列表筛选（必须带时间范围），all 导出全部保留记录。
+  downloadUsageLogs: (scope: 'filtered' | 'all', params?: UsageLogQueryParams, signal?: AbortSignal) => {
+    if (scope === 'filtered' && !params) throw new Error('Filtered export requires a time range')
+    const search = scope === 'filtered' && params ? buildUsageLogSearchParams(params) : new URLSearchParams()
+    search.set('scope', scope)
+    search.set('confirmed', 'true')
+    return requestBlob(`/usage/logs/export?${search.toString()}`, { method: 'POST', signal })
   },
   getUsageLogsErrorSummary: (params: UsageLogQueryParams) => {
     const searchParams = buildUsageLogSearchParams(params)
@@ -1322,6 +1401,7 @@ export const api = {
     request<MessageResponse>('/usage/logs', { method: 'DELETE' }),
   getSetupHints: () => request<SetupHintsResponse>('/setup-hints'),
   getSettings: () => request<SystemSettings>('/settings'),
+  exportSettings: (includeSecrets = false) => request<{ format: 'codex2api.settings'; version: 1; exported_at: string; secrets_included?: boolean; settings: Record<string, unknown> }>(`/settings/export${includeSecrets ? '?include_secrets=true' : ''}`),
   getClaudeConfig: () =>
     request<ClaudeGlobalConfig>('/settings/claude-config'),
   updateClaudeConfig: (data: ClaudeGlobalConfig) =>
@@ -1364,7 +1444,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  getPromptFilterLogs: (params: number | { page?: number; pageSize?: number; limit?: number; source?: string; action?: string; endpoint?: string; model?: string; apiKeyId?: string; q?: string; reviewed?: boolean; reviewResult?: string } = 100) => {
+  getPromptFilterLogs: (params: number | { grouped?: boolean; groupId?: number; page?: number; pageSize?: number; limit?: number; source?: string; action?: string; endpoint?: string; model?: string; apiKeyId?: string; q?: string; searchScope?: string; sort?: string; reviewed?: boolean; reviewResult?: string } = 100) => {
     const search = new URLSearchParams()
     if (typeof params === 'number') {
       search.set('limit', String(params))
@@ -1380,6 +1460,10 @@ export const api = {
       if (params.q) search.set('q', params.q)
       if (typeof params.reviewed === 'boolean') search.set('reviewed', String(params.reviewed))
       if (params.reviewResult) search.set('review_result', params.reviewResult)
+      if (params.searchScope) search.set('search_scope', params.searchScope)
+      if (params.sort) search.set('sort', params.sort)
+      if (typeof params.grouped === 'boolean') search.set('grouped', String(params.grouped))
+      if (params.groupId) search.set('group_id', String(params.groupId))
     }
     return request<PromptFilterLogsResponse>(`/prompt-filter/logs?${search.toString()}`)
   },
@@ -1418,6 +1502,49 @@ export const api = {
 	getPromptPolicyAuditHealth: () =>
 		request<PromptPolicyAuditHealth>('/prompt-policy/incidents/health'),
 	getPromptLogRetention: () => request<PromptLogRetention>('/prompt-filter/retention'),
+	getTransportPlugins: () => request<TransportPluginsResponse>('/plugins'),
+	getTransportPlugin: (id: string) => request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`),
+	updateTransportPlugin: (id: string, update: TransportPluginUpdate) =>
+		request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(update) }),
+	setTransportPluginAccountOverride: (id: string, accountId: number, enabled: boolean | null) =>
+		request<{ account_id: number; plugin: string; enabled: boolean | null }>(
+			`/plugins/${encodeURIComponent(id)}/accounts/${accountId}`,
+			{ method: 'PUT', body: JSON.stringify({ enabled }) },
+		),
+	getPluginAccountStatus: (id: string, accountIds: number[]) =>
+		request<{ accounts: PluginAccountStatus[] }>(`/plugins/${encodeURIComponent(id)}/account-status?ids=${accountIds.join(',')}`),
+	getPluginCaptures: (id: string, query: PluginCaptureQuery = {}) => {
+		const search = new URLSearchParams()
+		if (query.requestId) search.set('request_id', query.requestId)
+		if (query.accountId) search.set('account_id', String(query.accountId))
+		if (query.status !== undefined) search.set('status', String(query.status))
+		if (query.direction) search.set('direction', query.direction)
+		if (query.start) search.set('start', query.start)
+		if (query.end) search.set('end', query.end)
+		if (query.page) search.set('page', String(query.page))
+		if (query.pageSize) search.set('page_size', String(query.pageSize))
+		const qs = search.toString()
+		return request<PluginCapturePage>(`/plugins/${encodeURIComponent(id)}/captures${qs ? `?${qs}` : ''}`)
+	},
+	getBPSActivity: (id: string) => request<BPSActivity>(`/plugins/${encodeURIComponent(id)}/activity`),
+	getBPSDashboard: (id: string) => request<BPSDashboard>(`/plugins/${encodeURIComponent(id)}/dashboard`),
+	getPluginPolicyBlocks: (id: string) => request<BPSPolicyBlocksResponse>(`/plugins/${encodeURIComponent(id)}/policy-blocks`),
+	listDegradeProbes: (id: string, filter: { accountId?: number; route?: string; verdict?: string; limit?: number } = {}) => {
+		const search = new URLSearchParams()
+		if (filter.accountId) search.set('account_id', String(filter.accountId))
+		if (filter.route) search.set('route', filter.route)
+		if (filter.verdict) search.set('verdict', filter.verdict)
+		if (filter.limit) search.set('limit', String(filter.limit))
+		return request<import('./types').DegradeProbesResponse>(`/plugins/${encodeURIComponent(id)}/degrade-probes?${search.toString()}`)
+	},
+	getDegradeProbe: (id: string, probeId: number) => request<import('./types').DegradeProbe>(`/plugins/${encodeURIComponent(id)}/degrade-probes/${probeId}`),
+	startDegradeProbes: (id: string, accountIds: number[], route: 'bps' | 'native') =>
+		request<import('./types').DegradeProbeStartResult>(`/plugins/${encodeURIComponent(id)}/degrade-probes`, { method: 'POST', body: JSON.stringify({ account_ids: accountIds, route }) }),
+	getPluginCaptureStats: (id: string) => request<PluginCaptureStats>(`/plugins/${encodeURIComponent(id)}/capture-stats`),
+	purgePluginCaptures: (id: string, mode: PluginCapturePurgeMode, hours?: number) =>
+		request<PluginCapturePurgeResult>(`/plugins/${encodeURIComponent(id)}/captures/purge`, { method: 'POST', body: JSON.stringify(mode === 'older_than' ? { mode, hours } : { mode }) }),
+	getPluginCapture: (id: string, captureId: number) =>
+		request<PluginCapture>(`/plugins/${encodeURIComponent(id)}/captures/${captureId}`),
 	updatePromptLogRetention: (retentionDays: number) =>
 		request<PromptLogRetention>('/prompt-filter/retention', { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) }),
 	runPromptLogRetention: () =>
@@ -1479,6 +1606,8 @@ export const api = {
     request<{ ok: boolean }>(`/prompt-filter/review/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   testPromptFilterRulePattern: (data: { pattern: string; text: string }) =>
     request<PromptFilterRulePatternTestResponse>('/prompt-filter/rules/test', { method: 'POST', body: JSON.stringify(data) }),
+  updateBuiltinPromptRule: (name: string, expected: BuiltinPromptRuleFields, rule: BuiltinPromptRuleFields | null) =>
+    request<PromptFilterRulesResponse>(`/prompt-filter/rules/builtin/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ expected, rule }) }),
   getPromptFilterRules: () =>
     request<PromptFilterRulesResponse>('/prompt-filter/rules'),
   runPromptIntelligence: () =>

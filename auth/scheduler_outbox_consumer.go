@@ -251,7 +251,7 @@ func (s *Store) applySchedulerOutboxBatch(ctx context.Context, events []database
 		// Proxy and settings projections are reloaded as a whole. Multiple
 		// row events in one poll therefore collapse to one reload instead of
 		// repeating identical database work for every changed row.
-		if event.EntityType == database.SchedulerEntityProxy || event.EntityType == database.SchedulerEntitySettings {
+		if event.EntityType == database.SchedulerEntityProxy || event.EntityType == database.SchedulerEntitySettings || event.EntityType == database.SchedulerEntityPlugin {
 			entityID = 0
 		}
 		key := schedulerOutboxKey{entityType: event.EntityType, entityID: entityID}
@@ -330,6 +330,8 @@ func (s *Store) applySchedulerOutboxEvent(ctx context.Context, event database.Sc
 		// persisted scheduler-engine setting when that field is present; unknown
 		// settings events are safe no-ops for older schemas.
 		return s.reloadSchedulerEngineSetting(ctx)
+	case database.SchedulerEntityPlugin:
+		return reloadTransportPlugins(ctx)
 	default:
 		return nil
 	}
@@ -499,7 +501,8 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.CodexPassthroughMode = src.CodexPassthroughMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
 	dst.ExcelBPSEnabled = src.ExcelBPSEnabled
-	dst.ExcelBPSOptOut = src.ExcelBPSOptOut
+	dst.transportPluginOverrides = cloneTransportPluginOverrides(src.transportPluginOverrides)
+	dst.codexBPS = src.codexBPS.clone()
 	dst.Timezone = src.Timezone
 	dst.ClaudeFingerprintMode = src.ClaudeFingerprintMode
 	dst.claudeSessionWindow = src.claudeSessionWindow

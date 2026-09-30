@@ -1,18 +1,38 @@
+// Fork note: DEAD UPSTREAM ADAPTER. Upstream's Excel Basispoints adapter stays
+// in-tree but is unreachable (excelBPSRouteAvailable is gated closed by
+// excelBPSAdapterEnabled, and nothing from it is wired at boot). The bps
+// transport plugin owns BPS. Delete this file on the next upstream merge that
+// touches it.
+
 package proxy
 
 import (
 	"strings"
+	"sync/atomic"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 )
+
+// excelBPSAdapterEnabled opens upstream's Excel Basispoints adapter; it stays
+// off outside upstream's adapter tests (see excelBPSRouteAvailable).
+var excelBPSAdapterEnabled atomic.Bool
 
 // excelBPSRouteAvailable is the single account/model gate for the Excel
 // Basispoints adapter. It combines the effective account setting (explicit
 // opt-in, or the global default without an opt-out), the account's Codex model
 // allowlist and the optional global Basispoints model list. Request-shaped
 // reasons to stay on native Codex are decided later by handleExcelBPS.
+//
+// In this fork the bps transport plugin owns BPS routing (Chat, Messages,
+// Responses and Responses WebSocket all resolve it through
+// resolveTransportPlugin), so this gate never opens in production and none of
+// the adapter's native fallbacks (401, 5xx, transport, model access,
+// encrypted context) run. Only upstream's own adapter tests open it.
 func excelBPSRouteAvailable(account *auth.Account, model string) bool {
+	if !excelBPSAdapterEnabled.Load() {
+		return false
+	}
 	if account == nil || !account.IsExcelBPSAvailableForModel(model) {
 		return false
 	}

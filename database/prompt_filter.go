@@ -576,50 +576,54 @@ func (db *DB) WaitPromptFilterAuditIdle(ctx context.Context) bool {
 }
 
 type PromptFilterLog struct {
-	ID                   int64     `json:"id"`
-	CreatedAt            time.Time `json:"created_at"`
-	Source               string    `json:"source"`
-	Endpoint             string    `json:"endpoint"`
-	Protocol             string    `json:"protocol"`
-	Provider             string    `json:"provider"`
-	Model                string    `json:"model"`
-	Action               string    `json:"action"`
-	Mode                 string    `json:"mode"`
-	Score                int       `json:"score"`
-	AuditScore           int       `json:"audit_score"`
-	Threshold            int       `json:"threshold"`
-	PolicyProfile        string    `json:"policy_profile"`
-	ReasonCode           string    `json:"reason_code"`
-	PrimaryOrigin        string    `json:"primary_origin"`
-	StrikeEligible       bool      `json:"strike_eligible"`
-	MatchedPatterns      string    `json:"matched_patterns"`
-	TextPreview          string    `json:"text_preview"`
-	MatchContext         string    `json:"match_context"`
-	FullText             string    `json:"full_text"`
-	APIKeyID             int64     `json:"api_key_id"`
-	AccountID            int64     `json:"account_id"`
-	APIKeyName           string    `json:"api_key_name"`
-	APIKeyMasked         string    `json:"api_key_masked"`
-	ClientIP             string    `json:"client_ip"`
-	ErrorCode            string    `json:"error_code"`
-	ReviewModel          string    `json:"review_model"`
-	ReviewFlagged        bool      `json:"review_flagged"`
-	ReviewError          string    `json:"review_error"`
-	Reviewed             bool      `json:"reviewed"`
-	ReviewConfidence     *float64  `json:"review_confidence"`
-	ReviewThreshold      *float64  `json:"review_threshold"`
-	ReviewReason         string    `json:"review_reason"`
-	ReviewEndpoint       string    `json:"review_endpoint"`
-	ReviewRequestMode    string    `json:"review_request_mode"`
-	ReviewLatencyMS      *int64    `json:"review_latency_ms"`
-	RequestCorrelationID string    `json:"request_correlation_id,omitempty"`
-	NewAPIPolicyStatus   string    `json:"newapi_policy_status,omitempty"`
-	NewAPIPlatform       string    `json:"newapi_platform,omitempty"`
-	NewAPIUserID         string    `json:"newapi_user_id,omitempty"`
-	NewAPIRequestID      string    `json:"newapi_request_id,omitempty"`
-	NewAPIDecisionID     string    `json:"newapi_decision_id,omitempty"`
-	SessionHash          string    `json:"session_hash,omitempty"`
-	ClientIPHash         string    `json:"client_ip_hash,omitempty"`
+	OccurrenceCount      int64      `json:"occurrence_count,omitempty"`
+	GroupID              int64      `json:"group_id,omitempty"`
+	FirstSeen            *time.Time `json:"first_seen,omitempty"`
+	LastSeen             *time.Time `json:"last_seen,omitempty"`
+	ID                   int64      `json:"id"`
+	CreatedAt            time.Time  `json:"created_at"`
+	Source               string     `json:"source"`
+	Endpoint             string     `json:"endpoint"`
+	Protocol             string     `json:"protocol"`
+	Provider             string     `json:"provider"`
+	Model                string     `json:"model"`
+	Action               string     `json:"action"`
+	Mode                 string     `json:"mode"`
+	Score                int        `json:"score"`
+	AuditScore           int        `json:"audit_score"`
+	Threshold            int        `json:"threshold"`
+	PolicyProfile        string     `json:"policy_profile"`
+	ReasonCode           string     `json:"reason_code"`
+	PrimaryOrigin        string     `json:"primary_origin"`
+	StrikeEligible       bool       `json:"strike_eligible"`
+	MatchedPatterns      string     `json:"matched_patterns"`
+	TextPreview          string     `json:"text_preview"`
+	MatchContext         string     `json:"match_context"`
+	FullText             string     `json:"full_text"`
+	APIKeyID             int64      `json:"api_key_id"`
+	AccountID            int64      `json:"account_id"`
+	APIKeyName           string     `json:"api_key_name"`
+	APIKeyMasked         string     `json:"api_key_masked"`
+	ClientIP             string     `json:"client_ip"`
+	ErrorCode            string     `json:"error_code"`
+	ReviewModel          string     `json:"review_model"`
+	ReviewFlagged        bool       `json:"review_flagged"`
+	ReviewError          string     `json:"review_error"`
+	Reviewed             bool       `json:"reviewed"`
+	ReviewConfidence     *float64   `json:"review_confidence"`
+	ReviewThreshold      *float64   `json:"review_threshold"`
+	ReviewReason         string     `json:"review_reason"`
+	ReviewEndpoint       string     `json:"review_endpoint"`
+	ReviewRequestMode    string     `json:"review_request_mode"`
+	ReviewLatencyMS      *int64     `json:"review_latency_ms"`
+	RequestCorrelationID string     `json:"request_correlation_id,omitempty"`
+	NewAPIPolicyStatus   string     `json:"newapi_policy_status,omitempty"`
+	NewAPIPlatform       string     `json:"newapi_platform,omitempty"`
+	NewAPIUserID         string     `json:"newapi_user_id,omitempty"`
+	NewAPIRequestID      string     `json:"newapi_request_id,omitempty"`
+	NewAPIDecisionID     string     `json:"newapi_decision_id,omitempty"`
+	SessionHash          string     `json:"session_hash,omitempty"`
+	ClientIPHash         string     `json:"client_ip_hash,omitempty"`
 }
 
 type PromptFilterLogInput struct {
@@ -671,6 +675,9 @@ type PromptFilterLogInput struct {
 }
 
 type PromptFilterLogQuery struct {
+	Grouped             bool
+	GroupID             int64
+	ids                 []int64
 	Page                int
 	PageSize            int
 	Limit               int
@@ -680,6 +687,8 @@ type PromptFilterLogQuery struct {
 	Model               string
 	APIKeyID            int64
 	Query               string
+	SearchScope         string
+	Sort                string
 	ReviewState         string
 	ReviewResult        string
 	ExcludeIntelligence bool
@@ -740,6 +749,17 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 		signal.NewAPIUserName = input.NewAPIUserName
 		signal.NewAPIUserEmail = input.NewAPIUserEmail
 		signal.NewAPIUserGroup = input.NewAPIUserGroup
+		// Shadow-only logs do not create risk events, but their verified identity
+		// must still be searchable. Persist identity without attributing risk.
+		if identity, identityOK := promptRiskIdentityForSignal(promptRiskSignal{
+			NewAPIPolicyStatus: input.NewAPIPolicyStatus, NewAPIPlatform: input.NewAPIPlatform,
+			NewAPIUserID: input.NewAPIUserID, NewAPIUserName: input.NewAPIUserName,
+			NewAPIUserEmail: input.NewAPIUserEmail, NewAPIUserGroup: input.NewAPIUserGroup,
+		}); !ok && identityOK {
+			if err := upsertPromptRiskIdentity(ctx, tx, identity, "signed_metadata"); err != nil {
+				return err
+			}
+		}
 		if err := insertPromptRiskSignal(ctx, tx, signal); err != nil {
 			return err
 		}
@@ -759,6 +779,9 @@ func (db *DB) ListPromptFilterLogs(ctx context.Context, limit int) ([]*PromptFil
 }
 
 func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLogQuery) ([]*PromptFilterLog, int, error) {
+	if query.Grouped && query.GroupID == 0 {
+		return db.listPromptFilterLogGroups(ctx, query)
+	}
 	pageSize := query.PageSize
 	if pageSize <= 0 {
 		pageSize = query.Limit
@@ -793,7 +816,7 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		       COALESCE(account_id, 0)
 		FROM prompt_filter_logs
 		`+where+`
-		ORDER BY id DESC
+		ORDER BY `+promptFilterLogOrder(query.Sort)+`
 		LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args))+`
 	`, args...)
 	if err != nil {
@@ -828,6 +851,23 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 func promptFilterLogWhere(query PromptFilterLogQuery) (string, []any) {
 	clauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
+	if query.GroupID > 0 {
+		args = append(args, query.GroupID)
+		left, right := promptLogGroupExpressions("prompt_filter_logs."), promptLogGroupExpressions("reference.")
+		conditions := []string{"reference.id = $1"}
+		for i := range left {
+			conditions = append(conditions, left[i]+" = "+right[i])
+		}
+		clauses = append(clauses, "EXISTS (SELECT 1 FROM prompt_filter_logs reference WHERE "+strings.Join(conditions, " AND ")+")")
+	}
+	if len(query.ids) > 0 {
+		placeholders := make([]string, 0, len(query.ids))
+		for _, id := range query.ids {
+			args = append(args, id)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		clauses = append(clauses, "id IN ("+strings.Join(placeholders, ",")+")")
+	}
 	addExact := func(column, value string) {
 		value = strings.TrimSpace(value)
 		if value == "" || value == "all" {
@@ -862,31 +902,65 @@ func promptFilterLogWhere(query PromptFilterLogQuery) (string, []any) {
 		clauses = append(clauses, fmt.Sprintf("api_key_id = $%d", len(args)))
 	}
 	if q := strings.TrimSpace(query.Query); q != "" {
-		args = append(args, "%"+strings.ToLower(q)+"%")
+		q = strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(q))
+		args = append(args, "%"+q+"%")
 		idx := len(args)
-		clauses = append(clauses, fmt.Sprintf(`(
-			LOWER(COALESCE(text_preview, '')) LIKE $%d OR
-			LOWER(COALESCE(match_context, '')) LIKE $%d OR
-			LOWER(COALESCE(full_text, '')) LIKE $%d OR
-			LOWER(COALESCE(matched_patterns, '')) LIKE $%d OR
-			LOWER(COALESCE(error_code, '')) LIKE $%d OR
-			LOWER(COALESCE(review_error, '')) LIKE $%d OR
-			LOWER(COALESCE(review_reason, '')) LIKE $%d OR
-			LOWER(COALESCE(review_model, '')) LIKE $%d OR
-			LOWER(COALESCE(review_endpoint, '')) LIKE $%d OR
-			LOWER(COALESCE(api_key_name, '')) LIKE $%d OR
-			LOWER(COALESCE(api_key_masked, '')) LIKE $%d OR
-			LOWER(COALESCE(newapi_user_id, '')) LIKE $%d OR
-			LOWER(COALESCE(newapi_request_id, '')) LIKE $%d OR
-			LOWER(COALESCE(newapi_decision_id, '')) LIKE $%d OR
-			LOWER(COALESCE(request_correlation_id, '')) LIKE $%d OR
-			LOWER(COALESCE(session_hash, '')) LIKE $%d
-		)`, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx, idx))
+		columns := []string{"text_preview", "match_context", "full_text", "matched_patterns", "error_code", "review_error", "review_reason", "review_model", "review_endpoint", "api_key_name", "api_key_masked", "newapi_user_id", "newapi_request_id", "newapi_decision_id", "request_correlation_id", "session_hash"}
+		switch query.SearchScope {
+		case "username":
+			columns = nil
+		case "content":
+			columns = []string{"text_preview", "match_context", "full_text"}
+		case "rules":
+			columns = []string{"matched_patterns"}
+		case "error":
+			columns = []string{"error_code", "review_error", "review_reason"}
+		case "api_key":
+			columns = []string{"api_key_name", "api_key_masked"}
+		}
+		matches := make([]string, 0, len(columns)+1)
+		for _, column := range columns {
+			matches = append(matches, fmt.Sprintf("LOWER(COALESCE(%s, '')) LIKE $%d ESCAPE '!'", column, idx))
+		}
+		if query.SearchScope == "" || query.SearchScope == "all" || query.SearchScope == "username" {
+			// Identities retain names for historical logs. Match both platform and
+			// user ID, without duplicating rows or mixing users on other platforms.
+			matches = append(matches, fmt.Sprintf(`EXISTS (SELECT 1 FROM prompt_risk_identities pri
+				WHERE pri.subject_type = 'newapi_user'
+				AND prompt_filter_logs.newapi_policy_status IN ('verified', 'signed_response')
+				AND pri.platform = LOWER(TRIM(prompt_filter_logs.newapi_platform))
+				AND pri.external_user_id = TRIM(prompt_filter_logs.newapi_user_id)
+				AND LOWER(COALESCE(pri.user_name, '')) LIKE $%d ESCAPE '!')`, idx))
+		}
+		clauses = append(clauses, "("+strings.Join(matches, " OR ")+")")
 	}
 	if len(clauses) == 0 {
 		return "", args
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+func ValidPromptLogSearchScope(scope string) bool {
+	switch scope {
+	case "", "all", "username", "content", "rules", "error", "api_key":
+		return true
+	}
+	return false
+}
+
+func ValidPromptLogSort(order string) bool {
+	return order == "" || order == "newest" || order == "audit_desc" || order == "audit_asc"
+}
+
+func promptFilterLogOrder(order string) string {
+	switch order {
+	case "audit_desc":
+		return "COALESCE(audit_score, 0) DESC, created_at DESC, id DESC"
+	case "audit_asc":
+		return "COALESCE(audit_score, 0) ASC, created_at DESC, id DESC"
+	default:
+		return "created_at DESC, id DESC"
+	}
 }
 
 // FindNearestPromptFilterLog 返回与给定时间 at 最接近的一条提示词过滤日志，用于把

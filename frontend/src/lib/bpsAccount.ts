@@ -1,3 +1,5 @@
+import type { CodexBPSConvergence, CodexBPSProfile, UpdateAccountSchedulerRequest } from '../types'
+
 // Optional BPS configuration owns its eligibility rule independently of models.
 export function isBPSAccount(account: {
   openai_responses_api?: boolean;
@@ -13,4 +15,113 @@ export function isBPSAccount(account: {
     !account.antigravity_api &&
     !account.agent_identity
   );
+}
+
+// Tri-state account switches: inherit follows account group / global plugin
+// switch (BPS) or "native unless BPS" (native).
+export type BPSTriState = 'inherit' | 'on' | 'off'
+
+export const BPS_PROFILES: CodexBPSProfile[] = ['word', 'excel', 'sheets', 'powerpoint']
+export const BPS_CONVERGENCE_MODES: CodexBPSConvergence[] = ['off', 'session', 'full', 'round', 'turn_round']
+
+export interface BPSAccountSource {
+  codex_bps_enabled?: boolean | null
+  codex_native_enabled?: boolean | null
+  codex_native_models?: string[] | null
+  codex_bps_models?: string[] | null
+  codex_bps_image_trim_enabled?: boolean | null
+  codex_bps_profile?: CodexBPSProfile | string
+  codex_bps_convergence?: CodexBPSConvergence | string
+}
+
+export interface BPSAccountForm {
+  enabled: BPSTriState
+  native: BPSTriState
+  nativeModels: string
+  bpsModels: string
+  imageTrim: BPSTriState
+  profile: CodexBPSProfile
+  convergence: CodexBPSConvergence
+}
+
+function triState(value: boolean | null | undefined): BPSTriState {
+  if (value === true) return 'on'
+  if (value === false) return 'off'
+  return 'inherit'
+}
+
+function triStateValue(value: BPSTriState): boolean | null {
+  if (value === 'on') return true
+  if (value === 'off') return false
+  return null
+}
+
+export function bpsFormFromAccount(account: BPSAccountSource): BPSAccountForm {
+  const profile = BPS_PROFILES.includes(account.codex_bps_profile as CodexBPSProfile)
+    ? (account.codex_bps_profile as CodexBPSProfile)
+    : 'word'
+  const convergence = BPS_CONVERGENCE_MODES.includes(account.codex_bps_convergence as CodexBPSConvergence)
+    ? (account.codex_bps_convergence as CodexBPSConvergence)
+    : 'off'
+  return {
+    enabled: triState(account.codex_bps_enabled),
+    native: triState(account.codex_native_enabled),
+    nativeModels: (account.codex_native_models ?? []).join(', '),
+    bpsModels: (account.codex_bps_models ?? []).join(', '),
+    imageTrim: triState(account.codex_bps_image_trim_enabled),
+    profile,
+    convergence,
+  }
+}
+
+export function parseRouteModels(text: string): string[] {
+  return text.split(/[\s,]+/).map(value => value.trim()).filter(Boolean)
+}
+
+// Only the override is sent for the quick configuration; the full dialog
+// sends every BPS field.
+export function bpsPayloadFromForm(form: BPSAccountForm, overrideOnly = false): Partial<UpdateAccountSchedulerRequest> {
+  if (overrideOnly) return { codex_bps_enabled: triStateValue(form.enabled) }
+  return {
+    codex_bps_enabled: triStateValue(form.enabled),
+    codex_native_enabled: triStateValue(form.native),
+    codex_native_models: parseRouteModels(form.nativeModels),
+    codex_bps_models: parseRouteModels(form.bpsModels),
+    codex_bps_image_trim_enabled: triStateValue(form.imageTrim),
+    codex_bps_profile: form.profile,
+    codex_bps_convergence: form.convergence,
+  }
+}
+
+// Batch BPS settings: every field starts as 'keep' (left unchanged); only the
+// fields set to a value are sent to the batch update.
+export const BATCH_KEEP = 'keep' as const
+export type BatchKeep = typeof BATCH_KEEP
+
+export interface BatchBPSForm {
+  enabled: BPSTriState | BatchKeep
+  native: BPSTriState | BatchKeep
+  imageTrim: BPSTriState | BatchKeep
+  profile: CodexBPSProfile | BatchKeep
+  convergence: CodexBPSConvergence | BatchKeep
+  // Route model scopes: null keeps them; a string (possibly empty, which
+  // clears the scope) replaces them.
+  bpsModels: string | null
+  nativeModels: string | null
+}
+
+export function emptyBatchBPSForm(): BatchBPSForm {
+  return { enabled: BATCH_KEEP, native: BATCH_KEEP, imageTrim: BATCH_KEEP, profile: BATCH_KEEP, convergence: BATCH_KEEP, bpsModels: null, nativeModels: null }
+}
+
+export function batchBPSPayload(form: BatchBPSForm): Partial<UpdateAccountSchedulerRequest> {
+  const payload: Partial<UpdateAccountSchedulerRequest> = {}
+  if (form.enabled !== BATCH_KEEP) payload.codex_bps_enabled = triStateValue(form.enabled)
+  if (form.native !== BATCH_KEEP) payload.codex_native_enabled = triStateValue(form.native)
+  if (form.imageTrim !== BATCH_KEEP) payload.codex_bps_image_trim_enabled = triStateValue(form.imageTrim)
+  if (form.profile !== BATCH_KEEP) payload.codex_bps_profile = form.profile
+  if (form.convergence !== BATCH_KEEP) payload.codex_bps_convergence = form.convergence
+  if (form.bpsModels !== null) payload.codex_bps_models = parseRouteModels(form.bpsModels)
+  if (form.nativeModels !== null) payload.codex_native_models = parseRouteModels(form.nativeModels)
+  return payload
 }

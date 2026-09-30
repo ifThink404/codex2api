@@ -422,13 +422,21 @@ type promptFilterRulePatternTestResponse struct {
 }
 
 type promptFilterRuleItem struct {
-	Name     string `json:"name"`
-	Pattern  string `json:"pattern"`
-	Weight   int    `json:"weight"`
-	Category string `json:"category,omitempty"`
-	Strict   bool   `json:"strict,omitempty"`
-	Enabled  bool   `json:"enabled"`
-	Builtin  bool   `json:"builtin"`
+	Overridden                   bool                                 `json:"overridden"`
+	Default                      *promptfilter.BuiltinPatternOverride `json:"default,omitempty"`
+	Name                         string                               `json:"name"`
+	Pattern                      string                               `json:"pattern"`
+	Weight                       int                                  `json:"weight"`
+	Category                     string                               `json:"category,omitempty"`
+	Strict                       bool                                 `json:"strict,omitempty"`
+	SignalOnly                   bool                                 `json:"signal_only"`
+	AllPatterns                  []string                             `json:"all_patterns"`
+	AnyPatterns                  []string                             `json:"any_patterns"`
+	ExcludePatterns              []string                             `json:"exclude_patterns"`
+	AuthorizationExcludePatterns []string                             `json:"authorization_exclude_patterns"`
+	MinMatches                   int                                  `json:"min_matches"`
+	Enabled                      bool                                 `json:"enabled"`
+	Builtin                      bool                                 `json:"builtin"`
 }
 
 type promptFilterRulesResponse struct {
@@ -447,6 +455,7 @@ func (h *Handler) inspectImagePromptFilter(c *gin.Context, text string, model st
 	}
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.InspectText(text, cfg)
+	verdict = promptfilter.ApplyLocalMode(verdict, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
 		verdict = reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
 		verdict = promptfilter.ApplyReviewMode(verdict, cfg.Mode)
@@ -501,6 +510,35 @@ func (h *Handler) recordPromptFilterLog(c *gin.Context, input *database.PromptFi
 }
 
 func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
+	var groupID int64
+	if _, exists := c.Request.URL.Query()["group_id"]; exists {
+		raw := c.Query("group_id")
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeError(c, http.StatusBadRequest, "invalid prompt log group ID")
+			return
+		}
+		groupID = parsed
+	}
+	grouped := false
+	if _, exists := c.Request.URL.Query()["grouped"]; exists {
+		raw := c.Query("grouped")
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, "invalid prompt log grouping")
+			return
+		}
+		grouped = parsed
+	}
+	queryTimeout := 5 * time.Second
+	if grouped || groupID > 0 {
+		queryTimeout = 15 * time.Second
+	}
+	searchScope, sortOrder := strings.TrimSpace(c.Query("search_scope")), strings.TrimSpace(c.Query("sort"))
+	if !database.ValidPromptLogSearchScope(searchScope) || !database.ValidPromptLogSort(sortOrder) {
+		writeError(c, http.StatusBadRequest, "invalid prompt log search scope or sort")
+		return
+	}
 	page := positiveQueryInt(c, "page", 1)
 	pageSize := positiveQueryInt(c, "page_size", positiveQueryInt(c, "limit", 100))
 	apiKeyID := int64(0)
@@ -509,9 +547,11 @@ func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
 			apiKeyID = parsed
 		}
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), queryTimeout)
 	defer cancel()
 	logs, total, err := h.db.ListPromptFilterLogsPage(ctx, database.PromptFilterLogQuery{
+		Grouped:             grouped,
+		GroupID:             groupID,
 		Page:                page,
 		PageSize:            pageSize,
 		Source:              c.Query("source"),
@@ -520,6 +560,8 @@ func (h *Handler) ListPromptFilterLogs(c *gin.Context) {
 		Model:               c.Query("model"),
 		APIKeyID:            apiKeyID,
 		Query:               c.Query("q"),
+		SearchScope:         searchScope,
+		Sort:                sortOrder,
 		ReviewState:         c.Query("reviewed"),
 		ReviewResult:        c.Query("review_result"),
 		ExcludeIntelligence: true,
@@ -1143,17 +1185,43 @@ func (h *Handler) GetPromptFilterRules(c *gin.Context) {
 	for _, name := range cfg.DisabledPatterns {
 		disabled[strings.ToLower(strings.TrimSpace(name))] = true
 	}
-	builtin := promptfilter.BuiltinPatternConfigs()
+	// Read authoritative edits for administrator conflict detection, including
+	// edits made on another replica before its runtime synchronization fires.
+	if h.db != nil {
+		settings, err := h.db.GetSystemSettings(c.Request.Context())
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "读取内置规则配置失败")
+			return
+		}
+		if settings != nil {
+			cfg.BuiltinOverrides, err = promptfilter.ParseBuiltinPatternOverrides(settings.PromptFilterBuiltinOverrides)
+			if err != nil {
+				writeError(c, http.StatusInternalServerError, "内置规则配置无效")
+				return
+			}
+		}
+	}
+	defaults := promptfilter.BuiltinPatternConfigs()
+	builtin := promptfilter.EffectiveBuiltinPatternConfigs(cfg.BuiltinOverrides)
 	items := make([]promptFilterRuleItem, 0, len(builtin))
-	for _, pattern := range builtin {
+	for i, pattern := range builtin {
+		original := promptfilter.BuiltinPatternFields(defaults[i])
 		items = append(items, promptFilterRuleItem{
-			Name:     pattern.Name,
-			Pattern:  pattern.Pattern,
-			Weight:   pattern.Weight,
-			Category: pattern.Category,
-			Strict:   pattern.Strict,
-			Enabled:  !disabled[strings.ToLower(strings.TrimSpace(pattern.Name))],
-			Builtin:  true,
+			Default:                      &original,
+			Overridden:                   !promptfilter.BuiltinPatternOverridesEqual(promptfilter.BuiltinPatternFields(pattern), original),
+			Name:                         pattern.Name,
+			Pattern:                      pattern.Pattern,
+			Weight:                       pattern.Weight,
+			Category:                     pattern.Category,
+			Strict:                       pattern.Strict,
+			SignalOnly:                   pattern.SignalOnly,
+			AllPatterns:                  pattern.AllPatterns,
+			AnyPatterns:                  pattern.AnyPatterns,
+			ExcludePatterns:              pattern.ExcludePatterns,
+			AuthorizationExcludePatterns: pattern.AuthorizationExcludePatterns,
+			MinMatches:                   pattern.MinMatches,
+			Enabled:                      !disabled[strings.ToLower(strings.TrimSpace(pattern.Name))],
+			Builtin:                      true,
 		})
 	}
 	c.JSON(http.StatusOK, promptFilterRulesResponse{

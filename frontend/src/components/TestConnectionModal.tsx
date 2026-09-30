@@ -17,7 +17,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { api, getAdminKey } from "../api";
-import type { AccountRow } from "../types";
+import type { AccountRow, CodexTestMode } from "../types";
+import { isBPSAccount } from "../lib/bpsAccount";
 import type { CodexTestDiagnostics, CodexTestWindow } from "../lib/codexConnectionTest";
 import {
   clampCodexTestPercent,
@@ -112,6 +113,9 @@ export default function TestConnectionModal({
   const [rawOpen, setRawOpen] = useState(false);
   const [detectorOpen, setDetectorOpen] = useState(false);
   const [testContent, setTestContent] = useState("hi");
+  // Per-test transport path (auto/codex/bps); never written to the account.
+  const [testMode, setTestMode] = useState<CodexTestMode>("auto");
+  const testModeAvailable = isBPSAccount(account);
   // 跨重测保留:同步后自动重测仍被拒时,据此提示"已同步仍失败"而不是再次引导同步。
   const [versionSync, setVersionSync] = useState<{
     status: "idle" | "syncing" | "updated" | "latest" | "error";
@@ -224,11 +228,20 @@ export default function TestConnectionModal({
 
         const modelsResp = await api.getModels();
         if (!active) return;
+        // Keep account-declared entries in the selector even when the global
+        // catalog is scoped, stale, or temporarily unavailable, e.g. right
+        // after a newly published model is auto-added to the whitelist.
+        const accountModels = (account.models ?? []).filter(
+          isConnectionTestModel,
+        );
         const upstreamModels = extractTextModels(modelsResp);
         const preferredModel = isConnectionTestModel(settings.test_model)
           ? settings.test_model
           : DEFAULT_TEST_MODEL;
-        const nextModels = uniqueTestModels(upstreamModels, preferredModel);
+        const nextModels = uniqueTestModels(
+          [...accountModels, ...upstreamModels],
+          preferredModel,
+        );
         setModelOptions(nextModels);
         setSelectedModel(
           (current) => current || nextModels[0] || DEFAULT_TEST_MODEL,
@@ -266,7 +279,10 @@ export default function TestConnectionModal({
           setModelOptions(fallbackModels);
           setSelectedModel((current) => current || fallbackModels[0] || "");
         } else {
-          const fallbackModels = uniqueTestModels([], DEFAULT_TEST_MODEL);
+          const fallbackModels = uniqueTestModels(
+            (account.models ?? []).filter(isConnectionTestModel),
+            DEFAULT_TEST_MODEL,
+          );
           setModelOptions(fallbackModels);
           setSelectedModel((current) => current || fallbackModels[0]);
         }
@@ -311,6 +327,9 @@ export default function TestConnectionModal({
         const params = new URLSearchParams({ model: selectedModel, prompt: testContent });
         if (restoreOnSuccess) {
           params.set("restore_on_success", "true");
+        }
+        if (testModeAvailable && testMode !== "auto") {
+          params.set("test_mode", testMode);
         }
         const res = await fetch(
           `/api/admin/accounts/${account.id}/test?${params.toString()}`,
@@ -662,6 +681,20 @@ export default function TestConnectionModal({
             />
             {statusText}
           </span>
+          {testModeAvailable && (
+            <Select
+              className="w-40 max-w-full"
+              compact
+              value={testMode}
+              onValueChange={(value) => setTestMode(value as CodexTestMode)}
+              options={(["auto", "codex", "bps"] as CodexTestMode[]).map((value) => ({
+                value,
+                label: t(`accounts.bps.testModes.${value}`),
+              }))}
+              disabled={running}
+              aria-label={t("accounts.bps.testMode")}
+            />
+          )}
           <Select
             className="w-52 max-w-full"
             compact

@@ -26,6 +26,7 @@ import (
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/version"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/proxy/wsrelay"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
@@ -378,6 +379,17 @@ func main() {
 	adminHandler.StartOfficialPricingSync(backgroundCtx)
 	// Prompt 审核日志保留清理：默认保留 7 天，每小时分批清理过期行，CY 关联行不动。
 	adminHandler.StartPromptLogRetention(backgroundCtx)
+	// 传输插件：加载状态快照并挂上 outbox 热加载（各副本即时生效）；抓包异步落库、保留 3 天。
+	pluginAttachCtx, pluginAttachCancel := context.WithTimeout(backgroundCtx, 30*time.Second)
+	if err := plugins.Default().Attach(pluginAttachCtx, db); err != nil {
+		pluginAttachCancel()
+		log.Fatalf("加载传输插件状态失败: %v", err)
+	}
+	pluginAttachCancel()
+	plugins.Default().StartCaptureWriter(backgroundCtx)
+	plugins.StartPluginCaptureRetention(backgroundCtx, db)
+	// 日志分析记录按其保留天数每 10 分钟清理。
+	adminHandler.StartLogAgentRetention(backgroundCtx)
 	// Responses API 渠道监控按账号启用，健康检查和倍率探测分别调度。
 	adminHandler.StartChannelMonitor(backgroundCtx)
 
@@ -399,8 +411,18 @@ func main() {
 	if err := configureTrustedProxies(r, cfg.TrustedProxies); err != nil {
 		log.Fatalf("配置可信代理失败: %v", err)
 	}
+	// handler 不再接收 cfg.APIKeys
+	// 从环境变量读取 Codex 画像与 Beta 配置。
+	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
+	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
+	handler.SetRuntimeCache(tc)
+	// BPS usage-policy cooldowns end only after a background probe succeeds.
+	handler.StartBPSPolicyProber(backgroundCtx)
+
 	r.Use(api.RecoveryMiddleware())
 	r.Use(api.RequestContextMiddleware())
+	// 服务错误采集放在限流/请求体校验之前，才能记录这些网关本地拒绝。
+	r.Use(handler.ServiceErrorMiddleware())
 	r.Use(api.VersionMiddleware())
 	security.MaxRequestBodySize = cfg.MaxRequestBodySize
 	security.ConfigureRequestMemoryBudget(cfg.RequestMemoryBudgetBytes)
@@ -422,12 +444,6 @@ func main() {
 	r.Use(loggerMiddleware())
 	r.Use(security.SecurityHeadersMiddleware())
 
-	// handler 不再接收 cfg.APIKeys
-	// 从环境变量读取 Codex 画像与 Beta 配置。
-	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
-	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
-	handler.SetRuntimeCache(tc)
-	proxy.ConfigureExcelBPSReplay(tc)
 	defer handler.CloseAPIKeyAuthCache()
 	adminHandler.SetAPIKeyAuthCacheHandler(handler)
 
@@ -436,6 +452,10 @@ func main() {
 
 	// 注册 Agent Identity task 确保函数（proxy 无 Store 引用，启动时注入）
 	proxy.EnsureCodexAgentIdentityTaskFunc = store.EnsureCodexAgentIdentityTask
+
+	// Web search 位置读取代理池同步维护的已保存出口地区（不查库、不联网）。
+	proxy.SetCodexProxyLocationResolver(store.ProxyLocation)
+	proxy.SetCodexWebSearchProxyLocation(db.GetCodexWebSearchProxyLocation())
 
 	// 上游 WS 空闲连接保活常驻任务（默认关闭：goroutine 常驻但仅在运行时开关开启时才发送 Ping）
 	wsKeepalive := wsrelay.NewKeepaliveTask(

@@ -245,8 +245,6 @@ func (h *Handler) buildAccountResponse(
 		GrokAPI:                      isGrokAccount,
 		AntigravityAPI:               isAntigravityAccount,
 		ClaudeAPI:                    isClaudeAccount,
-		ExcelBPSEnabled:              row.GetCredentialBool(auth.ExcelBPSCredentialKey),
-		ExcelBPSOptOut:               row.GetCredentialBool(auth.ExcelBPSOptOutCredentialKey),
 		ClaudeAuthKind:               claudeAuthKindForRow(row, isClaudeAccount),
 		ClaudeBaseURL:                row.GetCredential(auth.ClaudeBaseURLCredentialKey),
 		AntigravityAuthKind:          antigravityAuthKind,
@@ -279,7 +277,7 @@ func (h *Handler) buildAccountResponse(
 		ClaudeVersionPolicyOverride:  claudeVersionPolicyOverride,
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
-		CodexBPS:                     row.GetCredentialBool(auth.CodexBPSEnabledCredentialKey),
+		codexBPSAccountView:          codexBPSAccountViewFromRow(row, runtimeAccount),
 		AccountHref:                  strings.TrimSpace(row.GetCredential(auth.AccountHrefCredentialKey)),
 		CustomHeaders:                customHeaders,
 		UpstreamRequestIDHeader:      row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
@@ -333,10 +331,6 @@ func (h *Handler) buildAccountResponse(
 		}
 		resp.UsageLimitOverride = runtimeAccount.GetIgnoreUsageLimitStatusOverride()
 		resp.UsageLimitEffective = runtimeAccount.IgnoresUsageLimitStatus()
-		resp.ExcelBPSEffective = runtimeAccount.IsExcelBPSEnabled()
-		if resp.ExcelBPSEffective {
-			resp.ExcelBPSPause = excelBPSPauseForAccount(row.ID)
-		}
 		if isGrokAccount {
 			if snap, hasSnap := runtimeAccount.GetGrokRateLimitSnapshot(); hasSnap {
 				resp.GrokRateLimit = &snap

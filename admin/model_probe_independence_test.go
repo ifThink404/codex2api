@@ -44,20 +44,34 @@ func TestModelProbeIgnoresOptionalRequestTransport(t *testing.T) {
 	account := &auth.Account{DBID: id, AccessToken: "test-token", PlanType: "pro", CredentialGeneration: row.CredentialGeneration, ProxyURL: server.URL}
 	store.AddAccount(account)
 	h := &Handler{store: store, db: db}
-	for _, enabled := range []bool{false, true} {
-		store.ApplyAccountCodexBPS(id, enabled)
+	// Probes stay native-only evidence: they never go through BPS. An account
+	// BPS owns (no explicit native route) is skipped instead, since it gets no
+	// native traffic, and its existing evidence is kept.
+	for _, tc := range []struct {
+		enabled, native, probed bool
+	}{{enabled: false, probed: true}, {enabled: true, native: true, probed: true}, {enabled: true}} {
+		store.ApplyAccountTransportPluginOverride(id, "bps", &tc.enabled)
+		native := tc.native
+		account.SetCodexBPSOptions(auth.CodexBPSAccountOptions{Native: &native})
+		if !tc.native {
+			account.SetCodexBPSOptions(auth.CodexBPSAccountOptions{})
+		}
 		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		results := h.runProbeModels(probeCtx, account, []string{"gpt-6-sol"}, 1, nil)
 		cancel()
-		if len(results) != 1 || results[0].Outcome != "available" {
-			t.Fatalf("optional transport=%v altered probe: %+v", enabled, results)
+		want := "available"
+		if !tc.probed {
+			want = "error"
+		}
+		if len(results) != 1 || results[0].Outcome != want {
+			t.Fatalf("bps=%v native=%v: probe = %+v, want %s", tc.enabled, tc.native, results, want)
 		}
 		evidence, err := db.ListAccountModelObservations(ctx, []int64{id})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(evidence[id]) != 1 || evidence[id][0].Outcome != "available" {
-			t.Fatalf("probe evidence missing: %+v", evidence)
+			t.Fatalf("probe evidence missing or overwritten: %+v", evidence)
 		}
 	}
 }

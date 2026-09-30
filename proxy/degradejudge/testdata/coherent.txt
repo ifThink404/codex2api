@@ -1,0 +1,26 @@
+Here you go:
+```html
+<!DOCTYPE html>
+<html><head><style>body{margin:0}</style></head><body>
+<svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="sky"><stop offset="0" stop-color="#87CEEB"/><stop offset="1" stop-color="#fff"/></linearGradient>
+<radialGradient id="sun"><stop offset="0" stop-color="#FFD700"/><stop offset="1" stop-color="#ff8c00"/></radialGradient>
+<filter id="shadow"><feDropShadow dx="2" dy="2" stdDeviation="2"/></filter></defs>
+<rect width="400" height="300" fill="url(#sky)"/>
+<circle cx="340" cy="50" r="30" fill="#FFD700" stroke="#ff8c00"/>
+<circle cx="120" cy="230" r="45" fill="none" stroke="#333333"/>
+<circle cx="290" cy="230" r="45" fill="none" stroke="#333"/>
+<line x1="120" y1="230" x2="200" y2="170" stroke="#C0392B"/>
+<line x1="200" y1="170" x2="290" y2="230" stroke="#c0392b"/>
+<polyline points="200,170 210,140 230,140" stroke="#444" fill="none"/>
+<polygon points="180,120 260,110 250,140" fill="#FF9F1C"/>
+<ellipse cx="210" cy="110" rx="40" ry="28" fill="#FFFFFF" filter="url(#shadow)"/>
+<path d="M240 100 Q300 105 320 115 L240 118 Z" fill="#FFB347"/>
+<path d="M245 118 Q280 140 300 120" fill="#ffcc80"/>
+<PATH d="M190 120 L170 150" stroke="#555"/>
+<rect x="190" y="160" width="20" height="6" fill="#222"/>
+</svg>
+<p style="color:#123456">A pelican riding a bicycle · 一只鹈鹕骑自行车</p>
+</body></html>
+```
+Enjoy!

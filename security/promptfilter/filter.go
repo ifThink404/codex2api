@@ -38,18 +38,19 @@ const (
 )
 
 type Config struct {
-	Enabled               bool            `json:"enabled"`
-	Mode                  string          `json:"mode"`
-	Threshold             int             `json:"threshold"`
-	StrictThreshold       int             `json:"strict_threshold"`
-	StrictTerminalEnabled bool            `json:"strict_terminal_enabled"`
-	LogMatches            bool            `json:"log_matches"`
-	MaxTextLength         int             `json:"max_text_length"`
-	SensitiveWords        string          `json:"sensitive_words"`
-	CustomPatterns        []PatternConfig `json:"custom_patterns"`
-	DisabledPatterns      []string        `json:"disabled_patterns"`
-	Review                ReviewConfig    `json:"review"`
-	Advanced              AdvancedConfig  `json:"advanced"`
+	BuiltinOverrides      []BuiltinPatternOverride `json:"builtin_overrides,omitempty"`
+	Enabled               bool                     `json:"enabled"`
+	Mode                  string                   `json:"mode"`
+	Threshold             int                      `json:"threshold"`
+	StrictThreshold       int                      `json:"strict_threshold"`
+	StrictTerminalEnabled bool                     `json:"strict_terminal_enabled"`
+	LogMatches            bool                     `json:"log_matches"`
+	MaxTextLength         int                      `json:"max_text_length"`
+	SensitiveWords        string                   `json:"sensitive_words"`
+	CustomPatterns        []PatternConfig          `json:"custom_patterns"`
+	DisabledPatterns      []string                 `json:"disabled_patterns"`
+	Review                ReviewConfig             `json:"review"`
+	Advanced              AdvancedConfig           `json:"advanced"`
 }
 
 type ReviewConfig struct {
@@ -108,6 +109,9 @@ type Match struct {
 }
 
 type Verdict struct {
+	LocalMode           string   `json:"local_mode,omitempty"`
+	LocalOriginalAction string   `json:"local_original_action,omitempty"`
+	LocalAction         string   `json:"local_action,omitempty"`
 	Enabled             bool     `json:"enabled"`
 	Mode                string   `json:"mode"`
 	Action              string   `json:"action"`
@@ -247,6 +251,7 @@ func MarshalDisabledPatterns(names []string) string {
 }
 
 func NormalizeConfig(cfg Config) Config {
+	cfg.BuiltinOverrides = cloneBuiltinPatternOverrides(cfg.BuiltinOverrides)
 	defaults := DefaultConfig()
 	if strings.TrimSpace(cfg.Mode) == "" {
 		cfg.Mode = defaults.Mode
@@ -304,21 +309,23 @@ func engineForConfig(cfg Config) (*Engine, error) {
 func engineCacheKey(cfg Config) string {
 	cfg = NormalizeConfig(cfg)
 	key := struct {
-		Enabled               bool            `json:"enabled"`
-		Mode                  string          `json:"mode"`
-		Threshold             int             `json:"threshold"`
-		StrictThreshold       int             `json:"strict_threshold"`
-		StrictTerminalEnabled bool            `json:"strict_terminal_enabled"`
-		MaxTextLength         int             `json:"max_text_length"`
-		SensitiveWords        string          `json:"sensitive_words"`
-		CustomPatterns        []PatternConfig `json:"custom_patterns"`
-		DisabledPatterns      []string        `json:"disabled_patterns"`
+		BuiltinOverrides      []BuiltinPatternOverride `json:"builtin_overrides,omitempty"`
+		Enabled               bool                     `json:"enabled"`
+		Mode                  string                   `json:"mode"`
+		Threshold             int                      `json:"threshold"`
+		StrictThreshold       int                      `json:"strict_threshold"`
+		StrictTerminalEnabled bool                     `json:"strict_terminal_enabled"`
+		MaxTextLength         int                      `json:"max_text_length"`
+		SensitiveWords        string                   `json:"sensitive_words"`
+		CustomPatterns        []PatternConfig          `json:"custom_patterns"`
+		DisabledPatterns      []string                 `json:"disabled_patterns"`
 		DetectionAdvanced     struct {
 			Normalization   NormalizationConfig   `json:"normalization"`
 			ContextDiscount ContextDiscountConfig `json:"context_discount"`
 			Enforcement     EnforcementConfig     `json:"enforcement"`
 		} `json:"advanced"`
 	}{
+		BuiltinOverrides:      cfg.BuiltinOverrides,
 		Enabled:               cfg.Enabled,
 		Mode:                  cfg.Mode,
 		Threshold:             cfg.Threshold,
@@ -347,7 +354,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	// operational credential rotation cannot leave old secrets reachable.
 	cfg.Review.APIKey = ""
 	disabled := disabledPatternSet(cfg.DisabledPatterns)
-	merged := append([]PatternConfig{}, defaultPatternConfigs...)
+	merged := EffectiveBuiltinPatternConfigs(cfg.BuiltinOverrides)
 	merged = append(merged, cfg.CustomPatterns...)
 	builtinCount := len(defaultPatternConfigs)
 

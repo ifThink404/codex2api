@@ -1,11 +1,12 @@
 import { NavLink } from 'react-router-dom'
-import { Activity, AlertCircle, ServerCog, Workflow } from 'lucide-react'
+import { Activity, AlertCircle, ServerCog, ShieldAlert, Workflow } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 const tabs = [
   { to: '/ops/overview', labelKey: 'ops.tabs.overview', icon: <Activity className="size-4" /> },
   { to: '/ops/runtime', labelKey: 'ops.tabs.runtime', icon: <ServerCog className="size-4" /> },
   { to: '/ops/errors', labelKey: 'ops.tabs.errors', icon: <AlertCircle className="size-4" /> },
+  { to: '/ops/service-errors', labelKey: 'ops.tabs.serviceErrors', icon: <ShieldAlert className="size-4" /> },
   { to: '/ops/scheduler', labelKey: 'ops.tabs.scheduler', icon: <Workflow className="size-4" /> },
 ]
 

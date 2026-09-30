@@ -358,20 +358,6 @@ export interface SubscriptionRefreshResponse {
 }
 
 export type AccountProbeMode = 'auto' | 'off' | 'on'
-
-/** Excel Basispoints route health of one account (automatic 403 pause / 429 cooldown). */
-export interface ExcelBpsPauseView {
-  /** "account" pauses every model; "models" pauses only `models`. */
-  scope?: 'account' | 'models'
-  reason?: 'forbidden' | 'model_access' | string
-  models?: string[]
-  paused_at?: string
-  last_probe_at?: string
-  next_probe_at?: string
-  failures?: number
-  rate_limited_until?: string
-}
-
 export interface AccountRow {
   api_auto_recovery_enabled?: boolean
   probe_mode?: AccountProbeMode
@@ -406,14 +392,6 @@ export interface AccountRow {
   claude_base_url?: string
   antigravity_auth_kind?: 'oauth' | 'api_key' | string
   agent_identity?: boolean
-  /** Account-level Excel Basispoints opt-in (forces BPS on). */
-  openai_excel_bps?: boolean
-  /** Excludes the account from the global Basispoints default. */
-  openai_excel_bps_opt_out?: boolean
-  /** Whether requests from this account currently use Basispoints. */
-  openai_excel_bps_effective?: boolean
-  /** Basispoints route health; absent when the route is healthy. */
-  bps_pause?: ExcelBpsPauseView
   grok_auth_kind?: string
   /** Safe, allowlisted User-Agent observed/generated for Claude upstream calls. */
   claude_user_agent?: string
@@ -458,7 +436,19 @@ export interface AccountRow {
   /** 账号页跳转地址;空值回退打开 base_url(api-base)。 */
   account_href?: string
   custom_headers?: Record<string, string> | null
-  codex_bps_enabled?: boolean
+  /** BPS plugin per-account override: null = inherit (group / global switch). */
+  codex_bps_enabled?: boolean | null
+  /** Whether BPS currently serves this account (override, group, global switch or Excel flag). */
+  codex_bps_active?: boolean
+  /** A 401 / banned / error credential keeps the account out of the BPS pool. */
+  codex_bps_credential_invalid?: boolean
+  codex_bps_eligible?: boolean
+  codex_native_enabled?: boolean | null
+  codex_native_models?: string[] | null
+  codex_bps_models?: string[] | null
+  codex_bps_image_trim_enabled?: boolean | null
+  codex_bps_profile?: CodexBPSProfile
+  codex_bps_convergence?: CodexBPSConvergence
   model_observations?: AccountModelObservation[]
   health_tier?: string
   scheduler_score?: number
@@ -1592,8 +1582,19 @@ export interface AccountModelObservation {
   observed_at: number
 }
 
+export type CodexBPSProfile = 'word' | 'excel' | 'sheets' | 'powerpoint'
+export type CodexBPSConvergence = 'off' | 'session' | 'full' | 'round' | 'turn_round'
+/** Connection-test path; only affects that test. */
+export type CodexTestMode = 'auto' | 'codex' | 'bps'
+
 export interface UpdateAccountSchedulerRequest {
-  codex_bps_enabled?: boolean
+  codex_bps_enabled?: boolean | null
+  codex_native_enabled?: boolean | null
+  codex_native_models?: string[] | null
+  codex_bps_models?: string[] | null
+  codex_bps_image_trim_enabled?: boolean | null
+  codex_bps_profile?: CodexBPSProfile
+  codex_bps_convergence?: CodexBPSConvergence
   api_auto_recovery_enabled?: boolean
   probe_mode?: AccountProbeMode
   probe_interval_minutes?: number
@@ -1624,8 +1625,6 @@ export interface UpdateAccountSchedulerRequest {
   claude_client_version?: string | null
   timezone?: string | null
   account_href?: string | null
-  openai_excel_bps?: boolean
-  openai_excel_bps_opt_out?: boolean
 }
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {
@@ -1633,6 +1632,8 @@ export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerReques
   selector?: AccountOperationSelector
   enabled?: boolean
   locked?: boolean
+  /** Adds the accounts to these groups, keeping their other groups (group_ids replaces). */
+  add_group_ids?: number[]
 }
 
 export interface AccountGroup {
@@ -2260,14 +2261,10 @@ export interface SystemSettings {
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
+  // Rewrites existing web_search tools' user_location from the outbound proxy's stored egress location.
+  codex_web_search_proxy_location: boolean
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
-  codex_basispoints_enabled: boolean
-  codex_basispoints_models: string
-  codex_basispoints_403_auto_pause: boolean
-  codex_basispoints_403_probe_interval_minutes: number
-  codex_basispoints_429_cooldown_seconds: number
-  codex_basispoints_cache_creation_as_input: boolean
   codex_ws_weak_network_mode: boolean
   codex_ws_keepalive_enabled: boolean
   codex_ws_keepalive_interval_sec: number
@@ -2409,6 +2406,7 @@ export interface SystemSettings {
   codex_effective_cli_version?: string
   codex_user_agent_config: string
   usage_log_mode: 'full' | 'errors' | 'off' | string
+  usage_metering_enabled: boolean
   usage_log_batch_size: number
   usage_log_flush_interval_seconds: number
   stream_flush_policy: 'immediate' | 'coalesce' | string
@@ -2492,6 +2490,10 @@ export interface PromptFilterVerdict {
 }
 
 export interface PromptFilterLog {
+  group_id?: number
+  occurrence_count?: number
+  first_seen?: string
+  last_seen?: string
   id: number
   created_at: ISODateString
   source: string
@@ -3133,12 +3135,34 @@ export function patchAdvancedConfigDocument(
   }
 }
 
+export interface BuiltinPromptRuleFields {
+  name: string
+  pattern: string
+  weight: number
+  category: string
+  strict: boolean
+  signal_only: boolean
+  all_patterns: string[]
+  any_patterns: string[]
+  exclude_patterns: string[]
+  authorization_exclude_patterns: string[]
+  min_matches: number
+}
+
 export interface PromptFilterRule {
+  overridden?: boolean
+  default?: BuiltinPromptRuleFields
   name: string
   pattern: string
   weight: number
   category?: string
   strict?: boolean
+  signal_only?: boolean
+  all_patterns?: string[] | null
+  any_patterns?: string[] | null
+  exclude_patterns?: string[] | null
+  authorization_exclude_patterns?: string[] | null
+  min_matches?: number
   enabled?: boolean
   builtin?: boolean
 }
@@ -3754,9 +3778,298 @@ export interface UsageLog {
   upstream_error_kind: string
 	error_message: string
 	prompt_policy_incident_id?: string
+	/** 'native' or the transport plugin ID that served this attempt. */
+	transport?: string
+	/** Plugin-owned JSON metadata; empty for native rows. */
+	plugin_meta?: string
 }
 
 export type UsageLogsResponse = ApiListResponse<'logs', UsageLog>
+
+export type TransportPluginRequestKind = 'responses' | 'responses_compact' | 'chat_completions' | 'messages'
+
+export interface TransportPluginMeta {
+  name: string
+  description: string
+  kinds: TransportPluginRequestKind[]
+  override_credential_key: string
+  upstream_endpoint?: string
+}
+
+export interface TransportPluginState {
+  id: string
+  enabled: boolean
+  group_ids: number[]
+  config: Record<string, unknown>
+  capture_enabled: boolean
+  capture_sample_rate: number
+  updated_at: string
+}
+
+export interface TransportPluginAccountOverride {
+  account_id: number
+  name: string
+  enabled: boolean
+}
+
+// Plugin-scoped account state (GET /plugins/:id/account-status).
+export interface PluginAccountStatus {
+  account_id: number
+  cooling_until?: string
+  reason?: string
+  policy_strikes?: number
+  policy_tier?: number
+  policy_tiers?: number
+  in_flight?: number
+  max_concurrency?: number
+  budget_used?: number
+  budget?: number
+  probe_pending?: boolean
+  last_probe?: string
+  last_probe_result?: string
+  // models BPS refused for this account, mapped to when BPS is retried
+  models_unavailable?: Record<string, string>
+}
+
+export interface TransportPlugin {
+  id: string
+  meta: TransportPluginMeta
+  override_credential_key: string
+  state: TransportPluginState
+  overrides: TransportPluginAccountOverride[]
+}
+
+export interface TransportPluginsResponse {
+  plugins: TransportPlugin[]
+  capture_written: number
+  capture_dropped: number
+}
+
+export interface TransportPluginUpdate {
+  enabled?: boolean
+  group_ids?: number[]
+  config?: Record<string, unknown>
+  capture_enabled?: boolean
+  capture_sample_rate?: number
+}
+
+export type PluginCaptureDirection = 'request' | 'response' | 'error'
+
+export interface PluginCapture {
+  id: number
+  plugin: string
+  request_id: string
+  account_id: number
+  attempt: number
+  direction: PluginCaptureDirection
+  status: number
+  headers: string
+  /** Present only on the single-capture endpoint. */
+  body?: string
+  body_bytes: number
+  error_kind: string
+  truncated: boolean
+  created_at: string
+}
+
+export type BPSAccountState = 'active' | 'policy_blocked' | 'rate_cooling' | 'budget_exhausted' | 'bps_degraded'
+
+export interface BPSTrafficStats {
+  requests: number
+  succeeded: number
+  success_rate: number
+  org_rate_limited: number
+  rate_limited: number
+  policy_blocked: number
+  avg_first_token_ms: number
+  internal_requests: number
+}
+
+// One time bucket of BPS client traffic (database.TransportTrafficPoint).
+export interface BPSTrafficPoint {
+  bucket: string
+  requests: number
+  succeeded: number
+  errors_4xx: number
+  errors_5xx: number
+  org_rate_limited: number
+  rate_limited: number
+  policy_blocked: number
+}
+
+// GET /plugins/bps/dashboard
+export interface BPSDashboard {
+  summary: { total: number; usable: number; disabled?: number; invalid?: number; native_degraded?: number; bps_degraded?: number; policy_blocked: number; rate_cooling: number; budget_exhausted: number; min_usable: number; warning: boolean }
+  accounts: Array<{
+    account_id: number
+    name: string
+    state: BPSAccountState
+    in_flight: number
+    max_concurrency: number
+    budget_used: number
+    budget: number
+    budget_window_seconds: number
+    tier?: number
+    tiers?: number
+    cooling_until?: string
+    blocked_at?: string
+    elapsed_seconds?: number
+    next_probe_at?: string
+    last_probe_result?: string
+  }>
+  traffic: Record<'1h' | '24h', BPSTrafficStats>
+  timeline?: Record<'1h' | '24h', BPSTrafficPoint[]>
+  recovery: { blocked: number; longest_active_seconds: number; recovered: number; min_seconds: number; median_seconds: number; max_seconds: number }
+  now?: string
+}
+
+// GET /plugins/bps/activity (polled every few seconds).
+export interface BPSActivityAccount {
+  account_id: number
+  name: string
+  state: BPSAccountState
+  tier?: number
+  tiers?: number
+  in_flight: number
+  max_concurrency: number
+  succeeded: number
+  attempts: number
+  budget: number
+  cooling_until?: string
+  elapsed_seconds?: number
+  next_probe_at?: string
+  last_request_at?: string
+  /** Native route breaker of a dual-route account (BPS + explicit native). */
+  native_route?: BPSNativeRoute
+  /** Latest pelican verdict and probe in flight, per route. */
+  degrade?: Partial<Record<'bps' | 'native', BPSDegradeView>>
+  bps_degraded_until?: string
+  bps_degraded_detail?: string
+}
+
+export interface BPSDegradeView {
+  verdict?: 'ok' | 'degraded' | 'invalid'
+  score?: number
+  probe_id?: number
+  at?: string
+  pending?: 'queued' | 'running'
+}
+
+// One pelican degradation-judge probe (GET /plugins/bps/degrade-probes).
+export interface DegradeProbe {
+  id: number
+  account_id: number
+  name: string
+  route: 'bps' | 'native'
+  model: string
+  upstream_model?: string
+  score: number
+  bytes: number
+  verdict: 'ok' | 'degraded' | 'invalid'
+  trigger: 'manual' | 'mismatch' | 'scheduled' | 'recovery'
+  html?: string
+  error?: string
+  duration_ms: number
+  created_at: string
+}
+
+export interface DegradeProbesResponse {
+  probes: DegradeProbe[]
+  threshold: number
+  model: string
+}
+
+export interface DegradeProbeStartResult {
+  queued: number
+  skipped: Array<{ account_id: number; reason: string }>
+}
+
+export interface BPSNativeRoute {
+  state: 'ok' | 'open'
+  until?: string
+  trigger?: 'native_403' | 'model_mismatch' | string
+  detail?: string
+}
+
+export interface BPSActivity {
+  accounts: BPSActivityAccount[]
+  window_seconds: number
+  in_flight_per_replica: boolean
+  now?: string
+}
+
+// One BPS usage-policy block event (GET /plugins/bps/policy-blocks).
+// A broken transport of an account: bps (usage policy) or native (the
+// native route breaker of a dual-route account).
+export type BPSRoute = 'bps' | 'native'
+
+export interface BPSPolicyBlock {
+  id: number
+  account_id: number
+  route?: BPSRoute
+  detail?: string
+  name: string
+  blocked_at: string
+  tier: number
+  tiers?: number
+  cleared_at?: string
+  duration_seconds: number
+  elapsed_seconds: number
+  probe_count: number
+  last_probe_result: string
+  last_probe_at?: string
+  next_probe_at?: string
+}
+
+export interface BPSPolicyBlockTotals {
+  account_id: number
+  route?: BPSRoute
+  name: string
+  times_blocked: number
+  total_blocked_seconds: number
+  longest_block_seconds: number
+  recovered: number
+}
+
+export interface BPSPolicyBlocksResponse {
+  active: BPSPolicyBlock[]
+  history: BPSPolicyBlock[]
+  totals: BPSPolicyBlockTotals[]
+  now?: string
+}
+
+// Stored captures of one plugin (GET /plugins/:id/capture-stats).
+export interface PluginCaptureStats {
+  rows: number
+  error_rows: number
+  body_bytes: number
+  // PostgreSQL only: the whole plugin_captures table on disk.
+  table_bytes: number
+}
+
+export type PluginCapturePurgeMode = 'all' | 'errors_only' | 'older_than'
+
+export interface PluginCapturePurgeResult {
+  deleted: number
+  batches: number
+  interrupted: boolean
+}
+
+export interface PluginCapturePage {
+  captures: PluginCapture[]
+  total: number
+}
+
+export interface PluginCaptureQuery {
+  requestId?: string
+  accountId?: number
+  status?: number
+  direction?: PluginCaptureDirection
+  start?: string
+  end?: string
+  page?: number
+  pageSize?: number
+}
 
 export interface UsageLogsPagedResponse {
   logs: UsageLog[]
@@ -3773,6 +4086,16 @@ export interface OpsErrorSummary {
   timeouts: number
   retry_attempts: number
   avg_duration_ms: number
+}
+
+// GET /ops/errors/by-account: one account's errors under the ops filters.
+export interface OpsErrorAccountGroup {
+  account_id: number
+  account_name: string
+  account_email: string
+  total: number
+  kinds: Record<string, number>
+  last_error_at: string
 }
 
 export interface ChartTimelinePoint {
@@ -4451,4 +4774,102 @@ export interface ClaudeGlobalConfig {
   max_output_tokens: number
   max_tool_count: number
   max_tool_schema_bytes: number
+}
+
+// 日志分析 Agent（/log-agent/*）：独立于具体功能，source 由后端注册（usage_logs、ops_errors 及各插件）。
+export interface LogAgentConfig {
+  enabled: boolean
+  api_key_id: number
+  model: string
+  max_input_bytes: number
+  max_records: number
+  timeout_seconds: number
+  retention_days: number
+}
+
+export interface LogAgentLimits {
+  min_max_input_bytes: number
+  max_max_input_bytes: number
+  max_max_records: number
+  min_timeout_seconds: number
+  max_timeout_seconds: number
+  max_retention_days: number
+}
+
+export interface LogAgentConfigResponse {
+  config: LogAgentConfig
+  gateway_keys: PromptIntelligenceGatewayKey[]
+  sources: string[]
+  limits: LogAgentLimits
+}
+
+export type LogAgentRootCauseCategory = 'upstream' | 'account' | 'gateway' | 'network' | 'client' | 'config' | 'unknown'
+
+export interface LogAgentRootCause {
+  title: string
+  detail: string
+  category: LogAgentRootCauseCategory
+  evidence_ids: string[]
+  confidence: number
+}
+
+export interface LogAgentAction {
+  title: string
+  detail: string
+  priority: 'high' | 'medium' | 'low'
+}
+
+export interface LogAgentFindings {
+  summary: string
+  root_causes: LogAgentRootCause[]
+  suggested_actions: LogAgentAction[]
+  confidence: number
+  fallback?: boolean
+}
+
+export interface LogAgentContextStats {
+  records: number
+  dropped_records: number
+  groups: number
+  included_groups: number
+  input_bytes: number
+  truncated: boolean
+  evidence_ids: string[] | null
+}
+
+export interface LogAgentSubject {
+  refs?: string[]
+  filters?: Record<string, string>
+  start?: string
+  end?: string
+  focus?: string
+  language?: string
+}
+
+export interface LogAgentRun {
+  id: number
+  source: string
+  subject: LogAgentSubject
+  model: string
+  api_key_id: number
+  status: 'succeeded' | 'fallback' | 'failed'
+  findings: LogAgentFindings | Record<string, never>
+  context_stats: LogAgentContextStats | Record<string, never>
+  error_message: string
+  record_count: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  duration_ms: number
+  created_at: string
+}
+
+export interface LogAgentAnalyzeRequest {
+  source: string
+  refs?: string[]
+  filters?: Record<string, string>
+  start?: string
+  end?: string
+  focus?: string
+  language?: string
 }

@@ -67,6 +67,9 @@ func TestResponsesRelayUpstreamAuthFailureKeepsAccount(t *testing.T) {
 	}
 }
 
+// A bare 402 is no account gate since v3.0.5 (ambiguous payment responses
+// are left to the usage probe), so it has no case here; explicit quota,
+// workspace and runtime gates still survive a late success.
 func TestAPIRecoveryPreservesExplicitAccountGates(t *testing.T) {
 	tests := []struct {
 		name, body, reason string
@@ -80,8 +83,6 @@ func TestAPIRecoveryPreservesExplicitAccountGates(t *testing.T) {
 		{"runtime deleted", `{"error":{"message":"Agent runtime has been deleted.","code":"biscuit_baker_service_agent_error_status"}}`, "unauthorized", 403, false, true},
 		{"Grok quota on 401", `{"error":{"message":"subscription:free-usage-exhausted"}}`, "usage_limited", 401, true, false},
 		{"Grok permanent denial", `{"error":{"message":"access to the chat endpoint is denied"}}`, "error", 403, true, true},
-		// A bare 402 no longer creates an account-level payment_required gate
-		// (upstream ced4aa9a), so there is no billing gate left to preserve here.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -107,6 +107,10 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		account = transient
 		isTransient = true
 	}
+	// 测试路径（auto/codex/bps）只作用于本次测试，必须早于上游 Excel BPS 拦截。
+	if !h.applyCodexTestMode(c, account, c.Query("test_mode")) {
+		return
+	}
 	// 连接测试虽是 SSE GET，却会写入未授权、错误、限流或恢复状态。等流结束后
 	// 再失效列表/分析快照，避免账号页继续把已判定的 401 账号显示为“未采样”。
 	if !isTransient {
@@ -201,18 +205,6 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 
 	// 发送请求
 	start := time.Now()
-	if account.IsExcelBPSAvailableForModel(testModel) {
-		// Keep account probes on the same Responses-shaped adapter as normal
-		// traffic. This also covers quality tests, whose HTML prompt is already
-		// represented as a standard Responses input item.
-		if mapped, ok := proxy.ResolveAccountModelMapping(account, testModel); ok && mapped != "" {
-			if next, setErr := sjson.SetBytes(payload, "model", mapped); setErr == nil {
-				payload = next
-			}
-		}
-		h.runExcelBPSInteractiveTest(c, account, payload, testModel, start, isTransient, restoreOnSuccess, &transientOutcome, id, quality != nil, usageReason, usageEndpoint, usageEffort)
-		return
-	}
 	var resp *http.Response
 	var reqErr error
 	if isClaudeAccount {
@@ -222,7 +214,9 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else {
-		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
+		testCtx, usage := proxy.WithConnectionTestUsage(c.Request.Context())
+		c.Set(contextConnectionTestTransport, usage)
+		resp, reqErr = proxy.ExecuteCodexConnectionTest(testCtx, account, payload, h.store.ResolveProxyForAccount(account))
 	}
 	if reqErr != nil {
 		h.logConnectionTestTransportFailure(c, account, usageReason, usageEndpoint, testModel, usageEffort, start, reqErr)
@@ -1042,7 +1036,7 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 		if requested == "" {
 			return h.connectionTestModel(ctx), nil
 		}
-		if !proxy.IsTextTestModelID(ctx, h.db, requested) {
+		if !proxy.IsTextTestModelID(ctx, h.db, requested) && !codexAccountAdvertisesTextModel(account, requested) {
 			return "", fmt.Errorf("不支持的测试模型: %s", requested)
 		}
 		return requested, nil
@@ -1085,6 +1079,23 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 		}
 	}
 	return textModels[0], nil
+}
+
+// codexAccountAdvertisesTextModel allows a connection test to use a model
+// learned from the account's upstream manifest even before the global model
+// registry has been synced. The account catalog is the source used by the
+// model picker, so rejecting it here makes a visible model impossible to test.
+func codexAccountAdvertisesTextModel(account *auth.Account, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	if account == nil || requested == "" {
+		return false
+	}
+	for _, model := range account.Models {
+		if isTextConnectionModel(model) && strings.EqualFold(strings.TrimSpace(model), requested) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTextConnectionModel(model string) bool {
@@ -1220,6 +1231,8 @@ type batchTestRequest struct {
 	Selector *accountOperationSelector `json:"selector,omitempty"`
 	// RestoreOnSuccess 仅回收站批量测试使用：测试通过的账号自动恢复到账号池。
 	RestoreOnSuccess bool `json:"restore_on_success"`
+	// TestMode 选择本次测试路径：auto（按账号配置）/ codex / bps，不写账号配置。
+	TestMode string `json:"test_mode"`
 }
 
 // persistRecycleBinTestResult 将回收站测试结果写入账号 credentials，供列表展示。
@@ -1251,6 +1264,12 @@ type batchOperationEvent struct {
 	AccountEmail string `json:"account_email,omitempty"`
 	Message      string `json:"message,omitempty"`
 	Error        string `json:"error,omitempty"`
+	// Batch-test only: bounded model output and the actual response model.
+	Output             string `json:"output,omitempty"`
+	OutputTruncated    bool   `json:"output_truncated,omitempty"`
+	TestModel          string `json:"test_model,omitempty"`
+	ResponseModel      string `json:"response_model,omitempty"`
+	ResponseFieldCount *int   `json:"response_field_count,omitempty"`
 }
 
 func runtimeAccountOperationIdentity(account *auth.Account) (string, string) {
@@ -1340,6 +1359,9 @@ func (h *Handler) BatchTest(c *gin.Context) {
 	}
 	if req.IDs != nil && req.Selector != nil {
 		writeError(c, http.StatusBadRequest, "ids 与 selector 不能同时提供")
+		return
+	}
+	if !h.applyCodexTestMode(c, nil, req.TestMode) {
 		return
 	}
 	if req.Selector != nil {
@@ -1476,7 +1498,7 @@ func (h *Handler) streamBatchTest(c *gin.Context, accounts []*auth.Account, miss
 		return
 	}
 
-	events := make(chan batchOperationEvent, len(accounts)+2)
+	events := make(chan batchOperationEvent, min(len(accounts)+2, 64))
 	ctx := c.Request.Context()
 	go func() {
 		counts := h.runBatchTest(ctx, accounts, missingCount, testFn, func(event batchOperationEvent) {
@@ -1539,12 +1561,18 @@ func (h *Handler) runBatchTest(ctx context.Context, accounts []*auth.Account, mi
 			case sem <- struct{}{}:
 			case <-ctx.Done():
 				atomic.AddInt64(&failedCount, 1)
-				h.emitBatchTestProgress(onProgress, acc.DBID, total, &completedCount, &successCount, &failedCount, &bannedCount, &rateLimitCount, "failed", "测试已取消")
+				h.emitBatchTestProgress(onProgress, acc.DBID, total, &completedCount, &successCount, &failedCount, &bannedCount, &rateLimitCount, "failed", "测试已取消", nil)
 				return
 			}
 			defer func() { <-sem }()
 
-			status, message := testFn(ctx, acc)
+			testCtx := ctx
+			var output *batchTestOutput
+			if onProgress != nil {
+				output = &batchTestOutput{}
+				testCtx = context.WithValue(ctx, batchTestOutputContextKey{}, output)
+			}
+			status, message := testFn(testCtx, acc)
 			switch status {
 			case "success":
 				atomic.AddInt64(&successCount, 1)
@@ -1555,7 +1583,7 @@ func (h *Handler) runBatchTest(ctx context.Context, accounts []*auth.Account, mi
 			default:
 				atomic.AddInt64(&failedCount, 1)
 			}
-			h.emitBatchTestProgress(onProgress, acc.DBID, total, &completedCount, &successCount, &failedCount, &bannedCount, &rateLimitCount, status, message)
+			h.emitBatchTestProgress(onProgress, acc.DBID, total, &completedCount, &successCount, &failedCount, &bannedCount, &rateLimitCount, status, message, output)
 		}(account)
 	}
 
@@ -1580,6 +1608,7 @@ func (h *Handler) emitBatchTestProgress(
 	rateLimitCount *int64,
 	status string,
 	message string,
+	output *batchTestOutput,
 ) {
 	if onProgress == nil {
 		return
@@ -1605,10 +1634,17 @@ func (h *Handler) emitBatchTestProgress(
 	if status == "failed" {
 		event.Error = message
 	}
+	if output != nil {
+		event.Output = string(output.text)
+		event.OutputTruncated = output.truncated
+		event.TestModel = output.model
+		event.ResponseModel = output.responseModel
+		event.ResponseFieldCount = output.responseFieldCount
+	}
 	onProgress(event)
 }
 
-func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (string, string) {
+func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (status, msg string) {
 	testCtx, cancel := context.WithTimeout(ctx, batchTestAccountTimeout)
 	defer cancel()
 	if acc == nil {
@@ -1628,10 +1664,6 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	if status, msg, done := h.batchTestSkipDeactivatedWorkspace(acc); done {
 		return status, msg
 	}
-	if acc.IsExcelBPSEnabled() {
-		return h.runExcelBPSBatchTest(testCtx, acc)
-	}
-
 	if status, msg, done := h.batchTestWhamPreflight(testCtx, acc); done {
 		return status, msg
 	}
@@ -1644,9 +1676,14 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		h.store.MarkError(acc, "批量测试失败: "+modelErr.Error())
 		return "failed", modelErr.Error()
 	}
+	if output := batchTestOutputFromContext(testCtx); output != nil {
+		output.model = testModel
+	}
 	securityCfg := h.store.ClaudeSecurityConfig()
 	payload := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, securityCfg)
 	start := time.Now()
+	testCtx, usageRow := h.beginBatchConnectionTestUsage(testCtx, acc, testModel, payload, start)
+	defer func() { usageRow.finish(status, msg) }()
 
 	var resp *http.Response
 	var err error
@@ -1657,7 +1694,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
+		resp, err = proxy.ExecuteCodexConnectionTest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc))
 	}
 	if err != nil {
 		if msg, ok := batchTestContextFailure(testCtx, err); ok {
@@ -1669,13 +1706,14 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		h.store.MarkError(acc, "批量测试请求失败: "+err.Error())
 		return "failed", err.Error()
 	}
+	usageRow.observe(resp)
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
 		if acc.IsClaudeOAuth() {
 			proxy.SyncClaudeUsageState(h.store, acc, resp)
-			status, msg := readClaudeMessagesStream(testCtx, resp, nil)
+			status, msg := readClaudeMessagesStream(testCtx, resp, batchTestOutputFromContext(testCtx).append)
 			if status != "success" {
 				applyClaudeConnectionStreamFailure(h, acc, testModel, status, msg, resp)
 			}
@@ -1789,7 +1827,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 // runRecycleBinSingleTest 测试单个回收站账号的连通性。账号是临时对象，
 // 全程不调用任何会回写账号/调度状态的方法（MarkError/MarkCooldown/
 // RecordManualTestSuccess 等），测试结果仅用于展示。
-func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account) (string, string) {
+func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account) (status, msg string) {
 	testCtx, cancel := context.WithTimeout(ctx, batchTestAccountTimeout)
 	defer cancel()
 	if acc == nil {
@@ -1807,8 +1845,13 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 		}
 		return "failed", modelErr.Error()
 	}
+	if output := batchTestOutputFromContext(testCtx); output != nil {
+		output.model = testModel
+	}
 	claudeSecurityCfg := h.store.ClaudeSecurityConfig()
 	payload := h.buildAccountConnectionTestPayload(testCtx, acc, testModel, claudeSecurityCfg)
+	testCtx, usageRow := h.beginBatchConnectionTestUsage(testCtx, acc, testModel, payload, time.Now())
+	defer func() { usageRow.finish(status, msg) }()
 
 	var resp *http.Response
 	var err error
@@ -1820,7 +1863,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
+		resp, err = proxy.ExecuteCodexConnectionTest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc))
 	}
 	if err != nil {
 		if msg, ok := batchTestContextFailure(testCtx, err); ok {
@@ -1828,6 +1871,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 		}
 		return "failed", err.Error()
 	}
+	usageRow.observe(resp)
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
@@ -1835,7 +1879,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 		if acc.IsClaudeOAuth() {
 			// Recycle-bin tests are intentionally read-only. Inspect the native
 			// response headers without mutating the transient account snapshot.
-			status, msg := readClaudeMessagesStream(testCtx, resp, nil)
+			status, msg := readClaudeMessagesStream(testCtx, resp, batchTestOutputFromContext(testCtx).append)
 			if status == "success" && claudeConnectionTestShouldPreserveUsageCooldown(acc, resp) {
 				return "rate_limited", "Claude 上游返回了有效响应，但账号仍处于配额/限流状态"
 			}
@@ -1869,6 +1913,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 // readRecycleBinTestStream 读取测试 SSE 流并判定结果；与
 // readBatchTestStreamResult 等价，但不回写任何账号状态。
 func readRecycleBinTestStream(ctx context.Context, resp *http.Response) (string, string) {
+	output := batchTestOutputFromContext(ctx)
 	hasContent := false
 	gotTerminal := false
 	resultStatus := ""
@@ -1877,6 +1922,7 @@ func readRecycleBinTestStream(ctx context.Context, resp *http.Response) (string,
 
 	readErr := proxy.ReadSSEStream(resp.Body, func(data []byte) bool {
 		lastUpstreamEvent = append(lastUpstreamEvent[:0], data...)
+		output.observeResponses(data)
 		switch gjson.GetBytes(data, "type").String() {
 		case "response.output_text.delta":
 			if gjson.GetBytes(data, "delta").String() != "" {
@@ -1961,7 +2007,26 @@ func (h *Handler) batchTestSkipDeactivatedWorkspace(acc *auth.Account) (string, 
 	return "failed", msg, true
 }
 
+// applyCodexTestMode installs the per-test transport mode. account is
+// validated when known (single tests); batch tests validate per account.
+func (h *Handler) applyCodexTestMode(c *gin.Context, account *auth.Account, mode string) bool {
+	ctx, err := proxy.WithCodexTestMode(c.Request.Context(), mode)
+	if err == nil && account != nil {
+		err = proxy.ValidateCodexTestMode(ctx, account)
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return false
+	}
+	c.Request = c.Request.WithContext(ctx)
+	return true
+}
+
 func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account) (string, string, bool) {
+	// BPS tests skip the native WHAM preflight and verify the chosen path.
+	if proxy.CodexTestModeLabel(ctx, acc) == "bps" {
+		return "", "", false
+	}
 	if h == nil || h.store == nil || acc == nil || acc.IsRelayStyle() || acc.GetAccessToken() == "" {
 		return "", "", false
 	}
@@ -2005,6 +2070,7 @@ func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account)
 }
 
 func (h *Handler) readBatchTestStreamResult(ctx context.Context, acc *auth.Account, resp *http.Response, model string) (string, string) {
+	output := batchTestOutputFromContext(ctx)
 	hasContent := false
 	gotTerminal := false
 	resultStatus := ""
@@ -2014,6 +2080,7 @@ func (h *Handler) readBatchTestStreamResult(ctx context.Context, acc *auth.Accou
 	readErr := proxy.ReadSSEStream(resp.Body, func(data []byte) bool {
 		lastUpstreamEvent = append(lastUpstreamEvent[:0], data...)
 		eventType := gjson.GetBytes(data, "type").String()
+		output.observeResponses(data)
 
 		switch eventType {
 		case "response.output_text.delta":

@@ -45,6 +45,8 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	usageLogExportBusy atomic.Bool
+
 	imageQueue         *imageJobQueue
 	qualityTestContext context.Context
 	qualityTestWG      sync.WaitGroup
@@ -109,6 +111,7 @@ type Handler struct {
 	imageProxy                 *proxy.Handler
 	antigravitySyncAccount     func(context.Context, int64) antigravityRefreshItem
 	antigravityCapabilityProbe antigravityCapabilityExecutor
+	logAgent                   logAgentState
 	// Claude / Antigravity 渠道连通性测试配置的进程内缓存（首次读库，PUT 刷新）。
 	channelTestCfg        atomic.Pointer[database.ChannelTestConfig]
 	channelMonitorWake    chan struct{}
@@ -1130,6 +1133,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		}
 	})
 	api.GET("/stats", h.GetStats)
+	api.POST("/project-integration/newapi/summary", h.ProjectNewAPISummary)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
@@ -1193,7 +1197,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/:id/models/sync-upstream", h.SyncAccountUpstreamModels)
 	api.POST("/accounts/:id/models/probe", h.ProbeAccountModels)
 	api.PATCH("/accounts/:id/scheduler", h.UpdateAccountScheduler)
-	api.POST("/accounts/:id/bps-pause/clear", h.ClearAccountExcelBPSPause)
 	api.GET("/channel-monitors", h.ListChannelMonitors)
 	api.GET("/channel-monitors/billing-rates", h.ListChannelMonitorBillingRates)
 	api.POST("/channel-monitors/:id/probe", h.ProbeChannelMonitorNow)
@@ -1260,6 +1263,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/usage/api-keys", h.GetAPIKeyTokenStats)
 	api.GET("/usage/api-keys/:id/accounts", h.GetAPIKeyAccountStats)
 	api.GET("/usage/logs", h.GetUsageLogs)
+	api.POST("/usage/logs/export", h.ExportUsageLogs)
 	api.GET("/usage/logs/error-summary", h.GetUsageLogsErrorSummary)
 	api.GET("/usage/chart-data", h.GetChartData)
 	api.DELETE("/usage/logs", h.ClearUsageLogs)
@@ -1289,7 +1293,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors", h.GetOpsErrorLogs)
 	api.GET("/ops/errors/export", h.ExportOpsErrorLogs)
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
+	api.GET("/ops/errors/by-account", h.GetOpsErrorsByAccount)
+	api.GET("/ops/service-errors", h.GetServiceErrorLogs)
+	h.registerLogAgentRoutes(api)
 	api.GET("/settings", h.GetSettings)
+	api.GET("/settings/export", h.ExportSettings)
 	api.PUT("/settings", h.UpdateSettings)
 	api.GET("/settings/codex-user-agent/catalog", h.GetCodexUserAgentCatalog)
 	api.POST("/settings/codex-user-agent/preview", h.PreviewCodexUserAgent)
@@ -1313,6 +1321,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/prompt-filter/retention", h.GetPromptLogRetention)
 	api.PUT("/prompt-filter/retention", h.UpdatePromptLogRetention)
 	api.POST("/prompt-filter/retention/run", h.RunPromptLogRetentionNow)
+	h.registerTransportPluginRoutes(api)
 	api.GET("/prompt-policy/incidents", h.ListPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents", h.ClearPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents/:incident_id", h.DeletePromptPolicyIncident)
@@ -1334,6 +1343,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/prompt-filter/review/models", h.ListPromptReviewModels)
 	api.POST("/prompt-filter/rules/test", h.TestPromptFilterRulePattern)
 	api.GET("/prompt-filter/rules", h.GetPromptFilterRules)
+	api.PUT("/prompt-filter/rules/builtin/:name", h.UpdatePromptFilterBuiltinRule)
 	api.GET("/prompt-filter/newapi-bindings", h.ListPromptFilterNewAPIBindings)
 	api.POST("/prompt-filter/newapi-bindings", h.CreatePromptFilterNewAPIBinding)
 	api.GET("/prompt-filter/newapi-bindings/:api_key_id", h.GetPromptFilterNewAPIBinding)
@@ -1689,139 +1699,135 @@ type accountResponse struct {
 	SkipWarmTier bool `json:"skip_warm_tier"`
 	// 账号级策略（auth/account_policies.go）；三列都以 inherit 为默认，
 	// 不加 omitempty——前端下拉要能区分"继承"和"字段缺失"。
-	PromptFilterPolicy            string                      `json:"prompt_filter_policy"`
-	EgressPolicy                  string                      `json:"egress_policy"`
-	SessionGuardsPolicy           string                      `json:"session_guards_policy"`
-	AccountType                   string                      `json:"account_type,omitempty"`
-	AccessTokenType               string                      `json:"access_token_type,omitempty"`
-	OpenAIResponsesAPI            bool                        `json:"openai_responses_api,omitempty"`
-	GrokAPI                       bool                        `json:"grok_api,omitempty"`
-	AntigravityAPI                bool                        `json:"antigravity_api,omitempty"`
-	ClaudeAPI                     bool                        `json:"claude_api,omitempty"`
-	ExcelBPSEnabled               bool                        `json:"openai_excel_bps,omitempty"`
-	ExcelBPSOptOut                bool                        `json:"openai_excel_bps_opt_out,omitempty"`
-	ExcelBPSEffective             bool                        `json:"openai_excel_bps_effective,omitempty"`
-	ExcelBPSPause                 *proxy.ExcelBPSPauseView    `json:"bps_pause,omitempty"`
-	ClaudeAuthKind                string                      `json:"claude_auth_kind,omitempty"`
-	ClaudeBaseURL                 string                      `json:"claude_base_url,omitempty"`
-	AntigravityAuthKind           string                      `json:"antigravity_auth_kind,omitempty"`
-	AgentIdentity                 bool                        `json:"agent_identity,omitempty"`
-	GrokAuthKind                  string                      `json:"grok_auth_kind,omitempty"`
-	GrokPlan                      *auth.GrokPlan              `json:"grok_plan,omitempty"`
-	GrokPlanDisplay               *database.GrokPlanDisplay   `json:"grok_plan_display,omitempty"`
-	GrokModels                    *database.GrokModelSummary  `json:"grok_models,omitempty"`
-	GrokBilling                   json.RawMessage             `json:"grok_billing,omitempty"`
-	GrokRateLimit                 *auth.GrokRateLimitSnapshot `json:"grok_rate_limit,omitempty"`
-	GrokFreeQuota                 *auth.GrokFreeQuotaSnapshot `json:"grok_free_quota,omitempty"`
-	AvatarURL                     string                      `json:"avatar_url,omitempty"`
-	VerifiedEmail                 bool                        `json:"verified_email,omitempty"`
-	ProjectID                     string                      `json:"project_id,omitempty"`
-	AntigravityQuota              json.RawMessage             `json:"antigravity_quota,omitempty"`
-	AntigravityPermissions        json.RawMessage             `json:"antigravity_permissions,omitempty"`
-	AntigravitySyncWarning        string                      `json:"antigravity_sync_warning,omitempty"`
-	BaseURL                       string                      `json:"base_url,omitempty"`
-	BalanceQueryURL               string                      `json:"balance_query_url,omitempty"`
-	Models                        []string                    `json:"models,omitempty"`
-	ModelMapping                  string                      `json:"model_mapping,omitempty"`
-	CodexClientMetadataMode       string                      `json:"codex_client_metadata_mode,omitempty"`
-	CodexPassthroughMode          string                      `json:"codex_passthrough_mode,omitempty"`
-	ResponsesUpstreamTransport    string                      `json:"responses_upstream_transport,omitempty"`
-	CodexFingerprintMode          string                      `json:"codex_fingerprint_mode,omitempty"`
-	ClaudeFingerprintMode         string                      `json:"claude_fingerprint_mode,omitempty"`
-	ClaudeUserAgent               string                      `json:"claude_user_agent,omitempty"`
-	ClaudeClientPlatform          string                      `json:"claude_client_platform,omitempty"`
-	ClaudeVersionPolicy           string                      `json:"claude_version_policy,omitempty"`
-	ClaudeClientVersion           string                      `json:"claude_client_version,omitempty"`
-	ClaudeClientPlatformOverride  string                      `json:"claude_client_platform_override,omitempty"`
-	ClaudeVersionPolicyOverride   string                      `json:"claude_version_policy_override,omitempty"`
-	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
-	Timezone                      string                      `json:"timezone,omitempty"`
-	CodexBPS                      bool                        `json:"codex_bps_enabled"`
-	AccountHref                   string                      `json:"account_href,omitempty"`
-	CustomHeaders                 map[string]string           `json:"custom_headers,omitempty"`
-	HealthTier                    string                      `json:"health_tier"`
-	SchedulerScore                float64                     `json:"scheduler_score"`
-	DispatchScore                 float64                     `json:"dispatch_score"`
-	ScoreBiasOverride             *int64                      `json:"score_bias_override"`
-	ScoreBiasEffective            int64                       `json:"score_bias_effective"`
-	BaseConcurrencyOverride       *int64                      `json:"base_concurrency_override"`
-	BaseConcurrencyEffective      int64                       `json:"base_concurrency_effective"`
-	ConcurrencyCap                int64                       `json:"dynamic_concurrency_limit"`
-	ProxyURL                      string                      `json:"proxy_url"`
-	CreatedAt                     string                      `json:"created_at"`
-	UpdatedAt                     string                      `json:"updated_at"`
-	CodexUsageUpdatedAt           string                      `json:"codex_usage_updated_at,omitempty"`
-	Codex5HUsageUpdatedAt         string                      `json:"codex_5h_usage_updated_at,omitempty"`
-	ClaudeUsageProbeAt            string                      `json:"claude_usage_probe_at,omitempty"`
-	ClaudeUsageProbeError         string                      `json:"claude_usage_probe_error,omitempty"`
-	ClaudeUsageWindows            []auth.ClaudeUsageWindow    `json:"claude_usage_windows,omitempty"`
-	ClaudeUsageWindowsProbed      bool                        `json:"claude_usage_windows_probed,omitempty"` // 已跑过 OAuth usage 采样(前端据此只回填从未采样的旧行)
-	ActiveRequests                int64                       `json:"active_requests"`
-	OccupiedRequests              int64                       `json:"occupied_requests"`
-	SessionSlotBufferEnabled      bool                        `json:"session_slot_buffer_enabled"`
-	TotalRequests                 int64                       `json:"total_requests"`
-	LastUsedAt                    string                      `json:"last_used_at"`
-	SuccessRequests               int64                       `json:"success_requests"`
-	ErrorRequests                 int64                       `json:"error_requests"`
-	RetryErrorRequests            int64                       `json:"retry_error_requests"`
-	RateLimitAttempts             int64                       `json:"rate_limit_attempts"`
-	ErrorStatusCounts             map[string]int64            `json:"error_status_counts,omitempty"`
-	SuccessModelCounts            map[string]int64            `json:"success_model_counts,omitempty"`
-	UsagePercent7d                *float64                    `json:"usage_percent_7d"`
-	UsagePercent5h                *float64                    `json:"usage_percent_5h"`
-	UsagePercentSpark             *float64                    `json:"usage_percent_spark"`
-	RateLimitResetCredits         *int                        `json:"rate_limit_reset_credits"`
-	DaybreakSupported             bool                        `json:"daybreak_supported"`
-	DaybreakModels                map[string][]string         `json:"daybreak_models,omitempty"`
-	DaybreakCheckedAt             int64                       `json:"daybreak_checked_at,omitempty"`
-	ApplicableResetCredits        *int                        `json:"applicable_reset_credits"`
-	CreditsValid                  bool                        `json:"credits_valid"`
-	CreditsBalance                *string                     `json:"credits_balance"`
-	CreditsHasCredits             *bool                       `json:"credits_has_credits"`
-	CreditsUnlimited              *bool                       `json:"credits_unlimited"`
-	CreditsOverageLimitReached    *bool                       `json:"credits_overage_limit_reached"`
-	CreditsSpendControlReached    *bool                       `json:"credits_spend_control_reached,omitempty"`
-	CreditsRateLimitReachedType   string                      `json:"credits_rate_limit_reached_type,omitempty"`
-	AutoPause5hThreshold          *float64                    `json:"auto_pause_5h_threshold"`
-	AutoPause7dThreshold          *float64                    `json:"auto_pause_7d_threshold"`
-	AutoPause5hDisabled           bool                        `json:"auto_pause_5h_disabled"`
-	AutoPause7dDisabled           bool                        `json:"auto_pause_7d_disabled"`
-	UsageLimitOverride            *bool                       `json:"ignore_usage_limit_status_override"`
-	UsageLimitEffective           bool                        `json:"ignore_usage_limit_status_effective"`
-	DispatchCountLimit            *int64                      `json:"dispatch_count_limit"`
-	DispatchCountUsed             int64                       `json:"dispatch_count_used,omitempty"`
-	DispatchCountResetAt          string                      `json:"dispatch_count_reset_at,omitempty"`
-	DispatchCountLimited          bool                        `json:"dispatch_count_limited,omitempty"`
-	SchedulerPriority             *int64                      `json:"scheduler_priority"`
-	Usage5hDetail                 *accountUsageWindow         `json:"usage_5h_detail,omitempty"`
-	Usage7dDetail                 *accountUsageWindow         `json:"usage_7d_detail,omitempty"`
-	Reset5hAt                     string                      `json:"reset_5h_at,omitempty"`
-	Reset7dAt                     string                      `json:"reset_7d_at,omitempty"`
-	ResetSparkAt                  string                      `json:"reset_spark_at,omitempty"`
-	Window7dKind                  string                      `json:"usage_window_7d_kind,omitempty"`    // "monthly"(team 月窗)/"weekly"/""；供前端标「30天」而非误标「7天」
-	Window7dSeconds               *int64                      `json:"usage_window_7d_seconds,omitempty"` // 长窗口真实周期秒数
-	Billed5h                      *float64                    `json:"billed_5h"`
-	Billed7d                      *float64                    `json:"billed_7d"`
-	ScoreBreakdown                schedulerBreakdownResponse  `json:"scheduler_breakdown"`
-	LastUnauthorizedAt            string                      `json:"last_unauthorized_at,omitempty"`
-	LastRateLimitedAt             string                      `json:"last_rate_limited_at,omitempty"`
-	LastTimeoutAt                 string                      `json:"last_timeout_at,omitempty"`
-	LastServerErrorAt             string                      `json:"last_server_error_at,omitempty"`
-	CooldownReason                string                      `json:"cooldown_reason,omitempty"`
-	CooldownUntil                 string                      `json:"cooldown_until,omitempty"`
-	ModelCooldowns                []modelCooldownResponse     `json:"model_cooldowns,omitempty"`
-	ModelCooldownModeOverride     *string                     `json:"model_cooldown_mode_override"`
-	ModelCooldownSecondsOverride  *int                        `json:"model_cooldown_seconds_override"`
-	ModelCooldownBackoffOverride  *bool                       `json:"model_cooldown_backoff_override"`
-	ModelCooldownModeEffective    string                      `json:"model_cooldown_mode_effective"`
-	ModelCooldownSecondsEffective int                         `json:"model_cooldown_seconds_effective"`
-	ModelCooldownBackoffEffective bool                        `json:"model_cooldown_backoff_effective"`
-	Enabled                       bool                        `json:"enabled"`
-	Locked                        bool                        `json:"locked"`
-	AllowedAPIKeyIDs              []int64                     `json:"allowed_api_key_ids"`
-	Tags                          []string                    `json:"tags"`
-	GroupIDs                      []int64                     `json:"group_ids"`
-	Note                          string                      `json:"note"`
+	PromptFilterPolicy           string                      `json:"prompt_filter_policy"`
+	EgressPolicy                 string                      `json:"egress_policy"`
+	SessionGuardsPolicy          string                      `json:"session_guards_policy"`
+	AccountType                  string                      `json:"account_type,omitempty"`
+	AccessTokenType              string                      `json:"access_token_type,omitempty"`
+	OpenAIResponsesAPI           bool                        `json:"openai_responses_api,omitempty"`
+	GrokAPI                      bool                        `json:"grok_api,omitempty"`
+	AntigravityAPI               bool                        `json:"antigravity_api,omitempty"`
+	ClaudeAPI                    bool                        `json:"claude_api,omitempty"`
+	ClaudeAuthKind               string                      `json:"claude_auth_kind,omitempty"`
+	ClaudeBaseURL                string                      `json:"claude_base_url,omitempty"`
+	AntigravityAuthKind          string                      `json:"antigravity_auth_kind,omitempty"`
+	AgentIdentity                bool                        `json:"agent_identity,omitempty"`
+	GrokAuthKind                 string                      `json:"grok_auth_kind,omitempty"`
+	GrokPlan                     *auth.GrokPlan              `json:"grok_plan,omitempty"`
+	GrokPlanDisplay              *database.GrokPlanDisplay   `json:"grok_plan_display,omitempty"`
+	GrokModels                   *database.GrokModelSummary  `json:"grok_models,omitempty"`
+	GrokBilling                  json.RawMessage             `json:"grok_billing,omitempty"`
+	GrokRateLimit                *auth.GrokRateLimitSnapshot `json:"grok_rate_limit,omitempty"`
+	GrokFreeQuota                *auth.GrokFreeQuotaSnapshot `json:"grok_free_quota,omitempty"`
+	AvatarURL                    string                      `json:"avatar_url,omitempty"`
+	VerifiedEmail                bool                        `json:"verified_email,omitempty"`
+	ProjectID                    string                      `json:"project_id,omitempty"`
+	AntigravityQuota             json.RawMessage             `json:"antigravity_quota,omitempty"`
+	AntigravityPermissions       json.RawMessage             `json:"antigravity_permissions,omitempty"`
+	AntigravitySyncWarning       string                      `json:"antigravity_sync_warning,omitempty"`
+	BaseURL                      string                      `json:"base_url,omitempty"`
+	BalanceQueryURL              string                      `json:"balance_query_url,omitempty"`
+	Models                       []string                    `json:"models,omitempty"`
+	ModelMapping                 string                      `json:"model_mapping,omitempty"`
+	CodexClientMetadataMode      string                      `json:"codex_client_metadata_mode,omitempty"`
+	CodexPassthroughMode         string                      `json:"codex_passthrough_mode,omitempty"`
+	ResponsesUpstreamTransport   string                      `json:"responses_upstream_transport,omitempty"`
+	CodexFingerprintMode         string                      `json:"codex_fingerprint_mode,omitempty"`
+	ClaudeFingerprintMode        string                      `json:"claude_fingerprint_mode,omitempty"`
+	ClaudeUserAgent              string                      `json:"claude_user_agent,omitempty"`
+	ClaudeClientPlatform         string                      `json:"claude_client_platform,omitempty"`
+	ClaudeVersionPolicy          string                      `json:"claude_version_policy,omitempty"`
+	ClaudeClientVersion          string                      `json:"claude_client_version,omitempty"`
+	ClaudeClientPlatformOverride string                      `json:"claude_client_platform_override,omitempty"`
+	ClaudeVersionPolicyOverride  string                      `json:"claude_version_policy_override,omitempty"`
+	ClaudeClientVersionOverride  string                      `json:"claude_client_version_override,omitempty"`
+	Timezone                     string                      `json:"timezone,omitempty"`
+	codexBPSAccountView
+	AccountHref                   string                     `json:"account_href,omitempty"`
+	CustomHeaders                 map[string]string          `json:"custom_headers,omitempty"`
+	HealthTier                    string                     `json:"health_tier"`
+	SchedulerScore                float64                    `json:"scheduler_score"`
+	DispatchScore                 float64                    `json:"dispatch_score"`
+	ScoreBiasOverride             *int64                     `json:"score_bias_override"`
+	ScoreBiasEffective            int64                      `json:"score_bias_effective"`
+	BaseConcurrencyOverride       *int64                     `json:"base_concurrency_override"`
+	BaseConcurrencyEffective      int64                      `json:"base_concurrency_effective"`
+	ConcurrencyCap                int64                      `json:"dynamic_concurrency_limit"`
+	ProxyURL                      string                     `json:"proxy_url"`
+	CreatedAt                     string                     `json:"created_at"`
+	UpdatedAt                     string                     `json:"updated_at"`
+	CodexUsageUpdatedAt           string                     `json:"codex_usage_updated_at,omitempty"`
+	Codex5HUsageUpdatedAt         string                     `json:"codex_5h_usage_updated_at,omitempty"`
+	ClaudeUsageProbeAt            string                     `json:"claude_usage_probe_at,omitempty"`
+	ClaudeUsageProbeError         string                     `json:"claude_usage_probe_error,omitempty"`
+	ClaudeUsageWindows            []auth.ClaudeUsageWindow   `json:"claude_usage_windows,omitempty"`
+	ClaudeUsageWindowsProbed      bool                       `json:"claude_usage_windows_probed,omitempty"` // 已跑过 OAuth usage 采样(前端据此只回填从未采样的旧行)
+	ActiveRequests                int64                      `json:"active_requests"`
+	OccupiedRequests              int64                      `json:"occupied_requests"`
+	SessionSlotBufferEnabled      bool                       `json:"session_slot_buffer_enabled"`
+	TotalRequests                 int64                      `json:"total_requests"`
+	LastUsedAt                    string                     `json:"last_used_at"`
+	SuccessRequests               int64                      `json:"success_requests"`
+	ErrorRequests                 int64                      `json:"error_requests"`
+	RetryErrorRequests            int64                      `json:"retry_error_requests"`
+	RateLimitAttempts             int64                      `json:"rate_limit_attempts"`
+	ErrorStatusCounts             map[string]int64           `json:"error_status_counts,omitempty"`
+	SuccessModelCounts            map[string]int64           `json:"success_model_counts,omitempty"`
+	UsagePercent7d                *float64                   `json:"usage_percent_7d"`
+	UsagePercent5h                *float64                   `json:"usage_percent_5h"`
+	UsagePercentSpark             *float64                   `json:"usage_percent_spark"`
+	RateLimitResetCredits         *int                       `json:"rate_limit_reset_credits"`
+	DaybreakSupported             bool                       `json:"daybreak_supported"`
+	DaybreakModels                map[string][]string        `json:"daybreak_models,omitempty"`
+	DaybreakCheckedAt             int64                      `json:"daybreak_checked_at,omitempty"`
+	ApplicableResetCredits        *int                       `json:"applicable_reset_credits"`
+	CreditsValid                  bool                       `json:"credits_valid"`
+	CreditsBalance                *string                    `json:"credits_balance"`
+	CreditsHasCredits             *bool                      `json:"credits_has_credits"`
+	CreditsUnlimited              *bool                      `json:"credits_unlimited"`
+	CreditsOverageLimitReached    *bool                      `json:"credits_overage_limit_reached"`
+	CreditsSpendControlReached    *bool                      `json:"credits_spend_control_reached,omitempty"`
+	CreditsRateLimitReachedType   string                     `json:"credits_rate_limit_reached_type,omitempty"`
+	AutoPause5hThreshold          *float64                   `json:"auto_pause_5h_threshold"`
+	AutoPause7dThreshold          *float64                   `json:"auto_pause_7d_threshold"`
+	AutoPause5hDisabled           bool                       `json:"auto_pause_5h_disabled"`
+	AutoPause7dDisabled           bool                       `json:"auto_pause_7d_disabled"`
+	UsageLimitOverride            *bool                      `json:"ignore_usage_limit_status_override"`
+	UsageLimitEffective           bool                       `json:"ignore_usage_limit_status_effective"`
+	DispatchCountLimit            *int64                     `json:"dispatch_count_limit"`
+	DispatchCountUsed             int64                      `json:"dispatch_count_used,omitempty"`
+	DispatchCountResetAt          string                     `json:"dispatch_count_reset_at,omitempty"`
+	DispatchCountLimited          bool                       `json:"dispatch_count_limited,omitempty"`
+	SchedulerPriority             *int64                     `json:"scheduler_priority"`
+	Usage5hDetail                 *accountUsageWindow        `json:"usage_5h_detail,omitempty"`
+	Usage7dDetail                 *accountUsageWindow        `json:"usage_7d_detail,omitempty"`
+	Reset5hAt                     string                     `json:"reset_5h_at,omitempty"`
+	Reset7dAt                     string                     `json:"reset_7d_at,omitempty"`
+	ResetSparkAt                  string                     `json:"reset_spark_at,omitempty"`
+	Window7dKind                  string                     `json:"usage_window_7d_kind,omitempty"`    // "monthly"(team 月窗)/"weekly"/""；供前端标「30天」而非误标「7天」
+	Window7dSeconds               *int64                     `json:"usage_window_7d_seconds,omitempty"` // 长窗口真实周期秒数
+	Billed5h                      *float64                   `json:"billed_5h"`
+	Billed7d                      *float64                   `json:"billed_7d"`
+	ScoreBreakdown                schedulerBreakdownResponse `json:"scheduler_breakdown"`
+	LastUnauthorizedAt            string                     `json:"last_unauthorized_at,omitempty"`
+	LastRateLimitedAt             string                     `json:"last_rate_limited_at,omitempty"`
+	LastTimeoutAt                 string                     `json:"last_timeout_at,omitempty"`
+	LastServerErrorAt             string                     `json:"last_server_error_at,omitempty"`
+	CooldownReason                string                     `json:"cooldown_reason,omitempty"`
+	CooldownUntil                 string                     `json:"cooldown_until,omitempty"`
+	ModelCooldowns                []modelCooldownResponse    `json:"model_cooldowns,omitempty"`
+	ModelCooldownModeOverride     *string                    `json:"model_cooldown_mode_override"`
+	ModelCooldownSecondsOverride  *int                       `json:"model_cooldown_seconds_override"`
+	ModelCooldownBackoffOverride  *bool                      `json:"model_cooldown_backoff_override"`
+	ModelCooldownModeEffective    string                     `json:"model_cooldown_mode_effective"`
+	ModelCooldownSecondsEffective int                        `json:"model_cooldown_seconds_effective"`
+	ModelCooldownBackoffEffective bool                       `json:"model_cooldown_backoff_effective"`
+	Enabled                       bool                       `json:"enabled"`
+	Locked                        bool                       `json:"locked"`
+	AllowedAPIKeyIDs              []int64                    `json:"allowed_api_key_ids"`
+	Tags                          []string                   `json:"tags"`
+	GroupIDs                      []int64                    `json:"group_ids"`
+	Note                          string                     `json:"note"`
 	// 图片配额信息
 	ImageQuotaRemaining *int   `json:"image_quota_remaining,omitempty"`
 	ImageQuotaTotal     *int   `json:"image_quota_total,omitempty"`
@@ -2143,9 +2149,6 @@ type accountLiteResponse struct {
 	ClaudeAPI              bool   `json:"claude_api"`
 	AgentIdentity          bool   `json:"agent_identity"`
 	GrokAuthKind           string `json:"grok_auth_kind,omitempty"`
-	ExcelBPSEnabled        bool   `json:"openai_excel_bps"`
-	ExcelBPSOptOut         bool   `json:"openai_excel_bps_opt_out"`
-	ExcelBPSEffective      bool   `json:"openai_excel_bps_effective"`
 }
 
 func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
@@ -2158,10 +2161,8 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 
 	// 运行时状态覆盖 DB 状态(与完整视图一致),其余富化一律跳过。
 	runtimeStatus := make(map[int64]string)
-	excelBPSEffective := make(map[int64]bool)
 	for _, acc := range h.store.Accounts() {
 		runtimeStatus[acc.DBID] = acc.RuntimeStatus()
-		excelBPSEffective[acc.DBID] = acc.IsExcelBPSEnabled()
 	}
 
 	accounts := make([]accountLiteResponse, 0, len(rows))
@@ -2207,9 +2208,6 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 			ClaudeAPI:              isClaudeAccount,
 			AgentIdentity:          isAgentIdentityCredentialRow(row),
 			GrokAuthKind:           grokAuthKind,
-			ExcelBPSEnabled:        row.GetCredentialBool(auth.ExcelBPSCredentialKey),
-			ExcelBPSOptOut:         row.GetCredentialBool(auth.ExcelBPSOptOutCredentialKey),
-			ExcelBPSEffective:      excelBPSEffective[row.ID],
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": accounts})
@@ -2244,10 +2242,10 @@ type updateAccountSchedulerReq struct {
 	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
-	CodexBPS                json.RawMessage `json:"codex_bps_enabled"`
-	AccountHref             json.RawMessage `json:"account_href"`
-	ExcelBPSEnabled         json.RawMessage `json:"openai_excel_bps"`
-	ExcelBPSOptOut          json.RawMessage `json:"openai_excel_bps_opt_out"`
+	codexBPSAccountFieldsReq
+	AccountHref     json.RawMessage `json:"account_href"`
+	ExcelBPSEnabled json.RawMessage `json:"openai_excel_bps"`
+	ExcelBPSOptOut  json.RawMessage `json:"openai_excel_bps_opt_out"`
 }
 
 type accountSchedulerUpdate struct {
@@ -2275,7 +2273,6 @@ type accountSchedulerUpdate struct {
 	ClaudeVersionPolicy     database.OptionalString
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
-	CodexBPS                database.OptionalBool
 	AccountHref             database.OptionalString
 	ExcelBPSEnabled         database.OptionalBool
 	ExcelBPSOptOut          database.OptionalBool
@@ -2400,10 +2397,6 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
-	codexBPS, err := parseOptionalBoolField(req.CodexBPS, "codex_bps_enabled")
-	if err != nil {
-		return accountSchedulerUpdate{}, err
-	}
 	accountHref, err := parseOptionalStringField(req.AccountHref, "account_href", validateAccountHref)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2448,8 +2441,8 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if timezoneField.Set {
 		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
 	}
-	if codexBPS.Set {
-		credentialUpdates[auth.CodexBPSEnabledCredentialKey] = codexBPS.Value
+	if err := parseCodexBPSAccountFields(req.codexBPSAccountFieldsReq, credentialUpdates); err != nil {
+		return accountSchedulerUpdate{}, err
 	}
 	if accountHref.Set {
 		normalized, err := auth.NormalizeAccountHref(accountHref.Value)
@@ -2457,12 +2450,6 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 			return accountSchedulerUpdate{}, err
 		}
 		credentialUpdates[auth.AccountHrefCredentialKey] = normalized
-	}
-	if excelBPSEnabled.Set {
-		credentialUpdates[auth.ExcelBPSCredentialKey] = excelBPSEnabled.Value
-	}
-	if excelBPSOptOut.Set {
-		credentialUpdates[auth.ExcelBPSOptOutCredentialKey] = excelBPSOptOut.Value
 	}
 	if autoPause5hThreshold.Set {
 		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
@@ -2511,7 +2498,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		credentialUpdates = nil
 	}
 
-	return accountSchedulerUpdate{
+	update := accountSchedulerUpdate{
 		ScoreBiasOverride:       scoreBiasOverride,
 		BaseConcurrencyOverride: baseConcurrencyOverride,
 		SkipWarmTier:            skipWarmTier,
@@ -2536,12 +2523,14 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ClaudeVersionPolicy:     claudeVersionPolicy,
 		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
-		CodexBPS:                codexBPS,
 		AccountHref:             accountHref,
 		ExcelBPSEnabled:         excelBPSEnabled,
 		ExcelBPSOptOut:          excelBPSOptOut,
 		CredentialUpdates:       credentialUpdates,
-	}, nil
+	}
+	// Upstream's Basispoints mode is accepted as the BPS plugin override.
+	translateExcelBPSMode(&update)
+	return update, nil
 }
 
 // validateClaudeFingerprintMode 允许空串(=跟随全局默认),其余必须是 preserve/force。
@@ -2607,7 +2596,7 @@ func validateCodexFingerprintMode(value string) error {
 }
 
 func (u accountSchedulerUpdate) hasChanges() bool {
-	return len(u.CredentialUpdates) > 0 || u.ScoreBiasOverride.Set || u.CodexBPS.Set ||
+	return len(u.CredentialUpdates) > 0 || u.ScoreBiasOverride.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
 		u.PromptFilterPolicy.Set ||
@@ -2858,6 +2847,10 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		}
 	}
 
+	if err := h.validateCodexBPSAccountTarget(id, update.CredentialUpdates); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, update.ScoreBiasOverride, update.BaseConcurrencyOverride, update.SkipWarmTier, update.AllowedAPIKeyIDs, database.OptionalStringSlice{Set: update.Tags.Set, Values: update.Tags.Values}, update.GroupIDs, update.ProxyURL, update.CredentialUpdates, update.accountPolicyUpdate()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
@@ -2867,6 +2860,10 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		return
 	}
 	h.applyAccountSchedulerRuntimeUpdate(id, update)
+	// BPS keys are not watched by the account outbox triggers; publish them.
+	if codexBPSFieldsChanged(update.CredentialUpdates) {
+		_ = h.db.InsertSchedulerOutboxEvent(ctx, database.SchedulerEntityAccount, id, "updated")
+	}
 
 	writeMessage(c, http.StatusOK, "账号调度配置已更新")
 }
@@ -2927,9 +2924,7 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	if value, ok := update.CredentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey].(string); ok {
 		h.store.ApplyAccountUpstreamRequestIDHeader(id, value)
 	}
-	if update.CodexBPS.Set {
-		h.store.ApplyAccountCodexBPS(id, update.CodexBPS.Value)
-	}
+	h.applyCodexBPSAccountRuntime(id, update.CredentialUpdates)
 	if update.CustomHeaders.Set {
 		h.store.ApplyAccountCustomHeaders(id, update.CustomHeaders.Values)
 	} else if update.Timezone.Set {
@@ -2976,17 +2971,6 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.Timezone.Set {
 		h.store.ApplyAccountTimezone(id, update.Timezone.Value)
-	}
-	if value, ok := update.CredentialUpdates[auth.ExcelBPSCredentialKey].(bool); ok {
-		h.store.ApplyAccountExcelBPSEnabled(id, value)
-	}
-	if value, ok := update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey].(bool); ok {
-		h.store.ApplyAccountExcelBPSOptOut(id, value)
-	}
-	// Changing an account's Basispoints mode is an explicit decision; it
-	// supersedes any automatic pause or cooldown of that route.
-	if update.ExcelBPSEnabled.Set || update.ExcelBPSOptOut.Set {
-		proxy.ClearExcelBPSPause(id)
 	}
 }
 
@@ -4853,8 +4837,8 @@ func validateAccountModelsForAccount(account *auth.Account, models []string) err
 }
 
 // SyncAccountUpstreamModels 用账号自身凭据实时拉取上游模型清单，
-// 返回该账号真实可用的模型 slug 列表。账号白名单本身只读不落库，由管理端确认后再保存；
-// 但清单里注册表尚不认识的模型会顺手学习进注册表（只增不改不删，与客户端刷新
+// 返回该账号真实可用的模型 slug 列表。已有非空白名单会自动并入清单中缺少的新模型；
+// 空白名单代表“全部放行”，保持为空。清单里注册表尚不认识的模型会顺手学习进注册表（只增不改不删，与客户端刷新
 // 选单时的学习同一实现）：否则 Trusted Access for Cyber 这类只有个别账号才有的模型
 // 探测看得见、保存进白名单后 /v1/models 却不列、调用直接报模型不存在（issue #624）。
 func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
@@ -4896,7 +4880,12 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 			return
 		}
 		models = auth.NormalizeAccountModels(models)
-		c.JSON(http.StatusOK, gin.H{"models": models})
+		whitelist, added, mergeErr := h.store.MergeAccountModelsFromUpstream(c.Request.Context(), id, models)
+		if mergeErr != nil {
+			writeError(c, http.StatusInternalServerError, fmt.Sprintf("更新账号模型白名单失败: %s", mergeErr.Error()))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"models": models, "whitelist": whitelist, "whitelist_added": added})
 		return
 	}
 	if account.IsOpenAIResponsesAPI() {
@@ -4933,7 +4922,12 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 	} else if len(added) > 0 {
 		log.Printf("[账号 %d] 已从上游模型清单学习 %d 个新模型进注册表: %s", id, len(added), strings.Join(added, ", "))
 	}
-	c.JSON(http.StatusOK, gin.H{"models": models})
+	whitelist, whitelistAdded, mergeErr := h.store.MergeAccountModelsFromUpstream(c.Request.Context(), id, models)
+	if mergeErr != nil {
+		writeError(c, http.StatusInternalServerError, fmt.Sprintf("更新账号模型白名单失败: %s", mergeErr.Error()))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"models": models, "whitelist": whitelist, "whitelist_added": whitelistAdded})
 }
 
 // importToken 导入时的统一 token 载体
@@ -6525,6 +6519,9 @@ type batchUpdateAccountsReq struct {
 	Selector *accountOperationSelector `json:"selector,omitempty"`
 	Enabled  *bool                     `json:"enabled"`
 	Locked   *bool                     `json:"locked"`
+	// AddGroupIDs adds the accounts to these groups and keeps their other
+	// groups (group_ids replaces them); the two cannot be combined.
+	AddGroupIDs *[]int64 `json:"add_group_ids"`
 }
 
 func (h *Handler) accountOperationIdentity(id int64) (string, string) {
@@ -6981,13 +6978,43 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 	}
 	enabled := optionalBoolFromPtr(req.Enabled)
 	locked := optionalBoolFromPtr(req.Locked)
-	if !enabled.Set && !locked.Set && !schedulerUpdate.hasChanges() {
+	var addGroupIDs []int64
+	if req.AddGroupIDs != nil {
+		addGroupIDs = uniqueAccountIDs(*req.AddGroupIDs)
+		if len(addGroupIDs) == 0 {
+			writeError(c, http.StatusBadRequest, "add_group_ids 不能为空")
+			return
+		}
+		if schedulerUpdate.GroupIDs.Set {
+			writeError(c, http.StatusBadRequest, "group_ids 与 add_group_ids 不能同时提供")
+			return
+		}
+	}
+	metadataChanges := enabled.Set || locked.Set || schedulerUpdate.hasChanges()
+	if !metadataChanges && len(addGroupIDs) == 0 {
 		writeError(c, http.StatusBadRequest, "请提供要更新的字段")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
+
+	// BPS fields only apply to accounts that can use BPS: the others in the
+	// selection are skipped and reported as failed.
+	requested := int64(len(ids))
+	if codexBPSFieldsChanged(schedulerUpdate.CredentialUpdates) {
+		eligible := make([]int64, 0, len(ids))
+		for _, id := range ids {
+			if h.validateCodexBPSAccountTarget(id, schedulerUpdate.CredentialUpdates) == nil {
+				eligible = append(eligible, id)
+			}
+		}
+		ids = eligible
+		if len(ids) == 0 {
+			c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("已更新 0 个账号，失败 %d 个（账号类型不支持 BPS）", requested), "success": 0, "failed": requested})
+			return
+		}
+	}
 
 	if schedulerUpdate.AllowedAPIKeyIDs.Set {
 		missingAPIKeyIDs, err := h.findMissingAPIKeyIDs(ctx, schedulerUpdate.AllowedAPIKeyIDs.Values)
@@ -7004,8 +7031,12 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 			return
 		}
 	}
-	if schedulerUpdate.GroupIDs.Set {
-		missingGroupIDs, err := h.db.VerifyAccountGroupIDs(ctx, schedulerUpdate.GroupIDs.Values)
+	groupTargets := schedulerUpdate.GroupIDs.Values
+	if len(addGroupIDs) > 0 {
+		groupTargets = addGroupIDs
+	}
+	if schedulerUpdate.GroupIDs.Set || len(addGroupIDs) > 0 {
+		missingGroupIDs, err := h.db.VerifyAccountGroupIDs(ctx, groupTargets)
 		if err != nil {
 			writeError(c, http.StatusInternalServerError, "校验账号分组失败: "+err.Error())
 			return
@@ -7018,7 +7049,7 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, "group_ids 包含不存在的分组 ID: "+strings.Join(values, ", "))
 			return
 		}
-		if len(schedulerUpdate.GroupIDs.Values) > 0 {
+		if len(groupTargets) > 0 {
 			rows, err := h.db.ListActive(ctx)
 			if err != nil {
 				writeError(c, http.StatusInternalServerError, "查询账号失败: "+err.Error())
@@ -7034,29 +7065,59 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 					targetRows = append(targetRows, row)
 				}
 			}
-			if err := h.validateGroupChannelForRows(ctx, targetRows, schedulerUpdate.GroupIDs.Values); err != nil {
+			if err := h.validateGroupChannelForRows(ctx, targetRows, groupTargets); err != nil {
 				writeError(c, http.StatusBadRequest, err.Error())
 				return
+			}
+			if len(addGroupIDs) > 0 {
+				// Only existing accounts are added to groups.
+				ids = ids[:0]
+				for _, row := range targetRows {
+					ids = append(ids, row.ID)
+				}
 			}
 		}
 	}
 
-	updatedIDs, err := h.db.BatchUpdateAccountMetadata(ctx, ids, database.BatchAccountMetadataUpdate{
-		Enabled:                 enabled,
-		Locked:                  locked,
-		ScoreBiasOverride:       schedulerUpdate.ScoreBiasOverride,
-		BaseConcurrencyOverride: schedulerUpdate.BaseConcurrencyOverride,
-		SkipWarmTier:            schedulerUpdate.SkipWarmTier,
-		Policies:                schedulerUpdate.accountPolicyUpdate(),
-		AllowedAPIKeyIDs:        schedulerUpdate.AllowedAPIKeyIDs,
-		Tags:                    database.OptionalStringSlice{Set: schedulerUpdate.Tags.Set, Values: schedulerUpdate.Tags.Values},
-		GroupIDs:                schedulerUpdate.GroupIDs,
-		ProxyURL:                schedulerUpdate.ProxyURL,
-		CredentialUpdates:       schedulerUpdate.CredentialUpdates,
-	})
-	if err != nil {
-		writeError(c, http.StatusInternalServerError, "批量更新账号失败: "+err.Error())
-		return
+	updatedIDs := ids
+	if metadataChanges {
+		updatedIDs, err = h.db.BatchUpdateAccountMetadata(ctx, ids, database.BatchAccountMetadataUpdate{
+			Enabled:                 enabled,
+			Locked:                  locked,
+			ScoreBiasOverride:       schedulerUpdate.ScoreBiasOverride,
+			BaseConcurrencyOverride: schedulerUpdate.BaseConcurrencyOverride,
+			SkipWarmTier:            schedulerUpdate.SkipWarmTier,
+			Policies:                schedulerUpdate.accountPolicyUpdate(),
+			AllowedAPIKeyIDs:        schedulerUpdate.AllowedAPIKeyIDs,
+			Tags:                    database.OptionalStringSlice{Set: schedulerUpdate.Tags.Set, Values: schedulerUpdate.Tags.Values},
+			GroupIDs:                schedulerUpdate.GroupIDs,
+			ProxyURL:                schedulerUpdate.ProxyURL,
+			CredentialUpdates:       schedulerUpdate.CredentialUpdates,
+		})
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "批量更新账号失败: "+err.Error())
+			return
+		}
+	}
+	if len(addGroupIDs) > 0 && len(updatedIDs) > 0 {
+		if err := h.db.AddAccountsToGroups(ctx, updatedIDs, addGroupIDs); err != nil {
+			writeError(c, http.StatusInternalServerError, "批量加入分组失败: "+err.Error())
+			return
+		}
+		if h.store != nil {
+			memberships, err := h.db.ListAccountGroupMembershipsByAccountIDs(ctx, updatedIDs)
+			if err == nil {
+				for _, id := range updatedIDs {
+					h.store.ApplyAccountGroups(id, memberships[id])
+				}
+			}
+		}
+	}
+	// BPS keys are not watched by the account outbox triggers; publish them.
+	if codexBPSFieldsChanged(schedulerUpdate.CredentialUpdates) {
+		for _, id := range updatedIDs {
+			_ = h.db.InsertSchedulerOutboxEvent(ctx, database.SchedulerEntityAccount, id, "updated")
+		}
 	}
 
 	if h.store != nil {
@@ -7082,7 +7143,7 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 	}
 
 	success := int64(len(updatedIDs))
-	failed := int64(len(ids)) - success
+	failed := requested - success
 	c.JSON(http.StatusOK, gin.H{
 		"message": fmt.Sprintf("已更新 %d 个账号，失败 %d 个", success, failed),
 		"success": success,
@@ -7648,7 +7709,7 @@ func (h *Handler) syncAccountPlanAfterReset(_ context.Context, acc *auth.Account
 }
 
 func (h *Handler) syncSingleAccountPlanOnReset(ctx context.Context, acc *auth.Account) error {
-	if h == nil || h.store == nil || acc == nil || acc.IsRelayStyle() || acc.GetAccessToken() == "" {
+	if h == nil || h.store == nil || acc == nil || acc.IsRelayStyle() || acc.GetAccessToken() == "" || proxy.BPSOwnsAccount(acc) {
 		return nil
 	}
 	model, err := h.connectionTestModelForAccount(ctx, acc, "")
@@ -8051,6 +8112,7 @@ func parseOpsErrorLogFilter(c *gin.Context, withPaging bool) (database.UsageLogF
 		AccountID:       accountID,
 		ErrorOnly:       true,
 		IncludeCanceled: true,
+		Transport:       strings.TrimSpace(c.Query("transport")),
 		ErrorKind:       strings.TrimSpace(c.Query("error_kind")),
 		Query:           strings.TrimSpace(c.Query("q")),
 		Channel:         parseUsageChannel(c),
@@ -8081,6 +8143,12 @@ func parseOpsErrorLogFilter(c *gin.Context, withPaging bool) (database.UsageLogF
 		v := streamStr == "true"
 		filter.StreamOnly = &v
 	}
+	// retry=true/false: retried attempts only / first attempts only;
+	// timeout=true: timeout errors (the summary's timeouts count).
+	if filter.RetryOnly, ok = parseUsageLogBoolFilter(c, "retry"); !ok {
+		return database.UsageLogFilter{}, false
+	}
+	filter.TimeoutOnly = c.Query("timeout") == "true"
 
 	if withPaging {
 		if pageStr := c.Query("page"); pageStr != "" {
@@ -8467,6 +8535,7 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 		ErrorKind:         strings.TrimSpace(c.Query("error_kind")),
 		Query:             strings.TrimSpace(c.Query("q")),
 		Channel:           parseUsageChannel(c),
+		Transport:         strings.TrimSpace(c.Query("transport")),
 	}
 
 	if pageStr := c.Query("page"); pageStr != "" {
@@ -8556,6 +8625,26 @@ func (h *Handler) GetOpsErrorSummary(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// GetOpsErrorsByAccount groups the filtered error rows by account: per
+// account the total, a count per error kind and the latest error
+// (?limit=, default 200 accounts).
+func (h *Handler) GetOpsErrorsByAccount(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	filter, ok := parseOpsErrorLogFilter(c, false)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
+	groups, err := h.db.GetUsageErrorsByAccount(ctx, filter, limit)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": groups})
 }
 
 // GetUsageLogsErrorSummary 获取与请求记录筛选联动的错误摘要。
@@ -9524,6 +9613,8 @@ type settingsResponse struct {
 	CodexSessionAutoLockThreshold       int                              `json:"codex_session_auto_lock_threshold"`
 	CodexTurnStateVaultEnabled          bool                             `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        string                           `json:"usage_log_mode"`
+	UsageMeteringEnabled                bool                             `json:"usage_metering_enabled"`
+	CodexWebSearchProxyLocation         bool                             `json:"codex_web_search_proxy_location"`
 	UsageLogBatchSize                   int                              `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        int                              `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                   string                           `json:"stream_flush_policy"`
@@ -9708,6 +9799,8 @@ type updateSettingsReq struct {
 	CodexSessionAutoLockThreshold       *int                             `json:"codex_session_auto_lock_threshold"`
 	CodexTurnStateVaultEnabled          *bool                            `json:"codex_turn_state_vault_enabled"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
+	UsageMeteringEnabled                *bool                            `json:"usage_metering_enabled"`
+	CodexWebSearchProxyLocation         *bool                            `json:"codex_web_search_proxy_location"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                   *string                          `json:"stream_flush_policy"`
@@ -10339,20 +10432,29 @@ func (h *Handler) GetObservedInstructions(c *gin.Context) {
 }
 
 func (h *Handler) GetSettings(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	snapshot, err := h.settingsSnapshot(c.Request.Context())
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, snapshot)
+}
+
+// settingsSnapshot builds the GET /settings view; ExportSettings reuses it so a
+// backup and the settings page always read the same saved state.
+func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, error) {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	cacheSettingsStore := h.cacheSettingsStore()
 	if cacheSettingsStore == nil {
-		writeError(c, http.StatusInternalServerError, "响应缓存设置存储不可用")
-		return
+		return nil, fmt.Errorf("响应缓存设置存储不可用")
 	}
 	responseCacheSettings, err := cacheSettingsStore.GetResponseCacheSettings(ctx)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "读取响应缓存设置失败："+err.Error())
-		return
+		return nil, fmt.Errorf("读取响应缓存设置失败：%w", err)
 	}
 	dbSettings, _ := h.db.GetSystemSettings(ctx)
-	_, adminAuthSource := h.resolveAdminSecret(c.Request.Context())
+	_, adminAuthSource := h.resolveAdminSecret(parent)
 	adminSecret := ""
 	var resinURL, resinPlatformName string
 	branding := brandingFromSettings(dbSettings)
@@ -10400,7 +10502,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	}
 	modelCooldownSettings := h.store.GetModelCooldownSettings()
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
-	c.JSON(http.StatusOK, settingsResponse{
+	return &settingsResponse{
 		antigravityOAuthSettingsView:        currentAntigravityOAuthSettingsView(),
 		SiteName:                            branding.SiteName,
 		SiteLogo:                            branding.SiteLogo,
@@ -10453,12 +10555,12 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		SchedulerEngine:                     h.store.SchedulerEngine(),
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
-		CodexBasispointsEnabled:             runtimeCfg.CodexBasispointsEnabled,
-		CodexBasispointsModels:              runtimeCfg.CodexBasispointsModels,
+		CodexBasispointsEnabled:             bpsPluginGlobalEnabled(),
+		CodexBasispointsModels:              bpsPluginModelsText(),
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,
 		CodexBasispoints429CooldownSec:      runtimeCfg.CodexBasispoints429CooldownSec,
-		CodexBasispointsCacheWriteAsInput:   runtimeCfg.CodexBasispointsCacheWriteAsInput,
+		CodexBasispointsCacheWriteAsInput:   bpsPluginCacheCreationAsInput(),
 		CodexWSWeakNetworkMode:              runtimeCfg.CodexWSWeakNetworkMode,
 		CodexWSKeepaliveEnabled:             h.store.CodexWSKeepaliveEnabled(),
 		CodexWSKeepaliveIntervalSec:         h.store.CodexWSKeepaliveIntervalSec(),
@@ -10565,6 +10667,8 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexSessionAutoLockThreshold:       runtimeCfg.CodexSessionAutoLockThreshold,
 		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
+		UsageMeteringEnabled:                h.db.GetUsageMeteringEnabled(),
+		CodexWebSearchProxyLocation:         h.db.GetCodexWebSearchProxyLocation(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
@@ -10593,7 +10697,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		SmartPacingMinConcurrency:           h.store.GetSmartPacingMinConcurrency(),
 		SmartPacingWindows:                  h.store.GetSmartPacingWindows(),
 		IgnoreUsageLimitStatus:              h.store.IgnoreUsageLimitStatus(),
-	})
+	}, nil
 }
 
 func promptFilterCustomPatternSnapshotsEquivalent(leftRaw, rightRaw string) bool {
@@ -11858,11 +11962,34 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		usageLogChanged = true
 		log.Printf("设置已更新: usage_log_flush_interval_seconds = %d", usageLogFlushIntervalSeconds)
 	}
+	if req.UsageMeteringEnabled != nil {
+		if err := h.db.SaveUsageMeteringEnabled(c.Request.Context(), *req.UsageMeteringEnabled); err != nil {
+			writeError(c, http.StatusInternalServerError, "保存轻量计量设置失败，设置未生效")
+			return
+		}
+		log.Printf("设置已更新: usage_metering_enabled = %v", *req.UsageMeteringEnabled)
+	}
+	if req.CodexWebSearchProxyLocation != nil {
+		if err := h.db.SaveCodexWebSearchProxyLocation(c.Request.Context(), *req.CodexWebSearchProxyLocation); err != nil {
+			writeError(c, http.StatusInternalServerError, "保存 Web Search 代理地区设置失败，设置未生效")
+			return
+		}
+		proxy.SetCodexWebSearchProxyLocation(*req.CodexWebSearchProxyLocation)
+		log.Printf("设置已更新: codex_web_search_proxy_location = %v", *req.CodexWebSearchProxyLocation)
+	}
+	// Enable metering before dropping details, and apply the detail mode before
+	// disabling metering, so a combined change never opens an unmetered gap.
+	if req.UsageMeteringEnabled != nil && *req.UsageMeteringEnabled {
+		h.db.SetUsageMeteringEnabled(true)
+	}
 	if usageLogChanged {
 		h.db.SetUsageLogConfig(usageLogMode, usageLogBatchSize, usageLogFlushIntervalSeconds)
 		usageLogMode = h.db.GetUsageLogMode()
 		usageLogBatchSize = h.db.GetUsageLogBatchSize()
 		usageLogFlushIntervalSeconds = h.db.GetUsageLogFlushIntervalSeconds()
+	}
+	if req.UsageMeteringEnabled != nil && !*req.UsageMeteringEnabled {
+		h.db.SetUsageMeteringEnabled(false)
 	}
 
 	promptFilterCfg := h.store.GetPromptFilterConfig()
@@ -12251,6 +12378,25 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	} else {
+		// The global Basispoints default is the BPS plugin's global switch.
+		if req.CodexBasispointsEnabled != nil {
+			if err := saveBPSPluginGlobalEnabled(c.Request.Context(), *req.CodexBasispointsEnabled); err != nil {
+				writeError(c, http.StatusInternalServerError, "保存 BPS 插件全局开关失败: "+err.Error())
+				return
+			}
+		}
+		if req.CodexBasispointsModels != nil {
+			if err := saveBPSPluginModels(c.Request.Context(), runtimeCfg.CodexBasispointsModels); err != nil {
+				writeError(c, http.StatusInternalServerError, "保存 BPS 插件模型范围失败: "+err.Error())
+				return
+			}
+		}
+		if req.CodexBasispointsCacheWriteAsInput != nil {
+			if err := saveBPSPluginCacheCreationAsInput(c.Request.Context(), *req.CodexBasispointsCacheWriteAsInput); err != nil {
+				writeError(c, http.StatusInternalServerError, "保存 BPS 插件缓存写入计费配置失败: "+err.Error())
+				return
+			}
+		}
 		proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 			current.CodexBasispointsEnabled = runtimeCfg.CodexBasispointsEnabled
 			current.CodexBasispointsModels = runtimeCfg.CodexBasispointsModels
@@ -12298,6 +12444,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				// just-published rule is not temporarily replaced in this Store by the
 				// older snapshot used to edit unrelated Prompt settings.
 				if persisted, readErr := h.db.GetSystemSettings(c.Request.Context()); readErr == nil && persisted != nil {
+					if overrides, parseErr := promptfilter.ParseBuiltinPatternOverrides(persisted.PromptFilterBuiltinOverrides); parseErr == nil {
+						promptFilterCfg.BuiltinOverrides = overrides
+					}
 					if patterns, parseErr := promptfilter.ParseCustomPatterns(persisted.PromptFilterCustomPatterns); parseErr == nil {
 						promptFilterCfg.CustomPatterns = patterns
 					} else {
@@ -12460,12 +12609,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		SchedulerEngine:                     h.store.SchedulerEngine(),
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
-		CodexBasispointsEnabled:             runtimeCfg.CodexBasispointsEnabled,
-		CodexBasispointsModels:              runtimeCfg.CodexBasispointsModels,
+		CodexBasispointsEnabled:             bpsPluginGlobalEnabled(),
+		CodexBasispointsModels:              bpsPluginModelsText(),
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,
 		CodexBasispoints429CooldownSec:      runtimeCfg.CodexBasispoints429CooldownSec,
-		CodexBasispointsCacheWriteAsInput:   runtimeCfg.CodexBasispointsCacheWriteAsInput,
+		CodexBasispointsCacheWriteAsInput:   bpsPluginCacheCreationAsInput(),
 		CodexWSWeakNetworkMode:              runtimeCfg.CodexWSWeakNetworkMode,
 		CodexWSKeepaliveEnabled:             h.store.CodexWSKeepaliveEnabled(),
 		CodexWSKeepaliveIntervalSec:         h.store.CodexWSKeepaliveIntervalSec(),
@@ -12574,6 +12723,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexSessionAutoLockThreshold:       runtimeCfg.CodexSessionAutoLockThreshold,
 		CodexTurnStateVaultEnabled:          runtimeCfg.CodexTurnStateVaultEnabled,
 		UsageLogMode:                        usageLogMode,
+		UsageMeteringEnabled:                h.db.GetUsageMeteringEnabled(),
+		CodexWebSearchProxyLocation:         h.db.GetCodexWebSearchProxyLocation(),
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
 		StreamFlushPolicy:                   runtimeCfg.StreamFlushPolicy,
@@ -13703,13 +13854,17 @@ func (h *Handler) CleanErrorProxies(c *gin.Context) {
 	})
 }
 
-func (h *Handler) persistProxyTestResult(ctx context.Context, id int64, expectedURL, status, ip, location, timezone string, latencyMs int) error {
+func (h *Handler) persistProxyTestResult(ctx context.Context, id int64, expectedURL, status, ip, location, timezone string, latencyMs int, geo ...database.ProxyTestGeo) error {
 	if id <= 0 {
 		return nil
 	}
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	if err := h.db.UpdateProxyTestResult(saveCtx, id, expectedURL, status, ip, location, timezone, latencyMs); err != nil {
+	var testGeo database.ProxyTestGeo
+	if len(geo) > 0 {
+		testGeo = geo[0]
+	}
+	if err := h.db.UpdateProxyTestResultWithGeo(saveCtx, id, expectedURL, status, ip, location, timezone, latencyMs, testGeo); err != nil {
 		return err
 	}
 	if status == database.ProxyTestStatusError {
@@ -13786,6 +13941,7 @@ func (h *Handler) TestProxy(c *gin.Context) {
 			result.Location,
 			result.Timezone,
 			result.LatencyMs,
+			proxyProbeGeoForStorage(result, req.Lang),
 		); err != nil {
 			respondProxyTestSaveError(c, err, result.Error)
 			return

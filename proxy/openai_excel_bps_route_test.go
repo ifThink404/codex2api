@@ -28,27 +28,27 @@ func setExcelBPSGlobalForTest(t *testing.T, enabled bool, models string) {
 }
 
 func TestExcelBPSRouteAvailable(t *testing.T) {
+	enableExcelBPSAdapterForTest(t)
 	for _, tc := range []struct {
-		name            string
-		global          bool
-		models          string
-		enabled, optOut bool
-		accountModels   []string
-		model           string
-		want            bool
+		name          string
+		global        bool
+		models        string
+		enabled       bool
+		accountModels []string
+		model         string
+		want          bool
 	}{
-		{name: "global off, not opted in", model: "gpt-6-astra"},
-		{name: "global on follows default", global: true, model: "gpt-6-astra", want: true},
-		{name: "global on excluded account", global: true, optOut: true, model: "gpt-6-astra"},
+		// fork: the adapter's global default is gone (the BPS plugin owns
+		// enablement), so only the account opt-in admits an account.
+		{name: "global on alone admits nothing", global: true, model: "gpt-6-astra"},
 		{name: "explicit account opt-in", enabled: true, model: "gpt-5.5", want: true},
-		{name: "global list admits model", global: true, models: "gpt-6-astra,gpt-5.6-sol", model: "GPT-6-Astra", want: true},
-		{name: "global list rejects model", global: true, models: "gpt-6-astra", model: "gpt-5.5"},
+		{name: "global list admits model", enabled: true, models: "gpt-6-astra,gpt-5.6-sol", model: "GPT-6-Astra", want: true},
 		{name: "global list also scopes opted-in accounts", enabled: true, models: "gpt-6-astra", model: "gpt-5.5"},
-		{name: "account allowlist still applies", global: true, accountModels: []string{"gpt-5.5"}, model: "gpt-6-astra"},
+		{name: "account allowlist still applies", enabled: true, accountModels: []string{"gpt-5.5"}, model: "gpt-6-astra"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setExcelBPSGlobalForTest(t, tc.global, tc.models)
-			account := &auth.Account{DBID: 7, AccessToken: "synthetic", ExcelBPSEnabled: tc.enabled, ExcelBPSOptOut: tc.optOut, Models: tc.accountModels}
+			account := &auth.Account{DBID: 7, AccessToken: "synthetic", ExcelBPSEnabled: tc.enabled, Models: tc.accountModels}
 			if got := excelBPSRouteAvailable(account, tc.model); got != tc.want {
 				t.Fatalf("excelBPSRouteAvailable = %t, want %t", got, tc.want)
 			}
@@ -82,6 +82,7 @@ type excelBPSRouteHarness struct {
 
 func newExcelBPSRouteHarness(t *testing.T, bpsResponses func(n int) (int, string)) *excelBPSRouteHarness {
 	t.Helper()
+	enableExcelBPSAdapterForTest(t)
 	resetExcelBPSHealthForTest(t)
 	harness := &excelBPSRouteHarness{}
 	oldDo, oldResin := excelBPSDo, resinCfg.Load()
@@ -108,7 +109,7 @@ func newExcelBPSRouteHarness(t *testing.T, bpsResponses func(n int) (int, string
 	SetResinConfig(&ResinConfig{BaseURL: native.URL, PlatformName: "test"})
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-6-astra"})
 	// Deliberately not opted in: the global default must select it.
-	harness.account = &auth.Account{DBID: 92, AccessToken: "synthetic-access-token", AccountID: "chatgpt-account", PlanType: "pro"}
+	harness.account = &auth.Account{DBID: 92, AccessToken: "synthetic-access-token", AccountID: "chatgpt-account", PlanType: "pro", ExcelBPSEnabled: true} // fork: the adapter no longer reads a global default
 	store.AddAccount(harness.account)
 	h := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 	harness.router = gin.New()

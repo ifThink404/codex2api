@@ -310,6 +310,7 @@ func (db *DB) ensurePromptRiskEventsTable(ctx context.Context) error {
 		return err
 	}
 	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_identities_user_lookup ON prompt_risk_identities(subject_type, platform, external_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_subject ON prompt_risk_events(subject_type, subject_key, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_created ON prompt_risk_events(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_risk_events_kind ON prompt_risk_events(event_kind, created_at)`,
@@ -1008,7 +1009,7 @@ func (db *DB) promptRiskActiveRestrictionSubjects(ctx context.Context, conversat
 		// Only a real upstream CYB expands to user scope. Local deterministic
 		// blocks remain attached to the exact session to avoid implicating every
 		// conversation of a shared user.
-		if identityKind == PromptConversationLockIdentityNewAPI && reasonCode == "upstream_cyber_policy" &&
+		if identityKind == PromptConversationLockIdentityNewAPI && (reasonCode == "upstream_cyber_policy" || reasonCode == "upstream_bio_policy") &&
 			(userCooldownTTL <= 0 || lockedAt.After(now.Add(-userCooldownTTL))) {
 			if subjectKey := PromptRiskNewAPIUserSubjectKey(platform, userID); subjectKey != "" {
 				key := PromptRiskSubjectNewAPIUser + "\x00" + subjectKey

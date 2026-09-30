@@ -152,8 +152,24 @@ func (h *Handler) streamProbeModels(c *gin.Context, account *auth.Account, model
 	}
 }
 
+// modelProbeSkippedBPS: model availability is native evidence and never
+// comes from BPS, while a BPS account without an explicit native route gets
+// no native traffic, so such accounts are not probed (and existing evidence
+// is left as it is).
+const modelProbeSkippedBPS = "BPS 账号未开启原生路由，已跳过原生模型探测"
+
 // runProbeModels 并发探测所有模型；onEvent 非空时逐模型回调 testing/result 事件（用于 SSE）。
 func (h *Handler) runProbeModels(ctx context.Context, account *auth.Account, models []string, concurrency int, onEvent func(modelProbeEvent)) []modelProbeResult {
+	if proxy.BPSOwnsAccount(account) {
+		results := make([]modelProbeResult, len(models))
+		for i, model := range models {
+			results[i] = modelProbeResult{Model: model, Outcome: modelProbeError, Detail: modelProbeSkippedBPS}
+			if onEvent != nil {
+				onEvent(modelProbeEvent{Type: "result", Model: model, Outcome: modelProbeError, Detail: modelProbeSkippedBPS, Current: i + 1, Total: len(models)})
+			}
+		}
+		return results
+	}
 	generation := account.GetCredentialGeneration()
 	observedAt := time.Now().Unix()
 	var (

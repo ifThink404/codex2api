@@ -1563,8 +1563,9 @@ func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte
 
 // imageCapableAccountFilter 生图上游目前只有 Codex 官方账号支持:中转/Grok
 // 账号拿到 image_generation 请求只会对上游 401/404,还会把自己误标成 unauthorized。
+// 生图只走原生传输，BPS 账号（未显式开启原生路由）不参与，避免原生流量被标记降智。
 func imageCapableAccountFilter(account *auth.Account) bool {
-	return account != nil && !account.IsRelayStyle()
+	return account != nil && !account.IsRelayStyle() && !BPSOwnsAccount(account)
 }
 
 func imagePreferredAccountFilter(account *auth.Account) bool {

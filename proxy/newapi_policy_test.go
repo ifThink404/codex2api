@@ -1196,6 +1196,14 @@ func TestAuthMiddlewareEnforcesBoundIdentityAndRestoresV1Body(t *testing.T) {
 	if verifyRecorder.Code != http.StatusOK || gjson.GetBytes(verifyRecorder.Body.Bytes(), "platform").String() != "gateway-a" {
 		t.Fatalf("authenticated V1 binding handshake = %d %s", verifyRecorder.Code, verifyRecorder.Body.String())
 	}
+	proof := hmac.New(sha256.New, []byte("gateway-a-secret"))
+	proof.Write([]byte(strings.Join([]string{"newapi-handshake-result-v1", "v1-binding-handshake", "gateway-a", verifyRequest.Header.Get("X-NewAPI-Timestamp"), "ok"}, "\n")))
+	if got := gjson.GetBytes(verifyRecorder.Body.Bytes(), "handshake_signature").String(); got != hex.EncodeToString(proof.Sum(nil)) {
+		t.Fatalf("handshake must prove the configured binding secret without revealing it")
+	}
+	if strings.Contains(verifyRecorder.Body.String(), "gateway-a-secret") || strings.Contains(verifyRecorder.Body.String(), apiKey) {
+		t.Fatal("handshake leaked credentials")
+	}
 }
 
 func TestBoundRiskAndSessionStateArePlatformScoped(t *testing.T) {

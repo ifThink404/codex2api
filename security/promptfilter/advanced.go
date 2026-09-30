@@ -133,13 +133,15 @@ type NewAPIConfig struct {
 }
 
 type EnforcementConfig struct {
-	TerminalCategories       []string `json:"terminal_categories"`
-	TerminalBypassModels     []string `json:"terminal_bypass_models"`
-	LocalBlockMessage        string   `json:"local_block_message,omitempty"`
-	ConversationLockEnabled  bool     `json:"conversation_lock_enabled"`
-	ConversationLockTTLHours int      `json:"conversation_lock_ttl_hours"`
-	UserCyberCooldownMinutes int      `json:"user_cyber_cooldown_minutes"`
-	CYBStrikeEnabled         bool     `json:"cyb_strike_enabled"`
+	LocalMode                      string   `json:"local_mode"`
+	AuxiliaryHighConfidenceEnabled bool     `json:"auxiliary_high_confidence_enabled"`
+	TerminalCategories             []string `json:"terminal_categories"`
+	TerminalBypassModels           []string `json:"terminal_bypass_models"`
+	LocalBlockMessage              string   `json:"local_block_message,omitempty"`
+	ConversationLockEnabled        bool     `json:"conversation_lock_enabled"`
+	ConversationLockTTLHours       int      `json:"conversation_lock_ttl_hours"`
+	UserCyberCooldownMinutes       int      `json:"user_cyber_cooldown_minutes"`
+	CYBStrikeEnabled               bool     `json:"cyb_strike_enabled"`
 	// LocalSevereStrikeEnabled 决定本地判定的**最高置信度**严重违规
 	// (当前用户直接发出 + 敏感意图 + 终局 strict/category 命中)是否累计到
 	// NewAPI 用户身上,从而触发 NewAPI 侧的 CYB 累计与自动封号。
@@ -749,6 +751,7 @@ func MarshalAdvancedConfig(cfg AdvancedConfig) string {
 
 func NormalizeAdvancedConfig(cfg AdvancedConfig) AdvancedConfig {
 	d := DefaultAdvancedConfig()
+	cfg.Enforcement.LocalMode = NormalizeLocalMode(cfg.Enforcement.LocalMode)
 	cfg.Guard = NormalizeGuardConfig(cfg.Guard)
 	seenCategories := map[string]bool{}
 	categories := make([]string, 0, len(cfg.Enforcement.TerminalCategories))

@@ -74,9 +74,10 @@ func (h *Handler) CodexAlphaSearchHandler(c *gin.Context) {
 	activateContinuousRetryKeepalive(c.Request.Context())
 
 	apiKeyID := requestAPIKeyID(c)
-	// 搜索端点只存在于 ChatGPT 后端，relay/Grok 账号无从代答。
+	// 搜索端点只存在于 ChatGPT 后端，relay/Grok 账号无从代答；它是原生流量，
+	// BPS 账号（未显式开启原生路由）不参与。
 	searchFilter := applyAffinityGroupRouting(c, resolveRequestSessionIdentity(c.Request.Header, rawBody), func(a *auth.Account) bool {
-		return !a.IsRelayStyle()
+		return !a.IsRelayStyle() && !BPSOwnsAccount(a)
 	})
 	account := h.store.NextExcludingWithFilter(apiKeyID, nil, searchFilter)
 	if account == nil {

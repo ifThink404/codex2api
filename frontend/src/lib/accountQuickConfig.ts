@@ -6,6 +6,12 @@ import {
   accountProbePolicyFromAccount,
   type AccountProbePolicy,
 } from "./accountProbePolicy.ts";
+import {
+  bpsFormFromAccount,
+  bpsPayloadFromForm,
+  type BPSAccountForm,
+  type BPSAccountSource,
+} from "./bpsAccount.ts";
 
 export type QuickConfigLoadStatus = "loading" | "ready" | "error";
 
@@ -21,8 +27,7 @@ export type QuickConfigReadySaveError = Exclude<
   "not_ready"
 >;
 
-export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
-  codex_bps_enabled?: boolean;
+export interface QuickConfigAccountSource extends Partial<AccountProbePolicy>, BPSAccountSource {
   upstream_request_id_header?: string | null;
   id: number;
   detail_loaded?: boolean;
@@ -35,8 +40,6 @@ export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
   custom_headers?: Record<string, string> | null;
   tags?: string[] | null;
   group_ids?: number[] | null;
-  openai_excel_bps?: boolean;
-  openai_excel_bps_opt_out?: boolean;
   openai_responses_api?: boolean;
   grok_api?: boolean;
   claude_api?: boolean;
@@ -44,42 +47,8 @@ export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
   agent_identity?: boolean;
 }
 
-/** Account-level Excel Basispoints mode: follow the global default, force on, or exclude. */
-export type ExcelBpsMode = "inherit" | "on" | "off";
-
-export function excelBpsModeFromAccount(account: {
-  openai_excel_bps?: boolean;
-  openai_excel_bps_opt_out?: boolean;
-}): ExcelBpsMode {
-  if (account.openai_excel_bps) return "on";
-  if (account.openai_excel_bps_opt_out) return "off";
-  return "inherit";
-}
-
-/** Maps a mode to the two persisted flags; an explicit opt-in always clears the opt-out. */
-export function excelBpsFlagsForMode(mode: ExcelBpsMode): {
-  openai_excel_bps: boolean;
-  openai_excel_bps_opt_out: boolean;
-} {
-  return {
-    openai_excel_bps: mode === "on",
-    openai_excel_bps_opt_out: mode === "off",
-  };
-}
-
-/** Only ordinary Codex OAuth accounts can use Basispoints. */
-export function accountSupportsExcelBps(account: QuickConfigAccountSource): boolean {
-  return !(
-    account.openai_responses_api ||
-    account.grok_api ||
-    account.claude_api ||
-    account.antigravity_api ||
-    account.agent_identity
-  );
-}
-
 export interface QuickConfigFormState {
-  bpsEnabled: boolean;
+  bps: BPSAccountForm;
   probePolicy: AccountProbePolicy;
   upstreamRequestIdHeader: string;
   accountId: number;
@@ -94,9 +63,8 @@ export interface QuickConfigFormState {
   customHeadersText: string;
   tags: string[];
   groupIds: number[];
-  /** Null when the account type cannot use Basispoints. */
-  excelBpsMode: ExcelBpsMode | null;
-  initialExcelBpsMode: ExcelBpsMode | null;
+  /** The BPS switch as loaded; the save sends it only when it changed. */
+  initialBPSEnabled: BPSAccountForm["enabled"];
 }
 
 export function accountHasQuickConfigDetails(
@@ -161,14 +129,11 @@ export function formatCustomHeadersText(
 export function formStateFromAccount(
   account: QuickConfigAccountSource,
 ): QuickConfigFormState {
-  const excelBpsMode = accountSupportsExcelBps(account)
-    ? excelBpsModeFromAccount(account)
-    : null;
+  const bps = bpsFormFromAccount(account);
   return {
     probePolicy: accountProbePolicyFromAccount(account),
-    bpsEnabled: account.codex_bps_enabled ?? false,
-    excelBpsMode,
-    initialExcelBpsMode: excelBpsMode,
+    bps,
+    initialBPSEnabled: bps.enabled,
     accountId: account.id,
     upstreamRequestIdHeader: account.upstream_request_id_header ?? "",
     fingerprintMode: normalizeCodexFingerprintMode(
@@ -259,18 +224,17 @@ export function buildQuickConfigSavePayload(
     parsedSchedulerPriority = value;
   }
 
-  // Leave the Basispoints flags untouched unless the administrator changed them.
-  const excelBpsPatch =
-    form.excelBpsMode != null && form.excelBpsMode !== form.initialExcelBpsMode
-      ? excelBpsFlagsForMode(form.excelBpsMode)
+  // Leave the BPS switch untouched unless the administrator changed it.
+  const bpsPatch =
+    form.bps.enabled !== form.initialBPSEnabled
+      ? bpsPayloadFromForm(form.bps, true)
       : {};
 
   return {
     ok: true,
     payload: {
       ...form.probePolicy,
-      codex_bps_enabled: form.bpsEnabled,
-      ...excelBpsPatch,
+      ...bpsPatch,
       score_bias_override: form.scoreMode === "custom" ? parsedScoreBias : null,
       base_concurrency_override:
         form.concurrencyMode === "custom" ? parsedBaseConcurrency : null,

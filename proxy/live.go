@@ -97,8 +97,10 @@ func (e *liveAttestationError) Error() string {
 	return e.Reason
 }
 
+// liveAccountFilter: Live is native-only, so BPS accounts without an
+// explicit native route are not eligible.
 func liveAccountFilter(account *auth.Account) bool {
-	return account != nil && !account.IsRelayStyle()
+	return account != nil && !account.IsRelayStyle() && !BPSOwnsAccount(account)
 }
 
 func isLiveModelName(model string) bool {

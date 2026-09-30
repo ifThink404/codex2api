@@ -14,6 +14,9 @@ const (
 	SchedulerEntityGroup    = "group"
 	SchedulerEntityProxy    = "proxy"
 	SchedulerEntitySettings = "settings"
+	// SchedulerEntityPlugin events carry entity_id 0: transport plugin state is
+	// reloaded as one snapshot, so consumers never look the id up.
+	SchedulerEntityPlugin = "plugin"
 )
 
 type SchedulerOutboxEvent struct {

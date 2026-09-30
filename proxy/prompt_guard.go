@@ -328,6 +328,7 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 	verdict.FullText = text
 	verdict.TextPreview = promptfilter.RedactedPreview(text, 500)
 	verdict.ExtractedChars = len([]rune(text))
+	verdict = promptfilter.ApplyLocalMode(verdict, cfg)
 	// Normal entry review receives the current user request. A narrowly qualified
 	// upstream-compatibility block instead reviews the exact auxiliary evidence;
 	// that result may add context, but it cannot clear the deterministic block or
@@ -344,7 +345,7 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 				decision.ReasonCode = "adaptive_trust_review_bypass"
 				h.recordPromptRiskTrustBypass(c, policy, subjectKey, promptRiskTrustBypassedSignalNames(decision, verdict))
 			} else {
-				localTrustRisk := trusted && promptRiskTrustShouldSuspend(decision, verdict)
+				localTrustRisk := trusted && verdict.LocalMode == "" && !decision.AuxiliaryHighConfidence && promptRiskTrustShouldSuspend(decision, verdict)
 				verdict = h.reviewPromptFilterVerdict(ctx, reviewText, verdict, cfg)
 				if trusted && verdict.ReviewError != "" {
 					promptRiskTrustReleaseReviewLease(subjectKey)
@@ -354,7 +355,7 @@ func (h *Handler) evaluatePromptGuardEnvelope(c *gin.Context, cfg promptfilter.C
 				if terminalBypassed {
 					localTrustRisk = false
 				}
-				if compatibilityBlock {
+				if compatibilityBlock && verdict.LocalMode == "" {
 					verdict = retainPromptGuardAuxiliaryCompatibilityBlock(verdict)
 				}
 				if trusted && !localTrustRisk && verdict.ReviewModel != "" && verdict.ReviewError == "" && !verdict.ReviewFlagged && verdict.Action == promptfilter.ActionAllow {
@@ -512,13 +513,14 @@ func promptGuardShadowLoggingEnabled(job promptGuardShadowAuditJob) bool {
 func (h *Handler) evaluateLegacyPromptGuard(c *gin.Context, ctx context.Context, cfg promptfilter.Config, envelope promptfilter.RequestEnvelope, profile string) promptGuardEvaluation {
 	text := envelopeCurrentUserText(envelope)
 	verdict := promptfilter.InspectText(text, cfg)
+	verdict = promptfilter.ApplyLocalMode(verdict, cfg)
 	verdict = h.applyPromptSemanticProtection(c, text, verdict, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
 		if policy, subjectKey, trusted := h.promptRiskTrustPolicyForRequest(c); trusted && verdict.Action == promptfilter.ActionAllow && verdict.Score == 0 && verdict.RawScore == 0 && len(verdict.Matched) == 0 && strings.TrimSpace(text) != "" && !promptRiskTrustReviewRequired(c, cfg, policy, subjectKey) {
 			verdict.Reason = "adaptive trusted profile bypassed synchronous model review"
 			h.recordPromptRiskTrustBypass(c, policy, subjectKey, nil)
 		} else {
-			localTrustRisk := trusted && (verdict.Action != promptfilter.ActionAllow || verdict.Score > 0 || verdict.RawScore > 0 || len(verdict.Matched) > 0)
+			localTrustRisk := trusted && verdict.LocalMode == "" && (verdict.Action != promptfilter.ActionAllow || verdict.Score > 0 || verdict.RawScore > 0 || len(verdict.Matched) > 0)
 			verdict = h.reviewPromptFilterVerdict(ctx, text, verdict, cfg)
 			if trusted && verdict.ReviewError != "" {
 				promptRiskTrustReleaseReviewLease(subjectKey)
@@ -616,8 +618,8 @@ func promptGuardReviewText(decision promptfilter.Decision, envelope promptfilter
 }
 
 func promptGuardAuxiliaryCompatibilityBlock(decision promptfilter.Decision) bool {
-	return decision.Action == promptfilter.ActionBlock &&
-		decision.PrimaryOrigin == promptfilter.OriginToolOutput &&
+	return decision.Action != promptfilter.ActionAllow &&
+		(decision.PrimaryOrigin == promptfilter.OriginToolOutput || decision.AuxiliaryHighConfidence) &&
 		!decision.StrikeEligible && !decision.Terminal &&
 		strings.TrimSpace(decision.ReviewText) != ""
 }
@@ -689,6 +691,10 @@ func shouldReviewPromptGuardDecision(decision promptfilter.Decision, verdict pro
 const promptGuardDetectorExternalReview = "external_review"
 
 func finalizePromptGuardDecision(decision promptfilter.Decision, verdict promptfilter.Verdict) promptfilter.Decision {
+	if verdict.LocalMode != "" || decision.AuxiliaryHighConfidence {
+		decision.Terminal = false
+		decision.StrikeEligible = false
+	}
 	decision.Score = verdict.Score
 	decision.RawScore = verdict.RawScore
 	if strings.TrimSpace(verdict.Reason) != "" {
@@ -729,6 +735,18 @@ func finalizePromptGuardDecision(decision promptfilter.Decision, verdict promptf
 		decision.ReasonCode = "prompt_policy_classifier"
 	} else if finalAction == promptfilter.ActionAllow && len(decision.Signals) > 0 {
 		decision.ReasonCode = "prompt_policy_shadow"
+	}
+	if verdict.LocalOriginalAction != "" && verdict.LocalOriginalAction != promptfilter.ActionAllow &&
+		!verdict.ReviewFlagged && verdict.ReviewError == "" && finalAction != promptfilter.ActionBlock {
+		decision.ReasonCode = "local_rules_" + verdict.LocalMode
+	}
+	if verdict.LocalMode != "" && (verdict.ReviewFlagged || verdict.ReviewError != "") && finalAction != promptfilter.ActionAllow {
+		decision.ReasonCode = "external_review_local_" + verdict.LocalMode
+	}
+	if verdict.LocalMode == promptfilter.ModeMonitor {
+		// Local observation scores remain in AuditScore, not execution score.
+		decision.Score = 0
+		decision.RawScore = 0
 	}
 	return decision
 }

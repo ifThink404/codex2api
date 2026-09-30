@@ -33,6 +33,7 @@ type Signal struct {
 	legacyVerdict            *Verdict
 	reviewText               string
 	highConfidenceToolOutput bool
+	highConfidenceAuxiliary  bool
 }
 
 const currentUserPrecheckRevision = "legacy-regex-current-user-v2"
@@ -56,30 +57,31 @@ type currentUserPrecheck struct {
 }
 
 type Decision struct {
-	Enabled               bool          `json:"enabled"`
-	Mode                  string        `json:"mode"`
-	Profile               string        `json:"profile"`
-	ApplicationPromptKind string        `json:"application_prompt_kind,omitempty"`
-	Action                string        `json:"action"`
-	WouldAction           string        `json:"would_action"`
-	Score                 int           `json:"score"`
-	RawScore              int           `json:"raw_score"`
-	AuditScore            int           `json:"audit_score,omitempty"`
-	AuditRawScore         int           `json:"audit_raw_score,omitempty"`
-	ReasonCode            string        `json:"reason_code,omitempty"`
-	Reason                string        `json:"reason,omitempty"`
-	Terminal              bool          `json:"terminal,omitempty"`
-	StrikeEligible        bool          `json:"strike_eligible,omitempty"`
-	Truncated             bool          `json:"truncated,omitempty"`
-	CurrentUserTruncated  bool          `json:"current_user_truncated,omitempty"`
-	AuxiliaryTruncated    bool          `json:"auxiliary_truncated,omitempty"`
-	PrimaryOrigin         SegmentOrigin `json:"primary_origin,omitempty"`
-	PrimaryDetector       string        `json:"primary_detector,omitempty"`
-	Signals               []Signal      `json:"signals,omitempty"`
-	Errors                []string      `json:"errors,omitempty"`
-	ReviewText            string        `json:"-"`
-	legacyVerdict         Verdict
-	deferredAudit         *DeferredAudit
+	AuxiliaryHighConfidence bool          `json:"auxiliary_high_confidence,omitempty"`
+	Enabled                 bool          `json:"enabled"`
+	Mode                    string        `json:"mode"`
+	Profile                 string        `json:"profile"`
+	ApplicationPromptKind   string        `json:"application_prompt_kind,omitempty"`
+	Action                  string        `json:"action"`
+	WouldAction             string        `json:"would_action"`
+	Score                   int           `json:"score"`
+	RawScore                int           `json:"raw_score"`
+	AuditScore              int           `json:"audit_score,omitempty"`
+	AuditRawScore           int           `json:"audit_raw_score,omitempty"`
+	ReasonCode              string        `json:"reason_code,omitempty"`
+	Reason                  string        `json:"reason,omitempty"`
+	Terminal                bool          `json:"terminal,omitempty"`
+	StrikeEligible          bool          `json:"strike_eligible,omitempty"`
+	Truncated               bool          `json:"truncated,omitempty"`
+	CurrentUserTruncated    bool          `json:"current_user_truncated,omitempty"`
+	AuxiliaryTruncated      bool          `json:"auxiliary_truncated,omitempty"`
+	PrimaryOrigin           SegmentOrigin `json:"primary_origin,omitempty"`
+	PrimaryDetector         string        `json:"primary_detector,omitempty"`
+	Signals                 []Signal      `json:"signals,omitempty"`
+	Errors                  []string      `json:"errors,omitempty"`
+	ReviewText              string        `json:"-"`
+	legacyVerdict           Verdict
+	deferredAudit           *DeferredAudit
 }
 
 // DeferredAudit is an immutable snapshot of auxiliary shadow-only content
@@ -385,6 +387,9 @@ func envelopeHasSynchronousCurrentUser(envelope RequestEnvelope) bool {
 }
 
 func guardSegmentCanRunDeferred(segment Segment, detectionContext DetectionContext, applicationPromptKind string) bool {
+	if detectionContext.Config.Advanced.Enforcement.AuxiliaryHighConfidenceEnabled && auxiliaryGuardOrigin(segment.Origin) && detectionContext.LayerMode(segment.Origin) != GuardModeOff {
+		return false
+	}
 	if segment.Origin == OriginCurrentUser || segment.Origin == OriginApplicationCandidate || (segment.Origin == OriginHistory && segment.Linked) {
 		return false
 	}
@@ -1111,6 +1116,16 @@ func (d LegacyRegexDetector) Detect(_ context.Context, envelope RequestEnvelope,
 			continue
 		}
 		signal := legacySignalFromVerdict(verdict, aggregate.Origin, layerMode, legacySignalCorrelation(aggregate.Text, verdict.Matched), "")
+		if detectionContext.Config.Advanced.Enforcement.AuxiliaryHighConfidenceEnabled &&
+			auxiliaryGuardOrigin(aggregate.Origin) && !aggregate.Truncated &&
+			maxScanBytes > 0 && len(aggregate.Text) <= maxScanBytes &&
+			highConfidenceAuxiliaryVerdict(verdict, cfg.Threshold) {
+			signal.highConfidenceAuxiliary = true
+			signal.LayerMode = capGuardMode(GuardModeEnforce, detectionContext.GlobalMode)
+			signal.TerminalCandidate = false
+			signal.StrikeEligible = false
+			signal.reviewText = aggregate.Text
+		}
 		if aggregate.Origin == OriginToolOutput && highConfidenceOperationalToolOutput(aggregate.Text, verdict) {
 			signal.highConfidenceToolOutput = true
 			signal.LayerMode = capGuardMode(GuardModeEnforce, detectionContext.GlobalMode)
@@ -1650,7 +1665,7 @@ func (DefaultGuardPolicy) Decide(request GuardRequest, detectionContext Detectio
 	var selectedAudit *Signal
 	for index := range decision.Signals {
 		signal := &decision.Signals[index]
-		compatibilityBlock := signal.Origin == OriginToolOutput && signal.highConfidenceToolOutput
+		compatibilityBlock := (signal.Origin == OriginToolOutput && signal.highConfidenceToolOutput) || signal.highConfidenceAuxiliary
 		if !guardOriginCanEnforce(signal.Origin) && !compatibilityBlock && (signal.LayerMode == GuardModeEnforce || signal.LayerMode == GuardModeWarn) {
 			// Defense in depth for custom detectors/policies that construct signals
 			// directly instead of using DetectionContext.LayerMode. Auxiliary
@@ -1708,6 +1723,7 @@ func (DefaultGuardPolicy) Decide(request GuardRequest, detectionContext Detectio
 		selected = selectedAudit
 	}
 	if selected != nil {
+		decision.AuxiliaryHighConfidence = selected.highConfidenceAuxiliary
 		decision.Reason = selected.Reason
 		decision.PrimaryOrigin = selected.Origin
 		decision.PrimaryDetector = selected.Detector

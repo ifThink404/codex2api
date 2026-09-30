@@ -14,8 +14,13 @@ import (
 )
 
 func TestResponsesExcelBPSNativeFallbackRoutesOriginalHistory(t *testing.T) {
+	// Fork: an Excel BPS account belongs to the bps transport plugin, which
+	// never spills onto native (only codex_native_enabled=true does), so
+	// upstream's native fallback is refused by design.
+	t.Skip("upstream native fallback is disabled: the BPS plugin owns Excel BPS accounts")
 	for _, agent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "upstream_500", true: "agent_context"}[agent], func(t *testing.T) {
+			enableExcelBPSAdapterForTest(t)
 			resetExcelBPSHealthForTest(t)
 			oldDo, oldResin := excelBPSDo, resinCfg.Load()
 			t.Cleanup(func() { excelBPSDo = oldDo; resinCfg.Store(oldResin) })

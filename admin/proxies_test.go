@@ -512,11 +512,11 @@ func TestProbeProxyFallsBackToIPv6Echo(t *testing.T) {
 	oldEcho := proxyProbeIPv6EchoURLsFn
 	oldGeo := proxyProbeLookupGeoFn
 	proxyProbeIPv6EchoURLsFn = func() []string { return []string{echoURL} }
-	proxyProbeLookupGeoFn = func(_ context.Context, ip, lang string) (string, string, string, string) {
+	proxyProbeLookupGeoFn = func(_ context.Context, ip, lang string) (string, string, string, string, string) {
 		if ip != "2605:1234:5678::1" || lang != "zh-CN" {
 			t.Fatalf("geo lookup ip=%q lang=%q", ip, lang)
 		}
-		return "美国", "新泽西", "纽瓦克", "Example ISP"
+		return "美国", "新泽西", "纽瓦克", "Example ISP", "US"
 	}
 	t.Cleanup(func() {
 		proxyProbeIPv6EchoURLsFn = oldEcho
@@ -605,13 +605,13 @@ func TestParseProxyProbeExitIP(t *testing.T) {
 }
 
 func TestParseProxyProbeGeoFields(t *testing.T) {
-	country, region, city, isp := parseIPAPIGeoFields(gjson.Parse(`{"country":"美国","regionName":"加州","city":"洛杉矶","isp":"Example"}`))
-	if country != "美国" || region != "加州" || city != "洛杉矶" || isp != "Example" {
-		t.Fatalf("ip-api geo = %q %q %q %q", country, region, city, isp)
+	country, region, city, isp, code := parseIPAPIGeoFields(gjson.Parse(`{"country":"美国","countryCode":"us","regionName":"加州","city":"洛杉矶","isp":"Example"}`))
+	if country != "美国" || region != "加州" || city != "洛杉矶" || isp != "Example" || code != "US" {
+		t.Fatalf("ip-api geo = %q %q %q %q %q", country, region, city, isp, code)
 	}
-	country, region, city, isp = parseIPWhoisGeoFields(gjson.Parse(`{"country":"United States","region":"New Jersey","city":"Newark","connection":{"isp":"Example ISP"}}`))
-	if country != "United States" || region != "New Jersey" || city != "Newark" || isp != "Example ISP" {
-		t.Fatalf("ipwhois geo = %q %q %q %q", country, region, city, isp)
+	country, region, city, isp, code = parseIPWhoisGeoFields(gjson.Parse(`{"country":"United States","country_code":"US","region":"New Jersey","city":"Newark","connection":{"isp":"Example ISP"}}`))
+	if country != "United States" || region != "New Jersey" || city != "Newark" || isp != "Example ISP" || code != "US" {
+		t.Fatalf("ipwhois geo = %q %q %q %q %q", country, region, city, isp, code)
 	}
 }
 

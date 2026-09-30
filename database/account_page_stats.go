@@ -63,7 +63,7 @@ func (db *DB) getAccountRequestCountsByIDs(ctx context.Context, ids []int64, wit
 			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code <> 499 AND %s THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND %s AND %s
 		GROUP BY account_id`, retryFalse, retryFalse, retryTrue, db.endUserUsageLogPredicate(), idFilter)
 	rows, err := db.conn.QueryContext(ctx, query, args...)
@@ -109,7 +109,7 @@ func (db *DB) attachErrorStatusCounts(ctx context.Context, result map[int64]*Acc
 	}
 	query := fmt.Sprintf(`
 		SELECT account_id, status_code, COUNT(*)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND status_code >= 400 AND status_code <> 499 AND %s AND %s%s
 		GROUP BY account_id, status_code`, db.nonRetryUsageLogPredicate(), db.endUserUsageLogPredicate(), idFilter)
 	rows, err := db.conn.QueryContext(ctx, query, args...)
@@ -152,7 +152,7 @@ func (db *DB) attachSuccessModelCounts(ctx context.Context, result map[int64]*Ac
 		SELECT account_id,
 			COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown'),
 			COUNT(*)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND status_code < 400 AND %s AND %s%s
 		GROUP BY account_id, COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown')`,
 		db.nonRetryUsageLogPredicate(), db.endUserUsageLogPredicate(), idFilter)
@@ -199,7 +199,7 @@ func (db *DB) GetAccountUsageWindowsByIDs(ctx context.Context, ids []int64, shor
 		COALESCE(SUM(CASE WHEN created_at >= $1 THEN account_billed ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN created_at >= $1 THEN user_billed ELSE 0 END), 0),
 		COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $2 AND status_code <> 499 AND %s AND %s AND %s AND %s
 		GROUP BY account_id`, db.nonRetryUsageLogPredicate(), db.currentAccountUsageGenerationPredicate(), db.endUserUsageLogPredicate(), idFilter)
 	rows, err := db.conn.QueryContext(ctx, query, args...)
@@ -237,7 +237,7 @@ func (db *DB) GetAccountUsageSinceByIDs(ctx context.Context, ids []int64, since 
 	idFilter := db.appendAccountIDFilter(&args, ids)
 	query := fmt.Sprintf(`SELECT account_id,
 		COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND status_code <> 499 AND %s AND %s AND %s
 		GROUP BY account_id`, db.nonRetryUsageLogPredicate(), db.currentAccountUsageGenerationPredicate(), idFilter)
 	rows, err := db.conn.QueryContext(ctx, query, args...)
@@ -270,7 +270,7 @@ func (db *DB) GetAccountModelCountsSinceByIDs(ctx context.Context, ids []int64, 
 		COUNT(*),
 		COALESCE(SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END), 0),
 		COALESCE(AVG(NULLIF(first_token_ms, 0)), 0)
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND status_code <> 499 AND %s AND %s AND %s
 		GROUP BY account_id, COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown')`,
 		db.nonRetryUsageLogPredicate(), db.currentAccountUsageGenerationPredicate(), idFilter)

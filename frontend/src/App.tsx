@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard'
 const Accounts = lazy(() => import('./pages/Accounts'))
 const Operations = lazy(() => import('./pages/Operations'))
 const OperationsErrors = lazy(() => import('./pages/OperationsErrors'))
+const ServiceErrors = lazy(() => import('./pages/ServiceErrors'))
 const RuntimeStatus = lazy(() => import('./pages/RuntimeStatus'))
 const Proxies = lazy(() => import('./pages/Proxies'))
 const SchedulerBoard = lazy(() => import('./pages/SchedulerBoard'))
@@ -29,6 +30,7 @@ const PromptFilter = lazy(() => import('./pages/PromptFilter'))
 const ThemeSettings = lazy(() => import('./pages/ThemeSettings'))
 const ModelPricing = lazy(() => import('./pages/ModelPricing'))
 const PayloadRules = lazy(() => import('./pages/PayloadRules'))
+const Plugins = lazy(() => import('./pages/Plugins'))
 const ChannelMonitor = lazy(() => import('./pages/ChannelMonitor'))
 
 export default function App() {
@@ -78,10 +80,14 @@ function AdminApp() {
           <Route path="/ops/overview" element={<Operations />} />
           <Route path="/ops/runtime" element={<RuntimeStatus />} />
           <Route path="/ops/errors" element={<OperationsErrors />} />
+          <Route path="/ops/service-errors" element={<ServiceErrors />} />
           <Route path="/ops/scheduler" element={<SchedulerBoard />} />
           <Route path="/usage" element={<Usage />} />
           <Route path="/channel-monitor" element={<ChannelMonitor />} />
           <Route path="/model-pricing" element={<ModelPricing />} />
+          <Route path="/plugins" element={<Plugins />} />
+          <Route path="/plugins/:id" element={<Plugins />} />
+          <Route path="/plugins/:id/:view" element={<Plugins />} />
           <Route path="/payload-rules" element={<Navigate to="/payload-rules/editor" replace />} />
           <Route path="/payload-rules/:view" element={<PayloadRules />} />
           <Route path="/theme" element={<ThemeSettings />} />

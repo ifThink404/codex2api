@@ -47,10 +47,6 @@ const (
 
 const UpstreamOpenAIResponses = "openai_responses"
 
-// CodexBPSEnabledCredentialKey enables the optional Basis Points (BPS)
-// transport for an individual Codex OAuth account.
-const CodexBPSEnabledCredentialKey = "codex_bps_enabled"
-
 const (
 	CodexClientMetadataModeAuto   = "auto"
 	CodexClientMetadataModeAlways = "always"
@@ -211,17 +207,20 @@ type Account struct {
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode string
-	// ExcelBPSEnabled is the durable opt-in for the Basispoints Responses adapter.
+	// ExcelBPSEnabled is upstream's adapter opt-in, read only by the dead
+	// adapter; the migrated credential no longer sets it (see excel_bps.go).
 	ExcelBPSEnabled bool
-	// ExcelBPSOptOut excludes the account from the global Basispoints default.
-	ExcelBPSOptOut bool
 	// Timezone 是账号绑定的 IANA 时区（credentials.timezone）。Codex 官方出站路径据此
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
 	Timezone string
-	// CodexBPS selects the BPS transport for this account's Responses requests.
-	// It is deliberately account-scoped so native Codex remains the default.
-	CodexBPS bool
+	// codexBPS is the BPS transport plugin's per-account configuration
+	// (routes, profile, convergence, image trim); see codex_bps.go.
+	codexBPS codexBPSAccountConfig
+	// transportPluginOverrides holds per-account transport plugin overrides
+	// (plugin ID -> forced on/off) read from registered credential keys; see
+	// transport_plugins.go. Guarded by mu.
+	transportPluginOverrides map[string]bool
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
@@ -568,17 +567,6 @@ func (a *Account) ID() int64 {
 // Mu 返回读写锁（供外部包安全读取字段）
 func (a *Account) Mu() *sync.RWMutex {
 	return &a.mu
-}
-
-// CodexBPSEnabled reports whether this account opts into the Basis Points
-// transport. Relay and agent-identity accounts cannot use the BPS OAuth path.
-func (a *Account) CodexBPSEnabled() bool {
-	if a == nil || a.IsRelayStyle() || a.IsCodexAgentIdentity() {
-		return false
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.CodexBPS
 }
 
 func (a *Account) isOpenAIResponsesAPILocked() bool {
@@ -3572,6 +3560,9 @@ func (a *Account) GetLastUsedAt() time.Time {
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
 	proxyAuditLabels                   map[string]ProxyAuditLabel
+	// proxyLocations is the stored egress location per proxy URL, refreshed with
+	// the proxy pool; web search reads it without any DB or network access.
+	proxyLocations map[string]database.ProxyLocation
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
 	accounts                           []*Account
@@ -5251,8 +5242,12 @@ func (s *Store) ReloadProxyPool() error {
 	s.proxyPoolSet = buildProxyPoolSet(enabledURLs)
 	s.managedProxySet = buildProxyPoolSet(managedURLs)
 	s.proxyAuditLabels = make(map[string]ProxyAuditLabel, len(auditRows))
+	s.proxyLocations = make(map[string]database.ProxyLocation, len(auditRows))
 	for _, row := range auditRows {
 		if row != nil {
+			if location := row.Location(); location != (database.ProxyLocation{}) {
+				s.proxyLocations[strings.TrimSpace(row.URL)] = location
+			}
 			name := strings.TrimSpace(row.Label)
 			if name == "" {
 				name = "proxy"
@@ -5263,6 +5258,17 @@ func (s *Store) ReloadProxyPool() error {
 	s.mu.Unlock()
 	log.Printf("代理池已重新加载: %d 个活跃代理", len(enabledURLs))
 	return nil
+}
+
+// ProxyLocation returns the stored egress location of a managed proxy URL, or
+// the zero value for direct connections and proxies outside the proxy table.
+func (s *Store) ProxyLocation(proxyURL string) database.ProxyLocation {
+	if s == nil {
+		return database.ProxyLocation{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.proxyLocations[strings.TrimSpace(proxyURL)]
 }
 
 // UnusableManagedProxies returns the subset of proxyURLs that are known to the
@@ -5707,9 +5713,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
 		ExcelBPSEnabled:              row.GetCredentialBool(ExcelBPSCredentialKey),
-		ExcelBPSOptOut:               row.GetCredentialBool(ExcelBPSOptOutCredentialKey),
 		Timezone:                     accountTimezone,
-		CodexBPS:                     row.GetCredentialBool(CodexBPSEnabledCredentialKey),
+		codexBPS:                     codexBPSAccountConfigFromRow(row),
+		transportPluginOverrides:     transportPluginOverridesFromRow(row),
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
 		ClaudeBaseURL:                row.GetCredential(ClaudeBaseURLCredentialKey),
@@ -8935,6 +8941,9 @@ func promptFilterConfigFromSettings(settings *database.SystemSettings) (promptfi
 	if disabled, err := promptfilter.ParseDisabledPatterns(settings.PromptFilterDisabledPatterns); err == nil {
 		cfg.DisabledPatterns = disabled
 	}
+	if overrides, err := promptfilter.ParseBuiltinPatternOverrides(settings.PromptFilterBuiltinOverrides); err == nil {
+		cfg.BuiltinOverrides = overrides
+	}
 	cfg.Review = promptfilter.ReviewConfig{
 		Enabled:        settings.PromptFilterReviewEnabled,
 		APIKey:         settings.PromptFilterReviewAPIKey,
@@ -10039,7 +10048,29 @@ func (s *Store) ApplyAccountModels(dbID int64, models []string) bool {
 	acc.mu.Lock()
 	acc.Models = normalizeModelList(models)
 	acc.mu.Unlock()
+	s.invalidateRoutingSchedulers()
+	s.fastSchedulerUpdate(acc)
 	return true
+}
+
+// MergeAccountModelsFromUpstream appends model IDs confirmed by the account's
+// own upstream manifest to an existing explicit allowlist. Empty allowlists
+// are the unlimited sentinel and remain empty. The database performs the
+// merge atomically so a background manifest refresh cannot clobber an admin
+// edit made at the same time; the returned list is the persisted result.
+func (s *Store) MergeAccountModelsFromUpstream(ctx context.Context, dbID int64, upstream []string) ([]string, []string, error) {
+	if s == nil || s.db == nil || dbID <= 0 || len(upstream) == 0 {
+		return nil, nil, nil
+	}
+	merged, added, err := s.db.MergeAccountModels(ctx, dbID, upstream)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Even when no new slug was appended, the transaction may have observed
+	// that another process cleared the whitelist. Refresh the runtime snapshot
+	// from the transaction result so routing does not keep a stale restriction.
+	s.ApplyAccountModels(dbID, merged)
+	return merged, added, nil
 }
 
 func (s *Store) ApplyAccountProxyURL(dbID int64, proxyURL string) bool {
@@ -10084,19 +10115,6 @@ func (s *Store) ApplyAccountCustomHeaders(dbID int64, headers map[string]string)
 	return true
 }
 
-// ApplyAccountCodexBPS synchronizes the persisted BPS switch with the runtime
-// account after an admin update or a scheduler reload.
-func (s *Store) ApplyAccountCodexBPS(dbID int64, enabled bool) bool {
-	acc := s.FindByID(dbID)
-	if acc == nil {
-		return false
-	}
-	acc.mu.Lock()
-	acc.CodexBPS = enabled
-	acc.mu.Unlock()
-	return true
-}
-
 // ApplyAccountCodexFingerprintMode 把管理端改动的指纹收敛档位同步到运行时账号，
 // 避免等到下一次全量重载才生效。
 func (s *Store) ApplyAccountCodexFingerprintMode(dbID int64, mode string) bool {
@@ -10122,6 +10140,28 @@ func (s *Store) ApplyAccountEnabled(dbID int64, enabled bool) bool {
 	}
 	s.fastSchedulerUpdate(acc)
 	return true
+}
+
+// IsEnabled reports the account's administrative enabled flag (accounts.enabled):
+// a disabled account is kept in the pool but never selected for dispatch.
+func (a *Account) IsEnabled() bool {
+	return a != nil && atomic.LoadInt32(&a.DispatchPaused) == 0
+}
+
+// CredentialInvalid reports whether the account's credential is known bad,
+// so routing to it only fails: a 401 (the Disabled flag, or a running
+// "unauthorized" cooldown), a banned health tier, or an error status such as
+// a dead refresh token or a deactivated workspace.
+func (a *Account) CredentialInvalid() bool {
+	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 {
+		return true
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.Status == StatusError || a.healthTierLocked() == HealthTierBanned {
+		return true
+	}
+	return a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || time.Now().Before(a.CooldownUtil))
 }
 
 func normalizeAccountErrorMessage(errorMsg string, fallback string) string {

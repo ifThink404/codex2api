@@ -43,7 +43,7 @@ func (db *DB) GetAccountsHealthBucketsByIDs(ctx context.Context, ids []int64, no
 
 	query := `
 		SELECT account_id, created_at, status_code
-		FROM usage_logs
+		FROM usage_metered_events AS usage_logs
 		WHERE created_at >= $1 AND created_at <= $2
 		  AND status_code <> 499
 		  AND account_id > 0
@@ -129,7 +129,7 @@ func (db *DB) getPostgresAccountHealthBuckets(ctx context.Context, ids []int64, 
 				GREATEST(0, LEAST($3 - 1,
 					FLOOR((EXTRACT(EPOCH FROM created_at) - EXTRACT(EPOCH FROM $1::timestamptz)) / $4)::integer
 				)) AS bucket_index
-			FROM usage_logs
+			FROM usage_metered_events AS usage_logs
 			WHERE created_at >= $1 AND created_at <= $2
 			  AND status_code <> 499 AND account_id > 0
 			  AND ` + db.endUserUsageLogPredicate() + idFilter + `

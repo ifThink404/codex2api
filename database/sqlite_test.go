@@ -1171,6 +1171,36 @@ func TestUsageErrorSummaryAndFilters(t *testing.T) {
 		t.Fatalf("summary = %+v, want one 5xx/401/499/timeout/retry", summary)
 	}
 
+	timeouts := filter
+	timeouts.TimeoutOnly = true
+	if page, err := db.ListUsageLogsByTimeRangePaged(ctx, timeouts); err != nil || page.Total != 1 || page.Logs[0].UpstreamErrorKind != "upstream_timeout" {
+		t.Fatalf("TimeoutOnly page = %+v, %v; want the one timeout row", page, err)
+	}
+	retried := true
+	retries := filter
+	retries.RetryOnly = &retried
+	if page, err := db.ListUsageLogsByTimeRangePaged(ctx, retries); err != nil || page.Total != 1 {
+		t.Fatalf("RetryOnly page = %+v, %v; want the one retried row", page, err)
+	}
+
+	groups, err := db.GetUsageErrorsByAccount(ctx, filter, 10)
+	if err != nil {
+		t.Fatalf("GetUsageErrorsByAccount 返回错误: %v", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("groups = %+v, want accounts 1, 2 and 3", groups)
+	}
+	byID := map[int64]UsageErrorAccountGroup{}
+	for _, group := range groups {
+		byID[group.AccountID] = group
+		if group.Total != 1 || group.LastErrorAt.IsZero() {
+			t.Fatalf("group %+v: want one error with a time", group)
+		}
+	}
+	if byID[1].Kinds["upstream_timeout"] != 1 || byID[2].Kinds["unauthorized"] != 1 || byID[3].Kinds["client_closed"] != 1 {
+		t.Fatalf("kinds = %+v / %+v / %+v (a row without a kind falls back to its status class)", byID[1].Kinds, byID[2].Kinds, byID[3].Kinds)
+	}
+
 	charts, err := db.GetChartAggregation(ctx, filter.Start, filter.End, 5, "")
 	if err != nil {
 		t.Fatalf("GetChartAggregation 返回错误: %v", err)
@@ -3245,11 +3275,12 @@ func TestUsageLogsIncludeAccountNameForOpenAIResponsesAccount(t *testing.T) {
 		t.Fatalf("InsertOpenAIResponsesAccount 返回错误: %v", err)
 	}
 	if err := db.InsertUsageLog(ctx, &UsageLogInput{
-		AccountID:  accountID,
-		Endpoint:   "/v1/responses",
-		Model:      "gpt-4.1",
-		StatusCode: 200,
-		DurationMs: 120,
+		AccountID:       accountID,
+		Endpoint:        "/v1/responses",
+		Model:           "gpt-4.1",
+		StatusCode:      200,
+		DurationMs:      120,
+		ClientUserAgent: "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.26200; x86_64)",
 	}); err != nil {
 		t.Fatalf("InsertUsageLog 返回错误: %v", err)
 	}
@@ -3296,6 +3327,20 @@ func TestUsageLogsIncludeAccountNameForOpenAIResponsesAccount(t *testing.T) {
 	}
 	if len(logs) != 1 || logs[0].AccountName != "API 别名" {
 		t.Fatalf("filter logs = %+v, want one account name match", logs)
+	}
+
+	page, err = db.ListUsageLogsByTimeRangePaged(ctx, UsageLogFilter{
+		Start:    now.Add(-1 * time.Hour),
+		End:      now.Add(1 * time.Hour),
+		Page:     1,
+		PageSize: 10,
+		Query:    "codex desktop/0.149.0-alpha.4.3",
+	})
+	if err != nil {
+		t.Fatalf("ListUsageLogsByTimeRangePaged 客户端 UA 返回错误: %v", err)
+	}
+	if page.Total != 1 || len(page.Logs) != 1 || !strings.Contains(page.Logs[0].ClientUserAgent, "Codex Desktop/0.149.0-alpha.4.3") {
+		t.Fatalf("filter page = %+v, want one client user-agent match", page)
 	}
 }
 

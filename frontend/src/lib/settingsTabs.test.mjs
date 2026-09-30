@@ -88,7 +88,9 @@ test('shared settings cards declare which upstream channels they apply to', () =
   const badges = readFileSync(new URL('../components/ChannelScopeBadges.tsx', import.meta.url), 'utf8')
   assert.match(badges, /export const ALL_UPSTREAM_CHANNELS/)
   assert.match(badges, /data-channel-scope/)
-  assert.match(settings, /channels\?: readonly UpstreamChannel\[\]/)
+  // SettingsCard / SettingField live in components/SettingsLayout.tsx (shared with plugin pages).
+  const layout = readFileSync(new URL('../components/SettingsLayout.tsx', import.meta.url), 'utf8')
+  assert.match(layout, /channels\?: readonly UpstreamChannel\[\]/)
   // 通用 Tab 里每张跨渠道卡片都必须带 channels，避免再出现"看不出给谁用"的设置。
   for (const title of ['settings.trafficProtection', 'settings.schedulingStrategy', 'settings.runtimeOptimization', 'settings.autoCleanup']) {
     assert.match(settings, new RegExp(`title=\\{t\\('${title.replace('.', '\\.')}'\\)\\}[^\\n]*channels=\\{ALL_UPSTREAM_CHANNELS\\}`), title)
@@ -176,6 +178,33 @@ test('provider visibility picker lives in general and keeps the fallback channel
   for (const locale of [zh, en]) {
     for (const key of ['visibleChannelsTitle', 'visibleChannelsDesc', 'visibleChannelsFallbackHint', 'visibleChannelsSaveFailed']) {
       assert.equal(typeof locale.settings?.[key], 'string', `settings.${key}`)
+    }
+  }
+})
+
+test('log analysis agent settings card lives in general and uses shared controls', () => {
+  const start = settings.indexOf("{activeTab === 'general' ? (")
+  assert.ok(settings.indexOf('<LogAgentSettingsCard models={', start) > start, 'general tab renders the log agent card')
+  const cardStart = settings.indexOf('function LogAgentSettingsCard(')
+  const cardEnd = settings.indexOf('\n}\n', cardStart)
+  const card = settings.slice(cardStart, cardEnd)
+  assert.ok(cardStart > 0)
+  assert.match(card, /api\s*\.getLogAgentConfig\(\)/)
+  assert.match(card, /api\.updateLogAgentConfig\(config\)/)
+  assert.match(card, /channels=\{ALL_UPSTREAM_CHANNELS\}/)
+  assert.match(card, /<Switch checked=\{config\.enabled\}/)
+  assert.equal((card.match(/<Select\n/g) ?? []).length, 2, 'gateway key and model use the shared Select')
+  assert.equal((card.match(/<DraftNumberInput\n/g) ?? []).length, 4)
+  assert.match(card, /className=\{SETTINGS_SWITCH_ROW\}/)
+  assert.doesNotMatch(card, /<select|type="checkbox"|type="number"/)
+  const zhTW = JSON.parse(readFileSync(new URL('../locales/zh-TW.json', import.meta.url), 'utf8'))
+  for (const locale of [zh, en, zhTW]) {
+    for (const key of card.match(/logAgent\.settings\.[A-Za-z]+\b(?!\.)/g)) {
+      const leaf = key.split('.').pop()
+      assert.equal(typeof locale.logAgent?.settings?.[leaf], 'string', key)
+    }
+    for (const status of ['expired', 'quotaExhausted']) {
+      assert.equal(typeof locale.logAgent.settings.keyStatus[status], 'string', `keyStatus.${status}`)
     }
   }
 })
