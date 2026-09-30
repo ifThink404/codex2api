@@ -4773,7 +4773,7 @@
     "codexBasispoints429CooldownDesc": "How long an account stops using BPS after a BPS rate limit; requests use native Codex meanwhile. 1-600 seconds, default 5. An upstream Retry-After takes precedence (up to 600 seconds).",
     "codexBasispoints429CooldownUnit": "s",
     "codexBasispointsCacheCreationAsInput": "Bill cache creation as regular input",
-    "codexBasispointsCacheCreationAsInputDesc": "Zero the BPS cache-write counters (cache_write_tokens and aliases) in the usage sent to clients. Those tokens stay in input_tokens and bill as regular input; total input and cache reads are unchanged, matching native Codex usage. Only the usage fields change; upstream caching stays on. This gateway's own usage records already count them as input. Off by default, which forwards the upstream counters unchanged.",
+    "codexBasispointsCacheCreationAsInputDesc": "Zero the BPS cache-write counters (cache_write_tokens and aliases) in the usage sent to clients. Those tokens stay in input_tokens and bill as regular input; total input and cache reads are unchanged, matching native Codex usage. Only the usage fields change; upstream caching stays on. This gateway's own usage records already count them as input. Off by default, which forwards the upstream counters unchanged. This switch is the BPS plugin's cache_creation_as_input setting.",
     "codexRequestCompression": "Codex HTTP Request Body Compression",
     "codexRequestCompressionDesc": "Compresses Codex /responses request bodies sent over HTTP with zstd (Content-Encoding: zstd), matching the real Codex CLI, which compresses by default against the ChatGPT backend — sending plaintext is itself a detectable signal. Enabled by default. Independent of Force WebSocket above: WebSocket uses permessage-deflate, while this setting only affects the HTTP path (1009 size fallback, image generation, Agent Identity accounts), so there is no need to disable WebSocket to use it.",
     "codexWSWeakNetworkMode": "WS Weak-Network Mode",
@@ -7578,7 +7578,8 @@
       "degrade_probe_interval": "Scheduled probe interval",
       "degrade_probe_max_concurrent": "Max concurrent probes",
       "degrade_cooldown_ladder": "Degradation cooldown ladder",
-      "dual_route_preference": "Dual-route preference"
+      "dual_route_preference": "Dual-route preference",
+      "cache_creation_as_input": "Bill cache creation as input"
     },
     "agentCapturesTitle": "Analyze captures",
     "agentCapturesDesc": "Analyze the (masked) plugin captures matching the current filters and time range.",
@@ -7616,7 +7617,8 @@
       "degrade_probe_interval": "Periodic probe of every account route, e.g. 6h (10m to 168h); empty is off. Native routes are probed only when explicitly on.",
       "degrade_probe_max_concurrent": "Pelican probes in flight per replica, manual and batch included.",
       "degrade_cooldown_ladder": "The cooldown per break; afterwards a pelican probe decides. Empty reuses the usage-policy ladder.",
-      "dual_route_preference": "Which route an account with BPS and an explicit native route uses while both are healthy; the other is the fallback (breakers, and a same-account retry after a usage-policy block). Native first by default."
+      "dual_route_preference": "Which route an account with BPS and an explicit native route uses while both are healthy; the other is the fallback (breakers, and a same-account retry after a usage-policy block). Native first by default.",
+      "cache_creation_as_input": "Off by default. On: the cache-write counters BPS reports (cache_write_tokens and the aliases other gateways read) are zeroed in the usage clients see. Those tokens stay in input_tokens and bill as regular input, like native Codex; input, cache reads and total are unchanged. Same as Settings › Basispoints."
     },
     "coolingUntil": "BPS cooling until {{time}} ({{reason}})",
     "coolingReasons": {
@@ -7702,6 +7704,10 @@
       "protection": {
         "title": "Account protection",
         "description": "Per-account limits and how usage-policy blocks and rate limits are handled."
+      },
+      "billing": {
+        "title": "Usage reporting",
+        "description": "How BPS usage is reported to clients."
       },
       "attachments": {
         "title": "Attachments",

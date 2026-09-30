@@ -9,6 +9,8 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/proxy/plugins"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Upstream's Excel Basispoints settings are views of the bps transport
@@ -20,7 +22,9 @@ import (
 //     plugin's per-account override: on = forced on (Excel profile), off =
 //     forced off, inherit = no override (groups / global switch);
 //   - the effective flag is whether the plugin serves the account, and the
-//     adapter's 403/429 pause never applies (the plugin keeps its own).
+//     adapter's 403/429 pause never applies (the plugin keeps its own);
+//   - codex_basispoints_cache_creation_as_input is the plugin config key
+//     cache_creation_as_input.
 
 // bpsPluginGlobalEnabled is the plugin's global switch.
 func bpsPluginGlobalEnabled() bool {
@@ -40,6 +44,45 @@ func saveBPSPluginGlobalEnabled(ctx context.Context, enabled bool) error {
 		return err
 	}
 	log.Printf("[bps] global switch set to %t through codex_basispoints_enabled", enabled)
+	return nil
+}
+
+// bpsCacheCreationConfigKey is the plugin config key behind
+// codex_basispoints_cache_creation_as_input.
+const bpsCacheCreationConfigKey = "cache_creation_as_input"
+
+// bpsPluginCacheCreationAsInput is the plugin's cache_creation_as_input.
+func bpsPluginCacheCreationAsInput() bool {
+	return gjson.GetBytes(plugins.Default().State(proxy.BPSPluginID).Config, bpsCacheCreationConfigKey).Bool()
+}
+
+// saveBPSPluginCacheCreationAsInput writes cache_creation_as_input into the
+// plugin config, keeping every other key; off removes the key (the default).
+func saveBPSPluginCacheCreationAsInput(ctx context.Context, enabled bool) error {
+	state := plugins.Default().State(proxy.BPSPluginID)
+	if gjson.GetBytes(state.Config, bpsCacheCreationConfigKey).Bool() == enabled {
+		return nil
+	}
+	config := []byte(state.Config)
+	if len(config) == 0 || !gjson.ValidBytes(config) {
+		config = []byte("{}")
+	}
+	var err error
+	if enabled {
+		config, err = sjson.SetBytes(config, bpsCacheCreationConfigKey, true)
+	} else {
+		config, err = sjson.DeleteBytes(config, bpsCacheCreationConfigKey)
+	}
+	if err != nil {
+		return err
+	}
+	state.Config = config
+	saveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := plugins.Default().Save(saveCtx, state); err != nil {
+		return err
+	}
+	log.Printf("[bps] cache_creation_as_input set to %t through codex_basispoints_cache_creation_as_input", enabled)
 	return nil
 }
 

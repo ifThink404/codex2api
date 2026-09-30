@@ -740,7 +740,7 @@
     "codexBasispoints429CooldownDesc": "BPS 回傳限流後，該帳號的 BPS 暫停多久再嘗試；期間請求走原 Codex。1–600 秒，預設 5 秒。上游明確給出 Retry-After 時以上游為準（最長 600 秒）。",
     "codexBasispoints429CooldownUnit": "秒",
     "codexBasispointsCacheCreationAsInput": "建立快取按一般輸入計費",
-    "codexBasispointsCacheCreationAsInputDesc": "BPS 回傳的快取寫入（cache_write_tokens 等）在下發給用戶端的用量中歸零，這部分 token 仍計在 input_tokens 裡，按一般輸入計費；總輸入與快取讀取不變，與原 Codex 的用量格式一致。只修改用量欄位，不關閉上游快取。本站自身的用量記錄本來就按一般輸入計。預設關閉，關閉時原樣轉送上游計數。",
+    "codexBasispointsCacheCreationAsInputDesc": "BPS 回傳的快取寫入（cache_write_tokens 等）在下發給用戶端的用量中歸零，這部分 token 仍計在 input_tokens 裡，按一般輸入計費；總輸入與快取讀取不變，與原 Codex 的用量格式一致。只修改用量欄位，不關閉上游快取。本站自身的用量記錄本來就按一般輸入計。預設關閉，關閉時原樣轉送上游計數。此開關即 BPS 外掛的 cache_creation_as_input 設定。",
     "clientVersionSyncSuccess": "用戶端版本已同步",
     "clientVersionSyncPartial": "部分來源同步失敗，已保留原有版本",
     "codexClientTitle": "User-Agent 身分",
@@ -2669,7 +2669,8 @@
       "degrade_probe_interval": "定時抽檢間隔",
       "degrade_probe_max_concurrent": "檢測並發上限",
       "degrade_cooldown_ladder": "降智熔斷冷卻階梯",
-      "dual_route_preference": "雙路由帳號優先路由"
+      "dual_route_preference": "雙路由帳號優先路由",
+      "cache_creation_as_input": "建立快取按一般輸入計費"
     },
     "agentCapturesTitle": "分析封包",
     "agentCapturesDesc": "分析目前篩選條件與時間範圍內的外掛封包（已遮罩）。",
@@ -2707,7 +2708,8 @@
       "degrade_probe_interval": "每個帳號每條路由的定時抽檢間隔，如 6h（10m–168h）；留空關閉。原生路由僅在顯式開啟時抽檢。",
       "degrade_probe_max_concurrent": "每個實例同時進行的鵜鶘檢測上限（含手動與批次）。",
       "degrade_cooldown_ladder": "降智熔斷每次觸發依次使用的冷卻時長，冷卻結束後由鵜鶘檢測決定是否恢復。留空沿用用量策略冷卻階梯。",
-      "dual_route_preference": "同時啟用 BPS 與原生路由（codex_native_enabled=true）的帳號在兩條路由都正常時先走哪條；另一條作為回退（熔斷、策略攔截後同帳號重試）。預設原生優先。"
+      "dual_route_preference": "同時啟用 BPS 與原生路由（codex_native_enabled=true）的帳號在兩條路由都正常時先走哪條；另一條作為回退（熔斷、策略攔截後同帳號重試）。預設原生優先。",
+      "cache_creation_as_input": "預設關閉。開啟後，BPS 回報的快取寫入計數（cache_write_tokens 及其他閘道讀取的別名）在下發給用戶端的用量中歸零；這部分 token 仍在 input_tokens 裡，按一般輸入計費，與原生 Codex 一致；輸入、快取讀取與總量不變。與「設定 › Basispoints」中的開關相同。"
     },
     "coolingUntil": "BPS 冷卻至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -2793,6 +2795,10 @@
       "protection": {
         "title": "帳號保護",
         "description": "單帳號限額，以及用量政策攔截與限流的處理方式。"
+      },
+      "billing": {
+        "title": "用量回報",
+        "description": "BPS 用量如何回報給用戶端。"
       },
       "attachments": {
         "title": "附件",

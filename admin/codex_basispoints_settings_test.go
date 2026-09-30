@@ -197,9 +197,27 @@ func TestBasispointsRateLimitCooldownPersistValidateAndReload(t *testing.T) {
 	}
 }
 
+// codex_basispoints_cache_creation_as_input is the BPS plugin config key
+// cache_creation_as_input in this fork; other plugin config keys survive.
 func TestBasispointsCacheCreationAsInputPersistAndReload(t *testing.T) {
 	h, db, _ := newImagesSettingsHandler(t)
+	attachBPSPluginForTest(t, db)
 	t.Cleanup(func() { proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings()) })
+	state := plugins.Default().State(proxy.BPSPluginID)
+	state.Config = json.RawMessage(`{"bps_min_usable_accounts":5}`)
+	if err := plugins.Default().Save(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	pluginConfig := func() map[string]any {
+		var config map[string]any
+		if err := json.Unmarshal(plugins.Default().State(proxy.BPSPluginID).Config, &config); err != nil {
+			t.Fatal(err)
+		}
+		if config["bps_min_usable_accounts"] != float64(5) {
+			t.Fatalf("other plugin config keys lost: %v", config)
+		}
+		return config
+	}
 	if get := decodeResponseCacheSettingsResponse(t, invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)); get.CodexBasispointsCacheWriteAsInput {
 		t.Fatal("cache creation is billed as input by default")
 	}
@@ -207,14 +225,13 @@ func TestBasispointsCacheCreationAsInputPersistAndReload(t *testing.T) {
 	if response.Code != 200 {
 		t.Fatalf("PUT: %d %s", response.Code, response.Body.String())
 	}
-	if got := decodeResponseCacheSettingsResponse(t, response); !got.CodexBasispointsCacheWriteAsInput || !proxy.CurrentRuntimeSettings().CodexBasispointsCacheWriteAsInput {
-		t.Fatalf("PUT/runtime mismatch: %t/%t", got.CodexBasispointsCacheWriteAsInput, proxy.CurrentRuntimeSettings().CodexBasispointsCacheWriteAsInput)
+	if got := decodeResponseCacheSettingsResponse(t, response); !got.CodexBasispointsCacheWriteAsInput || pluginConfig()["cache_creation_as_input"] != true {
+		t.Fatalf("PUT/plugin mismatch: %t/%v", got.CodexBasispointsCacheWriteAsInput, pluginConfig())
 	}
-	saved, err := db.GetSystemSettings(context.Background())
-	if err != nil || !saved.CodexBasispointsCacheWriteAsInput {
+	if saved, err := db.GetSystemSettings(context.Background()); err != nil || !saved.CodexBasispointsCacheWriteAsInput {
 		t.Fatalf("persisted mismatch: %+v %v", saved, err)
 	}
-	// An unrelated update from a stale instance keeps the persisted value.
+	// An unrelated update from a stale instance keeps the plugin value.
 	proxy.UpdateRuntimeSettings(func(s proxy.RuntimeSettings) proxy.RuntimeSettings {
 		s.CodexBasispointsCacheWriteAsInput = false
 		return s
@@ -222,16 +239,14 @@ func TestBasispointsCacheCreationAsInputPersistAndReload(t *testing.T) {
 	if response := invokeResponseCacheSettingsAdmin(t, h, http.MethodPut, map[string]any{"site_name": "unrelated"}); response.Code != 200 {
 		t.Fatalf("unrelated PUT: %d", response.Code)
 	}
-	if saved, err := db.GetSystemSettings(context.Background()); err != nil || !saved.CodexBasispointsCacheWriteAsInput {
-		t.Fatalf("unrelated update overwrote the setting: %+v %v", saved, err)
+	if reloaded := decodeResponseCacheSettingsResponse(t, invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)); !reloaded.CodexBasispointsCacheWriteAsInput || pluginConfig()["cache_creation_as_input"] != true {
+		t.Fatal("unrelated update or GET lost the setting")
 	}
-	proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings())
-	proxy.ApplyRuntimeSettingsFromSystem(saved)
-	if reloaded := decodeResponseCacheSettingsResponse(t, invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)); !reloaded.CodexBasispointsCacheWriteAsInput {
-		t.Fatal("reload/GET lost the setting")
-	}
-	if response := invokeResponseCacheSettingsAdmin(t, h, http.MethodPut, map[string]any{"codex_basispoints_cache_creation_as_input": false}); response.Code != 200 || proxy.CurrentRuntimeSettings().CodexBasispointsCacheWriteAsInput {
+	if response := invokeResponseCacheSettingsAdmin(t, h, http.MethodPut, map[string]any{"codex_basispoints_cache_creation_as_input": false}); response.Code != 200 || decodeResponseCacheSettingsResponse(t, response).CodexBasispointsCacheWriteAsInput {
 		t.Fatalf("disable PUT: %d", response.Code)
+	}
+	if _, present := pluginConfig()["cache_creation_as_input"]; present {
+		t.Fatal("off removes the key so the plugin default applies")
 	}
 }
 

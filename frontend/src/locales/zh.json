@@ -4770,7 +4770,7 @@
     "codexBasispoints429CooldownDesc": "BPS 返回限流后，该账号的 BPS 暂停多久再尝试；期间请求走原 Codex。1–600 秒，默认 5 秒。上游明确给出 Retry-After 时以上游为准（最长 600 秒）。",
     "codexBasispoints429CooldownUnit": "秒",
     "codexBasispointsCacheCreationAsInput": "创建缓存按普通输入计费",
-    "codexBasispointsCacheCreationAsInputDesc": "BPS 返回的缓存写入（cache_write_tokens 等）在下发给客户端的用量里清零，这部分 token 仍计在 input_tokens 里，按普通输入计费；总输入和缓存读取不变，与原 Codex 的用量格式一致。只改用量字段，不关闭上游缓存。本站自身的用量记录本来就按普通输入计。默认关闭，关闭时原样透传上游计数。",
+    "codexBasispointsCacheCreationAsInputDesc": "BPS 返回的缓存写入（cache_write_tokens 等）在下发给客户端的用量里清零，这部分 token 仍计在 input_tokens 里，按普通输入计费；总输入和缓存读取不变，与原 Codex 的用量格式一致。只改用量字段，不关闭上游缓存。本站自身的用量记录本来就按普通输入计。默认关闭，关闭时原样透传上游计数。此开关即 BPS 插件的 cache_creation_as_input 配置。",
     "codexRequestCompression": "Codex HTTP 请求体压缩",
     "codexRequestCompressionDesc": "对走 HTTP 路径的 Codex /responses 请求体做 zstd 压缩（Content-Encoding: zstd），与真实 Codex CLI 的默认行为一致——它对 ChatGPT 后端本来就压，不压反而是可被识别的特征。默认开启。与上面的强制 WebSocket 互不影响：WebSocket 走 permessage-deflate 压缩，本项只作用于 HTTP 路径（大请求 1009 降级、生图、Agent Identity 账号），无需为了压缩关闭 WebSocket。",
     "codexWSWeakNetworkMode": "WS 弱网模式",
@@ -7575,7 +7575,8 @@
       "degrade_probe_interval": "定时抽检间隔",
       "degrade_probe_max_concurrent": "检测并发上限",
       "degrade_cooldown_ladder": "降智熔断冷却阶梯",
-      "dual_route_preference": "双路由账号优先路由"
+      "dual_route_preference": "双路由账号优先路由",
+      "cache_creation_as_input": "创建缓存按普通输入计费"
     },
     "agentCapturesTitle": "分析抓包",
     "agentCapturesDesc": "分析当前筛选条件与时间范围内的插件抓包（已脱敏）。",
@@ -7613,7 +7614,8 @@
       "degrade_probe_interval": "每个账号每条路由的定时抽检间隔，如 6h（10m–168h）；留空关闭。原生路由仅在显式开启时抽检。",
       "degrade_probe_max_concurrent": "每个实例同时进行的鹈鹕检测上限（含手动与批量）。",
       "degrade_cooldown_ladder": "降智熔断每次触发依次使用的冷却时长，冷却结束后由鹈鹕检测决定是否恢复。留空沿用用量策略冷却阶梯。",
-      "dual_route_preference": "同时启用 BPS 与原生路由（codex_native_enabled=true）的账号在两条路由都正常时先走哪条；另一条作为回退（熔断、策略拦截后同账号重试）。默认原生优先。"
+      "dual_route_preference": "同时启用 BPS 与原生路由（codex_native_enabled=true）的账号在两条路由都正常时先走哪条；另一条作为回退（熔断、策略拦截后同账号重试）。默认原生优先。",
+      "cache_creation_as_input": "默认关闭。开启后，BPS 报告的缓存写入计数（cache_write_tokens 及其他网关读取的别名）在下发给客户端的用量里清零；这部分 token 仍在 input_tokens 里，按普通输入计费，与原生 Codex 一致；输入、缓存读取与总量不变。与「设置 › Basispoints」中的开关相同。"
     },
     "coolingUntil": "BPS 冷却至 {{time}}（{{reason}}）",
     "coolingReasons": {
@@ -7699,6 +7701,10 @@
       "protection": {
         "title": "账号保护",
         "description": "单账号限额，以及用量策略拦截与限流的处理方式。"
+      },
+      "billing": {
+        "title": "用量上报",
+        "description": "BPS 用量如何报告给客户端。"
       },
       "attachments": {
         "title": "附件",

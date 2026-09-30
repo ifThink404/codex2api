@@ -258,6 +258,9 @@ func projectBPSResponse(ctx context.Context, data []byte) ([]byte, error) {
 					case "usage":
 						if usage, ok := child.(map[string]any); ok {
 							projectBPSUsage(usage, d)
+							if currentBPSConfig().CacheCreationAsInput && reportBPSCacheWritesAsInput(usage) && d.Usage != nil {
+								d.Usage.CacheWriteAsInput = true
+							}
 						}
 						continue
 					case "instructions":

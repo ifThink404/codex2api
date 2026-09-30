@@ -10591,7 +10591,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,
 		CodexBasispoints429CooldownSec:      runtimeCfg.CodexBasispoints429CooldownSec,
-		CodexBasispointsCacheWriteAsInput:   runtimeCfg.CodexBasispointsCacheWriteAsInput,
+		CodexBasispointsCacheWriteAsInput:   bpsPluginCacheCreationAsInput(),
 		CodexWSWeakNetworkMode:              runtimeCfg.CodexWSWeakNetworkMode,
 		CodexWSKeepaliveEnabled:             h.store.CodexWSKeepaliveEnabled(),
 		CodexWSKeepaliveIntervalSec:         h.store.CodexWSKeepaliveIntervalSec(),
@@ -12416,6 +12416,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return
 			}
 		}
+		if req.CodexBasispointsCacheWriteAsInput != nil {
+			if err := saveBPSPluginCacheCreationAsInput(c.Request.Context(), *req.CodexBasispointsCacheWriteAsInput); err != nil {
+				writeError(c, http.StatusInternalServerError, "保存 BPS 插件缓存写入计费配置失败: "+err.Error())
+				return
+			}
+		}
 		proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 			current.CodexBasispointsEnabled = runtimeCfg.CodexBasispointsEnabled
 			current.CodexBasispointsModels = runtimeCfg.CodexBasispointsModels
@@ -12633,7 +12639,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,
 		CodexBasispoints429CooldownSec:      runtimeCfg.CodexBasispoints429CooldownSec,
-		CodexBasispointsCacheWriteAsInput:   runtimeCfg.CodexBasispointsCacheWriteAsInput,
+		CodexBasispointsCacheWriteAsInput:   bpsPluginCacheCreationAsInput(),
 		CodexWSWeakNetworkMode:              runtimeCfg.CodexWSWeakNetworkMode,
 		CodexWSKeepaliveEnabled:             h.store.CodexWSKeepaliveEnabled(),
 		CodexWSKeepaliveIntervalSec:         h.store.CodexWSKeepaliveIntervalSec(),

@@ -112,6 +112,12 @@ type BPSConfig struct {
 	// explicit native route) uses while both are healthy: native (default,
 	// as in fj-server) or bps. The other route is the fallback.
 	DualRoutePreference string `json:"dual_route_preference,omitempty"`
+	// CacheCreationAsInput zeroes the cache-creation counters BPS reports
+	// (input_tokens_details.cache_write_tokens and the aliases downstream
+	// gateways read) in the usage the client sees. input_tokens already
+	// includes them, so they bill as ordinary input, as with native Codex.
+	// Off by default (upstream v3.0.5 codex_basispoints_cache_creation_as_input).
+	CacheCreationAsInput bool `json:"cache_creation_as_input,omitempty"`
 }
 
 // Dual-route preferences.

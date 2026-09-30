@@ -38,6 +38,56 @@ type bpsUsageDiagnostic struct {
 	BilledInput        int64  `json:"billed_input_tokens"`
 	BilledCached       int64  `json:"billed_cached_tokens"`
 	BilledCacheWrite   int64  `json:"billed_cache_write_tokens"`
+	// CacheWriteAsInput: the client saw cache-creation counters zeroed.
+	CacheWriteAsInput bool `json:"cache_write_as_input,omitempty"`
+}
+
+// bpsCacheWriteUsageFields are the cache-creation counters a usage object may
+// carry, as paths below it: BPS reports input_tokens_details.cache_write_tokens;
+// the rest are the spellings downstream gateways read as cache creation.
+var bpsCacheWriteUsageFields = [][]string{
+	{"input_tokens_details", "cache_write_tokens"},
+	{"prompt_tokens_details", "cache_write_tokens"},
+	{"input_tokens_details", "cache_creation_tokens"},
+	{"prompt_tokens_details", "cache_creation_tokens"},
+	{"cache_write_tokens"},
+	{"cache_creation_input_tokens"},
+	{"cache_write_input_tokens"},
+	{"cache_creation_tokens"},
+	{"cache_creation", "ephemeral_5m_input_tokens"},
+	{"cache_creation", "ephemeral_1h_input_tokens"},
+}
+
+// reportBPSCacheWritesAsInput zeroes the present, non-zero cache-creation
+// counters of one usage object. input_tokens, cached_tokens and total_tokens
+// are kept, and absent counters stay absent.
+func reportBPSCacheWritesAsInput(usage map[string]any) bool {
+	changed := false
+	for _, path := range bpsCacheWriteUsageFields {
+		parent := usage
+		for _, key := range path[:len(path)-1] {
+			if parent, _ = parent[key].(map[string]any); parent == nil {
+				break
+			}
+		}
+		if parent == nil {
+			continue
+		}
+		key := path[len(path)-1]
+		value, exists := parent[key]
+		if !exists || value == nil {
+			continue
+		}
+		if count, ok := bpsUsageCount(value); ok && count == 0 {
+			continue
+		}
+		if number, ok := value.(int64); ok && number == 0 {
+			continue
+		}
+		parent[key] = json.Number("0")
+		changed = true
+	}
+	return changed
 }
 
 func bpsUsageCount(value any) (int64, bool) {

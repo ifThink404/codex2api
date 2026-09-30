@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Archive, Cable, ChevronRight, Fingerprint, FlaskConical, Gauge, HeartPulse, Hourglass, Paperclip, RefreshCw, Route, Save, Search, ShieldAlert, ShieldCheck, Timer, Trash2 } from 'lucide-react'
+import { Archive, Cable, ChevronRight, Fingerprint, FlaskConical, Gauge, HeartPulse, Hourglass, Paperclip, Receipt, RefreshCw, Route, Save, Search, ShieldAlert, ShieldCheck, Timer, Trash2 } from 'lucide-react'
 import { Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '../api'
 import AccountGroupMultiSelect from '../components/AccountGroupMultiSelect'
@@ -192,6 +192,7 @@ function Field({ label, help, children }: { label: string; help?: string; childr
 const BPS_CONFIG_GROUP_ICONS: Record<string, ReactNode> = {
   routing: <Route />,
   protection: <ShieldCheck />,
+  billing: <Receipt />,
   attachments: <Paperclip />,
   identity: <Fingerprint />,
   captures: <Archive />,

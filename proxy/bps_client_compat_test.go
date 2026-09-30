@@ -125,3 +125,41 @@ func TestBPSPluginRepairsMislabeledCustomToolCalls(t *testing.T) {
 		})
 	}
 }
+
+// Ported from upstream v3.0.5 (af602f52) as the plugin config key
+// cache_creation_as_input.
+func TestBPSPluginCacheCreationAsInput(t *testing.T) {
+	previous := currentBPSConfig()
+	t.Cleanup(func() { storeBPSConfig(previous) })
+	usage := `{"input_tokens":40000,"output_tokens":20,"total_tokens":40020,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":22500},"cache_creation_input_tokens":22500,"cache_creation":{"ephemeral_5m_input_tokens":22500}}`
+	event := []byte(`{"type":"response.completed","response":{"object":"response","id":"r","usage":` + usage + `}}`)
+	project := func(on, compact bool) gjson.Result {
+		cfg := previous
+		cfg.CacheCreationAsInput = on
+		storeBPSConfig(cfg)
+		d := &CodexBPSDiagnostic{Mode: "bps", Compact: compact, projection: newBPSResponseProjection(nil)}
+		out, err := projectBPSResponse(context.WithValue(t.Context(), codexBPSDiagnosticKey{}, d), event)
+		require.NoError(t, err)
+		if !compact {
+			require.Equal(t, on, d.Usage.CacheWriteAsInput)
+		}
+		return gjson.GetBytes(out, "response.usage")
+	}
+	off := project(false, false)
+	require.Positive(t, off.Get("input_tokens_details.cache_write_tokens").Int(), "off by default: the counter is reported")
+	require.EqualValues(t, 22500, off.Get("cache_creation_input_tokens").Int())
+
+	on := project(true, false)
+	require.Equal(t, off.Get("input_tokens").Int(), on.Get("input_tokens").Int(), "input_tokens is kept")
+	require.Equal(t, off.Get("total_tokens").Int(), on.Get("total_tokens").Int())
+	for _, path := range []string{"input_tokens_details.cache_write_tokens", "cache_creation_input_tokens", "cache_creation.ephemeral_5m_input_tokens"} {
+		require.True(t, on.Get(path).Exists(), path)
+		require.Zero(t, on.Get(path).Int(), path)
+	}
+	require.False(t, on.Get("cache_write_input_tokens").Exists(), "absent counters stay absent")
+	require.False(t, on.Get("cache_creation.ephemeral_1h_input_tokens").Exists())
+
+	compact := project(true, true)
+	require.EqualValues(t, 40000, compact.Get("input_tokens").Int(), "compact usage is not re-estimated")
+	require.Zero(t, compact.Get("input_tokens_details.cache_write_tokens").Int())
+}

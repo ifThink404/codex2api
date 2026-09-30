@@ -370,10 +370,22 @@ test('upstream Basispoints settings are views of the BPS plugin', () => {
   }
   const server = readFileSync(srcRoot + '../../admin/bps_upstream_takeover.go', 'utf8')
   assert.ok(server.includes('func translateExcelBPSMode') && server.includes('func saveBPSPluginGlobalEnabled'))
+  assert.ok(server.includes('func saveBPSPluginCacheCreationAsInput') && server.includes('bpsCacheCreationConfigKey = "cache_creation_as_input"'), 'the cache-creation switch is the plugin config key')
+  assert.ok(settings.includes('settingsForm.codex_basispoints_cache_creation_as_input'), 'the Settings switch stays as a view')
+  const field = bpsConfigFields.find((item) => item.key === 'cache_creation_as_input')
+  assert.equal(field.kind, 'boolean')
+  assert.equal(field.defaultValue, false)
+  assert.ok(bpsConfigGroups.find((group) => group.key === 'billing').fields.includes('cache_creation_as_input'))
+  assert.ok(read('pages/Plugins.tsx').includes('billing: <Receipt />'))
+  const plugin = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
+  assert.ok(plugin.includes('`json:"cache_creation_as_input,omitempty"`'), 'the server knows the field')
   const gate = readFileSync(srcRoot + '../../proxy/openai_excel_bps_route.go', 'utf8')
   assert.ok(gate.includes('if !excelBPSAdapterEnabled.Load() {'), 'upstream adapter gate stays closed')
   for (const name of ['zh', 'en', 'zh-TW']) {
     const locale = JSON.parse(read(`locales/${name}.json`))
     for (const key of ['codexBasispointsPluginNote', 'codexBasispointsPluginLink']) assert.equal(typeof locale.settings[key], 'string', `${name} ${key}`)
+    assert.equal(typeof locale.plugins.bpsConfig.cache_creation_as_input, 'string')
+    assert.equal(typeof locale.plugins.bpsConfigHints.cache_creation_as_input, 'string')
+    for (const part of ['title', 'description']) assert.equal(typeof locale.plugins.bpsConfigGroups.billing[part], 'string')
   }
 })
