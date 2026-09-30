@@ -205,18 +205,6 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 
 	// 发送请求
 	start := time.Now()
-	if proxy.UpstreamExcelBPSActive(account, testModel) {
-		// Keep account probes on the same Responses-shaped adapter as normal
-		// traffic. This also covers quality tests, whose HTML prompt is already
-		// represented as a standard Responses input item.
-		if mapped, ok := proxy.ResolveAccountModelMapping(account, testModel); ok && mapped != "" {
-			if next, setErr := sjson.SetBytes(payload, "model", mapped); setErr == nil {
-				payload = next
-			}
-		}
-		h.runExcelBPSInteractiveTest(c, account, payload, testModel, start, isTransient, restoreOnSuccess, &transientOutcome, id, quality != nil, usageReason, usageEndpoint, usageEffort)
-		return
-	}
 	var resp *http.Response
 	var reqErr error
 	if isClaudeAccount {
@@ -1676,10 +1664,6 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	if status, msg, done := h.batchTestSkipDeactivatedWorkspace(acc); done {
 		return status, msg
 	}
-	if proxy.UpstreamExcelBPSActive(acc, "") {
-		return h.runExcelBPSBatchTest(testCtx, acc)
-	}
-
 	if status, msg, done := h.batchTestWhamPreflight(testCtx, acc); done {
 		return status, msg
 	}

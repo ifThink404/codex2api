@@ -444,7 +444,6 @@ func main() {
 	r.Use(loggerMiddleware())
 	r.Use(security.SecurityHeadersMiddleware())
 
-	proxy.ConfigureExcelBPSReplay(tc)
 	defer handler.CloseAPIKeyAuthCache()
 	adminHandler.SetAPIKeyAuthCacheHandler(handler)
 

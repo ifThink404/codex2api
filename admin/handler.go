@@ -1197,7 +1197,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/:id/models/sync-upstream", h.SyncAccountUpstreamModels)
 	api.POST("/accounts/:id/models/probe", h.ProbeAccountModels)
 	api.PATCH("/accounts/:id/scheduler", h.UpdateAccountScheduler)
-	api.POST("/accounts/:id/bps-pause/clear", h.ClearAccountExcelBPSPause)
 	api.GET("/channel-monitors", h.ListChannelMonitors)
 	api.GET("/channel-monitors/billing-rates", h.ListChannelMonitorBillingRates)
 	api.POST("/channel-monitors/:id/probe", h.ProbeChannelMonitorNow)
@@ -1712,7 +1711,6 @@ type accountResponse struct {
 	ExcelBPSEnabled              bool                        `json:"openai_excel_bps,omitempty"`
 	ExcelBPSOptOut               bool                        `json:"openai_excel_bps_opt_out,omitempty"`
 	ExcelBPSEffective            bool                        `json:"openai_excel_bps_effective,omitempty"`
-	ExcelBPSPause                *proxy.ExcelBPSPauseView    `json:"bps_pause,omitempty"`
 	ClaudeAuthKind               string                      `json:"claude_auth_kind,omitempty"`
 	ClaudeBaseURL                string                      `json:"claude_base_url,omitempty"`
 	AntigravityAuthKind          string                      `json:"antigravity_auth_kind,omitempty"`
@@ -2984,11 +2982,6 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.Timezone.Set {
 		h.store.ApplyAccountTimezone(id, update.Timezone.Value)
-	}
-	// Changing an account's Basispoints mode is an explicit decision; it
-	// supersedes any automatic pause or cooldown of that route.
-	if update.ExcelBPSEnabled.Set || update.ExcelBPSOptOut.Set {
-		proxy.ClearExcelBPSPause(id)
 	}
 }
 

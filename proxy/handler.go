@@ -1315,7 +1315,6 @@ func (h *Handler) SetRuntimeCache(tc cache.TokenCache) {
 	if h.cfg != nil && h.cfg.APIKeyAuthCacheEnabled && h.db != nil {
 		h.authCache = newAPIKeyAuthCache(h.db, tc)
 	}
-	excelBPSHealth.configure(h.store, tc)
 }
 
 // NewHandlerWithDeviceProfile 创建处理器（带设备指纹配置）

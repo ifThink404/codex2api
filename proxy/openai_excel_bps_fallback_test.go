@@ -105,3 +105,13 @@ func TestHandleExcelBPSCanceledRequestDoesNotFallback(t *testing.T) {
 		t.Fatal("canceled request retried")
 	}
 }
+
+// Moved from bps_history_regression_test.go: it tests the upstream adapter's
+// routing (excelBPSNativeRequestReason), not the BPS plugin.
+func TestBPSPlaintextAgentContextStaysOnBPS(t *testing.T) {
+	for _, raw := range []string{`{"input":[{"type":"agent_message","content":[{"type":"input_text","text":"plain task"}]}]}`, `{"input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"Reply exactly BPS_AGENT_PROBE_OK."}]}]}`} {
+		if reason := excelBPSNativeRequestReason([]byte(raw)); reason != "" {
+			t.Fatalf("plaintext context unnecessarily switched upstream: %s", reason)
+		}
+	}
+}

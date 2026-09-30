@@ -30,13 +30,13 @@ func setExcelBPSGlobalForTest(t *testing.T, enabled bool, models string) {
 func TestExcelBPSRouteAvailable(t *testing.T) {
 	enableExcelBPSAdapterForTest(t)
 	for _, tc := range []struct {
-		name            string
-		global          bool
-		models          string
-		enabled, optOut bool
-		accountModels   []string
-		model           string
-		want            bool
+		name          string
+		global        bool
+		models        string
+		enabled       bool
+		accountModels []string
+		model         string
+		want          bool
 	}{
 		// fork: the adapter's global default is gone (the BPS plugin owns
 		// enablement), so only the account opt-in admits an account.
@@ -48,7 +48,7 @@ func TestExcelBPSRouteAvailable(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setExcelBPSGlobalForTest(t, tc.global, tc.models)
-			account := &auth.Account{DBID: 7, AccessToken: "synthetic", ExcelBPSEnabled: tc.enabled, ExcelBPSOptOut: tc.optOut, Models: tc.accountModels}
+			account := &auth.Account{DBID: 7, AccessToken: "synthetic", ExcelBPSEnabled: tc.enabled, Models: tc.accountModels}
 			if got := excelBPSRouteAvailable(account, tc.model); got != tc.want {
 				t.Fatalf("excelBPSRouteAvailable = %t, want %t", got, tc.want)
 			}

@@ -30,14 +30,6 @@ func TestBPSReasoningReplayOmitsDisplayContent(t *testing.T) {
 	}
 }
 
-func TestBPSPlaintextAgentContextStaysOnBPS(t *testing.T) {
-	for _, raw := range []string{`{"input":[{"type":"agent_message","content":[{"type":"input_text","text":"plain task"}]}]}`, `{"input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"Reply exactly BPS_AGENT_PROBE_OK."}]}]}`} {
-		if reason := excelBPSNativeRequestReason([]byte(raw)); reason != "" {
-			t.Fatalf("plaintext context unnecessarily switched upstream: %s", reason)
-		}
-	}
-}
-
 func TestPrepareResponsesBodyNormalizesPlaintextAgentContext(t *testing.T) {
 	raw := []byte(`{"model":"gpt-6-astra","input":[{"type":"agent_message","id":"amsg_probe","author":"parent","recipient":"child","content":[{"type":"encrypted_content","encrypted_content":"Return OK"}]}]}`)
 	got, _ := PrepareResponsesBody(raw)

@@ -444,13 +444,6 @@ func (bpsPlugin) StateChanged(state database.TransportPluginState) {
 	publishBPSConfig(state.Config)
 }
 
-// upstreamExcelBPSActive is upstream's Excel Basispoints gate
-// (excelBPSRouteAvailable) at the admin test sites: it never opens, because
-// the BPS plugin owns Excel BPS.
-func upstreamExcelBPSActive(account *auth.Account, model string) bool {
-	return excelBPSRouteAvailable(account, model)
-}
-
 // bpsServesAccount reports whether BPS would serve a main-turn request for
 // model on this account: plugin enabled plus the per-account route switches.
 func bpsServesAccount(account *auth.Account, model string) bool {
@@ -1210,12 +1203,6 @@ func (u *ConnectionTestUsage) Apply(input *database.UsageLogInput) {
 		return
 	}
 	applyTransportPluginUsage(u.req, input)
-}
-
-// UpstreamExcelBPSActive is the exported form of upstreamExcelBPSActive for
-// upstream's admin connection-test intercept sites.
-func UpstreamExcelBPSActive(account *auth.Account, model string) bool {
-	return upstreamExcelBPSActive(account, model)
 }
 
 // ExecuteCodexConnectionTest runs an account connection test on the transport

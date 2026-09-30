@@ -293,7 +293,9 @@ func TestExcelBPSHealthDropsPausesForAccountsThatLeftBasispoints(t *testing.T) {
 	setExcelBPSPauseSettingsForTest(t, false, 1)
 	account := excelBPSHealthTestAccount(308)
 	excelBPSHealth.observeFailure(context.Background(), account, "gpt-6-astra", http.StatusForbidden, "", nil, "")
-	account.SetExcelBPSEnabled(false)
+	account.Mu().Lock()
+	account.ExcelBPSEnabled = false
+	account.Mu().Unlock()
 	excelBPSAccessProbe = func(context.Context, *auth.Account, string) (excelBPSAccess, error) {
 		t.Fatal("probed an account that no longer uses Basispoints")
 		return excelBPSAccess{}, nil
