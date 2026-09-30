@@ -163,7 +163,8 @@ var legacyBasispointsModelSeparators = regexp.MustCompile(`[,;\s]+`)
 // no bps plugin row yet), inside the excel_bps_unify transaction:
 //   - the plugin row: global switch on, dual_route_preference=bps (BPS first,
 //     the account's native route is the fallback), upstream's model list as
-//     bps_models when one was set; capture, budgets, concurrency caps and the
+//     bps_models when one was set, and the degradation breaker off (no
+//     automatic pelican probes); capture, budgets, concurrency caps and the
 //     scheduled pelican probe stay at their off defaults;
 //   - every account BPS now serves through the global switch (Codex OAuth,
 //     not agent identity, no explicit plugin "off"): codex_bps_profile=excel
@@ -172,7 +173,9 @@ var legacyBasispointsModelSeparators = regexp.MustCompile(`[,;\s]+`)
 // Each changed account gets an outbox event, an account_events audit row and
 // a log line; the step is recorded as bps/excel_parity.
 func migrateExcelBPSParity(ctx context.Context, tx *sql.Tx, sqlite bool) error {
-	config := map[string]any{"dual_route_preference": "bps"}
+	// The degradation breaker starts off: no automatic pelican probes until
+	// an operator turns it on from the plugin page.
+	config := map[string]any{"dual_route_preference": "bps", "degrade_breaker_enabled": false}
 	var modelsRaw sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT codex_basispoints_models FROM system_settings WHERE id = 1`).Scan(&modelsRaw); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err

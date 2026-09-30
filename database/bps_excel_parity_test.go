@@ -80,7 +80,7 @@ func TestExcelParityMigrationOnTheProductionShape(t *testing.T) {
 			require.Len(t, states, 1)
 			state := states[0]
 			require.True(t, state.Enabled, "the plugin global switch follows codex_basispoints_enabled")
-			require.JSONEq(t, `{"dual_route_preference":"bps"}`, string(state.Config), "BPS first; no budgets, caps or scheduled probes")
+			require.JSONEq(t, `{"dual_route_preference":"bps","degrade_breaker_enabled":false}`, string(state.Config), "BPS first; breaker off, no budgets, caps or probes")
 			require.False(t, state.CaptureEnabled)
 			require.Zero(t, state.CaptureSampleRate)
 			require.Empty(t, state.GroupIDs)

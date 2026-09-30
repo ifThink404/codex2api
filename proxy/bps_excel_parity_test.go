@@ -76,6 +76,7 @@ func TestProductionExcelShapeRoutesBPSFirstWithSameAccountNativeFallback(t *test
 			})
 			require.NoError(t, store.Init(ctx))
 			require.True(t, currentBPSConfig().PrefersBPS(), "BPS first, native is the fallback")
+			require.False(t, currentBPSConfig().DegradeEnabled(), "no automatic pelican probes until an operator turns the breaker on")
 			p, _ := registry.Get(BPSPluginID)
 			for _, id := range ids {
 				account := store.FindByID(id)
