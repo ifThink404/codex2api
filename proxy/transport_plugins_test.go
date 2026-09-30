@@ -391,3 +391,43 @@ func TestResponsesWebSocketTurnUsesTransportPlugin(t *testing.T) {
 	require.EqualValues(t, 1, plugin.executes.Load(), "the only account is vetoed on the WS path too")
 	require.Zero(t, wsCalls.Load())
 }
+
+// A WS continuation served by a plugin runs over HTTP, which has no upstream
+// connection state: previous_response_id must be expanded from the response
+// cache into full input before the plugin sees the body (upstream v3.0.5
+// b368a744 relies on the same expansion for its Basispoints WS route).
+func TestResponsesWebSocketContinuationExpandsForTransportPlugin(t *testing.T) {
+	previousExec := WebsocketExecuteFunc
+	WebsocketExecuteFunc = func(context.Context, *auth.Account, []byte, string, string, string, *DeviceProfileConfig, http.Header, string) (*http.Response, error) {
+		return nil, context.Canceled
+	}
+	t.Cleanup(func() { WebsocketExecuteFunc = previousExec })
+	handler, _, plugin, nativeCalls := newTransportPluginTestHandler(t, true)
+
+	conn := dialPluginWS(t, handler)
+	completeTurn := func(frame string) string {
+		t.Helper()
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(frame)))
+		for {
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+			_, data, err := conn.ReadMessage()
+			require.NoError(t, err)
+			if gjson.GetBytes(data, "type").String() == "response.completed" {
+				return gjson.GetBytes(data, "response.id").String()
+			}
+		}
+	}
+	first := completeTurn(`{"type":"response.create","model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	require.NotEmpty(t, first)
+	completeTurn(`{"type":"response.create","model":"gpt-5.5","previous_response_id":"` + first + `","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"again"}]}]}`)
+
+	require.EqualValues(t, 2, plugin.executes.Load())
+	require.Zero(t, nativeCalls.Load())
+	body := plugin.lastEnv.Load().Body
+	require.False(t, gjson.GetBytes(body, "previous_response_id").Exists(), "HTTP plugins cannot resolve a server-side response id")
+	input := gjson.GetBytes(body, "input").Raw
+	require.Contains(t, input, "hello", "the cached first turn is replayed")
+	require.Contains(t, input, `"OK"`, "the cached assistant output is replayed")
+	require.Contains(t, input, "again")
+	require.Less(t, strings.Index(input, "hello"), strings.Index(input, "again"))
+}
