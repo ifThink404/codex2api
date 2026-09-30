@@ -54,23 +54,27 @@ func TestV302MergedAdminRoutes(t *testing.T) {
 	}
 }
 
+// Since v3.0.5 the two BPS switches are one: upstream's Excel mode writes the
+// plugin override (see bps_upstream_takeover.go); an explicit Excel "on" wins
+// over a plugin value sent in the same update.
 func TestV302BPSCapabilitiesRemainIndependent(t *testing.T) {
-	for _, req := range []updateAccountSchedulerReq{
-		{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`true`)}},
-		{ExcelBPSEnabled: json.RawMessage(`true`)},
-		{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`false`)}, ExcelBPSEnabled: json.RawMessage(`true`)},
+	for _, tc := range []struct {
+		req  updateAccountSchedulerReq
+		want any
+	}{
+		{updateAccountSchedulerReq{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`true`)}}, true},
+		{updateAccountSchedulerReq{ExcelBPSEnabled: json.RawMessage(`true`)}, true},
+		{updateAccountSchedulerReq{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`false`)}, ExcelBPSEnabled: json.RawMessage(`true`)}, true},
 	} {
-		got, err := parseAccountSchedulerUpdate(req)
+		got, err := parseAccountSchedulerUpdate(tc.req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !got.hasChanges() {
 			t.Fatal("capability-only update ignored")
 		}
-		_, codexSet := got.CredentialUpdates[auth.CodexBPSEnabledCredentialKey]
-		_, excelSet := got.CredentialUpdates[auth.ExcelBPSCredentialKey]
-		if codexSet != (req.Enabled != nil) || excelSet != (req.ExcelBPSEnabled != nil) {
-			t.Fatal("BPS transport updates are not independent")
+		if got.CredentialUpdates[auth.CodexBPSEnabledCredentialKey] != tc.want {
+			t.Fatalf("plugin override = %#v, want %#v", got.CredentialUpdates[auth.CodexBPSEnabledCredentialKey], tc.want)
 		}
 	}
 }

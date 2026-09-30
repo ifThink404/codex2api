@@ -2172,7 +2172,7 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 	excelBPSEffective := make(map[int64]bool)
 	for _, acc := range h.store.Accounts() {
 		runtimeStatus[acc.DBID] = acc.RuntimeStatus()
-		excelBPSEffective[acc.DBID] = acc.IsExcelBPSEnabled()
+		excelBPSEffective[acc.DBID] = bpsPluginServes(acc)
 	}
 
 	accounts := make([]accountLiteResponse, 0, len(rows))
@@ -2218,8 +2218,8 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 			ClaudeAPI:              isClaudeAccount,
 			AgentIdentity:          isAgentIdentityCredentialRow(row),
 			GrokAuthKind:           grokAuthKind,
-			ExcelBPSEnabled:        row.GetCredentialBool(auth.ExcelBPSCredentialKey),
-			ExcelBPSOptOut:         row.GetCredentialBool(auth.ExcelBPSOptOutCredentialKey),
+			ExcelBPSEnabled:        excelBPSModeEnabled(row),
+			ExcelBPSOptOut:         excelBPSModeOptOut(row),
 			ExcelBPSEffective:      excelBPSEffective[row.ID],
 		})
 	}
@@ -2517,7 +2517,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		credentialUpdates = nil
 	}
 
-	return accountSchedulerUpdate{
+	update := accountSchedulerUpdate{
 		ScoreBiasOverride:       scoreBiasOverride,
 		BaseConcurrencyOverride: baseConcurrencyOverride,
 		SkipWarmTier:            skipWarmTier,
@@ -2546,7 +2546,11 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ExcelBPSEnabled:         excelBPSEnabled,
 		ExcelBPSOptOut:          excelBPSOptOut,
 		CredentialUpdates:       credentialUpdates,
-	}, nil
+	}
+	// Upstream's Basispoints mode is the BPS plugin's per-account override.
+	translateExcelBPSMode(&update)
+	clearLegacyExcelOptIn(&update)
+	return update, nil
 }
 
 // validateClaudeFingerprintMode 允许空串(=跟随全局默认),其余必须是 preserve/force。
@@ -10582,7 +10586,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		SchedulerEngine:                     h.store.SchedulerEngine(),
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
-		CodexBasispointsEnabled:             runtimeCfg.CodexBasispointsEnabled,
+		CodexBasispointsEnabled:             bpsPluginGlobalEnabled(),
 		CodexBasispointsModels:              runtimeCfg.CodexBasispointsModels,
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,
@@ -12405,6 +12409,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	} else {
+		// The global Basispoints default is the BPS plugin's global switch.
+		if req.CodexBasispointsEnabled != nil {
+			if err := saveBPSPluginGlobalEnabled(c.Request.Context(), *req.CodexBasispointsEnabled); err != nil {
+				writeError(c, http.StatusInternalServerError, "保存 BPS 插件全局开关失败: "+err.Error())
+				return
+			}
+		}
 		proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 			current.CodexBasispointsEnabled = runtimeCfg.CodexBasispointsEnabled
 			current.CodexBasispointsModels = runtimeCfg.CodexBasispointsModels
@@ -12617,7 +12628,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		SchedulerEngine:                     h.store.SchedulerEngine(),
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
-		CodexBasispointsEnabled:             runtimeCfg.CodexBasispointsEnabled,
+		CodexBasispointsEnabled:             bpsPluginGlobalEnabled(),
 		CodexBasispointsModels:              runtimeCfg.CodexBasispointsModels,
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,

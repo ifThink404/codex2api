@@ -1798,7 +1798,7 @@
     "responsesUpstreamTransportHint": "仅当上游支持 Responses WebSocket 时打开。默认 HTTP，与全局强制 WebSocket 无关。握手失败会返回错误，不会改回 HTTP。",
     "codexFingerprintModeTitle": "设备指纹收敛",
     "excelBpsModeTitle": "Excel Basispoints（BPS）",
-    "excelBpsModeHint": "跟随全局：由系统设置里的“所有合格账号默认使用 BPS”决定；开启：不论全局开关都走 BPS；关闭：全局开启时也不走 BPS。尚未输出时遇到不支持的请求或上游故障，会自动回退原 Codex 通道。",
+    "excelBpsModeHint": "即 BPS 插件的单账号设置。跟随全局：由账号分组与插件全局开关决定；开启：强制走 BPS（Excel 类型）；关闭：强制不走 BPS。BPS 账号只有显式开启原生路由时才会走原 Codex。",
     "excelBpsModeInherit": "跟随全局",
     "excelBpsModeOn": "开启",
     "excelBpsModeOff": "关闭",
@@ -4753,9 +4753,9 @@
     "codexForceWebsocket": "Codex 上游强制 WebSocket",
     "codexForceWebsocketDesc": "启用后，对 Codex 上游的请求将走 WebSocket 长连接（复用连接池），减少每次请求的 TLS/连接握手开销，更接近官方 CLI 体验。默认关闭，关闭时走原有 HTTP 请求。",
     "codexBasispoints": "Excel Basispoints（BPS）",
-    "codexBasispointsDesc": "把 Codex 请求改走 ChatGPT Excel Basispoints 通道。只对普通 OAuth 账号生效，中转、API Key、Agent Identity 账号不受影响。需要实时联网搜索或生图的请求留在原 Codex；尚未输出时遇到不支持的请求、上游 5xx、429、401 或传输故障，会在同一账号上自动回退原 Codex 通道。",
-    "codexBasispointsEnabled": "所有合格账号默认使用 BPS",
-    "codexBasispointsEnabledDesc": "开启后，账号级 BPS 设为“跟随全局”的账号都优先走 BPS；设为“关闭”的账号不受影响，设为“开启”的账号不论此开关都会走 BPS。默认关闭。",
+    "codexBasispointsDesc": "由 BPS 传输插件接管：Codex 请求（Responses、Chat、Messages、Responses WebSocket）走 BPS 的路由、冷却、熔断和探测都在插件中完成。BPS 账号只有在显式开启原生路由（codex_native_enabled）时才会走原 Codex，不会自动回退。",
+    "codexBasispointsEnabled": "BPS 插件全局开关",
+    "codexBasispointsEnabledDesc": "与传输插件页的「全局开关」是同一个开关：对未单独设置、且不在启用分组内的合格账号启用 BPS。账号级「开启 / 关闭」即插件的单账号设置。",
     "codexBasispointsModels": "BPS 模型名单",
     "codexBasispointsModelsDesc": "只有名单内的模型走 BPS。可搜索选择，也可输入自定义模型名后回车添加；留空表示不限，由账号模型设置和上游返回决定。对单独开启的账号同样生效。",
     "codexBasispointsModelsPlaceholder": "搜索或输入模型，留空 = 全部模型",
@@ -5566,7 +5566,9 @@
     "claudeMaxToolCount": "最大工具数量",
     "claudeMaxToolCountDesc": "0 表示不设网关工具数量上限；非 0 用于运营侧资源保护。",
     "claudeMaxToolSchemaBytes": "工具 Schema 上限",
-    "claudeMaxToolSchemaBytesDesc": "0 表示不设网关 Schema 上限；请求体仍受系统大小和上游限制。"
+    "claudeMaxToolSchemaBytesDesc": "0 表示不设网关 Schema 上限；请求体仍受系统大小和上游限制。",
+    "codexBasispointsPluginNote": "模型范围、策略拦截冷却、限流、并发与预算、降智熔断等均在 BPS 插件中配置。",
+    "codexBasispointsPluginLink": "打开 BPS 插件 →"
   },
   "proxies": {
     "filterAll": "全部代理",

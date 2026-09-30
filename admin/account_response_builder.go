@@ -216,37 +216,38 @@ func (h *Handler) buildAccountResponse(
 		allowedAPIKeyIDs = row.GetCredentialInt64Slice("allowed_api_key_ids")
 	}
 	resp := accountResponse{
-		DetailLoaded:                 includeDetails,
-		ID:                           row.ID,
-		Name:                         row.Name,
-		Email:                        email,
-		EmailDomain:                  accountEmailDomain(email),
-		ChatGPTAccountID:             row.GetCredential("account_id"),
-		TokenWorkspaceID:             tokenWorkspaceID,
-		WorkspaceIDOverride:          workspaceIDOverride,
-		EffectiveWorkspaceID:         effectiveWorkspaceID,
-		PlanType:                     planType,
-		SubscriptionExpiresAt:        row.GetCredential("subscription_expires_at"),
-		Subscription:                 subscriptionStatusViewForRow(row, planType),
-		CodexLastRefreshAt:           row.GetCredential("codex_last_refresh_at"),
-		CodexRefreshError:            row.GetCredential("codex_refresh_error"),
-		Status:                       row.Status,
-		ErrorMessage:                 row.ErrorMessage,
-		ATOnly:                       !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
-		CreditEnabled:                row.CreditEnabled,
-		CreditSkipUsageWindow:        row.CreditSkipUsageWindow,
-		SkipWarmTier:                 row.SkipWarmTier,
-		PromptFilterPolicy:           auth.NormalizeAccountPolicy(auth.AccountPolicyPromptFilter, row.PromptFilterPolicy),
-		EgressPolicy:                 auth.NormalizeAccountPolicy(auth.AccountPolicyEgress, row.EgressPolicy),
-		SessionGuardsPolicy:          auth.NormalizeAccountPolicy(auth.AccountPolicySessionGuards, row.SessionGuardsPolicy),
-		AccountType:                  row.Type,
-		AccessTokenType:              accountAccessTokenType(row),
-		OpenAIResponsesAPI:           isOpenAIResponsesAccount,
-		GrokAPI:                      isGrokAccount,
-		AntigravityAPI:               isAntigravityAccount,
-		ClaudeAPI:                    isClaudeAccount,
-		ExcelBPSEnabled:              row.GetCredentialBool(auth.ExcelBPSCredentialKey),
-		ExcelBPSOptOut:               row.GetCredentialBool(auth.ExcelBPSOptOutCredentialKey),
+		DetailLoaded:          includeDetails,
+		ID:                    row.ID,
+		Name:                  row.Name,
+		Email:                 email,
+		EmailDomain:           accountEmailDomain(email),
+		ChatGPTAccountID:      row.GetCredential("account_id"),
+		TokenWorkspaceID:      tokenWorkspaceID,
+		WorkspaceIDOverride:   workspaceIDOverride,
+		EffectiveWorkspaceID:  effectiveWorkspaceID,
+		PlanType:              planType,
+		SubscriptionExpiresAt: row.GetCredential("subscription_expires_at"),
+		Subscription:          subscriptionStatusViewForRow(row, planType),
+		CodexLastRefreshAt:    row.GetCredential("codex_last_refresh_at"),
+		CodexRefreshError:     row.GetCredential("codex_refresh_error"),
+		Status:                row.Status,
+		ErrorMessage:          row.ErrorMessage,
+		ATOnly:                !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
+		CreditEnabled:         row.CreditEnabled,
+		CreditSkipUsageWindow: row.CreditSkipUsageWindow,
+		SkipWarmTier:          row.SkipWarmTier,
+		PromptFilterPolicy:    auth.NormalizeAccountPolicy(auth.AccountPolicyPromptFilter, row.PromptFilterPolicy),
+		EgressPolicy:          auth.NormalizeAccountPolicy(auth.AccountPolicyEgress, row.EgressPolicy),
+		SessionGuardsPolicy:   auth.NormalizeAccountPolicy(auth.AccountPolicySessionGuards, row.SessionGuardsPolicy),
+		AccountType:           row.Type,
+		AccessTokenType:       accountAccessTokenType(row),
+		OpenAIResponsesAPI:    isOpenAIResponsesAccount,
+		GrokAPI:               isGrokAccount,
+		AntigravityAPI:        isAntigravityAccount,
+		ClaudeAPI:             isClaudeAccount,
+		// Upstream's Basispoints mode, as a view of the plugin override.
+		ExcelBPSEnabled:              excelBPSModeEnabled(row),
+		ExcelBPSOptOut:               excelBPSModeOptOut(row),
 		ClaudeAuthKind:               claudeAuthKindForRow(row, isClaudeAccount),
 		ClaudeBaseURL:                row.GetCredential(auth.ClaudeBaseURLCredentialKey),
 		AntigravityAuthKind:          antigravityAuthKind,
@@ -333,10 +334,9 @@ func (h *Handler) buildAccountResponse(
 		}
 		resp.UsageLimitOverride = runtimeAccount.GetIgnoreUsageLimitStatusOverride()
 		resp.UsageLimitEffective = runtimeAccount.IgnoresUsageLimitStatus()
-		resp.ExcelBPSEffective = runtimeAccount.IsExcelBPSEnabled()
-		if resp.ExcelBPSEffective {
-			resp.ExcelBPSPause = excelBPSPauseForAccount(row.ID)
-		}
+		// The BPS plugin serves the account; upstream's adapter pause never
+		// applies (the plugin reports its own cooldowns).
+		resp.ExcelBPSEffective = bpsPluginServes(runtimeAccount)
 		if isGrokAccount {
 			if snap, hasSnap := runtimeAccount.GetGrokRateLimitSnapshot(); hasSnap {
 				resp.GrokRateLimit = &snap

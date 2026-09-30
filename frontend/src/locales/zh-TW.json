@@ -376,7 +376,7 @@
     "apiAutoRecovery": "API錯誤自動復原",
     "apiAutoRecoveryHint": "僅適用於 API Key 帳號，預設關閉。開啟後，API 上游暫時性 401/403 會進入 15 秒至 5 分鐘的有界退避，到期後由真實業務流量驗證復原，不依賴背景探測。關閉時保留原有保護行為，不改變 OAuth 封鎖規則。",
     "excelBpsModeTitle": "Excel Basispoints（BPS）",
-    "excelBpsModeHint": "跟隨全域：由系統設定中的「所有合格帳號預設使用 BPS」決定；開啟：不論全域開關都走 BPS；關閉：全域開啟時也不走 BPS。尚未輸出時遇到不支援的請求或上游故障，會自動回退原 Codex 通道。",
+    "excelBpsModeHint": "即 BPS 外掛的單帳號設定。跟隨全域：由帳號分組與外掛全域開關決定；開啟：強制走 BPS（Excel 類型）；關閉：強制不走 BPS。BPS 帳號只有顯式開啟原生路由時才會走原 Codex。",
     "excelBpsModeInherit": "跟隨全域",
     "excelBpsModeOn": "開啟",
     "excelBpsModeOff": "關閉",
@@ -723,9 +723,9 @@
     "codexPreflightSSEPassthroughEnabled": "啟用首回應計時回報",
     "codexPreflightSSEPassthroughEnabledDesc": "僅回報計時，不提前下發中繼資料或提交 HTTP 200。固定使用寬鬆口徑，包含閘道准入與此前重試的耗時；本機使用日誌的首字口徑不受影響。需部署支援此協定的 NewAPI 並設定可信 codex2api 目標。回應標頭已被心跳提交時略過回報，NewAPI 回退到自己觀測的首幀時間。中轉帳號與原生 WebSocket 用戶端不適用。預設關閉，熱更新即時生效。",
     "codexBasispoints": "Excel Basispoints（BPS）",
-    "codexBasispointsDesc": "把 Codex 請求改走 ChatGPT Excel Basispoints 通道。只對一般 OAuth 帳號生效，中轉、API Key、Agent Identity 帳號不受影響。需要即時聯網搜尋或生圖的請求留在原 Codex；尚未輸出時遇到不支援的請求、上游 5xx、429、401 或傳輸故障，會在同一帳號上自動回退原 Codex 通道。",
-    "codexBasispointsEnabled": "所有合格帳號預設使用 BPS",
-    "codexBasispointsEnabledDesc": "開啟後，帳號級 BPS 設為「跟隨全域」的帳號都優先走 BPS；設為「關閉」的帳號不受影響，設為「開啟」的帳號不論此開關都會走 BPS。預設關閉。",
+    "codexBasispointsDesc": "由 BPS 傳輸外掛接管：Codex 請求（Responses、Chat、Messages、Responses WebSocket）走 BPS 的路由、冷卻、熔斷和探測都在外掛中完成。BPS 帳號只有在顯式開啟原生路由（codex_native_enabled）時才會走原 Codex，不會自動回退。",
+    "codexBasispointsEnabled": "BPS 外掛全域開關",
+    "codexBasispointsEnabledDesc": "與傳輸外掛頁的「全域開關」是同一個開關：對未單獨設定、且不在啟用分組內的合格帳號啟用 BPS。帳號級「開啟 / 關閉」即外掛的單帳號設定。",
     "codexBasispointsModels": "BPS 模型名單",
     "codexBasispointsModelsDesc": "只有名單內的模型走 BPS。可搜尋選擇，也可輸入自訂模型名稱後按 Enter 新增；留空表示不限，由帳號模型設定與上游回應決定。對單獨開啟的帳號同樣生效。",
     "codexBasispointsModelsPlaceholder": "搜尋或輸入模型，留空 = 全部模型",
@@ -936,7 +936,9 @@
     "claudeMaxToolCount": "最大工具數量",
     "claudeMaxToolCountDesc": "0 表示不設閘道工具數量上限；非 0 用於營運側資源保護。",
     "claudeMaxToolSchemaBytes": "工具 Schema 上限",
-    "claudeMaxToolSchemaBytesDesc": "0 表示不設閘道 Schema 上限；請求體仍受系統大小與上游限制。"
+    "claudeMaxToolSchemaBytesDesc": "0 表示不設閘道 Schema 上限；請求體仍受系統大小與上游限制。",
+    "codexBasispointsPluginNote": "模型範圍、策略攔截冷卻、限流、並發與預算、降智熔斷等均在 BPS 外掛中設定。",
+    "codexBasispointsPluginLink": "開啟 BPS 外掛 →"
   },
   "promptFilter": {
     "builtinRestored": "已還原內建預設規則",

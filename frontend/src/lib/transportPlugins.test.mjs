@@ -361,3 +361,19 @@ test('dual_route_preference is a one-line switch in the config form', () => {
     for (const value of ['native', 'bps']) assert.equal(typeof locale.plugins.bpsConfigChoices.dual_route_preference[value], 'string')
   }
 })
+
+test('upstream Basispoints settings are views of the BPS plugin', () => {
+  const settings = read('pages/Settings.tsx')
+  assert.ok(settings.includes('<Link to="/plugins/bps/overview"'), 'the Basispoints card points at the plugin')
+  for (const dead of ['codex_basispoints_models', 'codex_basispoints_403_auto_pause', 'codex_basispoints_429_cooldown_seconds']) {
+    assert.ok(!settings.includes(`settingsForm.${dead}`), `${dead} (upstream adapter only) is not offered`)
+  }
+  const server = readFileSync(srcRoot + '../../admin/bps_upstream_takeover.go', 'utf8')
+  assert.ok(server.includes('func translateExcelBPSMode') && server.includes('func saveBPSPluginGlobalEnabled'))
+  const gate = readFileSync(srcRoot + '../../proxy/openai_excel_bps_route.go', 'utf8')
+  assert.ok(gate.includes('if !excelBPSAdapterEnabled.Load() {'), 'upstream adapter gate stays closed')
+  for (const name of ['zh', 'en', 'zh-TW']) {
+    const locale = JSON.parse(read(`locales/${name}.json`))
+    for (const key of ['codexBasispointsPluginNote', 'codexBasispointsPluginLink']) assert.equal(typeof locale.settings[key], 'string', `${name} ${key}`)
+  }
+})

@@ -8,11 +8,34 @@ import (
 	"testing"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/proxy/plugins"
 )
 
+// attachBPSPluginForTest gives the default registry a BPS plugin store on db.
+func attachBPSPluginForTest(t *testing.T, db *database.DB) {
+	t.Helper()
+	bps, ok := plugins.Default().Get(proxy.BPSPluginID)
+	if !ok {
+		t.Fatal("bps plugin not registered")
+	}
+	if err := db.MigrateBPSPlugin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	registry := plugins.NewRegistry()
+	registry.Register(bps)
+	if err := registry.Attach(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	previous := plugins.SwapDefault(registry)
+	t.Cleanup(func() { plugins.SwapDefault(previous) })
+}
+
+// codex_basispoints_enabled is the BPS plugin's global switch in this fork.
 func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 	h, db, _ := newImagesSettingsHandler(t)
+	attachBPSPluginForTest(t, db)
 	t.Cleanup(func() { proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings()) })
 	for _, tc := range []struct {
 		patch      map[string]any
@@ -35,8 +58,8 @@ func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 		}
 		got := decodeResponseCacheSettingsResponse(t, response)
 		runtime := proxy.CurrentRuntimeSettings()
-		if got.CodexBasispointsEnabled != tc.want || runtime.CodexBasispointsEnabled != tc.want || auth.ExcelBPSGlobalEnabled() != tc.want {
-			t.Fatalf("PUT/runtime/auth enabled mismatch for %v", tc.patch)
+		if got.CodexBasispointsEnabled != tc.want || plugins.Default().State(proxy.BPSPluginID).Enabled != tc.want {
+			t.Fatalf("PUT/plugin enabled mismatch for %v", tc.patch)
 		}
 		if got.CodexBasispointsModels != tc.wantModels || runtime.CodexBasispointsModels != tc.wantModels {
 			t.Fatalf("PUT/runtime models = %q/%q, want %q", got.CodexBasispointsModels, runtime.CodexBasispointsModels, tc.wantModels)
@@ -49,7 +72,7 @@ func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 		proxy.ApplyRuntimeSettingsFromSystem(saved)
 		get := invokeResponseCacheSettingsAdmin(t, h, http.MethodGet, nil)
 		reloaded := decodeResponseCacheSettingsResponse(t, get)
-		if get.Code != 200 || reloaded.CodexBasispointsEnabled != tc.want || reloaded.CodexBasispointsModels != tc.wantModels || auth.ExcelBPSGlobalEnabled() != tc.want {
+		if get.Code != 200 || reloaded.CodexBasispointsEnabled != tc.want || reloaded.CodexBasispointsModels != tc.wantModels {
 			t.Fatal("reload/GET mismatch")
 		}
 	}
@@ -86,6 +109,9 @@ func TestParseAccountSchedulerUpdateExcelBPSOptOut(t *testing.T) {
 	}
 	if !update.hasChanges() || !update.ExcelBPSOptOut.Set || !update.ExcelBPSOptOut.Value {
 		t.Fatalf("opt-out update = %#v", update.ExcelBPSOptOut)
+	}
+	if value, ok := update.CredentialUpdates[auth.CodexBPSEnabledCredentialKey].(bool); !ok || value {
+		t.Fatalf("mode off is the plugin override off: %#v", update.CredentialUpdates)
 	}
 	if value, ok := update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey].(bool); !ok || !value {
 		t.Fatalf("credential update = %#v", update.CredentialUpdates)
