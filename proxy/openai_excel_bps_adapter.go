@@ -1,3 +1,9 @@
+// Fork note: DEAD UPSTREAM ADAPTER. Upstream's Excel Basispoints adapter stays
+// in-tree but is unreachable (excelBPSRouteAvailable is gated closed by
+// excelBPSAdapterEnabled, and nothing from it is wired at boot). The bps
+// transport plugin owns BPS. Delete this file on the next upstream merge that
+// touches it.
+
 package proxy
 
 import (

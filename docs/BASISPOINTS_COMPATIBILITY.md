@@ -1,5 +1,7 @@
 # Excel Basispoints 客户端兼容与回退
 
+> **本分支说明（fork）**：以下描述的是上游的 Excel Basispoints 适配器。在本分支中它是**死代码**：路由闸门常关、启动时不接入任何钩子，BPS 完全由 `bps` 传输插件负责（插件页配置；账号开关为 `codex_bps_enabled`，优先级：账号设置 > 账号分组 > 全局开关）。上游的设置与账号字段只作为兼容输入被翻译到插件：`codex_basispoints_enabled` → 插件全局开关，`codex_basispoints_models` → `bps_models`，`codex_basispoints_cache_creation_as_input` → `cache_creation_as_input`，`openai_excel_bps` / `openai_excel_bps_opt_out` → 账号开关（开启时使用 Excel 配置）；403/429 暂停设置被接受但忽略，也不会回退到原生 Codex。下次触及该适配器的上游合并时删除适配器代码（`proxy/openai_excel_bps*.go`、`proxy/basispoints/`）。
+
 账号启用 Excel Basispoints 后，请求优先使用 BPS 适配器。本文说明启用方式、覆盖入口、客户端工具与历史的协议差异，以及何时回到原生 Codex。
 
 ## 启用方式

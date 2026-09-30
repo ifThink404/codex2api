@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,6 +42,27 @@ func TestExcelBPSAdapterHasNoStartupHooks(t *testing.T) {
 			if strings.Contains(string(source), hook) {
 				t.Fatalf("%s still wires the upstream adapter: %s", file, hook)
 			}
+		}
+	}
+}
+
+// Every file of the dead adapter says so at the top, so nobody extends it.
+func TestExcelBPSAdapterFilesAreMarkedDead(t *testing.T) {
+	files, err := filepath.Glob("openai_excel_bps*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, "basispoints/fork_dead_adapter.go")
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(string(source), "// Fork note: DEAD UPSTREAM ADAPTER.") {
+			t.Fatalf("%s lacks the dead-adapter note", file)
 		}
 	}
 }
