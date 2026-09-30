@@ -80,7 +80,8 @@ func TestAPIRecoveryPreservesExplicitAccountGates(t *testing.T) {
 		{"runtime deleted", `{"error":{"message":"Agent runtime has been deleted.","code":"biscuit_baker_service_agent_error_status"}}`, "unauthorized", 403, false, true},
 		{"Grok quota on 401", `{"error":{"message":"subscription:free-usage-exhausted"}}`, "usage_limited", 401, true, false},
 		{"Grok permanent denial", `{"error":{"message":"access to the chat endpoint is denied"}}`, "error", 403, true, true},
-		{"billing survives late success", `{"error":{"message":"insufficient balance"}}`, "payment_required", 402, false, false},
+		// A bare 402 no longer creates an account-level payment_required gate
+		// (upstream ced4aa9a), so there is no billing gate left to preserve here.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

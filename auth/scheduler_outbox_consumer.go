@@ -499,6 +499,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.CodexPassthroughMode = src.CodexPassthroughMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
 	dst.ExcelBPSEnabled = src.ExcelBPSEnabled
+	dst.ExcelBPSOptOut = src.ExcelBPSOptOut
 	dst.Timezone = src.Timezone
 	dst.ClaudeFingerprintMode = src.ClaudeFingerprintMode
 	dst.claudeSessionWindow = src.claudeSessionWindow
