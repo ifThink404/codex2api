@@ -60,15 +60,36 @@ func parseRouteModelsField(raw json.RawMessage, field string) ([]string, bool, e
 	return out, true, nil
 }
 
+// putBPSOverride records an account's BPS switch (nil = inherit) as a
+// credential update. Every write of the switch goes through it: the edit
+// dialog, quick config and batch dialog (scheduler updates), the Plugins-page
+// account list and the upstream openai_excel_bps compat input. The caller
+// validates with validateCodexBPSAccountTarget, persists the updates with an
+// account outbox event and publishes them with applyCodexBPSAccountRuntime.
+func putBPSOverride(updates map[string]interface{}, enabled *bool) {
+	if enabled == nil {
+		updates[auth.CodexBPSEnabledCredentialKey] = nil
+		return
+	}
+	updates[auth.CodexBPSEnabledCredentialKey] = *enabled
+}
+
 // parseCodexBPSAccountFields validates the BPS fields into credential
 // updates. codex_bps_enabled, codex_native_enabled and
 // codex_bps_image_trim_enabled are tri-state: null clears the explicit value
 // (inherit; image trim then follows the plugin's image_trim_default).
 func parseCodexBPSAccountFields(req codexBPSAccountFieldsReq, updates map[string]interface{}) error {
+	enabled, err := parseOptionalNullableBoolField(req.Enabled, auth.CodexBPSEnabledCredentialKey)
+	if err != nil {
+		return err
+	}
+	if enabled.Set {
+		putBPSOverride(updates, enabled.Value)
+	}
 	for _, field := range []struct {
 		raw json.RawMessage
 		key string
-	}{{req.Enabled, auth.CodexBPSEnabledCredentialKey}, {req.Native, auth.CodexNativeEnabledCredentialKey}, {req.ImageTrim, auth.CodexBPSImageTrimCredentialKey}} {
+	}{{req.Native, auth.CodexNativeEnabledCredentialKey}, {req.ImageTrim, auth.CodexBPSImageTrimCredentialKey}} {
 		value, err := parseOptionalNullableBoolField(field.raw, field.key)
 		if err != nil {
 			return err

@@ -217,14 +217,11 @@ func (r *Registry) Save(ctx context.Context, state database.TransportPluginState
 	return r.Reload(ctx)
 }
 
-// EnabledFor applies the precedence plugin-forced (AccountForcer) > account
-// override > group membership > global switch.
+// EnabledFor applies the precedence account override > group membership >
+// global switch. The override credential is the only per-account input.
 func (r *Registry) EnabledFor(p Plugin, account *auth.Account) bool {
 	if account == nil {
 		return false
-	}
-	if f, ok := p.(AccountForcer); ok && f.ForcedFor(account) {
-		return true
 	}
 	id := p.ID()
 	if enabled, ok := account.TransportPluginOverride(id); ok {

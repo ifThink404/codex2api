@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/proxy/plugins"
@@ -170,6 +171,22 @@ func (h *Handler) SetTransportPluginAccountOverride(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
+	if p.ID() == proxy.BPSPluginID {
+		// The BPS switch has one write path shared with the account dialogs.
+		updates := map[string]interface{}{}
+		putBPSOverride(updates, req.Enabled)
+		if err := h.validateCodexBPSAccountTarget(accountID, updates); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := h.db.SetAccountTransportPluginOverride(ctx, accountID, auth.CodexBPSEnabledCredentialKey, req.Enabled); err != nil {
+			writeInternalError(c, err)
+			return
+		}
+		h.applyCodexBPSAccountRuntime(accountID, updates)
+		c.JSON(http.StatusOK, gin.H{"account_id": accountID, "plugin": p.ID(), "enabled": req.Enabled})
+		return
+	}
 	if err := h.db.SetAccountTransportPluginOverride(ctx, accountID, plugins.OverrideCredentialKey(p), req.Enabled); err != nil {
 		writeInternalError(c, err)
 		return

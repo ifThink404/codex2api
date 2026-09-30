@@ -444,21 +444,6 @@ func (bpsPlugin) StateChanged(state database.TransportPluginState) {
 	publishBPSConfig(state.Config)
 }
 
-// ForcedFor: upstream's openai_excel_bps switch means "BPS plugin, Excel
-// profile" for eligible accounts.
-func (bpsPlugin) ForcedFor(account *auth.Account) bool {
-	return upstreamExcelBPSFlag(account)
-}
-
-func upstreamExcelBPSFlag(account *auth.Account) bool {
-	if !account.CodexBPSEligible() {
-		return false
-	}
-	account.Mu().RLock()
-	defer account.Mu().RUnlock()
-	return account.ExcelBPSEnabled
-}
-
 // upstreamExcelBPSActive is upstream's Excel Basispoints gate
 // (excelBPSRouteAvailable) at the admin test sites: it never opens, because
 // the BPS plugin owns Excel BPS.

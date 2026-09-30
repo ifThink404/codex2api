@@ -2464,12 +2464,6 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		}
 		credentialUpdates[auth.AccountHrefCredentialKey] = normalized
 	}
-	if excelBPSEnabled.Set {
-		credentialUpdates[auth.ExcelBPSCredentialKey] = excelBPSEnabled.Value
-	}
-	if excelBPSOptOut.Set {
-		credentialUpdates[auth.ExcelBPSOptOutCredentialKey] = excelBPSOptOut.Value
-	}
 	if autoPause5hThreshold.Set {
 		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
 	}
@@ -2547,9 +2541,8 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ExcelBPSOptOut:          excelBPSOptOut,
 		CredentialUpdates:       credentialUpdates,
 	}
-	// Upstream's Basispoints mode is the BPS plugin's per-account override.
+	// Upstream's Basispoints mode is accepted as the BPS plugin override.
 	translateExcelBPSMode(&update)
-	clearLegacyExcelOptIn(&update)
 	return update, nil
 }
 
@@ -2991,12 +2984,6 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.Timezone.Set {
 		h.store.ApplyAccountTimezone(id, update.Timezone.Value)
-	}
-	if value, ok := update.CredentialUpdates[auth.ExcelBPSCredentialKey].(bool); ok {
-		h.store.ApplyAccountExcelBPSEnabled(id, value)
-	}
-	if value, ok := update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey].(bool); ok {
-		h.store.ApplyAccountExcelBPSOptOut(id, value)
 	}
 	// Changing an account's Basispoints mode is an explicit decision; it
 	// supersedes any automatic pause or cooldown of that route.
@@ -10587,7 +10574,7 @@ func (h *Handler) settingsSnapshot(parent context.Context) (*settingsResponse, e
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
 		CodexBasispointsEnabled:             bpsPluginGlobalEnabled(),
-		CodexBasispointsModels:              runtimeCfg.CodexBasispointsModels,
+		CodexBasispointsModels:              bpsPluginModelsText(),
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,
 		CodexBasispoints429CooldownSec:      runtimeCfg.CodexBasispoints429CooldownSec,
@@ -12416,6 +12403,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return
 			}
 		}
+		if req.CodexBasispointsModels != nil {
+			if err := saveBPSPluginModels(c.Request.Context(), runtimeCfg.CodexBasispointsModels); err != nil {
+				writeError(c, http.StatusInternalServerError, "保存 BPS 插件模型范围失败: "+err.Error())
+				return
+			}
+		}
 		if req.CodexBasispointsCacheWriteAsInput != nil {
 			if err := saveBPSPluginCacheCreationAsInput(c.Request.Context(), *req.CodexBasispointsCacheWriteAsInput); err != nil {
 				writeError(c, http.StatusInternalServerError, "保存 BPS 插件缓存写入计费配置失败: "+err.Error())
@@ -12635,7 +12628,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
 		CodexBasispointsEnabled:             bpsPluginGlobalEnabled(),
-		CodexBasispointsModels:              runtimeCfg.CodexBasispointsModels,
+		CodexBasispointsModels:              bpsPluginModelsText(),
 		CodexBasispoints403AutoPause:        !runtimeCfg.CodexBasispoints403PauseDisabled,
 		CodexBasispoints403ProbeIntervalMin: runtimeCfg.CodexBasispoints403ProbeIntervalMin,
 		CodexBasispoints429CooldownSec:      runtimeCfg.CodexBasispoints429CooldownSec,

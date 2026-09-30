@@ -490,9 +490,6 @@ func currentRuntimeSettings() RuntimeSettings {
 func storeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings = NormalizeRuntimeSettings(settings)
 	runtimeSettings.Store(settings)
-	// Account-level Basispoints resolution lives in auth; keep its view of the
-	// global default in step with every runtime settings publication.
-	auth.SetExcelBPSGlobalEnabled(settings.CodexBasispointsEnabled)
 	return settings
 }
 

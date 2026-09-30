@@ -182,17 +182,13 @@ func (a *Account) CodexBPSImageTrimEnabled() bool {
 	return enabled
 }
 
-// EffectiveCodexBPSProfile is the profile BPS uses for this account. The
-// upstream openai_excel_bps flag means "BPS plugin, Excel profile".
+// EffectiveCodexBPSProfile is the profile BPS uses for this account.
 func (a *Account) EffectiveCodexBPSProfile() CodexBPSProfile {
 	if a == nil {
 		return BPSWord
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.ExcelBPSEnabled {
-		return BPSExcel
-	}
 	return NormalizeCodexBPSProfile(string(a.codexBPS.Profile))
 }
 

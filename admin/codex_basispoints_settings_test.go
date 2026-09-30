@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/proxy/plugins"
+	"github.com/tidwall/gjson"
 )
 
 // attachBPSPluginForTest gives the default registry a BPS plugin store on db.
@@ -61,6 +63,13 @@ func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 		if got.CodexBasispointsEnabled != tc.want || plugins.Default().State(proxy.BPSPluginID).Enabled != tc.want {
 			t.Fatalf("PUT/plugin enabled mismatch for %v", tc.patch)
 		}
+		var pluginModels []string
+		for _, model := range gjson.GetBytes(plugins.Default().State(proxy.BPSPluginID).Config, "bps_models").Array() {
+			pluginModels = append(pluginModels, model.String())
+		}
+		if strings.Join(pluginModels, ",") != tc.wantModels {
+			t.Fatalf("plugin bps_models = %v, want %q (codex_basispoints_models is the plugin's bps_models)", pluginModels, tc.wantModels)
+		}
 		if got.CodexBasispointsModels != tc.wantModels || runtime.CodexBasispointsModels != tc.wantModels {
 			t.Fatalf("PUT/runtime models = %q/%q, want %q", got.CodexBasispointsModels, runtime.CodexBasispointsModels, tc.wantModels)
 		}
@@ -80,6 +89,7 @@ func TestBasispointsSettingsPersistenceAndReload(t *testing.T) {
 
 func TestBasispointsSettingsFailedSavePreservesRuntime(t *testing.T) {
 	h, db, path := newImagesSettingsHandler(t)
+	attachBPSPluginForTest(t, db)
 	t.Cleanup(func() { proxy.ApplyRuntimeSettings(proxy.DefaultRuntimeSettings()) })
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -94,7 +104,7 @@ func TestBasispointsSettingsFailedSavePreservesRuntime(t *testing.T) {
 		t.Fatalf("PUT status=%d", response.Code)
 	}
 	saved, err := db.GetSystemSettings(context.Background())
-	if err != nil || saved.CodexBasispointsEnabled || proxy.CurrentRuntimeSettings().CodexBasispointsEnabled || auth.ExcelBPSGlobalEnabled() {
+	if err != nil || saved.CodexBasispointsEnabled || proxy.CurrentRuntimeSettings().CodexBasispointsEnabled || plugins.Default().State(proxy.BPSPluginID).Enabled {
 		t.Fatal("failed save enabled routing")
 	}
 }
@@ -113,8 +123,8 @@ func TestParseAccountSchedulerUpdateExcelBPSOptOut(t *testing.T) {
 	if value, ok := update.CredentialUpdates[auth.CodexBPSEnabledCredentialKey].(bool); !ok || value {
 		t.Fatalf("mode off is the plugin override off: %#v", update.CredentialUpdates)
 	}
-	if value, ok := update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey].(bool); !ok || !value {
-		t.Fatalf("credential update = %#v", update.CredentialUpdates)
+	if _, written := update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey]; written {
+		t.Fatalf("the legacy opt-out is translated, not stored: %#v", update.CredentialUpdates)
 	}
 	if _, err := parseAccountSchedulerUpdate(updateAccountSchedulerReq{ExcelBPSOptOut: json.RawMessage(`1`)}); err == nil {
 		t.Fatal("non-boolean opt-out was accepted")

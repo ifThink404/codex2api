@@ -97,7 +97,10 @@ func (db *DB) MigrateBPSPlugin(ctx context.Context) error {
 	if err := db.migrateDegradeProbes(ctx); err != nil {
 		return err
 	}
-	return db.migrateLegacyBPSSwitch(ctx)
+	if err := db.migrateLegacyBPSSwitch(ctx); err != nil {
+		return err
+	}
+	return db.migrateExcelBPSUnify(ctx)
 }
 
 // migrateLegacyBPSSwitch clears codex_bps_enabled=false once. Before the

@@ -114,12 +114,6 @@ type SSEFinisher interface {
 	FinishSSE(env *ReqEnv) ([]SSEFrame, error)
 }
 
-// AccountForcer lets a plugin force itself on for an account from account
-// state core already tracks. It is checked before the override credential.
-type AccountForcer interface {
-	ForcedFor(account *auth.Account) bool
-}
-
 // Pinner is implemented by plugins whose produced state is route-bound (for
 // example opaque encrypted content only the plugin's upstream accepts). A
 // pinned request may only be scheduled on accounts the plugin is enabled for

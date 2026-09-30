@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/codex2api/auth"
@@ -13,18 +14,21 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// Upstream's Excel Basispoints settings are views of the bps transport
-// plugin, which owns BPS routing in this fork:
+// Compat layer for upstream's Excel Basispoints inputs. The bps transport
+// plugin owns BPS in this fork and has one enablement input per account (the
+// codex_bps_enabled override > account groups > global switch); upstream's
+// inputs are still accepted and translated, never stored:
 //
-//   - codex_basispoints_enabled (the global default) is the plugin's global
-//     switch: settings read it from the plugin and writes save the plugin;
-//   - an account's openai_excel_bps / openai_excel_bps_opt_out mode is the
-//     plugin's per-account override: on = forced on (Excel profile), off =
-//     forced off, inherit = no override (groups / global switch);
-//   - the effective flag is whether the plugin serves the account, and the
-//     adapter's 403/429 pause never applies (the plugin keeps its own);
-//   - codex_basispoints_cache_creation_as_input is the plugin config key
-//     cache_creation_as_input.
+//   - account writes of openai_excel_bps / openai_excel_bps_opt_out become
+//     the plugin override (on = forced on with the Excel profile, off =
+//     forced off, inherit = cleared); the legacy keys are not written and a
+//     one-time migration (database excel_bps_unify) folded existing ones in;
+//   - settings codex_basispoints_enabled is the plugin's global switch,
+//     codex_basispoints_models the plugin's bps_models and
+//     codex_basispoints_cache_creation_as_input its cache_creation_as_input;
+//   - settings codex_basispoints_403_* / _429_* are accepted and ignored:
+//     they only tuned upstream's adapter, which never runs here (the plugin
+//     has its own policy-block and rate-limit handling).
 
 // bpsPluginGlobalEnabled is the plugin's global switch.
 func bpsPluginGlobalEnabled() bool {
@@ -47,9 +51,11 @@ func saveBPSPluginGlobalEnabled(ctx context.Context, enabled bool) error {
 	return nil
 }
 
-// bpsCacheCreationConfigKey is the plugin config key behind
-// codex_basispoints_cache_creation_as_input.
-const bpsCacheCreationConfigKey = "cache_creation_as_input"
+// Plugin config keys behind upstream's settings.
+const (
+	bpsCacheCreationConfigKey = "cache_creation_as_input"
+	bpsModelsConfigKey        = "bps_models"
+)
 
 // bpsPluginCacheCreationAsInput is the plugin's cache_creation_as_input.
 func bpsPluginCacheCreationAsInput() bool {
@@ -59,30 +65,37 @@ func bpsPluginCacheCreationAsInput() bool {
 // saveBPSPluginCacheCreationAsInput writes cache_creation_as_input into the
 // plugin config, keeping every other key; off removes the key (the default).
 func saveBPSPluginCacheCreationAsInput(ctx context.Context, enabled bool) error {
+	return saveBPSPluginConfigKey(ctx, bpsCacheCreationConfigKey, true, enabled)
+}
+
+// saveBPSPluginConfigKey sets (present) or removes one plugin config key,
+// keeping the others, and saves only when the value changes.
+func saveBPSPluginConfigKey(ctx context.Context, key string, value any, present bool) error {
 	state := plugins.Default().State(proxy.BPSPluginID)
-	if gjson.GetBytes(state.Config, bpsCacheCreationConfigKey).Bool() == enabled {
-		return nil
-	}
 	config := []byte(state.Config)
 	if len(config) == 0 || !gjson.ValidBytes(config) {
 		config = []byte("{}")
 	}
+	var next []byte
 	var err error
-	if enabled {
-		config, err = sjson.SetBytes(config, bpsCacheCreationConfigKey, true)
+	if present {
+		next, err = sjson.SetBytes(config, key, value)
 	} else {
-		config, err = sjson.DeleteBytes(config, bpsCacheCreationConfigKey)
+		next, err = sjson.DeleteBytes(config, key)
 	}
 	if err != nil {
 		return err
 	}
-	state.Config = config
+	if gjson.GetBytes(next, key).Raw == gjson.GetBytes(config, key).Raw {
+		return nil
+	}
+	state.Config = next
 	saveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := plugins.Default().Save(saveCtx, state); err != nil {
 		return err
 	}
-	log.Printf("[bps] cache_creation_as_input set to %t through codex_basispoints_cache_creation_as_input", enabled)
+	log.Printf("[bps] plugin config %s set to %s through upstream settings", key, gjson.GetBytes(next, key).Raw)
 	return nil
 }
 
@@ -96,14 +109,11 @@ func bpsPluginServes(account *auth.Account) bool {
 	return ok && plugins.Default().EnabledFor(p, account)
 }
 
-// excelBPSModeFlags is the upstream mode view of a row: on when the plugin
-// override is on (or the legacy opt-in is set), off when it is off.
+// excelBPSModeFlags is the upstream mode view of a row, read from the plugin
+// override: on when forced on, off when forced off.
 func excelBPSModeFlags(row *database.AccountRow) (enabled, optOut bool) {
 	if row == nil {
 		return false, false
-	}
-	if row.GetCredentialBool(auth.ExcelBPSCredentialKey) {
-		return true, false
 	}
 	switch override := row.GetCredentialOptionalBool(auth.CodexBPSEnabledCredentialKey); {
 	case override == nil:
@@ -125,40 +135,48 @@ func excelBPSModeOptOut(row *database.AccountRow) bool {
 	return optOut
 }
 
-// translateExcelBPSMode turns an upstream mode write into the plugin
-// override (and the Excel profile when it is switched on). The upstream keys
-// are written too, so their own readers stay consistent.
+// translateExcelBPSMode turns an upstream mode write into the plugin override
+// (and the Excel profile when it is switched on).
 func translateExcelBPSMode(update *accountSchedulerUpdate) {
 	if !update.ExcelBPSEnabled.Set && !update.ExcelBPSOptOut.Set {
 		return
 	}
+	if update.CredentialUpdates == nil {
+		update.CredentialUpdates = make(map[string]interface{})
+	}
 	enabled := update.ExcelBPSEnabled.Set && update.ExcelBPSEnabled.Value
 	optOut := update.ExcelBPSOptOut.Set && update.ExcelBPSOptOut.Value
+	on, off := true, false
 	switch auth.ExcelBPSModeFor(enabled, optOut) {
 	case auth.ExcelBPSModeOn:
-		update.CredentialUpdates[auth.CodexBPSEnabledCredentialKey] = true
+		putBPSOverride(update.CredentialUpdates, &on)
 		update.CredentialUpdates[auth.CodexBPSProfileCredentialKey] = string(auth.BPSExcel)
 	case auth.ExcelBPSModeOff:
-		update.CredentialUpdates[auth.CodexBPSEnabledCredentialKey] = false
+		putBPSOverride(update.CredentialUpdates, &off)
 	default:
-		update.CredentialUpdates[auth.CodexBPSEnabledCredentialKey] = nil
+		putBPSOverride(update.CredentialUpdates, nil)
 	}
 }
 
-// clearLegacyExcelOptIn keeps the legacy openai_excel_bps opt-in (which
-// forces the plugin on) from outranking an explicit plugin override that is
-// not "on".
-func clearLegacyExcelOptIn(update *accountSchedulerUpdate) {
-	if update.ExcelBPSEnabled.Set {
-		return
+// bpsPluginModelsText is the plugin's bps_models as upstream's comma list
+// (empty = the plugin default).
+func bpsPluginModelsText() string {
+	var models []string
+	for _, item := range gjson.GetBytes(plugins.Default().State(proxy.BPSPluginID).Config, bpsModelsConfigKey).Array() {
+		models = append(models, item.String())
 	}
-	value, ok := update.CredentialUpdates[auth.CodexBPSEnabledCredentialKey]
-	if !ok {
-		return
+	return strings.Join(models, ",")
+}
+
+// saveBPSPluginModels writes codex_basispoints_models (already normalized to
+// a comma list) as the plugin's bps_models; empty removes the key so the
+// plugin default applies. Other config keys are kept.
+func saveBPSPluginModels(ctx context.Context, models string) error {
+	var list []string
+	for _, model := range strings.Split(models, ",") {
+		if model = strings.TrimSpace(model); model != "" {
+			list = append(list, model)
+		}
 	}
-	if on, isBool := value.(bool); isBool && on {
-		return
-	}
-	update.CredentialUpdates[auth.ExcelBPSCredentialKey] = false
-	update.CredentialUpdates[auth.ExcelBPSOptOutCredentialKey] = value != nil
+	return saveBPSPluginConfigKey(ctx, bpsModelsConfigKey, list, len(list) > 0)
 }
