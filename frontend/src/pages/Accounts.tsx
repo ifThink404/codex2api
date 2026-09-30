@@ -52,7 +52,7 @@ import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
 import StatusBadge from "../components/StatusBadge";
 import DaybreakBadge from "../components/DaybreakBadge";
-import { BPSAccountStatus, BPSAccountStatusProvider } from "../components/PluginAccountStatusLine";
+import { BPSAccountStatusProvider, BPSStatusBadge } from "../components/PluginAccountStatusLine";
 import { useDataLoader, type LoadOptions } from "../hooks/useDataLoader";
 import {
   useConfirmDialog,
@@ -1434,7 +1434,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                           {account.rate_limit_reset_credits ?? 0}
                                         </button>
                                       )}
-                                      {account.codex_bps_active && <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">{t("accounts.bps.badge")}</span>}
                                       <AccountModelAvailabilityBadge account={account} onClick={() => actions.openModelsEditor(account)} />
                                       {getCreditBalanceDisplay(account) !==
                                         null && (
@@ -1579,12 +1578,12 @@ const AccountTableRow = memo(function AccountTableRow({
                                         }
                                         errorMessage={account.error_message}
                                       />
+                                      <BPSStatusBadge accountId={account.id} active={account.codex_bps_active} />
                                       <UsingCreditsBadge account={account} />
                                       {account.status !== "overload_paused" && (
                                         <AccountStatusCountdown account={account} />
                                       )}
                                       <AccountConcurrencyBadge account={account} />
-                                      <BPSAccountStatus accountId={account.id} />
                                     </div>
                                     <AccountHealthBar
                                       buckets={healthBuckets}
@@ -14365,7 +14364,6 @@ function AccountMobileCard({
               </span>
             )}
             <div className="codex-account-card__flags">
-              {account.codex_bps_active && <span className="codex-account-card__flag">{t("accounts.bps.badge")}</span>}
               {onEditModels && <AccountModelAvailabilityBadge account={account} onClick={onEditModels} />}
               <SubscriptionBadge
                 accountId={account.id}
@@ -14389,12 +14387,12 @@ function AccountMobileCard({
               )}
               {showColumn("status") && (
                 <>
+                  <BPSStatusBadge accountId={account.id} active={account.codex_bps_active} variant="card" />
                   <UsingCreditsBadge account={account} />
                   {account.status !== "overload_paused" && (
                     <AccountStatusCountdown account={account} />
                   )}
                   <AccountConcurrencyBadge account={account} />
-                  <BPSAccountStatus accountId={account.id} />
                 </>
               )}
               {isFullCard && resetCredits > 0 && (

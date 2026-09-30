@@ -5,24 +5,22 @@ import type { PluginAccountStatus } from '../types'
 import { activeUntil, hasTime, pluginCoolingReasonKey } from '../lib/transportPlugins'
 import { formatBeijingTime } from '../utils/time'
 import { cn } from '../lib/utils'
+import { bpsBadgeView, type BPSBadgeTone } from '../lib/bpsBadge'
+import { Layers, ShieldAlert, Timer, TriangleAlert } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 // PluginAccountStatusLine shows an account's plugin-scoped state. Only a real
 // cooldown still running shows as one: paused or forced-off accounts report
-// no (or a zero) cooling time and get no cooling line. compact (the Accounts
-// list) keeps the lines that explain why BPS is not serving the account and
-// leaves out in-flight counts and probe history.
-export function PluginAccountStatusLine({ status, compact = false }: { status?: PluginAccountStatus; compact?: boolean }) {
+// no (or a zero) cooling time and get no cooling line.
+export function PluginAccountStatusLine({ status, className }: { status?: PluginAccountStatus; className?: string }) {
   const { t } = useTranslation()
   const now = Date.now()
   const models = Object.entries(status?.models_unavailable ?? {}).filter(([, until]) => activeUntil(until, now))
   const cooling = activeUntil(status?.cooling_until, now) ? status?.cooling_until : undefined
-  const budgetExhausted = Boolean(status?.budget) && (status?.budget_used ?? 0) >= (status?.budget ?? 0)
-  const details = compact
-    ? budgetExhausted
-    : Boolean(status?.max_concurrency) || Boolean(status?.budget) || Boolean(status?.probe_pending) || Boolean(status?.last_probe_result)
-  if (!status || (!cooling && !status.policy_strikes && !status.policy_tier && models.length === 0 && !details && !(compact && status.probe_pending))) return null
+  const capped = Boolean(status?.max_concurrency) || Boolean(status?.budget) || Boolean(status?.probe_pending) || Boolean(status?.last_probe_result)
+  if (!status || (!cooling && !status.policy_strikes && !status.policy_tier && models.length === 0 && !capped && !status.bps_degraded)) return null
   return (
-    <span className={cn('block space-y-0.5 text-amber-600 dark:text-amber-400', compact ? 'w-full min-w-0 basis-full whitespace-normal break-words text-[11px] leading-snug' : 'mt-1 text-xs')}>
+    <span className={cn('mt-1 block space-y-0.5 text-xs text-amber-600 dark:text-amber-400', className)}>
       {Boolean(cooling || status.policy_strikes) && (
         <span className="block">
           {cooling
@@ -32,12 +30,13 @@ export function PluginAccountStatusLine({ status, compact = false }: { status?: 
       )}
       {Boolean(status.policy_tier) && <span className="block">{t('plugins.policyTier', { tier: status.policy_tier, tiers: status.policy_tiers })}</span>}
       {status.probe_pending && !cooling && <span className="block">{t('plugins.probePending')}</span>}
-      {!compact && status.last_probe_result && hasTime(status.last_probe) && (
+      {status.bps_degraded_detail && <span className="block">{t('plugins.bpsDegradedDetail', { detail: status.bps_degraded_detail })}</span>}
+      {status.last_probe_result && hasTime(status.last_probe) && (
         <span className="block text-muted-foreground">{t('plugins.lastProbe', { time: formatBeijingTime(status.last_probe), result: status.last_probe_result })}</span>
       )}
-      {!compact && Boolean(status.max_concurrency) && <span className="block text-muted-foreground">{t('plugins.inFlight', { current: status.in_flight ?? 0, max: status.max_concurrency })}</span>}
-      {Boolean(status.budget) && (!compact || budgetExhausted) && (
-        <span className={budgetExhausted ? 'block' : 'block text-muted-foreground'}>
+      {Boolean(status.max_concurrency) && <span className="block text-muted-foreground">{t('plugins.inFlight', { current: status.in_flight ?? 0, max: status.max_concurrency })}</span>}
+      {Boolean(status.budget) && (
+        <span className={(status.budget_used ?? 0) >= (status.budget ?? 0) ? 'block' : 'block text-muted-foreground'}>
           {t('plugins.budgetUsed', { used: status.budget_used ?? 0, budget: status.budget })}
         </span>
       )}
@@ -82,8 +81,52 @@ export function BPSAccountStatusProvider({ accounts, children }: { accounts: Arr
   return <BPSAccountStatusContext.Provider value={statuses}>{children}</BPSAccountStatusContext.Provider>
 }
 
-// BPSAccountStatus is the compact BPS state of one account in the Accounts
-// list (nothing while BPS serves it normally).
-export function BPSAccountStatus({ accountId }: { accountId: number }) {
-  return <PluginAccountStatusLine status={useContext(BPSAccountStatusContext).get(accountId)} compact />
+const BPS_BADGE_TONES: Record<BPSBadgeTone, string> = {
+  active: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-400/20',
+  cooling: 'bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20',
+  blocked: 'bg-rose-50 text-rose-700 ring-rose-600/20 dark:bg-rose-950 dark:text-rose-400 dark:ring-rose-400/20',
+  degraded: 'bg-rose-50 text-rose-700 ring-rose-600/20 dark:bg-rose-950 dark:text-rose-400 dark:ring-rose-400/20',
+}
+
+const BPS_BADGE_ICONS: Record<BPSBadgeTone, typeof Layers> = { active: Layers, cooling: Timer, blocked: ShieldAlert, degraded: TriangleAlert }
+
+// BPSStatusBadge is the one BPS indicator of an Accounts row / card: the
+// "BPS" pill next to the status badge (upstream's look), toned by the plugin
+// state, with the full plugin detail in its tooltip. Nothing when BPS does
+// not serve the account.
+export function BPSStatusBadge({ accountId, active, variant = 'row' }: { accountId: number; active?: boolean; variant?: 'row' | 'card' }) {
+  const { t } = useTranslation()
+  const status = useContext(BPSAccountStatusContext).get(accountId)
+  if (!active) return null
+  const view = bpsBadgeView(status, Date.now())
+  const time = view.until ? formatBeijingTime(view.until).slice(11, 16) : ''
+  let label = t('accounts.bpsBadge.active')
+  if (view.tone === 'blocked') label = view.tier ? t('accounts.bpsBadge.blockedTier', { tier: view.tier, tiers: view.tiers ?? view.tier }) : t('accounts.bpsBadge.blocked')
+  else if (view.tone === 'degraded') label = t('accounts.bpsBadge.degraded')
+  else if (view.tone === 'cooling') label = view.cause === 'budget' ? t('accounts.bpsBadge.budget') : time ? t('accounts.bpsBadge.coolingUntil', { time }) : t('accounts.bpsBadge.cooling')
+  const Icon = BPS_BADGE_ICONS[view.tone]
+  const pill = (
+    <span
+      data-bps-tone={view.tone}
+      className={cn(
+        'inline-flex max-w-full cursor-help items-center gap-1 rounded-md font-medium ring-1 ring-inset',
+        variant === 'card' ? 'px-[0.4375rem] py-1 text-[11px] leading-[1.2]' : 'px-1.5 py-0.5 text-[11px]',
+        BPS_BADGE_TONES[view.tone],
+      )}
+    >
+      <Icon className="size-3 shrink-0" aria-hidden />
+      <span className="truncate tabular-nums">{label}</span>
+    </span>
+  )
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>{pill}</TooltipTrigger>
+        <TooltipContent className="max-w-xs [&_.text-muted-foreground]:text-current [&_.text-muted-foreground]:opacity-75">
+          <span className="block font-medium">{t('accounts.bpsBadge.title')}</span>
+          <PluginAccountStatusLine status={status} className="text-current dark:text-current" />
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
 }

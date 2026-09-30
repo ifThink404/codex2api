@@ -3829,6 +3829,10 @@ export interface PluginAccountStatus {
   last_probe_result?: string
   // models BPS refused for this account, mapped to when BPS is retried
   models_unavailable?: Record<string, string>
+  // the degradation breaker broke the BPS route (until the next probe)
+  bps_degraded?: boolean
+  bps_degraded_until?: string
+  bps_degraded_detail?: string
 }
 
 export interface TransportPlugin {

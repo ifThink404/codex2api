@@ -579,7 +579,6 @@
       "nativeModels": "原生路徑模型",
       "modelsPlaceholder": "留空表示全部模型；支援結尾 * 前綴",
       "routesHelp": "模型清單只約束主請求；壓縮等關聯請求沿用所屬會話的路徑。",
-      "badge": "BPS",
       "testMode": "測試路徑",
       "testModes": {
         "auto": "依帳號設定",
@@ -610,6 +609,16 @@
       "native": "原生",
       "start": "檢測 {{count}} 個帳號",
       "done": "已排隊 {{queued}} 個降智檢測，略過 {{skipped}} 個"
+    },
+    "bpsBadge": {
+      "active": "BPS",
+      "cooling": "BPS 冷卻中",
+      "coolingUntil": "BPS 冷卻至 {{time}}",
+      "budget": "BPS 額度用盡",
+      "blocked": "BPS 攔截",
+      "blockedTier": "BPS 攔截 {{tier}}/{{tiers}}",
+      "degraded": "BPS 降智",
+      "title": "此帳號由 BPS 傳輸外掛服務"
     }
   },
   "runtime": {
