@@ -26,8 +26,8 @@ func SecurityHeadersMiddleware() gin.HandlerFunc {
 
 		// Content Security Policy
 		// script-src 内联哈希对应 frontend/index.html 中的主题恢复脚本（在 React 挂载前同步 localStorage 主题到 <html>，避免刷新闪烁）。
-		// 如修改该脚本，请同步更新此处哈希（浏览器控制台报错会给出新哈希）。
-		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'sha256-WBkfMfl2yQ2pGMyfjGOlZU/dKJRErT3nin/t7BPNjn0='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; font-src 'self'; connect-src 'self' https://api.github.com;")
+		// 如修改该脚本，请同步更新此处哈希（浏览器控制台报错会给出新哈希；TestCSPAllowsIndexInlineScripts 会校验）。
+		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'sha256-8jI3h1oN0D7cJ3eKd/Mjk+hKunZV0rZrmg9g4u/5+Nk='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; font-src 'self'; connect-src 'self' https://api.github.com;")
 
 		// Strict Transport Security (HTTPS only)
 		// c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
