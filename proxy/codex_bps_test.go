@@ -85,7 +85,7 @@ func TestBPSExecutorNormalAndCompact(t *testing.T) {
 		require.Equal(t, "call_history", gjson.GetBytes(sentBody, "input.5.call_id").String())
 		require.Equal(t, "input_text", gjson.GetBytes(sentBody, "input.5.output.1.type").String())
 		require.Equal(t, "file-bps-test", gjson.GetBytes(sentBody, "input.6.content.1.file_id").String())
-		require.Equal(t, "original", gjson.GetBytes(sentBody, "input.6.content.1.detail").String())
+		require.Equal(t, "high", gjson.GetBytes(sentBody, "input.6.content.1.detail").String())
 		require.Equal(t, "opaque-history", gjson.GetBytes(sentBody, "input.7.encrypted_content").String())
 		require.NotContains(t, string(sentBody), imageData)
 		if task == "" {

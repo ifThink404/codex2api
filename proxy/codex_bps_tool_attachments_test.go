@@ -86,7 +86,7 @@ func TestBPSCustomToolImagesAndFilesKeepBatchAndHistory(t *testing.T) {
 		require.Equal(t, "file-document", parts[3].Get("file_id").String())
 		for _, index := range []int{1, 5, 7} {
 			require.Equal(t, "file-image", parts[index].Get("file_id").String())
-			require.Equal(t, "original", parts[index].Get("detail").String())
+			require.Equal(t, "high", parts[index].Get("detail").String())
 		}
 		require.Contains(t, parts[6].Get("text").String(), "function-call")
 		require.NotContains(t, string(data), image)
@@ -188,7 +188,7 @@ func TestBPSImageFileReferencesKeepAttachmentBridge(t *testing.T) {
 			require.Equal(t, wantKind, gjson.GetBytes(out, "input.1.type").String())
 			require.Equal(t, "real-call", gjson.GetBytes(out, "input.1.call_id").String())
 			require.Equal(t, "file-existing", gjson.GetBytes(out, "input.2.content.1.file_id").String())
-			require.Equal(t, "original", gjson.GetBytes(out, "input.2.content.1.detail").String())
+			require.Equal(t, "high", gjson.GetBytes(out, "input.2.content.1.detail").String())
 			require.Equal(t, "message", d.Images.Details[0].OutboundItemType)
 			require.Equal(t, 1, d.Images.ToolAttachmentMessages)
 			require.Zero(t, d.Images.Uploaded)
@@ -256,7 +256,7 @@ func TestBPSCustomImageResultsUploadedExecutor(t *testing.T) {
 		for i := 0; i < 31; i++ {
 			require.Contains(t, attachments[i*2].Get("text").String(), "real-call")
 			require.Equal(t, "file-custom-image", attachments[i*2+1].Get("file_id").String())
-			require.Equal(t, "original", attachments[i*2+1].Get("detail").String())
+			require.Equal(t, "high", attachments[i*2+1].Get("detail").String())
 		}
 		require.NotContains(t, string(data), imageURL)
 		require.Equal(t, "custom_tool_call_output", items[4].Get("type").String())

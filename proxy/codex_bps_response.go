@@ -118,6 +118,93 @@ func (p *bpsResponseProjection) declaresTool(name string) bool {
 	return contains(p.tools, "")
 }
 
+// declaredToolKinds reports whether the caller declared name as a function
+// and/or as a custom tool, using the same namespace rules as declaresTool.
+func (p *bpsResponseProjection) declaredToolKinds(name string) (function, custom bool) {
+	var visit func([]any, string)
+	visit = func(tools []any, prefix string) {
+		for _, tool := range tools {
+			m, ok := tool.(map[string]any)
+			if !ok {
+				continue
+			}
+			n, _ := m["name"].(string)
+			if n == name || prefix+n == name {
+				switch m["type"] {
+				case "function":
+					function = true
+				case "custom":
+					custom = true
+				}
+			}
+			if children, ok := m["tools"].([]any); ok {
+				visit(children, prefix+n+".")
+			}
+		}
+	}
+	visit(p.tools, "")
+	return function, custom
+}
+
+// recoverMislabeledFunctionCall rewrites a custom_tool_call whose tool the
+// caller declared only as a function, when its input is exactly one JSON
+// object. Undeclared or ambiguous tools, scripts, arrays and envelopes naming
+// another tool stay untouched. Streaming input deltas are left as they are;
+// the completed item is what the client executes.
+func (p *bpsResponseProjection) recoverMislabeledFunctionCall(item map[string]any) bool {
+	name := stringValue(item["name"])
+	if name == "" {
+		return false
+	}
+	function, custom := p.declaredToolKinds(name)
+	if !function || custom {
+		return false
+	}
+	input, ok := item["input"].(string)
+	if !ok || strings.TrimSpace(input) == "" {
+		return false
+	}
+	var fields map[string]any
+	decoder := json.NewDecoder(strings.NewReader(input))
+	decoder.UseNumber()
+	if decoder.Decode(&fields) != nil || fields == nil || decoder.More() {
+		return false
+	}
+	var args any = fields
+	_, hasArguments := fields["arguments"]
+	_, hasArgs := fields["args"]
+	if _, hasName := fields["name"]; hasName && (hasArguments || hasArgs) {
+		if stringValue(fields["name"]) != name || len(fields) != 2 {
+			return false
+		}
+		if hasArguments {
+			args = fields["arguments"]
+		} else {
+			args = fields["args"]
+		}
+		if text, ok := args.(string); ok {
+			var nested map[string]any
+			dec := json.NewDecoder(strings.NewReader(text))
+			dec.UseNumber()
+			if dec.Decode(&nested) != nil || nested == nil {
+				return false
+			}
+			args = nested
+		}
+		if _, ok := args.(map[string]any); !ok {
+			return false
+		}
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return false
+	}
+	item["type"] = "function_call"
+	item["arguments"] = string(encoded)
+	delete(item, "input")
+	return true
+}
+
 // Both the public API and account tests project provider configuration before
 // capture/truncation. Caller schemas and tool arguments are business data.
 func projectBPSResponse(ctx context.Context, data []byte) ([]byte, error) {
@@ -146,6 +233,17 @@ func projectBPSResponse(ctx context.Context, data []byte) ([]byte, error) {
 			}
 		case map[string]any:
 			kind, _ := v["type"].(string)
+			if kind == "custom_tool_call" && p.recoverMislabeledFunctionCall(v) {
+				kind = "function_call"
+			}
+			if kind == "function_call" {
+				// BPS relays plaintext arguments. An explicit empty list stops
+				// clients inferring encrypted fields from encrypted:true schemas;
+				// an explicit upstream declaration is kept as sent.
+				if _, declared := v["encrypted_function_args"]; !declared {
+					v["encrypted_function_args"] = []any{}
+				}
+			}
 			if (kind == "function_call" || kind == "custom_tool_call") && bpsSourceField(stringValue(v["name"])) && !p.declaresTool(stringValue(v["name"])) {
 				// Never invent a renamed tool the client cannot execute.
 				return errors.New("upstream requested an unavailable tool")

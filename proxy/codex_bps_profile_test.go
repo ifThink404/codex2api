@@ -95,7 +95,7 @@ func TestBPSProfilesPreserveCallerToolsAndContinuation(t *testing.T) {
 			} {
 				projected, err := projectBPSResponse(ctx, []byte(event))
 				require.NoError(t, err)
-				require.JSONEq(t, event, string(projected))
+				require.JSONEq(t, event, string(withoutPlaintextArgsMarker(t, projected)))
 			}
 		}
 	}

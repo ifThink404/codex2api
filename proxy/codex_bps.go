@@ -153,6 +153,9 @@ func prepareCodexBPSBodyForProfile(body []byte, cacheKey string, compact, trimIm
 	if d.Images != nil && d.Images.MIMENormalized > 0 {
 		d.AdaptedFields = append(d.AdaptedFields, "input image MIME normalized")
 	}
+	if d.Images != nil && d.Images.DetailNormalized > 0 {
+		d.AdaptedFields = append(d.AdaptedFields, "input image detail original → high")
+	}
 	var imageErr error
 	items, imageErr = projectBPSCustomImageOutputs(items, d)
 	if imageErr != nil {

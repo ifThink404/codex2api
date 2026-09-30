@@ -133,7 +133,7 @@ func TestBPSUsageDoesNotFabricateMissingUsageOrChangeOtherProviders(t *testing.T
 	business := []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"echo","call_id":"c","arguments":"{\"usage\":{\"input_tokens\":20100,\"output_tokens\":20}}"}}`)
 	unchanged, err = projectBPSResponse(ctx, business)
 	require.NoError(t, err)
-	require.JSONEq(t, string(business), string(unchanged))
+	require.JSONEq(t, string(business), string(withoutPlaintextArgsMarker(t, unchanged)))
 }
 
 func TestBPSCallerBillingThroughHTTPExecutor(t *testing.T) {

@@ -87,7 +87,7 @@ func TestBPSCallerBusinessPayloadAndDeclaredNamesRemainUsable(t *testing.T) {
 	} {
 		out, err := projectBPSResponse(ctx, []byte(payload))
 		require.NoError(t, err)
-		require.JSONEq(t, payload, string(out))
+		require.JSONEq(t, payload, string(withoutPlaintextArgsMarker(t, out)))
 	}
 	out, err := projectBPSResponse(ctx, []byte(`{"object":"response","metadata":{"bps_tools_version_id":"provider"}}`))
 	require.NoError(t, err)

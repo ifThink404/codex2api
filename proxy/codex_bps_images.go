@@ -19,6 +19,7 @@ import (
 type codexBPSImageDiagnostic struct {
 	Count                  int                   `json:"count"`
 	MIMENormalized         int                   `json:"mime_normalized"`
+	DetailNormalized       int                   `json:"detail_normalized,omitempty"`
 	Uploaded               int                   `json:"uploaded,omitempty"`
 	UploadReused           int                   `json:"upload_reused,omitempty"`
 	ToolOutputConversions  int                   `json:"tool_output_conversions,omitempty"`
@@ -82,6 +83,14 @@ func normalizeBPSInputImages(items []json.RawMessage) ([]json.RawMessage, *codex
 					detail.Detail = "other"
 				}
 			}
+			// BPS only accepts auto/low/high. "original" is the client's fidelity
+			// hint; map it to the closest tier and keep the image bytes untouched.
+			if detail.Detail == "original" {
+				if updated, err := sjson.SetBytes(raw, fmt.Sprintf("%s.%d.detail", field, partIndex), "high"); err == nil {
+					raw = updated
+					detail.Action = "detail_normalized"
+				}
+			}
 			if field == "content" {
 				detail.Role = item.Get("role").String()
 			}
@@ -104,6 +113,9 @@ func normalizeBPSInputImages(items []json.RawMessage) ([]json.RawMessage, *codex
 			diagnostic.Count++
 			if detail.Action == "mime_normalized" {
 				diagnostic.MIMENormalized++
+			}
+			if detail.Detail == "original" {
+				diagnostic.DetailNormalized++
 			}
 			if len(diagnostic.Details) == 8 {
 				diagnostic.Details = append(diagnostic.Details[:0], diagnostic.Details[1:]...)

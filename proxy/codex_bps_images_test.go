@@ -42,7 +42,7 @@ func TestBPSImageMIMENormalizationPreservesProtocol(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, before, body)
 				require.Equal(t, "data:image/png;base64,"+encoded, gjson.GetBytes(out, "input.1."+field+".1.image_url").String())
-				require.Equal(t, "original", gjson.GetBytes(out, "input.1."+field+".1.detail").String())
+				require.Equal(t, "high", gjson.GetBytes(out, "input.1."+field+".1.detail").String())
 				require.Equal(t, "call_original", gjson.GetBytes(out, "input.1.call_id").String())
 				require.Equal(t, "item_original", gjson.GetBytes(out, "input.1.id").String())
 				require.Equal(t, "9007199254740993", gjson.GetBytes(out, "input.1.large_integer").Raw)

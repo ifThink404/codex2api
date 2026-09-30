@@ -67,7 +67,7 @@ func TestBPSUserImageAttachmentsExecutor(t *testing.T) {
 				require.Equal(t, fileID, user.Get("content."+idx+".file_id").String())
 				require.False(t, user.Get("content."+idx+".image_url").Exists())
 			}
-			require.Equal(t, "original", user.Get("content.1.detail").String())
+			require.Equal(t, "high", user.Get("content.1.detail").String())
 			require.Equal(t, "low", user.Get("content.3.detail").String())
 			require.Equal(t, "call_original", gjson.GetBytes(body, "input.2.call_id").String())
 			require.Equal(t, "input_text", gjson.GetBytes(body, "input.2.output.0.type").String())
