@@ -1552,6 +1552,7 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		AffinityMode:                      "bounded",
 		BackgroundConfig:                  "{}",
 		ShowFullUsageNumbers:              true,
+		ShowUpstreamModelMismatch:         false,
 		PublicKeyUsagePageEnabled:         true,
 		PublicImageStudioPageEnabled:      true,
 		CodexWSHideUpstreamErrors:         true,
@@ -1604,6 +1605,9 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if !settings.ShowFullUsageNumbers {
 		t.Fatal("ShowFullUsageNumbers = false, want true")
+	}
+	if settings.ShowUpstreamModelMismatch {
+		t.Fatal("ShowUpstreamModelMismatch = true, want false")
 	}
 	if !settings.PublicKeyUsagePageEnabled {
 		t.Fatal("PublicKeyUsagePageEnabled = false, want true")

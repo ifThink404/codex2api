@@ -36,12 +36,8 @@ func TestV305SettingsKeepBasispointsAndSessionGuardsAligned(t *testing.T) {
 				CodexInitialSessionMaxAgeSeconds: 600, CodexSessionAutoLockEnabled: false,
 				CodexSessionAutoLockThreshold: 7, CodexTurnStateVaultEnabled: false,
 				AutoResetCreditsOnExhaustionEnabled: true,
-				CodexBasispointsEnabled:             false,
-				CodexBasispointsModels:              "gpt-6-astra",
-				CodexBasispoints403PauseDisabled:    true,
-				CodexBasispointsProbeMinutes:        17,
-				CodexBasispoints429CooldownSeconds:  42,
-				CodexBasispointsCacheWriteAsInput:   false,
+				CodexUnifiedClientIdentityEnabled:   false,
+				ShowUpstreamModelMismatch:           true,
 				PromptFilterCustomPatterns:          `[{"id":"keep"}]`,
 				PromptFilterReviewAPIKey:            "test-review-key",
 			}
@@ -62,13 +58,9 @@ func TestV305SettingsKeepBasispointsAndSessionGuardsAligned(t *testing.T) {
 					got.AutoResetCreditsOnExhaustionEnabled != want.AutoResetCreditsOnExhaustionEnabled {
 					t.Fatalf("%s: session guard fields shifted", stage)
 				}
-				if got.CodexBasispointsEnabled != want.CodexBasispointsEnabled ||
-					got.CodexBasispointsModels != want.CodexBasispointsModels ||
-					got.CodexBasispoints403PauseDisabled != want.CodexBasispoints403PauseDisabled ||
-					got.CodexBasispointsProbeMinutes != want.CodexBasispointsProbeMinutes ||
-					got.CodexBasispoints429CooldownSeconds != want.CodexBasispoints429CooldownSeconds ||
-					got.CodexBasispointsCacheWriteAsInput != want.CodexBasispointsCacheWriteAsInput {
-					t.Fatalf("%s: Basispoints fields shifted", stage)
+				if got.CodexUnifiedClientIdentityEnabled != want.CodexUnifiedClientIdentityEnabled ||
+					got.ShowUpstreamModelMismatch != want.ShowUpstreamModelMismatch {
+					t.Fatalf("%s: v3.0.6 fields shifted", stage)
 				}
 				if got.PromptFilterCustomPatterns != wantPatterns || got.PromptFilterReviewAPIKey != wantKey {
 					t.Fatalf("%s: preserve flags shifted: patterns=%q key=%q", stage, got.PromptFilterCustomPatterns, got.PromptFilterReviewAPIKey)
@@ -87,9 +79,7 @@ func TestV305SettingsKeepBasispointsAndSessionGuardsAligned(t *testing.T) {
 			s.CodexInitialSessionMaxAgeSeconds, s.CodexSessionAutoLockEnabled = 900, true
 			s.CodexSessionAutoLockThreshold, s.CodexTurnStateVaultEnabled = 9, true
 			s.AutoResetCreditsOnExhaustionEnabled = false
-			s.CodexBasispointsEnabled, s.CodexBasispointsModels = true, "gpt-5.6-sol"
-			s.CodexBasispoints403PauseDisabled, s.CodexBasispointsProbeMinutes = false, 33
-			s.CodexBasispoints429CooldownSeconds, s.CodexBasispointsCacheWriteAsInput = 99, true
+			s.CodexUnifiedClientIdentityEnabled, s.ShowUpstreamModelMismatch = true, false
 			s.PreservePromptFilterCustomPatterns, s.PreservePromptFilterReviewAPIKey = true, true
 			s.PromptFilterCustomPatterns, s.PromptFilterReviewAPIKey = "[]", ""
 			if err := db.UpdateSystemSettings(ctx, s); err != nil {

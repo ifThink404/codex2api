@@ -500,7 +500,6 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.CodexClientMetadataMode = src.CodexClientMetadataMode
 	dst.CodexPassthroughMode = src.CodexPassthroughMode
 	dst.CodexFingerprintMode = src.CodexFingerprintMode
-	dst.ExcelBPSEnabled = src.ExcelBPSEnabled
 	dst.transportPluginOverrides = cloneTransportPluginOverrides(src.transportPluginOverrides)
 	dst.codexBPS = src.codexBPS.clone()
 	dst.Timezone = src.Timezone
@@ -567,6 +566,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.PromptFilterPolicy = src.PromptFilterPolicy
 	dst.EgressPolicy = src.EgressPolicy
 	dst.SessionGuardsPolicy = src.SessionGuardsPolicy
+	dst.KeepConcurrencyOnDegrade = src.KeepConcurrencyOnDegrade
 	dst.AllowedAPIKeyIDs = cloneInt64Slice(src.AllowedAPIKeyIDs)
 	dst.setAllowedAPIKeyIDsLocked(src.AllowedAPIKeyIDs)
 	dst.Tags = cloneStringSlice(src.Tags)

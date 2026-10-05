@@ -29,9 +29,9 @@ import (
 
 // BPS transport plugin: routes opted-in Codex OAuth/AT accounts to the Basis
 // Points endpoint (profiles word/excel/sheets/powerpoint). Enablement follows
-// the framework precedence; codex_bps_enabled is the per-account override and
-// openai_excel_bps (upstream's official Excel BPS switch) forces the plugin on
-// with the Excel profile.
+// the framework precedence; codex_bps_enabled is the per-account override.
+// Upstream's retired openai_excel_bps switch was folded into that override
+// (Excel profile) by the database excel_bps_unify migration.
 
 const BPSPluginID = "bps"
 

@@ -365,14 +365,16 @@ test('dual_route_preference is a one-line switch in the config form', () => {
   }
 })
 
-test('upstream Basispoints settings are views of the BPS plugin', () => {
+// Upstream retired its Basispoints adapter and settings in v3.0.6; the plugin
+// is the only BPS surface and the Settings card just points at it.
+test('upstream Basispoints is retired; the plugin owns BPS', () => {
   const settings = read('pages/Settings.tsx')
   assert.ok(settings.includes('<Link to="/plugins/bps/overview"'), 'the Basispoints card points at the plugin')
   assert.ok(!settings.includes('codex_basispoints_'), 'Settings edits no Basispoints field; the plugin owns them')
-  assert.ok(read('lib/settingsPayload.ts').includes('CODEX_BASISPOINTS_PREFIX'), 'a settings save never writes the plugin views back')
-  const server = readFileSync(srcRoot + '../../admin/bps_upstream_takeover.go', 'utf8')
-  assert.ok(server.includes('func translateExcelBPSMode') && server.includes('func saveBPSPluginGlobalEnabled'))
-  assert.ok(server.includes('func saveBPSPluginCacheCreationAsInput') && server.includes('bpsCacheCreationConfigKey = "cache_creation_as_input"'), 'the cache-creation switch is the plugin config key')
+  const exists = (path) => { try { readFileSync(srcRoot + path, 'utf8'); return true } catch { return false } }
+  for (const gone of ['../../admin/bps_upstream_takeover.go', '../../proxy/openai_excel_bps_route.go', '../../proxy/basispoints/fork_dead_adapter.go']) {
+    assert.ok(!exists(gone), `${gone} is deleted`)
+  }
   const field = bpsConfigFields.find((item) => item.key === 'cache_creation_as_input')
   assert.equal(field.kind, 'boolean')
   assert.equal(field.defaultValue, false)
@@ -380,8 +382,6 @@ test('upstream Basispoints settings are views of the BPS plugin', () => {
   assert.ok(readPluginsUI().includes('billing: <Receipt />'))
   const plugin = readFileSync(srcRoot + '../../proxy/bps_plugin.go', 'utf8')
   assert.ok(plugin.includes('`json:"cache_creation_as_input,omitempty"`'), 'the server knows the field')
-  const gate = readFileSync(srcRoot + '../../proxy/openai_excel_bps_route.go', 'utf8')
-  assert.ok(gate.includes('if !excelBPSAdapterEnabled.Load() {'), 'upstream adapter gate stays closed')
   for (const name of ['zh', 'en', 'zh-TW']) {
     const locale = JSON.parse(read(`locales/${name}.json`))
     for (const key of ['codexBasispointsPluginNote', 'codexBasispointsPluginLink']) assert.equal(typeof locale.settings[key], 'string', `${name} ${key}`)
@@ -415,8 +415,7 @@ test('one BPS UI per concern', () => {
   assert.ok(badges.includes('basispoints_cutoff_completed') && badges.includes('basispoints_model_access_changed'))
   const plugins = readFileSync(srcRoot + '../../admin/transport_plugins.go', 'utf8')
   const scheduler = readFileSync(srcRoot + '../../admin/codex_bps_account.go', 'utf8')
-  const compat = readFileSync(srcRoot + '../../admin/bps_upstream_takeover.go', 'utf8')
-  for (const [name, source] of [['Plugins-page switch', plugins], ['scheduler/batch fields', scheduler], ['upstream compat', compat]]) {
+  for (const [name, source] of [['Plugins-page switch', plugins], ['scheduler/batch fields', scheduler]]) {
     assert.ok(source.includes('putBPSOverride('), `${name} writes the switch through putBPSOverride`)
   }
   for (const name of ['zh', 'en', 'zh-TW']) {

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { getTimezone } from '../utils/time'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -336,6 +337,7 @@ function formatClockTime(value: number | null): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    timeZone: getTimezone(),
   })
 }
 

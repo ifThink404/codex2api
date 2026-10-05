@@ -412,7 +412,7 @@ func (h *Handler) refreshCodexChannelModels(ctx context.Context, emit modelRefre
 	h.probePlanGroups(ctx, database.UpstreamChannelCodex, h.planGroupsFor(isCodexOAuthAccount), &result, emit,
 		func(ctx context.Context, group modelRefreshPlanGroup) (int, []string, error) {
 			generation, observedAt := group.Sample.GetCredentialGeneration(), time.Now()
-			manifest, err := proxy.FetchCodexModelsManifest(ctx, group.Sample, h.store.ResolveProxyForAccount(group.Sample), "", "")
+			manifest, err := proxy.FetchCodexModelsManifest(ctx, group.Sample, h.store.ResolveProxyForAccount(group.Sample), "", "", nil)
 			if err != nil {
 				return 0, nil, err
 			}

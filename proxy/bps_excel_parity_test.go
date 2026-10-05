@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,7 +40,8 @@ func TestProductionExcelShapeRoutesBPSFirstWithSameAccountNativeFallback(t *test
 			t.Setenv("CODEX_TRANSPORT_MODE", "standard")
 			freshBPSAccountStates(t)
 			ctx := context.Background()
-			db, err := database.New("sqlite", filepath.Join(t.TempDir(), "production-shape.db"))
+			dbPath := filepath.Join(t.TempDir(), "production-shape.db")
+			db, err := database.New("sqlite", dbPath)
 			require.NoError(t, err)
 			db.SetUsageLogConfig(database.UsageLogModeFull, 100, 300)
 			var ids []int64
@@ -57,8 +59,16 @@ func TestProductionExcelShapeRoutesBPSFirstWithSameAccountNativeFallback(t *test
 			if settings == nil {
 				settings = &database.SystemSettings{}
 			}
-			settings.CodexBasispointsEnabled = true
 			require.NoError(t, db.UpdateSystemSettings(ctx, settings))
+			// Production predates upstream v3.0.6: the retired column is still
+			// there with upstream's global Basispoints switch on.
+			raw, err := sql.Open("sqlite", dbPath)
+			require.NoError(t, err)
+			_, err = raw.ExecContext(ctx, `ALTER TABLE system_settings ADD COLUMN codex_basispoints_enabled BOOLEAN DEFAULT FALSE`)
+			require.NoError(t, err)
+			_, err = raw.ExecContext(ctx, `UPDATE system_settings SET codex_basispoints_enabled = 1 WHERE id = 1`)
+			require.NoError(t, err)
+			require.NoError(t, raw.Close())
 
 			// Startup: the plugin's Migrate runs the legacy, unify and parity steps.
 			registry := plugins.NewRegistry()

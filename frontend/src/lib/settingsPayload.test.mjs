@@ -15,6 +15,7 @@ test("writable settings payload omits response cache generation regardless of va
       codex_images_main_model: "gpt-5.6-sol",
       codex_images_default_main_model: "gpt-5.6-luna",
       codex_egress: { mode: "resin", resin_enabled: true },
+      codex_client_versions: [{ cli_version: "0.158.0-alpha.2.1" }],
     };
 
     const payload = buildWritableSettingsPayload(settings);
@@ -38,15 +39,4 @@ test("writable settings payload omits response cache generation regardless of va
     );
     assert.equal(settings.response_cache_config_generation, generation);
   }
-});
-
-test("writable settings payload never writes the Basispoints views of the BPS plugin", () => {
-  const payload = buildWritableSettingsPayload({
-    site_name: "CodexProxy",
-    codex_basispoints_enabled: false,
-    codex_basispoints_models: "",
-    codex_basispoints_cache_creation_as_input: false,
-    codex_basispoints_403_auto_pause: true,
-  });
-  assert.deepEqual(payload, { site_name: "CodexProxy" });
 });

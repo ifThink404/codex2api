@@ -170,12 +170,10 @@ func TestBPSPluginDefaultOffGroupAndGlobalEnablement(t *testing.T) {
 	require.EqualValues(t, 2, f.native.Load())
 }
 
-// Upstream's openai_excel_bps flag means "BPS plugin, Excel profile"; the
-// upstream adapter branch never runs.
 // An upstream Excel opt-in is migrated to the plugin override with the Excel
 // profile (database excel_bps_unify); that is what serves the account.
 func TestBPSPluginServesMigratedExcelAccounts(t *testing.T) {
-	legacy := newBPSHandlerFixture(t, map[string]any{auth.ExcelBPSCredentialKey: true})
+	legacy := newBPSHandlerFixture(t, map[string]any{"openai_excel_bps": true})
 	require.Equal(t, http.StatusOK, legacy.serve(t, "/v1/responses", `{"model":"gpt-5.6-sol","stream":true,"input":"hi"}`).Code)
 	require.Zero(t, legacy.bps.Load(), "the legacy flag alone is not a BPS input")
 

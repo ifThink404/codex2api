@@ -46,7 +46,7 @@ func TestProbePolicyNativeAPIValidationNeverCallsWham(t *testing.T) {
 				a.Models = []string{"grok-4.3"}
 			}
 			if provider == auth.UpstreamAntigravity {
-				a.Models = []string{"gemini-3.5-flash-low"}
+				a.Models = []string{"gemini-3.6-flash-low"}
 				h.antigravityCapabilityProbe = func(context.Context, *auth.Account, string, []byte, bool, string) (*http.Response, error) {
 					calls.Add(1)
 					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"interaction-1","outputs":[]}`))}, nil

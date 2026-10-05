@@ -121,9 +121,17 @@ func (db *DB) migrateExcelBPSUnify(ctx context.Context) error {
 				return err
 			}
 		}
+		// Upstream retired codex_basispoints_* in v3.0.6: databases created
+		// since then never had the column, so its absence means "off".
 		var global sql.NullBool
-		if err := tx.QueryRowContext(ctx, `SELECT codex_basispoints_enabled FROM system_settings WHERE id = 1`).Scan(&global); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		hasGlobal, err := legacySystemSettingsColumnExists(ctx, tx, db.isSQLite(), "codex_basispoints_enabled")
+		if err != nil {
 			return err
+		}
+		if hasGlobal {
+			if err := tx.QueryRowContext(ctx, `SELECT codex_basispoints_enabled FROM system_settings WHERE id = 1`).Scan(&global); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
 		}
 		var configured bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM transport_plugins WHERE id='bps')`).Scan(&configured); err != nil {
@@ -177,8 +185,14 @@ func migrateExcelBPSParity(ctx context.Context, tx *sql.Tx, sqlite bool) error {
 	// an operator turns it on from the plugin page.
 	config := map[string]any{"dual_route_preference": "bps", "degrade_breaker_enabled": false}
 	var modelsRaw sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT codex_basispoints_models FROM system_settings WHERE id = 1`).Scan(&modelsRaw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	hasModels, err := legacySystemSettingsColumnExists(ctx, tx, sqlite, "codex_basispoints_models")
+	if err != nil {
 		return err
+	}
+	if hasModels {
+		if err := tx.QueryRowContext(ctx, `SELECT codex_basispoints_models FROM system_settings WHERE id = 1`).Scan(&modelsRaw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 	}
 	var models []string
 	seen := map[string]bool{}
@@ -270,4 +284,17 @@ func migrateExcelBPSParity(ctx context.Context, tx *sql.Tx, sqlite bool) error {
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO transport_plugin_migrations(plugin,name) VALUES('bps',$1)`, bpsExcelParityMigration)
 	return err
+}
+
+// legacySystemSettingsColumnExists reports whether an upstream-retired
+// system_settings column is still present (it is on databases created before
+// upstream v3.0.6, which kept the columns but stopped creating them).
+func legacySystemSettingsColumnExists(ctx context.Context, tx *sql.Tx, sqlite bool, column string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'system_settings' AND column_name = $1)`
+	if sqlite {
+		query = `SELECT EXISTS(SELECT 1 FROM pragma_table_info('system_settings') WHERE name = $1)`
+	}
+	var exists bool
+	err := tx.QueryRowContext(ctx, query, column).Scan(&exists)
+	return exists, err
 }

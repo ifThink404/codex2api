@@ -61,13 +61,7 @@ func TestMigrateExcelBPSUnifyOnce(t *testing.T) {
 				require.NoError(t, err)
 				ids[name] = id
 			}
-			settings, err := db.GetSystemSettings(ctx)
-			require.NoError(t, err)
-			if settings == nil {
-				settings = &SystemSettings{}
-			}
-			settings.CodexBasispointsEnabled = true
-			require.NoError(t, db.UpdateSystemSettings(ctx, settings))
+			seedLegacyBasispointsSettings(t, db, "")
 			require.NoError(t, db.SaveTransportPluginState(ctx, TransportPluginState{ID: "bps", Config: []byte(`{"bps_min_usable_accounts":5}`)}))
 
 			before, err := db.SchedulerOutboxHighWatermark(ctx)
@@ -140,4 +134,28 @@ func TestMigrateExcelBPSUnifyLeavesGlobalOffAlone(t *testing.T) {
 	states, err := db.ListTransportPluginStates(ctx)
 	require.NoError(t, err)
 	require.Empty(t, states, "no plugin row is created when codex_basispoints_enabled is off")
+}
+
+// seedLegacyBasispointsSettings gives the database the shape of one created
+// before upstream v3.0.6: the retired codex_basispoints_* columns exist and
+// upstream's global Basispoints switch is on.
+func seedLegacyBasispointsSettings(t *testing.T, db *DB, models string) {
+	t.Helper()
+	ctx := context.Background()
+	settings, err := db.GetSystemSettings(ctx)
+	require.NoError(t, err)
+	if settings == nil {
+		settings = &SystemSettings{}
+	}
+	require.NoError(t, db.UpdateSystemSettings(ctx, settings))
+	for _, column := range []string{"codex_basispoints_enabled BOOLEAN DEFAULT FALSE", "codex_basispoints_models TEXT DEFAULT ''"} {
+		ddl := `ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS ` + column
+		if db.isSQLite() {
+			ddl = `ALTER TABLE system_settings ADD COLUMN ` + column
+		}
+		_, err := db.conn.ExecContext(ctx, ddl)
+		require.NoError(t, err)
+	}
+	_, err = db.conn.ExecContext(ctx, `UPDATE system_settings SET codex_basispoints_enabled = $1, codex_basispoints_models = $2 WHERE id = 1`, true, models)
+	require.NoError(t, err)
 }

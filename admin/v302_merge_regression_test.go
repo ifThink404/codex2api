@@ -54,17 +54,13 @@ func TestV302MergedAdminRoutes(t *testing.T) {
 	}
 }
 
-// Since v3.0.5 the two BPS switches are one: upstream's Excel mode writes the
-// plugin override (see bps_upstream_takeover.go); an explicit Excel "on" wins
-// over a plugin value sent in the same update.
+// The BPS plugin override is accepted as a capability-only update.
 func TestV302BPSCapabilitiesRemainIndependent(t *testing.T) {
 	for _, tc := range []struct {
 		req  updateAccountSchedulerReq
 		want any
 	}{
 		{updateAccountSchedulerReq{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`true`)}}, true},
-		{updateAccountSchedulerReq{ExcelBPSEnabled: json.RawMessage(`true`)}, true},
-		{updateAccountSchedulerReq{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`false`)}, ExcelBPSEnabled: json.RawMessage(`true`)}, true},
 	} {
 		got, err := parseAccountSchedulerUpdate(tc.req)
 		if err != nil {

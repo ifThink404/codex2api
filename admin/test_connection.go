@@ -35,6 +35,9 @@ type testEvent struct {
 	// diagnostics,Codex/Responses 测连用 codex_diagnostics,两者不会同时出现。
 	Diagnostics      *claudeTestDiagnostics `json:"diagnostics,omitempty"`
 	CodexDiagnostics *codexTestDiagnostics  `json:"codex_diagnostics,omitempty"`
+	// Interrupted 标记 error 事件是传输/流中断(连接失败、读流失败、无终态即断开),
+	// 而非上游明确拒绝;降智检测据此决定是否自动重试及展示"已中断"。
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
 type responsesTerminalOutcome uint8
@@ -213,6 +216,10 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		resp, reqErr = h.executeAntigravityConnectionTest(c.Request.Context(), account, testModel, payload, h.store.ResolveProxyForAccount(account), !isTransient)
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
+	} else if quality != nil {
+		// 降智检测是一次性长生成(常达数分钟),不需要 WS 续链;强制走独立 HTTP SSE,
+		// 不受"强制 WebSocket"影响,也不占用/依赖池化长连接。
+		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil, false)
 	} else {
 		testCtx, usage := proxy.WithConnectionTestUsage(c.Request.Context())
 		c.Set(contextConnectionTestTransport, usage)
@@ -220,7 +227,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	}
 	if reqErr != nil {
 		h.logConnectionTestTransportFailure(c, account, usageReason, usageEndpoint, testModel, usageEffort, start, reqErr)
-		event := testEvent{Type: "error", Error: fmt.Sprintf("请求失败: %s", reqErr.Error())}
+		event := testEvent{Type: "error", Error: fmt.Sprintf("请求失败: %s", reqErr.Error()), Interrupted: true}
 		if isClaudeAccount {
 			event.Diagnostics = newClaudeTestRecorder(nil, testModel, claudeFingerprintMode, account.GetAccessToken(), start).finish()
 			event.Error = sanitizeClaudeTestText(event.Error, account.GetAccessToken())
@@ -443,11 +450,11 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	})
 
 	if readErr != nil && !sentTerminal {
-		sendTestEvent(c, testEvent{Type: "error", Error: "读取上游流失败: " + readErr.Error()})
+		sendTestEvent(c, testEvent{Type: "error", Error: "读取上游流失败: " + readErr.Error(), Interrupted: true})
 		return
 	}
 	if !gotTerminal && !sentTerminal {
-		sendTestEvent(c, testEvent{Type: "error", Error: formatMissingTerminalUpstreamError(lastUpstreamEvent)})
+		sendTestEvent(c, testEvent{Type: "error", Error: formatMissingTerminalUpstreamError(lastUpstreamEvent), Interrupted: true})
 	}
 }
 
@@ -1664,6 +1671,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	if status, msg, done := h.batchTestSkipDeactivatedWorkspace(acc); done {
 		return status, msg
 	}
+
 	if status, msg, done := h.batchTestWhamPreflight(testCtx, acc); done {
 		return status, msg
 	}

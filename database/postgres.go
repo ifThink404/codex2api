@@ -1155,7 +1155,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	if db.isSQLite() {
 		return db.migrateSQLite(ctx)
 	}
-	query := `
+	query := codexClientVersionCacheSchema + `;
 	CREATE TABLE IF NOT EXISTS accounts (
 		id            SERIAL PRIMARY KEY,
 		name          VARCHAR(255) DEFAULT '',
@@ -1584,17 +1584,12 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS billing_tier_policy VARCHAR(20) DEFAULT 'actual';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS image_storage_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS show_full_usage_numbers BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS show_upstream_model_mismatch BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS public_key_usage_page_enabled BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS public_image_studio_page_enabled BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS public_account_portal_page_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_force_websocket BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_request_compression BOOLEAN DEFAULT TRUE;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_basispoints_enabled BOOLEAN DEFAULT FALSE;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_basispoints_models TEXT DEFAULT '';
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_basispoints_403_pause_disabled BOOLEAN DEFAULT FALSE;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_basispoints_403_probe_interval_minutes INT DEFAULT 1;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_basispoints_429_cooldown_seconds INT DEFAULT 5;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_basispoints_cache_creation_as_input BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_weak_network_mode BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_keepalive_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_keepalive_interval_sec INT DEFAULT 60;
@@ -1640,6 +1635,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS ignore_usage_limit_status BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_on_exhaustion_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_unified_client_identity_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_before_expiry_min INT DEFAULT 60;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_activate_5h_window_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
@@ -2526,6 +2522,7 @@ type SystemSettings struct {
 	CodexUserAgentConfig                string
 	CodexTelemetryEnabled               bool
 	CodexTelemetryTimingDebug           bool
+	CodexUnifiedClientIdentityEnabled   bool   // 网关自发维护请求统一使用配置的客户端身份（默认关闭，issue #774）
 	CodexTurnStateStrict                bool   // 来源未知的 X-Codex-Turn-State 回带也剥离，并按帧携带
 	CodexSessionNoBorrowEnabled         bool   // 绑定账号并发满时先等待而不是借用其他账号
 	CodexSessionNoBorrowHoldSeconds     int    // 等待多久后才允许借用，1..30，默认 20
@@ -2545,23 +2542,25 @@ type SystemSettings struct {
 	BillingTierPolicy                   string
 	ImageStorageConfig                  string // JSON: {"backend":"s3","endpoint":"...","region":"...","bucket":"...","access_key":"...","secret_key":"...","prefix":"...","force_path_style":false}
 	ShowFullUsageNumbers                bool
-	PublicKeyUsagePageEnabled           bool
-	PublicImageStudioPageEnabled        bool
-	PublicAccountPortalPageEnabled      bool // 账号自助添加公开门户开关，默认 false
-	CodexForceWebsocket                 bool // 强制 Codex 上游走 WebSocket（复用连接池），默认 false
-	CodexRequestCompression             bool // HTTP /responses 请求体 zstd 压缩（对齐真实客户端），默认 true
-	CodexBasispointsEnabled             bool // 所有合格 OAuth 账号默认走 Excel Basispoints 适配器，默认 false
-	CodexWSWeakNetworkMode              bool // WS 弱网保守复用模式，默认 false
-	CodexWSKeepaliveEnabled             bool // 启用上游 WS 空闲连接保活（仅 Ping，不发业务帧），默认 false
-	CodexWSKeepaliveIntervalSec         int  // WS 保活 Ping 间隔（秒），默认 60
-	CodexWSHideUpstreamErrors           bool // 隐藏上游 WS 原始错误，默认 true
-	CodexWSSilentRetryEnabled           bool // 首包前 WS 上游错误静默换号重试，默认 true
-	CodexWSSilentMaxRetries             int  // WS 静默换号最大重试次数，默认 2
-	CodexWSSizeRouterEnabled            bool // 1009 自学习体积路由：超大请求直接首发 HTTP，默认 true
-	CodexWSBusyAcquireMaxWaitSec        int  // busy session/容量等待的累计上限（秒），默认 30（issue #413）
-	CodexWSBusyOverflowEnabled          bool // busy session 溢出到同账号兄弟连接，默认 false（issue #413）
-	CodexWSBusyPatienceSec              int  // 触发溢出前的短等待（秒），默认 2（issue #413）
-	CodexWSStatelessSlots               int  // 无状态请求每 (账号, cacheKey) 的持久连接槽位数，默认 8，范围 1-32（issue #522）
+	// ShowUpstreamModelMismatch 控制用量页是否标出上游响应模型与请求模型不一致。
+	// 只影响展示和筛选，不停止记录。默认开启。
+	ShowUpstreamModelMismatch      bool
+	PublicKeyUsagePageEnabled      bool
+	PublicImageStudioPageEnabled   bool
+	PublicAccountPortalPageEnabled bool // 账号自助添加公开门户开关，默认 false
+	CodexForceWebsocket            bool // 强制 Codex 上游走 WebSocket（复用连接池），默认 false
+	CodexRequestCompression        bool // HTTP /responses 请求体 zstd 压缩（对齐真实客户端），默认 true
+	CodexWSWeakNetworkMode         bool // WS 弱网保守复用模式，默认 false
+	CodexWSKeepaliveEnabled        bool // 启用上游 WS 空闲连接保活（仅 Ping，不发业务帧），默认 false
+	CodexWSKeepaliveIntervalSec    int  // WS 保活 Ping 间隔（秒），默认 60
+	CodexWSHideUpstreamErrors      bool // 隐藏上游 WS 原始错误，默认 true
+	CodexWSSilentRetryEnabled      bool // 首包前 WS 上游错误静默换号重试，默认 true
+	CodexWSSilentMaxRetries        int  // WS 静默换号最大重试次数，默认 2
+	CodexWSSizeRouterEnabled       bool // 1009 自学习体积路由：超大请求直接首发 HTTP，默认 true
+	CodexWSBusyAcquireMaxWaitSec   int  // busy session/容量等待的累计上限（秒），默认 30（issue #413）
+	CodexWSBusyOverflowEnabled     bool // busy session 溢出到同账号兄弟连接，默认 false（issue #413）
+	CodexWSBusyPatienceSec         int  // 触发溢出前的短等待（秒），默认 2（issue #413）
+	CodexWSStatelessSlots          int  // 无状态请求每 (账号, cacheKey) 的持久连接槽位数，默认 8，范围 1-32（issue #522）
 	// GithubToken 用于 api.github.com 请求的 Personal Access Token（提升限流配额，
 	// 只发给 api.github.com，绝不发给镜像/其他主机；空表示未配置，issue #522）。
 	GithubToken string
@@ -2608,21 +2607,6 @@ type SystemSettings struct {
 	AutoResetCreditsEnabled bool
 	// AutoResetCreditsOnExhaustionEnabled consumes a credit after a live window reaches 100%.
 	AutoResetCreditsOnExhaustionEnabled bool
-	// CodexBasispointsModels is the optional global Basispoints model list
-	// (normalized, comma-separated); empty does not restrict models.
-	CodexBasispointsModels string
-	// CodexBasispoints403PauseDisabled turns off the automatic Basispoints pause
-	// after HTTP 403 (stored inverted so zero-value settings keep it on).
-	CodexBasispoints403PauseDisabled bool
-	// CodexBasispointsProbeMinutes is the recovery probe interval
-	// (1-10080 minutes; 0 means the default of 1).
-	CodexBasispointsProbeMinutes int
-	// CodexBasispoints429CooldownSeconds is the route cooldown after a Basispoints
-	// rate limit without Retry-After (1-600 seconds; 0 means the default of 5).
-	CodexBasispoints429CooldownSeconds int
-	// CodexBasispointsCacheWriteAsInput zeroes Basispoints cache-creation
-	// counters in client usage so they bill as ordinary input (default false).
-	CodexBasispointsCacheWriteAsInput bool
 	// AutoResetCreditsBeforeExpiryMin 是进入临期窗口的提前分钟数（默认 60，范围 10-10080）。
 	AutoResetCreditsBeforeExpiryMin int
 	// AutoActivate5hWindowEnabled 控制 5h 窗口重置后是否发送一次最小真实 /responses 以启动下一轮窗口（默认关闭，issue #581）。
@@ -2831,6 +2815,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(background_config, '{}'),
 		       COALESCE(grok_config, '{}'),
 		       COALESCE(show_full_usage_numbers, false),
+		       COALESCE(show_upstream_model_mismatch, true),
 		       COALESCE(public_key_usage_page_enabled, true),
 		       COALESCE(public_image_studio_page_enabled, true),
 		       COALESCE(public_account_portal_page_enabled, false),
@@ -2898,12 +2883,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(codex_session_auto_lock_threshold, 3),
 		       COALESCE(codex_turn_state_vault_enabled, true),
 		       COALESCE(auto_reset_credits_on_exhaustion_enabled, false),
-		       COALESCE(codex_basispoints_enabled, false),
-		       COALESCE(codex_basispoints_models, ''),
-		       COALESCE(codex_basispoints_403_pause_disabled, false),
-		       COALESCE(codex_basispoints_403_probe_interval_minutes, 1),
-		       COALESCE(codex_basispoints_429_cooldown_seconds, 5),
-		       COALESCE(codex_basispoints_cache_creation_as_input, false)
+		       COALESCE(codex_unified_client_identity_enabled, false)
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -2930,6 +2910,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.BackgroundConfig,
 		&s.GrokConfig,
 		&s.ShowFullUsageNumbers,
+		&s.ShowUpstreamModelMismatch,
 		&s.PublicKeyUsagePageEnabled,
 		&s.PublicImageStudioPageEnabled,
 		&s.PublicAccountPortalPageEnabled,
@@ -2997,12 +2978,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.CodexSessionAutoLockThreshold,
 		&s.CodexTurnStateVaultEnabled,
 		&s.AutoResetCreditsOnExhaustionEnabled,
-		&s.CodexBasispointsEnabled,
-		&s.CodexBasispointsModels,
-		&s.CodexBasispoints403PauseDisabled,
-		&s.CodexBasispointsProbeMinutes,
-		&s.CodexBasispoints429CooldownSeconds,
-		&s.CodexBasispointsCacheWriteAsInput,
+		&s.CodexUnifiedClientIdentityEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -3208,6 +3184,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				background_config,
 				grok_config,
 				show_full_usage_numbers,
+				show_upstream_model_mismatch,
 				public_key_usage_page_enabled,
 				public_image_studio_page_enabled,
 					reasoning_effort_models,
@@ -3276,14 +3253,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_session_auto_lock_threshold,
 					codex_turn_state_vault_enabled,
 					auto_reset_credits_on_exhaustion_enabled,
-					codex_basispoints_enabled,
-					codex_basispoints_models,
-					codex_basispoints_403_pause_disabled,
-					codex_basispoints_403_probe_interval_minutes,
-					codex_basispoints_429_cooldown_seconds,
-					codex_basispoints_cache_creation_as_input
+					codex_unified_client_identity_enabled
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $131, $132, $133, $134, $135, $136, $137, $138)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $131, $132, $133, $134)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3323,10 +3295,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				prompt_filter_log_matches = EXCLUDED.prompt_filter_log_matches,
 				prompt_filter_max_text_length = EXCLUDED.prompt_filter_max_text_length,
 				prompt_filter_sensitive_words = EXCLUDED.prompt_filter_sensitive_words,
-				prompt_filter_custom_patterns = CASE WHEN $139 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
+				prompt_filter_custom_patterns = CASE WHEN $135 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
 				prompt_filter_disabled_patterns = EXCLUDED.prompt_filter_disabled_patterns,
 				prompt_filter_review_enabled = EXCLUDED.prompt_filter_review_enabled,
-				prompt_filter_review_api_key = CASE WHEN $140 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
+				prompt_filter_review_api_key = CASE WHEN $136 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
 				prompt_filter_review_base_url = EXCLUDED.prompt_filter_review_base_url,
 				prompt_filter_review_model = EXCLUDED.prompt_filter_review_model,
 				prompt_filter_review_timeout_seconds = EXCLUDED.prompt_filter_review_timeout_seconds,
@@ -3350,6 +3322,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				background_config = EXCLUDED.background_config,
 				grok_config = EXCLUDED.grok_config,
 				show_full_usage_numbers = EXCLUDED.show_full_usage_numbers,
+				show_upstream_model_mismatch = EXCLUDED.show_upstream_model_mismatch,
 				public_key_usage_page_enabled = EXCLUDED.public_key_usage_page_enabled,
 				public_image_studio_page_enabled = EXCLUDED.public_image_studio_page_enabled,
 					reasoning_effort_models = EXCLUDED.reasoning_effort_models,
@@ -3414,12 +3387,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_session_auto_lock_threshold = EXCLUDED.codex_session_auto_lock_threshold,
 					codex_turn_state_vault_enabled = EXCLUDED.codex_turn_state_vault_enabled,
 					auto_reset_credits_on_exhaustion_enabled = EXCLUDED.auto_reset_credits_on_exhaustion_enabled,
-					codex_basispoints_enabled = EXCLUDED.codex_basispoints_enabled,
-					codex_basispoints_models = EXCLUDED.codex_basispoints_models,
-					codex_basispoints_403_pause_disabled = EXCLUDED.codex_basispoints_403_pause_disabled,
-					codex_basispoints_403_probe_interval_minutes = EXCLUDED.codex_basispoints_403_probe_interval_minutes,
-					codex_basispoints_429_cooldown_seconds = EXCLUDED.codex_basispoints_429_cooldown_seconds,
-					codex_basispoints_cache_creation_as_input = EXCLUDED.codex_basispoints_cache_creation_as_input
+					codex_unified_client_identity_enabled = EXCLUDED.codex_unified_client_identity_enabled
 			`, NormalizeSiteName(s.SiteName), strings.TrimSpace(s.SiteLogo),
 		s.MaxConcurrency, s.GlobalRPM, s.TestModel, testContent, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
 		s.AutoCleanUnauthorized, s.AutoCleanRateLimited, s.AdminSecret, s.AutoCleanFullUsage, s.ProxyPoolEnabled,
@@ -3433,7 +3401,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.PromptFilterReviewModel, s.PromptFilterReviewTimeoutSeconds, s.PromptFilterReviewFailClosed,
 		s.ClientCompatMode, s.CodexMinCLIVersion, codexUserAgentConfig, s.UsageLogMode, s.UsageLogBatchSize,
 		s.UsageLogFlushIntervalSeconds, s.StreamFlushPolicy, s.StreamFlushIntervalMS,
-		s.FirstTokenTimeoutSeconds, firstTokenMode, billingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.SessionAffinitySpread, s.BackgroundConfig, normalizeGrokConfig(s.GrokConfig), s.ShowFullUsageNumbers, s.PublicKeyUsagePageEnabled, s.PublicImageStudioPageEnabled, reasoningEffortModels,
+		s.FirstTokenTimeoutSeconds, firstTokenMode, billingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.SessionAffinitySpread, s.BackgroundConfig, normalizeGrokConfig(s.GrokConfig), s.ShowFullUsageNumbers, s.ShowUpstreamModelMismatch, s.PublicKeyUsagePageEnabled, s.PublicImageStudioPageEnabled, reasoningEffortModels,
 		s.CodexForceWebsocket, s.CodexWSKeepaliveEnabled, normalizeCodexWSKeepaliveInterval(s.CodexWSKeepaliveIntervalSec),
 		s.CodexWSHideUpstreamErrors, s.CodexWSSilentRetryEnabled, normalizeCodexWSSilentMaxRetries(s.CodexWSSilentMaxRetries),
 		s.AutoPause5hThreshold, s.AutoPause7dThreshold, s.AutoPause5hGuardBandPercent, s.AutoPause5hGuardConcurrency,
@@ -3482,12 +3450,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeSessionAutoLockThreshold(s.CodexSessionAutoLockThreshold),
 		s.CodexTurnStateVaultEnabled,
 		s.AutoResetCreditsOnExhaustionEnabled,
-		s.CodexBasispointsEnabled,
-		NormalizeCodexBasispointsModels(s.CodexBasispointsModels),
-		s.CodexBasispoints403PauseDisabled,
-		NormalizeCodexBasispoints403ProbeIntervalMinutes(s.CodexBasispointsProbeMinutes),
-		NormalizeCodexBasispoints429CooldownSeconds(s.CodexBasispoints429CooldownSeconds),
-		s.CodexBasispointsCacheWriteAsInput,
+		s.CodexUnifiedClientIdentityEnabled,
 		s.PreservePromptFilterCustomPatterns,
 		s.PreservePromptFilterReviewAPIKey)
 	if err != nil {

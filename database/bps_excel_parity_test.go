@@ -34,14 +34,7 @@ func productionExcelShape(t *testing.T, db *DB, models string) (legacyOff, unset
 	}
 	relay = insert("relay", map[string]any{"upstream_type": "openai_responses", "base_url": "https://relay.example", "api_key": "sk-relay"})
 	agent = insert("agent", map[string]any{"auth_mode": "agent_identity", "agent_runtime_id": "rt", "agent_private_key": "key"})
-	settings, err := db.GetSystemSettings(ctx)
-	require.NoError(t, err)
-	if settings == nil {
-		settings = &SystemSettings{}
-	}
-	settings.CodexBasispointsEnabled = true
-	settings.CodexBasispointsModels = models
-	require.NoError(t, db.UpdateSystemSettings(ctx, settings))
+	seedLegacyBasispointsSettings(t, db, models)
 	return legacyOff, unset, relay, agent
 }
 

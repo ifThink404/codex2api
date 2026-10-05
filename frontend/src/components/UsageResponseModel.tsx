@@ -15,15 +15,16 @@ function normalizeModelVariant(model: string): string {
  *
  * 所有自报模型都保留；不一致时区分疑似变体（琥珀）与其他差异（橙色）。
  * 优先使用后端审计结果；旧记录没有审计标记时保留大小写不敏感的本地比对。
+ * showMismatch 关闭时（系统设置 show_upstream_model_mismatch）只显示模型、不标差异。
  */
-export default function UsageResponseModel({ log }: { log: UsageLog }) {
+export default function UsageResponseModel({ log, showMismatch = true }: { log: UsageLog; showMismatch?: boolean }) {
   const { t } = useTranslation()
   const upstreamModel = log.upstream_response_model
   if (!upstreamModel) return null
 
   // 请求侧压根没有模型名时不标琥珀：那不是「上游换了模型」，只是没东西可比。
   const requestedModel = (log.effective_model || log.model || '').trim()
-  const differs = !!requestedModel && (log.upstream_model_mismatch ?? (upstreamModel.trim().toLowerCase() !== requestedModel.toLowerCase()))
+  const differs = showMismatch && !!requestedModel && (log.upstream_model_mismatch ?? (upstreamModel.trim().toLowerCase() !== requestedModel.toLowerCase()))
   const variant = differs && normalizeModelVariant(requestedModel) === normalizeModelVariant(upstreamModel)
   const titleLines = [
     t('usage.responseModelHint'),

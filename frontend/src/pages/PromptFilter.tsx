@@ -221,7 +221,7 @@ type PromptGuardEditorConfig = Omit<PromptGuardConfig, 'performance'>
 
 type AdvancedProtectionConfig = {
   guard: PromptGuardEditorConfig
-  enforcement: { local_mode: string; auxiliary_high_confidence_enabled: boolean; terminal_categories: string[]; terminal_bypass_models: string[]; local_block_message: string; conversation_lock_enabled: boolean; conversation_lock_ttl_hours: number; user_cyber_cooldown_minutes: number; cyb_strike_enabled: boolean; local_severe_strike_enabled: boolean; authorized_pentest_allowed: boolean }
+  enforcement: { local_mode: string; auxiliary_high_confidence_enabled: boolean; terminal_categories: string[]; terminal_bypass_models: string[]; approval_review_models: string[]; local_block_message: string; conversation_lock_enabled: boolean; conversation_lock_ttl_hours: number; user_cyber_cooldown_minutes: number; cyb_strike_enabled: boolean; local_severe_strike_enabled: boolean; authorized_pentest_allowed: boolean }
   normalization: {
     enabled: boolean
     decode_url: boolean
@@ -312,7 +312,7 @@ const defaultPromptGuard: PromptGuardEditorConfig = {
 
 const defaultAdvancedProtection: AdvancedProtectionConfig = {
   guard: defaultPromptGuard,
-  enforcement: { local_mode: 'block', auxiliary_high_confidence_enabled: false, terminal_categories: [], terminal_bypass_models: ['codex-auto-review'], local_block_message: '', conversation_lock_enabled: true, conversation_lock_ttl_hours: 168, user_cyber_cooldown_minutes: 30, cyb_strike_enabled: false, local_severe_strike_enabled: true, authorized_pentest_allowed: false },
+  enforcement: { local_mode: 'block', auxiliary_high_confidence_enabled: false, terminal_categories: [], terminal_bypass_models: ['codex-auto-review'], approval_review_models: ['codex-auto-review'], local_block_message: '', conversation_lock_enabled: true, conversation_lock_ttl_hours: 168, user_cyber_cooldown_minutes: 30, cyb_strike_enabled: false, local_severe_strike_enabled: true, authorized_pentest_allowed: false },
   normalization: {
     enabled: true,
     decode_url: true,
@@ -408,6 +408,9 @@ function parseAdvancedProtection(value: AdvancedConfigObject): AdvancedProtectio
       terminal_bypass_models: Array.isArray(enforcement.terminal_bypass_models)
         ? enforcement.terminal_bypass_models.filter((model: unknown): model is string => typeof model === 'string')
         : [...defaultAdvancedProtection.enforcement.terminal_bypass_models],
+      approval_review_models: Array.isArray(enforcement.approval_review_models)
+        ? enforcement.approval_review_models.filter((model: unknown): model is string => typeof model === 'string')
+        : [...defaultAdvancedProtection.enforcement.approval_review_models],
       local_block_message: typeof enforcement.local_block_message === 'string'
         ? enforcement.local_block_message
         : defaultAdvancedProtection.enforcement.local_block_message,
@@ -919,6 +922,7 @@ function AdvancedProtectionEditor({
   }
   const terminalCategoriesText = config.enforcement.terminal_categories.join(', ')
   const terminalBypassModelsText = config.enforcement.terminal_bypass_models.join(', ')
+  const approvalReviewModelsText = config.enforcement.approval_review_models.join(', ')
   const queryCount = config.intelligence.queries.length
   const enabledExtensionCount = [config.sidecar.enabled, config.session.enabled, config.attachment.enabled, config.intelligence.enabled].filter(Boolean).length
   const guardModeOptions = promptGuardModes.map((mode) => ({
@@ -1229,6 +1233,8 @@ function AdvancedProtectionEditor({
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('promptFilter.terminalCategoriesHint')}</p>
             <CompactField label={t('promptFilter.terminalBypassModels')} hint={t('promptFilter.help.terminalBypassModels')}><Input value={terminalBypassModelsText} placeholder="codex-auto-review" onChange={(e) => update('enforcement', { terminal_bypass_models: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></CompactField>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('promptFilter.terminalBypassModelsHint')}</p>
+            <CompactField label={t('promptFilter.approvalReviewModels')} hint={t('promptFilter.help.approvalReviewModels')}><Input value={approvalReviewModelsText} placeholder="codex-auto-review" onChange={(e) => update('enforcement', { approval_review_models: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></CompactField>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('promptFilter.approvalReviewModelsHint')}</p>
             <CompactField label={t('promptFilter.localBlockMessage')} hint={t('promptFilter.help.localBlockMessage')}>
               <Textarea
                 rows={3}
