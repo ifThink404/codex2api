@@ -89,7 +89,7 @@ test("every account editor loads, renders and saves the probe draft", () => {
   assert.match(schedulerBody, /<AccountProbePolicyFields/);
   for (const [page, handler, providerMethod, id] of [
     ["GrokAccounts", "handleSaveEdit", "updateGrokAccount", "editAccount"],
-    ["AntigravityAccounts", "handleEdit", "updateAntigravityAccount", "editingAccount"],
+    ["antigravity/AntigravityEditModal", "handleEdit", "updateAntigravityAccount", "editingAccount"],
   ]) {
     const code = source(`../pages/${page}.tsx`);
     assert.match(code, /<AccountProbePolicyFields/);

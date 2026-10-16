@@ -455,6 +455,19 @@ CREATE TABLE usage_logs (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- 用量小时汇总：按 UTC 整点小时 + API Key/渠道/模型/端点/状态码/流式/内部请求聚合 usage_logs。
+-- 写日志的事务里同步累加，清空日志时一并清空；升级前的历史在后台按 id 分块回填。
+-- 用量页、自助用量页的长区间统计读整点小时的汇总，只有首尾零头扫明细。
+CREATE TABLE usage_log_hourly (
+    bucket TIMESTAMPTZ NOT NULL,
+    api_key_id BIGINT, api_key_name TEXT, api_key_masked TEXT, channel TEXT,
+    model TEXT, effective_model TEXT, inbound_endpoint TEXT, endpoint TEXT,
+    status_code INTEGER, stream BOOLEAN, internal INTEGER,
+    requests BIGINT, total_tokens BIGINT, user_billed DOUBLE PRECISION, ...,
+    PRIMARY KEY (bucket, api_key_id, api_key_name, api_key_masked, channel, model,
+                 effective_model, inbound_endpoint, endpoint, status_code, stream, internal)
+);
+
 -- 系统设置表
 CREATE TABLE system_settings (
     id INTEGER PRIMARY KEY DEFAULT 1,
@@ -528,14 +541,14 @@ L1 受 4,096 条、16 MiB 逻辑 JSON 字节和单条 64 KiB 预算限制；大�
 
 #### Responses 上下文缓存
 
-`previous_response_id` 连续请求使用一层每进程独立的有界 L1。完成响应时先按完整 call/output 组保留尾部最多 200 个 raw item，再写入 L1；默认总量 64 MiB、单条准入 8 MiB、最多 2,000 条、绝对 TTL 10 分钟。LRU 同时受条数和逻辑字节预算约束，命中不会延长绝对 TTL。
+`previous_response_id` 连续请求使用一层每进程独立的有界 L1。完成响应时先按完整 call/output 组保留尾部最多 200 个 raw item，再写入 L1；默认总量 64 MiB、单条准入 8 MiB、最多 2,000 条、绝对 TTL 45 分钟。LRU 同时受条数和逻辑字节预算约束，命中不会延长绝对 TTL。
 
 ```text
 完成响应
    │
    ├─ pair-safe 尾部裁剪（最多 200 items）
    │
-   ├─ 本进程 L1（64 MiB total / 8 MiB entry / 2,000 entries / 10m）
+   ├─ 本进程 L1（64 MiB total / 8 MiB entry / 2,000 entries / 45m）
    │
    └─ Redis 共享 response context（仅 Redis 模式）
 

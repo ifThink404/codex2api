@@ -22,7 +22,7 @@ func TestAPIUnauthorizedIsRecoverableWithoutProbe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	a := newAPIRecoveryTestAccount(1)
-	s := &Store{accounts: []*Account{a}, maxConcurrency: 4, backgroundCtx: ctx}
+	s := (&Store{accounts: []*Account{a}, backgroundCtx: ctx}).withMaxConcurrency(4)
 	s.rebuildAccountIndex()
 	s.SetSchedulerEngine("indexed")
 	s.ReportRequestFailure(a, "unauthorized", time.Millisecond)
@@ -57,7 +57,7 @@ func TestAPIUnauthorizedIsRecoverableWithoutProbe(t *testing.T) {
 
 func TestAPIRecoveryPreservesNewerCooldownAndManualPause(t *testing.T) {
 	a := newAPIRecoveryTestAccount(1)
-	s := &Store{maxConcurrency: 4}
+	s := (&Store{}).withMaxConcurrency(4)
 	s.MarkCooldownWithError(a, time.Minute, "unauthorized", "upstream auth unavailable")
 	s.ReportRequestSuccess(a, time.Millisecond)
 	if a.IsAvailable() || a.GetCooldownReason() == "" {
@@ -79,8 +79,8 @@ func TestAPIRecoveryCooldownAcrossInstances(t *testing.T) {
 	c := cache.NewMemory(1)
 	defer c.Close()
 	a, b := newAPIRecoveryTestAccount(1), newAPIRecoveryTestAccount(1)
-	s1 := &Store{accounts: []*Account{a}, maxConcurrency: 4, tokenCache: c}
-	s2 := &Store{accounts: []*Account{b}, maxConcurrency: 4, tokenCache: c}
+	s1 := (&Store{accounts: []*Account{a}, tokenCache: c}).withMaxConcurrency(4)
+	s2 := (&Store{accounts: []*Account{b}, tokenCache: c}).withMaxConcurrency(4)
 	s1.ReportRequestFailure(a, "unauthorized", time.Millisecond)
 	s1.MarkCooldownWithError(a, time.Minute, "unauthorized", "upstream error")
 	if !s2.accountHasCachedCooldown(b) {
@@ -93,7 +93,7 @@ func TestAPIRecoveryCooldownAcrossInstances(t *testing.T) {
 
 func TestOAuthUnauthorizedStillRequiresRecovery(t *testing.T) {
 	a := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
-	s := &Store{maxConcurrency: 4}
+	s := (&Store{}).withMaxConcurrency(4)
 	s.ReportRequestFailure(a, "unauthorized", time.Millisecond)
 	s.MarkCooldownWithError(a, time.Minute, "unauthorized", "token expired")
 	if !a.IsBanned() || time.Until(a.CooldownUtil) < 5*time.Hour {
@@ -109,7 +109,7 @@ func TestAPIUnauthorizedRecoveryAppliesToAllKeyProviders(t *testing.T) {
 		{DBID: 4, UpstreamType: UpstreamClaude, AccessToken: "sk-ant-api-test", ClaudeAuthKind: ClaudeAuthKindAPIKey, Status: StatusReady, APIAutoRecoveryEnabled: true},
 	} {
 		t.Run(a.UpstreamType, func(t *testing.T) {
-			s := &Store{maxConcurrency: 4}
+			s := (&Store{}).withMaxConcurrency(4)
 			s.ReportRequestFailure(a, "unauthorized", time.Millisecond)
 			s.MarkCooldownWithError(a, time.Hour, "unauthorized", "credential rejected")
 			if a.IsBanned() || a.GetCooldownReason() != APIUpstreamUnavailableCooldownReason {
@@ -122,7 +122,7 @@ func TestAPIUnauthorizedRecoveryAppliesToAllKeyProviders(t *testing.T) {
 func TestAPIRecoverySwitchOffPreservesLegacyBan(t *testing.T) {
 	a := newAPIRecoveryTestAccount(1)
 	a.APIAutoRecoveryEnabled = false
-	s := &Store{maxConcurrency: 4}
+	s := (&Store{}).withMaxConcurrency(4)
 	s.ReportRequestFailure(a, "unauthorized", time.Millisecond)
 	s.MarkCooldownWithError(a, time.Minute, "unauthorized", "token rejected")
 	if !a.IsBanned() || time.Until(a.CooldownUtil) < 5*time.Hour {
@@ -135,7 +135,7 @@ func TestAPIRecoveryCachedFailureTimeControlsStableReset(t *testing.T) {
 		t.Run(prior, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				a := newAPIRecoveryTestAccount(1)
-				s := &Store{maxConcurrency: 4}
+				s := (&Store{}).withMaxConcurrency(4)
 				observed := time.Now().Add(-10 * time.Second)
 				want := observed
 				switch prior {
@@ -175,7 +175,7 @@ func TestAPIRecoveryOptOutIgnoresStaleSharedRecords(t *testing.T) {
 			defer c.Close()
 			a := newAPIRecoveryTestAccount(1)
 			a.APIAutoRecoveryEnabled = false
-			s := &Store{accounts: []*Account{a}, maxConcurrency: 4, tokenCache: c}
+			s := (&Store{accounts: []*Account{a}, tokenCache: c}).withMaxConcurrency(4)
 			record := runtimeCooldownRecord{Kind: kind, Reason: APIUpstreamUnavailableCooldownReason,
 				ResetAt: time.Now().Add(time.Minute), UpdatedAt: time.Now(), BackoffLevel: 2}
 			s.cacheAccountCooldownRecord(a.DBID, record)
@@ -198,7 +198,7 @@ func TestAPIRecoveryOptOutStillImportsOrdinary429(t *testing.T) {
 	defer c.Close()
 	a := newAPIRecoveryTestAccount(1)
 	a.APIAutoRecoveryEnabled = false
-	s := &Store{accounts: []*Account{a}, maxConcurrency: 4, tokenCache: c}
+	s := (&Store{accounts: []*Account{a}, tokenCache: c}).withMaxConcurrency(4)
 	s.cacheAccountCooldownRecord(a.DBID, runtimeCooldownRecord{
 		Kind: cache.CooldownKindTransient, Reason: ResponsesRateLimitedCooldownReason,
 		ResetAt: time.Now().Add(time.Minute), UpdatedAt: time.Now(), BackoffLevel: 2,
@@ -213,7 +213,7 @@ func TestAPIRecoveryOptOutTimerRestoresLegacyAuthGate(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		a := newAPIRecoveryTestAccount(1)
-		s := &Store{accounts: []*Account{a}, maxConcurrency: 4, backgroundCtx: ctx}
+		s := (&Store{accounts: []*Account{a}, backgroundCtx: ctx}).withMaxConcurrency(4)
 		s.rebuildAccountIndex()
 		s.SetSchedulerEngine("indexed")
 		s.MarkAPIUpstreamUnavailable(a, 0, "upstream auth rejected")
@@ -239,7 +239,7 @@ func TestAPIRecoveryOptOutTimerRestoresLegacyAuthGate(t *testing.T) {
 func TestAPIRecoveryOptOutLateSuccessCannotRestorePendingWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a := newAPIRecoveryTestAccount(1)
-		s := &Store{maxConcurrency: 4}
+		s := (&Store{}).withMaxConcurrency(4)
 		s.MarkAPIUpstreamUnavailable(a, 0, "upstream auth rejected")
 		a.APIAutoRecoveryEnabled = false
 		time.Sleep(16 * time.Second)
@@ -252,7 +252,7 @@ func TestAPIRecoveryOptOutLateSuccessCannotRestorePendingWindow(t *testing.T) {
 
 func TestAPIRecoveryOptOutRejectsPreparedTemporaryFailure(t *testing.T) {
 	a := newAPIRecoveryTestAccount(1)
-	s := &Store{maxConcurrency: 4}
+	s := (&Store{}).withMaxConcurrency(4)
 	// The caller selected API recovery, then a policy update won the account lock.
 	a.APIAutoRecoveryEnabled = false
 	s.markTransientUpstreamCooldown(a, 0, APIUpstreamUnavailableCooldownReason, "late rejection")
@@ -265,7 +265,7 @@ func TestAPIRecoveryExactAuthCooldownRemainsAuthoritative(t *testing.T) {
 	for _, reason := range []string{"unauthorized", "forbidden"} {
 		t.Run(reason, func(t *testing.T) {
 			a := newAPIRecoveryTestAccount(1)
-			s := &Store{maxConcurrency: 4}
+			s := (&Store{}).withMaxConcurrency(4)
 			s.MarkCooldownWithErrorExactDuration(a, 24*time.Hour, reason, "permanent provider denial")
 			s.ReportRequestSuccess(a, time.Millisecond)
 			if got, until := a.GetCooldownSnapshot(); got != reason || time.Until(until) < 23*time.Hour {
@@ -289,7 +289,7 @@ func TestAPIRecoveryOptOutHookKeepsLegacyGateAfterTimerDeadline(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				a := newAPIRecoveryTestAccount(1)
-				s := &Store{accounts: []*Account{a}, maxConcurrency: 4, backgroundCtx: ctx}
+				s := (&Store{accounts: []*Account{a}, backgroundCtx: ctx}).withMaxConcurrency(4)
 				s.rebuildAccountIndex()
 				s.SetSchedulerEngine("indexed")
 				s.MarkAPIUpstreamUnavailable(a, 0, "upstream auth rejected")
@@ -339,7 +339,7 @@ func TestAPIRecoveryOptOutHookPreservesOtherGates(t *testing.T) {
 	for _, gate := range []string{"ready", "429", "quota", "terminal"} {
 		t.Run(gate, func(t *testing.T) {
 			a := newAPIRecoveryTestAccount(1)
-			s := &Store{maxConcurrency: 4}
+			s := (&Store{}).withMaxConcurrency(4)
 			switch gate {
 			case "429":
 				s.MarkTransientRateLimited(a, 0)
@@ -366,7 +366,7 @@ func TestAPIRecoveryCachedExpiryRestoresIndexAndEscalates(t *testing.T) {
 		defer cancel()
 		a := newAPIRecoveryTestAccount(1)
 		other := newAPIRecoveryTestAccount(2)
-		s := &Store{accounts: []*Account{a, other}, maxConcurrency: 4, backgroundCtx: ctx}
+		s := (&Store{accounts: []*Account{a, other}, backgroundCtx: ctx}).withMaxConcurrency(4)
 		s.rebuildAccountIndex()
 		s.SetSchedulerEngine("indexed")
 		s.applyCachedAccountCooldown(a, runtimeCooldownRecord{

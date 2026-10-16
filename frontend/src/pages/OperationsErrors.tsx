@@ -152,7 +152,7 @@ export default function OperationsErrors({ transport, embedded = false }: { tran
         page,
         pageSize,
       }),
-      api.getAPIKeys().catch(() => ({ keys: [] as APIKeyRow[] })),
+      api.getAPIKeys({ view: 'lite' }).catch(() => ({ keys: [] as APIKeyRow[] })),
       api.getOpsErrorsByAccount({ ...baseParams, accountId: '' }).catch(() => ({ accounts: [] as OpsErrorAccountGroup[] })),
     ])
 

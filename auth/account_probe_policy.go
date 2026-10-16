@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/codex2api/database"
@@ -215,7 +214,7 @@ func (s *Store) ApplyAccountProbePolicyPatch(id int64, updates map[string]interf
 	}
 	recoveryChanged := a.enforceAPIAutoRecoveryOptOutLocked(time.Now())
 	if recoveryChanged {
-		a.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+		a.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	}
 	if !modeSet {
 		mode = a.ProbeMode

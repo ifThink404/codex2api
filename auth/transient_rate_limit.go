@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"sync/atomic"
 	"time"
 
 	"github.com/codex2api/cache"
@@ -121,7 +120,7 @@ func (s *Store) markTransientUpstreamCooldown(acc *Account, retryAfter time.Dura
 		acc.ErrorMsg = errorMsg
 	}
 	acc.transientRateLimitUntil = until
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	acc.armTransientRateLimitRecoveryLocked(s)
 	record := runtimeCooldownRecord{
 		Kind: cache.CooldownKindTransient, Reason: reason,
@@ -205,7 +204,7 @@ func (a *Account) armTransientRateLimitRecoveryLocked(s *Store) {
 		}
 		a.transientRateLimitTimer = nil
 		a.enforceAPIAutoRecoveryOptOutLocked(time.Now())
-		a.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+		a.recomputeSchedulerLocked(s.maxConcurrency.Load())
 		a.mu.Unlock()
 		s.fastSchedulerUpdate(a)
 	})

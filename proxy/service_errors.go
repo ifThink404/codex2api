@@ -102,6 +102,15 @@ func writeAuditedResponsesWSError(ctx *gin.Context, conn *websocket.Conn, apiErr
 	return writeResponsesWSError(conn, apiError)
 }
 
+// writeAuditedResponsesWSRecoveryError records a context-recovery error for the
+// service error diagnostics and answers it on the WebSocket, which stays open.
+func writeAuditedResponsesWSRecoveryError(ctx *gin.Context, conn *websocket.Conn, apiError *api.APIError) error {
+	if apiError != nil {
+		api.ObserveError(ctx, api.HTTPStatusCode(apiError.Code), apiError)
+	}
+	return writeResponsesWSRecoveryError(conn, apiError)
+}
+
 // resetServiceErrorFrame starts a new logical request on a WebSocket so each
 // frame's local error is recorded once, keeping the connection's identity.
 func resetServiceErrorFrame(ctx *gin.Context) {

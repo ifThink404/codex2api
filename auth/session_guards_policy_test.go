@@ -11,7 +11,7 @@ func TestSessionNoBorrowSkipsAccountsWithGuardsOff(t *testing.T) {
 	guarded := &Account{DBID: 1, AccessToken: "tok-1"}
 	off := &Account{DBID: 2, AccessToken: "tok-2", SessionGuardsPolicy: SessionGuardsPolicyOff}
 	relay := &Account{DBID: 3, UpstreamType: UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "sk"}
-	store := &Store{accounts: []*Account{guarded, off, relay}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{guarded, off, relay}}).withMaxConcurrency(1)
 
 	if !store.sessionNoBorrowAppliesTo(guarded.DBID) {
 		t.Fatal("an official account with the default policy must stay under the no-borrow hold")
@@ -29,7 +29,7 @@ func TestSessionNoBorrowSkipsAccountsWithGuardsOff(t *testing.T) {
 func TestNoBorrowSpillsOverForGuardsOffBinding(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1", SessionGuardsPolicy: SessionGuardsPolicyOff}
 	fallback := &Account{DBID: 2, AccessToken: "tok-2"}
-	store := &Store{accounts: []*Account{bound, fallback}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{bound, fallback}}).withMaxConcurrency(1)
 	store.SetSessionNoBorrow(true, 5*time.Second)
 	store.bindSessionAffinity("guards-off-borrow", bound, "")
 

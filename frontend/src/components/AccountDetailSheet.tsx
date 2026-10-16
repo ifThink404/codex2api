@@ -295,18 +295,20 @@ export default function AccountDetailSheet({
   const rateWindow = account ? getRateLimitWindow(account) : null;
   const isGrok = Boolean(account?.grok_api);
   const isClaude = Boolean(account?.claude_api);
+  const isAntigravity = Boolean(account?.antigravity_api);
   // Grok API Key 无 refresh_token；Codex AT-only / Responses 也不走 AT 刷新。
   const refreshDisabled = Boolean(
     account &&
       (refreshing ||
         account.at_only ||
         account.openai_responses_api ||
-        (isGrok && account.grok_auth_kind !== "oauth")),
+        (isGrok && account.grok_auth_kind !== "oauth") ||
+        (isAntigravity && account.antigravity_auth_kind === "api_key")),
   );
   // 凭据导出由各 provider 自己决定格式；Claude 使用专用安全导出端点，
   // Grok OAuth 由其页面生成 Grok CLI 格式（API Key 账号没有 CLI 登录态）。
   const showAuthJson = Boolean(account && (!isGrok || account.grok_auth_kind === "oauth"));
-  const showResetCredits = Boolean(account && !isGrok && !isClaude);
+  const showResetCredits = Boolean(account && !isGrok && !isClaude && !isAntigravity);
   const authJsonDisabled = Boolean(
     account &&
       (authJsonExporting || (!isClaude && (account.at_only || account.openai_responses_api))),
@@ -356,6 +358,8 @@ export default function AccountDetailSheet({
                 <span className="mt-0.5 flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-card ring-1 ring-border shadow-sm">
                   {account.claude_api ? (
                     <ChannelLogo channel="claude" size={22} />
+                  ) : account.antigravity_api ? (
+                    <ChannelLogo channel="antigravity" size={22} />
                   ) : account.grok_api ? (
                     <ChannelLogo channel="grok" size={22} />
                   ) : account.openai_responses_api ? (
@@ -415,7 +419,7 @@ export default function AccountDetailSheet({
                       </SheetDescription>
                     ) : null}
                   </div>
-                ) : isGrok && account.email && account.name && account.email !== account.name ? (
+                ) : (isGrok || isAntigravity) && account.email && account.name && account.email !== account.name ? (
                   <SheetDescription className="mt-1 break-all text-[12px]">
                     {account.email}
                   </SheetDescription>
@@ -782,6 +786,7 @@ export default function AccountDetailSheet({
               account.openai_responses_api ||
               account.grok_api ||
               account.claude_api ||
+              account.antigravity_api ||
               account.base_url ||
               (!account.openai_responses_api &&
                 (account.models?.length ?? 0) > 0)) && (
@@ -813,6 +818,18 @@ export default function AccountDetailSheet({
                         {t("accounts.detailAuthType")}
                       </span>
                       <span className="font-medium text-foreground">{t("claude.authOAuth")}</span>
+                    </div>
+                  )}
+                  {isAntigravity && (
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">
+                        {t("accounts.detailAuthType")}
+                      </span>
+                      <span className="font-medium text-foreground">
+                        {account.antigravity_auth_kind === "api_key"
+                          ? t("antigravity.authKindApiKey")
+                          : t("antigravity.authKindOAuth")}
+                      </span>
                     </div>
                   )}
                   {isGrok && (
@@ -923,6 +940,8 @@ export default function AccountDetailSheet({
                 />
                 {isClaude
                   ? t("claude.actionRefresh")
+                  : isAntigravity
+                  ? t("antigravity.syncAccount")
                   : isGrok
                   ? t("grok.actionRefresh")
                   : t("accounts.actionRefreshAT")}
@@ -936,7 +955,11 @@ export default function AccountDetailSheet({
                   onClick={onGenerateAuthJson}
                 >
                   <FileJson className="size-3.5" />
-                  {isClaude ? t("claude.exportCredential") : t("accounts.actionAuthJson")}
+                  {isClaude
+                    ? t("claude.exportCredential")
+                    : isAntigravity
+                      ? t("antigravity.exportOne")
+                      : t("accounts.actionAuthJson")}
                 </Button>
               )}
               <Button

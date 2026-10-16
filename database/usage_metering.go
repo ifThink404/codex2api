@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Lightweight metering keeps the numbers that billing windows and usage
@@ -218,4 +219,47 @@ func usageStatsSource(dim UsageLogFilter) string {
 		return "usage_logs"
 	}
 	return "usage_metered_events"
+}
+
+// usageMeteringRangeTotals sums the requests whose detail row usage_log_mode
+// dropped. The range statistics read the hourly rollup and usage_logs, which
+// never hold these rows, so dimension-free statistics add them here; each
+// event lands in exactly one of the two tables.
+func (db *DB) usageMeteringRangeTotals(ctx context.Context, rangeStart, rangeEnd time.Time, channel string, minuteAgo time.Time) (usageRangeTotals, error) {
+	args := []interface{}{db.timeArg(minuteAgo), db.timeArg(rangeStart)}
+	where := "u.created_at >= $2 AND u.status_code <> 499 AND TRIM(COALESCE(u.internal_reason, '')) = ''"
+	if !rangeEnd.IsZero() {
+		args = append(args, db.timeArg(rangeEnd))
+		where += fmt.Sprintf(" AND u.created_at < $%d", len(args))
+	}
+	if channel != "" {
+		args = append(args, channel)
+		where += fmt.Sprintf(" AND u.channel = $%d", len(args))
+	}
+	var totals usageRangeTotals
+	err := db.conn.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(u.total_tokens), 0),
+			COALESCE(SUM(u.prompt_tokens), 0),
+			COALESCE(SUM(u.completion_tokens), 0),
+			COALESCE(SUM(u.cached_tokens), 0),
+			COALESCE(SUM(u.account_billed), 0),
+			COALESCE(SUM(u.user_billed), 0),
+			COALESCE(SUM(u.duration_ms), 0),
+			COUNT(u.duration_ms),
+			COALESCE(SUM(CASE WHEN u.first_token_ms > 0 THEN u.first_token_ms ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN u.first_token_ms > 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN u.cached_tokens > 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN u.status_code >= 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN u.created_at >= $1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN u.created_at >= $1 THEN u.total_tokens ELSE 0 END), 0)
+		FROM usage_metering u
+		WHERE `+where, args...).Scan(
+		&totals.Requests, &totals.Tokens, &totals.Prompt, &totals.Completion, &totals.Cached,
+		&totals.AccountBilled, &totals.UserBilled,
+		&totals.DurationSum, &totals.DurationRows, &totals.FirstTokenSum, &totals.FirstTokenSamples,
+		&totals.CacheHits, &totals.Errors, &totals.RPM, &totals.TPM,
+	)
+	return totals, err
 }

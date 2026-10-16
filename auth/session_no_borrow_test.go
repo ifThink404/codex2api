@@ -9,7 +9,7 @@ import (
 func TestNoBorrowHoldsInsteadOfSpilloverAtCapacity(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
 	fallback := &Account{DBID: 2, AccessToken: "tok-2"}
-	store := &Store{accounts: []*Account{bound, fallback}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{bound, fallback}}).withMaxConcurrency(1)
 	store.SetSessionNoBorrow(true, 5*time.Second)
 	store.bindSessionAffinity("no-borrow", bound, "")
 
@@ -44,7 +44,7 @@ func TestNoBorrowHoldsInsteadOfSpilloverAtCapacity(t *testing.T) {
 
 func TestNoBorrowUnboundSessionStillSelectsFreely(t *testing.T) {
 	a := &Account{DBID: 1, AccessToken: "tok-1"}
-	store := &Store{accounts: []*Account{a}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{a}}).withMaxConcurrency(1)
 	store.SetSessionNoBorrow(true, 5*time.Second)
 	selected, _, _ := store.NextForSessionWithDispatchGuard("fresh", 0, nil, nil, DispatchPolicyStandard)
 	if selected != a {
@@ -56,7 +56,7 @@ func TestNoBorrowUnboundSessionStillSelectsFreely(t *testing.T) {
 func TestNoBorrowWaitBorrowsAfterHold(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
 	fallback := &Account{DBID: 2, AccessToken: "tok-2"}
-	store := &Store{accounts: []*Account{bound, fallback}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{bound, fallback}}).withMaxConcurrency(1)
 	store.SetSessionNoBorrow(true, time.Second)
 	store.sessionNoBorrowHoldNS.Store(int64(150 * time.Millisecond)) // 测试用短 hold，绕过 1s 下限
 	store.bindSessionAffinity("no-borrow-wait", bound, "")
@@ -90,7 +90,7 @@ func TestNoBorrowWaitBorrowsAfterHold(t *testing.T) {
 func TestNoBorrowWaitReturnsBoundAccountWhenItFrees(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
 	fallback := &Account{DBID: 2, AccessToken: "tok-2"}
-	store := &Store{accounts: []*Account{bound, fallback}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{bound, fallback}}).withMaxConcurrency(1)
 	store.SetSessionNoBorrow(true, 10*time.Second)
 	store.bindSessionAffinity("no-borrow-free", bound, "")
 	held := store.TakePreferredAccountWithDispatch(bound.DBID, 0, nil, nil, DispatchPolicyStandard)
@@ -118,7 +118,7 @@ func TestNoBorrowWaitReturnsBoundAccountWhenItFrees(t *testing.T) {
 // 第二个元素，离队时只摘掉一个，残留元素让后续 Release 在派发时永久卡死。
 func TestNoBorrowHoldExpiryLeavesHubClean(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
-	store := &Store{accounts: []*Account{bound}, maxConcurrency: 1} // 单账号：hold 到期后也无号可借
+	store := (&Store{accounts: []*Account{bound}}).withMaxConcurrency(1) // 单账号：hold 到期后也无号可借
 	store.SetSessionNoBorrow(true, time.Second)
 	store.sessionNoBorrowHoldNS.Store(int64(100 * time.Millisecond))
 	store.bindSessionAffinity("no-borrow-hold-clean", bound, "")
@@ -173,7 +173,7 @@ func TestNoBorrowSkipsRelayStyleBoundAccount(t *testing.T) {
 	if !bound.IsRelayStyle() {
 		t.Fatal("fixture must be relay-style")
 	}
-	store := &Store{accounts: []*Account{bound, fallback}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{bound, fallback}}).withMaxConcurrency(1)
 	store.SetSessionNoBorrow(true, time.Second)
 	store.sessionNoBorrowHoldNS.Store(int64(150 * time.Millisecond))
 	store.bindSessionAffinity("no-borrow-relay", bound, "")
