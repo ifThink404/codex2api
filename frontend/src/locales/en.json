@@ -198,7 +198,7 @@
     "streamInterrupted": "The stream ended without a successful completion event."
   },
   "nav": {
-    "qualityTest": "Quality check",
+    "qualityTest": "Quality test",
     "dashboard": "Dashboard",
     "accounts": "Accounts",
     "grokAccounts": "Grok",
@@ -215,7 +215,8 @@
     "promptFilter": "Prompt Filter",
     "modelPricing": "Model Pricing",
     "payloadRules": "Payload Rules",
-    "plugins": "Transport plugins"
+    "plugins": "Transport plugins",
+    "intelligenceCheck": "Intelligence checks"
   },
   "antigravity": {
     "pageTitle": "Antigravity Accounts",
@@ -301,6 +302,9 @@
     "replacementAuthJson": "Replacement credential (optional)",
     "replacementAuthJsonPlaceholder": "Paste JSON or a refresh token; leave blank to keep the current credential",
     "replacementAuthJsonHint": "Only provide a value when rotating or replacing this account's credential.",
+    "userProjectId": "GCP project ID (Workspace / enterprise)",
+    "userProjectIdPlaceholder": "e.g. my-company-gca-project; leave blank for personal accounts",
+    "userProjectIdHint": "Google does not provision a project for Workspace / Gemini Code Assist Standard or Enterprise accounts. Enter a Google Cloud project that has Gemini for Google Cloud enabled; saving resyncs the account.",
     "deleteTitle": "Delete Antigravity account",
     "deleteDescription": "Delete {{account}}? This cannot be undone.",
     "deleteSuccess": "Antigravity account deleted",
@@ -3119,7 +3123,9 @@
     "mediaUnitsImage": "{{count}} images",
     "mediaUnitsVideo": "{{count}} s of video",
     "videoSettlesOnDone": "Settles on completion",
-    "mediaUnpricedHint": "This media model has no upstream unit cost; set one on the model pricing page"
+    "mediaUnpricedHint": "This media model has no upstream unit cost; set one on the model pricing page",
+    "internalIntelligenceCheck": "Intelligence check",
+    "internalIntelligenceCheckTooltip": "Internal request using saved intelligence check settings"
   },
   "promptFilter": {
     "builtinRestored": "Built-in rule restored to defaults",
@@ -5696,6 +5702,8 @@
     "modelCooldownSecondsDesc": "Base model cooldown duration from 1 to 1800 seconds.",
     "modelCooldownBackoff": "Exponential backoff",
     "modelCooldownBackoffDesc": "Adaptive mode only. Repeated 429s extend the cooldown up to 30 minutes.",
+    "unsupportedModelCooldownSeconds": "Unsupported-model cooldown",
+    "unsupportedModelCooldownSecondsDesc": "When upstream answers \"model is not supported when using Codex with a ChatGPT account\", the account stops serving that model for this long. Other models and account health are unaffected. 0 disables it (the same request still fails over to other accounts); lowering or disabling it clears existing cooldowns longer than the new value. For mixed free/paid pools, prefer the per-account supported-model whitelist.",
     "claudeSettingsTitle": "ClaudeCode Global Config",
     "claudeSettingsDesc": "Controls the default Claude User-Agent and identity-header policy, timezone, and session window; accounts may override it.",
     "claudeClientPlatform": "Client platform",

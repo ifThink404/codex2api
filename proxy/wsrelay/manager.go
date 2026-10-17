@@ -38,6 +38,8 @@ type WsConnection struct {
 	upstreamUserAgent      string
 	upstreamUserAgentKnown bool
 	upstreamClientIdentity string
+	// 握手时发送的 Version 头，供上游"模型不支持"时判断是否为客户端版本闸。
+	upstreamVersion string
 
 	// 创建/复用该连接的账号。请求并发由调度层独立管理，
 	// response_id 复用按共享连接槽位预算收敛无绑定的空闲连接。
@@ -563,7 +565,7 @@ func (m *Manager) AcquireConnection(
 	proxyOverride string,
 ) (*WsConnection, *PendingRequest, error) {
 	kind := requestConnectionCapacityKind(ctx)
-	key := m.poolKey(account.ID(), wsURL, sessionKey, effectiveProxyURL(account, proxyOverride))
+	key := m.poolKey(account.ID(), wsURL, sessionKey, requestProxyKey(ctx, account, proxyOverride))
 	lock, releaseKeyLock := m.keyLock(key)
 	defer releaseKeyLock()
 	accountLock, releaseAccountLock := m.accountLock(account.ID())
@@ -717,7 +719,7 @@ func (m *Manager) tryAcquireBusyOverflow(
 	headers http.Header,
 	proxyOverride string,
 ) (*WsConnection, *PendingRequest, bool) {
-	proxyURL := effectiveProxyURL(account, proxyOverride)
+	proxyURL := requestProxyKey(ctx, account, proxyOverride)
 	kind := requestConnectionCapacityKind(ctx)
 	accountLimit := connectionLimit(kind)
 	accountLock, releaseAccountLock := m.accountLock(account.ID())
@@ -836,7 +838,7 @@ func (m *Manager) AcquireReusableConnection(
 	headers http.Header,
 	proxyOverride string,
 ) (*WsConnection, *PendingRequest, string, error) {
-	proxyURL := effectiveProxyURL(account, proxyOverride)
+	proxyURL := requestProxyKey(ctx, account, proxyOverride)
 	kind := requestConnectionCapacityKind(ctx)
 	accountLimit := connectionLimit(kind)
 	if slots < 1 || slots > statelessConnectionSlots() {
@@ -1303,7 +1305,7 @@ func (m *Manager) ReplaceConnection(
 	proxyOverride string,
 ) (*WsConnection, *PendingRequest, error) {
 	// 先移除旧连接
-	m.RemoveConnection(account.ID(), wsURL, sessionKey, effectiveProxyURL(account, proxyOverride))
+	m.RemoveConnection(account.ID(), wsURL, sessionKey, requestProxyKey(ctx, account, proxyOverride))
 
 	// 创建新连接
 	return m.AcquireConnection(ctx, account, wsURL, sessionKey, headers, proxyOverride)

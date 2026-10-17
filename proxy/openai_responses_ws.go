@@ -58,6 +58,9 @@ func prepareOpenAIResponsesWebsocketBody(body []byte) []byte {
 		return []byte(`{"type":"response.create","stream":true}`)
 	}
 	wsBody := stripResponsesImageGenerationTool(bytes.Clone(body))
+	// This pool owns one response lease per socket. Named ingress lanes are
+	// handled by the gateway; do not project their envelope into the provider.
+	wsBody, _ = sjson.DeleteBytes(wsBody, "stream_id")
 	wsBody, err := sjson.SetBytes(wsBody, "type", "response.create")
 	if err != nil {
 		return body
@@ -126,14 +129,19 @@ func executeOpenAIResponsesWebsocket(ctx context.Context, account *auth.Account,
 		return nil, err
 	}
 	body := prepareOpenAIResponsesWebsocketBody(requestBody)
+	boundProxy, accountBound := AccountBoundEgress(ctx)
+	if accountBound {
+		proxyURL = boundProxy
+	}
 	record := beginUpstreamTrace(ctx, account, proxyURL, true)
 	resp, err := openAIResponsesWebsocketPool.roundTrip(ctx, openAIResponsesWSSpec{
-		accountID: account.ID(),
-		baseURL:   strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		keyHash:   openAIResponsesWSKeyHash(apiKey),
-		proxyURL:  strings.TrimSpace(proxyURL),
-		wsURL:     wsURL,
-		headers:   headers,
+		accountID:    account.ID(),
+		accountBound: accountBound,
+		baseURL:      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		keyHash:      openAIResponsesWSKeyHash(apiKey),
+		proxyURL:     strings.TrimSpace(proxyURL),
+		wsURL:        wsURL,
+		headers:      headers,
 	}, body)
 	record(resp)
 	return resp, err
@@ -145,16 +153,21 @@ func openAIResponsesWSKeyHash(apiKey string) string {
 }
 
 type openAIResponsesWSSpec struct {
-	accountID int64
-	baseURL   string
-	keyHash   string
-	proxyURL  string
-	wsURL     string
-	headers   http.Header
+	accountBound bool
+	accountID    int64
+	baseURL      string
+	keyHash      string
+	proxyURL     string
+	wsURL        string
+	headers      http.Header
 }
 
 func (s openAIResponsesWSSpec) id() string {
-	return fmt.Sprintf("%d\n%s\n%s\n%s", s.accountID, s.baseURL, s.keyHash, s.proxyURL)
+	key := fmt.Sprintf("%d\n%s\n%s\n%s", s.accountID, s.baseURL, s.keyHash, s.proxyURL)
+	if s.accountBound {
+		key = "account-bound\n" + key
+	}
+	return key
 }
 
 type openAIResponsesWSConn struct {
@@ -393,6 +406,9 @@ func (p *openAIResponsesWSPool) dial(ctx context.Context, spec openAIResponsesWS
 		HandshakeTimeout:  30 * time.Second,
 		EnableCompression: true,
 		Proxy:             http.ProxyFromEnvironment,
+	}
+	if spec.accountBound {
+		dialer.Proxy = nil
 	}
 	if spec.proxyURL != "" {
 		if err := configureOpenAIResponsesWSProxy(dialer, spec.proxyURL); err != nil {

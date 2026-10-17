@@ -99,7 +99,7 @@ func writeAuditedResponsesWSError(ctx *gin.Context, conn *websocket.Conn, apiErr
 	if apiError != nil {
 		api.ObserveError(ctx, api.HTTPStatusCode(apiError.Code), apiError)
 	}
-	return writeResponsesWSError(conn, apiError)
+	return writeResponsesWSErrorForContext(ctx, conn, apiError)
 }
 
 // writeAuditedResponsesWSRecoveryError records a context-recovery error for the
@@ -108,7 +108,7 @@ func writeAuditedResponsesWSRecoveryError(ctx *gin.Context, conn *websocket.Conn
 	if apiError != nil {
 		api.ObserveError(ctx, api.HTTPStatusCode(apiError.Code), apiError)
 	}
-	return writeResponsesWSRecoveryError(conn, apiError)
+	return writeResponsesWSRecoveryErrorForContext(ctx, conn, apiError)
 }
 
 // resetServiceErrorFrame starts a new logical request on a WebSocket so each

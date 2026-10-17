@@ -22,7 +22,7 @@ import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
 import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexClientVersionSyncResult, CodexClientVersionTarget, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, LogAgentConfig, LogAgentConfigResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
-import { ANTIGRAVITY_DEFAULT_MODELS } from '../lib/antigravityModels'
+import { ANTIGRAVITY_DEFAULT_MODELS, isAntigravityDisabledModel } from '../lib/antigravityModels'
 import ChipInput from '../components/ChipInput'
 import { countPayloadRules, PAYLOAD_RULE_GROUPS } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
@@ -220,7 +220,7 @@ const RESPONSE_CACHE_BUDGET_KEYS = [
 const DEFAULT_CODEX_UA_CONFIG: Required<CodexUserAgentConfig> = {
   raw_user_agent: '',
   client_name: 'codex-tui',
-  client_version: '0.153.3',
+  client_version: '0.160.0',
   os_name: 'Mac OS',
   os_version: '15.5.0',
   arch: 'arm64',
@@ -866,7 +866,9 @@ function ChannelConnectivityTestCard({ channel }: { channel: 'antigravity' | 'cl
     const list = current && !base.includes(current) ? [current, ...base] : base
     return [
       { value: '', label: t('settings.channelTest.autoModel') },
-      ...list.map((model) => ({ value: model, label: model })),
+      ...list
+        .filter((model) => channel !== 'antigravity' || !isAntigravityDisabledModel(model))
+        .map((model) => ({ value: model, label: model })),
     ]
   }, [catalogChoices, channel, settings?.test_model, t])
 
@@ -880,7 +882,7 @@ function ChannelConnectivityTestCard({ channel }: { channel: 'antigravity' | 'cl
         <div className={SETTINGS_FIELD_GRID}>
           <SettingField label={t('settings.testModelLabel')} description={t('settings.channelTest.modelHint')}>
             <Select
-              value={settings?.test_model ?? ''}
+              value={channel === 'antigravity' && isAntigravityDisabledModel(settings?.test_model ?? '') ? '' : settings?.test_model ?? ''}
               onValueChange={(value) => void save({ test_model: value })}
               options={modelChoices}
               disabled={settings === null || saving}
@@ -2655,6 +2657,7 @@ export default function Settings() {
     oauth_model_cooldown_mode: 'adaptive',
     oauth_model_cooldown_seconds: 300,
     oauth_model_cooldown_backoff_enabled: true,
+    oauth_unsupported_model_cooldown_seconds: 1800,
     model_mapping: '{}',
     codex_model_mapping: '{}',
     payload_rules: '{}',
@@ -2680,7 +2683,7 @@ export default function Settings() {
     prompt_filter_review_timeout_seconds: 10,
     prompt_filter_review_fail_closed: true,
     client_compat_mode: 'preserve',
-    codex_min_cli_version: '0.153.3',
+    codex_min_cli_version: '0.160.0',
     codex_images_main_model: '',
     codex_cli_version_sync_enabled: true,
     codex_cli_version_sync_interval_hours: 12,
@@ -4786,7 +4789,7 @@ export default function Settings() {
                         <Input
                           className="font-mono text-xs"
                           value={codexUserAgentConfig.raw_user_agent ?? ''}
-                          placeholder="codex-tui/0.153.3 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.153.3)"
+                          placeholder="codex-tui/0.160.0 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.160.0)"
                           onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ raw_user_agent: e.target.value })}
                           onBlur={saveCodexUserAgentConfig}
                         />
@@ -5977,6 +5980,19 @@ export default function Settings() {
                         checked={settingsForm.oauth_model_cooldown_backoff_enabled}
                         disabled={settingsForm.oauth_model_cooldown_mode !== 'adaptive'}
                         onCheckedChange={(checked) => autoSaveBooleanField('oauth_model_cooldown_backoff_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.unsupportedModelCooldownSeconds')}
+                      description={t('settings.unsupportedModelCooldownSecondsDesc')}
+                      suffix={t('settings.unit.sec')}
+                    >
+                      <DraftNumberInput
+                        min={0}
+                        max={1800}
+                        value={settingsForm.oauth_unsupported_model_cooldown_seconds}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, oauth_unsupported_model_cooldown_seconds: value }))}
+                        onValueCommit={(value) => void autoSaveSettingsPatch({ oauth_unsupported_model_cooldown_seconds: value })}
                       />
                     </SettingField>
                   </div>

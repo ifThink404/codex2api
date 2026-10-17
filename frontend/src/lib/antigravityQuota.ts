@@ -6,6 +6,7 @@ import type {
   AntigravityQuotaGroup,
   AntigravityQuotaSnapshot,
 } from "../types";
+import { antigravityDisplayCatalogModels, isAntigravityDisabledModel } from "./antigravityModels.ts";
 
 // Antigravity 账号页的纯数据工具:额度快照解析、配额组摘要、身份字段兜底。
 // 上游快照历经多版字段名(snake/camel、groups/quota_groups、models 数组/对象),
@@ -49,24 +50,41 @@ export function quotaDisplayName(model: string, info: AntigravityModelQuota): st
 
 export function modelQuotaEntries(
   quota?: AntigravityQuotaSnapshot | null,
+  catalogModels: readonly string[] = [],
 ): Array<[string, AntigravityModelQuota]> {
-  if (!quota?.models) return [];
-  if (Array.isArray(quota.models)) {
-    return quota.models.map((info, index) => {
+  let entries: Array<[string, AntigravityModelQuota]> = [];
+  if (Array.isArray(quota?.models)) {
+    entries = quota.models.map((info, index) => {
       const record = toRecord(info);
       const model =
         firstString(record, ["model", "model_id", "modelId", "name", "id"]) ||
         `model-${index + 1}`;
       return [model, info];
     });
+  } else if (quota?.models) {
+    entries = Object.entries(quota.models);
   }
-  return Object.entries(quota.models);
+  const catalog = antigravityDisplayCatalogModels(catalogModels, quota);
+  const currentCatalog = new Set(catalog.map((model) => model.toLowerCase()));
+  const authoritativeCatalog = Array.isArray(quota?.catalog_model_ids);
+  entries = entries.filter(([model]) => authoritativeCatalog
+    ? currentCatalog.has(model.toLowerCase())
+    : catalogModels.length === 0 || !isAntigravityDisabledModel(model) || currentCatalog.has(model.toLowerCase()));
+  const seen = new Set(entries.map(([model]) => model.toLowerCase()));
+  for (const model of catalog) {
+    if (!seen.has(model.toLowerCase())) {
+      entries.push([model, { model_id: model }]);
+      seen.add(model.toLowerCase());
+    }
+  }
+  return entries;
 }
 
 export function sortedModelQuotaEntries(
   quota?: AntigravityQuotaSnapshot | null,
+  catalogModels: readonly string[] = [],
 ): Array<[string, AntigravityModelQuota]> {
-  return modelQuotaEntries(quota).sort(([leftName, left], [rightName, right]) => {
+  return modelQuotaEntries(quota, catalogModels).sort(([leftName, left], [rightName, right]) => {
     if (Boolean(left.recommended) !== Boolean(right.recommended)) {
       return left.recommended ? -1 : 1;
     }

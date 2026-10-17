@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,6 +73,19 @@ type updateAntigravityAccountRequest struct {
 	ModelMapping *string         `json:"model_mapping"`
 	ProxyURL     *string         `json:"proxy_url"`
 	GroupIDs     json.RawMessage `json:"group_ids"`
+	// UserProjectID sets (or clears with "") the caller-owned Google Cloud
+	// project used by Workspace / enterprise OAuth accounts.
+	UserProjectID *string `json:"user_project_id"`
+}
+
+var antigravityUserProjectIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.:-]{2,127}$`)
+
+func normalizeAntigravityUserProjectID(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value != "" && !antigravityUserProjectIDPattern.MatchString(value) {
+		return "", errors.New("GCP 项目 ID 格式无效")
+	}
+	return value, nil
 }
 
 // antigravityModelsForPersistence keeps the durable account catalog in the
@@ -92,7 +106,7 @@ func antigravityModelsForPersistence(models []string) []string {
 }
 
 func antigravityPublishedModels(rawModels []string) []string {
-	return proxy.AntigravityPublishedModelIDs(auth.NormalizeAccountModels(rawModels))
+	return proxy.AntigravityAdminModelIDs(auth.NormalizeAccountModels(rawModels))
 }
 
 func antigravityPublishedModelsOrDefault(rawModels []string) []string {
@@ -126,9 +140,9 @@ func antigravityPublishedModelForObservation(model string, publishedModels []str
 	return "", false
 }
 
-// antigravityPublishedQuota clones a persisted raw quota snapshot into the
-// public model namespace. A logical model may be backed by several provider
-// wire models, but the admin response exposes exactly one quota entry for it.
+// antigravityPublishedQuota projects persisted quota into the admin catalog.
+// Disabled placeholders remain visible, but a catalog-only model never gains
+// an invented quota entry. Explicit provider-internal IDs stay hidden.
 func antigravityPublishedQuota(raw auth.AntigravityQuotaSnapshot) auth.AntigravityQuotaSnapshot {
 	projected := raw
 	projected.CatalogModelIDs = antigravityPublishedModels(auth.AntigravityDiscoveredModels(raw))
@@ -140,9 +154,13 @@ func antigravityPublishedQuota(raw auth.AntigravityQuotaSnapshot) auth.Antigravi
 
 	rawModels := make([]string, 0, len(raw.Models))
 	byWireID := make(map[string]auth.AntigravityModelQuota, len(raw.Models))
+	internal := make(map[string]bool, len(raw.InternalModelIDs))
+	for _, model := range raw.InternalModelIDs {
+		internal[strings.ToLower(strings.TrimSpace(model))] = true
+	}
 	for _, model := range raw.Models {
 		wireID := strings.ToLower(strings.TrimSpace(model.ModelID))
-		if wireID == "" {
+		if wireID == "" || internal[wireID] {
 			continue
 		}
 		rawModels = append(rawModels, wireID)
@@ -797,6 +815,14 @@ func (h *Handler) UpdateAntigravityAccount(c *gin.Context) {
 		}
 		req.ProxyURL = &value
 	}
+	if req.UserProjectID != nil {
+		value, projectErr := normalizeAntigravityUserProjectID(*req.UserProjectID)
+		if projectErr != nil {
+			writeError(c, http.StatusBadRequest, projectErr.Error())
+			return
+		}
+		req.UserProjectID = &value
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 120*time.Second)
 	defer cancel()
 	row, err := h.db.GetAccountByID(ctx, id)
@@ -832,6 +858,11 @@ func (h *Handler) UpdateAntigravityAccount(c *gin.Context) {
 	var syncResult auth.AntigravitySyncResult
 	credentialsChanged := false
 	accessWarning := ""
+	userProjectID := row.GetCredential(auth.AntigravityUserProjectIDCredentialKey)
+	userProjectChanged := req.UserProjectID != nil && *req.UserProjectID != userProjectID
+	if userProjectChanged {
+		userProjectID = *req.UserProjectID
+	}
 	if strings.TrimSpace(req.AuthJSON) != "" {
 		var effectiveGroupIDs []int64
 		if groupUpdate.Set {
@@ -867,6 +898,7 @@ func (h *Handler) UpdateAntigravityAccount(c *gin.Context) {
 		}
 		parsed[0].ProjectID = ""
 		parsed[0].IDToken = ""
+		parsed[0].UserProjectID = userProjectID
 		client, clientErr := auth.NewAntigravityClient(effectiveProxyURL)
 		if clientErr != nil {
 			writeError(c, http.StatusBadRequest, clientErr.Error())
@@ -917,6 +949,10 @@ func (h *Handler) UpdateAntigravityAccount(c *gin.Context) {
 			return
 		}
 		updates["credential_family_id"] = familyID
+		if userProjectChanged {
+			updates[auth.AntigravityUserProjectIDCredentialKey] = userProjectID
+			userProjectChanged = false
+		}
 
 		h.mergeDuplicateMu.Lock()
 		rows, listErr := h.db.ListActiveByChannel(ctx, database.UpstreamChannelAntigravity)
@@ -996,8 +1032,26 @@ func (h *Handler) UpdateAntigravityAccount(c *gin.Context) {
 		}
 		runtimeMutationPersisted = true
 	}
+	if userProjectChanged {
+		if err := h.db.UpdateCredentials(ctx, id, map[string]interface{}{auth.AntigravityUserProjectIDCredentialKey: userProjectID}); err != nil {
+			reloadAfterPartialMutation()
+			writeInternalError(c, err)
+			return
+		}
+		runtimeMutationPersisted = true
+	}
 	warning := appendAntigravityWarning(syncResult.Warning, accessWarning)
-	if err := h.reloadAntigravityRuntimeAccount(ctx, id); err != nil {
+	if userProjectChanged {
+		// The project only takes effect through loadCodeAssist/onboardUser, so
+		// re-run the identity sync now instead of waiting for the next refresh.
+		// refreshAntigravityAccount reloads the runtime account itself.
+		item := h.refreshAntigravityAccount(ctx, id)
+		if item.OK {
+			warning = appendAntigravityWarning(warning, item.Warning)
+		} else {
+			warning = appendAntigravityWarning(warning, "GCP 项目 ID 已保存，但重新同步失败: "+item.Error)
+		}
+	} else if err := h.reloadAntigravityRuntimeAccount(ctx, id); err != nil {
 		log.Printf("重载 Antigravity 账号 %d 运行时状态失败: %v", id, err)
 		warning = appendAntigravityWarning(warning, "运行时重载失败: "+err.Error())
 	}
@@ -2211,7 +2265,7 @@ func antigravityCredentialFromRow(row *database.AccountRow) auth.AntigravityCred
 		AvatarURL: row.GetCredential("avatar_url"), ProjectID: row.GetCredential("project_id"),
 		OAuthClientKey: row.GetCredential("oauth_client_key"),
 		ClientID:       row.GetCredential("antigravity_client_id"), ClientSecret: row.GetCredential("antigravity_client_secret"),
-		Scope: row.GetCredential("oauth_scope"),
+		Scope: row.GetCredential("oauth_scope"), UserProjectID: row.GetCredential(auth.AntigravityUserProjectIDCredentialKey),
 	}
 	if raw := strings.TrimSpace(row.GetCredential("expires_at")); raw != "" {
 		credential.ExpiresAt, _ = time.Parse(time.RFC3339, raw)

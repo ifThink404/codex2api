@@ -45,6 +45,16 @@ Run it as a full **PostgreSQL + Redis** production stack or as a single-containe
 </p>
 
 <p align="center">
+  <a href="https://www.rapidproxy.io/?ref=codex2api"><img src="assets/rapidproxy-banner.png" alt="RapidProxy 代理 IP：动态住宅 $0.55/GB 起，静态住宅 $5/IP/月" width="100%"></a>
+</p>
+
+<p align="center">
+  <b><a href="https://www.rapidproxy.io/?ref=codex2api">RapidProxy</a></b> 为开发者和企业提供高性能代理 IP 服务，覆盖全球 200+ 国家和地区的 9000 万+ 住宅 IP，支持智能轮换、精准地理定位、流量永不过期及高并发连接。<br>
+  广泛适用于网页采集、AI 数据获取、SEO 监控和电商分析，支持 HTTP / HTTPS / SOCKS5 协议。<br>
+  支持免费试用，九折优惠码：<code>RAPID10</code>
+</p>
+
+<p align="center">
   <a href="https://www.ipwo.net/?ref=githubcodex2api"><img src="assets/ipwo-banner.webp" alt="IPWO 住宅代理" width="100%"></a>
 </p>
 
@@ -310,6 +320,7 @@ Each successful budget change receives a read-only generation and is polled by e
 - Admin Secret priority:
   - If `ADMIN_SECRET` is set in `.env`, the environment variable wins.
   - Otherwise, the database `AdminSecret` value is used.
+  - If neither is set, `/admin` opens the first-run setup page. It requires the one-time bootstrap token printed in the service log (`docker compose logs codex2api | grep "bootstrap token"`); the token is per-process, regenerated on restart, and revoked once setup succeeds.
   - After login, the frontend sends `X-Admin-Key` when calling `/api/admin/*`.
 
 ---

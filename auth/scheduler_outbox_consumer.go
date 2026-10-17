@@ -361,6 +361,11 @@ func (s *Store) reloadDispatchAccountsByIDs(ctx context.Context, accountIDs []in
 		return nil
 	}
 
+	var pauseErr error
+	ctx, pauseErr = s.withIntelligencePauses(ctx)
+	if pauseErr != nil {
+		return pauseErr
+	}
 	rows, err := s.db.ListActiveByIDs(ctx, ids)
 	if err != nil {
 		return err
@@ -604,6 +609,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	} else {
 		atomic.StoreInt32(&dst.Locked, 0)
 	}
+	atomic.StoreInt32(&dst.IntelligencePaused, atomic.LoadInt32(&src.IntelligencePaused))
 	if enabled {
 		atomic.StoreInt32(&dst.DispatchPaused, 0)
 	} else {

@@ -387,7 +387,7 @@ func TestAcquireConnectionKeepsActualHandshakeUserAgentWhenReused(t *testing.T) 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
 	first, pending, err := manager.AcquireConnection(
-		context.Background(), account, wsURL, "session-ua", http.Header{"User-Agent": []string{"codex-first/1.0"}}, "",
+		context.Background(), account, wsURL, "session-ua", http.Header{"User-Agent": []string{"codex-first/1.0"}, "Version": []string{"0.159.0"}}, "",
 	)
 	if err != nil {
 		t.Fatalf("first AcquireConnection error = %v", err)
@@ -405,7 +405,7 @@ func TestAcquireConnectionKeepsActualHandshakeUserAgentWhenReused(t *testing.T) 
 	manager.ReleaseConnection(first)
 
 	reused, pending, err := manager.AcquireConnection(
-		context.Background(), account, wsURL, "session-ua", http.Header{"User-Agent": []string{"codex-new-setting/2.0"}}, "",
+		context.Background(), account, wsURL, "session-ua", http.Header{"User-Agent": []string{"codex-new-setting/2.0"}, "Version": []string{"0.160.0"}}, "",
 	)
 	if err != nil {
 		t.Fatalf("second AcquireConnection error = %v", err)
@@ -423,6 +423,9 @@ func TestAcquireConnectionKeepsActualHandshakeUserAgentWhenReused(t *testing.T) 
 	}
 	if got := reused.upstreamUserAgent; got != "codex-first/1.0" {
 		t.Fatalf("reused connection User-Agent = %q, want original handshake value", got)
+	}
+	if got := reused.upstreamVersion; got != "0.159.0" {
+		t.Fatalf("reused connection Version = %q, want original handshake value", got)
 	}
 }
 

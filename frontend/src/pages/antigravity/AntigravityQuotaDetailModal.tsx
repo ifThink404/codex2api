@@ -38,7 +38,7 @@ export default function AntigravityQuotaDetailModal({
 }) {
   const { t } = useTranslation();
   const isAPIKey = account?.antigravity_auth_kind === "api_key";
-  const modelCount = account ? modelQuotaEntries(account.antigravity_quota).length : 0;
+  const modelCount = account ? modelQuotaEntries(account.antigravity_quota, account.models).length : 0;
   const updatedAt = account ? quotaUpdatedAt(account.antigravity_quota) : "";
 
   return (

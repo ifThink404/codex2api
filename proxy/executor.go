@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/proxy/internal/jsonbody"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -217,7 +218,14 @@ func shouldRecyclePooledClient(err error) bool {
 }
 
 func recyclePooledClient(account *auth.Account, proxyURL string) {
+	recyclePooledClientForRoute(account, proxyURL, false)
+}
+
+func recyclePooledClientForRoute(account *auth.Account, proxyURL string, accountBound bool) {
 	key := clientPoolKey(account, proxyURL, codexTransportModeFromEnv())
+	if accountBound {
+		key = "account-bound|" + key
+	}
 	if v, ok := clientPool.LoadAndDelete(key); ok {
 		releaseEvictedClient(v.(*poolEntry).client)
 	}
@@ -317,15 +325,27 @@ func logCodexFingerprintDebug(kind string, account *auth.Account, proxyURL strin
 
 // getPooledClient 获取或创建连接池中的 HTTP Client（按账号隔离，TTL 自动淘汰）
 func getPooledClient(account *auth.Account, proxyURL string) *http.Client {
+	return getPooledClientForRoute(account, proxyURL, false)
+}
+
+func getPooledClientForRoute(account *auth.Account, proxyURL string, accountBound bool) *http.Client {
 	transportMode := codexTransportModeFromEnv()
 	key := clientPoolKey(account, proxyURL, transportMode)
+	if accountBound {
+		key = "account-bound|" + key
+	}
 	if v, ok := clientPool.Load(key); ok {
 		entry := v.(*poolEntry)
 		entry.touch()
 		return entry.client
 	}
 
-	transport := newCodexTransport(proxyURL)
+	var transport http.RoundTripper
+	if accountBound {
+		transport = newAccountBoundTransport(proxyURL)
+	} else {
+		transport = newCodexTransport(proxyURL)
+	}
 
 	entry := &poolEntry{
 		createdAt: time.Now().UnixNano(),
@@ -400,17 +420,15 @@ func prepareCodexResponsesLiteTransport(requestBody []byte, headers http.Header,
 			if err == nil {
 				requestBody = updated
 			}
-		} else if updated, err := sjson.DeleteBytes(requestBody, codexResponsesLiteWSMetadataPath); err == nil {
+		} else {
 			// 信号被模型门禁剥离（或下游标记非 true）时，清掉体内残留标记，
 			// 避免不支持 lite 的模型把标记带上 WS 上游触发 400。
-			requestBody = updated
+			requestBody = jsonbody.DeletePath(requestBody, codexResponsesLiteWSMetadataPath)
 		}
 		return requestBody, forwardHeaders
 	}
 
-	if updated, err := sjson.DeleteBytes(requestBody, codexResponsesLiteWSMetadataPath); err == nil {
-		requestBody = updated
-	}
+	requestBody = jsonbody.DeletePath(requestBody, codexResponsesLiteWSMetadataPath)
 	if enabled {
 		if !headersCloned {
 			forwardHeaders = headers.Clone()
@@ -651,6 +669,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if proxyOverride != "" {
 		proxyURL = proxyOverride
 	}
+	proxyURL = requestProxyURL(ctx, proxyURL)
 
 	isAgentIdentity := account.IsCodexAgentIdentity()
 	// Agent Identity 无 access_token，鉴权靠 AgentAssertion；请求前确保 task 已注册。
@@ -673,24 +692,25 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	}
 
 	// 2. 清理可能导致上游报错的多余字段
-	requestBody, _ = sjson.DeleteBytes(requestBody, "previous_response_id")
+	requestBody = jsonbody.DeletePath(requestBody, "previous_response_id")
 	// 注意：HTTP /responses 上游不接受 prompt_cache_retention（会 400），必须删除；
 	// 该字段的 cache 收益只在 WS 路径注入（见 wsrelay 的 prepareWebsocketBody）。
-	requestBody, _ = sjson.DeleteBytes(requestBody, "prompt_cache_retention")
-	requestBody, _ = sjson.DeleteBytes(requestBody, "safety_identifier")
-	requestBody, _ = sjson.DeleteBytes(requestBody, "disable_response_storage")
+	requestBody = jsonbody.DeletePath(requestBody, "prompt_cache_retention")
+	requestBody = jsonbody.DeletePath(requestBody, "safety_identifier")
+	requestBody = jsonbody.DeletePath(requestBody, "disable_response_storage")
 	// 顶层 type 是 Responses WS 事件信封字段（response.create），native WS ingress 的
 	// 1009 降级、生图强制 HTTP、Agent Identity 强制 HTTP 都会复用带信封的 body，而
 	// HTTP /responses 上游不接受它（400 Unsupported parameter: type）。此处为出站
 	// 收口兜底；sjson 只删顶层路径，input[] 等嵌套 type 不受影响（issue #548）。
-	requestBody, _ = sjson.DeleteBytes(requestBody, "type")
+	requestBody = jsonbody.DeletePath(requestBody, "type")
+	requestBody = jsonbody.DeletePath(requestBody, "stream_id")
 
 	// 3. 注入 prompt_cache_key（如果请求体中没有，且 sessionID 不为空）
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
 	if sessionID != "" {
 		cacheKey = sessionID
-		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
+		requestBody = jsonbody.SetString(requestBody, "prompt_cache_key", cacheKey)
 	}
 
 	endpoint := CodexBaseURL + "/responses"
@@ -784,7 +804,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		resp, err := doTracedUpstreamRequest(client, req, account, proxyURL)
 		if err != nil {
 			if shouldRecyclePooledClient(err) {
-				recyclePooledClient(account, proxyURL)
+				recycleRequestClient(ctx, account, proxyURL)
 			}
 			return nil, ErrUpstream(0, "请求上游失败", err)
 		}
@@ -832,6 +852,7 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	if proxyOverride != "" {
 		proxyURL = proxyOverride
 	}
+	proxyURL = requestProxyURL(ctx, proxyURL)
 	if baseURL == "" || apiKey == "" {
 		return nil, ErrNoAvailableAccount()
 	}
@@ -856,8 +877,12 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	if openAIResponsesRelayUsesUpstreamWebsocket(account, requestBody) {
 		return executeOpenAIResponsesWebsocket(ctx, account, requestBody, proxyURL, headers, baseURL, apiKey)
 	}
+	// stream_id belongs to the WebSocket envelope, including when an ingress
+	// lane falls back to HTTP. Keep nested tool/input IDs untouched.
+	requestBody = jsonbody.DeletePath(requestBody, "type")
+	requestBody = jsonbody.DeletePath(requestBody, "stream_id")
 
-	client := getPooledClient(account, proxyURL)
+	client := getRequestClient(ctx, account, proxyURL)
 	send := func(body []byte) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
@@ -872,7 +897,7 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 		resp, err := doTracedUpstreamRequest(client, req, account, proxyURL)
 		if err != nil {
 			if shouldRecyclePooledClient(err) {
-				recyclePooledClient(account, proxyURL)
+				recycleRequestClient(ctx, account, proxyURL)
 			}
 			return nil, ErrUpstream(0, "请求 OpenAI Responses API 失败", err)
 		}
@@ -1058,6 +1083,8 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 	}
 
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses/compact")
+	requestBody = jsonbody.DeletePath(requestBody, "type")
+	requestBody = jsonbody.DeletePath(requestBody, "stream_id")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
 	if err != nil {
 		return nil, ErrInternalError("创建请求失败", err)
@@ -1115,13 +1142,14 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	if !gjson.GetBytes(requestBody, "instructions").Exists() {
 		requestBody, _ = sjson.SetBytes(requestBody, "instructions", "")
 	}
-	requestBody, _ = sjson.DeleteBytes(requestBody, "previous_response_id")
+	requestBody = jsonbody.DeletePath(requestBody, "previous_response_id")
 	// compact 端点同样走 HTTP，不接受 prompt_cache_retention，必须删除。
-	requestBody, _ = sjson.DeleteBytes(requestBody, "prompt_cache_retention")
-	requestBody, _ = sjson.DeleteBytes(requestBody, "safety_identifier")
-	requestBody, _ = sjson.DeleteBytes(requestBody, "disable_response_storage")
+	requestBody = jsonbody.DeletePath(requestBody, "prompt_cache_retention")
+	requestBody = jsonbody.DeletePath(requestBody, "safety_identifier")
+	requestBody = jsonbody.DeletePath(requestBody, "disable_response_storage")
 	// 顶层 type 是 WS 事件信封字段，compact HTTP 端点同样不接受，兜底删除(issue #548)。
-	requestBody, _ = sjson.DeleteBytes(requestBody, "type")
+	requestBody = jsonbody.DeletePath(requestBody, "type")
+	requestBody = jsonbody.DeletePath(requestBody, "stream_id")
 	requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, false, responsesLite)
 	// 指纹收敛：与 ExecuteRequest 同样在请求体定稿后、构造出站请求前改写
 	// client_metadata。漏掉这一步会让 compact 路径只收敛请求头、请求体仍带客户端
@@ -1136,7 +1164,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	cacheKey := existingCacheKey
 	if sessionID != "" {
 		cacheKey = sessionID
-		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
+		requestBody = jsonbody.SetString(requestBody, "prompt_cache_key", cacheKey)
 	}
 
 	// compact 端点

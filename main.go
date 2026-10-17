@@ -113,7 +113,7 @@ func main() {
 			PromptFilterCustomPatterns:        "[]",
 			PromptFilterDisabledPatterns:      "[]",
 			ClientCompatMode:                  proxy.ClientCompatModePreserve,
-			CodexMinCLIVersion:                "0.153.3",
+			CodexMinCLIVersion:                "0.160.0",
 			UsageLogMode:                      database.UsageLogModeFull,
 			UsageLogBatchSize:                 200,
 			UsageLogFlushIntervalSeconds:      5,
@@ -129,6 +129,8 @@ func main() {
 			CodexWSHideUpstreamErrors:         true,
 			CodexWSSilentRetryEnabled:         true,
 			CodexWSSilentMaxRetries:           2,
+			CodexWSStatelessSlots:             proxy.DefaultRuntimeSettings().CodexWSStatelessSlots,
+			CodexWSDownstreamKeepaliveSlots:   database.DefaultCodexWSDownstreamKeepaliveSlots,
 			CodexContinueMaxRounds:            8,
 			AutoPause5hGuardBandPercent:       5,
 			AutoPause5hGuardConcurrency:       1,
@@ -168,7 +170,7 @@ func main() {
 			PromptFilterCustomPatterns:        "[]",
 			PromptFilterDisabledPatterns:      "[]",
 			ClientCompatMode:                  proxy.ClientCompatModePreserve,
-			CodexMinCLIVersion:                "0.153.3",
+			CodexMinCLIVersion:                "0.160.0",
 			UsageLogMode:                      database.UsageLogModeFull,
 			UsageLogBatchSize:                 200,
 			UsageLogFlushIntervalSeconds:      5,
@@ -184,6 +186,8 @@ func main() {
 			CodexWSHideUpstreamErrors:         true,
 			CodexWSSilentRetryEnabled:         true,
 			CodexWSSilentMaxRetries:           2,
+			CodexWSStatelessSlots:             proxy.DefaultRuntimeSettings().CodexWSStatelessSlots,
+			CodexWSDownstreamKeepaliveSlots:   database.DefaultCodexWSDownstreamKeepaliveSlots,
 			CodexContinueMaxRounds:            8,
 			AutoPause5hGuardBandPercent:       5,
 			AutoPause5hGuardConcurrency:       1,
@@ -211,6 +215,8 @@ func main() {
 	settings.OAuthModelCooldownMode = modelCooldownSettings.OAuthMode
 	settings.OAuthModelCooldownSeconds = modelCooldownSettings.OAuthSeconds
 	settings.OAuthModelCooldownBackoffEnabled = modelCooldownSettings.OAuthBackoffEnabled
+	settings.OAuthUnsupportedModelCooldownDisabled = modelCooldownSettings.OAuthUnsupportedDisabled
+	settings.OAuthUnsupportedModelCooldownSeconds = modelCooldownSettings.OAuthUnsupportedSeconds
 	if envPolicy := strings.TrimSpace(os.Getenv("CODEX_BILLING_TIER_POLICY")); envPolicy != "" {
 		settings.BillingTierPolicy = proxy.NormalizeBillingTierPolicy(envPolicy)
 	}
@@ -398,6 +404,12 @@ func main() {
 	// Responses API 渠道监控按账号启用，健康检查和倍率探测分别调度。
 	adminHandler.StartChannelMonitor(backgroundCtx)
 
+	// 版本闸与套餐闸上游同文案：版本抬升后旧版本下学到的模型不支持冷却作废（issue #793）。
+	proxy.OnCodexClientVersionRaised(func() {
+		if cleared := store.ClearModelCooldownsByReason(auth.ModelCooldownReasonUnsupported, 0); cleared > 0 {
+			log.Printf("Codex 客户端版本已抬升，清除 %d 条模型不支持冷却", cleared)
+		}
+	})
 	// 后台定时同步 Codex CLI 模拟版本（启动即拉一次，之后按设置的间隔）；
 	// 出上游新版本门槛时无需发版即可跟进。开关/间隔在设置页可调，
 	// CODEX_DISABLE_CLI_VERSION_SYNC 为硬关闭。
@@ -489,6 +501,7 @@ func main() {
 		log.Fatalf("Initialize image maintenance: %v", err)
 	}
 	adminHandler.StartPromptIntelligence(backgroundCtx)
+	adminHandler.StartIntelligenceChecks(backgroundCtx, deviceCfg)
 	adminHandler.RegisterRoutes(r)
 
 	// 管理后台前端静态文件
@@ -693,6 +706,7 @@ func main() {
 	adminHandler.WaitAutoResetCredits()
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
+	adminHandler.WaitIntelligenceChecks()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()
 	if !proxy.DrainResponseCacheBackendWrites(2 * time.Second) {
@@ -804,6 +818,10 @@ func printSecurityBanner(db *database.DB, cfg *config.Config, settings *database
 		log.Println("⚠ 尚未配置 ADMIN_SECRET（环境变量与数据库均为空）。")
 		log.Printf("  请使用浏览器访问管理台 http://%s:%d/admin/ 完成首次初始化，", bannerDisplayHost(bind), cfg.Port)
 		log.Println("  设置一个强随机的管理密钥；该密钥也将作为登录密钥。")
+		log.Println("  初始化页面需要填写下面的一次性令牌，以证明操作者能读到本服务日志：")
+		if _, err := admin.EnsureBootstrapToken(); err != nil {
+			log.Printf("  生成初始化令牌失败: %v", err)
+		}
 		log.Println("  在初始化完成之前，所有 /api/admin/* 接口（除初始化端点外）均返回 503。")
 	case envSecret != "":
 		log.Println("✓ ADMIN_SECRET 来源：环境变量 (.env)")

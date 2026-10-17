@@ -11,6 +11,7 @@ import {
   normalizeFraction,
   parseModelList,
   parseRefreshTokenLines,
+  quotaRemaining,
   quotaWindowKey,
   shortQuotaGroupLabel,
   summarizeQuotaGroups,
@@ -88,6 +89,54 @@ test('model entries accept array and object shapes and report the lowest remaini
     ['gemini-2.5-pro'],
   )
   assert.equal(lowestModelRemaining(undefined), null)
+})
+
+test('current catalogs show disabled and ordinary models with unknown quota without restoring stale account models', () => {
+  const disabled = 'gemini-4-argon-disabled'
+  const active = 'gemini-3.8-flash-low'
+  const entries = modelQuotaEntries({
+    models: [{ model_id: active, remaining_fraction: 0.5 }],
+    catalog_model_ids: [active, disabled, disabled, 'gemini-4-current-high'],
+  }, ['gemini-2.5-pro'])
+  assert.deepEqual(entries.map(([model]) => model), [active, disabled, 'gemini-4-current-high'])
+  assert.equal(quotaRemaining(entries[1][1]), null)
+  assert.equal(quotaRemaining(entries[2][1]), null)
+  assert.deepEqual(modelQuotaEntries(undefined, [disabled, 'gemini-2.5-pro']).map(([model]) => model), [disabled])
+})
+
+test('disabled quota entries are not duplicated and preserve reported metadata', () => {
+  const disabled = 'gemini-4-argon-disabled'
+  const info = { display_name: 'Gemini 4 Argon', remaining_fraction: 0.25 }
+  assert.deepEqual(modelQuotaEntries({
+    models: { [disabled]: info },
+    catalog_model_ids: [disabled],
+  }), [[disabled, info]])
+})
+
+test('refreshed catalog removes an old disabled row instead of keeping a sticky disabled state', () => {
+  const disabled = 'gemini-4-argon-disabled'
+  const restored = 'gemini-4-argon-high'
+  const entries = modelQuotaEntries({
+    models: [{ model_id: disabled }, { model_id: restored, remaining_fraction: 1 }],
+    catalog_model_ids: [restored],
+  }, [disabled])
+  assert.deepEqual(entries.map(([model]) => model), [restored])
+  assert.equal(quotaRemaining(entries[0][1]), 1)
+})
+
+test('restored catalog model is visible immediately even before quota arrives', () => {
+  const disabled = 'gemini-4-argon-disabled'
+  const restored = 'gemini-4-argon-high'
+  const entries = modelQuotaEntries({ models: [], catalog_model_ids: [restored] }, [disabled])
+  assert.deepEqual(entries.map(([model]) => model), [restored])
+  assert.equal(quotaRemaining(entries[0][1]), null)
+})
+
+test('authoritative empty catalogs remove stale model rows', () => {
+  assert.deepEqual(modelQuotaEntries({
+    models: [{ model_id: 'stale-model', remaining_fraction: 1 }],
+    catalog_model_ids: [],
+  }), [])
 })
 
 test('fractions accept percentages and clamp out-of-range values', () => {

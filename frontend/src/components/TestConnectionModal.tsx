@@ -38,7 +38,7 @@ import {
   isConnectionTestModel,
   uniqueTestModels,
 } from "../lib/connectionTestModels";
-import { orderAntigravityTestModels } from "../lib/antigravityModels";
+import { isAntigravityDisabledModel, orderAntigravityTestModels, resolveAntigravityTestModelSelection } from "../lib/antigravityModels";
 import { grokConnectionTestModels } from "../lib/grokModelDisplay";
 import { cn } from "@/lib/utils";
 import { useToast } from "../hooks/useToast";
@@ -156,7 +156,10 @@ export default function TestConnectionModal({
         modelOptions,
         isAntigravityAccount && !modelOptions.includes(selectedModel) ? undefined : selectedModel,
         !isOpenAIResponsesAccount && !isClaudeAccount && !isAntigravityAccount,
-      ).map((item) => ({ label: item, value: item })),
+      ).filter((item) => !isAntigravityAccount || !isAntigravityDisabledModel(item)).map((item) => ({
+        label: item,
+        value: item,
+      })),
     [isAntigravityAccount, isClaudeAccount, isOpenAIResponsesAccount, modelOptions, selectedModel],
   );
 
@@ -178,7 +181,7 @@ export default function TestConnectionModal({
           if (!active) return;
           const ordered = orderAntigravityTestModels(account.models ?? [], preferred, account.antigravity_quota);
           setModelOptions(ordered);
-          setSelectedModel((current) => ordered.includes(current) ? current : ordered[0] || "");
+          setSelectedModel((current) => resolveAntigravityTestModelSelection(ordered, current));
           return;
         }
 
@@ -266,7 +269,7 @@ export default function TestConnectionModal({
         if (isAntigravityAccount) {
           const ordered = orderAntigravityTestModels(account.models ?? [], "", account.antigravity_quota);
           setModelOptions(ordered);
-          setSelectedModel((current) => ordered.includes(current) ? current : ordered[0] || "");
+          setSelectedModel((current) => resolveAntigravityTestModelSelection(ordered, current));
         } else if (isClaudeAccount) {
           const accountModels = (account.models ?? []).filter(
             (model) => isConnectionTestModel(model) && model.toLowerCase().startsWith("claude-"),

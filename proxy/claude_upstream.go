@@ -200,6 +200,7 @@ func ExecuteClaudeMessagesRequestWithPolicy(ctx context.Context, account *auth.A
 	if proxyOverride != "" {
 		proxyURL = proxyOverride
 	}
+	proxyURL = requestProxyURL(ctx, proxyURL)
 	if accessToken == "" {
 		return nil, ErrNoAvailableAccount()
 	}
@@ -241,7 +242,7 @@ func ExecuteClaudeMessagesRequestWithPolicy(ctx context.Context, account *auth.A
 	}
 	stream := gjson.GetBytes(body, "stream").Bool()
 
-	client := getPooledClient(account, proxyURL)
+	client := getRequestClient(ctx, account, proxyURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, claudeMessagesEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, ErrInternalError("创建 Claude 请求失败", err)
@@ -267,7 +268,7 @@ func ExecuteClaudeMessagesRequestWithPolicy(ctx context.Context, account *auth.A
 	resp, err := doTracedUpstreamRequest(client, req, account, proxyURL)
 	if err != nil {
 		if shouldRecyclePooledClient(err) {
-			recyclePooledClient(account, proxyURL)
+			recycleRequestClient(ctx, account, proxyURL)
 		}
 		return nil, ErrUpstream(0, "请求 Anthropic Messages API 失败", err)
 	}

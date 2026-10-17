@@ -198,7 +198,7 @@
     "streamInterrupted": "流已中断，未收到成功完成事件。"
   },
   "nav": {
-    "qualityTest": "降智检测",
+    "qualityTest": "质量测试",
     "dashboard": "仪表盘",
     "accounts": "账号管理",
     "grokAccounts": "Grok",
@@ -215,7 +215,8 @@
     "promptFilter": "Prompt 检查",
     "modelPricing": "模型定价",
     "payloadRules": "请求体重写",
-    "plugins": "传输插件"
+    "plugins": "传输插件",
+    "intelligenceCheck": "降智检测"
   },
   "antigravity": {
     "pageTitle": "Antigravity 账号",
@@ -301,6 +302,9 @@
     "replacementAuthJson": "替换凭据（可选）",
     "replacementAuthJsonPlaceholder": "粘贴 JSON 或 refresh token；留空则保留当前凭据",
     "replacementAuthJsonHint": "仅在轮换或替换该账号凭据时填写。",
+    "userProjectId": "GCP 项目 ID（Workspace / 企业账号）",
+    "userProjectIdPlaceholder": "例如 my-company-gca-project；个人账号留空",
+    "userProjectIdHint": "Google 不会为 Workspace / Gemini Code Assist Standard、Enterprise 账号自动分配项目，需填写已启用 Gemini for Google Cloud 的 GCP 项目 ID；保存后会立即重新同步。",
     "deleteTitle": "删除 Antigravity 账号",
     "deleteDescription": "确定删除 {{account}}？此操作无法撤销。",
     "deleteSuccess": "Antigravity 账号已删除",
@@ -3119,7 +3123,9 @@
     "mediaUnitsImage": "{{count}} 张图片",
     "mediaUnitsVideo": "{{count}} 秒视频",
     "videoSettlesOnDone": "完成时结算",
-    "mediaUnpricedHint": "该媒体模型没有上游单位成本，请到模型定价页补填"
+    "mediaUnpricedHint": "该媒体模型没有上游单位成本，请到模型定价页补填",
+    "internalIntelligenceCheck": "降智检测",
+    "internalIntelligenceCheckTooltip": "使用已保存检测配置发起的内部请求"
   },
   "promptFilter": {
     "builtinRestored": "已恢复内置默认规则",
@@ -5695,6 +5701,8 @@
     "modelCooldownSecondsDesc": "模型冷却基础秒数，范围 1–1800 秒。",
     "modelCooldownBackoff": "指数退避",
     "modelCooldownBackoffDesc": "仅自适应模式生效；重复 429 会逐步延长，最长 30 分钟。",
+    "unsupportedModelCooldownSeconds": "不支持模型冷却",
+    "unsupportedModelCooldownSecondsDesc": "上游返回「model is not supported when using Codex with a ChatGPT account」时，该账号在此时长内不再调度这个模型，不影响其他模型和账号健康度。0 表示关闭（同一请求内仍会换号重试）；调小或关闭时会自动清除超出新时长的已有冷却。混用免费/付费账号时，建议在账号详情配置支持模型白名单。",
     "claudeSettingsTitle": "ClaudeCode 全局配置",
     "claudeSettingsDesc": "统一控制 Claude 上游的 User-Agent 与身份头策略、默认时区和并发窗口;个体账号可单独覆盖。",
     "claudeClientPlatform": "客户端平台",

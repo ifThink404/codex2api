@@ -44,6 +44,16 @@
 </p>
 
 <p align="center">
+  <a href="https://www.rapidproxy.io/?ref=codex2api"><img src="assets/rapidproxy-banner.png" alt="RapidProxy 代理 IP：动态住宅 $0.55/GB 起，静态住宅 $5/IP/月" width="100%"></a>
+</p>
+
+<p align="center">
+  <b><a href="https://www.rapidproxy.io/?ref=codex2api">RapidProxy</a></b> 为开发者和企业提供高性能代理 IP 服务，覆盖全球 200+ 国家和地区的 9000 万+ 住宅 IP，支持智能轮换、精准地理定位、流量永不过期及高并发连接。<br>
+  广泛适用于网页采集、AI 数据获取、SEO 监控和电商分析，支持 HTTP / HTTPS / SOCKS5 协议。<br>
+  支持免费试用，九折优惠码：<code>RAPID10</code>
+</p>
+
+<p align="center">
   <a href="https://www.ipwo.net/?ref=githubcodex2api"><img src="assets/ipwo-banner.webp" alt="IPWO 住宅代理" width="100%"></a>
 </p>
 
@@ -360,6 +370,7 @@ Redis 模式下，共享上下文只要没有超过重建上限，即使大于 L
 - **管理后台 Admin Secret**：
   - 如果 `.env` 中设置了 `ADMIN_SECRET`，则优先使用环境变量。
   - 如果未设置 `ADMIN_SECRET`，则回退到数据库中的 `AdminSecret`。
+  - 两者都为空时，访问 `/admin` 会进入首次初始化页面，需要填写服务日志里打印的一次性初始化令牌（`docker compose logs codex2api | grep "bootstrap token"`）；令牌仅当前进程有效，重启后重新生成，初始化成功后立即作废。
   - 鉴权生效时，首次访问 `/admin` 会弹出密码输入框；前端登录成功后通过 `X-Admin-Key` 请求头访问 `/api/admin/*`。
 
 ---

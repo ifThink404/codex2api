@@ -426,13 +426,14 @@ type Account struct {
 	ActiveRequests atomic.Int64 // 当前正在执行的请求数
 	// OccupiedRequests 包含当前请求和成功结束后为原会话保留的缓冲槽。
 	// 调度准入读取它；管理端仍分别展示真实在途与含缓冲占用。
-	OccupiedRequests atomic.Int64
-	TotalRequests    atomic.Int64 // 累计总请求数
-	LastUsedAt       atomic.Int64 // 最后使用时间（UnixNano）
-	Disabled         int32        // 原子标志，1 = 立即不可调度（401 时瞬间置位，无需等锁）
-	AddedAt          atomic.Int64 // 加入号池的时间（UnixNano），用于过期清理
-	Locked           int32        // 原子标志，1 = 锁定，自动清理跳过此账号
-	DispatchPaused   int32        // 原子标志，1 = 禁用调度选择，不影响刷新/探针/清理
+	OccupiedRequests   atomic.Int64
+	TotalRequests      atomic.Int64 // 累计总请求数
+	LastUsedAt         atomic.Int64 // 最后使用时间（UnixNano）
+	Disabled           int32        // 原子标志，1 = 立即不可调度（401 时瞬间置位，无需等锁）
+	AddedAt            atomic.Int64 // 加入号池的时间（UnixNano），用于过期清理
+	Locked             int32        // 原子标志，1 = 锁定，自动清理跳过此账号
+	IntelligencePaused int32        // 独立的持久化降智检测暂停；不修改人工 enabled
+	DispatchPaused     int32        // 原子标志，1 = 禁用调度选择，不影响刷新/探针/清理
 
 	// per-account 调度配置（nil = 跟随默认）
 	ScoreBiasOverride       *int64
@@ -1209,7 +1210,7 @@ func (a *Account) premium5hUsageUrgencyBonusLocked(now time.Time) float64 {
 	if a.AccessToken == "" || a.Status == StatusError || a.HealthTier == HealthTierBanned {
 		return 0
 	}
-	if atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0 {
 		return 0
 	}
 	if a.Status == StatusCooldown && now.Before(a.CooldownUtil) {
@@ -1254,7 +1255,7 @@ func (a *Account) premium7dUsageUrgencyBonusLocked(now time.Time) float64 {
 	if a.AccessToken == "" || a.Status == StatusError || a.HealthTier == HealthTierBanned {
 		return 0
 	}
-	if atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0 {
 		return 0
 	}
 	if a.Status == StatusCooldown && now.Before(a.CooldownUtil) {
@@ -1451,7 +1452,7 @@ func (a *Account) IsAvailable() bool {
 	if atomic.LoadInt32(&a.Disabled) != 0 {
 		return false
 	}
-	if atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0 {
 		return false
 	}
 
@@ -1651,6 +1652,10 @@ func (a *Account) quotaAutoPause5hGuardConcurrencyLimitLocked(limit int64, now t
 	if limit <= 1 || a.AutoPause5hDisabled || a.effectiveAutoPause5h <= 0 || !a.UsagePercent5hValid || a.autoPause5hGuardBandPercent <= 0 || a.autoPause5hGuardConcurrency <= 0 {
 		return limit
 	}
+	// 积分顶替时自动暂停不生效（见 quotaAutoPausedLocked），护栏带也随之让位。
+	if a.creditSkipsUsageWindowLocked() {
+		return limit
+	}
 	if !a.Reset5hAt.IsZero() && !now.Before(a.Reset5hAt) {
 		return limit
 	}
@@ -1711,6 +1716,9 @@ func (a *Account) quotaAutoPause5hGuardDispatchPenaltyLocked(now time.Time) floa
 	if a.AutoPause5hDisabled || a.effectiveAutoPause5h <= 0 || !a.UsagePercent5hValid || a.autoPause5hGuardBandPercent <= 0 || a.autoPause5hGuardConcurrency <= 0 {
 		return 0
 	}
+	if a.creditSkipsUsageWindowLocked() {
+		return 0
+	}
 	if !a.Reset5hAt.IsZero() && !now.Before(a.Reset5hAt) {
 		return 0
 	}
@@ -1724,6 +1732,12 @@ func (a *Account) quotaAutoPause5hGuardDispatchPenaltyLocked(now time.Time) floa
 }
 
 func (a *Account) quotaAutoPausedLocked(now time.Time) bool {
+	// 积分顶替限流开着且当下确有积分时，自动暂停让位：阈值最高只到 100%，照常按阈值
+	// 停调度的话，窗口永远走不到「打满后改扣积分」那一步，账号级开关形同虚设（issue #791）。
+	// 积分归零或工作区 hard-stop 后 creditSkipsUsageWindowLocked 转 false，阈值恢复生效。
+	if a.creditSkipsUsageWindowLocked() {
+		return false
+	}
 	if quotaAutoPausedByWindow(a.UsagePercent5h, a.UsagePercent5hValid, a.Reset5hAt, a.effectiveAutoPause5h, a.AutoPause5hDisabled, now) {
 		return true
 	}
@@ -1919,11 +1933,17 @@ func (a *Account) rawUsageExhaustedLocked() bool {
 // 两者共用 "rate_limited" 这个 reason，光看 reason 分不开。可靠的区分点是判罚时长：
 // MarkUsage7dRateLimited 直接把 CooldownUtil 设成 Reset7dAt，而上游 429 的冷却时长
 // 来自 Retry-After / 限流决策，不会正好落在 7d 重置时刻上。留 2s 容差吸收计算抖动。
+//
+// premium 5h 判罚（rate_limited_5h）只由响应头 / WHAM 观测落下——/responses 真 429 的
+// 5h 冷却记的是 ResponsesRateLimitedCooldownReason——所以按 reason 即可认定为本地判罚。
+// 漏掉它时，Plus/Pro 先撞 5h 再开积分开关，就得干等到 5h 重置（issue #791）。
 func (a *Account) usageWindowCooldownLocked() bool {
 	if a.Status != StatusCooldown {
 		return false
 	}
 	switch a.CooldownReason {
+	case premium5hCooldownReason:
+		return true
 	case "rate_limited", "rate_limited_7d", "usage_limited", "usage_limit":
 	default:
 		return false
@@ -1971,7 +1991,7 @@ func (a *Account) usageLimitContinuationEligibleLocked(now time.Time) bool {
 	if !a.ignoreUsageLimitStatus {
 		return false
 	}
-	if atomic.LoadInt32(&a.Disabled) != 0 || atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&a.Disabled) != 0 || (atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0) {
 		return false
 	}
 	if a.Status == StatusError || a.healthTierLocked() == HealthTierBanned ||
@@ -1983,7 +2003,7 @@ func (a *Account) usageLimitContinuationEligibleLocked(now time.Time) bool {
 	// Responses turn. A real upstream 429 is authoritative evidence that a new
 	// request is rejected, so it must not be bypassed.
 	if a.Status == StatusCooldown && now.Before(a.CooldownUtil) {
-		if a.CooldownReason == premium5hCooldownReason || a.usageWindowCooldownLocked() {
+		if a.usageWindowCooldownLocked() {
 			return true
 		}
 		return false
@@ -2008,7 +2028,7 @@ func (a *Account) UsageLimitContinuationEligible() bool {
 // account is blocked specifically by a usage-limit observation. It lets API
 // handlers return 429 instead of misreporting an exhausted pool as 503.
 func (a *Account) FreshDispatchUsageLimited() bool {
-	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 || atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 || (atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0) {
 		return false
 	}
 	a.mu.RLock()
@@ -2167,7 +2187,7 @@ func (a *Account) ModelCatalogEligible() bool {
 		return false
 	}
 	if a.IsAntigravityAPI() {
-		if atomic.LoadInt32(&a.DispatchPaused) != 0 {
+		if atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0 {
 			return false
 		}
 		a.mu.RLock()
@@ -2178,7 +2198,7 @@ func (a *Account) ModelCatalogEligible() bool {
 		}
 		return a.hasDispatchCredentialLocked()
 	}
-	if atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0 {
 		return false
 	}
 	a.mu.RLock()
@@ -2445,7 +2465,7 @@ func (a *Account) ShouldActivate5hWindow(now time.Time) bool {
 	if a == nil {
 		return false
 	}
-	if atomic.LoadInt32(&a.Disabled) != 0 || atomic.LoadInt32(&a.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&a.Disabled) != 0 || (atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0) {
 		return false
 	}
 	if now.IsZero() {
@@ -3572,10 +3592,10 @@ func (a *Account) GetLastUsedAt() time.Time {
 
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
-	proxyAuditLabels                   map[string]ProxyAuditLabel
+	proxyAuditLabels map[string]ProxyAuditLabel
 	// proxyLocations is the stored egress location per proxy URL, refreshed with
 	// the proxy pool; web search reads it without any DB or network access.
-	proxyLocations map[string]database.ProxyLocation
+	proxyLocations                     map[string]database.ProxyLocation
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
 	accounts                           []*Account
@@ -4455,6 +4475,9 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 		OAuthMode:           settings.OAuthModelCooldownMode,
 		OAuthSeconds:        settings.OAuthModelCooldownSeconds,
 		OAuthBackoffEnabled: settings.OAuthModelCooldownBackoffEnabled,
+
+		OAuthUnsupportedDisabled: settings.OAuthUnsupportedModelCooldownDisabled,
+		OAuthUnsupportedSeconds:  settings.OAuthUnsupportedModelCooldownSeconds,
 	})
 
 	s.globalAutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(settings.AutoPause5hThreshold)
@@ -5571,6 +5594,11 @@ func (s *Store) Init(ctx context.Context) error {
 
 // loadFromDB 从数据库加载账号
 func (s *Store) loadFromDB(ctx context.Context) error {
+	var pauseErr error
+	ctx, pauseErr = s.withIntelligencePauses(ctx)
+	if pauseErr != nil {
+		return pauseErr
+	}
 	rows, err := s.db.ListActive(ctx)
 	if err != nil {
 		return fmt.Errorf("从数据库加载账号失败: %w", err)
@@ -5828,6 +5856,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 	if !row.Enabled {
 		atomic.StoreInt32(&account.DispatchPaused, 1)
+	}
+	if s.intelligencePaused(ctx, row.ID) {
+		atomic.StoreInt32(&account.IntelligencePaused, 1)
 	}
 	account.CreditEnabled = row.CreditEnabled
 	account.CreditSkipUsageWindow = row.CreditSkipUsageWindow
@@ -6121,6 +6152,11 @@ func (s *Store) reconcileDispatchState(ctx context.Context) (bool, error) {
 	}
 	s.dispatchReconciledAt.Store(now.UnixNano())
 
+	var pauseErr error
+	ctx, pauseErr = s.withIntelligencePauses(ctx)
+	if pauseErr != nil {
+		return false, pauseErr
+	}
 	rows, err := s.db.ListActive(ctx)
 	if err != nil {
 		return false, fmt.Errorf("reconcile dispatch accounts: %w", err)
@@ -6187,6 +6223,14 @@ func (s *Store) reconcileDispatchState(ctx context.Context) (bool, error) {
 			paused := int32(0)
 			if !row.Enabled {
 				paused = 1
+			}
+			qualityPaused := int32(0)
+			if s.intelligencePaused(ctx, row.ID) {
+				qualityPaused = 1
+			}
+			if atomic.SwapInt32(&acc.IntelligencePaused, qualityPaused) != qualityPaused {
+				s.fastSchedulerUpdate(acc)
+				changed = true
 			}
 			if atomic.SwapInt32(&acc.DispatchPaused, paused) != paused {
 				changed = true
@@ -6648,7 +6692,7 @@ func accountOccupiedRequests(acc *Account) int64 {
 }
 
 func accountDispatchBlocked(acc *Account) bool {
-	return acc == nil || atomic.LoadInt32(&acc.Disabled) != 0 || atomic.LoadInt32(&acc.DispatchPaused) != 0
+	return acc == nil || atomic.LoadInt32(&acc.Disabled) != 0 || (atomic.LoadInt32(&acc.DispatchPaused) != 0 || atomic.LoadInt32(&acc.IntelligencePaused) != 0)
 }
 
 func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
@@ -6859,7 +6903,7 @@ func (s *Store) accountLazySelectable(acc *Account) bool {
 	if atomic.LoadInt32(&acc.Disabled) != 0 {
 		return false
 	}
-	if atomic.LoadInt32(&acc.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&acc.DispatchPaused) != 0 || atomic.LoadInt32(&acc.IntelligencePaused) != 0 {
 		return false
 	}
 
@@ -7563,7 +7607,7 @@ func (s *Store) affinityAccountStillHealthy(accountID int64) bool {
 	if target == nil {
 		return false
 	}
-	if atomic.LoadInt32(&target.Disabled) != 0 || atomic.LoadInt32(&target.DispatchPaused) != 0 {
+	if atomic.LoadInt32(&target.Disabled) != 0 || (atomic.LoadInt32(&target.DispatchPaused) != 0 || atomic.LoadInt32(&target.IntelligencePaused) != 0) {
 		return false
 	}
 	target.mu.RLock()
@@ -8896,7 +8940,7 @@ func (s *Store) EnabledGrokAccounts() []*Account {
 		if a == nil || !a.IsGrokAPI() {
 			continue
 		}
-		if atomic.LoadInt32(&a.DispatchPaused) != 0 {
+		if atomic.LoadInt32(&a.DispatchPaused) != 0 || atomic.LoadInt32(&a.IntelligencePaused) != 0 {
 			continue
 		}
 		out = append(out, a)
@@ -10164,6 +10208,7 @@ func (s *Store) ApplyAccountEnabled(dbID int64, enabled bool) bool {
 	if acc == nil {
 		return false
 	}
+	atomic.StoreInt32(&acc.IntelligencePaused, 0) // DB manual write revoked detection ownership.
 	if enabled {
 		atomic.StoreInt32(&acc.DispatchPaused, 0)
 	} else {
@@ -10566,6 +10611,105 @@ func (s *Store) ClearAllModelCooldowns(acc *Account) int {
 	return len(models)
 }
 
+// ModelCooldownReasonUnsupported marks the plan-gated Codex 400 "model is not
+// supported when using Codex with a ChatGPT account".
+const ModelCooldownReasonUnsupported = "model_not_supported"
+
+// UnsupportedModelCooldown returns the configured cooldown for the plan-gated
+// unsupported-model 400; zero when disabled.
+func (s *Store) UnsupportedModelCooldown() time.Duration {
+	settings := s.GetModelCooldownSettings()
+	return time.Duration(settings.UnsupportedCooldownSeconds()) * time.Second
+}
+
+// MarkModelUnsupported cools (account, model) down without touching account
+// health: a plan that cannot serve one model says nothing about the others.
+func (s *Store) MarkModelUnsupported(acc *Account, model string, duration time.Duration) ModelCooldown {
+	if s == nil || acc == nil || duration <= 0 {
+		return ModelCooldown{}
+	}
+	if duration > 30*time.Minute {
+		duration = 30 * time.Minute
+	}
+	resetAt := time.Now().Add(duration)
+	if remaining := acc.ModelCooldownRemaining(model); remaining > duration {
+		resetAt = time.Now().Add(remaining)
+	}
+	cooldown := acc.SetModelCooldownUntil(model, ModelCooldownReasonUnsupported, resetAt)
+	if cooldown.Model == "" {
+		return cooldown
+	}
+	s.fastSchedulerUpdate(acc)
+	s.setCachedModelCooldown(acc.DBID, cooldown)
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := s.db.SetModelCooldown(ctx, acc.DBID, cooldown.Model, cooldown.Reason, cooldown.ResetAt); err != nil {
+			log.Printf("[账号 %d] 持久化模型冷却失败 model=%s: %v", acc.DBID, cooldown.Model, err)
+		}
+	}
+	return cooldown
+}
+
+// ClearModelCooldownsByReason clears active model cooldowns with the given
+// reason whose remaining time exceeds keepWithin (0 clears all of them).
+func (s *Store) ClearModelCooldownsByReason(reason string, keepWithin time.Duration) int {
+	if s == nil {
+		return 0
+	}
+	cleared := 0
+	now := time.Now()
+	for _, acc := range s.accountSnapshotAccounts() {
+		if acc == nil {
+			continue
+		}
+		for _, cooldown := range acc.ActiveModelCooldowns() {
+			if cooldown.Reason != reason || (keepWithin > 0 && cooldown.ResetAt.Sub(now) <= keepWithin) {
+				continue
+			}
+			s.ClearModelCooldown(acc, cooldown.Model)
+			cleared++
+		}
+	}
+	return cleared
+}
+
+// UnsupportedModelPoolSummary reports whether dispatchable accounts are being
+// skipped for model because each recently answered the unsupported-model 400,
+// so callers can surface that instead of a bare "no available account".
+type UnsupportedModelPoolSummary struct {
+	Found   bool
+	ResetAt time.Time // earliest recovery among those accounts
+}
+
+func (s *Store) UnsupportedModelCandidateSummary(apiKeyID int64, exclude map[int64]bool, model string, policy DispatchPolicy) UnsupportedModelPoolSummary {
+	var summary UnsupportedModelPoolSummary
+	key := normalizeModelCooldownKey(model)
+	if s == nil || key == "" {
+		return summary
+	}
+	now := time.Now()
+	for _, acc := range s.accountSnapshotAccounts() {
+		if acc == nil || (exclude != nil && exclude[acc.DBID]) || acc.IsRelayStyle() {
+			continue
+		}
+		if !acc.dispatchableForPolicy(policy) || !s.accountAllowedForAPIKey(acc, apiKeyID) {
+			continue
+		}
+		acc.mu.RLock()
+		cooldown, ok := acc.ModelCooldowns[key]
+		acc.mu.RUnlock()
+		if !ok || cooldown.Reason != ModelCooldownReasonUnsupported || !cooldown.ResetAt.After(now) {
+			continue
+		}
+		summary.Found = true
+		if summary.ResetAt.IsZero() || cooldown.ResetAt.Before(summary.ResetAt) {
+			summary.ResetAt = cooldown.ResetAt
+		}
+	}
+	return summary
+}
+
 type ModelCooldownPolicy struct {
 	Mode           string
 	Seconds        int
@@ -10751,7 +10895,8 @@ func (s *Store) ClearCooldown(acc *Account) {
 // 对已经在 cooldown 里的账号无效。而用户最自然的用法恰恰是「发现账号限流了才去开开关」，
 // 那时判罚已经落下，不主动释放就得干等到窗口重置——开关看起来完全没用。
 //
-// 只释放本地用量判罚（usageWindowCooldownLocked 用判罚时长与 Reset7dAt 对齐来识别），
+// 只释放本地用量判罚（usageWindowCooldownLocked：7d 按判罚时长对齐 Reset7dAt 识别，
+// premium 5h 按 rate_limited_5h reason 识别），
 // 上游 429 的冷却不动。万一识别错放行了，上游会再拒一次并重新进入冷却，代价是一个请求。
 // 返回是否真的释放了。
 func (s *Store) ReleaseUsageWindowCooldownForCredits(acc *Account) bool {
@@ -12000,7 +12145,7 @@ func (s *Store) HealthCountsNonBlocking() (available int, total int, complete bo
 		if acc == nil {
 			continue
 		}
-		if atomic.LoadInt32(&acc.Disabled) != 0 || atomic.LoadInt32(&acc.DispatchPaused) != 0 {
+		if atomic.LoadInt32(&acc.Disabled) != 0 || (atomic.LoadInt32(&acc.DispatchPaused) != 0 || atomic.LoadInt32(&acc.IntelligencePaused) != 0) {
 			continue
 		}
 		if !acc.mu.TryRLock() {
@@ -12097,7 +12242,7 @@ func antigravityCredentialFromStoreRow(row *database.AccountRow) AntigravityCred
 		Name: row.GetCredential("name"), AvatarURL: row.GetCredential("avatar_url"),
 		ProjectID: row.GetCredential("project_id"), OAuthClientKey: row.GetCredential("oauth_client_key"),
 		ClientID: row.GetCredential("antigravity_client_id"), ClientSecret: row.GetCredential("antigravity_client_secret"),
-		Scope: row.GetCredential("oauth_scope"),
+		Scope: row.GetCredential("oauth_scope"), UserProjectID: row.GetCredential(AntigravityUserProjectIDCredentialKey),
 	}
 	credential.ExpiresAt = parseOAuthCredentialExpiry(row.GetCredential("expires_at"))
 	return credential

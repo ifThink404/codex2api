@@ -931,9 +931,13 @@ func antigravityFunctionOutput(raw any) (string, []any, error) {
 	return string(encoded), nil, nil
 }
 
+// The replay stub covers the whole Gemini family, including backings first
+// seen through raw catalog pass-through: a model that does not validate
+// signatures ignores it, while a missing stub fails every tool loop on one
+// that does. It is a replay field, not a capability claim, so a new version
+// name is no reason to withhold it. Claude and GPT-OSS backings never get it.
 func antigravityGeminiNeedsToolSignature(model string) bool {
-	name := strings.ToLower(strings.TrimSpace(model))
-	return strings.Contains(name, "gemini") && (strings.Contains(name, "flash") || strings.Contains(name, "pro") || strings.Contains(name, "thinking"))
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-")
 }
 
 func antigravityGeminiSupportsFunctionTools(model string) bool {
@@ -996,11 +1000,15 @@ func antigravityGeminiResolvedModel(model string, reasoning map[string]any) stri
 	return strings.TrimSpace(model)
 }
 
-// New tiered Flash uses a named level, not the older numeric budget ladder.
-// Fixed suffixes win over conflicting effort; bare models default to low.
+// Named-level models do not use the older numeric budget ladder. Fixed
+// suffixes win over conflicting effort; logical models use their own default.
 func antigravityGeminiThinkingLevel(requestedModel, wireModel string, reasoning map[string]any) (string, bool) {
-	if wireModel != "gemini-3.8-flash-tiered" {
+	if wireModel != "gemini-3.8-flash-tiered" && wireModel != "gemini-4-argon-high" {
 		return "", false
+	}
+	if wireModel == "gemini-4-argon-high" && lowerStringField(reasoning, "effort") == "" {
+		// Summary visibility alone must not replace Argon's high default.
+		reasoning = nil
 	}
 	if variant, ok := antigravityResolvedVariant(requestedModel, reasoning); ok {
 		return strings.ToUpper(variant.level), true

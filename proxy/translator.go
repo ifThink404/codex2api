@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"container/list"
 	"crypto/sha256"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codex2api/proxy/internal/jsonbody"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -454,19 +456,6 @@ func firstResponsesImageGenerationTool(body map[string]any) map[string]any {
 	return nil
 }
 
-func isTopLevelResponsesImageOption(key string, value any) bool {
-	if value == nil {
-		return false
-	}
-	if key == "background" {
-		// The Responses boolean controls asynchronous execution. Only the
-		// legacy image option belongs inside the image_generation tool.
-		_, requestBackgroundMode := value.(bool)
-		return !requestBackgroundMode
-	}
-	return true
-}
-
 func moveTopLevelResponsesImageOptions(body map[string]any) bool {
 	toolMap := firstResponsesImageGenerationTool(body)
 	if len(body) == 0 || toolMap == nil {
@@ -475,7 +464,7 @@ func moveTopLevelResponsesImageOptions(body map[string]any) bool {
 	modified := false
 	for _, key := range responsesImageGenerationOptionFields {
 		value, exists := body[key]
-		if !exists || !isTopLevelResponsesImageOption(key, value) {
+		if !exists || !isResponsesImageGenerationOption(key, value) {
 			continue
 		}
 		_, toolHas := toolMap[key]
@@ -705,11 +694,25 @@ func hasTopLevelResponsesImageOptions(body map[string]any) bool {
 		return false
 	}
 	for _, key := range responsesImageGenerationOptionFields {
-		if value, exists := body[key]; exists && isTopLevelResponsesImageOption(key, value) {
+		if value, exists := body[key]; exists && isResponsesImageGenerationOption(key, value) {
 			return true
 		}
 	}
 	return false
+}
+
+func isResponsesImageGenerationOption(key string, value any) bool {
+	if value == nil {
+		return false
+	}
+	if key == "background" {
+		// Responses uses a boolean for asynchronous execution; image generation
+		// uses a string (auto/opaque/transparent). Never move that boolean into
+		// an image tool or use it to infer an image-generation request.
+		_, imageBackground := value.(string)
+		return imageBackground
+	}
+	return true
 }
 
 func isStructuredResponsesFormatType(formatType string) bool {
@@ -2105,7 +2108,7 @@ func ValidateResponsesFunctionNames(rawBody []byte) error {
 	// 无效 JSON 时 gjson 查询返回空结果、校验直接通过（与旧版 Unmarshal 失败即
 	// 放行一致），无需先做一次全量 ValidBytes 扫描。
 	var funcErr error
-	gjson.GetBytes(rawBody, "input").ForEach(func(idx, item gjson.Result) bool {
+	jsonbody.GetView(rawBody, "input").ForEach(func(idx, item gjson.Result) bool {
 		if strings.TrimSpace(item.Get("type").String()) != "function_call" {
 			return true
 		}
@@ -2305,25 +2308,35 @@ type responsesBodyPreparation struct {
 	CacheLookup          responseCacheLookupResult
 	RequiresLocalContext bool
 	Bypassed             bool
+	InputReplayConflict  bool
 }
 
 func prepareResponsesBodyForOwnerDetailed(rawBody []byte, owner string) responsesBodyPreparation {
 	prevID := gjson.GetBytes(rawBody, "previous_response_id").String()
 	preparation := responsesBodyPreparation{PreviousResponseID: prevID}
 	if prevID != "" {
-		currentInput := gjson.GetBytes(rawBody, "input")
-		if currentInput.IsArray() && inputHasToolCallContext(currentInput) {
-			preparation.Bypassed = true
-		} else {
-			preparation.RequiresLocalContext = currentInput.IsArray() && inputHasFunctionCallOutput(currentInput)
-			preparation.CacheLookup = getResponseCacheForReplay(owner, prevID)
+		// Codex HTTP removes previous_response_id before sending upstream. Every
+		// reference therefore needs an owner-scoped snapshot, even when the new
+		// input is plain text or also contains complete tool call/result pairs.
+		// Otherwise a cache miss silently turns a continuation into a new turn.
+		preparation.RequiresLocalContext = true
+		preparation.CacheLookup = getResponseCacheForReplay(owner, prevID)
+		if preparation.CacheLookup.Kind == responseCacheLookupHit {
+			// A new tool pair is not a replay of the parent. Skip expansion only
+			// when overlapping call IDs prove an exact, complete parent prefix.
+			preparation.Bypassed, preparation.InputReplayConflict = responsesHTTPClientReplaysParent(
+				preparation.CacheLookup.Items, gjson.GetBytes(rawBody, "input"))
 		}
+	}
+	cachedItems := preparation.CacheLookup.Items
+	if preparation.Bypassed {
+		cachedItems = nil
 	}
 	preparedBody, expandedInputRaw := prepareResponsesBodyWithOptions(rawBody, responsesBodyPrepareOptions{
 		forceStoreFalse:        true,
 		expandPreviousResponse: false,
 		cacheOwner:             owner,
-		cachedResponseItems:    preparation.CacheLookup.Items,
+		cachedResponseItems:    cachedItems,
 	})
 	preparation.Body = preparedBody
 	preparation.ExpandedInputRaw = expandedInputRaw
@@ -2398,6 +2411,11 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 	var body map[string]any
 	if err := json.Unmarshal(rawBody, &body); err != nil {
 		return rawBody, ""
+	}
+	if background, present := body["background"]; present && (background == nil || background == false) {
+		// Codex executes synchronously; these nullable/default values request
+		// the same behavior and need no unsupported background parameter.
+		delete(body, "background")
 	}
 	if opts.naturalImageIntent != nil {
 		// Inspect the original prompt before compatibility rewrites or automatic
@@ -2584,7 +2602,11 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 // without applying Codex-specific fields such as store/include/tool injection.
 func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 	var body map[string]any
-	if err := json.Unmarshal(rawBody, &body); err != nil {
+	// Native schema constraints and future provider fields can contain integers
+	// beyond float64's exact range. Shape-only compatibility must preserve them.
+	decoder := json.NewDecoder(bytes.NewReader(rawBody))
+	decoder.UseNumber()
+	if !json.Valid(rawBody) || decoder.Decode(&body) != nil {
 		return rawBody
 	}
 
@@ -2599,19 +2621,20 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 				reasoning["effort"] = normalized
 				body["reasoning"] = reasoning
 			}
-		}
-	}
-	if reasoning, ok := body["reasoning"].(map[string]any); ok {
-		if effort, ok := reasoning["effort"].(string); ok {
-			if normalized := normalizeReasoningEffortForModel(effort, effortModel); normalized != "" {
-				reasoning["effort"] = normalized
-			} else {
-				delete(reasoning, "effort")
-			}
+			delete(body, "reasoning_effort")
 		}
 	}
 
-	normalizeResponsesStructuredOutputFormat(body)
+	// Codex's structured-output sanitizer is deliberately confined to a
+	// translated legacy alias. A native Responses text.format is authoritative:
+	// retain its constraints and let its provider validate JSON-mode prompting.
+	if legacy, ok := body["response_format"].(map[string]any); ok && responsesTextFormatFromResponseFormat(legacy) != nil {
+		text, _ := body["text"].(map[string]any)
+		if _, nativeFormat := text["format"]; !nativeFormat {
+			normalizeResponsesStructuredOutputFormat(body)
+		}
+		delete(body, "response_format")
+	}
 	normalizeResponsesFunctionTools(body)
 	normalizeResponsesToolChoice(body)
 	normalizeResponsesContentPartTypes(body)
@@ -3056,29 +3079,28 @@ func normalizeServiceTierField(body []byte) []byte {
 	if tier == "" {
 		return body
 	}
-	body, _ = sjson.SetBytes(body, "service_tier", tier)
-	body, _ = sjson.DeleteBytes(body, "serviceTier")
+	body = jsonbody.SetString(body, "service_tier", tier)
+	body = jsonbody.DeletePath(body, "serviceTier")
 	return body
 }
 
 func sanitizeServiceTierForUpstream(body []byte) []byte {
 	tier := strings.TrimSpace(gjson.GetBytes(body, "service_tier").String())
 	if tier == "" {
-		body, _ = sjson.DeleteBytes(body, "serviceTier")
-		return body
+		return jsonbody.DeletePath(body, "serviceTier")
 	}
 	switch tier {
 	case "auto", "default", "flex", "priority", "scale", "fast", "ultrafast":
-		body, _ = sjson.DeleteBytes(body, "serviceTier")
+		body = jsonbody.DeletePath(body, "serviceTier")
 		if upstreamTier, ok := upstreamServiceTier(tier); ok {
-			body, _ = sjson.SetBytes(body, "service_tier", upstreamTier)
+			body = jsonbody.SetString(body, "service_tier", upstreamTier)
 		} else {
-			body, _ = sjson.DeleteBytes(body, "service_tier")
+			body = jsonbody.DeletePath(body, "service_tier")
 		}
 		return body
 	default:
-		body, _ = sjson.DeleteBytes(body, "service_tier")
-		body, _ = sjson.DeleteBytes(body, "serviceTier")
+		body = jsonbody.DeletePath(body, "service_tier")
+		body = jsonbody.DeletePath(body, "serviceTier")
 		return body
 	}
 }
@@ -3523,9 +3545,13 @@ func normalizeResponsesToolSchema(rawTool any, descDefaults map[string]string) {
 	if !ok || isReservedCodexTool(toolMap) {
 		return
 	}
-	if toolType, _ := toolMap["type"].(string); toolType != "" {
-		if defaultDesc, ok := descDefaults[toolType]; ok {
-			if desc, _ := toolMap["description"].(string); desc == "" {
+	// Defaults describe user-defined tools by name. Builtin tool types have
+	// their own wire schemas (server-executed tool_search forbids description).
+	// Explicit fields, including empty or invalid values, belong to the client.
+	toolType, _ := toolMap["type"].(string)
+	if toolType == "function" || toolType == "custom" {
+		if _, exists := toolMap["description"]; !exists {
+			if defaultDesc, ok := descDefaults[strings.TrimSpace(firstNonEmptyAnyString(toolMap["name"]))]; ok {
 				toolMap["description"] = defaultDesc
 			}
 		}

@@ -116,6 +116,7 @@ function ReasoningEffortBadge({ effort }: { effort: string }) {
 // 其余未知原因统一显示为"内部请求"。
 const INTERNAL_REQUEST_PRESENTATION: Record<string, { labelKey: string; tooltipKey: string; Icon: typeof Brain }> = {
   connection_test: { labelKey: 'usage.internalConnectionTest', tooltipKey: 'usage.internalConnectionTestTooltip', Icon: PlugZap },
+  intelligence_check: { labelKey: 'usage.internalIntelligenceCheck', tooltipKey: 'usage.internalIntelligenceCheckTooltip', Icon: Brain },
   quality_test: { labelKey: 'usage.internalQualityTest', tooltipKey: 'usage.internalQualityTestTooltip', Icon: FlaskConical },
   overflow_compact_summary: { labelKey: 'usage.internalOverflowSummary', tooltipKey: 'usage.internalRequestTooltip', Icon: Brain },
 }

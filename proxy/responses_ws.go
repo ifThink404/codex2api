@@ -101,6 +101,7 @@ type responsesWSForwardOptions struct {
 	auditEndpoint        string
 	transformClientEvent func([]byte) []byte
 	onResponseCompleted  func([]byte)
+	lineage              *responsesWSLineage
 }
 
 // responsesWSInboundMessage is produced by the connection's only reader. A
@@ -276,55 +277,9 @@ func (h *Handler) ResponsesWebSocket(c *gin.Context) {
 		drainResponsesWSInboundMessages(messages)
 	}()
 
-	for {
-		var message responsesWSInboundMessage
-		var ok bool
-		select {
-		case message, ok = <-messages:
-		case <-requestCtx.Done():
-			return
-		}
-		if !ok {
-			return
-		}
-		message.releaseQueueBudget()
-		if message.err != nil {
-			if websocket.IsCloseError(message.err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
-				return
-			}
-			if message.turn == 0 {
-				log.Printf("Responses WebSocket first message read failed: %v", message.err)
-			}
-			return
-		}
-		if requestCtx.Err() != nil {
-			return
-		}
-
-		if message.messageType != websocket.TextMessage && message.messageType != websocket.BinaryMessage {
-			apiErr := api.NewAPIError(api.ErrCodeInvalidRequest, "unsupported websocket message type", api.ErrorTypeInvalidRequest)
-			_ = writeAuditedResponsesWSError(c, conn, apiErr)
-			closeResponsesWS(conn, websocket.CloseUnsupportedData, apiErr.Message)
-			return
-		}
-
-		payload, forwardedEventID := stripNewAPIPolicyWebSocketEventID(message.payload)
-		if forwardedEventID == "" {
-			forwardedEventID = fmt.Sprintf("responses:%d", message.turn)
-		}
-		if err := h.forwardResponsesWebSocketTurn(c, conn, payload, forwardedEventID, nil); err != nil {
-			if errors.Is(err, errResponsesWSClientGone) {
-				return
-			}
-			var closeErr *responsesWSCloseError
-			if errors.As(err, &closeErr) {
-				closeResponsesWS(conn, closeErr.code, closeErr.reason)
-				return
-			}
-			closeResponsesWS(conn, websocket.CloseInternalServerErr, "upstream websocket proxy failed")
-			return
-		}
-	}
+	unregisterWriter := registerResponsesWSWriter(conn)
+	defer unregisterWriter()
+	h.runResponsesWSMultiplex(c, conn, messages, requestCtx)
 }
 
 func newAPIPolicyWebSocketUpgradeHeaders() http.Header {
@@ -354,7 +309,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	reservation, admitted := security.TryAcquireRequestMemory(int64(len(rawPayload)))
 	if !admitted {
 		apiErr := api.NewAPIError(api.ErrCodeServiceUnavailable, "Request memory capacity exhausted, please retry later", api.ErrorTypeServer)
-		_ = writeResponsesWSErrorWithin(conn, apiErr, responsesWSOverloadWriteTimeout)
+		_ = writeResponsesWSErrorForStream(conn, apiErr, c.GetString(responsesWSStreamContextKey), responsesWSOverloadWriteTimeout)
 		return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
 	}
 	defer reservation.Release()
@@ -471,6 +426,21 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	if gjson.GetBytes(rawBody, "store").Type == gjson.False {
 		respCacheOwner = nativeWSTurnCacheOwner(c, respCacheOwner, nativeWSTurnScope{body: rawBody, identity: sessionIdentity, databaseScope: h.db.RuntimeCacheScope()})
 	}
+	lookupOwner := respCacheOwner
+	lineageScope := ""
+	if options != nil && options.lineage != nil && strings.HasPrefix(respCacheOwner, nativeWSCachePrefix) {
+		lineageScope = responsesWSLineageScope(c, sessionIdentity, h.db.RuntimeCacheScope())
+		parentOwner, lookupErr := options.lineage.lookup(c.Request.Context(), strings.TrimSpace(gjson.GetBytes(rawBody, "previous_response_id").String()), lineageScope)
+		if lookupErr != nil {
+			if c.Request.Context().Err() != nil {
+				return errResponsesWSClientGone
+			}
+			return writeResponsesWSErrorForContext(c, conn, nativeResponsesWSContextError(responsesWSContextUnavailable(http.StatusServiceUnavailable, "context_commit_pending")))
+		}
+		if parentOwner != "" {
+			lookupOwner = parentOwner
+		}
+	}
 	markResponsesWSContinuationCapable(respCacheOwner, rawBody)
 	ruleIdentity := h.payloadRuleIdentity(c)
 	// 上下文压缩轮豁免首字超时看门狗（issue #381）：压缩首帧天然慢，超时换号无益。
@@ -526,6 +496,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	// 被更新的连接取代时先给本连接发 1013 关闭帧再取消：Codex 客户端据此立即重试，
 	// 而不是在裸 1006 断开后静默等到自己的空闲超时。
 	notifyPreempted := func() {
+		if streamID := c.GetString(responsesWSStreamContextKey); streamID != "" {
+			_ = writeResponsesWSErrorForStream(conn, api.NewAPIError(api.ErrCodeServiceUnavailable, responsesWSSessionPreemptedCloseReason, api.ErrorTypeServer), streamID, responsesWSOverloadWriteTimeout)
+			return
+		}
 		closeResponsesWS(conn, websocket.CloseTryAgainLater, responsesWSSessionPreemptedCloseReason)
 	}
 	if preemptCtx, cleanupPreempt, armed := h.beginResponsesWSSessionPreemptionWithNotify(c.Request.Context(), c, rawBody, sessionIdentity, notifyPreempted); armed {
@@ -629,13 +603,13 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	// 忽略本地 WHAM 100% 快照；previous_response_id 本身不足以证明这是活跃 turn。
 	continuationPinned := turnContinuation && turnHasBinding
 	continuationDegraded := false
-	if err := waitNativeWSCommit(c.Request.Context(), respCacheOwner, gjson.GetBytes(codexBody, "previous_response_id").String()); err != nil {
-		return writeResponsesWSError(conn, nativeResponsesWSContextError(responsesWSContextUnavailable(http.StatusServiceUnavailable, "context_commit_pending")))
+	if err := waitNativeWSCommit(c.Request.Context(), lookupOwner, gjson.GetBytes(codexBody, "previous_response_id").String()); err != nil {
+		return writeResponsesWSErrorForContext(c, conn, nativeResponsesWSContextError(responsesWSContextUnavailable(http.StatusServiceUnavailable, "context_commit_pending")))
 	}
-	turnReplay := newResponsesWSReplaySource(codexBody, respCacheOwner)
+	turnReplay := newResponsesWSReplaySource(codexBody, lookupOwner)
 	accountFilter = nativeWSReplayAccountFilter(accountFilter, turnReplay)
 	degradeContinuation := func(reason string, attempt int) *api.APIError {
-		expanded, lost, contextErr := degradeResponsesWSContinuationWithSource(codexBody, respCacheOwner, turnReplay)
+		expanded, lost, contextErr := degradeResponsesWSContinuationWithSource(codexBody, lookupOwner, turnReplay)
 		if contextErr != nil {
 			return contextErr
 		}
@@ -725,7 +699,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				apiErr = compactionUpstreamUnavailableAPIError()
 			} else if lastRetryableUpstreamErr != nil {
 				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
-			} else if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
+			} else if (lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0) || lastFailureModelUnsupported(lastStatusCode, lastBody) {
 				apiErr = responsesWSUpstreamAPIError(lastStatusCode, lastBody)
 			} else if msg := scopeBudgetExhaustedMessage(c); msg != "" {
 				// 候选被 scope 预算剔空（issue #439）：按限流语义回帧，而不是「无可用账号」。
@@ -735,6 +709,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				apiErr = api.NewAPIError(api.ErrCodeRateLimitReached, usageLimitedPoolMessages(limited).Chinese, api.ErrorTypeRateLimit)
 			} else if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
 				apiErr = api.NewAPIError(api.ErrorCode(ErrorCodeAccountPoolConcurrencySaturated), concurrencySaturatedMessageZH, api.ErrorTypeServer)
+			} else if msg, ok := h.unsupportedModelPoolMessage(apiKeyID, retryExclusions.ForSelection(), effectiveModel, dispatchPolicy); ok {
+				apiErr = api.NewAPIError(api.ErrorCode(auth.ModelCooldownReasonUnsupported), msg, api.ErrorTypeInvalidRequest)
 			} else {
 				apiErr = api.NewAPIError(api.ErrCodeServiceUnavailable, noAvailableAccountMessage(effectiveModel), api.ErrorTypeServer)
 			}
@@ -760,11 +736,16 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}
 
+		if compatibilityErr := selectedCodexResponsesCompatibilityError(c, account, rawBody); compatibilityErr != nil {
+			h.store.Release(account)
+			_ = writeResponsesWSErrorForContext(c, conn, compatibilityErr)
+			return newResponsesWSCloseError(websocket.ClosePolicyViolation, compatibilityErr.Message, compatibilityErr)
+		}
 		h.AcquireAPIKeyScopeConcurrency(c, account)
 		turnReplay.setAccount(account)
 		if continuationDegraded && turnReplay.Input() == "" && turnReplay.err != nil {
 			h.store.Release(account)
-			return writeResponsesWSRecoveryError(conn, turnReplay.err)
+			return writeResponsesWSRecoveryErrorForContext(c, conn, turnReplay.err)
 		}
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
@@ -826,12 +807,23 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		// WebSocket 上游下剥离自动注入的图片工具，防止模型自主生图卡死。
 		upstreamBody := codexBody
 		attemptReplay := turnReplay
-		if useWebsocket {
+		if account.IsOpenAIResponsesAPI() {
+			// A Responses relay supports its own native fields and continuation
+			// state. Do not feed it Codex's lossy compatibility preparation.
+			upstreamBody = applyImageGenerationStripPolicy(c, PrepareOpenAIResponsesBody(rawBody))
+			upstreamBody, _ = sjson.DeleteBytes(upstreamBody, "type")
+			if continuationDegraded {
+				// Recovery expands only lineage. Retain native provider fields
+				// while sending the admitted complete input without the lost ID.
+				upstreamBody, _ = sjson.SetRawBytes(upstreamBody, "input", []byte(responsesInputRaw(codexBody)))
+				upstreamBody, _ = sjson.DeleteBytes(upstreamBody, "previous_response_id")
+			}
+		} else if useWebsocket {
 			upstreamBody = stripResponsesImageGenerationTool(codexBody)
 		} else if prevID := strings.TrimSpace(gjson.GetBytes(codexBody, "previous_response_id").String()); prevID != "" {
 			var contextErr *api.APIError
 			var lost bool
-			upstreamBody, lost, contextErr = degradeResponsesWSContinuationWithSource(codexBody, respCacheOwner, turnReplay)
+			upstreamBody, lost, contextErr = degradeResponsesWSContinuationWithSource(codexBody, lookupOwner, turnReplay)
 			if contextErr != nil {
 				ttftGuard.Stop()
 				upstreamCancel()
@@ -880,14 +872,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				ttftGuard.Stop()
 				upstreamCancel()
 				h.store.Release(account)
-				return writeResponsesWSError(conn, api.NewAPIError(api.ErrorCode(ErrorCodeUpstreamWSConnectionCapacity), capacityErr.Error(), api.ErrorTypeServer))
+				return writeResponsesWSErrorForContext(c, conn, api.NewAPIError(api.ErrorCode(ErrorCodeUpstreamWSConnectionCapacity), capacityErr.Error(), api.ErrorTypeServer))
 			}
 			var continuationBusy *ResponsesContinuationBusyError
 			if errors.As(reqErr, &continuationBusy) {
 				ttftGuard.Stop()
 				upstreamCancel()
 				h.store.Release(account)
-				return writeResponsesWSError(conn, api.NewAPIError(api.ErrCodeServiceUnavailable, continuationBusy.Error(), api.ErrorTypeServer))
+				return writeResponsesWSErrorForContext(c, conn, api.NewAPIError(api.ErrCodeServiceUnavailable, continuationBusy.Error(), api.ErrorTypeServer))
 			}
 			var continuationLost *ResponsesContinuationLostError
 			if errors.As(reqErr, &continuationLost) {
@@ -896,11 +888,11 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				h.store.Release(account)
 				if canDegradeContinuation() {
 					if contextErr := degradeContinuation(continuationLost.Reason, attempt+1); contextErr != nil {
-						return writeResponsesWSRecoveryError(conn, contextErr)
+						return writeResponsesWSRecoveryErrorForContext(c, conn, contextErr)
 					}
 					continue
 				}
-				return writeResponsesWSRecoveryError(conn, nativeResponsesWSContextError(responsesWSContextUnavailable(http.StatusConflict, continuationLost.Reason)))
+				return writeResponsesWSRecoveryErrorForContext(c, conn, nativeResponsesWSContextError(responsesWSContextUnavailable(http.StatusConflict, continuationLost.Reason)))
 			}
 			if quotaErr := apiKeyModelRequestError(reqErr); quotaErr != nil {
 				ttftGuard.Stop()
@@ -1011,7 +1003,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 						// Keep the admitted ancestor while dropping rejected opaque items from
 						// this attempt. A previously lossy fallback must remain unwritable.
 						if turnReplay != nil && !(turnReplay.precomputed && turnReplay.input == "") {
-							updated := newResponsesWSReplaySource(codexBody, respCacheOwner)
+							updated := newResponsesWSReplaySource(codexBody, lookupOwner)
 							if turnReplay.previous != nil {
 								updated.previous = turnReplay.previous
 							}
@@ -1039,7 +1031,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				continue
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -1116,7 +1108,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 		preserveAffinity := preserveContinuationBinding()
 		allowContinuationDegrade := canDegradeContinuation()
-		if err := h.streamResponsesWSUpstream(c, conn, resp, account, proxyURL, affinityKey, affinityGuard, preserveAffinity, allowContinuationDegrade, logModel, effectiveModel, logEffectiveModel, reasoningEffort, serviceTier, respCacheOwner, attemptReplay, start, ttftGuard, retryEnabled, hideUpstreamErrors, useWebsocket, fallbackLog, attempt+1, options, continuousRetryPolicy); err != nil {
+		if err := h.streamResponsesWSUpstream(c, conn, resp, account, proxyURL, affinityKey, affinityGuard, preserveAffinity, allowContinuationDegrade, logModel, effectiveModel, logEffectiveModel, reasoningEffort, serviceTier, respCacheOwner, lineageScope, attemptReplay, start, ttftGuard, retryEnabled, hideUpstreamErrors, useWebsocket, fallbackLog, attempt+1, options, continuousRetryPolicy); err != nil {
 			if continuousRetryDeadlineExceeded(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
@@ -1233,6 +1225,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	reasoningEffort string,
 	serviceTier string,
 	respCacheOwner string,
+	lineageScope string,
 	replayInput *responsesWSReplaySource,
 	start time.Time,
 	ttftGuard *firstTokenTimeoutGuard,
@@ -1287,10 +1280,14 @@ func (h *Handler) streamResponsesWSUpstream(
 		wsReplay = h.newContinuousRetryWSReplay()
 	}
 	finishContextCommit := func() {}
-	defer func() { finishContextCommit() }()
+	finishLineageCommit := func() {}
+	defer func() { finishContextCommit(); finishLineageCommit() }()
 	writeClientMessage := func(payload []byte) error {
 		if isResponsesSuccessTerminalEvent(gjson.GetBytes(payload, "type").String()) {
 			finishContextCommit = beginNativeWSCommit(respCacheOwner, gjson.GetBytes(payload, "response.id").String())
+			if options != nil && options.lineage != nil && strings.HasPrefix(respCacheOwner, nativeWSCachePrefix) {
+				finishLineageCommit = options.lineage.beginCommit(gjson.GetBytes(payload, "response.id").String(), lineageScope)
+			}
 		}
 		return writeResponsesWSMessage(conn, payload)
 	}
@@ -1634,12 +1631,17 @@ func (h *Handler) streamResponsesWSUpstream(
 			// Committed completed/incomplete responses can be continuation history.
 			// Failed attempts and locally blocked/unwritable replays leave no cache.
 			if !outputCollector.overflow {
-				cacheCommittedResponsesWSContext(nativeWSCompletedContext{owner: respCacheOwner, input: replayInput.Input(),
+				committedInput := replayInput.Input()
+				cacheCommittedResponsesWSContext(nativeWSCompletedContext{owner: respCacheOwner, input: committedInput,
 					completed: completedResponsePayload, outputs: outputCollector.Items(), provenance: replayInput.committedProvenance()})
+				if committedInput != "" && options != nil && options.lineage != nil {
+					options.lineage.remember(gjson.GetBytes(completedResponsePayload, "response.id").String(), respCacheOwner, lineageScope)
+				}
 			}
 		}
 	}
 	finishContextCommit()
+	finishLineageCommit()
 	_ = wsReplay.Close()
 	if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 		h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
@@ -1827,7 +1829,15 @@ func normalizeResponsesWebSocketClientPayload(raw []byte) ([]byte, string, *api.
 		}
 	case "response.create":
 	case "response.append":
-		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, "response.append is not supported; use response.create with previous_response_id", api.ErrorTypeInvalidRequest)
+		return nil, "", api.NewAPIErrorWithDetails(api.ErrCodeUnsupportedFeature, "response.append is not supported; use response.create with previous_response_id", api.ErrorTypeInvalidRequest, map[string]any{
+			"event": "response.append",
+			"hint":  "send response.create with previous_response_id",
+		})
+	case "response.steer":
+		return nil, "", api.NewAPIErrorWithDetails(api.ErrCodeUnsupportedFeature, "response.steer is not supported by this gateway", api.ErrorTypeInvalidRequest, map[string]any{
+			"event": "response.steer",
+			"hint":  "wait for the current turn, then send response.create with previous_response_id and the new input",
+		})
 	default:
 		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, fmt.Sprintf("unsupported websocket request type: %s", eventType), api.ErrorTypeInvalidRequest)
 	}
@@ -1938,17 +1948,23 @@ func writeResponsesWSError(conn *websocket.Conn, apiErr *api.APIError) error {
 }
 
 func writeResponsesWSErrorWithin(conn *websocket.Conn, apiErr *api.APIError, timeout time.Duration) error {
+	return writeResponsesWSErrorForStream(conn, apiErr, "", timeout)
+}
+
+func writeResponsesWSErrorForStream(conn *websocket.Conn, apiErr *api.APIError, streamID string, timeout time.Duration) error {
 	if apiErr == nil {
 		apiErr = api.NewAPIError(api.ErrCodeServerError, "Internal server error", api.ErrorTypeServer)
 	}
 	payload, err := json.Marshal(struct {
-		Type   string        `json:"type"`
-		Status int           `json:"status"`
-		Error  *api.APIError `json:"error"`
+		Type     string        `json:"type"`
+		StreamID string        `json:"stream_id,omitempty"`
+		Status   int           `json:"status"`
+		Error    *api.APIError `json:"error"`
 	}{
-		Type:   "error",
-		Status: responsesWSErrorStatus(apiErr),
-		Error:  apiErr,
+		Type:     "error",
+		StreamID: streamID,
+		Status:   responsesWSErrorStatus(apiErr),
+		Error:    apiErr,
 	})
 	if err != nil {
 		return err
@@ -1956,8 +1972,7 @@ func writeResponsesWSErrorWithin(conn *websocket.Conn, apiErr *api.APIError, tim
 	if conn == nil {
 		return errResponsesWSClientGone
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(timeout))
-	return conn.WriteMessage(websocket.TextMessage, payload)
+	return writeResponsesWSPayload(conn, payload, timeout)
 }
 
 func responsesWSClientUpstreamAPIError(apiErr *api.APIError, hideUpstreamErrors bool) *api.APIError {
@@ -1971,8 +1986,7 @@ func writeResponsesWSMessage(conn *websocket.Conn, payload []byte) error {
 	if conn == nil {
 		return errResponsesWSClientGone
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(responsesWSWriteTimeout))
-	return conn.WriteMessage(websocket.TextMessage, payload)
+	return writeResponsesWSPayload(conn, payload, responsesWSWriteTimeout)
 }
 
 func closeResponsesWS(conn *websocket.Conn, code int, reason string) {

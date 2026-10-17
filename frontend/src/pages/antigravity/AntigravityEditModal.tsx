@@ -39,6 +39,7 @@ interface EditDraft {
   modelMapping: string;
   proxyUrl: string;
   groupIds: number[];
+  userProjectId: string;
 }
 
 const EMPTY_EDIT_DRAFT: EditDraft = {
@@ -51,6 +52,7 @@ const EMPTY_EDIT_DRAFT: EditDraft = {
   modelMapping: "",
   proxyUrl: "",
   groupIds: [],
+  userProjectId: "",
 };
 
 function editDraftFromAccount(account: AccountRow): EditDraft {
@@ -71,6 +73,7 @@ function editDraftFromAccount(account: AccountRow): EditDraft {
     modelMapping: account.model_mapping ?? "",
     proxyUrl: account.proxy_url ?? "",
     groupIds: account.group_ids ?? [],
+    userProjectId: account.antigravity_user_project_id ?? "",
   };
 }
 
@@ -160,6 +163,10 @@ export default function AntigravityEditModal({
     };
     if (editDraft.authKind === "oauth" && editDraft.authJson.trim()) {
       payload.auth_json = editDraft.authJson.trim();
+    }
+    const userProjectId = editDraft.userProjectId.trim();
+    if (editDraft.authKind === "oauth" && userProjectId !== (editingAccount.antigravity_user_project_id ?? "")) {
+      payload.user_project_id = userProjectId;
     }
     if (editDraft.authKind === "api_key") {
       if (editDraft.apiKey.trim()) payload.api_key = editDraft.apiKey.trim();
@@ -284,6 +291,19 @@ export default function AntigravityEditModal({
                 <FieldHint>{t("antigravity.replacementApiKeyHint")}</FieldHint>
               </label>
             )}
+            {editDraft.authKind === "oauth" ? (
+              <label className="block space-y-1.5">
+                <FieldLabel>{t("antigravity.userProjectId")}</FieldLabel>
+                <Input
+                  value={editDraft.userProjectId}
+                  onChange={(event) => setEditDraft((current) => ({ ...current, userProjectId: event.target.value }))}
+                  spellCheck={false}
+                  placeholder={t("antigravity.userProjectIdPlaceholder")}
+                  className="font-mono"
+                />
+                <FieldHint>{t("antigravity.userProjectIdHint")}</FieldHint>
+              </label>
+            ) : null}
           </FormSection>
 
           {editDraft.authKind === "api_key" ? (

@@ -27,6 +27,7 @@ import (
 	"github.com/codex2api/cache"
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy/internal/jsonbody"
 	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
@@ -684,6 +685,36 @@ func noAvailableAccountError(model string) gin.H {
 			"message": noAvailableAccountMessage(model),
 			"type":    ErrorTypeServerError,
 			"code":    ErrorCodeNoAvailableAccount,
+		},
+	}
+}
+
+// lastFailureModelUnsupported reports that the request's last upstream attempt
+// failed with the plan-gated unsupported-model 400, which callers should pass
+// through rather than replacing with no_available_account.
+func lastFailureModelUnsupported(statusCode int, body []byte) bool {
+	return statusCode == http.StatusBadRequest && len(body) > 0 && isCodexModelUnsupportedError(body)
+}
+
+// unsupportedModelPoolMessage explains an empty pool whose dispatchable
+// accounts are all cooling down after the unsupported-model 400.
+func (h *Handler) unsupportedModelPoolMessage(apiKeyID int64, exclude map[int64]bool, model string, policy auth.DispatchPolicy) (string, bool) {
+	if h == nil || h.store == nil {
+		return "", false
+	}
+	summary := h.store.UnsupportedModelCandidateSummary(apiKeyID, exclude, model, policy)
+	if !summary.Found {
+		return "", false
+	}
+	return fmt.Sprintf("The '%s' model is not supported when using Codex with a ChatGPT account. 可用账号近期均对该模型返回此错误，模型冷却至 %s；可在后台清除账号的模型冷却，或在设置中调整「不支持模型冷却」", model, summary.ResetAt.Local().Format("2006-01-02 15:04:05")), true
+}
+
+func unsupportedModelPoolError(message string) gin.H {
+	return gin.H{
+		"error": gin.H{
+			"message": message,
+			"type":    ErrorTypeInvalidRequest,
+			"code":    auth.ModelCooldownReasonUnsupported,
 		},
 	}
 }
@@ -1877,7 +1908,7 @@ func requestCompactionMetaForHTTP(c *gin.Context, body []byte) requestCompaction
 // content, tool output, or arbitrary stringified JSON.
 func requestBodyCompactionMeta(body []byte) requestCompactionMeta {
 	meta := requestCompactionMeta{}
-	input := gjson.GetBytes(body, "input")
+	input := jsonbody.GetView(body, "input")
 	inspect := func(item gjson.Result) {
 		switch {
 		case gjsonResultIsCompactionTrigger(item):
@@ -1965,9 +1996,12 @@ func excludeAntigravityAccountsFilter(inner auth.AccountFilter) auth.AccountFilt
 	}
 }
 
-func relayOnlyAccountFilter(inner auth.AccountFilter) auth.AccountFilter {
+func responsesContinuationRelayFilter(inner auth.AccountFilter) auth.AccountFilter {
 	return func(account *auth.Account) bool {
-		if account == nil || !account.IsRelayStyle() {
+		// Only the native Responses relay retains previous_response_id for its
+		// own upstream to resolve. Other adapters cannot recover a missing local
+		// snapshot merely because they are relay-style accounts.
+		if account == nil || !account.IsOpenAIResponsesAPI() {
 			return false
 		}
 		return inner == nil || inner(account)
@@ -1975,7 +2009,13 @@ func relayOnlyAccountFilter(inner auth.AccountFilter) auth.AccountFilter {
 }
 
 func responseCachePreparationFailure(prepared responsesBodyPreparation) (status int, reason string, unavailable bool) {
-	if prepared.PreviousResponseID == "" || prepared.Bypassed || prepared.CacheLookup.Kind == responseCacheLookupHit {
+	if prepared.PreviousResponseID == "" {
+		return 0, "", false
+	}
+	if prepared.InputReplayConflict {
+		return http.StatusConflict, "ambiguous_tool_history", true
+	}
+	if prepared.CacheLookup.Kind == responseCacheLookupHit {
 		return 0, "", false
 	}
 	switch prepared.CacheLookup.Kind {
@@ -2177,8 +2217,10 @@ func classifyTransportFailure(err error) string {
 	return "transport"
 }
 
-func classifyHTTPFailure(statusCode int) string {
+func classifyHTTPFailure(statusCode int, body []byte) string {
 	switch {
+	case statusCode == http.StatusBadRequest && isCodexModelUnsupportedError(body):
+		return "" // 套餐不支持该模型，只做 (账号, 模型) 冷却，不计入账号健康度
 	case statusCode == http.StatusUnauthorized:
 		return "unauthorized"
 	case statusCode == http.StatusTooManyRequests:
@@ -2209,6 +2251,9 @@ type streamOutcome struct {
 	// requestScoped 标记故障由本次请求内容触发（如零输出的 response.incomplete）：
 	// penalize 保持 true 以复用首包前透明重试/换号，但不计入账号健康度。
 	requestScoped bool
+	// modelUnsupported 标记套餐不支持该模型的 400：penalize 保持 true 以换号重试，
+	// 但只做 (账号, 模型) 冷却，不计入账号健康度。
+	modelUnsupported bool
 	// terminalLocal marks proxy replay/storage failures; they never affect
 	// upstream retry or account health and must exit as protocol terminal errors.
 	// terminalLocal 标记代理自身的回放/存储失败；它们不参与上游重试或账号健康度，
@@ -2374,13 +2419,14 @@ func classifyResponseFailedOutcome(payload []byte) streamOutcome {
 	// 400 中"账号不支持该模型"属账号权益问题，冷却后换号重试有意义，视同可重试故障。
 	modelUnsupported := statusCode == http.StatusBadRequest && isCodexModelUnsupportedError(errorBody)
 	return streamOutcome{
-		logStatusCode:  statusCode,
-		failureKind:    kind,
-		failureMessage: message,
-		failurePayload: append([]byte(nil), payload...),
-		penalize:       !safetyPolicy && (statusCode == http.StatusUnauthorized || statusCode == http.StatusTooManyRequests || statusCode >= 500 || modelUnsupported),
-		capacityShed:   !capacityShedHandlingDisabled() && isCapacityShedPayload(payload),
-		requestScoped:  emptyIncomplete,
+		logStatusCode:    statusCode,
+		failureKind:      kind,
+		failureMessage:   message,
+		failurePayload:   append([]byte(nil), payload...),
+		penalize:         !safetyPolicy && (statusCode == http.StatusUnauthorized || statusCode == http.StatusTooManyRequests || statusCode >= 500 || modelUnsupported),
+		capacityShed:     !capacityShedHandlingDisabled() && isCapacityShedPayload(payload),
+		requestScoped:    emptyIncomplete,
+		modelUnsupported: modelUnsupported,
 	}
 }
 
@@ -2388,7 +2434,7 @@ func classifyResponseFailedOutcome(payload []byte) streamOutcome {
 // 例外：它是按模型/身份容量分桶的请求级瞬时信号，换号不改变被降载因素，计入连击只会
 // 在高峰期把整池账号逐个调度降权。跳过上报即"软信号保留、硬惩罚移除"。
 func (h *Handler) reportStreamOutcomeFailure(account *auth.Account, outcome streamOutcome, d time.Duration) {
-	if outcome.capacityShed || outcome.requestScoped {
+	if outcome.capacityShed || outcome.requestScoped || outcome.modelUnsupported {
 		return
 	}
 	// Cloud Code can report a model capacity shortage inside an HTTP 200
@@ -3898,6 +3944,10 @@ func (h *Handler) Responses(c *gin.Context) {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
 	}
+	if contextErr := responsesHTTPContextEnvelopeError(rawBody); contextErr != nil {
+		api.SendError(c, contextErr)
+		return
+	}
 	h.capturePromptRequestIngress(c, rawBody)
 	bodyReadDone := time.Now()
 	compactionMeta := requestCompactionMetaForHTTP(c, rawBody)
@@ -4093,7 +4143,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	if continuationUnavailable {
-		accountFilter = relayOnlyAccountFilter(accountFilter)
+		accountFilter = responsesContinuationRelayFilter(accountFilter)
 	}
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
@@ -4237,6 +4287,13 @@ func (h *Handler) Responses(c *gin.Context) {
 				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
 				return
 			}
+			if msg, ok := h.unsupportedModelPoolMessage(apiKeyID, retryExclusions.ForSelection(), effectiveModel, dispatchPolicy); ok {
+				if isStream && writeCommittedResponsesRetryError(c, msg) {
+					return
+				}
+				c.JSON(http.StatusBadRequest, unsupportedModelPoolError(msg))
+				return
+			}
 			if isStream && writeCommittedResponsesRetryError(c, noAvailableAccountMessage(effectiveModel)) {
 				return
 			}
@@ -4256,6 +4313,11 @@ func (h *Handler) Responses(c *gin.Context) {
 
 		if attempt == 0 {
 			emitResponsesPhaseTimings(c, logModel, len(rawBody), handlerStart, bodyReadDone, validateDone, prepareDone)
+		}
+		if compatibilityErr := selectedCodexResponsesCompatibilityError(c, account, rawBody); compatibilityErr != nil {
+			h.store.Release(account)
+			sendResponsesCompatibilityError(c, compatibilityErr)
+			return
 		}
 		h.AcquireAPIKeyScopeConcurrency(c, account)
 		attemptMaxRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
@@ -4503,7 +4565,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 				}
 
-				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+				if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 					h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
@@ -5294,7 +5356,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -6071,6 +6133,10 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
 	}
+	if contextErr := responsesHTTPContextEnvelopeError(rawBody); contextErr != nil {
+		api.SendError(c, contextErr)
+		return
+	}
 	h.capturePromptRequestIngress(c, rawBody)
 	cacheRequestCompactionMeta(c, requestCompactionMetaForHTTP(c, rawBody))
 
@@ -6190,7 +6256,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	if continuationUnavailable {
-		accountFilter = relayOnlyAccountFilter(accountFilter)
+		accountFilter = responsesContinuationRelayFilter(accountFilter)
 	}
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
@@ -6285,7 +6351,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					return
 				}
-				if (lastStatusCode == http.StatusTooManyRequests || lastStatusCode == http.StatusBadGateway) && len(lastBody) > 0 {
+				if ((lastStatusCode == http.StatusTooManyRequests || lastStatusCode == http.StatusBadGateway) && len(lastBody) > 0) || lastFailureModelUnsupported(lastStatusCode, lastBody) {
 					h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
 					return
 				}
@@ -6302,6 +6368,10 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
 					return
 				}
+				if msg, ok := h.unsupportedModelPoolMessage(apiKeyID, retryExclusions.ForSelection(), effectiveModel, dispatchPolicy); ok {
+					c.JSON(http.StatusBadRequest, unsupportedModelPoolError(msg))
+					return
+				}
 				c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
 				return
 			}
@@ -6314,6 +6384,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			return
 		}
 
+		if compatibilityErr := selectedCodexResponsesCompatibilityError(c, account, rawBody); compatibilityErr != nil {
+			h.store.Release(account)
+			sendResponsesCompatibilityError(c, compatibilityErr)
+			return
+		}
 		h.AcquireAPIKeyScopeConcurrency(c, account)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
@@ -6408,7 +6483,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					}
 				}
 
-				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+				if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 					h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
@@ -6671,7 +6746,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -7134,7 +7209,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolChat) {
 				return
 			}
-			if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
+			if (lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0) || lastFailureModelUnsupported(lastStatusCode, lastBody) {
 				if isStream && writeCommittedChatRetryError(c, usageLogErrorMessage(lastStatusCode, lastBody)) {
 					return
 				}
@@ -7155,6 +7230,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					return
 				}
 				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+				return
+			}
+			if msg, ok := h.unsupportedModelPoolMessage(apiKeyID, retryExclusions.ForSelection(), effectiveModel, dispatchPolicy); ok {
+				if isStream && writeCommittedChatRetryError(c, msg) {
+					return
+				}
+				c.JSON(http.StatusBadRequest, unsupportedModelPoolError(msg))
 				return
 			}
 			if isStream && writeCommittedChatRetryError(c, noAvailableAccountMessage(effectiveModel)) {
@@ -7413,7 +7495,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					log.Printf("Antigravity OAuth refresh failed after upstream 401 (account=%d, endpoint=/v1/chat/completions): %v", account.ID(), refreshErr)
 				}
 			}
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 				h.reportAttemptFailure(c, account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -8724,18 +8806,31 @@ func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, b
 	}
 	switch statusCode {
 	case http.StatusBadRequest:
-		// 账号套餐不支持该模型：按 (账号, 模型) 冷却，调度器随后会跳过该组合；
+		// 上游"模型不支持"：套餐闸按 (账号, 模型) 冷却，调度器随后会跳过该组合；
+		// 版本闸对全池一样，冷却只会把号池逐个锁死，故不写冷却。
 		// 其余 400 属请求内容问题，不动账号状态。
 		if model != "" && isCodexModelUnsupportedError(body) {
-			cooldown := h.store.MarkModelCooldown(account, model, 30*time.Minute, "model_not_supported")
-			log.Printf("账号 %d (plan=%s) 不支持模型 %s，该模型冷却到 %s", account.ID(), account.GetPlanType(), model, cooldown.ResetAt.Format(time.RFC3339))
-			return codex429Decision{
-				Scope:    rateLimitScopeModel,
-				Reason:   "model_not_supported",
-				Model:    model,
-				ResetAt:  cooldown.ResetAt,
-				Cooldown: time.Until(cooldown.ResetAt),
+			decision := codex429Decision{
+				Scope:  rateLimitScopeModel,
+				Reason: auth.ModelCooldownReasonUnsupported,
+				Model:  model,
 			}
+			outboundVersion := codexOutboundClientVersion(resp)
+			version := displayCodexOutboundVersion(outboundVersion)
+			if classifyCodexUnsupportedModel(account.GetPlanType(), model, outboundVersion, time.Now()) == codexUnsupportedVersionGate {
+				log.Printf("账号 %d (plan=%s) 请求模型 %s 被上游拒绝，判定为客户端版本过低（出站 Version=%s），不写入模型冷却；请在后台同步 Codex 客户端版本或检查固定的 User-Agent", account.ID(), account.GetPlanType(), model, version)
+				return decision
+			}
+			duration := h.store.UnsupportedModelCooldown()
+			if duration <= 0 {
+				log.Printf("账号 %d (plan=%s) 不支持模型 %s（出站 Version=%s），按设置不写入模型冷却", account.ID(), account.GetPlanType(), model, version)
+				return decision
+			}
+			cooldown := h.store.MarkModelUnsupported(account, model, duration)
+			log.Printf("账号 %d (plan=%s) 不支持模型 %s（出站 Version=%s，套餐或客户端版本受限），该模型冷却到 %s", account.ID(), account.GetPlanType(), model, version, cooldown.ResetAt.Format(time.RFC3339))
+			decision.ResetAt = cooldown.ResetAt
+			decision.Cooldown = time.Until(cooldown.ResetAt)
+			return decision
 		}
 		return codex429Decision{}
 	case http.StatusTooManyRequests:

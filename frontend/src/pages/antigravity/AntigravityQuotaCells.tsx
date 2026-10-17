@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Clock, Coins, TriangleAlert } from "lucide-react";
+import { Ban, ChevronDown, Clock, Coins, TriangleAlert } from "lucide-react";
 import type { AccountRow, AntigravityQuotaSnapshot } from "../../types";
 import ModelLogo from "../../components/ModelLogo";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ import {
   type QuotaWindowSummary,
 } from "../../lib/antigravityQuota";
 import { formatBeijingTime, formatRelativeTime } from "../../utils/time";
+import { isAntigravityDisabledModel } from "../../lib/antigravityModels";
 
 // formatUntil 把未来时间压成 "2d3h" / "4h12m" / "8m" 的倒计时;已过去或无法解析时为空。
 function formatUntil(iso: string, now = Date.now()): string {
@@ -102,7 +103,7 @@ export function AntigravityQuotaCell({
   const labels = useWindowLabels();
   const quota = account.antigravity_quota;
   const groups = summarizeQuotaGroups(quota);
-  const models = modelQuotaEntries(quota);
+  const models = modelQuotaEntries(quota, account.models);
 
   if (groups.length === 0 && models.length === 0) {
     return (
@@ -291,7 +292,7 @@ export function AntigravityModelQuotaList({
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const models = sortedModelQuotaEntries(account.antigravity_quota);
+  const models = sortedModelQuotaEntries(account.antigravity_quota, account.models);
   if (models.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
@@ -305,8 +306,17 @@ export function AntigravityModelQuotaList({
     <div className="overflow-hidden rounded-xl border border-border bg-card">
       <div className="divide-y divide-border/70">
         {visible.map(([model, info]) => {
+          const disabled = isAntigravityDisabledModel(model);
           const fraction = quotaRemaining(info);
           const resetAt = quotaResetTime(info);
+          const disabledOverlay = disabled ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-end bg-background/30 px-3.5">
+              <Badge variant="outline" className="gap-1 bg-background/95 text-muted-foreground shadow-sm">
+                <Ban className="size-3" aria-hidden />
+                {t("accounts.disabled")}
+              </Badge>
+            </div>
+          ) : null;
           const capabilities = (
             <div className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-muted-foreground">
               {info.supports_images ? <span>{t("antigravity.images")}</span> : null}
@@ -343,40 +353,48 @@ export function AntigravityModelQuotaList({
             return (
               <div
                 key={model}
-                className="grid gap-2 px-3.5 py-2.5 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-center"
+                data-model-id={model}
+                data-disabled={disabled || undefined}
+                className="relative"
               >
-                <div className="flex min-w-0 items-center gap-2.5">
-                  <ModelLogo model={model} size={18} variant="plain" />
-                  <div className="min-w-0 flex-1">
-                    {title}
-                    {capabilities}
+                <div className={cn("grid gap-2 px-3.5 py-2.5 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-center", disabled && "opacity-50")}>
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <ModelLogo model={model} size={18} variant="plain" />
+                    <div className="min-w-0 flex-1">
+                      {title}
+                      {capabilities}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="truncate text-muted-foreground" title={resetAt ? formatBeijingTime(resetAt) : undefined}>
+                        {resetAt ? t("antigravity.resetAt", { time: formatBeijingTime(resetAt) }) : "-"}
+                      </span>
+                      <span className={cn("shrink-0 font-mono font-semibold tabular-nums", quotaTextTone(fraction))}>
+                        {formatPercent(fraction)}
+                      </span>
+                    </div>
+                    <QuotaBar fraction={fraction} className="mt-1.5" />
                   </div>
                 </div>
-                <div>
-                  <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="truncate text-muted-foreground" title={resetAt ? formatBeijingTime(resetAt) : undefined}>
-                      {resetAt ? t("antigravity.resetAt", { time: formatBeijingTime(resetAt) }) : "-"}
-                    </span>
-                    <span className={cn("shrink-0 font-mono font-semibold tabular-nums", quotaTextTone(fraction))}>
-                      {formatPercent(fraction)}
-                    </span>
-                  </div>
-                  <QuotaBar fraction={fraction} className="mt-1.5" />
-                </div>
+                {disabledOverlay}
               </div>
             );
           }
           return (
-            <div key={model} className="flex items-center gap-2.5 px-3 py-2">
-              <ModelLogo model={model} size={16} variant="plain" />
-              <div className="min-w-0 flex-1">
-                {title}
-                {capabilities}
+            <div key={model} data-model-id={model} data-disabled={disabled || undefined} className="relative">
+              <div className={cn("flex items-center gap-2.5 px-3 py-2", disabled && "opacity-50")}>
+                <ModelLogo model={model} size={16} variant="plain" />
+                <div className="min-w-0 flex-1">
+                  {title}
+                  {capabilities}
+                </div>
+                <QuotaBar fraction={fraction} className="w-16 shrink-0" />
+                <span className={cn("w-9 shrink-0 text-right text-[11px] font-semibold tabular-nums", quotaTextTone(fraction))}>
+                  {formatPercent(fraction)}
+                </span>
               </div>
-              <QuotaBar fraction={fraction} className="w-16 shrink-0" />
-              <span className={cn("w-9 shrink-0 text-right text-[11px] font-semibold tabular-nums", quotaTextTone(fraction))}>
-                {formatPercent(fraction)}
-              </span>
+              {disabledOverlay}
             </div>
           );
         })}
