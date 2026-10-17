@@ -6,12 +6,6 @@ import {
   accountProbePolicyFromAccount,
   type AccountProbePolicy,
 } from "./accountProbePolicy.ts";
-import {
-  bpsFormFromAccount,
-  bpsPayloadFromForm,
-  type BPSAccountForm,
-  type BPSAccountSource,
-} from "./bpsAccount.ts";
 
 export type QuickConfigLoadStatus = "loading" | "ready" | "error";
 
@@ -27,7 +21,7 @@ export type QuickConfigReadySaveError = Exclude<
   "not_ready"
 >;
 
-export interface QuickConfigAccountSource extends Partial<AccountProbePolicy>, BPSAccountSource {
+export interface QuickConfigAccountSource extends Partial<AccountProbePolicy> {
   upstream_request_id_header?: string | null;
   id: number;
   detail_loaded?: boolean;
@@ -49,7 +43,6 @@ export interface QuickConfigAccountSource extends Partial<AccountProbePolicy>, B
 }
 
 export interface QuickConfigFormState {
-  bps: BPSAccountForm;
   probePolicy: AccountProbePolicy;
   upstreamRequestIdHeader: string;
   accountId: number;
@@ -65,8 +58,6 @@ export interface QuickConfigFormState {
   customHeadersText: string;
   tags: string[];
   groupIds: number[];
-  /** The BPS switch as loaded; the save sends it only when it changed. */
-  initialBPSEnabled: BPSAccountForm["enabled"];
 }
 
 export function accountHasQuickConfigDetails(
@@ -131,11 +122,8 @@ export function formatCustomHeadersText(
 export function formStateFromAccount(
   account: QuickConfigAccountSource,
 ): QuickConfigFormState {
-  const bps = bpsFormFromAccount(account);
   return {
     probePolicy: accountProbePolicyFromAccount(account),
-    bps,
-    initialBPSEnabled: bps.enabled,
     accountId: account.id,
     upstreamRequestIdHeader: account.upstream_request_id_header ?? "",
     fingerprintMode: normalizeCodexFingerprintMode(
@@ -227,17 +215,10 @@ export function buildQuickConfigSavePayload(
     parsedSchedulerPriority = value;
   }
 
-  // Leave the BPS switch untouched unless the administrator changed it.
-  const bpsPatch =
-    form.bps.enabled !== form.initialBPSEnabled
-      ? bpsPayloadFromForm(form.bps, true)
-      : {};
-
   return {
     ok: true,
     payload: {
       ...form.probePolicy,
-      ...bpsPatch,
       score_bias_override: form.scoreMode === "custom" ? parsedScoreBias : null,
       base_concurrency_override:
         form.concurrencyMode === "custom" ? parsedBaseConcurrency : null,

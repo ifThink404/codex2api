@@ -157,9 +157,7 @@ func (h *Handler) runAutoActivate5hScan(ctx context.Context, now time.Time) auto
 }
 
 func (h *Handler) autoActivate5hForAccount(ctx context.Context, account *auth.Account, now time.Time) (candidate, activated bool, err error) {
-	// The 5h window is a native Codex window; a BPS account without an
-	// explicit native route never gets native traffic to open it.
-	if account == nil || !account.AutomaticProbesEnabled() || proxy.BPSOwnsAccount(account) {
+	if account == nil || !account.AutomaticProbesEnabled() {
 		return false, false, nil
 	}
 	enabled, settingsErr := h.loadAutoActivate5hEnabled(ctx)

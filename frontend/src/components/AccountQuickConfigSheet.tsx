@@ -46,8 +46,6 @@ import AccountGroupMultiSelect from "./AccountGroupMultiSelect";
 import StateShell from "./StateShell";
 import AccountProbePolicyFields from "./AccountProbePolicyFields";
 import { isAPIKeyProbeAccount } from "../lib/accountProbePolicy";
-import BPSAccountFields from './BPSAccountFields';
-import { isBPSAccount } from '../lib/bpsAccount';
 
 function formatSignedNumber(value: number): string {
   if (value > 0) return `+${value}`;
@@ -255,7 +253,6 @@ export default function AccountQuickConfigSheet({
           >
             {form ? (
               <>
-          {isBPSAccount(account) && <BPSAccountFields compact form={form.bps} onChange={patch => patchForm({ bps: { ...form.bps, ...patch } })} disabled={saving} active={account.codex_bps_active} />}
           <div className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs space-y-3">
             <div className="flex items-center gap-2 border-b border-border/50 pb-2.5">
               <Fingerprint className="size-4 text-teal-500" />

@@ -60,3 +60,4 @@ diagrams/
 
 # local e2e test scaffolding (mock upstream + scripts, not for CI)
 /local-test/
+/dist/releases/

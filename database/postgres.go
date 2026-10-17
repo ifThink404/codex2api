@@ -1871,7 +1871,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_image_assets_created ON image_assets(created_at);
 	CREATE INDEX IF NOT EXISTS idx_image_assets_job_id ON image_assets(job_id);
 	`
-	_, err := db.conn.ExecContext(ctx, query+accountModelObservationsSchema+transportPluginsSchemaPostgres)
+	_, err := db.conn.ExecContext(ctx, query+accountModelObservationsSchema)
 	if err != nil {
 		return err
 	}
@@ -4774,6 +4774,18 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 	return nil
 }
 
+// TransportNative is the usage_logs.transport value of every request; the
+// column stays for rows written while transport plugins existed.
+const TransportNative = "native"
+
+func normalizeUsageLogTransport(transport string) string {
+	transport = strings.TrimSpace(transport)
+	if transport == "" {
+		return TransportNative
+	}
+	return clampUsageLogText(transport, 32)
+}
+
 // UsageLogInput 日志写入参数
 type UsageLogInput struct {
 	billingSnapshot      *usageBillingSnapshot
@@ -4864,8 +4876,7 @@ type UsageLogInput struct {
 	// 及其同义错误类型）。纯传输字段：没有对应的 usage_logs 列，也不写库，只供落库
 	// 前的会话自动锁定区分「上游按账号×模型分桶降载」与真正的 server_error。
 	CapacityShed bool
-	// Transport 为空按 native 落库；传输插件承载的尝试填插件 ID（由 proxy 在落库
-	// 填充链里按请求上下文补上，不在各落库点手写）。PluginMeta 是插件自带的 JSON。
+	// Transport 为空按 native 落库；PluginMeta 只在已移除的传输插件时期写过。
 	Transport  string
 	PluginMeta string
 }

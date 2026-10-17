@@ -26,7 +26,6 @@ import (
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/version"
 	"github.com/codex2api/proxy"
-	"github.com/codex2api/proxy/plugins"
 	"github.com/codex2api/proxy/wsrelay"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
@@ -390,15 +389,6 @@ func main() {
 	adminHandler.StartOfficialPricingSync(backgroundCtx)
 	// Prompt 审核日志保留清理：默认保留 7 天，每小时分批清理过期行，CY 关联行不动。
 	adminHandler.StartPromptLogRetention(backgroundCtx)
-	// 传输插件：加载状态快照并挂上 outbox 热加载（各副本即时生效）；抓包异步落库、保留 3 天。
-	pluginAttachCtx, pluginAttachCancel := context.WithTimeout(backgroundCtx, 30*time.Second)
-	if err := plugins.Default().Attach(pluginAttachCtx, db); err != nil {
-		pluginAttachCancel()
-		log.Fatalf("加载传输插件状态失败: %v", err)
-	}
-	pluginAttachCancel()
-	plugins.Default().StartCaptureWriter(backgroundCtx)
-	plugins.StartPluginCaptureRetention(backgroundCtx, db)
 	// 日志分析记录按其保留天数每 10 分钟清理。
 	adminHandler.StartLogAgentRetention(backgroundCtx)
 	// Responses API 渠道监控按账号启用，健康检查和倍率探测分别调度。
@@ -433,8 +423,6 @@ func main() {
 	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
 	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
 	handler.SetRuntimeCache(tc)
-	// BPS usage-policy cooldowns end only after a background probe succeeds.
-	handler.StartBPSPolicyProber(backgroundCtx)
 
 	r.Use(api.RecoveryMiddleware())
 	r.Use(api.RequestContextMiddleware())

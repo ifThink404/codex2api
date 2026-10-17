@@ -39,10 +39,7 @@ func TestModelCatalogDoesNotDependOnOptionalTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewHandler(store, db, nil, nil)
-	for _, enabled := range []bool{false, true, false} {
-		store.ApplyAccountTransportPluginOverride(id, BPSPluginID, &enabled)
-		if !h.observedCodexManifestModels(ctx, &database.APIKeyRow{ID: 12})["gpt-6-sol"] {
-			t.Fatalf("optional transport=%v changed catalog", enabled)
-		}
+	if !h.observedCodexManifestModels(ctx, &database.APIKeyRow{ID: 12})["gpt-6-sol"] {
+		t.Fatal("an observation saved with a legacy transport is missing from the catalog")
 	}
 }

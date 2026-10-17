@@ -10,8 +10,6 @@ import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
-import BPSAccountFields from '../components/BPSAccountFields';
-import { bpsFormFromAccount, bpsPayloadFromForm, isBPSAccount, type BPSAccountForm } from '../lib/bpsAccount';
 import { AccountModelAvailabilityProvider, AccountModelAvailabilityToolbar, AccountModelAvailabilityBadge, AccountModelAvailabilityPanel } from '../components/AccountModelAvailability';
 import AccountHrefQuickEditor, {
   openAccountHref,
@@ -23,8 +21,6 @@ import {
   type ProxyBindingContext,
 } from "../lib/accountProxyBinding";
 import Modal from "../components/Modal";
-import BatchBPSDialog from "../components/BatchBPSDialog";
-import BatchDegradeProbeDialog from "../components/BatchDegradeProbeDialog";
 import ChannelLogo from "../components/ChannelLogo";
 import { useVisibleChannels } from "../visibleChannels";
 import ModelLogo from "../components/ModelLogo";
@@ -55,7 +51,6 @@ import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
 import StatusBadge from "../components/StatusBadge";
 import DaybreakBadge from "../components/DaybreakBadge";
-import { BPSAccountStatusProvider, BPSStatusBadge } from "../components/PluginAccountStatusLine";
 import { useDataLoader, type LoadOptions } from "../hooks/useDataLoader";
 import {
   useConfirmDialog,
@@ -66,7 +61,6 @@ import {
   usePersistedPageSize,
 } from "../hooks/usePersistedPageSize";
 import { useToast } from "../hooks/useToast";
-import type { CodexTestMode } from "../types";
 import type {
   AccountRow,
   AccountHealthBucket,
@@ -193,7 +187,6 @@ import {
   BarChart3,
   Search,
   Fingerprint,
-  Cable,
   FolderOpen,
   FolderPlus,
   Layers,
@@ -1600,7 +1593,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                           errorMessage={account.error_message}
                                         />
                                         <AccountIntelligenceActions bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} />
-                                        <BPSStatusBadge accountId={account.id} active={account.codex_bps_active} />
                                       </div>
                                       <UsingCreditsBadge account={account} />
                                       {account.status !== "overload_paused" && (
@@ -2261,9 +2253,7 @@ export default function Accounts() {
   const [modelsSyncing, setModelsSyncing] = useState(false);
   const [modelsProbing, setModelsProbing] = useState(false);
   const [modelsSaving, setModelsSaving] = useState(false);
-  const [editBPS, setEditBPS] = useState<BPSAccountForm>(() => bpsFormFromAccount({}));
   // Batch connection-test path; applies to that run only, never saved.
-  const [batchTestMode, setBatchTestMode] = useState<CodexTestMode>("auto");
   // 探测看板：逐模型的实时测试状态（pending→testing→结果）。
   const [probeBoard, setProbeBoard] = useState<ModelProbeItem[]>([]);
   const [tagFilter, setTagFilter] = useState<string>("");
@@ -2326,8 +2316,6 @@ export default function Accounts() {
   const [showBatchMetaEditor, setShowBatchMetaEditor] = useState(false);
   // groups replaces the selected accounts' groups; addGroups adds to them.
   const [batchMetaMode, setBatchMetaMode] = useState<"all" | "groups" | "addGroups">("all");
-  const [showBatchBPS, setShowBatchBPS] = useState(false);
-  const [showBatchDegrade, setShowBatchDegrade] = useState(false);
   const [batchUpdateProbePolicy, setBatchUpdateProbePolicy] = useState(false);
   const [batchProbePolicy, setBatchProbePolicy] = useState(accountProbePolicyFromAccount);
   const [batchUpdateTags, setBatchUpdateTags] = useState(false);
@@ -5698,7 +5686,7 @@ export default function Accounts() {
       const target = ids ? { ids } : { selector: currentAccountSelector };
       const result = await runStreamingAccountOperation(
         "/accounts/batch-test?stream=true",
-        batchTestMode === "auto" ? target : { ...target, test_mode: batchTestMode },
+        target,
         t("accounts.batchTestProgressTitle"),
       );
       showToast(
@@ -5877,7 +5865,6 @@ export default function Accounts() {
     setEditTimezoneCustom(
       Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
     );
-    setEditBPS(bpsFormFromAccount(account));
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
     setEditOpenAIForm({
@@ -6112,7 +6099,6 @@ export default function Accounts() {
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
               timezone: editTimezone.trim(),
-              ...(isBPSAccount(editingAccount) ? bpsPayloadFromForm(editBPS) : {}),
             }
           : {}),
       };
@@ -6672,18 +6658,6 @@ export default function Accounts() {
                         <Plus className="size-3.5" />
                         {t("accounts.addAccount")}
                       </Button>
-<Select
-                        className="w-32 shrink-0"
-                        compact
-                        value={batchTestMode}
-                        onValueChange={(value) => setBatchTestMode(value as CodexTestMode)}
-                        options={(["auto", "codex", "bps"] as CodexTestMode[]).map((value) => ({
-                          value,
-                          label: t(`accounts.bps.testModes.${value}`),
-                        }))}
-                        disabled={batchTesting}
-                        aria-label={t("accounts.bps.testMode")}
-                      />
                       <Button
                         variant="outline"
                         size="sm"
@@ -7620,18 +7594,6 @@ export default function Accounts() {
                     {t("accounts.batchGroupEdit")}
                   </span>
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={batchLoading || batchTesting}
-                  onClick={() => setShowBatchBPS(true)}
-                  title={t("accounts.batchBPS.action")}
-                >
-                  <Cable className="size-3.5" />
-                  <span className="hidden sm:inline">
-                    {t("accounts.batchBPS.action")}
-                  </span>
-                </Button>
                 <HeaderActionMenu
                   label={t("accounts.batchMore")}
                   icon={<MoreHorizontal className="size-3.5" />}
@@ -7665,13 +7627,6 @@ export default function Accounts() {
                       icon: <Hourglass className="size-3.5" />,
                       disabled: batchLoading || batchTesting,
                       onSelect: openBatchQuotaAutoPauseEditor,
-                    },
-                    {
-                      key: "degrade-probe",
-                      label: t("accounts.batchDegrade.action"),
-                      icon: <FlaskConical className="size-3.5" />,
-                      disabled: batchLoading || batchTesting,
-                      onSelect: () => setShowBatchDegrade(true),
                     },
                     {
                       key: "reset-status",
@@ -7711,7 +7666,6 @@ export default function Accounts() {
           ) : null}
 
           <AccountModelAvailabilityToolbar accounts={accounts} onUpdated={() => void reloadSilently()} />
-          <BPSAccountStatusProvider accounts={pagedAccounts}>
           <Card className={shouldRenderMobileCards ? "codex-account-list" : undefined}>
             <CardContent className={shouldRenderMobileCards ? "p-0" : "p-3 sm:p-4"}>
               <StateShell
@@ -8058,7 +8012,6 @@ export default function Accounts() {
               </StateShell>
             </CardContent>
           </Card>
-          </BPSAccountStatusProvider>
 
           <Modal
             show={showAdd}
@@ -10506,7 +10459,6 @@ export default function Accounts() {
                         </div>
 
                         {/* 设备指纹收敛 */}
-                        {isBPSAccount(editingAccount) && <div className="md:col-span-2"><BPSAccountFields form={editBPS} onChange={patch => setEditBPS(prev => ({ ...prev, ...patch }))} disabled={editSubmitting} active={editingAccount.codex_bps_active} /></div>}
                         {isCodexOfficialAccount(editingAccount) ? (
                           <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                             <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
@@ -11316,38 +11268,7 @@ export default function Accounts() {
             </div>
           </Modal>
 
-          <BatchDegradeProbeDialog
-            show={showBatchDegrade}
-            ids={Array.from(selected)}
-            onClose={() => setShowBatchDegrade(false)}
-            onDone={(result) => {
-              setShowBatchDegrade(false);
-              showToast(
-                t("accounts.batchDegrade.done", {
-                  queued: result.queued,
-                  skipped: result.skipped,
-                }),
-                result.queued === 0 ? "error" : "success",
-              );
-            }}
-          />
 
-          <BatchBPSDialog
-            show={showBatchBPS}
-            ids={Array.from(selected)}
-            onClose={() => setShowBatchBPS(false)}
-            onDone={(result) => {
-              setShowBatchBPS(false);
-              showToast(
-                t("accounts.batchBPS.done", {
-                  success: result.success,
-                  fail: result.failed,
-                }),
-                result.failed > 0 ? "error" : "success",
-              );
-              void reload();
-            }}
-          />
 
           <Modal
             show={showBatchQuotaAutoPauseEditor}
@@ -14585,7 +14506,6 @@ function AccountMobileCard({
               )}
               {showColumn("status") && (
                 <>
-                  <BPSStatusBadge accountId={account.id} active={account.codex_bps_active} variant="card" />
                   <UsingCreditsBadge account={account} />
                   {account.status !== "overload_paused" && (
                     <AccountStatusCountdown account={account} />

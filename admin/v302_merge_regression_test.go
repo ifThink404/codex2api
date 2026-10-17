@@ -53,24 +53,3 @@ func TestV302MergedAdminRoutes(t *testing.T) {
 		}
 	}
 }
-
-// The BPS plugin override is accepted as a capability-only update.
-func TestV302BPSCapabilitiesRemainIndependent(t *testing.T) {
-	for _, tc := range []struct {
-		req  updateAccountSchedulerReq
-		want any
-	}{
-		{updateAccountSchedulerReq{codexBPSAccountFieldsReq: codexBPSAccountFieldsReq{Enabled: json.RawMessage(`true`)}}, true},
-	} {
-		got, err := parseAccountSchedulerUpdate(tc.req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !got.hasChanges() {
-			t.Fatal("capability-only update ignored")
-		}
-		if got.CredentialUpdates[auth.CodexBPSEnabledCredentialKey] != tc.want {
-			t.Fatalf("plugin override = %#v, want %#v", got.CredentialUpdates[auth.CodexBPSEnabledCredentialKey], tc.want)
-		}
-	}
-}

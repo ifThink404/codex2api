@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/codex2api/auth"
@@ -16,7 +17,7 @@ func WithCodexTestMode(ctx context.Context, mode string) (context.Context, error
 	if mode == "" {
 		mode = "auto"
 	}
-	if mode != "auto" && mode != "codex" && mode != "bps" {
+	if mode != "auto" && mode != "codex" {
 		return ctx, fmt.Errorf("测试路径无效，请重新选择")
 	}
 	return context.WithValue(ctx, codexTestModeKey{}, mode), nil
@@ -30,17 +31,13 @@ func ValidateCodexTestMode(ctx context.Context, account *auth.Account) error {
 	native := account != nil
 	if account != nil {
 		account.Mu().RLock()
-		kind, authMode := strings.TrimSpace(account.UpstreamType), account.CodexAuthMode
+		kind := strings.TrimSpace(account.UpstreamType)
 		account.Mu().RUnlock()
-		native = (kind == "" || kind == "codex") && !(mode == "bps" && strings.EqualFold(authMode, auth.CodexAuthModeAgentIdentity))
+		native = kind == "" || kind == "codex"
 	}
-	if !native || account.IsRelayStyle() || mode == "bps" && account.IsCodexAgentIdentity() {
+	if !native || account.IsRelayStyle() {
 		return fmt.Errorf("该账号不支持所选测试路径，请使用按账号配置")
 	}
-	// An explicit Codex (native) test is allowed on an account BPS owns: a
-	// manual connection test is a deliberate one-off, not business traffic,
-	// so the no-native rule for BPS accounts (routing, background jobs) does
-	// not apply to it.
 	return nil
 }
 
@@ -52,12 +49,15 @@ func CodexTestModeLabel(ctx context.Context, account *auth.Account, models ...st
 	if account == nil || account.IsRelayStyle() {
 		return "account"
 	}
-	model := ""
-	if len(models) > 0 {
-		model = models[0]
-	}
-	if bpsServesAccount(account, model) && !account.CodexRouteAllows("native", model, false, true) {
-		return "bps"
-	}
 	return "codex"
+}
+
+// ExecuteCodexConnectionTest runs an account connection test after checking
+// the explicit test mode (WithCodexTestMode); the mode never changes account
+// settings.
+func ExecuteCodexConnectionTest(ctx context.Context, account *auth.Account, payload []byte, proxyURL string) (*http.Response, error) {
+	if err := ValidateCodexTestMode(ctx, account); err != nil {
+		return nil, err
+	}
+	return ExecuteRequest(ctx, account, payload, "", proxyURL, "", nil, nil)
 }

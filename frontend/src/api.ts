@@ -3,19 +3,6 @@ import { intelligenceQuery, type IntelligenceSettings, type IntelligenceAccount,
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
   BuiltinPromptRuleFields,
-  PluginCapture,
-  PluginAccountStatus,
-  BPSPolicyBlocksResponse,
-  BPSDashboard,
-  BPSActivity,
-  PluginCapturePage,
-  PluginCapturePurgeMode,
-  PluginCapturePurgeResult,
-  PluginCaptureStats,
-  PluginCaptureQuery,
-  TransportPlugin,
-  TransportPluginsResponse,
-  TransportPluginUpdate,
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
   AccountPortalSubmitResponse,
@@ -1527,49 +1514,6 @@ export const api = {
 	getPromptPolicyAuditHealth: () =>
 		request<PromptPolicyAuditHealth>('/prompt-policy/incidents/health'),
 	getPromptLogRetention: () => request<PromptLogRetention>('/prompt-filter/retention'),
-	getTransportPlugins: () => request<TransportPluginsResponse>('/plugins'),
-	getTransportPlugin: (id: string) => request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`),
-	updateTransportPlugin: (id: string, update: TransportPluginUpdate) =>
-		request<TransportPlugin>(`/plugins/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(update) }),
-	setTransportPluginAccountOverride: (id: string, accountId: number, enabled: boolean | null) =>
-		request<{ account_id: number; plugin: string; enabled: boolean | null }>(
-			`/plugins/${encodeURIComponent(id)}/accounts/${accountId}`,
-			{ method: 'PUT', body: JSON.stringify({ enabled }) },
-		),
-	getPluginAccountStatus: (id: string, accountIds: number[]) =>
-		request<{ accounts: PluginAccountStatus[] }>(`/plugins/${encodeURIComponent(id)}/account-status?ids=${accountIds.join(',')}`),
-	getPluginCaptures: (id: string, query: PluginCaptureQuery = {}) => {
-		const search = new URLSearchParams()
-		if (query.requestId) search.set('request_id', query.requestId)
-		if (query.accountId) search.set('account_id', String(query.accountId))
-		if (query.status !== undefined) search.set('status', String(query.status))
-		if (query.direction) search.set('direction', query.direction)
-		if (query.start) search.set('start', query.start)
-		if (query.end) search.set('end', query.end)
-		if (query.page) search.set('page', String(query.page))
-		if (query.pageSize) search.set('page_size', String(query.pageSize))
-		const qs = search.toString()
-		return request<PluginCapturePage>(`/plugins/${encodeURIComponent(id)}/captures${qs ? `?${qs}` : ''}`)
-	},
-	getBPSActivity: (id: string) => request<BPSActivity>(`/plugins/${encodeURIComponent(id)}/activity`),
-	getBPSDashboard: (id: string) => request<BPSDashboard>(`/plugins/${encodeURIComponent(id)}/dashboard`),
-	getPluginPolicyBlocks: (id: string) => request<BPSPolicyBlocksResponse>(`/plugins/${encodeURIComponent(id)}/policy-blocks`),
-	listDegradeProbes: (id: string, filter: { accountId?: number; route?: string; verdict?: string; limit?: number } = {}) => {
-		const search = new URLSearchParams()
-		if (filter.accountId) search.set('account_id', String(filter.accountId))
-		if (filter.route) search.set('route', filter.route)
-		if (filter.verdict) search.set('verdict', filter.verdict)
-		if (filter.limit) search.set('limit', String(filter.limit))
-		return request<import('./types').DegradeProbesResponse>(`/plugins/${encodeURIComponent(id)}/degrade-probes?${search.toString()}`)
-	},
-	getDegradeProbe: (id: string, probeId: number) => request<import('./types').DegradeProbe>(`/plugins/${encodeURIComponent(id)}/degrade-probes/${probeId}`),
-	startDegradeProbes: (id: string, accountIds: number[], route: 'bps' | 'native') =>
-		request<import('./types').DegradeProbeStartResult>(`/plugins/${encodeURIComponent(id)}/degrade-probes`, { method: 'POST', body: JSON.stringify({ account_ids: accountIds, route }) }),
-	getPluginCaptureStats: (id: string) => request<PluginCaptureStats>(`/plugins/${encodeURIComponent(id)}/capture-stats`),
-	purgePluginCaptures: (id: string, mode: PluginCapturePurgeMode, hours?: number) =>
-		request<PluginCapturePurgeResult>(`/plugins/${encodeURIComponent(id)}/captures/purge`, { method: 'POST', body: JSON.stringify(mode === 'older_than' ? { mode, hours } : { mode }) }),
-	getPluginCapture: (id: string, captureId: number) =>
-		request<PluginCapture>(`/plugins/${encodeURIComponent(id)}/captures/${captureId}`),
 	updatePromptLogRetention: (retentionDays: number) =>
 		request<PromptLogRetention>('/prompt-filter/retention', { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) }),
 	runPromptLogRetention: () =>

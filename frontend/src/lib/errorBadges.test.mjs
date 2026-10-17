@@ -7,9 +7,8 @@ const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
 const locales = ['zh', 'en', 'zh-TW'].map((name) => JSON.parse(read(`../locales/${name}.json`)))
 
 test('error kinds map to tones', () => {
-  for (const kind of ['bps_rate_limited', 'rate_limit', 'rate_limited']) assert.equal(errorKindTone(kind), 'rate', kind)
-  for (const kind of ['bps_policy_blocked', 'basispoints_model_access_changed', 'cyber_policy']) assert.equal(errorKindTone(kind), 'policy', kind)
-  for (const kind of ['bps_unavailable', 'bps_model_unavailable', 'bps_concurrency_full', 'bps_budget_exhausted']) assert.equal(errorKindTone(kind), 'availability', kind)
+  for (const kind of ['rate_limit', 'rate_limited']) assert.equal(errorKindTone(kind), 'rate', kind)
+  for (const kind of ['cyber_policy']) assert.equal(errorKindTone(kind), 'policy', kind)
   assert.equal(errorKindTone('basispoints_cutoff_completed'), 'info')
   for (const kind of ['server_error', 'upstream_error', 'upstream_timeout', 'transport_error', 'unauthorized']) assert.equal(errorKindTone(kind), 'error', kind)
   assert.equal(errorKindTone('some_new_rate_limit_kind'), 'rate', 'unknown kinds fall back to patterns')
@@ -21,7 +20,7 @@ test('tone badges are distinct and themed for light and dark', () => {
   const classes = ERROR_KIND_TONES.map((tone) => ERROR_KIND_TONE_BADGE_CLASSES[tone])
   assert.equal(new Set(classes).size, ERROR_KIND_TONES.length)
   for (const value of classes) assert.match(value, /dark:text-/)
-  assert.equal(errorKindBadgeClassName('bps_rate_limited'), ERROR_KIND_TONE_BADGE_CLASSES.rate)
+  assert.equal(errorKindBadgeClassName('rate_limited'), ERROR_KIND_TONE_BADGE_CLASSES.rate)
   assert.equal(errorStatusBadgeClassName(502), ERROR_KIND_TONE_BADGE_CLASSES.error)
   assert.equal(errorStatusBadgeClassName(429), ERROR_KIND_TONE_BADGE_CLASSES.rate)
   assert.equal(errorStatusBadgeClassName(499), ERROR_KIND_TONE_BADGE_CLASSES.availability)
@@ -29,7 +28,7 @@ test('tone badges are distinct and themed for light and dark', () => {
 
 test('kindless rows use the status class, matching the server', () => {
   assert.equal(errorKindLabel({ upstream_error_kind: '', status_code: 502 }), 'server_error')
-  assert.equal(errorKindLabel({ upstream_error_kind: 'bps_policy_blocked', status_code: 403 }), 'bps_policy_blocked')
+  assert.equal(errorKindLabel({ upstream_error_kind: 'cyber_policy', status_code: 403 }), 'cyber_policy')
   assert.equal(classifyStatus(499), 'client_closed')
   const server = read('../../../database/postgres.go')
   for (const [status, kind] of [[401, 'unauthorized'], [403, 'forbidden'], [429, 'rate_limit'], [499, 'client_closed']]) {

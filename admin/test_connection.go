@@ -112,7 +112,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		account = transient
 		isTransient = true
 	}
-	// 测试路径（auto/codex/bps）只作用于本次测试，必须早于上游 Excel BPS 拦截。
+	// 测试路径（auto/codex）只作用于本次测试。
 	if !h.applyCodexTestMode(c, account, c.Query("test_mode")) {
 		return
 	}
@@ -223,9 +223,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		// 不受"强制 WebSocket"影响,也不占用/依赖池化长连接。
 		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil, false)
 	} else {
-		testCtx, usage := proxy.WithConnectionTestUsage(c.Request.Context())
-		c.Set(contextConnectionTestTransport, usage)
-		resp, reqErr = proxy.ExecuteCodexConnectionTest(testCtx, account, payload, h.store.ResolveProxyForAccount(account))
+		resp, reqErr = proxy.ExecuteCodexConnectionTest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account))
 	}
 	if reqErr != nil {
 		h.logConnectionTestTransportFailure(c, account, usageReason, usageEndpoint, testModel, usageEffort, start, reqErr)
@@ -1265,7 +1263,7 @@ type batchTestRequest struct {
 	Selector *accountOperationSelector `json:"selector,omitempty"`
 	// RestoreOnSuccess 仅回收站批量测试使用：测试通过的账号自动恢复到账号池。
 	RestoreOnSuccess bool `json:"restore_on_success"`
-	// TestMode 选择本次测试路径：auto（按账号配置）/ codex / bps，不写账号配置。
+	// TestMode 选择本次测试路径：auto（按账号配置）/ codex，不写账号配置。
 	TestMode string `json:"test_mode"`
 }
 
@@ -2060,10 +2058,6 @@ func (h *Handler) applyCodexTestMode(c *gin.Context, account *auth.Account, mode
 }
 
 func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account) (string, string, bool) {
-	// BPS tests skip the native WHAM preflight and verify the chosen path.
-	if proxy.CodexTestModeLabel(ctx, acc) == "bps" {
-		return "", "", false
-	}
 	if h == nil || h.store == nil || acc == nil || acc.IsRelayStyle() || acc.GetAccessToken() == "" {
 		return "", "", false
 	}

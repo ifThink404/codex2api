@@ -4258,13 +4258,6 @@ export default function Settings() {
                 </div>
               </SettingsCard>
 
-              <SettingsCard title={t('settings.codexBasispoints')} icon={<Layers className="size-4" />}>
-                <p className="text-sm text-muted-foreground">
-                  {t('settings.codexBasispointsPluginNote')}{' '}
-                  <Link to="/plugins/bps/overview" className="font-medium text-primary hover:underline">{t('settings.codexBasispointsPluginLink')}</Link>
-                </p>
-              </SettingsCard>
-
               <SettingsCard title={t('settings.codexContinueThinking')} description={t('settings.codexContinueThinkingDesc')} icon={<Brain className="size-4" />}>
                 <div className="space-y-4">
                   <div className={SETTINGS_SWITCH_ROW}>

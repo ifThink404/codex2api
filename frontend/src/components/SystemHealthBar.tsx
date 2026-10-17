@@ -57,7 +57,7 @@ interface Props {
   chartData: ChartAggregation | null
   timeRange: TimeRangeKey
   loading?: boolean
-  // title 覆盖默认的「系统健康」标题（如插件页的 BPS 成功率条）。
+  // title 覆盖默认的「系统健康」标题。
   title?: string
 }
 

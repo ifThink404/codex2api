@@ -152,19 +152,3 @@ for (const mode of ['single_machine_multi_window']) {
   });
 }
 
-test("quick config sends the BPS switch only when it changed, and never the upstream flags", () => {
-  const inherit = formStateFromAccount({ ...detailedRow });
-  let result = buildQuickConfigSavePayload(inherit, true);
-  assert.equal(result.ok, true);
-  assert.equal("codex_bps_enabled" in result.payload, false, "unchanged switch is left alone");
-  assert.equal("openai_excel_bps" in result.payload, false);
-  assert.equal("openai_excel_bps_opt_out" in result.payload, false);
-
-  result = buildQuickConfigSavePayload({ ...inherit, bps: { ...inherit.bps, enabled: "off" } }, true);
-  assert.equal(result.payload.codex_bps_enabled, false);
-
-  const forced = formStateFromAccount({ ...detailedRow, codex_bps_enabled: true });
-  assert.equal("codex_bps_enabled" in buildQuickConfigSavePayload(forced, true).payload, false);
-  result = buildQuickConfigSavePayload({ ...forced, bps: { ...forced.bps, enabled: "inherit" } }, true);
-  assert.equal(result.payload.codex_bps_enabled, null);
-});

@@ -9,7 +9,6 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
-	"github.com/codex2api/proxy/plugins"
 	"github.com/google/uuid"
 )
 
@@ -356,18 +355,6 @@ func (r *retryAccountExclusions) CanContinueTransientCycle() bool {
 	return r != nil && len(r.recoverable) > 0
 }
 
-// Reprieve lifts every exclusion of accountID for the rest of the request
-// (a transport plugin retries it on another transport).
-func (r *retryAccountExclusions) Reprieve(accountID int64) {
-	if r == nil || accountID == 0 {
-		return
-	}
-	delete(r.hard, accountID)
-	delete(r.soft, accountID)
-	delete(r.transient, accountID)
-	delete(r.recoverable, accountID)
-}
-
 func (r *retryAccountExclusions) ForSelection() map[int64]bool {
 	if r == nil || (len(r.hard) == 0 && len(r.soft) == 0 && len(r.transient) == 0) {
 		return nil
@@ -558,11 +545,6 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 	ctx, cancelSelection := context.WithTimeout(ctx, accountSelectionTimeout)
 	defer cancelSelection()
 	filter = selectionFilterWithContext(ctx, filter)
-	// A transport plugin may hand the failed attempt back to the same account
-	// on another transport (BPS refused it; its native route retries).
-	if id := plugins.Default().RetryAccount(ctx, plugins.RequestFromContext(ctx)); id > 0 {
-		exclusions.Reprieve(id)
-	}
 	for {
 		if ctx.Err() != nil {
 			return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
@@ -574,7 +556,7 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if preserveBinding {
 			account, stickyProxyURL = h.store.NextForContinuationWithDispatch(affinityKey, apiKeyID, exclude, filter, policy)
 		} else {
-			account, stickyProxyURL, guard = h.nextAccountWithTransportPlugins(ctx, affinityKey, apiKeyID, exclude, filter, policy)
+			account, stickyProxyURL, guard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy)
 		}
 		if account != nil {
 			if ctx.Err() != nil {
@@ -630,12 +612,4 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 
 func isFirstTokenTimeoutOutcome(outcome streamOutcome) bool {
 	return outcome.failureKind == "timeout"
-}
-
-// pluginSameAccountRetry reports that a transport plugin handed this failed
-// attempt back to the same account on another transport (a BPS failure its
-// native route retries). The failure is then retryable whatever its status;
-// the plugin grants it once per account and request.
-func pluginSameAccountRetry(ctx context.Context, account *auth.Account) bool {
-	return account != nil && plugins.Default().RetryAccount(ctx, plugins.RequestFromContext(ctx)) == account.ID()
 }

@@ -1,2 +1,0 @@
-<html><body><svg><circle r="3" fill="#abc"/><circle r="4" fill="#ABC"/><rect fill="#abcdef" stroke="#abcdefg"/><lineargradient><stop/></lineargradient></svg></body></html>
-trailing text

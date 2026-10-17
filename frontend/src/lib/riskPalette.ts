@@ -1,5 +1,5 @@
 // riskPalette is the risk-tone hero palette (soft wash, foreground, pill and
-// dot) shared by the pool runway card and the BPS health hero.
+// dot) shared by the pool runway card.
 import type { RiskLevel } from './poolRunway'
 
 export function riskPalette(level: RiskLevel) {

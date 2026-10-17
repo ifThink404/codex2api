@@ -1,4 +1,4 @@
-// Error badges shared by the ops errors page (and its BPS plugin embed) and
+// Error badges shared by the ops errors page and
 // the usage log: status-class fallback labels, status badge colors and a
 // tone per upstream error kind. Badge classes follow the StatTile tone
 // tokens (tinted surface, 600 text in light, 300 text in dark).
@@ -9,25 +9,15 @@ export const ERROR_KIND_TONES: readonly ErrorKindTone[] = ['rate', 'policy', 'av
 
 // Known kinds; anything else is classified by errorKindTone's patterns.
 const ERROR_KIND_TONE_MAP: Record<string, ErrorKindTone> = {
-  bps_rate_limited: 'rate',
   rate_limit: 'rate',
   rate_limited: 'rate',
   rate_limited_model: 'rate',
   org_rate_limited: 'rate',
   usage_limit: 'rate',
   quota_exhausted: 'rate',
-  bps_policy_blocked: 'policy',
-  basispoints_model_access_changed: 'policy',
   cyber_policy: 'policy',
-  bps_account_refused: 'policy',
   forbidden: 'policy',
-  bps_unavailable: 'availability',
-  bps_model_unavailable: 'availability',
-  bps_concurrency_full: 'availability',
-  bps_concurrency_limited: 'availability',
-  bps_budget_exhausted: 'availability',
   client_closed: 'availability',
-  basispoints_cutoff_completed: 'info',
   server_error: 'error',
   upstream_error: 'error',
   upstream_timeout: 'error',

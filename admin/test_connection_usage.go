@@ -8,7 +8,6 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
-	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -24,9 +23,6 @@ const (
 	connectionTestTransportStatus = 598
 
 	contextConnectionTestLastError = "connection_test_last_error"
-	// contextConnectionTestTransport holds the proxy.ConnectionTestUsage of a
-	// Codex connection test.
-	contextConnectionTestTransport = "connection_test_transport"
 )
 
 // connectionTestUsageInput 是探针收尾时从诊断对象抽出的记账字段。
@@ -49,8 +45,6 @@ type connectionTestUsageInput struct {
 	UpstreamRequestID string
 	ErrorMessage      string
 	UpstreamErrorKind string
-	// Transport, when set, is the transport report of a Codex test.
-	Transport *proxy.ConnectionTestUsage
 }
 
 func connectionTestReason(quality *qualityTestRequest) string {
@@ -230,13 +224,7 @@ func (h *Handler) logConnectionTestUsage(c *gin.Context, account *auth.Account, 
 		ErrorMessage:         in.ErrorMessage,
 		UpstreamErrorKind:    in.UpstreamErrorKind,
 	}
-	in.Transport.Apply(input)
 	if c != nil {
-		if value, ok := c.Get(contextConnectionTestTransport); ok {
-			// A test served by a transport plugin records it like normal traffic.
-			usage, _ := value.(*proxy.ConnectionTestUsage)
-			usage.Apply(input)
-		}
 		input.ClientIP = strings.TrimSpace(c.ClientIP())
 		if c.Request != nil {
 			input.ClientUserAgent = strings.TrimSpace(c.Request.UserAgent())
@@ -274,12 +262,10 @@ type batchConnectionTestUsage struct {
 	effort     string
 	start      time.Time
 	httpStatus int
-	transport  *proxy.ConnectionTestUsage
 }
 
 func (h *Handler) beginBatchConnectionTestUsage(ctx context.Context, account *auth.Account, model string, payload []byte, start time.Time) (context.Context, *batchConnectionTestUsage) {
-	ctx, transport := proxy.WithConnectionTestUsage(ctx)
-	return ctx, &batchConnectionTestUsage{h: h, account: account, model: model, effort: connectionTestReasoningEffort(payload), start: start, transport: transport}
+	return ctx, &batchConnectionTestUsage{h: h, account: account, model: model, effort: connectionTestReasoningEffort(payload), start: start}
 }
 
 // observe records the upstream response status.
@@ -297,7 +283,6 @@ func (u *batchConnectionTestUsage) finish(status, msg string) {
 		Reason: internalReasonConnectionTest, Endpoint: connectionTestEndpoint(u.account),
 		Model: u.model, EffectiveModel: u.model, ReasoningEffort: u.effort,
 		StatusCode: u.httpStatus, DurationMs: int(time.Since(u.start).Milliseconds()),
-		Transport: u.transport,
 	}
 	if status != "success" {
 		in.ErrorMessage = strings.TrimSpace(msg)

@@ -2539,13 +2539,6 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 	sanitizeMalformedResponsesFunctionCalls(body)
 	normalizeResponsesInputItemIDs(body)
 	stripResponsesInputInternalMetadata(body)
-	if input, ok := body["input"].([]any); ok {
-		for _, raw := range input {
-			if item, ok := raw.(map[string]any); ok {
-				normalizeBPSAgentMessage(item)
-			}
-		}
-	}
 	dropBareReasoningInputItems(body)
 	// 6c. 修复工具调用/输出的 call_id 配对（issue #414）。
 	// previous_response_id 保留给上游的原生续链场景跳过：历史存于上游服务端，
