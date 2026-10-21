@@ -208,24 +208,28 @@ func fetchOfficialPricingMarkdown(ctx context.Context, client *http.Client, sour
 // ParseOpenAIOfficialPricingMarkdown 读取官方 pricing.md 的 Standard 与 Fast 表。
 // 表中的 cache-write 价格当前不参与请求成本，因此只投影系统实际记账的 token 字段。
 func ParseOpenAIOfficialPricingMarkdown(body []byte) (map[string]database.ModelPricingOverride, error) {
-	standard := parseOfficialPricingTable(body, "### Standard pricing data")
-	fast := parseOfficialPricingTable(body, "### Fast pricing data")
+	standardHeader, standard := parseOfficialPricingTable(body, "### Standard pricing data")
+	fastHeader, fast := parseOfficialPricingTable(body, "### Fast pricing data")
 	images := parseGPTImage25Pricing(body)
 	if len(standard) == 0 && len(images) == 0 {
 		return nil, fmt.Errorf("未找到 Standard pricing data 表")
 	}
 	out := images
+	// OpenAI reorders and adds columns (2026-10: output moved before cached
+	// input, 30m / 12h writes added), so prices are read by header name.
+	std := openAIPricingColumnsOf(standardHeader)
+	fst := openAIPricingColumnsOf(fastHeader)
 	for model, cells := range standard {
-		if len(cells) < 9 {
-			continue
+		if !std.complete() {
+			break
 		}
 		override := database.ModelPricingOverride{
-			Input:           parseOfficialPrice(cells[1]),
-			CachedInput:     parseOfficialPrice(cells[2]),
-			Output:          parseOfficialPrice(cells[4]),
-			InputLong:       parseOfficialPrice(cells[5]),
-			CachedInputLong: parseOfficialPrice(cells[6]),
-			OutputLong:      parseOfficialPrice(cells[8]),
+			Input:           std.price(cells, std.input),
+			CachedInput:     std.price(cells, std.cached),
+			Output:          std.price(cells, std.output),
+			InputLong:       std.price(cells, std.inputLong),
+			CachedInputLong: std.price(cells, std.cachedLong),
+			OutputLong:      std.price(cells, std.outputLong),
 		}
 		if override.InputLong > 0 || override.OutputLong > 0 {
 			override.LongContextThresholdTokens = 272000
@@ -233,19 +237,19 @@ func ParseOpenAIOfficialPricingMarkdown(body []byte) (map[string]database.ModelP
 		out[model] = override
 	}
 	for model, cells := range fast {
-		if len(cells) < 9 {
-			continue
+		if !fst.complete() {
+			break
 		}
 		override, ok := out[model]
 		if !ok {
 			override = database.ModelPricingOverride{}
 		}
-		override.InputPriority = parseOfficialPrice(cells[1])
-		override.CachedInputPriority = parseOfficialPrice(cells[2])
-		override.OutputPriority = parseOfficialPrice(cells[4])
-		override.InputLongPriority = parseOfficialPrice(cells[5])
-		override.CachedInputLongPriority = parseOfficialPrice(cells[6])
-		override.OutputLongPriority = parseOfficialPrice(cells[8])
+		override.InputPriority = fst.price(cells, fst.input)
+		override.CachedInputPriority = fst.price(cells, fst.cached)
+		override.OutputPriority = fst.price(cells, fst.output)
+		override.InputLongPriority = fst.price(cells, fst.inputLong)
+		override.CachedInputLongPriority = fst.price(cells, fst.cachedLong)
+		override.OutputLongPriority = fst.price(cells, fst.outputLong)
 		out[model] = override
 	}
 	for model, override := range out {
@@ -256,8 +260,51 @@ func ParseOpenAIOfficialPricingMarkdown(body []byte) (map[string]database.ModelP
 	return out, nil
 }
 
-func parseOfficialPricingTable(body []byte, heading string) map[string][]string {
+// openAIPricingColumns are the cell indexes of one OpenAI pricing table, found
+// by header name; -1 = the table has no such column.
+type openAIPricingColumns struct {
+	input, cached, output, inputLong, cachedLong, outputLong int
+}
+
+func openAIPricingColumnsOf(header []string) openAIPricingColumns {
+	find := func(names ...string) int {
+		for i, cell := range header {
+			label := strings.ToLower(strings.Join(strings.Fields(cell), " "))
+			for _, name := range names {
+				if label == name {
+					return i
+				}
+			}
+		}
+		return -1
+	}
+	return openAIPricingColumns{
+		input:      find("short context input", "input"),
+		cached:     find("short context cached input", "cached input"),
+		output:     find("short context output", "output"),
+		inputLong:  find("long context input"),
+		cachedLong: find("long context cached input"),
+		outputLong: find("long context output"),
+	}
+}
+
+// complete: the standard prices can be read (long context is optional).
+func (c openAIPricingColumns) complete() bool {
+	return c.input > 0 && c.cached > 0 && c.output > 0
+}
+
+func (c openAIPricingColumns) price(cells []string, index int) float64 {
+	if index <= 0 || index >= len(cells) {
+		return 0
+	}
+	return parseOfficialPrice(cells[index])
+}
+
+// parseOfficialPricingTable returns the header cells and the rows by model of
+// the first table under heading.
+func parseOfficialPricingTable(body []byte, heading string) ([]string, map[string][]string) {
 	rows := make(map[string][]string)
+	var header []string
 	scanner := bufio.NewScanner(strings.NewReader(string(body)))
 	inSection := false
 	seenHeader := false
@@ -282,6 +329,7 @@ func parseOfficialPricingTable(body []byte, heading string) map[string][]string 
 		}
 		if !seenHeader {
 			seenHeader = true
+			header = cells
 			continue
 		}
 		if isMarkdownSeparatorRow(cells) {
@@ -292,7 +340,7 @@ func parseOfficialPricingTable(body []byte, heading string) map[string][]string 
 			rows[model] = cells
 		}
 	}
-	return rows
+	return header, rows
 }
 
 // ParseXAIOfficialPricingMarkdown reads xAI's stable central pricing table. It
