@@ -40,6 +40,12 @@ func migrateOnlyEnabled() bool {
 	return value == "1" || strings.EqualFold(value, "true")
 }
 
+func configureCodexIdleUsageObserver(store *auth.Store) {
+	wsrelay.SetIdleMetadataObserver(func(account *auth.Account, eventType string, payload []byte) {
+		proxy.ApplyCodexIdleUsageFrame(store, account, eventType, payload)
+	})
+}
+
 // main 加载配置、初始化存储与路由，并启动 Codex2API HTTP 服务。
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -199,7 +205,7 @@ func main() {
 		}
 	} else {
 		log.Printf("已加载持久化业务设置: ProxyURL=%s, MaxConcurrency=%d, GlobalRPM=%d, PgMaxConns=%d, RedisPoolSize=%d",
-			settings.ProxyURL, settings.MaxConcurrency, settings.GlobalRPM, settings.PgMaxConns, settings.RedisPoolSize)
+			security.MaskURLCredentials(settings.ProxyURL), settings.MaxConcurrency, settings.GlobalRPM, settings.PgMaxConns, settings.RedisPoolSize)
 	}
 	modelCooldownCtx, modelCooldownCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	modelCooldownSettings, modelCooldownErr := db.GetModelCooldownSettings(modelCooldownCtx)
@@ -262,6 +268,23 @@ func main() {
 		appliedResponseCache.ReconstructMaxBytes,
 	)
 
+	// 模型输出失控防护设置：冷启动读取失败不致命，由后台 5 秒轮询器恢复；
+	// 未就绪期间 HTTP/WS/Stream 门禁统一返回 503 service_unavailable。
+	outputGuardCtx, outputGuardCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := proxy.LoadOutputGuardSettings(outputGuardCtx, db); err != nil {
+		outputGuardCancel()
+		log.Printf("警告: 加载模型输出失控防护设置失败（冷启动门禁将返回 503 直至 DB 轮询恢复）: %v", err)
+	} else {
+		outputGuardCancel()
+		appliedGuard := proxy.CurrentOutputGuardConfig()
+		log.Printf(
+			"模型输出失控防护设置已加载: generation=%d enabled=%t tool_bytes=%d tool_deltas=%d channel_bytes=%d request_bytes=%d",
+			appliedGuard.Generation, appliedGuard.Enabled, appliedGuard.MaxToolArgumentBytes,
+			appliedGuard.MaxToolArgumentDeltas, appliedGuard.MaxChannelBytes, appliedGuard.MaxRequestBytes,
+		)
+	}
+	proxy.StartOutputGuardConfigPoller(context.Background(), db)
+
 	// 4. 初始化缓存（使用数据库中保存的连接池大小）
 	redisPoolSize := 30
 	if settings.RedisPoolSize > 0 {
@@ -292,7 +315,30 @@ func main() {
 	default:
 		log.Printf("%s 连接成功: %s, pool_size=%d", cfg.Cache.Label(), cache.RedactRedisAddr(cfg.Cache.Redis.Addr), redisPoolSize)
 	}
-	proxy.SetResponseContextCache(tc)
+	responseContextCache := tc
+	var durableResponseContexts *cache.DurableResponseContextStore
+	if storeCfg := cfg.Cache.ResponseContextStore; storeCfg.Path != "" {
+		durableResponseContexts, err = cache.OpenDurableResponseContextStore(storeCfg.Path, cache.DurableResponseContextOptions{
+			TTL:      storeCfg.TTL,
+			MaxBytes: storeCfg.MaxBytes,
+		})
+		if err != nil {
+			// 持久层只是缓存：打不开时退回原有的 L1 行为，不阻止服务启动。
+			log.Printf("持久化 response context 存储不可用，继续使用内存缓存: %v", err)
+			durableResponseContexts = nil
+		} else {
+			responseContextCache = cache.WithDurableResponseContexts(tc, durableResponseContexts)
+			statsCtx, cancelStats := context.WithTimeout(context.Background(), 5*time.Second)
+			stats, statsErr := durableResponseContexts.Stats(statsCtx)
+			cancelStats()
+			if statsErr != nil {
+				log.Printf("持久化 response context 存储已启用: path=%s ttl=%s max_mb=%d (统计失败: %v)", storeCfg.Path, storeCfg.TTL, storeCfg.MaxBytes>>20, statsErr)
+			} else {
+				log.Printf("持久化 response context 存储已启用: path=%s ttl=%s max_mb=%d contexts=%d item_bytes=%d", storeCfg.Path, storeCfg.TTL, storeCfg.MaxBytes>>20, stats.Contexts, stats.ItemBytes)
+			}
+		}
+	}
+	proxy.SetResponseContextCache(responseContextCache)
 
 	// 4b. 应用数据库连接池设置
 	if settings.PgMaxConns > 0 {
@@ -350,6 +396,7 @@ func main() {
 	claudeCLIVersionCancel()
 
 	// 5. 初始化账号管理器
+	auth.CodexOAuthIdentityHeaders = proxy.CodexOAuthIdentityHeaders
 	store := auth.NewStore(db, tc, settings)
 	store.SetSchedulerWaitLimits(cfg.SchedulerMaxWaiters, cfg.SchedulerMaxWaitersPerKey)
 
@@ -369,6 +416,9 @@ func main() {
 
 	// 启动后台刷新
 	store.StartBackgroundRefresh()
+	// Antigravity groups summary 周期巡检（Spec §5.3）：随 Store 生命周期启动，
+	// Store.Stop 在关闭 stopCh 前收口。
+	store.StartAntigravityQuotaScheduler()
 	store.TriggerUsageProbeAsync()
 	store.TriggerRecoveryProbeAsync()
 	store.TriggerAutoCleanupAsync()
@@ -381,6 +431,7 @@ func main() {
 	}
 	adminHandler.StartAutoResetCredits(backgroundCtx)
 	adminHandler.StartAutoActivate5hWindow(backgroundCtx)
+	adminHandler.StartScheduledConnectionTests(backgroundCtx)
 	// Grok 账号状态定期探测（默认关，由 grok 系统设置开关/间隔控制）
 	adminHandler.StartGrokStatusProbe(backgroundCtx)
 	// 官方结算用量按天快照：上游只保留 7 天，不落库就永久丢失，长期历史全靠这个任务。
@@ -441,10 +492,7 @@ func main() {
 	if security.MaxImportBodySize < int64(security.MaxRequestBodySize) {
 		security.MaxImportBodySize = int64(security.MaxRequestBodySize)
 	}
-	r.Use(security.RequestSizeLimiter(int64(security.MaxRequestBodySize)))
-	r.Use(security.RequestBodyDecompressor(int64(security.MaxRequestBodySize)))
-	r.Use(api.BodyCacheMiddleware())
-	r.Use(api.CORSMiddleware())
+	configureRequestBodyMiddleware(r, int64(security.MaxRequestBodySize))
 	r.Use(api.SecurityHeadersMiddleware())
 	r.Use(loggerMiddleware())
 	r.Use(security.SecurityHeadersMiddleware())
@@ -454,6 +502,20 @@ func main() {
 
 	// 注册 WebSocket 执行函数（避免 proxy ↔ wsrelay 循环依赖）
 	proxy.WebsocketExecuteFunc = wsrelay.ExecuteRequestWebsocket
+	// 连接级（终态后补发）的用量帧也交给 proxy 更新内存快照；observer 必须非阻塞。
+	configureCodexIdleUsageObserver(store)
+	// WS 逐帧用量落库节流；大号池可按数据库承压情况调大，0/非法值保持默认 30s。
+	if raw := strings.TrimSpace(os.Getenv("CODEX_WS_USAGE_FRAME_PERSIST_SECONDS")); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			proxy.SetCodexUsageFramePersistInterval(time.Duration(seconds) * time.Second)
+		}
+	}
+	// 帧摄入的部署级逃生阀；false 时回退到 WHAM 探针与 HTTP 响应头。
+	if raw := strings.TrimSpace(os.Getenv("CODEX_WS_USAGE_FRAME_INGEST")); raw != "" {
+		if enabled, err := strconv.ParseBool(raw); err == nil {
+			proxy.SetCodexUsageFrameIngestEnabled(enabled)
+		}
+	}
 
 	// 注册 Agent Identity task 确保函数（proxy 无 Store 引用，启动时注入）
 	proxy.EnsureCodexAgentIdentityTaskFunc = store.EnsureCodexAgentIdentityTask
@@ -668,9 +730,12 @@ func main() {
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: r,
-		// ReadHeaderTimeout 防 Slowloris 慢速攻击；IdleTimeout 回收空闲 keep-alive 连接。
+		// ReadHeaderTimeout 防 Slowloris 慢速攻击；ReadTimeout 限制整个请求体读取，
+		// 防止“声明大 Content-Length 但不发 body”长期占用连接/内存预算；
+		// IdleTimeout 回收空闲 keep-alive 连接。
 		// 注意：WriteTimeout 必须保持 0 —— LLM 流式响应可持续数分钟，任何固定写超时都会中途切断长回答。
 		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       10 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 	go func() {
@@ -693,12 +758,18 @@ func main() {
 	}
 	adminHandler.WaitAutoResetCredits()
 	adminHandler.WaitAutoActivate5hWindow()
+	adminHandler.WaitScheduledConnectionTests()
 	adminHandler.WaitQualityTests()
 	adminHandler.WaitIntelligenceChecks()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()
 	if !proxy.DrainResponseCacheBackendWrites(2 * time.Second) {
 		log.Printf("部分响应上下文后台写入未在关闭窗口内完成")
+	}
+	if durableResponseContexts != nil {
+		if err := durableResponseContexts.Close(); err != nil {
+			log.Printf("关闭持久化 response context 存储失败: %v", err)
+		}
 	}
 	store.Stop()
 	// 所有请求入口和后台生产者停止后，再排空仍可能访问 Store、缓存或数据库的短任务。

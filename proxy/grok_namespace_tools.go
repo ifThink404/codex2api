@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -101,6 +102,9 @@ func grokJSONString(value any) string {
 
 func grokToolSearchArguments(value any) any {
 	text := strings.TrimSpace(grokJSONString(value))
+	if text == "" {
+		return map[string]any{}
+	}
 	var decoded any
 	if text != "" && json.Unmarshal([]byte(text), &decoded) == nil {
 		return decoded
@@ -1057,7 +1061,7 @@ func newGrokNamespaceReverser(body io.ReadCloser, streaming bool, aliases map[st
 	go func() {
 		defer body.Close()
 		if !streaming {
-			data, err := io.ReadAll(body)
+			data, err := readAllLimitedWithContinuousRetryKeepalive(context.Background(), body, maxUpstreamResponseBodyBytes)
 			if err != nil {
 				_ = pw.CloseWithError(err)
 				return
@@ -1069,7 +1073,7 @@ func newGrokNamespaceReverser(body io.ReadCloser, streaming bool, aliases map[st
 		reverser := newGrokStreamReverser(aliases)
 		reader := bufio.NewReader(body)
 		for {
-			line, err := reader.ReadBytes('\n')
+			line, err := readBoundedSSELine(reader, maxSSELineBytes)
 			if len(line) > 0 {
 				rewritten := reverser.rewriteLine(line)
 				if len(rewritten) > 0 {

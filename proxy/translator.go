@@ -189,7 +189,12 @@ type openAIErrorResponse struct {
 
 // ==================== LRU 请求解析缓存 ====================
 
-const requestCacheSize = 256
+const (
+	requestCacheSize          = 256
+	requestCacheMaxBytes      = 64 << 20
+	requestCacheMaxEntryBytes = 1 << 20
+	requestCacheTTL           = 10 * time.Minute
+)
 
 // maxTools 上游 Codex API 允许的最大工具数量
 const maxTools = 128
@@ -215,19 +220,28 @@ var responsesImageGenerationUnsupportedOptionFields = []string{
 }
 
 type requestCacheEntry struct {
-	key [32]byte
-	req openAIRequest
+	key       [32]byte
+	req       openAIRequest
+	size      int
+	expiresAt time.Time
 }
 
 type requestCache struct {
-	mu    sync.Mutex
-	order *list.List
-	items map[[32]byte]*list.Element
+	mu            sync.Mutex
+	order         *list.List
+	items         map[[32]byte]*list.Element
+	bytes         int
+	maxBytes      int
+	maxEntryBytes int
+	ttl           time.Duration
 }
 
 var globalRequestCache = &requestCache{
-	order: list.New(),
-	items: make(map[[32]byte]*list.Element, requestCacheSize),
+	order:         list.New(),
+	items:         make(map[[32]byte]*list.Element, requestCacheSize),
+	maxBytes:      requestCacheMaxBytes,
+	maxEntryBytes: requestCacheMaxEntryBytes,
+	ttl:           requestCacheTTL,
 }
 
 func firstNonEmptyAnyString(raw any) string {
@@ -767,6 +781,10 @@ func shouldAutoInjectResponsesImageGenerationTool(body map[string]any) bool {
 	}
 	if hasTopLevelResponsesImageOptions(body) {
 		return true
+	}
+	// An implicit image tool must not evict an explicitly supplied tool at capacity.
+	if tools, ok := body["tools"].([]any); ok && len(tools) >= maxTools {
+		return false
 	}
 	return !hasStructuredResponsesFormat(body)
 }
@@ -1696,6 +1714,46 @@ func truncateToolsPreservingImageGeneration(tools []any) []any {
 	return truncated
 }
 
+func (c *requestCache) ttlValue() time.Duration {
+	if c.ttl > 0 {
+		return c.ttl
+	}
+	return requestCacheTTL
+}
+
+func (c *requestCache) maxBytesValue() int {
+	if c.maxBytes > 0 {
+		return c.maxBytes
+	}
+	return requestCacheMaxBytes
+}
+
+func (c *requestCache) maxEntryBytesValue() int {
+	if c.maxEntryBytes > 0 {
+		return c.maxEntryBytes
+	}
+	return requestCacheMaxEntryBytes
+}
+
+func (c *requestCache) removeElementLocked(elem *list.Element) {
+	entry := elem.Value.(*requestCacheEntry)
+	c.order.Remove(elem)
+	delete(c.items, entry.key)
+	c.bytes -= entry.size
+	if c.bytes < 0 {
+		c.bytes = 0
+	}
+}
+
+func (c *requestCache) pruneExpiredLocked(now time.Time) {
+	for _, elem := range c.items {
+		entry := elem.Value.(*requestCacheEntry)
+		if !entry.expiresAt.IsZero() && now.After(entry.expiresAt) {
+			c.removeElementLocked(elem)
+		}
+	}
+}
+
 func (c *requestCache) get(key [32]byte) (openAIRequest, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1703,29 +1761,66 @@ func (c *requestCache) get(key [32]byte) (openAIRequest, bool) {
 	if !ok {
 		return openAIRequest{}, false
 	}
+	entry := elem.Value.(*requestCacheEntry)
+	if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
+		c.removeElementLocked(elem)
+		return openAIRequest{}, false
+	}
 	c.order.MoveToFront(elem)
-	return elem.Value.(*requestCacheEntry).req, true
+	return entry.req, true
 }
 
-func (c *requestCache) put(key [32]byte, req openAIRequest) {
+func (c *requestCache) put(key [32]byte, req openAIRequest, size int) {
+	if size <= 0 || size > c.maxEntryBytesValue() {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := time.Now()
+	c.pruneExpiredLocked(now)
+	expiresAt := now.Add(c.ttlValue())
 	if elem, ok := c.items[key]; ok {
+		entry := elem.Value.(*requestCacheEntry)
+		c.bytes -= entry.size
+		entry.req = req
+		entry.size = size
+		entry.expiresAt = expiresAt
+		c.bytes += size
 		c.order.MoveToFront(elem)
-		elem.Value.(*requestCacheEntry).req = req
-		return
+	} else {
+		elem := c.order.PushFront(&requestCacheEntry{key: key, req: req, size: size, expiresAt: expiresAt})
+		c.items[key] = elem
+		c.bytes += size
 	}
-	elem := c.order.PushFront(&requestCacheEntry{key: key, req: req})
-	c.items[key] = elem
-	if c.order.Len() <= requestCacheSize {
-		return
+	for c.order.Len() > requestCacheSize || c.bytes > c.maxBytesValue() {
+		tail := c.order.Back()
+		if tail == nil {
+			break
+		}
+		c.removeElementLocked(tail)
 	}
-	tail := c.order.Back()
-	if tail == nil {
-		return
+}
+
+// 解析后常驻堆的开销估算：除原始 JSON 外，还需计入切片本身。
+// 20000 条短消息的 JSON 只有约 60KB，但 []openAIMessage 的后备数组就占 ~1.5MB。
+const (
+	parsedRequestSizeCeiling = requestCacheMaxEntryBytes + 1
+	parsedMessageOverhead    = 128 // openAIMessage 结构体 + 切片增长余量
+	parsedToolCallOverhead   = 128 // openAIToolCall 结构体 + 切片增长余量
+	parsedRawJSONOverhead    = 32  // json.RawMessage 头部
+)
+
+func estimateParsedRequestSize(rawJSON []byte, req *openAIRequest) int {
+	size := int64(len(rawJSON)) * 3
+	size += int64(cap(req.Messages)) * parsedMessageOverhead
+	for i := range req.Messages {
+		size += int64(cap(req.Messages[i].ToolCalls)) * parsedToolCallOverhead
 	}
-	c.order.Remove(tail)
-	delete(c.items, tail.Value.(*requestCacheEntry).key)
+	size += int64(cap(req.Tools)) * parsedRawJSONOverhead
+	if size > parsedRequestSizeCeiling {
+		return parsedRequestSizeCeiling
+	}
+	return int(size)
 }
 
 // cachedOrParse 从缓存获取或解析请求，返回结构体（Unmarshal 至多一次）
@@ -1739,7 +1834,11 @@ func cachedOrParse(rawJSON []byte) openAIRequest {
 	}
 	var req openAIRequest
 	_ = json.Unmarshal(rawJSON, &req)
-	globalRequestCache.put(key, req)
+	// The parsed request retains more than the raw JSON (message slices,
+	// RawMessage copies, tool structs). Charge a conservative multiplier plus
+	// per-slice overhead so the byte budget bounds retained heap, not just wire
+	// bytes.
+	globalRequestCache.put(key, req, estimateParsedRequestSize(rawJSON, &req))
 	return req
 }
 

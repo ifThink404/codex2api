@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/codex2api/security"
 )
 
 // ProxyHealthStatus 代理健康状态
@@ -917,7 +919,7 @@ func (p *ProxyPool) RecoverIsolatedProxies() {
 
 	// 在锁外执行回调，避免死锁
 	for _, entry := range recoveredEntries {
-		log.Printf("[ProxyPool] 代理已恢复: %s", entry.URL)
+		log.Printf("[ProxyPool] 代理已恢复: %s", security.MaskURLCredentials(entry.URL))
 		if p.onRecovery != nil {
 			p.onRecovery(entry)
 		}

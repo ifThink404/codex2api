@@ -290,6 +290,8 @@ func TestIntelligenceCheckSchedulerMetadataManualOverride(t *testing.T) {
 		t.Fatal("manual scheduler groups edit released owned pause")
 	}
 }
+
+// TestIntelligenceCheckDueFiltersBarsAndDisabledPause verifies due selection and disabled-account presentation.
 func TestIntelligenceCheckDueFiltersBarsAndDisabledPause(t *testing.T) {
 	db := intelligenceDB(t)
 	ctx := context.Background()
@@ -300,8 +302,9 @@ func TestIntelligenceCheckDueFiltersBarsAndDisabledPause(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.EnqueueIntelligenceChecks(ctx, []int64{grok}, now); !errors.Is(e, ErrIntelligenceCheckUnsupportedAccount) {
-		t.Fatal(e)
+	var grokEnabled bool
+	if e = db.conn.QueryRowContext(ctx, "SELECT enabled FROM intelligence_check_accounts WHERE account_id=$1", grok).Scan(&grokEnabled); e != nil || grokEnabled {
+		t.Fatalf("Grok should remain opted out by default: %v %v", grokEnabled, e)
 	}
 	if n, e := db.EnqueueDueIntelligenceChecks(ctx, now, 5); e != nil || n != 0 {
 		t.Fatal(n, e)
@@ -346,11 +349,12 @@ func TestIntelligenceCheckDueFiltersBarsAndDisabledPause(t *testing.T) {
 	}
 }
 
+// TestIntelligenceCheckPostgres runs detector lifecycle regressions against isolated PostgreSQL schemas.
 func TestIntelligenceCheckPostgres(t *testing.T) {
 	if os.Getenv("CODEX2API_TEST_POSTGRES_DSN") == "" {
 		t.Skip("requires isolated CODEX2API_TEST_POSTGRES_DSN")
 	}
-	for name, run := range map[string]func(*testing.T){"settings": TestIntelligenceCheckSettingsAndMigration, "claims": TestIntelligenceCheckClaimDedupLeaseAndRetention, "ownership": TestIntelligenceCheckOwnershipManualAndConfig, "groups": TestIntelligenceCheckRestoreSurvivingGroups, "metadata": TestIntelligenceCheckSchedulerMetadataManualOverride, "due": TestIntelligenceCheckDueFiltersBarsAndDisabledPause, "queue": TestIntelligenceCheckDisabledAutomaticQueueDoesNotBlockManual, "stale_expiry": TestIntelligenceCheckExpiredOldConfigDoesNotOverwriteNewState, "promote": TestIntelligenceCheckManualPromotesExistingAutomaticQueue, "manual_groups": TestIntelligenceCheckManualGroupOwnershipIntents, "targets": TestIntelligenceCheckTargetCompatibilityPreflight, "claude_effort": TestIntelligenceCheckClaudeSnapshotEffort, "rotation": TestIntelligenceCheckQuestionRotationAfterDisablingEarlierQuestion, "restore_channel": TestIntelligenceCheckRestoreSkipsChangedGroupChannel, "pending_recovery": TestIntelligenceCheckPendingRecoveryIgnoresNewTargetRemoval, "invalid_claim": TestIntelligenceCheckClaimRejectsRemovedTargetBeforeSending, "legacy_groups": TestIntelligenceCheckRestorePreservesUnchangedLegacyMixedGroup, "snapshot_size": TestIntelligenceCheckRunSnapshotOmitsUnrelatedQuestionBank, "claim_refresh": TestIntelligenceCheckClaimRefreshesQueuedAndBusySnapshots, "bars_alloc": TestIntelligenceCheckBarsAvoidHistoryBodyAllocations, "bars_active": TestIntelligenceCheckBarsTrackActiveRun, "bars_disabled_automatic": TestIntelligenceCheckBarsAllowManualAfterDisablingAutomatic} {
+	for name, run := range map[string]func(*testing.T){"source_backlog": TestIntelligenceChannelSwitchesClaimBacklog, "source_models": TestIntelligenceChannelSwitchesModelsRefreshAndClear, "source_precedence": TestIntelligenceChannelSwitchesSourcePrecedence, "source_auth_fence": TestIntelligenceChannelSwitchesAntigravityCredentialFence, "source_switches": TestIntelligenceChannelSwitchesFilterBeforeLimitAndClaim, "source_legacy": TestIntelligenceChannelSwitchesLegacySaveAndManualOverride, "source_defaults": TestIntelligenceChannelSwitchesNewAccountDefaults, "source_target": TestIntelligenceChannelSwitchesDisabledSourceDoesNotConflictWithTarget, "adaptive_lifecycle": TestIntelligenceCheckAdaptiveLifecycle, "adaptive_credentials": TestIntelligenceCheckAdaptiveCredentialFence, "adaptive_legacy": TestIntelligenceCheckAdaptiveLegacySettings, "new_defaults": TestIntelligenceCheckNewAccountDefaults, "concurrent_defaults": TestIntelligenceCheckNewAccountConcurrentSettings, "default_upgrade": TestIntelligenceCheckDefaultTriggerUpgrade, "conflict_batches": TestIntelligenceCheckTargetConflictBatches, "missing_default_target": TestIntelligenceCheckNewAccountWithMissingTarget, "settings": TestIntelligenceCheckSettingsAndMigration, "claims": TestIntelligenceCheckClaimDedupLeaseAndRetention, "ownership": TestIntelligenceCheckOwnershipManualAndConfig, "groups": TestIntelligenceCheckRestoreSurvivingGroups, "metadata": TestIntelligenceCheckSchedulerMetadataManualOverride, "due": TestIntelligenceCheckDueFiltersBarsAndDisabledPause, "queue": TestIntelligenceCheckDisabledAutomaticQueueDoesNotBlockManual, "stale_expiry": TestIntelligenceCheckExpiredOldConfigDoesNotOverwriteNewState, "promote": TestIntelligenceCheckManualPromotesExistingAutomaticQueue, "manual_groups": TestIntelligenceCheckManualGroupOwnershipIntents, "targets": TestIntelligenceCheckTargetCompatibilityPreflight, "claude_effort": TestIntelligenceCheckClaudeSnapshotEffort, "rotation": TestIntelligenceCheckQuestionRotationAfterDisablingEarlierQuestion, "restore_channel": TestIntelligenceCheckRestoreSkipsChangedGroupChannel, "pending_recovery": TestIntelligenceCheckPendingRecoveryIgnoresNewTargetRemoval, "invalid_claim": TestIntelligenceCheckClaimRejectsRemovedTargetBeforeSending, "legacy_groups": TestIntelligenceCheckRestorePreservesUnchangedLegacyMixedGroup, "snapshot_size": TestIntelligenceCheckRunSnapshotOmitsUnrelatedQuestionBank, "claim_refresh": TestIntelligenceCheckClaimRefreshesQueuedAndBusySnapshots, "bars_alloc": TestIntelligenceCheckBarsAvoidHistoryBodyAllocations, "bars_active": TestIntelligenceCheckBarsTrackActiveRun, "bars_disabled_automatic": TestIntelligenceCheckBarsAllowManualAfterDisablingAutomatic, "disabled_account": TestIntelligenceCheckAutomaticSkipsManuallyDisabledAccounts, "quota_hold": TestIntelligenceCheckQuotaHoldPostponesAutomaticChecks, "quota_hold_bar": TestIntelligenceCheckQuotaHoldBarFollowsAutomaticChecks} {
 		t.Run(name, run)
 	}
 }
@@ -375,6 +379,49 @@ func TestIntelligenceCheckDisabledAutomaticQueueDoesNotBlockManual(t *testing.T)
 	r, e := db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute)
 	if e != nil || r == nil || r.AccountID != manual {
 		t.Fatalf("manual task blocked by disabled automatic queue: %+v %v", r, e)
+	}
+}
+func TestIntelligenceCheckAutomaticSkipsManuallyDisabledAccounts(t *testing.T) {
+	db := intelligenceDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	s, _ := db.GetIntelligenceCheckSettings(ctx)
+	s.Enabled = true
+	if _, e := db.SaveIntelligenceCheckSettings(ctx, s); e != nil {
+		t.Fatal(e)
+	}
+	active := intelligenceAccount(t, db)
+	disabled := intelligenceAccount(t, db)
+	if e := db.SetAccountEnabled(ctx, disabled, false); e != nil {
+		t.Fatal(e)
+	}
+	if n, e := db.EnqueueDueIntelligenceChecks(ctx, now, 10); e != nil || n != 1 {
+		t.Fatal("disabled account was scheduled", n, e)
+	}
+	r, e := db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute)
+	if e != nil || r == nil || r.AccountID != active {
+		t.Fatalf("expected the enabled account, got %+v %v", r, e)
+	}
+	// A run queued before the account was disabled must not be sent either.
+	if e = db.SetAccountEnabled(ctx, disabled, true); e != nil {
+		t.Fatal(e)
+	}
+	if n, e := db.EnqueueDueIntelligenceChecks(ctx, now, 10); e != nil || n != 1 {
+		t.Fatal(n, e)
+	}
+	if e = db.SetAccountEnabled(ctx, disabled, false); e != nil {
+		t.Fatal(e)
+	}
+	if r, e = db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute); e != nil || r != nil {
+		t.Fatalf("automatic check claimed for a disabled account: %+v %v", r, e)
+	}
+	// An explicit manual check still runs against a disabled account.
+	if _, e = db.EnqueueIntelligenceChecks(ctx, []int64{disabled}, now); e != nil {
+		t.Fatal(e)
+	}
+	r, e = db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute)
+	if e != nil || r == nil || r.AccountID != disabled || r.Source != "manual" {
+		t.Fatalf("manual check blocked by account disable: %+v %v", r, e)
 	}
 }
 func TestIntelligenceCheckExpiredOldConfigDoesNotOverwriteNewState(t *testing.T) {

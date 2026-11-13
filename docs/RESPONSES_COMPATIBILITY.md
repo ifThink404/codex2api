@@ -26,7 +26,7 @@ X-Codex2API-Strict-Compatibility: true
 
 HTTP Responses/Compact 在处理原始 JSON 时拒绝重复的顶层 `input` 或 `previous_response_id`，返回 `400 invalid_request`，避免不同解析器选取不同值；JSON 转义后的同名键也算重复。嵌套字段和正常原生 Responses relay 的数值、父引用不受此检查改写。
 
-原生 Codex HTTP 出站需要展开并删除 `previous_response_id`。每个非空父响应引用都必须在当前请求归属的缓存中得到证明；缓存缺失或过期返回 409，后端故障返回 503，不会丢弃引用后继续返回一轮没有历史的成功响应。新工具调用对仍需拼接父快照，不能据此推断客户端重传了所有祖先。只有重叠 `call_id` 且完整父前缀一致时才跳过重复拼接；比较仅忽略已定义的顶层 item ID 和内部元数据。部分重放、调用内容冲突或重复定义父调用返回 `409 response_context_unavailable`，客户端可重发完整历史并省略父 ID。相同消息文本本身不会触发去重。
+原生 Codex HTTP 出站需要展开并删除 `previous_response_id`。每个非空父响应引用都必须在当前请求归属的缓存中得到证明；缓存缺失或过期返回 409，后端故障返回 503，不会丢弃引用后继续返回一轮没有历史的成功响应。新工具调用对仍需拼接父快照，不能据此推断客户端重传了所有祖先。只有重叠 `call_id` 且完整父前缀一致时才跳过重复拼接；比较仅忽略已定义的顶层 item ID 和内部元数据。部分重放、调用内容冲突或重复定义父调用返回 `409 previous_response_not_found`，客户端可重发完整历史并省略父 ID。相同消息文本本身不会触发去重。
 
 当前 HTTP 缓存主要保存工具上下文，不为普通消息新增会话存储。普通文本父轮的后续 HTTP 请求应发送完整历史并省略 `previous_response_id`；需要增量续链时使用经过验证的 WS 路径。原生 Responses relay 可把父 ID 交给自己的上游恢复，不套用 Codex 的本地缓存缺失限制；其他仅做协议翻译的渠道不能因此自动获得服务端父响应存储能力。
 
@@ -43,6 +43,18 @@ HTTP Responses/Compact 在处理原始 JSON 时拒绝重复的顶层 `input` 或
 `stream_id` 决定排序，`previous_response_id` 决定历史来源。对于 `store:false` 原生 WS 缓存，同一客户端连接可以从另一个流**已提交**的响应分叉，新响应写入自己的流缓存。连接内索引最多保留 256 个响应标识，仍须命中完整上下文并满足账号/密钥、路由分组、凭据和缓存限制。另一个客户端连接不能凭这个索引读取未观察到的跨流历史；索引淘汰、缓存过期或重启后，客户端应提供完整历史。Memory 与 Redis 的恢复规则详见 [Responses 上下文](API.md#responses-上下文不可用)。
 
 `response.append` 和官方 GPT-6 `response.steer` 目前返回 `status:400`、错误码 `unsupported_feature` 的 WebSocket 错误帧。本次没有实现生成中改向；等待当前轮终止后发送新的 `response.create` 是另一轮请求。真正的 steering 还需要覆盖 accepted/pending/failed、原响应 incomplete、自动后继响应、工具结果、配额与提交状态，不能仅转发一帧控制消息后宣称成功。
+
+Codex 的中断控制事件与 `response.steer` 不同：
+
+```json
+{"type":"response.interrupt","response_id":"resp_current","mode":"discard_partial_items"}
+```
+
+中断绕过生成队列，按当前下游连接内的 `response_id` 定位上游租约；可选 `stream_id` 进一步限制目标流，发往上游时剥离该网关路由字段。Codex OAuth 与启用 WebSocket 出站的 Responses 中转账号会把控制帧发往当前连接，不重连、不重放、不另开生成请求。上游的 `response.interrupt.accepted` / `response.interrupt.failed`、`response.output_item.interrupted` 和 `response.incomplete` 原样保留，命名流仍带回 `stream_id`。完成帧可以早于中断确认；网关保留事件及 `sequence_number` 的原始顺序，直到终态与对应确认都消费完才归还租约。
+
+已结束轮次的迟到中断会本地确认，重复中断不重复转发；连接内最多记住最近 256 个已结束轮次，不能用旧 ID 取消下一轮或其他连接的请求。中断确认等待上限为 30 秒，超时销毁对应上游连接，避免残留确认进入后续租约。未知目标返回带相同 `response_id` 的 `response.interrupt.failed`；无 WebSocket 控制通道的上游返回 `interrupt_not_supported`。缺少或类型错误的 `response_id`、不支持的 `mode`、非法 JSON、非对象载荷及重复的路由/控制字段返回请求错误。
+
+`response.incomplete` 的 `interrupted`、`steered`、`content_filter` 和 `max_messages` 原因即使输出为零也保留原终态，不进入空回复修复或自动重试。已完成输出与用量继续按原续链和计费路径处理，未完成输出是否丢弃由上游 `discard_partial_items` 语义决定。
 
 ## 能力目录与工具边界
 
@@ -63,3 +75,5 @@ HTTP Responses/Compact 在处理原始 JSON 时拒绝重复的顶层 `input` 或
 真实验收仍应对同一个支持该功能的上游进行官方 SDK 直连与网关差分，比较事件序列、终态、工具配对、约束、资源归属和错误；模型升级、凭据变化及缓存/协议切换后应重验。本地自动化回归不代表实际部署或上游全部能力已验证。
 
 官方契约参考：[WebSocket 模式](https://developers.openai.com/api/docs/guides/websocket-mode)、[Steering](https://developers.openai.com/api/docs/guides/steering)、[Codex 模型描述结构](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs)。
+
+中断协议按 Codex 源码核对：[发送与确认](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、[中断终态与用量](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/codex-api/src/sse/responses.rs)。公开 [Responses 事件定义](https://developers.openai.com/api/reference/resources/responses/streaming-events)及 Steering 文档不能替代 Codex 的 `response.interrupt` 契约。

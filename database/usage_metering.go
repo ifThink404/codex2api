@@ -158,14 +158,17 @@ func (db *DB) insertUsageMeteringBatch(ctx context.Context, execer sqlExecer, ba
 	if count == 0 {
 		return nil
 	}
-	args := make([]any, 0, min(count, maxRows)*usageMeteringColumnCount)
+	// created_at is written explicitly, as for usage_logs (issue #857): the
+	// completion time, not the flush time.
+	const insertColumns = usageMeteringColumnCount + 1
+	args := make([]any, 0, min(count, maxRows)*insertColumns)
 	var values strings.Builder
 	rows := 0
 	flush := func() error {
 		if rows == 0 {
 			return nil
 		}
-		_, err := execer.ExecContext(ctx, `INSERT INTO usage_metering (`+usageMeteringColumns+`) VALUES `+values.String(), args...)
+		_, err := execer.ExecContext(ctx, `INSERT INTO usage_metering (created_at, `+usageMeteringColumns+`) VALUES `+values.String(), args...)
 		rows = 0
 		args = args[:0]
 		values.Reset()
@@ -183,15 +186,15 @@ func (db *DB) insertUsageMeteringBatch(ctx context.Context, execer sqlExecer, ba
 			values.WriteByte(',')
 		}
 		values.WriteByte('(')
-		for col := 0; col < usageMeteringColumnCount; col++ {
+		for col := 0; col < insertColumns; col++ {
 			if col > 0 {
 				values.WriteByte(',')
 			}
 			values.WriteByte('$')
-			values.WriteString(strconv.Itoa(rows*usageMeteringColumnCount + col + 1))
+			values.WriteString(strconv.Itoa(rows*insertColumns + col + 1))
 		}
 		values.WriteByte(')')
-		args = append(args, e.AccountID, e.CredentialGeneration, e.Channel,
+		args = append(args, db.usageLogCreatedAtArg(e.CreatedAt), e.AccountID, e.CredentialGeneration, e.Channel,
 			e.Endpoint, e.InboundEndpoint, e.Model, e.EffectiveModel,
 			e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.InputTokens, e.OutputTokens,
 			e.ReasoningTokens, e.CachedTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens,

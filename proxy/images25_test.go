@@ -18,7 +18,9 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestGPTImage25ImagesIngressToUpstream(t *testing.T) {
+// TestImagesIngressToUpstream covers Images and Image Studio against an upstream
+// that rejects explicit reasoning effort while preserving image quality and inputs.
+func TestImagesIngressToUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousRuntime, previousResin := CurrentRuntimeSettings(), resinCfg.Load()
 	t.Cleanup(func() { ApplyRuntimeSettings(previousRuntime); resinCfg.Store(previousResin) })
@@ -29,8 +31,16 @@ func TestGPTImage25ImagesIngressToUpstream(t *testing.T) {
 	observed := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		forwarded := readUpstreamRequestBody(r)
-		observed <- forwarded
 		w.Header().Set("Content-Type", "text/event-stream")
+		// The Codex backend rejects explicit reasoning effort on image turns,
+		// independently of the image tool's quality setting.
+		if effort := gjson.GetBytes(forwarded, "reasoning.effort"); effort.Exists() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, `{"error":{"type":"invalid_request_error","code":"invalid_value","message":"Complexity '%s' is not supported for this image model."}}`, effort.String())
+			return
+		}
+		observed <- forwarded
 		fmt.Fprint(w, `data: {"type":"response.completed","response":{"tool_usage":{"image_gen":{"input_tokens":1550,"input_tokens_details":{"text_tokens":29,"image_tokens":1521},"output_tokens":515,"output_tokens_details":{"image_tokens":515}}},"tools":[{"type":"image_generation","model":"gpt-image-2-codex"}],"output":[{"type":"image_generation_call","result":"`+tinyPNGBase64+`","output_format":"png"}]}}`+"\n\n")
 	}))
 	defer upstream.Close()
@@ -43,12 +53,17 @@ func TestGPTImage25ImagesIngressToUpstream(t *testing.T) {
 		model, quality, mode, driver string
 		stream                       bool
 	}{
+		{"gpt-image-2", "auto", "generate", "gpt-6.1-terra", false},
+		{"gpt-image-2", "medium", "json", "gpt-6.1-terra", false},
 		{"gpt-image-2.5-flare", "xhigh", "generate", "gpt-5.6-sol", false},
 		{"gpt-image-2.5-sunburst", "max", "generate", "gpt-5.6-terra", true},
 		{"gpt-image-2.5-sunburst-2026-09-08", "max", "json", "gpt-5.6-sol", false},
 		{"gpt-image-2.5-flare", "xhigh", "multipart", "gpt-5.6-terra", true},
 		{"gpt-image-2.5-flare", "max", "studio_generate", "gpt-5.6-sol", false},
 		{"gpt-image-2.5-sunburst", "xhigh", "studio_edit", "gpt-5.6-terra", false},
+		{"gpt-image-2.6-flare", "xhigh", "generate", "gpt-5.6-sol", false},
+		{"gpt-image-2.6-sunburst", "max", "generate", "gpt-5.6-terra", true},
+		{"gpt-image-2.6", "max", "studio_generate", "gpt-5.6-sol", false},
 	} {
 		t.Run(tc.mode+tc.model, func(t *testing.T) {
 			// One handler observes changes made between requests without restarting.
@@ -109,6 +124,9 @@ func TestGPTImage25ImagesIngressToUpstream(t *testing.T) {
 				t.Fatalf("image request failed: %d %s", recorder.Code, recorder.Body.String())
 			}
 			forwarded := <-observed
+			if gjson.GetBytes(forwarded, "reasoning.summary").String() != "auto" || gjson.GetBytes(forwarded, "include.0").String() != "reasoning.encrypted_content" {
+				t.Fatalf("reasoning metadata changed: %s", forwarded)
+			}
 			if gjson.GetBytes(forwarded, "model").String() != tc.driver || gjson.GetBytes(forwarded, "tools.0.model").String() != tc.model || gjson.GetBytes(forwarded, "tools.0.quality").String() != tc.quality {
 				t.Fatalf("outbound model/quality changed: %s", forwarded)
 			}
@@ -132,7 +150,7 @@ func TestGPTImage25UsageAndResponsesModel(t *testing.T) {
 	if gjson.GetBytes(body, "model").String() != "gpt-5.6-sol" || gjson.GetBytes(body, "tools.0.model").String() != "gpt-image-2.5-sunburst-2026-09-08" || gjson.GetBytes(body, "tools.0.quality").String() != "max" {
 		t.Fatalf("Responses fields changed: %s", body)
 	}
-	for _, model := range []string{"gpt-image-2.5-flare", "gpt-image-2.5-sunburst-4k"} {
+	for _, model := range []string{"gpt-image-2.5-flare", "gpt-image-2.5-sunburst-4k", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst-4k", "gpt-image-2.6"} {
 		if !slices.Contains(SupportedModelIDs(context.Background(), nil), model) {
 			t.Fatalf("model not exposed: %s", model)
 		}
@@ -140,21 +158,16 @@ func TestGPTImage25UsageAndResponsesModel(t *testing.T) {
 }
 
 func TestGPTImage25OfficialPricingIgnoresBatch(t *testing.T) {
-	body := []byte(`Image generation models
-Standard
-### Grouped Pricing Table data
-| Model | Modality | Input | Cached input | Output |
-| --- | --- | --- | --- | --- |
-| gpt-image-2.5-flare | Image | $8.00 | $2.00 | $30.00 |
-| gpt-image-2.5-flare | Text | $5.00 | $1.25 | - |
-
-Batch
-### Grouped Pricing Table data
-| Model | Modality | Input | Cached input | Output |
-| --- | --- | --- | --- | --- |
-| gpt-image-2.5-flare | Image | $4.00 | $1.00 | $15.00 |
+	body := []byte(`
+<section data-pricing-tier="standard"><table><thead><tr><th>Model</th><th>Modality</th><th>Input</th><th>Cached input</th><th>Output</th></tr></thead><tbody>
+<tr><td>gpt-image-2.5-flare</td><td>Image</td><td>$8.00</td><td>$2.00</td><td>$30.00</td></tr>
+<tr><td>gpt-image-2.5-flare</td><td>Text</td><td>$5.00</td><td>$1.25</td><td>-</td></tr>
+</tbody></table></section>
+<section data-pricing-tier="batch"><table><thead><tr><th>Model</th><th>Modality</th><th>Input</th><th>Cached input</th><th>Output</th></tr></thead><tbody>
+<tr><td>gpt-image-2.5-flare</td><td>Image</td><td>$4.00</td><td>$1.00</td><td>$15.00</td></tr>
+</tbody></table></section>
 `)
-	prices, err := ParseOpenAIOfficialPricingMarkdown(body)
+	prices, err := ParseOpenAIOfficialPricingHTML(body)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -206,6 +206,7 @@ Antigravity accounts are managed as a dedicated Google channel with browser/impo
 | [Usage Guide](docs/USAGE.md) | Client setup, SDK examples, media workflows, and troubleshooting | `docs/USAGE.md` |
 | [API Documentation](docs/API.md) | API endpoints, request and response examples, error codes | `docs/API.md` |
 | [Antigravity Integration](docs/ANTIGRAVITY.md) | Google OAuth and experimental API Key channel, models, risks, and protocol status | `docs/ANTIGRAVITY.md` |
+| [Codex Multi-Agent v2 Compatibility](docs/CODEX_MULTI_AGENT_V2_COMPAT.md) | Opt-in plaintext compatibility for third-party subagents, risks, rollout, rollback | `docs/CODEX_MULTI_AGENT_V2_COMPAT.md` |
 | [Deployment Guide](docs/DEPLOYMENT.md) | Deployment modes, upgrade guide, backup and restore | `docs/DEPLOYMENT.md` |
 | [Configuration Guide](docs/CONFIGURATION.md) | Environment variables, system settings, configuration priority | `docs/CONFIGURATION.md` |
 | [Architecture](docs/ARCHITECTURE.md) | System architecture, scheduling algorithm, storage design | `docs/ARCHITECTURE.md` |
@@ -331,7 +332,7 @@ Each successful budget change receives a read-only generation and is polled by e
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /v1/chat/completions`                            | Chat Completions style endpoint                                                                                                       |
 | `POST /v1/responses`                                   | Responses style endpoint                                                                                                              |
-| `POST /v1/images/generations`                          | OpenAI Images generation endpoint (gpt-image-2 / gpt-image-2.5 via Codex, grok-imagine via Grok)                                                      |
+| `POST /v1/images/generations`                          | OpenAI Images generation endpoint (gpt-image-2 / gpt-image-2.5 / gpt-image-2.6 via Codex, grok-imagine via Grok)                                      |
 | `POST /v1/images/edits`                                | OpenAI Images edit endpoint                                                                                                           |
 | `POST /v1/videos/generations`                          | Grok Imagine video generation (async, returns `request_id`)                                                                           |
 | `POST /v1/videos/edits` / `POST /v1/videos/extensions` | Grok Imagine video edit / extension                                                                                                   |

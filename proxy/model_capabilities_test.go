@@ -35,6 +35,42 @@ func TestCodexCapabilityValidationAndIntersection(t *testing.T) {
 	}
 }
 
+func TestCodexManifestSaveCapabilitiesUsesObservedGeneration(t *testing.T) {
+	db := newTestModelRegistryDB(t)
+	ctx := context.Background()
+	id, err := db.InsertAccount(ctx, "caps", "sync-refresh", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &auth.Account{DBID: id, CredentialGeneration: row.CredentialGeneration, AccessToken: "test-only", PlanType: "plus"}
+	manifest := &CodexModelsManifest{
+		Body:              []byte(`{"models":[{"slug":"gpt-6.1-sol","context_window":500000,"max_context_window":872000}]}`),
+		capabilityAccount: account,
+		capabilitySnapshot: database.ModelCapabilitySnapshot{
+			AccountID: id, CredentialGeneration: row.CredentialGeneration, ObservedAt: time.Now().UnixNano(),
+		},
+	}
+	if err := manifest.SaveCapabilities(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := db.ListModelCapabilities(ctx, []int64{id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(snapshots[id].Models["gpt-6.1-sol"]["context_window"]); got != "500000" {
+		t.Fatalf("context window = %q, want 500000", got)
+	}
+
+	account.CredentialGeneration++
+	if err := manifest.SaveCapabilities(ctx, db); err == nil {
+		t.Fatal("stale manifest was accepted after credential refresh")
+	}
+}
+
 func TestStoredModelCapabilitiesRestoreAndScope(t *testing.T) {
 	db := newTestModelRegistryDB(t)
 	ctx := context.Background()
@@ -91,6 +127,45 @@ func TestCodexCapabilityInvalidModalityDefaultsToText(t *testing.T) {
 	unknownModalities := handler.applyUpstreamModelCapabilities(context.Background(), &database.APIKeyRow{ID: 1}, []byte(`{"models":[{"slug":"gpt-6-astra","input_modalities":["video"]}]}`))
 	if got := gjson.GetBytes(unknownModalities, "models.0.input_modalities").Raw; got != `["text"]` {
 		t.Fatalf("invalid modalities restored an implicit image capability: %s", unknownModalities)
+	}
+}
+
+func TestLiveCapabilitiesRespectRelayTransportAndVisibility(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		for _, transport := range []string{auth.OpenAIResponsesTransportHTTP, auth.OpenAIResponsesTransportWebsocket} {
+			t.Run(fmt.Sprintf("%s/observed=%v", transport, observed), func(t *testing.T) {
+				db := newTestModelRegistryDB(t)
+				ctx := context.Background()
+				store := auth.NewStore(nil, nil, nil)
+				store.AddAccount(&auth.Account{DBID: 100, AccessToken: "codex-test", PlanType: "plus"})
+				id, err := db.InsertOpenAIResponsesAccount(ctx, "relay", map[string]interface{}{"api_key": "test-token", "base_url": "https://relay.example", "models": []string{"gpt-6-astra"}}, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				row, err := db.GetAccountByID(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				relay := &auth.Account{DBID: id, CredentialGeneration: row.CredentialGeneration, UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "test-token", Models: []string{"gpt-6-astra"}, ResponsesUpstreamTransport: transport}
+				relay.SetAllowedAPIKeyIDs([]int64{2})
+				store.AddAccount(relay)
+				source := []byte(`{"models":[{"slug":"gpt-6-astra","prefer_websockets":true,"context_window":1000,"use_responses_lite":true}]}`)
+				if observed {
+					if err := db.SaveModelCapabilities(ctx, database.ModelCapabilitySnapshot{AccountID: id, CredentialGeneration: row.CredentialGeneration, ObservedAt: 1, Models: parseCodexModelCapabilities(source)}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				h := NewHandler(store, db, nil, nil)
+				for _, key := range []int64{1, 2} {
+					result := h.applyUpstreamModelCapabilities(ctx, &database.APIKeyRow{ID: key}, source)
+					wantWS := key == 1 || transport == auth.OpenAIResponsesTransportWebsocket
+					if gjson.GetBytes(result, "models.0.prefer_websockets").Bool() != wantWS ||
+						gjson.GetBytes(result, "models.0.context_window").Int() != 1000 || !gjson.GetBytes(result, "models.0.use_responses_lite").Bool() {
+						t.Fatalf("key=%d want websocket=%v; descriptor=%s", key, wantWS, result)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -188,10 +263,12 @@ func TestStoredCapabilitiesUnknownAndCredentialGenerationAreConservative(t *test
 	t.Run("unknown visible account", func(t *testing.T) {
 		assertUnknown(t, h.applyStoredModelCapabilities(ctx, &database.APIKeyRow{ID: 2}, body))
 	})
-	t.Run("unknown snapshot cannot inherit source manifest", func(t *testing.T) {
+	t.Run("unknown snapshot does not erase live source manifest", func(t *testing.T) {
 		source := []byte(`{"models":[{"slug":"gpt-6-astra","use_responses_lite":true,"prefer_websockets":true,"experimental_supported_tools":["function","web_search"],"context_window":1000,"base_instructions":"retain source prompt"}]}`)
 		result := h.applyUpstreamModelCapabilities(ctx, &database.APIKeyRow{ID: 2}, source)
-		assertUnknown(t, result)
+		if !gjson.GetBytes(result, "models.0.use_responses_lite").Bool() || !gjson.GetBytes(result, "models.0.prefer_websockets").Bool() || gjson.GetBytes(result, "models.0.context_window").Int() != 1000 || gjson.GetBytes(result, "models.0.experimental_supported_tools").Raw != `["function","web_search"]` {
+			t.Fatalf("unobserved account erased live descriptor: %s", result)
+		}
 		if gjson.GetBytes(result, "models.0.base_instructions").String() != "retain source prompt" {
 			t.Fatal("gateway rewrote source instructions")
 		}

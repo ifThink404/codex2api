@@ -126,10 +126,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Test PostgreSQL trace, indexes, capabilities and intelligence checks
+      - name: Test PostgreSQL compatibility and pending-account transactions
         env:
           CODEX2API_TEST_POSTGRES_DSN: postgres://codex2api_test:test-only@localhost:5432/codex2api_test?sslmode=disable
-        run: go test -race -count=1 ./database -run '^(TestPostgresTraceAndCapabilities|TestIntelligenceCheckPostgres)$'
+        run: go test -race -count=1 ./database -run '^(TestPostgresTraceAndCapabilities|TestIntelligenceCheckPostgres|TestPendingAccountTransaction)$'
 
   test-race:
     name: test-race (${{ matrix.name }})

@@ -45,6 +45,23 @@ Claude 原生请求的显式会话来源依次为 `X-Claude-Code-Session-Id`、J
 `account_uuid` 则跟随实际选中账号；其他 metadata 字段及普通业务字符串 `user_id` 保留。
 system 前导块整理为计费标识、CLI 声明、其余原始块，保留原块属性及其余内容顺序。
 
+Messages→Codex 映射将工具结果中的 `tool_reference` 保留为含工具名称的 JSON 文本，
+`search_result`（用户消息或工具结果）及 `browser_state`（工具结果）也以原始 JSON 文本保留，
+避免丢失搜索来源、正文、标签页和状态变化；这些数据提供上下文，不提供 Claude 原生引用渲染。
+工具参数仍按增量发送；完成事件携带完整参数时仅补齐缺失后缀，内容冲突或非法 JSON 会明确报错。
+工具表超过现有 128 项容量时，优先保留未延迟加载、历史调用、已发现和 `tool_choice` 指定的工具，
+再按原顺序填充剩余容量；满容量时不会额外注入默认图片工具挤掉已选定义。
+必须同时保留的工具超过 128 项时明确报错，调用方需减少活跃工具
+或使用 `defer_loading`，避免静默截断所需定义。Grok 路径继续使用其原有工具表处理。
+
+Messages→Codex 的服务端 `web_search` 使用官方 Codex `/alpha/search`，复用当前账号、
+出口和客户端身份；搜索由网关执行，结果交回模型生成回答，并转换为配对的
+`server_tool_use` / `web_search_tool_result`。不切换第三方搜索服务。流式与非流式请求
+均支持，并累计搜索前后模型请求的实际 token 用量。支持 `allowed_domains`，遵守
+`max_uses`，每个请求最多执行 8 次搜索；耗尽后移除搜索工具，让模型基于已有结果回答。
+目前独立搜索适配不支持 `user_location` 和 `blocked_domains`，显式设置时返回错误，
+避免静默忽略限制。OpenAI Responses 中转账号继续转发原有 hosted `web_search`。
+
 用量日志 API 的 Claude `input_tokens` 使用包含缓存读写的总输入口径，供统一统计和计费。
 管理后台明细中的 `↓` 则显示未缓存输入（总输入减去缓存读取及 5 分钟／1 小时缓存写入），
 悬浮说明展示完整拆分；缓存列分别用读取和创建图标显示对应数量。汇总卡仍显示含缓存的总输入。
@@ -227,14 +244,14 @@ Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输�
 | include              | array        | 否   | 包含的额外字段                                                                                     |
 | previous_response_id | string       | 否   | 上一响应 ID，用于上下文连续                                                                        |
 
-`previous_response_id` 的上下文先查当前进程的有界 L1。本地与 Redis 共享上下文的默认绝对 TTL 为 45 分钟，覆盖聊天上游连接 30 分钟空闲回收后的恢复窗口，仍受缓存容量和账号兼容性限制。已认证请求按 API Key ID 隔离；未配置任何 API Key、显式启用 `CODEX_ALLOW_ANONYMOUS=true` 后放行的请求共用 `anon` 命名空间。Redis 模式在 L1 未命中时可从共享后端重建；后端值未超过重建上限但超过 L1 准入预算时仍可服务本次请求，只是不提升到 L1。Memory 模式没有共享 response context 后备，依赖上下文被判定为超限、已淘汰或缺失时可能返回 HTTP `409 response_context_unavailable`。共享后端暂时不可用且请求依赖该上下文时可能返回 HTTP `503 service_unavailable`。如果账号池存在可用的原生 OpenAI Responses relay 后备，网关可保留原始 `previous_response_id` 交给其上游恢复；其他仅做协议翻译的账号不具备这一后备能力。原生 Codex HTTP 的每个非空父引用都要求当前归属的本地或共享快照证明；普通文本父轮不新增 HTTP 会话存储，应重发完整历史并省略父 ID。重叠工具历史仅在能证明完整父前缀重放时去重，否则返回 409。客户端原生 Responses WebSocket 入口在上游连接正常时保留 `previous_response_id` 并只发送当轮增量，轮次开始时保留仍有效的 L1 祖先引用，快照合并与序列化在响应成功提交后才执行并写入本地缓存，共享后端（Redis）写入在后台完成，不占首字路径。缓存会收集 `response.output_item.done`，因此最终 `response.output` 为空时也能保留消息、`phase`、工具调用/结果及 Lite `additional_tools` 声明。`response.completed` 和 `response.incomplete` 成功提交后均可写入，仍受写入策略、TTL 和容量限制约束；按需写入模式下，`store` 未显式为 `false` 的 WebSocket 会话从根轮起即有写入资格；显式 `store:false` 的原生 WS 会话（如 Codex CLI）使用隔离的完整快照及共享后端恢复，不表示网关完全不缓存历史；仍受 TTL、容量和完整性限制。续链失效、换号或转为 HTTP 时，只有能够恢复所需上下文才继续发送；缺失、超限或不可移植的加密状态返回 `response_context_unavailable` 错误帧，共享后端故障返回 `service_unavailable`，此类恢复失败终止本轮并返回错误帧，命名流附带 `stream_id`；连接仍可接收新的完整上下文请求。协议、鉴权或连接资源错误仍可关闭连接。客户端应重发完整上下文并开始新的响应链。
-祖先在轮次开始前已过期或被淘汰时，网关不会把增量伪装成完整快照；该链后续健康轮也不能自行补全历史。缓存 TTL 为 45 分钟，Memory 模式重启会丢失缓存。设置环境变量 `CODEX_WS_CONTINUATION_FAIL_OPEN=true` 可退回旧行为：上下文不可恢复时剥离 `previous_response_id` 后按原样转发，上游将看不到历史；这次有损降级产生的响应不写回放缓存，关闭逃生阀后也不会信任残缺快照。
+`previous_response_id` 的上下文先查当前进程的有界 L1。本地与 Redis 共享上下文的默认绝对 TTL 为 45 分钟，覆盖聊天上游连接 30 分钟空闲回收后的恢复窗口，仍受缓存容量和账号兼容性限制。已认证请求按 API Key ID 隔离；未配置任何 API Key、显式启用 `CODEX_ALLOW_ANONYMOUS=true` 后放行的请求共用 `anon` 命名空间。Redis 模式在 L1 未命中时可从共享后端重建；后端值未超过重建上限但超过 L1 准入预算时仍可服务本次请求，只是不提升到 L1。Memory 模式在关闭磁盘持久层时没有 response context 后备，依赖上下文被判定为超限、已淘汰或缺失时可能返回 HTTP `409 previous_response_not_found`。共享后端暂时不可用且请求依赖该上下文时可能返回 HTTP `503 service_unavailable`。如果账号池存在可用的原生 OpenAI Responses relay 后备，网关可保留原始 `previous_response_id` 交给其上游恢复；其他仅做协议翻译的账号不具备这一后备能力。原生 Codex HTTP 的每个非空父引用都要求当前归属的本地或共享快照证明；普通文本父轮不新增 HTTP 会话存储，应重发完整历史并省略父 ID。重叠工具历史仅在能证明完整父前缀重放时去重，否则返回 409。客户端原生 Responses WebSocket 入口在上游连接正常时保留 `previous_response_id` 并只发送当轮增量，轮次开始时保留仍有效的 L1 祖先引用，快照合并与序列化在响应成功提交后才执行并写入本地缓存，共享后端（Redis）写入在后台完成，不占首字路径。缓存会收集 `response.output_item.done`，因此最终 `response.output` 为空时也能保留消息、`phase`、工具调用/结果及 Lite `additional_tools` 声明。`response.completed` 和 `response.incomplete` 成功提交后均可写入，仍受写入策略、TTL 和容量限制约束；按需写入模式下，`store` 未显式为 `false` 的 WebSocket 会话从根轮起即有写入资格；显式 `store:false` 的原生 WS 会话（如 Codex CLI）使用隔离的完整快照及共享后端恢复，不表示网关完全不缓存历史；仍受 TTL、容量和完整性限制。续链失效、换号或转为 HTTP 时，只有能够恢复所需上下文才继续发送；缺失、超限或不可移植的加密状态返回 `previous_response_not_found` 错误帧，共享后端故障返回 `service_unavailable`，此类恢复失败终止本轮并返回错误帧，命名流附带 `stream_id`；连接仍可接收新的完整上下文请求。协议、鉴权或连接资源错误仍可关闭连接。客户端应重发完整上下文并开始新的响应链。
+祖先在轮次开始前已过期或被淘汰时，网关不会把增量伪装成完整快照；该链后续健康轮也不能自行补全历史。L1 缓存 TTL 为 45 分钟；Memory 模式重启会丢失原生 WebSocket 快照。设置环境变量 `CODEX_WS_CONTINUATION_FAIL_OPEN=true` 可退回旧行为：上下文不可恢复时剥离 `previous_response_id` 后按原样转发，上游将看不到历史；这次有损降级产生的响应不写回放缓存，关闭逃生阀后也不会信任残缺快照。
 
 对于原生 WebSocket 的结构化输出，`gpt-6-astra` 和 `gpt-5.6-luna` 在显式启用 Responses Lite 时保留 JSON Schema 的 `minLength` / `maxLength`。Lite 信号可来自 `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite=true`、`X-OpenAI-Internal-Codex-Responses-Lite: true` 请求头，或由 Payload Rules 注入该元数据标记。该放行仅用于结构化输出；已有工具参数清洗继续使用保守规则。长度约束在入口准备阶段暂时保留，最终出站前才根据最终模型、规则改写后的 Lite 信号、账号 Lite 能力和实际传输统一处理。其他模型、最终未启用 Lite、HTTP 和 Compact 请求沿用原有清洗策略，HTTP 降级请求不会携带不适用的约束。
 
 OpenAI Responses 中转账号默认仍用 HTTP POST `/v1/responses`。账号设置 `responses_upstream_transport=websocket` 后，这个账号的 Responses 出站改为 WebSocket：地址由 Base URL 换成 `ws`/`wss`，路径仍是 `/v1/responses`，握手使用该账号的 API Key 和 `OpenAI-Beta: responses_websockets=2026-02-06`，上行帧为 `response.create`。这个开关只作用于 OpenAI Responses 中转账号，和全局 `codex_force_websocket` 无关；Grok、Antigravity、Claude 不会走这条连接。握手失败返回上游状态或传输错误，不会改回 HTTP。生图请求仍走 HTTP。连接按账号、Base URL 和 API Key 隔离；带 `previous_response_id` 时优先复用产出该响应的连接。客户端 `GET /v1/responses` 也会选中已打开该开关的中转账号。
 
-原生 WebSocket 入口为 `GET /v1/responses`。客户端每轮发送 `response.create`；当前网关明确拒绝 `response.append` 和官方 GPT-6 `response.steer`，返回 `status:400` 的 `unsupported_feature` WebSocket 错误帧，不会伪装成已完成的 steer。需要中途改向时，应等待当前轮结束后用 `previous_response_id` 发起新的 `response.create`。通过校验与 API Key 限制后，较新的同 API Key、同渠道/分组路由作用域、同会话请求会抢占仍在运行的旧请求，并先取消旧上游以释放账号与并发位。相同 `stream_id`（含缺省流）内 FIFO，不同独立流可并行；每连接最多 16 个活动轮次、32 个命名流。命名流事件和请求级错误带回 `stream_id`，命名流请求错误或抢占不会关闭其他健康流，缺省流保留原有协议错误关闭行为。上游连接池按流隔离；同一客户端连接可从另一流已提交的 `store:false` 响应分叉，仍须命中完整缓存并满足授权范围，且指向同一父响应时仍可能等待上游原连接租约。不同 API Key 或不同路由作用域不会互相取消。只有 `prompt_cache_key`、显式会话头、`previous_response_id`、turn state、专用 affinity key 或可稳定派生的内容会话存在时才启用，纯 API Key 兜底身份不会把无关请求合并。Redis 模式支持跨实例抢占，Memory 模式仅在当前进程内生效。
+原生 WebSocket 入口为 `GET /v1/responses`。客户端每轮发送 `response.create`；生成期间可发送带 `response_id` 和 `mode: "discard_partial_items"` 的 `response.interrupt`，网关将其路由到当前 WebSocket 上游租约，并保留确认与终态的原始顺序，详见 [Responses 兼容性](RESPONSES_COMPATIBILITY.md#websocket-流与续链)。当前网关明确拒绝 `response.append` 和官方 GPT-6 `response.steer`，返回 `status:400` 的 `unsupported_feature` WebSocket 错误帧，不会伪装成已完成的 steer。需要中途改向时，应等待当前轮结束后用 `previous_response_id` 发起新的 `response.create`。通过校验与 API Key 限制后，较新的同 API Key、同渠道/分组路由作用域、同会话请求会抢占仍在运行的旧请求，并先取消旧上游以释放账号与并发位。相同 `stream_id`（含缺省流）内 FIFO，不同独立流可并行；每连接最多 16 个活动轮次、32 个命名流。每个 API Key 最多保留 64 条并发下游 WebSocket 连接，全局 4096 条；显式启用匿名访问时，匿名连接另按 IP 限制 16 条，超出返回 `503` 和 `Retry-After: 5`。命名流事件和请求级错误带回 `stream_id`，命名流请求错误或抢占不会关闭其他健康流，缺省流保留原有协议错误关闭行为。上游连接池按流隔离；同一客户端连接可从另一流已提交的 `store:false` 响应分叉，仍须命中完整缓存并满足授权范围，且指向同一父响应时仍可能等待上游原连接租约。不同 API Key 或不同路由作用域不会互相取消。只有 `prompt_cache_key`、显式会话头、`previous_response_id`、turn state、专用 affinity key 或可稳定派生的内容会话存在时才启用，纯 API Key 兜底身份不会把无关请求合并。Redis 模式支持跨实例抢占，Memory 模式仅在当前进程内生效。
 
 **响应示例:**
 
@@ -294,13 +311,17 @@ OpenAI Responses 中转账号默认仍用 HTTP POST `/v1/responses`。账号设�
 
 **端点:** `POST /v1/images/generations`
 
-**说明:** OpenAI Images 兼容入口。外部请求使用 `gpt-image-2`、`gpt-image-2.5-flare` 或 `gpt-image-2.5-sunburst`（支持日期快照及 `-2k` / `-4k` 档位后缀），内部按 `CLIProxyAPI/` 与 `sub2api/` 的链路转换为 Codex `/responses`：主模型默认 `gpt-5.6-luna`（优先使用「系统设置 → Codex → 生图设置」中的文本模型，未配置时沿用环境变量 `CODEX_IMAGES_MAIN_MODEL`；被上游拒绝时按 `gpt-5.5` → `gpt-5.6-terra` → `gpt-5.6-sol` → `gpt-6-astra` 顺序换驱动重试），图像模型写入 `tools[0].model`。
+**说明:** OpenAI Images 兼容入口。外部请求使用 `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.6-flare`、`gpt-image-2.6-sunburst` 或 `gpt-image-2.6`（支持日期快照及 `-2k` / `-4k` 档位后缀），内部按 `CLIProxyAPI/` 与 `sub2api/` 的链路转换为 Codex `/responses`：主模型默认 `gpt-5.6-luna`（优先使用「系统设置 → Codex → 生图设置」中的文本模型，未配置时沿用环境变量 `CODEX_IMAGES_MAIN_MODEL`；被上游拒绝时按 `gpt-5.5` → `gpt-5.6-terra` → `gpt-5.6-sol` → `gpt-6-astra` 顺序换驱动重试），图像模型写入 `tools[0].model`。
 
-GPT Image 2.5 支持 `auto`、`low`、`medium`、`high`、`xhigh`、`max`。质量参数原样传给图片工具；工作台切回旧型号时会将 `xhigh` / `max` 调整为 `high`。省略模型仍默认使用 `gpt-image-2`。`-2k` / `-4k` 是本项目的尺寸与超分别名，发往上游前会剥掉该后缀。
+Images 入口及后台生图自动构造的 Codex 请求不强制 `reasoning.effort`，由上游选择默认值，避免显式 effort 被作为图片 complexity 拒绝。`reasoning.summary`、加密 reasoning 元数据及图片工具的 `quality` 参数保持原有语义。
+
+Codex/GPT 图片生成与编辑在 `stream=false` 或省略 `stream` 时，只返回最终 JSON，不发送 HTTP `102 Processing` 或提前提交 HTTP 200；`stream=true` 仍使用原有 SSE 心跳。`DOWNSTREAM_HTTP_KEEPALIVE_INTERVAL` 不再为这两个入口的 Codex/GPT 非流式分支提供保活。客户端和反向代理仍需给完整生成时长足够的等待/空闲超时；需要异步调用时可使用下文的图片任务接口。Grok 图片分支不受此例外影响，仍保留既有 102 行为。
+
+GPT Image 2.5 / 2.6 支持 `auto`、`low`、`medium`、`high`、`xhigh`、`max`。质量参数原样传给图片工具；工作台切回旧型号时会将 `xhigh` / `max` 调整为 `high`。省略模型仍默认使用 `gpt-image-2`。`-2k` / `-4k` 是本项目的尺寸与超分别名，发往上游前会剥掉该后缀。
 
 直接使用 `/v1/responses` 时，文本主控放在顶层 `model`，图片模型放在 `tools[].model`；显式文本主控优先于后台生图设置及 `CODEX_IMAGES_MAIN_MODEL`。顶层 `model` 直接填图像模型时，则使用后台配置的文本主控。工具模型省略时仍补为 `gpt-image-2`。
 
-Images 入口的 2.5 token 计费区分文本输入、图片输入与各自缓存：内置费率分别为 $5、$8、$1.25、$2 / 百万 token，图片输出 $30 / 百万 token（[官方价格](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)，2026-09-09 核对）。Flare/Sunburst 各有独立定价键，日期快照和尺寸别名使用对应基础型号费率；自定义覆盖优先。usage 日志新增 `image_input_tokens`、`image_output_tokens`、`cached_image_input_tokens`，是总输入/输出/缓存的子集，不重复计费。历史日志无法补回未记录的图片 token 明细。
+Images 入口的 2.5/2.6 token 计费区分文本输入、图片输入与各自缓存：内置费率分别为 $5、$8、$1.25、$2 / 百万 token，图片输出 $30 / 百万 token（[官方价格](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)，2026-09-09 核对）。Flare/Sunburst 各有独立定价键，日期快照和尺寸别名使用对应基础型号费率；自定义覆盖优先。usage 日志新增 `image_input_tokens`、`image_output_tokens`、`cached_image_input_tokens`，是总输入/输出/缓存的子集，不重复计费。历史日志无法补回未记录的图片 token 明细。
 
 **请求示例:**
 
@@ -773,6 +794,70 @@ Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`inpu
 | credit_skip_usage_window   | bool         | 是否跳过 7 天/5 小时用量窗口惩罚                                  |
 | billed_5h                  | number/null  | 过去 5 小时窗口内的累计计费金额（USD）                            |
 | billed_7d                  | number/null  | 过去 7 天窗口内的累计计费金额（USD）                              |
+
+#### GET /api/admin/accounts/live
+
+返回当前页账号的运行时并发计数与用量投影，供账号页约每秒一次的轻量轮询。只读取内存状态，不查数据库、不重建调度快照。
+
+**请求参数:**
+
+| 参数 | 类型   | 说明                               |
+| ---- | ------ | ---------------------------------- |
+| ids  | string | 逗号分隔的账号 ID，最多 500 个     |
+
+**响应:**
+
+```json
+{
+  "accounts": {
+    "1": {
+      "active_requests": 1,
+      "occupied_requests": 1,
+      "dynamic_concurrency_limit": 2,
+      "base_concurrency_effective": 2,
+      "status": "quota_paused",
+      "using_credits": false,
+      "plan_type": "pro",
+      "credits_valid": true,
+      "credits_balance": "12.5",
+      "credits_has_credits": true,
+      "credits_unlimited": false,
+      "credits_overage_limit_reached": false,
+      "credits_spend_control_reached": null,
+      "credits_rate_limit_reached_type": "",
+      "usage_percent_5h": 91.2,
+      "reset_5h_at": "2026-10-18T18:00:00+08:00",
+      "codex_5h_usage_updated_at": "2026-10-18T15:10:00+08:00",
+      "usage_percent_7d": 42,
+      "reset_7d_at": "2026-10-25T07:00:00+08:00",
+      "codex_usage_updated_at": "2026-10-18T15:10:00+08:00",
+      "codex_usage_frame_at": "2026-10-18T15:10:00+08:00",
+      "codex_usage_frame_kind": "codex.rate_limits"
+    }
+  },
+  "session_slot_buffer_enabled": false
+}
+```
+
+**字段说明:**
+
+| 字段 | 类型 | 说明 |
+| ---- | ---- | ---- |
+| status / using_credits | string / bool | 运行时状态；旧后端或 Antigravity 行省略该 key，前端保留列表值 |
+| plan_type | string | 最新运行时套餐，沿用账号列表字段；旧后端或 Antigravity 行省略时保留列表值 |
+| credits_valid / credits_balance | bool / string/null | 当前积分快照是否已观测、余额；未知或隐藏的余额为 `null`，清除旧显示值 |
+| credits_has_credits / credits_unlimited / credits_overage_limit_reached | bool/null | 沿用账号列表的积分业务标志；未观测快照时为 `null` |
+| credits_spend_control_reached / credits_rate_limit_reached_type | bool/null / string | 支出限制与工作区硬停止；未知支出限制为 `null`，无硬停止为 `""` |
+| usage_percent_5h / usage_percent_7d | number/null | 运行时用量；显式 `null` 表示窗口已失效，前端清除列表值 |
+| reset_5h_at / reset_7d_at | string/null | 窗口重置时间（RFC3339） |
+| codex_5h_usage_updated_at / codex_usage_updated_at | string/null | 最近一次用量刷新时间；WS 每轮配额帧也会刷新 |
+| codex_usage_frame_at / codex_usage_frame_kind | string | 最近一次被应用的 WS 配额帧时间与事件类型；首帧前省略，可用于确认帧摄入是否生效 |
+| dynamic_concurrency_limit / base_concurrency_effective | integer | 调度器当前生效的并发上限与配置值 |
+| session_slot_buffer_enabled | bool | 全局会话槽缓冲开关 |
+
+缺失的 key 表示旧后端，前端保留列表值；用量字段显式 `null` 表示窗口失效。套餐与 credits 的 live 字段只投影到使用 Codex 运行时字段的行，Antigravity 行省略这些字段，不改变原列表展示。
+
+终态后到达的连接级配额帧也会更新上述字段。只有通过观测排序门的帧才推进帧时间、credits 和用量；遇到并发观测锁争用时按原始时间排队应用，不等待数据库。用量、credits、套餐与冷却的数据库写入在后台合并执行，因此 live 结果可先于持久化结果可见。
 
 #### PATCH /api/admin/accounts/:id/scheduler
 
@@ -1753,6 +1838,10 @@ HTTP `/v1/*` 响应的 `X-Codex2API-Request-ID` 对应下方可检索的 `reques
 
 `upstream_turn_state` 是上游响应回带的 `X-Codex-Turn-State`（HTTP 取响应头，WebSocket 取流内 metadata 帧），空串表示没有。`injected_turn_state` 与 `turn_state_overridden` 只保留给更早版本写入的用量记录。
 
+`first_token_ms` 对 Responses 上游使用宽松口径：从本次上游尝试开始，到 `response.created` / `response.in_progress` 之外的首个非终态响应事件，包含没有可见文本的结构帧。它不是首个正文字符的时间，也不包含尝试开始前的入站处理和调度等待，不能直接与客户端会话日志推算的首字时间比较。
+
+`ws_acquire_ms` 包含 WebSocket 取连的排队、探活和握手耗时。默认计入 `first_token_ms`；开启 `first_token_excludes_ws_acquire` 后，两列相加可恢复含取连的首响应时间。`output_tokens` 包含推理等不可见输出，比较正文显示速度时还需核对 `reasoning_tokens`、推理强度和实际首个内容帧的时间，不能只用不同来源的平均首字值归因。
+
 #### GET /api/admin/usage/chart-data
 
 获取图表聚合数据。
@@ -1791,6 +1880,12 @@ HTTP `/v1/*` 响应的 `X-Codex2API-Request-ID` 对应下方可检索的 `reques
   "message": "日志已清空"
 }
 ```
+
+### 模型价格同步
+
+`GET /api/admin/model-pricing` 返回参考源地址 `litellm_url`、`models_dev_url`、`default_sync_url` 及官方 HTML 页面地址。`POST /api/admin/model-pricing/sync` 的 `url` 支持 LiteLLM、models.dev 和项目扁平 JSON 格式，手工价格不会被覆盖。
+
+`POST /api/admin/model-pricing/official-sync` 校验所选官方来源的 HTML 价格，失败或缺价时按模型依次回退 LiteLLM、models.dev、项目默认 JSON，最后恢复内置默认价。返回值 `sources` 列出取得有效价格的来源，`fallbacks` 为模型到参考源 URL 的映射，`missing` 为所有来源仍未提供有效价格的模型，`warnings` 仅包含抓取、解析及格式校验异常，`notices` 包含成功回退和使用默认价的普通提示。未勾选渠道不参与同步，管理员手工价格优先。
 
 ### 模型生图计费设置
 
@@ -1840,6 +1935,10 @@ HTTP `/v1/*` 响应的 `X-Codex2API-Request-ID` 对应下方可检索的 `reques
 #### POST /api/admin/keys
 
 创建新 API 密钥。
+
+创建时，自动渠道（省略 `limits.upstream_channel` 或设为 `auto`）和 Codex 渠道的
+`limits.allow_live` 默认 `true`；显式设为 `false` 可关闭 ChatGPT Live。
+管理台创建和编辑时均可在这两个渠道下调整开关，已有 Key 的设置不自动变更。
 
 **请求:**
 
@@ -2051,7 +2150,6 @@ curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
   "continuous_retry_error_codes": [],
   "continuous_retry_max_duration_seconds": 600,
   "codex_fingerprint_default_mode": "off",
-  "codex_unified_client_identity_enabled": false,
   "scheduler_mode": "round_robin",
   "allow_remote_migration": false,
   "database_driver": "postgres",
@@ -2099,13 +2197,13 @@ curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
 
 `codex_fingerprint_default_mode`（`off`/`device`/`session`/`full`，默认 `off`）是新导入或新建 Codex 账号默认盖上的设备指纹收敛档位，只影响之后新加入的账号；已有账号档位不变，入库后仍可在账号级单独调整。非法取值返回 HTTP 400。
 
-`codex_unified_client_identity_enabled`（默认 `false`）控制网关自发的 Codex 维护请求是否与对话请求使用同一份客户端身份。开启后，wham 用量查询、重置券查询与消耗、每日用量、token 明细、订阅同步（Codex 形态）、模型清单（含下游透传）以及 OpenAI Responses 中转账号的模型发现，都改用与对话出站相同的解析：按 `codex_user_agent_config` 生成（号池模式按账号抽取画像），`Originator` 跟随生成的 UA，最后套用账号自定义头里的 `User-Agent` / `Originator` / `Version`。模型清单的 `client_version` 查询参数、`Version` 头与 UA 版本段取同一版本；中转账号的 installation id 改为按中转凭据派生，对话请求体与模型发现请求头取同一值。维护请求不会新增原本不发送的头（例如 wham 探针不补 `Version` 或 `X-Codex-Installation-Id`）。订阅同步被挑战时的浏览器形态回退、邀请接口与外部版本/指纹库同步不受影响。配置身份解析失败（如 `auto` 模式下版本低于最低要求）时回退内置 `codex-tui` 身份并限频记日志。该开关不改变对话请求的身份选择：`client_compat_mode` 不是 `force` 时，官方 Codex 客户端的对话请求仍透传其自身 UA，要让账号对上游只呈现一份身份需同时使用 `force`。
+Codex 维护请求默认与对话请求共用客户端身份解析和账号自定义身份头，设置中不再提供单独开关。模型清单版本与解析出的客户端版本保持一致；身份解析失败时返回错误，不回退固定身份。维护请求仅设置各端点所需的头，不额外添加会话标识或 attestation。订阅同步的浏览器协议回退保持独立。兼容模式允许官方客户端透传时，后台请求使用配置身份，不追踪或复用某个下游客户端的实时身份。
 
 `max_retries`、`max_rate_limit_retries` 与 `codex_ws_silent_max_retries` 是原有的有限重试预算，管理界面和 API 范围均为 `0` 到 `10`（`0` 禁用对应预算）。需要持续重试时使用独立的 `continuous_retry_enabled` 开关；它不会改变这些有限预算的含义。开关打开后，可在 `continuous_retry_categories` 选择 `transport`、`http_429`、`http_4xx`、`http_5xx`、`stream_error`、`response_failed`、`context_error`，并用 `continuous_retry_status_codes`（例如 `[403,404,501]`）或 `continuous_retry_error_codes`（例如 `["rate_limited","context_length_exceeded"]`）精确追加匹配。类别、状态码、错误代码任一命中即可进入持续重试；403、404、上下文错误及“全部 `response.failed`”默认不选中（501 已由默认的 `http_5xx` 类别覆盖）。普通自选模式不会把结构化安全策略拒绝升级为无限重试。永久额度/余额错误（如 `insufficient_quota`、`quota_exceeded`、`billing_hard_limit`、`billing_limit_reached`、`spend_limit`、`credit_balance`、`insufficient_balance`、`usage_limited`）不会因为通用类别进入无限循环；只有管理员明确选择对应额度错误代码，或明确启用下述超级开关时，才会进入持续重试。
 
 `continuous_retry_catch_all` 是默认关闭的超级开关。请求同时提交 `continuous_retry_enabled=true` 与 `continuous_retry_catch_all=true` 后，除明确的上游 `cyber_policy` 外，所有被代理识别为真实上游失败的 HTTP 状态、传输/读取失败、`error` 帧、`response.failed` 以及以后出现的未知失败都会进入持续重试，不依赖当前已知错误码清单；永久额度、余额、鉴权、无效请求和其他结构化安全策略错误也包含在内。明确的上游 `cyber_policy` 始终终止当前请求，不换号、不重放。文本推理请求只把上游 HTTP `200` 及协议正常终态视为可提交结果；201、202、204、重定向、`response.failed`、独立 `error` 帧及无终态 EOF 都会丢弃整次尝试并继续重试。无状态请求会轮换可用账号；持有账号绑定加密状态的请求只有在能够安全展开为自包含请求时才换号，否则沿用相应协议的绑定语义。`continuous_retry_enabled=false` 会规范化为 `continuous_retry_catch_all=false`。
 
-开启持续重试后，流式上游尝试会先完整暂存，只有正常终态才一次性回放给客户端。因此失败尝试的半截文本、工具调用和错误帧不会泄漏，但客户端也不再实时逐 token 收到该次结果。SSE 路径在退避、等待账号、等待响应头和读取暂存流时写注释心跳并 flush；Responses WebSocket 使用 Ping。非流式 JSON（包括 Grok 图片/视频创建）在已进入无限重试后，会在退避、等待账号、等待响应头和读取响应体时发送标准 HTTP `102 Processing` 信息响应；它不会提交最终 JSON 的状态码或响应体，但中间代理可能丢弃 1xx，因此仍需依赖墙钟上限和客户端超时。`retry_interval_ms` 是本地等待下限；实际等待取该值、带抖动的指数退避（250ms 起步、30 秒封顶）和有效 `Retry-After`（最多 5 分钟）中的较大值。
+开启持续重试后，流式上游尝试会先完整暂存，只有正常终态才一次性回放给客户端。因此失败尝试的半截文本、工具调用和错误帧不会泄漏，但客户端也不再实时逐 token 收到该次结果。SSE 路径在退避、等待账号、等待响应头和读取暂存流时写注释心跳并 flush；Responses WebSocket 使用 Ping。非流式 JSON（包括 Grok 图片/视频创建，但不包括 Codex/GPT Images）在已进入无限重试后，会在退避、等待账号、等待响应头和读取响应体时发送标准 HTTP `102 Processing` 信息响应；它不会提交最终 JSON 的状态码或响应体，但中间代理可能丢弃 1xx，因此仍需依赖墙钟上限和客户端超时。Codex/GPT Images 的非流式生成与编辑即使进入无限重试，也只等待最终 JSON，不发送 102；其重试截止时间和取消行为保持不变。`retry_interval_ms` 是本地等待下限；实际等待取该值、带抖动的指数退避（250ms 起步、30 秒封顶）和有效 `Retry-After`（最多 5 分钟）中的较大值。
 
 `continuous_retry_max_duration_seconds`（默认 600，范围 1-900）是无限预算的墙钟上限，从请求第一次进入 `retryLimit=-1` 时开始，后续尝试不会重置。到期会取消正在进行的上游请求，并返回最近一次真实上游失败；已提交的 SSE 将该失败转换为协议错误事件，Responses WebSocket 使用错误帧并以 1013 关闭。若尚无上游失败可返回，才回退到 504 `upstream_timeout`。Grok 图片/视频创建保持非流式 JSON；无限重试期间使用 HTTP `102 Processing` 保活，不把 SSE 注释混入最终 JSON。该信息响应是 best-effort 的，中间代理仍可能过滤它。
 
@@ -2701,7 +2799,7 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 | account_pool_concurrency_saturated | 匹配账号的并发窗口已满 | 稍后重试，或提高单账号并发上限 |
 | account_pool_usage_limit_reached | 账号池额度耗尽   | 等待冷却或添加新账号             |
 | rate_limit_exceeded              | 限流触发         | 降低请求频率                     |
-| response_context_unavailable     | `previous_response_id` 所需上下文不可用 | 重新发送完整上下文或开始新的响应链 |
+| previous_response_not_found      | `previous_response_id` 所需上下文不可用 | 重新发送完整上下文或开始新的响应链 |
 | service_unavailable              | 依赖的共享上下文后端暂时不可用 | 退避后重试并检查 Redis 状态 |
 
 ### Responses 上下文不可用
@@ -2714,8 +2812,8 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 ```json
 {
   "error": {
-    "code": "response_context_unavailable",
-    "message": "Previous response context is unavailable",
+    "code": "previous_response_not_found",
+    "message": "Previous response not found; resend the full conversation input without previous_response_id",
     "type": "invalid_request_error",
     "details": {
       "field": "previous_response_id",
@@ -2737,6 +2835,26 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 
 - `global_rpm = 0`: 无限流
 - `global_rpm > 0`: 启用 RPM 限流
+
+### API Key 级窗口限额
+
+`limits.rpm`、`limits.rpd` 以及 cost/token 窗口在每次请求转发前检查。同一进程内另有原子准入计数；RPM 使用秒桶，RPD 使用滑动 24 小时计数。同一分钟内的 RPD 准入合并，在该桶最后一次准入满 24 小时后过期，因此最多保守多保留不到一分钟，不会提前释放额度。多实例部署时计数按副本独立，重启也会丢失进程内记录；持久历史检查仍依赖用量日志。准入表最多保留 8,192 个 Key；满表且没有可过期记录时，新 Key 返回 `503`，不会通过淘汰活跃计数来重置额度。
+
+批量生图在入队时只检查边界，不预留 RPM/RPD；每个实际图片调用各占一次准入。`202` 只代表任务已接收，执行时仍可能因额度不足失败，客户端必须检查任务终态。
+
+Responses（含直接 `/v1/responses/compact`）的 `input` 超过 20,000 条时在解析和改写前返回 `400`；Chat Completions 的 `messages` 保持已有 4,096 条校验上限，另有解析前守卫。两个字段的重复顶层键、大小写冲突或非规范拼写（如 `Messages`）均返回 `400`，避免前置检查与后续 JSON 解码选择不同字段。
+
+Image Studio 的管理端、门户和外部任务入口对显式 `WIDTHxHEIGHT` 限制为单边 16,384 像素、总像素 4,000 万；非法或超限目标在入队、外链下载及上游调用前返回 `400`，不会静默取消精确缩放。
+
+管理端按客户端 IP 记录认证失败：10 分钟内 5 次失败后阻断 10 分钟，并返回 `429` 与 `Retry-After`。阻断在密钥比较前执行，因此期间正确密钥也会收到 `429`，共享出口的管理员需等待阻断过期。只有明确配置的可信反向代理才能提供可信客户端地址；不要把任意客户端提供的转发头视为身份。
+
+认证失败表最多记录 4,096 个来源，保留有效的失败计数和封禁。满表且无过期条目时，未跟踪的新来源在密钥比较前收到 `429`，`Retry-After` 指向最早可释放的条目；已跟踪来源继续使用自己的计数和封禁，成功认证仍可清除该来源记录。
+
+OAuth 会话在兑换前一次性认领，公开回调、手动兑换和账号更新共享此状态。并发或重复兑换被拒绝；失败后需要重新发起授权，不重用可能已被上游消费的 code。回调处理期间轮询返回 `processing`，完成后返回 `completed` 并清理会话；回调页面与轮询结果只提供通用错误，脱敏诊断保留在服务端日志。
+
+自助提交账号的凭据、禁用状态、联系人备注、`self-service` 标签及凭据族在同一数据库事务中保存。保存失败不留下半成品账号，也不占用该账号身份；重新发起授权后可以再次提交。待审核账号在管理员批准前不进入调度池。
+
+Responses、Chat、compact、Images、原生 Gemini 及下游 Responses WS 的上游 HTTP 错误处理最多读取 1 MiB 前缀；Responses/compact 直接聚合的成功 JSON 与 Grok namespace 非流式改写最多读取 64 MiB，超限成功 JSON 明确报错，不会作为截断 JSON 返回。新增 SSE 读取路径的单行上限为 8 MiB，Grok SSE 聚合还限制完整事件为 8 MiB，超限错误会向调用方传播。这些是本地资源边界，不代表更大的 Base64 图片或工具输出在上游协议中一定非法，也不代表 OAuth 等其他 HTTP 客户端都复用此预算。
 
 ### API Key 模型周请求次数预算
 
@@ -2872,3 +2990,7 @@ Retry-After: 3600
 ### 可选的持久化生图队列
 
 设置 `IMAGE_JOB_WORKERS=2` 可启用固定并发的数据库任务队列。启用后创建接口只返回 `job.id` 和 `job.status`；参考图在任务执行时读取。数据库增量迁移、内存限制、重启恢复及兼容性详见 [图片任务队列](IMAGE_JOB_QUEUE.md)。
+
+### 自适应降智检测配置
+
+`PUT /api/admin/intelligence-check/settings` 支持 `adaptive_enabled`、`pause_initial_seconds`、`pause_max_seconds`、`recovery_initial_seconds`、`recovery_min_seconds`。仍需提交当前 `revision` 和完整设置。字段语义、边界与兼容规则见 [自适应降智检测](INTELLIGENCE_BACKOFF.md)。检测 bars 增加 `probe_phase`、`next_interval_seconds`、`passed_streak`、`next_due_at`，用于展示退避或恢复确认进度。账号限流或额度耗尽、自动检测正在等待恢复时，`probe_phase` 为 `quota_wait` 且不返回 `next_due_at`。

@@ -676,6 +676,7 @@ func ValidateInput() ValidationRule {
 			// multi-agent 会话的代理间消息历史项,续会话时随 input 回放,上游原生接受
 			"agent_message":           true,
 			"reasoning":               true,
+			"configuration_update":    true,
 			"function_call":           true,
 			"function_call_output":    true,
 			"tool_call":               true,

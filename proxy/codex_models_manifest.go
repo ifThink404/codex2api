@@ -89,7 +89,7 @@ func (h *Handler) CodexModelsManifestHandler(c *gin.Context) {
 				http.StatusBadGateway)
 			return
 		}
-		h.learnManifestModelsAsync(manifest.Body, account)
+		h.learnFetchedManifestAsync(manifest)
 		h.writeMergedCodexManifest(c, body, "", extraModels)
 		return
 	}
@@ -102,7 +102,7 @@ func (h *Handler) CodexModelsManifestHandler(c *gin.Context) {
 	}
 	// 顺手把清单里注册表不认识的新模型学习进注册表（只增不改不删），
 	// 让选单里出现的新模型立即通过请求侧模型校验，无需等手动同步。
-	h.learnManifestModelsAsync(manifest.Body, account)
+	h.learnFetchedManifestAsync(manifest)
 	h.writeMergedCodexManifest(c, manifest.Body, manifest.ETag, extraModels)
 }
 
@@ -422,6 +422,27 @@ func (h *Handler) learnManifestModelsAsync(manifestBody []byte, accounts ...*aut
 	for _, account := range accounts {
 		h.learnModelCapabilitiesAsync(account, manifestBody)
 	}
+	h.learnManifestModelRegistryAsync(manifestBody)
+}
+
+// learnFetchedManifestAsync carries the credential generation captured before
+// the upstream request into capability persistence. The response body must
+// never be re-associated with a generation read after a token rotation.
+func (h *Handler) learnFetchedManifestAsync(manifest *CodexModelsManifest) {
+	if manifest == nil {
+		return
+	}
+	if manifest.capabilityAccount != nil {
+		h.learnModelCapabilitiesAsyncAtGeneration(
+			manifest.capabilityAccount,
+			manifest.capabilitySnapshot.CredentialGeneration,
+			manifest.Body,
+		)
+	}
+	h.learnManifestModelRegistryAsync(manifest.Body)
+}
+
+func (h *Handler) learnManifestModelRegistryAsync(manifestBody []byte) {
 	if len(manifestBody) == 0 {
 		return
 	}
@@ -490,6 +511,9 @@ type CodexModelsManifest struct {
 	Body        []byte
 	ETag        string
 	NotModified bool
+
+	capabilityAccount  *auth.Account
+	capabilitySnapshot database.ModelCapabilitySnapshot
 }
 
 // FetchCodexModelsManifest 用账号凭据向 ChatGPT 后端实时拉取 Codex 模型清单。
@@ -498,7 +522,7 @@ type CodexModelsManifest struct {
 // 演进，透传使网关无需跟进 schema 变化，且返回的始终是账号真实的模型权限
 // （区别于内置模型注册表的"理论列表"）。
 //
-// downstream 是下游透传请求的原始头（后台拉取传 nil），只在统一身份开关开启时参与
+// downstream 是下游透传请求的原始头（后台拉取传 nil），参与
 // 出站身份解析，规则与对话请求一致。
 func FetchCodexModelsManifest(ctx context.Context, account *auth.Account, proxyURL, clientVersion, ifNoneMatch string, downstream http.Header) (*CodexModelsManifest, error) {
 	endpoint := CodexModelsManifestURL
@@ -512,27 +536,20 @@ func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account,
 	if account == nil {
 		return nil, fmt.Errorf("account is nil")
 	}
-	accessToken := account.GetAccessToken()
+	account.Mu().RLock()
+	accessToken := strings.TrimSpace(account.AccessToken)
+	generation := account.CredentialGeneration
+	account.Mu().RUnlock()
 	if accessToken == "" {
 		return nil, fmt.Errorf("account has no access token")
 	}
 
-	// UA 版本段、Version 头与 client_version query 三者保持同一版本，避免出站身份
-	// 自相矛盾。统一身份开启时三者都取解析出的身份版本：清单按 client_version 过滤
-	// 模型，对话请求以该版本出站，清单也必须按同一版本拿。
-	identity := ResolveCodexMaintenanceIdentity(account, downstream)
-	userAgent := ""
-	if identity.Unified {
-		clientVersion = firstNonEmptyString(identity.Version, clientVersion)
-		userAgent = identity.UserAgent
+	// 清单过滤版本与本次对话身份版本保持一致。
+	identity, err := ResolveCodexMaintenanceIdentity(account, downstream)
+	if err != nil {
+		return nil, err
 	}
-	clientVersion = strings.TrimSpace(clientVersion)
-	if clientVersion == "" {
-		clientVersion = effectiveLatestCodexCLIVersion()
-	}
-	if userAgent == "" {
-		userAgent = replaceCodexUserAgentVersion(defaultCodexCLIUserAgent, clientVersion)
-	}
+	clientVersion = firstNonEmptyString(identity.Version, clientVersion)
 	requestURL := endpoint + "?client_version=" + url.QueryEscape(clientVersion)
 
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -543,7 +560,7 @@ func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account,
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", identity.UserAgent)
 	req.Header.Set("Originator", identity.Originator)
 	req.Header.Set("Version", clientVersion)
 	if ifNoneMatch = strings.TrimSpace(ifNoneMatch); ifNoneMatch != "" {
@@ -581,5 +598,12 @@ func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account,
 	if err != nil {
 		return nil, fmt.Errorf("read codex models response: %w", err)
 	}
-	return &CodexModelsManifest{Body: body, ETag: resp.Header.Get("ETag")}, nil
+	observedAt := time.Now().UnixNano()
+	return &CodexModelsManifest{
+		Body: body, ETag: resp.Header.Get("ETag"),
+		capabilityAccount: account,
+		capabilitySnapshot: database.ModelCapabilitySnapshot{
+			AccountID: account.ID(), CredentialGeneration: generation, ObservedAt: observedAt,
+		},
+	}, nil
 }

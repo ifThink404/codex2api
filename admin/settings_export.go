@@ -45,7 +45,7 @@ func portableSettings(snapshot *settingsResponse) (map[string]json.RawMessage, e
 			}
 		}
 	}
-	for _, name := range []string{"admin_secret", "response_cache_config_generation", "prompt_filter_custom_patterns", "prompt_filter_custom_patterns_expected"} {
+	for _, name := range []string{"admin_secret", "response_cache_config_generation", "output_guard_config_generation", "prompt_filter_custom_patterns", "prompt_filter_custom_patterns_expected"} {
 		delete(allowed, name)
 	}
 	for name := range values {

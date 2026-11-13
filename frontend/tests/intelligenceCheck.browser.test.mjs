@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 let artifactDir
 let browser, script, css
 const question = { id: 'candy', name: '糖果配对', prompt: '本地演示题目，最终只恢复数字结果。', expected_answer: '21', match_mode: 'exact', max_duration_ms: 20000, enabled: true }
-const settings = { revision: 1, enabled: false, gpt_model: 'gpt-6-astra', claude_model: 'claude-sonnet-4-6', reasoning_effort: 'high', judge_mode: 'answer', interval_seconds: 300, retry_seconds: 60, timeout_seconds: 180, concurrency: 4, retention: 200, new_accounts_enabled: true, action: 'none', degrade_threshold: 2, recover_threshold: 1, target_group_id: 0, questions: [question] }
+const settings = { adaptive_enabled: false, pause_initial_seconds: 1800, pause_max_seconds: 172800, recovery_initial_seconds: 300, recovery_min_seconds: 120, revision: 1, enabled: false, gpt_model: 'gpt-6-astra', claude_model: 'claude-sonnet-4-6', reasoning_effort: 'high', judge_mode: 'answer', interval_seconds: 300, retry_seconds: 60, timeout_seconds: 180, concurrency: 4, retention: 200, new_accounts_enabled: true, action: 'none', degrade_threshold: 2, recover_threshold: 1, target_group_id: 0, questions: [question] }
 const accounts = [{ account_id: 1, account_name: '本地 Codex 测试账号', channel: 'codex', enabled: true, latest_status: 'degraded', failed_streak: 2, passed_streak: 0, action: 'pause', next_due_at: '2026-10-15T13:00:00Z' }]
 const run = { id: 11, account_id: 1, account_name: accounts[0].account_name, channel: 'codex', source: 'manual', status: 'degraded', config_revision: 1, model: 'gpt-6-astra', response_model: 'gpt-6-astra', reasoning_effort: 'high', judge_mode: 'answer', question, output: '29', error: '', duration_ms: 4120, input_tokens: 120, output_tokens: 10, reasoning_tokens: 8, created_at: '2026-10-15T12:00:00Z', started_at: '2026-10-15T12:00:00Z', completed_at: '2026-10-15T12:00:04Z', action: 'pause' }
 before(async () => {
@@ -57,6 +57,8 @@ async function fixture(t, options = {}) {
   localStorage.setItem("lang", "zh"); localStorage.setItem("codex2api:accounts:page-mode", "pool"); window.__claudePage = options.claudePage; window.__accountsPage = options.accountsPage; window.__initialPath = options.initialPath; window.__calls = []; window.__config = settings; window.__showBar = options.bar
   window.__bar = { enabled: options.detectionEnabled ?? true, action: 'none', records: ['normal', 'degraded', 'error', 'interrupted'].map((status, i) => ({ id: 10 + i, status, question_name: '糖果配对', duration_ms: 1200, completed_at: run.completed_at })) }
   if (options.dark) document.documentElement.classList.add('dark')
+  window.__conflictActive = !!options.conflict
+  if (options.conflict) window.__config = {...settings, action: 'switch_group', target_group_id: 1}
   window.__api = async (name, args) => {
    window.__calls.push({ name, args })
    const account = { id: 1, name: '本地 Codex 测试账号', email: 'fixture@example.test', account_type: 'oauth', status: 'active', enabled: true, health_tier: 'healthy', created_at: '2026-10-15T12:00:00Z', group_ids: [], models: ['gpt-6-astra'], detail_loaded: true, usage_percent_7d: 12, active_requests: 2, dynamic_concurrency_limit: 200, ...options.accountOverrides }
@@ -72,13 +74,17 @@ async function fixture(t, options = {}) {
    if (name === 'getProxies') return { proxies: [] }
    if (name === 'getChannelMonitorBillingRates') return { rates: [] }
    if (name === 'getIntelligenceSettings') return window.__config
-   if (name === 'listAccountGroups') return { groups: [{ id: 1, name: '隔离分组' }] }
+   if (name === 'listAccountGroups') return { groups: [{ id: 1, name: '隔离分组', channel: 'codex' }, { id: 2, name: 'Claude 隔离', channel: 'claude' }, { id: 3, name: 'Grok 隔离', channel: 'grok' }] }
    if (name === 'getIntelligenceAccounts') { if (options.error) throw new Error('本地模拟读取失败'); return { items: options.empty ? [] : accounts, total: options.empty ? 0 : 1, page: 1, page_size: 20 } }
    if (name === 'getIntelligenceRuns') { if (options.error) throw new Error('本地模拟读取失败'); return { items: options.empty ? [] : (options.pagination ? [{...run,id:args[0] === 2 ? 3 : 21,source:'automatic'},run].sort((a,b)=>b.id-a.id) : [run]), total: options.empty ? 0 : options.pagination ? 22 : 1, page: args[0], page_size: 20 } }
    if (name === 'getIntelligenceRun') return { run }
-   if (name === 'saveIntelligenceSettings') { if (options.saveError) throw new Error('配置版本冲突'); window.__config = { ...args[0], revision: args[0].revision + 1 }; return window.__config }
+   if (name === 'saveIntelligenceSettings') {
+    if (options.saveError) throw new Error('配置版本冲突')
+    if (window.__conflictActive) throw Object.assign(new Error('intelligence check target group is incompatible: 1 enabled accounts belong to another channel'), {details: {code:'intelligence_check_target_conflict',target_group_id:1,target_group_channel:'codex',conflict_count:options.conflictCount || 1,conflicts:[{account_id:68876,account_name:'冲突 Claude 账号',channel:'claude'}]}})
+    window.__config = { ...args[0], revision: args[0].revision + 1 }; return window.__config
+   }
    if (name === 'createIntelligenceRuns') { if (options.createError) throw new Error('检测提交失败'); window.__bar = {...window.__bar,active_run_id:99,active_status:'queued'}; return { runs: [{...run,id:99,status:'queued'}] } }
-   if (name === 'setIntelligenceAccounts') { if (options.toggleError) throw new Error('保存开关失败'); window.__bar.enabled=args[1]; return { updated: args[0].length } }
+   if (name === 'setIntelligenceAccounts') { if (options.toggleError) throw new Error('保存开关失败'); if (args[0].includes(68876) && !args[1]) window.__conflictActive=false; window.__bar.enabled=args[1]; return { updated: args[0].length } }
    throw new Error(`unexpected API ${name}`)
   }
  }, { settings, accounts, run, options })
@@ -184,10 +190,46 @@ test('save errors keep drafts and failed requests restore the manual action',asy
  await page.getByText('检测提交失败',{exact:true}).waitFor()
  assert.equal(await page.getByRole('button',{name:'立即检测',exact:true}).isEnabled(),true)
 })
+
+test('conflicting accounts can be disabled explicitly and the unsaved configuration retried', async t => {
+ const page = await fixture(t, {conflict:true, mobile:true})
+ await page.getByLabel('GPT / Codex 模型',{exact:true}).fill('gpt-6-sol')
+ await page.getByRole('button',{name:'保存配置',exact:true}).click()
+ const conflict = page.getByRole('alert').filter({hasText:'配置尚未保存'})
+ await conflict.waitFor()
+ assert.match(await conflict.innerText(),/#68876 · 冲突 Claude 账号 · claude/)
+ assert.match(await conflict.innerText(),/隔离分组（codex）/)
+ assert.equal(await page.evaluate(()=>window.__calls.filter(c=>c.name==='setIntelligenceAccounts').length),0)
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1))
+ await page.screenshot({path:path.join(artifactDir,'settings-conflict-mobile.png'),fullPage:true})
+ await conflict.getByRole('button',{name:'关闭以上 1 个账号的自动检测'}).click()
+ await conflict.waitFor({state:'detached'})
+ assert.deepEqual(await page.evaluate(()=>window.__calls.find(c=>c.name==='setIntelligenceAccounts').args),[[68876],false])
+ assert.equal(await page.getByLabel('GPT / Codex 模型',{exact:true}).inputValue(),'gpt-6-sol')
+ assert.equal(await page.evaluate(()=>window.__config.gpt_model),'gpt-6-astra')
+ await page.getByRole('button',{name:'保存配置',exact:true}).click()
+ await page.getByRole('button',{name:'保存配置',exact:true,disabled:true}).waitFor()
+ assert.equal(await page.evaluate(()=>window.__config.gpt_model),'gpt-6-sol')
+})
+
+test('failed conflict resolution keeps the account list and configuration draft', async t => {
+ const page = await fixture(t, {conflict:true, toggleError:true, conflictCount:201})
+ await page.getByLabel('GPT / Codex 模型',{exact:true}).fill('gpt-6-sol')
+ await page.getByRole('button',{name:'保存配置',exact:true}).click()
+ const conflict = page.getByRole('alert').filter({hasText:'配置尚未保存'})
+ await conflict.waitFor()
+ assert.match(await conflict.innerText(),/处理后重新保存可查看剩余冲突/)
+ await conflict.getByRole('button',{name:'关闭以上 1 个账号的自动检测'}).click()
+ await page.getByText('保存开关失败',{exact:true}).waitFor()
+ assert.equal(await conflict.isVisible(),true)
+ assert.equal(await page.getByLabel('GPT / Codex 模型',{exact:true}).inputValue(),'gpt-6-sol')
+})
 async function assertConcurrencyInline(scope) {
  const concurrency = scope.locator('span[title*="当前正在处理 2 个请求"]').first()
  const detect = scope.getByRole('button', {name: '立即检测', exact: true})
+ await Promise.all([concurrency.waitFor(), detect.waitFor()])
  const [counter, action] = await Promise.all([concurrency.boundingBox(), detect.boundingBox()])
+ assert.ok(counter && action, 'concurrency and action must both be visible')
  assert.ok(Math.abs(counter.y + counter.height/2 - action.y - action.height/2) < 2, 'concurrency stays on the action row')
 }
 async function assertActionsFollowStatus(scope) {
@@ -254,4 +296,68 @@ test('Claude account table and detail receive batch intelligence history', async
  await page.getByRole('dialog').getByLabel('最近 20 次降智检测，由旧到新').waitFor()
  await assertActionsFollowStatus(page.getByRole('dialog'))
  assert.ok(await page.evaluate(() => window.__calls.filter(c => c.name === 'getIntelligenceBars').every(c => JSON.stringify(c.args[0])==='[1]')))
+})
+
+
+test('adaptive settings can be enabled and saved with an independent long cap', async t => {
+ const page = await fixture(t)
+ await page.getByRole('switch', {name:'自适应检测',exact:true}).click()
+ assert.equal(await page.getByLabel('暂停最大间隔（秒）',{exact:true}).inputValue(),'172800')
+ await page.getByLabel('暂停最大间隔（秒）',{exact:true}).fill('259200')
+ await page.getByRole('button',{name:'保存配置',exact:true}).click()
+ await page.getByRole('button',{name:'保存配置',exact:true,disabled:true}).waitFor()
+ assert.equal(await page.evaluate(()=>window.__config.adaptive_enabled),true)
+ assert.equal(await page.evaluate(()=>window.__config.pause_max_seconds),259200)
+ await page.screenshot({path:path.join(artifactDir,'settings-adaptive.png'),fullPage:true})
+})
+
+test('account bar shows recovery progress and persisted next probe', async t => {
+ const page = await fixture(t,{bar:true})
+ await page.evaluate(()=>{window.__bar={...window.__bar,action:'pause',probe_phase:'recovering',passed_streak:1,next_due_at:'2026-11-03T12:00:00Z'}})
+ await page.getByText(/恢复确认 · 连续通过 1 次 · 下次/).waitFor({timeout:6000})
+ await page.screenshot({path:path.join(artifactDir,'account-recovering.png'),fullPage:true})
+})
+
+
+test('source switches preserve legacy defaults, change independently and save without altering adaptive policy', async t => {
+ const page = await fixture(t)
+ const source = label => page.getByRole('switch', {name: label + ' 自动降智检测', exact: true})
+ for (const [label, value] of [['GPT / Codex','true'],['Claude','true'],['Grok','false'],['Antigravity','false']]) {
+  assert.equal(await source(label).getAttribute('aria-checked'), value)
+ }
+ await source('Claude').click()
+ assert.equal(await source('GPT / Codex').getAttribute('aria-checked'), 'true')
+ assert.equal(await source('Antigravity').getAttribute('aria-checked'), 'false')
+ await source('Grok').click()
+ assert.equal(await source('Claude').getAttribute('aria-checked'), 'false')
+ await page.getByLabel('Grok 检测模型', {exact:true}).fill('grok-4.7')
+ assert.equal(await page.evaluate(()=>window.__calls.filter(c=>c.name==='saveIntelligenceSettings').length),0)
+ await page.getByRole('button',{name:'保存配置',exact:true}).click()
+ await page.getByRole('button',{name:'保存配置',exact:true,disabled:true}).waitFor()
+ const config = await page.evaluate(()=>window.__config)
+ assert.deepEqual(config.channels, {codex:true,claude:false,grok:true,antigravity:false})
+ assert.equal(config.grok_model,'grok-4.7')
+ assert.equal(config.enabled,false)
+ assert.equal(config.pause_initial_seconds,1800)
+ assert.equal(config.recovery_initial_seconds,300)
+ assert.equal(config.adaptive_enabled,false)
+})
+
+test('adding a question works on insecure HTTP origins without crypto.randomUUID', async t => {
+ const page = await fixture(t)
+ // 模拟非安全上下文（HTTP 站点）：randomUUID 不存在，但 getRandomValues 仍在。
+ await page.evaluate(() => {
+  const source = window.crypto
+  const getRandomValues = source.getRandomValues.bind(source)
+  Object.defineProperty(window, 'crypto', { value: { getRandomValues } })
+ })
+ assert.equal(await page.evaluate(() => typeof crypto.randomUUID), 'undefined')
+ await page.getByRole('region', { name: '检测题库' }).getByRole('button', { name: '新增题目' }).click()
+ await page.getByLabel('题目正文').fill('回退题目正文')
+ await page.getByRole('button', { name: '保存配置', exact: true }).click()
+ const ids = await page.evaluate(() => window.__config.questions.map(q => q.id))
+ assert.equal(ids.length, 2)
+ assert.notEqual(ids[1], ids[0])
+ assert.match(ids[1], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+ assert.equal(await page.evaluate(() => window.__config.questions[1].prompt), '回退题目正文')
 })

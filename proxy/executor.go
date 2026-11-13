@@ -20,6 +20,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/proxy/internal/jsonbody"
+	"github.com/codex2api/security"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -260,7 +261,7 @@ func newCodexStandardTransport(proxyURL string) http.RoundTripper {
 	baseDialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport.DialContext = baseDialer.DialContext
 	if err := auth.ConfigureTransportProxy(transport, proxyURL, baseDialer); err != nil {
-		log.Printf("[CodexTransport] 代理配置失败，回退直连: proxy=%s err=%v", proxyURL, err)
+		log.Printf("[CodexTransport] 代理配置失败，回退直连: proxy=%s err_type=%T", security.MaskURLCredentials(proxyURL), err)
 		transport.Proxy = nil
 		transport.DialContext = baseDialer.DialContext
 	}
@@ -390,9 +391,6 @@ var codexAllowedForwardHeaders = []string{
 	"X-Client-Request-Id",
 	"X-Codex-Beta-Features",
 	codexResponsesLiteHeader,
-	// 下游真实客户端的证明优先透传。Windows Desktop 身份缺失时，会在出站头
-	// 装配结束后补官方客户端的 DeviceCheck 不可用状态；macOS 不模拟硬件证明。
-	"X-Oai-Attestation",
 }
 
 func codexResponsesLiteRequested(requestBody []byte, headers http.Header) bool {
@@ -576,6 +574,20 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
 	// Web search 位置跟随实际出站代理（默认关闭）；WS/HTTP 共用同一出站代理口径。
 	requestBody = ApplyCodexWebSearchLocation(requestBody, account, codexOutboundProxyURL(account, proxyOverride))
+	// Codex multi-agent v2 兼容层：仅在调用方显式安装状态、部署方开启开关、
+	// 且下游确实是 Codex 客户端时改写 collaboration 工具 schema。冲突、无效
+	// JSON 或结构超限的请求保持原生路径，绝不猜测任务正文。
+	if state := codexMultiAgentV2StateFromContext(ctx); state != nil &&
+		codexMultiAgentV2CompatEnabled() && isCodexMultiAgentV2Client(headers.Get("User-Agent")) {
+		model := gjson.GetBytes(requestBody, "model").String()
+		if updated, optimized, err := prepareCodexMultiAgentV2Request(requestBody); err != nil {
+			log.Printf("[multi-agent-v2] 兼容层跳过请求改写 (account=%d model=%s): %v", account.ID(), model, err)
+		} else if optimized {
+			requestBody = updated
+			state.markOptimized(account.ID(), model)
+			log.Printf("[multi-agent-v2] 父请求已切换为明文协作工具 (account=%d model=%s)", account.ID(), model)
+		}
+	}
 	// lite 信号收敛：签名在 payload 规则改写后采集（规则可注入/删除 WS 标记，改写
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
@@ -1001,7 +1013,7 @@ func ensureCodexClientInstallationMetadata(requestBody []byte, account *auth.Acc
 	}
 
 	installationID := ""
-	if CurrentRuntimeSettings().CodexUnifiedClientIdentityEnabled && account != nil {
+	if account != nil {
 		// 统一身份：按中转凭据派生账号级设备标识，与模型发现请求头同值，
 		// 不再按下游 Key 分裂成多台设备（issue #774）。
 		if baseURL, apiKey := account.OpenAIResponsesCredentials(); baseURL != "" && apiKey != "" {
@@ -1033,23 +1045,27 @@ func isCodexAccessRestrictedResponse(resp *http.Response) bool {
 	if resp == nil || resp.StatusCode != http.StatusForbidden || resp.Body == nil {
 		return false
 	}
-	body, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	resp.ContentLength = int64(len(body))
+	// 只读取用于识别的前缀，再把前缀和剩余流拼回去，避免把巨大的错误体
+	// 整体读进内存（上游可能由第三方中转控制）。
+	const peekLimit = 64 << 10
+	peek, err := io.ReadAll(io.LimitReader(resp.Body, peekLimit))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(peek), resp.Body), resp.Body}
 	if err != nil {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()), "codex_access_restricted") {
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(peek, "error.code").String()), "codex_access_restricted") {
 		return true
 	}
 	// 部分中转（sub2api 的 codex_cli_only、zzzcoding 等第三方网关）用
 	// {"error":{"message":"This account only allows Codex official clients",
 	// "type":"forbidden_error"}} 表达同样的官方客户端限制。
-	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()), "forbidden_error") {
+	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(peek, "error.type").String()), "forbidden_error") {
 		return false
 	}
-	msg := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+	msg := strings.ToLower(strings.TrimSpace(gjson.GetBytes(peek, "error.message").String()))
 	return strings.Contains(msg, "official clients") ||
 		strings.Contains(msg, "codex client") ||
 		strings.Contains(msg, "codex 客户端")
@@ -1353,7 +1369,9 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 	// 可整体退回旧的 Session_id 形态。
 	ApplyCodexSessionHeaders(req.Header, account, cacheKey, downstreamHeaders, false)
 	applyAccountCustomHeaders(req, account)
-	ApplyWindowsDesktopAttestation(req.Header, account)
+	if err := ApplyCodexAttestation(req.Context(), CodexAttestationInput{Headers: req.Header, Account: account}); err != nil {
+		return err
+	}
 	RecordUpstreamUserAgent(req.Context(), req.Header.Get("User-Agent"))
 	return nil
 }
@@ -1633,12 +1651,14 @@ func ReadSSEStreamWithEvent(body io.Reader, callback func(event string, data []b
 
 	var dataLines [][]byte
 	var eventName string
+	var currentEventBytes int
 
-	emitEvent := func() bool {
+	emitEvent := func() (bool, error) {
 		event := eventName
 		eventName = ""
+		currentEventBytes = 0
 		if len(dataLines) == 0 {
-			return true
+			return true, nil
 		}
 
 		// 绝大多数上游事件只有一条 data: 行，直接交给 callback，避免
@@ -1655,24 +1675,39 @@ func ReadSSEStreamWithEvent(body io.Reader, callback func(event string, data []b
 			dataLines[i] = nil
 		}
 		dataLines = dataLines[:0]
-		return keepReading
+		return keepReading, nil
 	}
 
-	consumeField := func(line []byte) {
+	consumeField := func(line []byte) error {
 		if bytes.HasPrefix(line, []byte("data:")) {
 			data := bytes.TrimPrefix(line, []byte("data:"))
 			data = bytes.TrimPrefix(data, []byte(" "))
+			// 单行与多行累积事件都必须在 wire 层硬性受限，避免超大事件
+			// 长期占用内存。计量必须严格对齐 bytes.Join 交付给 callback 的
+			// 实际字节数：第一条 data 行计 len(data)，之后每条计 1 + len(data)
+			// （含 1 字节 '\n' 分隔符）。空 data 行（len(data)==0）从第二条起
+			// 每行计入 1 字节分隔符，累积到 maxSSEEventBytes 时同样受硬上限
+			// 约束，既防止无界增长，又保证恰好 8MiB 的合法事件不被误拒。
+			lineBytes := len(data)
+			if len(dataLines) > 0 {
+				lineBytes++
+			}
+			if currentEventBytes+lineBytes > maxSSEEventBytes {
+				return errSSEEventTooLarge
+			}
+			currentEventBytes += lineBytes
 			// 使用 copy 避免底层数组共享导致的内存泄漏
 			dataCopy := make([]byte, len(data))
 			copy(dataCopy, data)
 			dataLines = append(dataLines, dataCopy)
-			return
+			return nil
 		}
 		if bytes.HasPrefix(line, []byte("event:")) {
 			event := bytes.TrimPrefix(line, []byte("event:"))
 			event = bytes.TrimPrefix(event, []byte(" "))
 			eventName = string(event)
 		}
+		return nil
 	}
 
 	for {
@@ -1687,15 +1722,32 @@ func ReadSSEStreamWithEvent(body io.Reader, callback func(event string, data []b
 			for {
 				idx := bytes.IndexByte(lineBuf[consumed:], '\n')
 				if idx < 0 {
+					// 无换行：只约束这条未完成行的内容长度。每次 Read 最多再
+					// 追加 len(buf) 字节，因此内存增长有界（<= 行上限 + 一次
+					// Read），不会因无换行的巨量数据无限增长。
+					if len(lineBuf)-consumed > maxSSELineBytes {
+						return errSSELineTooLong
+					}
 					break
 				}
 
 				lineEnd := consumed + idx
+				// 行长检查必须放在找到换行之后、按完整行判断：本次读取可能
+				// 恰好补完一条接近上限的合法行，其后还跟着其他行/事件；若在
+				// append 前按"未完成缓冲区 + 本次读取"的总长度判断，会把这条
+				// 合法行误判为超长。
+				if lineEnd-consumed > maxSSELineBytes {
+					return errSSELineTooLong
+				}
 				line := bytes.TrimRight(lineBuf[consumed:lineEnd], "\r")
 				consumed = lineEnd + 1
 
 				if len(line) == 0 {
-					if !emitEvent() {
+					keep, emitErr := emitEvent()
+					if emitErr != nil {
+						return emitErr
+					}
+					if !keep {
 						return nil
 					}
 					continue
@@ -1706,7 +1758,9 @@ func ReadSSEStreamWithEvent(body io.Reader, callback func(event string, data []b
 				}
 
 				// 解析 SSE event/data 字段，支持标准多行 data 聚合。
-				consumeField(line)
+				if err := consumeField(line); err != nil {
+					return err
+				}
 			}
 
 			if consumed > 0 {
@@ -1718,11 +1772,19 @@ func ReadSSEStreamWithEvent(body io.Reader, callback func(event string, data []b
 		if err != nil {
 			if err == io.EOF {
 				if len(lineBuf) > 0 {
+					// 深度防御（defense in depth）：扫描循环的无换行分支已把
+					// 未完成行限制在 maxSSELineBytes 内，此处数学上不可达，仅
+					// 作为未来改动的兜底。
+					if len(lineBuf) > maxSSELineBytes {
+						return errSSELineTooLong
+					}
 					line := bytes.TrimRight(lineBuf, "\r")
-					consumeField(line)
+					if err := consumeField(line); err != nil {
+						return err
+					}
 				}
-				if !emitEvent() {
-					return nil
+				if _, emitErr := emitEvent(); emitErr != nil {
+					return emitErr
 				}
 				return nil
 			}

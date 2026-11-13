@@ -282,8 +282,8 @@ const (
 	maxUsageLogFlushIntervalSeconds     = 300
 
 	postgresMaxBindParams       = 65535
-	usageLogInsertColumnCount   = 77
-	maxUsageLogInsertRowsPerSQL = 800 // 77 cols * 800 = 61600, below the PostgreSQL bind limit.
+	usageLogInsertColumnCount   = 78
+	maxUsageLogInsertRowsPerSQL = 800 // 78 cols * 800 = 62400, below the PostgreSQL bind limit.
 
 	// usageLogBufferHardLimit 内存缓冲的硬上限。PG 长时间不可用时（维护、主从切换、
 	// 磁盘写满）失败批次会一直被放回缓冲区，没有上限的话内存一路涨到 OOM——那会把
@@ -407,6 +407,8 @@ type usageLogEntry struct {
 	PromptPolicyIncidentID string
 	Transport              string
 	PluginMeta             string
+	// CreatedAt 是请求完成、进缓冲的时刻,落库为 created_at。
+	CreatedAt time.Time
 }
 
 // New 创建数据库连接并自动建表。
@@ -1463,6 +1465,12 @@ func (db *DB) migrate(ctx context.Context) error {
 			response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864,
 			response_cache_write_policy VARCHAR(20) NOT NULL DEFAULT 'always',
 			response_cache_config_generation BIGINT NOT NULL DEFAULT 1,
+			output_guard_enabled BOOLEAN DEFAULT FALSE,
+			output_guard_max_tool_argument_bytes BIGINT NOT NULL DEFAULT 262144,
+			output_guard_max_tool_argument_deltas INT NOT NULL DEFAULT 4096,
+			output_guard_max_channel_bytes BIGINT NOT NULL DEFAULT 2097152,
+			output_guard_max_request_bytes BIGINT NOT NULL DEFAULT 4194304,
+			output_guard_config_generation BIGINT NOT NULL DEFAULT 1,
 			models_list_read_max_bytes BIGINT NOT NULL DEFAULT 8388608
 		);
 	CREATE TABLE IF NOT EXISTS api_key_model_request_counters (
@@ -1660,7 +1668,6 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS ignore_usage_limit_status BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_on_exhaustion_enabled BOOLEAN DEFAULT FALSE;
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_unified_client_identity_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_reset_credits_before_expiry_min INT DEFAULT 60;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_activate_5h_window_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
@@ -1678,6 +1685,12 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS oauth_model_cooldown_seconds INT NOT NULL DEFAULT 300;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS oauth_model_cooldown_backoff_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS oauth_unsupported_model_cooldown_seconds INT NOT NULL DEFAULT 1800;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS output_guard_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS output_guard_max_tool_argument_bytes BIGINT NOT NULL DEFAULT 262144;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS output_guard_max_tool_argument_deltas INT NOT NULL DEFAULT 4096;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS output_guard_max_channel_bytes BIGINT NOT NULL DEFAULT 2097152;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS output_guard_max_request_bytes BIGINT NOT NULL DEFAULT 4194304;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS output_guard_config_generation BIGINT NOT NULL DEFAULT 1;
 
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS auto_pause_5h_threshold DOUBLE PRECISION DEFAULT 0;
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS auto_pause_7d_threshold DOUBLE PRECISION DEFAULT 0;
@@ -1975,7 +1988,7 @@ type APIKeyLimits struct {
 	// 而不是直接把 400 透传给下游。默认关闭。
 	AutoCompactOnOverflow bool `json:"auto_compact_overflow,omitempty"`
 	// AllowLive 为 true 时，该 Key 可以使用 ChatGPT Live（/v1/live 与
-	// /backend-api/codex/realtime/calls）。默认关闭。
+	// /backend-api/codex/realtime/calls）。管理端新建 auto/codex Key 时默认开启。
 	AllowLive bool `json:"allow_live,omitempty"`
 	// UpstreamChannel 限定该 Key 的请求只调度到指定上游渠道的账号：
 	//   - ""/auto: 不限（默认，按模型路由）
@@ -1988,6 +2001,10 @@ type APIKeyLimits struct {
 	// 与上面的 Cost/Token 限额不同，它只统计该 Key 打到对应 scope 的用量，超额后默认
 	// 把该 scope 的账号从候选池剔除（自动落到其它分组），详见 APIKeyScopeLimit。
 	ScopeLimits []APIKeyScopeLimit `json:"scope_limits,omitempty"`
+	// ExternalScheduler 为 true 时，该 Key 由外部调度器管理（issue #831）：每个执行请求
+	// 必须用 X-Codex2API-Account-ID 指定账号，网关只在该账号上执行，不做内部选号、
+	// 换号或重试，也不以冷却 / 并发 / 自动暂停等内部调度判断拒绝请求。默认关闭。
+	ExternalScheduler bool `json:"external_scheduler,omitempty"`
 }
 
 // 图片工具策略取值。
@@ -2068,6 +2085,7 @@ func (l APIKeyLimits) IsZero() bool {
 		!l.DisableImageGeneration &&
 		!l.AutoCompactOnOverflow &&
 		!l.AllowLive &&
+		!l.ExternalScheduler &&
 		l.ResolveImageGenerationPolicy() == ImageGenerationPolicyAllow &&
 		l.ResolveUpstreamChannel() == UpstreamChannelAuto
 }
@@ -2548,7 +2566,6 @@ type SystemSettings struct {
 	CodexUserAgentConfig                string
 	CodexTelemetryEnabled               bool
 	CodexTelemetryTimingDebug           bool
-	CodexUnifiedClientIdentityEnabled   bool   // 网关自发维护请求统一使用配置的客户端身份（默认关闭，issue #774）
 	CodexTurnStateStrict                bool   // 来源未知的 X-Codex-Turn-State 回带也剥离，并按帧携带
 	CodexSessionNoBorrowEnabled         bool   // 绑定账号并发满时先等待而不是借用其他账号
 	CodexSessionNoBorrowHoldSeconds     int    // 等待多久后才允许借用，1..30，默认 20
@@ -2913,7 +2930,6 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(codex_session_auto_lock_threshold, 3),
 		       COALESCE(codex_turn_state_vault_enabled, true),
 		       COALESCE(auto_reset_credits_on_exhaustion_enabled, false),
-		       COALESCE(codex_unified_client_identity_enabled, false),
 		       COALESCE(codex_ws_downstream_keepalive_slots, 8)
 			FROM system_settings WHERE id = 1
 		`).Scan(
@@ -3009,7 +3025,6 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.CodexSessionAutoLockThreshold,
 		&s.CodexTurnStateVaultEnabled,
 		&s.AutoResetCreditsOnExhaustionEnabled,
-		&s.CodexUnifiedClientIdentityEnabled,
 		&s.CodexWSDownstreamKeepaliveSlots,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -3170,10 +3185,22 @@ func NormalizeCodexFingerprintDefaultMode(mode string) string {
 	}
 }
 
+// systemSettingsExecer 让同一份 system_settings upsert 既能直接在连接上执行，
+// 也能在事务内执行，供需要原子提交多份设置的调用方复用。
+type systemSettingsExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // UpdateSystemSettings 更新全局设置（upsert：无行时自动插入）。
 // codex_synced_cli_version 与 model_pricing_* 由各自的窄更新独立维护；冲突更新时
 // 保留数据库当前值，避免管理员保存其他设置时回滚后台同步刚写入的数据。
 func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error {
+	return updateSystemSettingsWithExecer(ctx, db.conn, s)
+}
+
+// updateSystemSettingsWithExecer 执行全局设置 upsert。它不关心调用方是
+// *sql.DB 还是 *sql.Tx，由调用方决定是否与其他写入共享事务。
+func updateSystemSettingsWithExecer(ctx context.Context, execer systemSettingsExecer, s *SystemSettings) error {
 	reasoningEffortModels := strings.TrimSpace(s.ReasoningEffortModels)
 	if reasoningEffortModels == "" {
 		reasoningEffortModels = "[]"
@@ -3192,7 +3219,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 	if testContent == "" {
 		testContent = "hi"
 	}
-	_, err := db.conn.ExecContext(ctx, `
+	_, err := execer.ExecContext(ctx, `
 			INSERT INTO system_settings (
 				id, site_name, site_logo, max_concurrency, global_rpm, test_model, test_content, test_concurrency, proxy_url, pg_max_conns, redis_pool_size,
 				auto_clean_unauthorized, auto_clean_rate_limited, admin_secret, auto_clean_full_usage, proxy_pool_enabled,
@@ -3285,10 +3312,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_session_auto_lock_threshold,
 					codex_turn_state_vault_enabled,
 					auto_reset_credits_on_exhaustion_enabled,
-					codex_unified_client_identity_enabled,
 					codex_ws_downstream_keepalive_slots
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $131, $132, $133, $134, $137)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $126, $127, $128, $129, $130, $131, $132, $133, $136)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3328,10 +3354,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				prompt_filter_log_matches = EXCLUDED.prompt_filter_log_matches,
 				prompt_filter_max_text_length = EXCLUDED.prompt_filter_max_text_length,
 				prompt_filter_sensitive_words = EXCLUDED.prompt_filter_sensitive_words,
-				prompt_filter_custom_patterns = CASE WHEN $135 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
+				prompt_filter_custom_patterns = CASE WHEN $134 THEN system_settings.prompt_filter_custom_patterns ELSE EXCLUDED.prompt_filter_custom_patterns END,
 				prompt_filter_disabled_patterns = EXCLUDED.prompt_filter_disabled_patterns,
 				prompt_filter_review_enabled = EXCLUDED.prompt_filter_review_enabled,
-				prompt_filter_review_api_key = CASE WHEN $136 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
+				prompt_filter_review_api_key = CASE WHEN $135 THEN system_settings.prompt_filter_review_api_key ELSE EXCLUDED.prompt_filter_review_api_key END,
 				prompt_filter_review_base_url = EXCLUDED.prompt_filter_review_base_url,
 				prompt_filter_review_model = EXCLUDED.prompt_filter_review_model,
 				prompt_filter_review_timeout_seconds = EXCLUDED.prompt_filter_review_timeout_seconds,
@@ -3420,7 +3446,6 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_session_auto_lock_threshold = EXCLUDED.codex_session_auto_lock_threshold,
 					codex_turn_state_vault_enabled = EXCLUDED.codex_turn_state_vault_enabled,
 					auto_reset_credits_on_exhaustion_enabled = EXCLUDED.auto_reset_credits_on_exhaustion_enabled,
-					codex_unified_client_identity_enabled = EXCLUDED.codex_unified_client_identity_enabled,
 					codex_ws_downstream_keepalive_slots = EXCLUDED.codex_ws_downstream_keepalive_slots
 			`, NormalizeSiteName(s.SiteName), strings.TrimSpace(s.SiteLogo),
 		s.MaxConcurrency, s.GlobalRPM, s.TestModel, testContent, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
@@ -3484,7 +3509,6 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		NormalizeSessionAutoLockThreshold(s.CodexSessionAutoLockThreshold),
 		s.CodexTurnStateVaultEnabled,
 		s.AutoResetCreditsOnExhaustionEnabled,
-		s.CodexUnifiedClientIdentityEnabled,
 		s.PreservePromptFilterCustomPatterns,
 		s.PreservePromptFilterReviewAPIKey, NormalizeCodexWSDownstreamKeepaliveSlots(s.CodexWSDownstreamKeepaliveSlots))
 	if err != nil {
@@ -4678,6 +4702,14 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		return nil
 	}
 
+	// 日志要在缓冲里等一个刷盘间隔(默认 5 秒,最长 300 秒)才落库,created_at 交给列默认值
+	// NOW() 的话记的是刷盘时刻:同一批请求被压到同一秒,整点前完成的请求还会被算进下一个
+	// 小时(issue #857)。这里在请求完成时就定下时间,落库时显式写入。
+	createdAt := log.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
 	entry := usageLogEntry{
 		RequestID:              clampUsageLogText(log.RequestID, usageLogRequestIDMaxLen),
 		UpstreamRequestID:      clampUsageLogText(log.UpstreamRequestID, usageLogRequestIDMaxLen),
@@ -4752,6 +4784,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		PromptPolicyIncidentID: clampUsageLogText(log.PromptPolicyIncidentID, usageLogShortTextMaxLen),
 		Transport:              normalizeUsageLogTransport(log.Transport),
 		PluginMeta:             log.PluginMeta,
+		CreatedAt:              createdAt,
 	}
 	if !storeUsageLog {
 		// Detail-only fields are never written for this event; do not let the
@@ -4879,6 +4912,8 @@ type UsageLogInput struct {
 	// Transport 为空按 native 落库；PluginMeta 只在已移除的传输插件时期写过。
 	Transport  string
 	PluginMeta string
+	// CreatedAt 是请求完成时刻,写入 usage_logs.created_at;零值取 InsertUsageLog 被调用的时刻。
+	CreatedAt time.Time
 }
 
 func (l *UsageLog) populateBillingBreakdown() {
@@ -5200,8 +5235,8 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 				  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 				  is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 				  client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count,
-				  window_number, turn_state_length, turn_state_echo, turn_state_stripped, daybreak_program, video_seconds, transport, plugin_meta)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77)
+				  window_number, turn_state_length, turn_state_echo, turn_state_stripped, daybreak_program, video_seconds, transport, plugin_meta, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78)
 			`)
 		if err != nil {
 			return fmt.Errorf("准备语句: %w", err)
@@ -5215,7 +5250,7 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 				e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 				e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount,
-				e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped, e.DaybreakProgram, e.VideoSeconds, e.Transport, e.PluginMeta)
+				e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped, e.DaybreakProgram, e.VideoSeconds, e.Transport, e.PluginMeta, db.usageLogCreatedAtArg(e.CreatedAt))
 			if err != nil {
 				return fmt.Errorf("执行插入: %w", err)
 			}
@@ -5327,7 +5362,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, tx *sql.Tx, batch []usag
 			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 			e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount,
-			e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped, e.DaybreakProgram, e.VideoSeconds, e.Transport, e.PluginMeta)
+			e.WindowNumber, nullableUsageLogTurnStateLength(e.TurnStateLength), e.TurnStateEcho, e.TurnStateStripped, e.DaybreakProgram, e.VideoSeconds, e.Transport, e.PluginMeta, db.usageLogCreatedAtArg(e.CreatedAt))
 		argIdx += usageLogInsertColumnCount
 	}
 
@@ -5337,7 +5372,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, tx *sql.Tx, batch []usag
 		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 		is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 		client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count,
-		window_number, turn_state_length, turn_state_echo, turn_state_stripped, daybreak_program, video_seconds, transport, plugin_meta)
+		window_number, turn_state_length, turn_state_echo, turn_state_stripped, daybreak_program, video_seconds, transport, plugin_meta, created_at)
 		VALUES %s
 		RETURNING id`, strings.Join(valueStrings, ","))
 
@@ -5355,6 +5390,16 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, tx *sql.Tx, batch []usag
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// usageLogCreatedAtArg 把请求完成时刻转成 created_at 的绑定参数。SQLite 沿用列默认值
+// CURRENT_TIMESTAMP 的 UTC 秒级文本,区间查询按字符串比较,格式不一致就会错位。
+// 零值(不经 InsertUsageLog 直接拼的条目)退回写入时刻,不会写出 0001 年。
+func (db *DB) usageLogCreatedAtArg(createdAt time.Time) any {
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	return db.timeArg(createdAt.UTC())
 }
 
 func nullablePromptPolicyIncidentID(value string) any {
@@ -5945,52 +5990,6 @@ func topUsageStats[K comparable, T any](byKey map[K]*T, limit int, less func(a, 
 		out[i] = *item
 	}
 	return out
-}
-
-// GetTrafficSnapshot 获取近实时流量快照
-func (db *DB) GetTrafficSnapshot(ctx context.Context) (*TrafficSnapshot, error) {
-	if db.isSQLite() {
-		return db.getTrafficSnapshotSQLite(ctx)
-	}
-
-	snapshot := &TrafficSnapshot{}
-	query := `
-	WITH per_second AS (
-		SELECT
-			date_trunc('second', created_at) AS sec,
-			COUNT(*)::float8 AS req_count,
-			COALESCE(SUM(total_tokens), 0)::float8 AS token_count
-		FROM usage_metered_events AS usage_logs
-		WHERE created_at >= NOW() - INTERVAL '5 minutes'
-		  AND TRIM(COALESCE(internal_reason, '')) = ''
-		GROUP BY 1
-	),
-	current_window AS (
-		SELECT
-			COALESCE(SUM(req_count), 0)::float8 AS req_10s,
-			COALESCE(SUM(token_count), 0)::float8 AS tok_10s
-		FROM per_second
-		WHERE sec >= date_trunc('second', NOW() - INTERVAL '10 seconds')
-	)
-	SELECT
-		COALESCE((SELECT req_10s FROM current_window), 0) / 10.0 AS qps,
-		COALESCE(MAX(req_count), 0) AS qps_peak,
-		COALESCE((SELECT tok_10s FROM current_window), 0) / 10.0 AS tps,
-		COALESCE(MAX(token_count), 0) AS tps_peak
-	FROM per_second
-	`
-
-	err := db.conn.QueryRowContext(ctx, query).Scan(
-		&snapshot.QPS,
-		&snapshot.QPSPeak,
-		&snapshot.TPS,
-		&snapshot.TPSPeak,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return snapshot, nil
 }
 
 // ListRecentUsageLogs 获取最近的请求日志
@@ -9246,6 +9245,24 @@ func (db *DB) InsertAccountWithCredentials(ctx context.Context, name string, cre
 		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`,
 		credentials,
 		name, credJSON, proxyURL,
+	)
+}
+
+// InsertPendingAccountWithCredentials atomically saves a disabled account and
+// its review metadata together with the credential family.
+func (db *DB) InsertPendingAccountWithCredentials(ctx context.Context, name string, credentials map[string]interface{}, proxyURL, note string, tags []string) (int64, error) {
+	if credentials == nil {
+		credentials = map[string]interface{}{}
+	}
+	credJSON, err := json.Marshal(encryptSensitiveCredentials(credentials))
+	if err != nil {
+		return 0, err
+	}
+	return db.insertAccountRowWithFamily(ctx,
+		`INSERT INTO accounts (name, credentials, proxy_url, enabled, note, tags) VALUES ($1, $2, $3, FALSE, $4, $5::jsonb) RETURNING id`,
+		`INSERT INTO accounts (name, credentials, proxy_url, enabled, note, tags) VALUES ($1, $2, $3, FALSE, $4, $5)`,
+		credentials,
+		name, credJSON, proxyURL, note, encodeTagsJSON(tags),
 	)
 }
 

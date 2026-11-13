@@ -66,16 +66,18 @@ type readLeaseWriteResult struct {
 type wsReadState struct {
 	mu sync.Mutex
 
-	queue               []readPumpItem
-	queuedPayload       int
-	queueSequence       uint64
-	activeLease         string
-	leasePhase          readLeasePhase
-	leaseWrite          *readLeaseWriteResult
-	leaseTerminalQueued bool
-	pumpStarted         bool
-	readerErr           error
-	readerStopped       bool
+	queue                   []readPumpItem
+	queuedPayload           int
+	queueSequence           uint64
+	activeLease             string
+	leasePhase              readLeasePhase
+	leaseWrite              *readLeaseWriteResult
+	leaseTerminalQueued     bool
+	interruptResponseID     string
+	interruptTerminalQueued bool
+	pumpStarted             bool
+	readerErr               error
+	readerStopped           bool
 	// idleSniffing 空闲期业务帧正在读取/裁决中：期间拒绝新租约，保证该帧
 	// 永远不会被归属给后来的请求（无论最终判定丢弃还是销毁连接）。
 	idleSniffing bool
@@ -203,6 +205,9 @@ func (wc *WsConnection) runReadPump() {
 			// 只在"丢弃元数据"与"销毁连接"之间裁决，不延长业务空闲窗口。
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			if isIdleDroppableMetadataFrame(eventType) {
+				// 连接级元数据帧不属于任何请求，但其中的 codex.rate_limits 是
+				// 上一轮结束后的权威用量信号；在丢弃前交给只做内存更新的 observer。
+				notifyIdleMetadataObserver(wc.account, eventType, payload)
 				wc.endIdleSniff()
 				wc.touchInbound()
 				continue
@@ -344,7 +349,17 @@ func (wc *WsConnection) enqueueBusinessFrameForCapturedLease(messageType int, pa
 		leaseID:     leaseID,
 		captured:    captured,
 	})
-	if isReadLeaseTerminal(payload) {
+	interruptAck := gjson.GetBytes(payload, "type").String()
+	if interruptAck == "response.interrupt.accepted" || interruptAck == "response.interrupt.failed" {
+		if state.interruptResponseID == "" || state.interruptResponseID != gjson.GetBytes(payload, "response_id").String() {
+			return fmt.Errorf("unexpected response interruption acknowledgement")
+		}
+		state.interruptResponseID = ""
+	}
+	if isInterruptCompletion(payload) && state.interruptResponseID != "" {
+		state.interruptTerminalQueued = true
+	} else if isReadLeaseTerminal(payload) || state.interruptTerminalQueued && state.interruptResponseID == "" {
+		state.interruptTerminalQueued = false
 		if captured.write != nil && !captured.write.resolved {
 			state.leaseTerminalQueued = true
 		} else {

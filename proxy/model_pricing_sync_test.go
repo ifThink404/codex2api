@@ -31,18 +31,16 @@ func TestAstraPricingSourcesPreserveLongContext(t *testing.T) {
 			parse: parseModelPricingPayload,
 		},
 		{
-			name: "official API Markdown",
+			name: "official API HTML",
 			body: `
-### Standard pricing data
-| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| gpt-6-astra | $10.00 | $1.00 | $12.50 | $50.00 | $20.00 | $2.00 | $25.00 | $75.00 |
-### Fast pricing data
-| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| gpt-6-astra | $20.00 | $2.00 | $25.00 | $100.00 | $40.00 | $4.00 | $50.00 | $150.00 |
+<section data-pricing-tier="standard"><table><thead><tr><th>Model</th><th>Short context input</th><th>Short context cached input</th><th>Short context cache writes</th><th>Short context output</th><th>Long context input</th><th>Long context cached input</th><th>Long context cache writes</th><th>Long context output</th></tr></thead><tbody>
+<tr><td>gpt-6-astra</td><td>$10.00</td><td>$1.00</td><td>$12.50</td><td>$50.00</td><td>$20.00</td><td>$2.00</td><td>$25.00</td><td>$75.00</td></tr>
+</tbody></table></section>
+<section data-pricing-tier="fast"><table><thead><tr><th>Model</th><th>Short context input</th><th>Short context cached input</th><th>Short context cache writes</th><th>Short context output</th><th>Long context input</th><th>Long context cached input</th><th>Long context cache writes</th><th>Long context output</th></tr></thead><tbody>
+<tr><td>gpt-6-astra</td><td>$20.00</td><td>$2.00</td><td>$25.00</td><td>$100.00</td><td>$40.00</td><td>$4.00</td><td>$50.00</td><td>$150.00</td></tr>
+</tbody></table></section>
 `,
-			parse: ParseOpenAIOfficialPricingMarkdown,
+			parse: ParseOpenAIOfficialPricingHTML,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -201,5 +199,50 @@ func TestParseModelPricingPayloadModelsDevIncludesXAI(t *testing.T) {
 	}
 	if ov5 := got["gpt-5.5"]; ov5.Input != 5 {
 		t.Fatalf("openai entries must survive alongside xai: %+v", ov5)
+	}
+}
+
+func TestParseModelPricingPayloadModelsDevIncludesGoogle(t *testing.T) {
+	body := []byte(`{
+		"openai": {
+			"id": "openai",
+			"models": {"gpt-5.5": {"id": "gpt-5.5", "cost": {"input": 5, "output": 30, "cache_read": 0.5}}}
+		},
+		"google": {
+			"id": "google",
+			"models": {
+				"gemini-3.8-flash": {
+					"id": "gemini-3.8-flash",
+					"cost": {
+						"input": 0.75, "output": 3.75, "cache_read": 0.075
+					}
+				},
+				"non-gemini-model": {
+					"id": "non-gemini-model",
+					"cost": {"input": 1, "output": 1}
+				}
+			}
+		},
+		"google-reseller": {
+			"id": "google-reseller",
+			"models": {"gemini-3.8-flash": {"cost": {"input": 99, "output": 99}}}
+		}
+	}`)
+
+	got, err := parseModelPricingPayload(body)
+	if err != nil {
+		t.Fatalf("parse models.dev payload: %v", err)
+	}
+
+	ov, ok := got["gemini-3.8-flash"]
+	if !ok {
+		t.Fatalf("missing gemini-3.8-flash, got keys: %v", got)
+	}
+	if ov.Input != 0.75 || ov.Output != 3.75 || ov.CachedInput != 0.075 {
+		t.Fatalf("gemini-3.8-flash pricing = %+v, want $0.75/$3.75/cache $0.075", ov)
+	}
+
+	if _, ok := got["non-gemini-model"]; ok {
+		t.Fatalf("non-gemini google models should be filtered out")
 	}
 }

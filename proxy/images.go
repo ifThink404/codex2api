@@ -1549,8 +1549,12 @@ func (h *Handler) imagesEditsFromJSON(c *gin.Context) {
 	h.forwardImagesRequest(c, "/v1/images/edits", imageModel, requestModel, logEffectiveModel, responsesBody, responseFormat, "image_edit", stream)
 }
 
+// buildImagesResponsesRequest builds the shared Images envelope, leaving reasoning
+// effort unset so the upstream can choose a supported image complexity.
 func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {
-	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
+	// Explicit reasoning effort is rejected as unsupported image complexity.
+	// Let the upstream choose its default while retaining reasoning metadata.
+	req := []byte(`{"instructions":"","stream":true,"reasoning":{"summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
 	req, _ = sjson.SetBytes(req, "model", imagesMainModel())
 
 	input := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
@@ -1574,10 +1578,18 @@ func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte
 	return req
 }
 
-// imageCapableAccountFilter 生图上游目前只有 Codex 官方账号支持:中转/Grok
+// imageCapableAccountFilter 生图上游支持 Codex 官方账号与 OpenAI Responses 中转
+// 账号（issue #820）：后者走同一 /responses 协议，中转开启生图时携带 image_generation
+// 工具即可正常生图，执行器会按请求体自动保持 HTTP 出站。Grok/Antigravity/Claude
 // 账号拿到 image_generation 请求只会对上游 401/404,还会把自己误标成 unauthorized。
 func imageCapableAccountFilter(account *auth.Account) bool {
-	return account != nil && !account.IsRelayStyle()
+	if account == nil {
+		return false
+	}
+	if account.IsOpenAIResponsesAPI() {
+		return true
+	}
+	return !account.IsRelayStyle()
 }
 
 func imagePreferredAccountFilter(account *auth.Account) bool {
@@ -1624,9 +1636,12 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	stopRetryDeadline := installContinuousRetryHTTPDeadline(c, continuousRetryPolicy, continuousRetryProtocolResponses)
 	defer stopRetryDeadline()
-	stopRetryKeepalive := installContinuousRetrySSEKeepalive(c, stream, "text/event-stream")
-	defer stopRetryKeepalive()
-	activateContinuousRetryKeepalive(c.Request.Context())
+	// Some reverse proxies misframe HTTP 102; JSON Images must wait for the final response.
+	if stream {
+		stopRetryKeepalive := installContinuousRetrySSEKeepalive(c, true, "text/event-stream")
+		defer stopRetryKeepalive()
+		activateContinuousRetryKeepalive(c.Request.Context())
+	}
 	maxRetries := h.getMaxRetries()
 	maxRateLimitRetries := h.getMaxRateLimitRetries()
 	generalRetries := 0
@@ -1759,6 +1774,16 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		}
 
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+			// OpenAI Responses 中转账号走自己的 /responses 出站（issue #820）；
+			// 生图请求体由执行器强制保持 HTTP，不受账号 WebSocket 出站设置影响。
+			if account.IsOpenAIResponsesAPI() {
+				if replay != nil {
+					return executePipelineImage(c.Request.Context(), replay, gjson.GetBytes(responsesBody, "model").String(), func(body []byte) (*http.Response, error) {
+						return ExecuteOpenAIResponsesRequest(c.Request.Context(), account, body, proxyURL, c.Request.Header.Clone())
+					})
+				}
+				return ExecuteOpenAIResponsesRequest(c.Request.Context(), account, responsesBody, proxyURL, c.Request.Header.Clone())
+			}
 			if replay != nil {
 				return executePipelineImage(c.Request.Context(), replay, gjson.GetBytes(responsesBody, "model").String(), func(body []byte) (*http.Response, error) {
 					return ExecuteRequest(c.Request.Context(), account, body, "", proxyURL, apiKey, deviceCfg, c.Request.Header.Clone(), false)
@@ -1816,7 +1841,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			errBody, _ := readAllWithContinuousRetryKeepalive(c.Request.Context(), resp.Body)
+			errBody, _ := readUpstreamErrorBody(c.Request.Context(), resp.Body)
 			rememberContinuousRetryHTTPFailure(c.Request.Context(), resp, errBody)
 			resp.Body.Close()
 			if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {

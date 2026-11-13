@@ -154,6 +154,13 @@ var capabilityLearnCache = struct {
 }{entries: make(map[string]capabilityLearnEntry)}
 
 func (h *Handler) learnModelCapabilitiesAsync(account *auth.Account, body []byte) {
+	if account == nil {
+		return
+	}
+	h.learnModelCapabilitiesAsyncAtGeneration(account, account.GetCredentialGeneration(), body)
+}
+
+func (h *Handler) learnModelCapabilitiesAsyncAtGeneration(account *auth.Account, generation int64, body []byte) {
 	if h == nil || h.db == nil || account == nil || account.IsRelayStyle() {
 		return
 	}
@@ -162,7 +169,7 @@ func (h *Handler) learnModelCapabilitiesAsync(account *auth.Account, body []byte
 		return
 	}
 	observed := time.Now()
-	snapshot := database.ModelCapabilitySnapshot{AccountID: account.ID(), CredentialGeneration: account.GetCredentialGeneration(), ObservedAt: observed.UnixNano(), Models: models}
+	snapshot := database.ModelCapabilitySnapshot{AccountID: account.ID(), CredentialGeneration: generation, ObservedAt: observed.UnixNano(), Models: models}
 	key := fmt.Sprintf("%p:%d:%d", h.db, snapshot.AccountID, snapshot.CredentialGeneration)
 	hash := sha256.Sum256(body)
 	capabilityLearnCache.Lock()
@@ -186,19 +193,50 @@ func (h *Handler) learnModelCapabilitiesAsync(account *auth.Account, body []byte
 	if !h.db.RunBackgroundTask(func(parent context.Context) {
 		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 		defer cancel()
-		if err := h.db.SaveModelCapabilities(ctx, snapshot); err != nil {
+		if err := saveModelCapabilitySnapshot(ctx, h.db, account, snapshot); err != nil {
 			forget()
 			log.Printf("save model capabilities: %v", err)
-			return
-		}
-		if stored, err := h.db.ListModelCapabilities(ctx, []int64{snapshot.AccountID}); err == nil {
-			if current, ok := stored[snapshot.AccountID]; ok {
-				account.ApplyModelCapabilities(current)
-			}
 		}
 	}) {
 		forget()
 	}
+}
+
+// SaveCapabilities persists this manifest for the account and credential
+// generation observed when the upstream request started. Explicit account
+// synchronization uses this synchronous path so success includes persistence.
+func (manifest *CodexModelsManifest) SaveCapabilities(ctx context.Context, db *database.DB) error {
+	if manifest == nil || manifest.capabilityAccount == nil || db == nil {
+		return fmt.Errorf("missing model capability observation")
+	}
+	snapshot := manifest.capabilitySnapshot
+	snapshot.Models = parseCodexModelCapabilities(manifest.Body)
+	if len(snapshot.Models) == 0 {
+		return fmt.Errorf("manifest contains no Codex model capabilities")
+	}
+	return saveModelCapabilitySnapshot(ctx, db, manifest.capabilityAccount, snapshot)
+}
+
+func saveModelCapabilitySnapshot(ctx context.Context, db *database.DB, account *auth.Account, snapshot database.ModelCapabilitySnapshot) error {
+	if snapshot.CredentialGeneration != account.GetCredentialGeneration() {
+		return fmt.Errorf("account credential generation changed")
+	}
+	if err := db.SaveModelCapabilities(ctx, snapshot); err != nil {
+		return err
+	}
+	stored, err := db.ListModelCapabilities(ctx, []int64{snapshot.AccountID})
+	if err != nil {
+		return err
+	}
+	if current, ok := stored[snapshot.AccountID]; ok {
+		if current.CredentialGeneration != snapshot.CredentialGeneration {
+			return fmt.Errorf("model capability snapshot generation changed")
+		}
+		account.ApplyModelCapabilities(current)
+	} else {
+		return fmt.Errorf("model capability snapshot was not saved for current credentials")
+	}
+	return nil
 }
 
 // Missing declarations count as unknown. Booleans require every serving
@@ -312,10 +350,14 @@ func (h *Handler) applyModelCapabilities(ctx context.Context, row *database.APIK
 		}
 	}
 	snapshots := make(map[int64]database.ModelCapabilitySnapshot)
+	// Without a readable store an observed narrower account cannot be told
+	// apart from an unobserved one, so every account stays a blocker.
+	snapshotsLoaded := false
 	if h != nil && h.db != nil {
 		stored, err := h.db.ListModelCapabilities(ctx, ids)
 		if err == nil {
 			snapshots = stored
+			snapshotsLoaded = true
 		}
 	}
 	for _, account := range accounts {
@@ -331,19 +373,43 @@ func (h *Handler) applyModelCapabilities(ctx context.Context, row *database.APIK
 			continue
 		}
 		filter := codexManifestCapabilityAccountFilter(row, slug)
+		var live map[string]json.RawMessage
+		if upstream {
+			live = make(map[string]json.RawMessage)
+			for name, kind := range codexCapabilityKinds {
+				if raw := model[name]; validCodexCapability(kind, raw) {
+					live[name] = raw
+				}
+			}
+		}
 		var candidates []map[string]json.RawMessage
+		eligible := 0
+		websocketEligible := accountFilterForResponsesWebSocket(slug)
+		allWebsocketEligible := true
 		for _, account := range accounts {
 			if !filter(account) {
 				continue
+			}
+			eligible++
+			if !websocketEligible(account) {
+				allWebsocketEligible = false
 			}
 			target := slug
 			if mapped, ok := resolveAccountModelMapping(account, slug); ok {
 				target = mapped
 			}
-			snapshot := snapshots[account.ID()]
+			snapshot, observed := snapshots[account.ID()]
+			observed = observed && snapshot.CredentialGeneration == account.GetCredentialGeneration()
 			var fields map[string]json.RawMessage
-			if snapshot.CredentialGeneration == account.GetCredentialGeneration() {
-				fields = snapshot.Models[strings.ToLower(strings.TrimSpace(target))]
+			if observed {
+				fields, observed = snapshot.Models[strings.ToLower(strings.TrimSpace(target))]
+			}
+			// Against a live descriptor, an account without a current observation
+			// of this model (relay-style upstreams never learn; new or rotated
+			// credentials have not been seen yet) is unknown rather than a
+			// downgrade. Request-side gates still handle such accounts per call.
+			if upstream && snapshotsLoaded && !observed {
+				continue
 			}
 			validated := make(map[string]json.RawMessage)
 			for name, raw := range fields {
@@ -351,22 +417,30 @@ func (h *Handler) applyModelCapabilities(ctx context.Context, row *database.APIK
 					validated[name] = raw
 				}
 			}
+			if upstream && snapshotsLoaded {
+				// Fields an older observation did not declare cannot narrow, and
+				// the live descriptor stays the upper bound for those it did.
+				for name, raw := range live {
+					if _, declared := validated[name]; !declared {
+						validated[name] = raw
+					}
+				}
+			}
 			candidates = append(candidates, validated)
 		}
 		if upstream {
-			validated := make(map[string]json.RawMessage)
-			for name, kind := range codexCapabilityKinds {
-				if raw := model[name]; validCodexCapability(kind, raw) {
-					validated[name] = raw
-				}
-			}
 			// No eligible credential means there is no usable capability proof.
-			if len(candidates) == 0 {
+			if eligible == 0 {
 				candidates = append(candidates, nil)
 			}
-			candidates = append(candidates, validated)
+			candidates = append(candidates, live)
 		}
 		effective := intersectCodexCapabilities(candidates)
+		// Unknown observations cannot widen the transports actually available
+		// to this key. HTTP-only relays never learn a capability snapshot.
+		if !allWebsocketEligible {
+			effective["prefer_websockets"] = json.RawMessage("false")
+		}
 		for name, kind := range codexCapabilityKinds {
 			value := effective[name]
 			if len(value) == 0 || bytes.Equal(value, []byte("null")) {

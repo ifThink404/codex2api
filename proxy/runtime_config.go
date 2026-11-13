@@ -84,10 +84,6 @@ type RuntimeSettings struct {
 	CodexSessionAutoLockThreshold int
 	// CodexTurnStateVaultEnabled 真实 X-Codex-Turn-State 留在网关，客户端只拿替身（默认开）。
 	CodexTurnStateVaultEnabled bool
-	// CodexUnifiedClientIdentityEnabled 让网关自发的 Codex 维护请求（用量探针、重置券、
-	// 订阅同步、模型清单、中转模型发现）与对话请求使用同一套配置身份，而不是内置的
-	// codex-tui 身份（默认关闭，issue #774）。见 ResolveCodexMaintenanceIdentity。
-	CodexUnifiedClientIdentityEnabled bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -381,7 +377,6 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexSessionAutoLockEnabled = settings.CodexSessionAutoLockEnabled
 		next.CodexSessionAutoLockThreshold = database.NormalizeSessionAutoLockThreshold(settings.CodexSessionAutoLockThreshold)
 		next.CodexTurnStateVaultEnabled = settings.CodexTurnStateVaultEnabled
-		next.CodexUnifiedClientIdentityEnabled = settings.CodexUnifiedClientIdentityEnabled
 		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS

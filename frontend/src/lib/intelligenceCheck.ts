@@ -10,7 +10,16 @@ export interface IntelligenceQuestion {
   max_duration_ms: number;
   enabled: boolean;
 }
+export type IntelligenceChannel = "codex" | "claude" | "grok" | "antigravity";
 export interface IntelligenceSettings {
+  channels?: Partial<Record<IntelligenceChannel, boolean>>;
+  grok_model?: string;
+  antigravity_model?: string;
+  adaptive_enabled: boolean;
+  pause_initial_seconds: number;
+  pause_max_seconds: number;
+  recovery_initial_seconds: number;
+  recovery_min_seconds: number;
   revision: number;
   enabled: boolean;
   gpt_model: string;
@@ -29,6 +38,26 @@ export interface IntelligenceSettings {
   target_group_id: number;
   questions: IntelligenceQuestion[];
 }
+export interface IntelligenceTargetConflict {
+  code: "intelligence_check_target_conflict";
+  target_group_id: number;
+  target_group_channel: string;
+  conflict_count: number;
+  conflicts: { account_id: number; account_name: string; channel: string }[];
+}
+
+export function intelligenceTargetConflict(error: unknown): IntelligenceTargetConflict | null {
+  if (!error || typeof error !== "object" || !("details" in error)) return null;
+  const details = error.details as Partial<IntelligenceTargetConflict> | null;
+  if (!details || details.code !== "intelligence_check_target_conflict" ||
+    !Number.isSafeInteger(details.target_group_id) ||
+    typeof details.target_group_channel !== "string" ||
+    !Number.isSafeInteger(details.conflict_count) || (details.conflict_count ?? 0) <= 0 ||
+    !Array.isArray(details.conflicts) || details.conflicts.length === 0 || details.conflicts.length > 200 ||
+    details.conflicts.some(a => !a || !Number.isSafeInteger(a.account_id) || a.account_id <= 0 || typeof a.account_name !== "string" || typeof a.channel !== "string")) return null;
+  return details as IntelligenceTargetConflict;
+}
+
 export interface IntelligenceRecord {
   id: number;
   status: IntelligenceStatus;
@@ -73,6 +102,10 @@ export interface IntelligenceAccount {
   next_due_at?: string | null;
 }
 export interface IntelligenceBar {
+  probe_phase?: string;
+  next_interval_seconds?: number;
+  next_due_at?: string | null;
+  passed_streak?: number;
   active_run_id?: number;
   active_status?: "queued" | "running";
   enabled: boolean;
@@ -140,4 +173,18 @@ export function latestRequestGuard() {
     next: () => ++revision,
     isCurrent: (value: number) => value === revision,
   };
+}
+
+export function intelligenceScheduleLabel(bar: IntelligenceBar): string {
+  const labels: Record<string, string> = {
+    normal: '正常检测', backoff: '退避中', recovering: '恢复确认',
+    retrying: '异常重试', credential_blocked: '等待凭证修复',
+    quota_wait: '等待额度恢复',
+  };
+  const label = labels[bar.probe_phase || ''];
+  if (!label) return '';
+  if (bar.probe_phase === 'credential_blocked') return label;
+  const progress = bar.probe_phase === 'recovering' ? ` · 连续通过 ${bar.passed_streak ?? 0} 次` : '';
+  const due = bar.enabled && bar.next_due_at ? ` · 下次 ${new Date(bar.next_due_at).toLocaleString()}` : '';
+  return label + progress + due;
 }

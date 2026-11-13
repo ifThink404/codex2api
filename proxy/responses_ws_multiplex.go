@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +42,20 @@ func writeResponsesWSPayload(conn *websocket.Conn, payload []byte, timeout time.
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(timeout))
 	return conn.WriteMessage(websocket.TextMessage, payload)
+}
+
+// sendResponsesWSGuardTerminal serializes the guard terminal frame on the
+// connection's shared write lock. gorilla/websocket panics on concurrent
+// writers, and runResponsesWSMultiplex may run up to 16 same-connection lanes
+// in parallel. Unregistered connections (single direct test sockets outside
+// the multiplexer) have no competing lane and are written directly.
+func sendResponsesWSGuardTerminal(conn *websocket.Conn, streamID string, reason string) error {
+	if lock, ok := responsesWSWriters.Load(conn); ok {
+		mu := lock.(*sync.Mutex)
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return SendDownstreamGuardTerminalWS(conn, streamID, reason)
 }
 
 func responsesWSStreamID(raw []byte) (string, *api.APIError) {
@@ -107,8 +120,9 @@ type responsesWSLaneTurn struct {
 }
 
 type responsesWSLaneResult struct {
-	streamID string
-	err      error
+	streamID  string
+	err       error
+	interrupt *responsesWSInterruptState
 }
 
 // The scheduler is connection-owned. Same-lane work is FIFO; other lanes may
@@ -130,6 +144,7 @@ func (h *Handler) runResponsesWSMultiplex(c *gin.Context, conn *websocket.Conn, 
 	running := map[string]bool{}
 	names := map[string]bool{}
 	lineage := newResponsesWSLineage()
+	interrupts := newResponsesWSInterruptRegistry()
 	active := 0
 	for {
 		for i := 0; i < len(pending) && active < responsesWSMaxActiveStreams; {
@@ -150,6 +165,7 @@ func (h *Handler) runResponsesWSMultiplex(c *gin.Context, conn *websocket.Conn, 
 			frameCtx := context.WithValue(ctx, upstreamTraceContextKey{}, &upstreamTraceAudit{requestID: NewUpstreamSessionUUID(), store: h.store})
 			frameCtx = context.WithValue(frameCtx, userAgentAuditContextKey{}, &userAgentAudit{})
 			frameCtx = context.WithValue(frameCtx, wsAcquireAuditContextKey{}, &wsAcquireAudit{})
+			frameCtx, interrupt := interrupts.begin(frameCtx, turn.streamID)
 			frame.Request = c.Request.Clone(frameCtx)
 			frame.Writer = &responsesWSFrameWriter{header: c.Writer.Header().Clone()}
 			frame.Set(responsesWSStreamContextKey, turn.streamID)
@@ -163,7 +179,7 @@ func (h *Handler) runResponsesWSMultiplex(c *gin.Context, conn *websocket.Conn, 
 				}
 				options := &responsesWSForwardOptions{lineage: lineage, transformClientEvent: func(data []byte) []byte { return withResponsesWSStreamID(data, turn.streamID) }}
 				err := h.forwardResponsesWebSocketTurn(frame, conn, payload, eventID, options)
-				results <- responsesWSLaneResult{streamID: turn.streamID, err: err}
+				results <- responsesWSLaneResult{streamID: turn.streamID, err: err, interrupt: interrupt}
 			}()
 		}
 		select {
@@ -172,6 +188,7 @@ func (h *Handler) runResponsesWSMultiplex(c *gin.Context, conn *websocket.Conn, 
 		case result := <-results:
 			active--
 			delete(running, result.streamID)
+			interrupts.finish(result.interrupt)
 			if result.err != nil {
 				var closeErr *responsesWSCloseError
 				if errors.Is(result.err, errResponsesWSClientGone) {
@@ -209,13 +226,27 @@ func (h *Handler) runResponsesWSMultiplex(c *gin.Context, conn *websocket.Conn, 
 				_ = writeAuditedResponsesWSError(c, conn, api.NewAPIError(api.ErrCodeInvalidRequest, "unsupported websocket message type", api.ErrorTypeInvalidRequest))
 				return
 			}
+			eventType, eventErr := responsesWSClientEventType(message.payload)
+			if eventErr != nil {
+				message.releaseQueueBudget()
+				_ = writeResponsesWSError(conn, eventErr)
+				continue
+			}
 			streamID, streamErr := responsesWSStreamID(message.payload)
 			if streamErr != nil {
 				message.releaseQueueBudget()
 				_ = writeAuditedResponsesWSError(c, conn, streamErr)
 				continue
 			}
-			if eventType := strings.TrimSpace(gjson.GetBytes(message.payload, "type").String()); eventType != "" && eventType != "response.create" {
+			if eventType == "response.interrupt" {
+				err := interrupts.handle(conn, message.payload, streamID)
+				message.releaseQueueBudget()
+				if err != nil {
+					return
+				}
+				continue
+			}
+			if eventType != "" && eventType != "response.create" {
 				_, _, eventErr := normalizeResponsesWebSocketClientPayload(message.payload)
 				message.releaseQueueBudget()
 				_ = writeResponsesWSErrorForStream(conn, eventErr, streamID, responsesWSWriteTimeout)

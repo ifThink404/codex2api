@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   ArrowDown,
@@ -23,13 +23,29 @@ import { Switch } from "../components/ui/switch";
 import { Select } from "../components/ui/select";
 import { useToast } from "../hooks/useToast";
 import { getErrorMessage } from "../utils/error";
+import { refreshIntelligenceBars } from "../hooks/useIntelligenceBars";
 import {
+  intelligenceTargetConflict,
+  type IntelligenceTargetConflict,
   type IntelligenceQuestion,
   type IntelligenceSettings,
 } from "../lib/intelligenceCheck";
 
 const fieldClass =
   "w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
+// 非 HTTPS 的 HTTP 站点不是安全上下文，crypto.randomUUID 可能不存在，
+// 退回用 crypto.getRandomValues 生成 UUID v4。
+function createQuestionId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 const field = (label: string, child: ReactNode, hint?: string) => (
   <label className="flex flex-col gap-2 text-sm">
     <span className="font-medium">{label}</span>
@@ -46,13 +62,21 @@ export default function IntelligenceCheck() {
   const runID = Number(params.get("run")) || null;
   const [settings, setSettings] = useState<IntelligenceSettings | null>(null);
   const [saved, setSaved] = useState<IntelligenceSettings | null>(null);
-  const [groups, setGroups] = useState<{ id: number; name: string }[]>([]);
+  const [groups, setGroups] = useState<
+    { id: number; name: string; channel?: string }[]
+  >([]);
+  const [targetConflict, setTargetConflict] = useState<IntelligenceTargetConflict | null>(null);
+  const conflictPanel = useRef<HTMLDivElement>(null);
   const [configError, setConfigError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editor, setEditor] = useState<string | null>(null);
   const { showToast } = useToast();
   const dirty =
     !!settings && JSON.stringify(settings) !== JSON.stringify(saved);
+
+  useEffect(() => {
+    if (targetConflict) conflictPanel.current?.scrollIntoView({ block: "center" });
+  }, [targetConflict]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -84,14 +108,24 @@ export default function IntelligenceCheck() {
   const change = <K extends keyof IntelligenceSettings>(
     key: K,
     value: IntelligenceSettings[K],
-  ) => setSettings((s) => (s ? { ...s, [key]: value } : s));
+  ) => {
+    if (key === "action" || key === "target_group_id") setTargetConflict(null);
+    setSettings((s) => (s ? { ...s, [key]: value } : s));
+  };
   const mutate = async (fn: () => Promise<unknown>, message: string) => {
     setBusy(true);
     try {
       await fn();
       showToast(message);
     } catch (e) {
-      showToast(getErrorMessage(e), "error");
+      const conflict = intelligenceTargetConflict(e);
+      if (conflict) setTargetConflict(conflict);
+      showToast(
+        conflict
+          ? `有 ${conflict.conflict_count} 个账号的检测通道不兼容，请处理下方列表后重新保存`
+          : getErrorMessage(e),
+        "error",
+      );
     } finally {
       setBusy(false);
     }
@@ -102,7 +136,17 @@ export default function IntelligenceCheck() {
       const next = await api.saveIntelligenceSettings(settings);
       setSettings(next);
       setSaved(next);
+      setTargetConflict(null);
     }, "检测配置和题库已保存");
+  const disableConflicts = () =>
+    mutate(async () => {
+      if (!targetConflict) return;
+      await api.setIntelligenceAccounts(
+        targetConflict.conflicts.map(a => a.account_id), false,
+      );
+      refreshIntelligenceBars();
+      setTargetConflict(null);
+    }, "已关闭所列账号的自动检测，请重新保存配置");
   const question = settings?.questions.find((q) => q.id === editor);
   const editQuestion = (patch: Partial<IntelligenceQuestion>) => {
     if (settings)
@@ -124,6 +168,10 @@ export default function IntelligenceCheck() {
   };
   const numeric = (
     key:
+      | "pause_initial_seconds"
+      | "pause_max_seconds"
+      | "recovery_initial_seconds"
+      | "recovery_min_seconds"
       | "interval_seconds"
       | "retry_seconds"
       | "timeout_seconds"
@@ -192,6 +240,34 @@ export default function IntelligenceCheck() {
                 />,
                 "保存后生效；关闭时仍可手动检测。",
               )}
+              <div className="col-span-full space-y-3 rounded-lg border p-4">
+                <h3 className="text-sm font-medium">自动检测来源</h3>
+                <p className="text-xs text-muted-foreground">按账号来源独立控制，不按所调用的模型名称分类。保存后停止该来源的新自动检测，手动立即检测不受影响；已有账号的单独开关保留。</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {([
+                    ["codex", "GPT / Codex"],
+                    ["claude", "Claude"],
+                    ["grok", "Grok"],
+                    ["antigravity", "Antigravity"],
+                  ] as const).map(([channel, label]) => (
+                    <label key={channel} className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-3 py-2 text-sm">
+                      <span>{label}</span>
+                      <Switch aria-label={`${label} 自动降智检测`}
+                        checked={settings.channels?.[channel] ?? (channel === "codex" || channel === "claude")}
+                        onCheckedChange={(value) => change("channels", {
+                          codex: settings.channels?.codex ?? true,
+                          claude: settings.channels?.claude ?? true,
+                          grok: settings.channels?.grok ?? false,
+                          antigravity: settings.channels?.antigravity ?? false,
+                          [channel]: value,
+                        })} />
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">Antigravity 来源的 Claude 模型仍归 Antigravity。Grok 和 Antigravity 为新增支持，默认关闭，开启前请核对检测模型。</p>
+              </div>
+              {field("Grok 检测模型", <Input value={settings.grok_model ?? "grok-4.5"} onChange={(e) => change("grok_model", e.target.value)} />)}
+              {field("Antigravity 检测模型", <Input value={settings.antigravity_model ?? "gemini-3.8-flash-medium"} onChange={(e) => change("antigravity_model", e.target.value)} />)}
               {field(
                 "GPT / Codex 模型",
                 <Input
@@ -248,7 +324,7 @@ export default function IntelligenceCheck() {
                   checked={settings.new_accounts_enabled}
                   onCheckedChange={(v) => change("new_accounts_enabled", v)}
                 />,
-                "已有账号不受此选项影响。",
+                "仅对已开启来源的新账号生效；切换分组时，仅同来源新账号默认参与。已有账号不受此选项影响。",
               )}
             </CardContent>
           </Card>
@@ -262,6 +338,18 @@ export default function IntelligenceCheck() {
               {numeric("timeout_seconds", "请求超时（秒）", 1, 3600)}
               {numeric("concurrency", "全局检测并发", 1, 100)}
               {numeric("retention", "每账号保留记录", 1, 10000)}
+              <div className="sm:col-span-2">
+                {field("自适应检测", <Switch aria-label="自适应检测" checked={settings.adaptive_enabled ?? false} onCheckedChange={v => change("adaptive_enabled", v)} />,
+                  "暂停后未通过则间隔翻倍；检测正常后加速确认。恢复调度后，正常检测逐步减轻历史退避。关闭时沿用固定间隔。")}
+              </div>
+              {settings.adaptive_enabled && <>
+                {numeric("pause_initial_seconds", "暂停初始间隔（秒）", 1, 2592000)}
+                {numeric("pause_max_seconds", "暂停最大间隔（秒）", 1, 2592000)}
+                {numeric("recovery_initial_seconds", "恢复确认初始间隔（秒）", 1, 2592000)}
+                {numeric("recovery_min_seconds", "恢复确认最短间隔（秒）", 1, 2592000)}
+                <p className="text-xs text-muted-foreground sm:col-span-2">恢复确认间隔逐次减半（最短间隔至少一分钟时按整分钟向下取整），直到达到下方连续通过次数。实际等待有最多 10% 的提前抖动。最大间隔越长，发现恢复可能越晚。</p>
+              </>}
+
             </CardContent>
           </Card>
           <Card>
@@ -295,15 +383,85 @@ export default function IntelligenceCheck() {
                         change("target_group_id", Number(v))
                       }
                       placeholder="选择分组"
-                      options={groups.map((g) => ({
-                        value: String(g.id),
-                        label: g.name,
-                      }))}
+                      options={groups
+                        .filter(g => !g.channel || ["codex", "claude", "grok", "antigravity"].includes(g.channel))
+                        .map(g => ({
+                          value: String(g.id),
+                          label: `${g.name}（${({ codex: "Codex", claude: "Claude", grok: "Grok", antigravity: "Antigravity" } as Record<string, string>)[g.channel ?? "codex"] ?? g.channel}）`,
+                        }))}
                     />,
                   )}
               </div>
+              {targetConflict && (
+                <div
+                  ref={conflictPanel}
+                  role="alert"
+                  className="space-y-3 rounded-md border border-destructive/40 p-3 text-sm"
+                >
+                  <p className="font-medium">
+                    有 {targetConflict.conflict_count}{" "}
+                    个账号的检测通道与目标分组不兼容，配置尚未保存。
+                  </p>
+                  <p className="text-muted-foreground">
+                    目标分组：
+                    {groups.find(
+                      (g) => g.id === targetConflict.target_group_id,
+                    )?.name || `#${targetConflict.target_group_id}`}
+                    （{targetConflict.target_group_channel}
+                    ）。可关闭下列账号的自动检测后重新保存，或调整处置策略。
+                  </p>
+                  <ul className="max-h-60 space-y-2 overflow-y-auto">
+                    {targetConflict.conflicts.map((account) => (
+                      <li
+                        key={account.account_id}
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span className="min-w-0 break-all">
+                          #{account.account_id} ·{" "}
+                          {account.account_name || "未命名账号"} ·{" "}
+                          {account.channel}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => {
+                            const next = new URLSearchParams(params);
+                            next.delete("run");
+                            next.set(
+                              "account_id",
+                              String(account.account_id),
+                            );
+                            setParams(next);
+                          }}
+                        >
+                          查看账号检测
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                  {targetConflict.conflict_count >
+                    targetConflict.conflicts.length && (
+                    <p className="text-muted-foreground">
+                      当前列出前 {targetConflict.conflicts.length}{" "}
+                      个；处理后重新保存可查看剩余冲突。
+                    </p>
+                  )}
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void disableConflicts()}
+                  >
+                    关闭以上 {targetConflict.conflicts.length}{" "}
+                    个账号的自动检测
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    仅关闭自动检测，账号的业务调度和已有处置恢复状态保持不变。
+                  </p>
+                </div>
+              )}
               <p className="text-xs leading-relaxed text-muted-foreground">
-                上游错误不打断连续次数。人工修改调度或分组优先，并重置连续次数。关闭暂停策略不会自动释放已有暂停；关闭切组策略后，已切组账号仍可按恢复阈值还原原分组。检测暂停期间继续检测。
+                上游错误不计为降智；开启自适应时会中断恢复确认。人工修改调度或分组优先，并重置连续次数。关闭暂停策略不会自动释放已有暂停；关闭切组策略后，已切组账号仍可按恢复阈值还原原分组。检测暂停期间继续检测。
               </p>
             </CardContent>
           </Card>
@@ -317,7 +475,7 @@ export default function IntelligenceCheck() {
             <Button
               variant="outline"
               onClick={() => {
-                const id = crypto.randomUUID();
+                const id = createQuestionId();
                 change("questions", [
                   ...settings.questions,
                   {

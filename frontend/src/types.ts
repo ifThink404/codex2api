@@ -117,7 +117,33 @@ export interface AntigravitySettingsResponse {
   model_redirects: Record<string, string>
   redirect_overrides_effort: boolean
   expose_thoughts: boolean
+  /** 配额自动刷新开关（GET 返回后端生效值；PUT 缺失 = 保留现值，null = 重置默认）。 */
+  quota_refresh_enabled?: boolean
+  /** 配额刷新间隔（分钟），允许范围 3–60。 */
+  quota_refresh_interval_minutes?: number
+  /** 配额硬门禁开关：开启后配额耗尽账号直接 429，不进入排队。 */
+  quota_gate_enabled?: boolean
+  /** 临期优先调度开关：周配额临近重置且仍有存量的账号优先承接新会话（仅 round_robin）。 */
+  expiry_priority_enabled?: boolean
+  /** 临期时间窗（小时），允许范围 1–168。 */
+  expiry_priority_horizon_hours?: number
+  /** 渠道配置 CAS 版本号（只读，后端下发）。 */
+  config_revision?: number
   choices: AntigravityRedirectChoice[]
+}
+
+/** POST /accounts/antigravity/quota/clear 的逐项结果（运维止血）。 */
+export interface AntigravityQuotaClearItem {
+  id: number
+  ok: boolean
+  quota_epoch: number
+  error?: string
+}
+
+export interface AntigravityQuotaClearResponse {
+  cleared: number
+  failed: number
+  items: AntigravityQuotaClearItem[]
 }
 
 export interface VisibleChannelsSettings {
@@ -649,6 +675,26 @@ export interface AccountLiveStateResponse {
     // 调度器当前实际执行的并发上限与配置值；旧后端不返回时保留列表里的值。
     dynamic_concurrency_limit?: number
     base_concurrency_effective?: number
+    // 运行时用量投影：旧后端缺 key 时保留列表值；显式 null 表示窗口已失效。
+    status?: AccountStatus
+    using_credits?: boolean
+    plan_type?: string
+    credits_valid?: boolean
+    credits_balance?: string | null
+    credits_has_credits?: boolean | null
+    credits_unlimited?: boolean | null
+    credits_overage_limit_reached?: boolean | null
+    credits_spend_control_reached?: boolean | null
+    credits_rate_limit_reached_type?: string | null
+    usage_percent_5h?: number | null
+    reset_5h_at?: ISODateString | null
+    codex_5h_usage_updated_at?: ISODateString | null
+    usage_percent_7d?: number | null
+    reset_7d_at?: ISODateString | null
+    codex_usage_updated_at?: ISODateString | null
+    // 最近一次被应用的 WS 配额帧；旧后端不返回，仅用于观测帧摄入。
+    codex_usage_frame_at?: ISODateString
+    codex_usage_frame_kind?: string
   }>
   session_slot_buffer_enabled: boolean
 }
@@ -1132,7 +1178,10 @@ export interface AntigravityModelQuota {
   model?: string
   model_id?: string
   name?: string
-  remaining_fraction?: number
+  /** V2 契约：null 表示无事实；配合 fraction_present 区分"未观测"与"观测到耗尽"。 */
+  remaining_fraction?: number | null
+  /** 上游是否观测到该配额的 remaining_fraction（true 时 0 是可信的耗尽事实）。 */
+  fraction_present?: boolean
   remaining_percent?: number
   reset_time?: string
   display_name?: string
@@ -1148,7 +1197,10 @@ export interface AntigravityModelQuota {
 export interface AntigravityQuotaBucket {
   bucket_id: string
   window: string
-  remaining_fraction: number
+  /** V2 契约：null 表示无事实；配合 fraction_present 区分"未观测"与"观测到耗尽"。 */
+  remaining_fraction: number | null
+  /** 上游是否观测到该配额的 remaining_fraction（true 时 0 是可信的耗尽事实）。 */
+  fraction_present?: boolean
   reset_time?: string
   display_name?: string
   description?: string
@@ -2250,7 +2302,6 @@ export interface SystemSettings {
   // Rewrites existing web_search tools' user_location from the outbound proxy's stored egress location.
   codex_web_search_proxy_location: boolean
   codex_telemetry_timing_debug: boolean
-  codex_unified_client_identity_enabled: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean
   codex_ws_keepalive_enabled: boolean
@@ -2345,6 +2396,12 @@ export interface SystemSettings {
   response_cache_reconstruct_max_bytes: number
   response_cache_write_policy: ResponseCacheWritePolicy
   readonly response_cache_config_generation: number
+  output_guard_enabled: boolean
+  output_guard_max_tool_argument_bytes: number
+  output_guard_max_tool_argument_deltas: number
+  output_guard_max_channel_bytes: number
+  output_guard_max_request_bytes: number
+  readonly output_guard_config_generation: number
   relay_model_cooldown_mode: ModelCooldownMode
   relay_model_cooldown_seconds: number
   relay_model_cooldown_backoff_enabled: boolean
@@ -3871,6 +3928,8 @@ export interface OfficialPricingSyncResult {
 	sources: string[]
 	warnings?: string[]
 	synced_at: string
+	fallbacks?: Record<string, string>
+	notices?: string[]
 }
 
 /**
@@ -4000,8 +4059,10 @@ export interface APIKeyLimits {
   /** 图片工具策略：""/"allow" 放行、"strip" 剥离后继续文本请求、"block" 命中即 403。 */
   image_generation_policy?: "allow" | "strip" | "block"
   upstream_channel?: UpstreamChannel
-  /** 允许该 Key 使用 ChatGPT Live（/v1/live）。默认关闭。 */
+  /** 允许该 Key 使用 ChatGPT Live（/v1/live）。新建自动/Codex 渠道 Key 默认开启。 */
   allow_live?: boolean
+  /** 外部调度模式（issue #831）：请求用 X-Codex2API-Account-ID 指定账号，网关不选号、不换号、不重试。 */
+  external_scheduler?: boolean
   /** 分组 / 账号维度的用量预算（issue #439）。 */
   scope_limits?: APIKeyScopeLimit[]
   /** Fixed weekly request budgets shared by models matching each rule. */
@@ -4180,6 +4241,8 @@ export interface PublicAPIKeyUsageLog {
   billed_image_count?: number
   id: number
   channel?: UpstreamChannel | ''
+  client_ip: string
+  client_user_agent: string
   endpoint: string
   model: string
   effective_model: string
@@ -4189,7 +4252,11 @@ export interface PublicAPIKeyUsageLog {
   first_token_ms: number
   input_tokens: number
   output_tokens: number
+  reasoning_tokens: number
+  reasoning_effort: string
   cached_tokens: number
+  cache_write_5m_tokens?: number
+  cache_write_1h_tokens?: number
   total_tokens: number
   user_billed: number
   input_cost: number
@@ -4613,4 +4680,27 @@ export interface LogAgentAnalyzeRequest {
   end?: string
   focus?: string
   language?: string
+}
+
+export interface ScheduledConnectionTestConfig {
+  enabled: boolean
+  model: string
+  content: string
+  weekday_times: string[]
+  weekend_times: string[]
+}
+export interface ScheduledConnectionTestRecord {
+  scheduled_at: string
+  attempted_at?: string
+  account_id: number
+  model?: string
+  status: 'success' | 'failed' | 'skipped' | 'unknown'
+  success: boolean
+  error?: string
+  next_reset_5h_at?: string
+}
+export interface ScheduledConnectionTestResponse {
+  config: ScheduledConnectionTestConfig
+  timezone: string
+  records: ScheduledConnectionTestRecord[]
 }

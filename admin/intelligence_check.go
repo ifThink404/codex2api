@@ -25,6 +25,15 @@ func (h *Handler) registerIntelligenceCheckRoutes(api *gin.RouterGroup) {
 	api.GET("/intelligence-check/bars", h.GetIntelligenceBars)
 }
 func intelligenceAPIError(c *gin.Context, err error) {
+	var conflict *database.IntelligenceCheckTargetConflictError
+	if errors.As(err, &conflict) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": err.Error(), "code": "intelligence_check_target_conflict",
+			"target_group_id": conflict.TargetGroupID, "target_group_channel": conflict.TargetGroupChannel,
+			"conflict_count": conflict.ConflictCount, "conflicts": conflict.Conflicts,
+		})
+		return
+	}
 	status := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, database.ErrIntelligenceCheckRevisionConflict):
@@ -57,7 +66,7 @@ func (h *Handler) SaveIntelligenceSettings(c *gin.Context) {
 	}
 	saved, err := h.db.SaveIntelligenceCheckSettings(c.Request.Context(), settings)
 	if err != nil {
-		if errors.Is(err, database.ErrIntelligenceCheckRevisionConflict) {
+		if errors.Is(err, database.ErrIntelligenceCheckRevisionConflict) || errors.Is(err, database.ErrIntelligenceCheckTargetGroup) {
 			intelligenceAPIError(c, err)
 		} else {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -128,6 +137,8 @@ func (h *Handler) SetIntelligenceAccounts(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"updated": len(ids)})
 }
+
+// CreateIntelligenceRuns validates selected accounts and queues explicit manual detector runs.
 func (h *Handler) CreateIntelligenceRuns(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16*1024)
 	var body struct {
@@ -161,15 +172,7 @@ func (h *Handler) CreateIntelligenceRuns(c *gin.Context) {
 			c.JSON(400, gin.H{"error": fmt.Sprintf("账号 %d 不在运行时池中", id)})
 			return
 		}
-		if account.IsGrokAPI() || account.IsAntigravityAPI() {
-			c.JSON(400, gin.H{"error": "该渠道暂不支持降智检测"})
-			return
-		}
-		model, effort := settings.GPTModel, settings.ReasoningEffort
-		if account.IsClaudeOAuth() {
-			model = settings.ClaudeModel
-			effort = ""
-		}
+		model, effort := settings.ModelForChannel(intelligenceAccountChannel(account))
 		if err = h.validateQualityTestForAccount(c.Request.Context(), account, qualityTestRequest{Model: model, ReasoningEffort: effort}); err != nil {
 			c.JSON(400, gin.H{"error": fmt.Sprintf("账号 %d: %s", id, err)})
 			return

@@ -153,8 +153,9 @@ func TestUsageLogCompactionStatesRoundTripAndFilter(t *testing.T) {
 }
 
 func TestUsageLogInsertColumnCountIncludesCompactionHistory(t *testing.T) {
-	// 77 columns retain local turn-state audit fields, upstream Daybreak attribution, video duration and transport plugin attribution.
-	const want = 77
+	// 78 columns: the upstream 72 (including explicit created_at, issue #857) plus the
+	// local turn-state audit fields, upstream Daybreak attribution and transport plugin attribution.
+	const want = 78
 	if usageLogInsertColumnCount != want {
 		t.Fatalf("usageLogInsertColumnCount = %d, want %d", usageLogInsertColumnCount, want)
 	}

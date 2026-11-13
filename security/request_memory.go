@@ -50,6 +50,15 @@ func GetRequestMemorySnapshot() RequestMemorySnapshot {
 	return processRequestMemory.RequestMemorySnapshot
 }
 
+func (b *requestMemoryBudget) snapshot() RequestMemorySnapshot {
+	if b == nil {
+		return RequestMemorySnapshot{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.RequestMemorySnapshot
+}
+
 // RequestMemoryReservation may be shared by queue message copies. Release is
 // idempotent; a released reservation cannot be grown again.
 type RequestMemoryReservation struct {
