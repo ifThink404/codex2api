@@ -612,7 +612,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", "messages is required")
 		return
 	}
-	if h.inspectPromptFilterAnthropicDeferred(c, canonicalBody, "/v1/messages", model) {
+	if h.inspectPromptFilterAnthropic(c, canonicalBody, "/v1/messages", model) {
 		return
 	}
 
@@ -660,10 +660,6 @@ func (h *Handler) Messages(c *gin.Context) {
 		}
 	}
 	if isMediaOnlyModel(effectiveModel) {
-		// 拦截优先于校验拒绝：见 abortIfPromptBlockPending。
-		if h.abortIfPromptBlockPending(c) {
-			return
-		}
 		sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("model %s is only supported on %s", effectiveModel, mediaOnlyModelEndpoints(effectiveModel)))
 		return
 	}
@@ -769,10 +765,6 @@ func (h *Handler) Messages(c *gin.Context) {
 			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, selectionOpts)
 		}
 		if account == nil {
-			// 同上：号池全空时仍要把待执行的拦截写给下游。
-			if h.enforcePendingPromptBlock(c, nil) {
-				return
-			}
 			if pin != nil {
 				pin.writeFailure(c, continuousRetryProtocolAnthropic, isStream)
 				return
@@ -832,12 +824,6 @@ func (h *Handler) Messages(c *gin.Context) {
 				return
 			}
 			sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", noAvailableAnthropicAccountMessage(effectiveModel))
-			return
-		}
-		// 选到账号才知道拦不拦；必须在任何上游连接之前执行，按请求只执行一次。
-		if h.enforcePendingPromptBlock(c, account) {
-			h.store.Release(account)
-			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			return
 		}
 		if attempt > 0 {
@@ -1038,7 +1024,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			// service_tier 记账按 payload 规则改写后的值归因（仅 Codex 路径套用规则）。
 			serviceTier = EffectiveRequestedServiceTier(codexBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
 			upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
-			codexBody, _, _ = h.applyCodexTurnStateEchoPolicy(c, affinityKey, account, downstreamHeaders, codexBody)
+			guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return executeAnthropicCodexRequest(upstreamCtx, account, codexBody, canonicalBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})
@@ -1282,7 +1268,6 @@ func (h *Handler) Messages(c *gin.Context) {
 				UpstreamErrorKind:      upstreamErrorKind(resp.StatusCode, errBody, decision),
 				ErrorMessage:           usageLogErrorMessage(resp.StatusCode, errBody),
 				PromptPolicyIncidentID: promptPolicyIncidentID,
-				CapacityShed:           isCapacityShedPayload(errBody),
 			})
 
 			if shouldRetry {
@@ -1358,27 +1343,18 @@ func (h *Handler) Messages(c *gin.Context) {
 		if isGrokNativeRouteResponse(resp) {
 			downstreamFlusher, _ := c.Writer.(http.Flusher)
 			streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
-			// Non-stream responses are committed by forwardGrokNativeResponseObserved;
+			// Non-stream responses are committed by forwardGrokNativeResponseTo;
 			// copy Claude's safe headers before that commit so net/http can send
 			// them. Stream headers are copied after the successful attempt below
 			// to avoid exposing a buffered/retried attempt.
 			if account.IsClaudeOAuth() && (!isStream || !continuousRetryBuffersAttempts(continuousRetryPolicy)) {
 				copyClaudeNativeResponseHeaders(c, resp.Header)
 			}
-			// Anthropic Messages 信封把模型放在 message.model：流式只在 message_start
-			// 里出现一次，非流式在整体响应体顶层；没有「终态覆盖」这回事，取到一次就够，
-			// 后续帧（content_block_* / message_delta / message_stop）连解析都省掉。
-			responseModelObserver := &upstreamResponseModelObserver{}
-			observeNativeMessagesPayload := func(payload []byte) {
-				if responseModelObserver.Model() == "" {
-					observeUpstreamResponseModelPayload(responseModelObserver, payload, "")
-				}
-			}
 			// [OutputGuard] 复用循环外创建的 requestGuard，使被缓冲的重试 attempt
 			// 承接已消耗的事件/字节预算；每次 attempt 只重建投影器与终止协调器。
 			// 显式传入 attempt 作用域，隔离各 attempt 的通道身份。
 			attemptScope := fmt.Sprintf("a%d", attempt)
-			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObservedWithScope(readCtx, c, resp, GrokProtocolMessages, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), observeNativeMessagesPayload, requestGuard, attemptScope)
+			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObservedWithScope(readCtx, c, resp, GrokProtocolMessages, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), nil, requestGuard, attemptScope)
 			if account.IsClaudeOAuth() {
 				// Anthropic 的 input_tokens 不含缓存命中/写入，转换成计费层的总输入口径。
 				applyAnthropicUsageSemantics(usage)
@@ -1416,13 +1392,11 @@ func (h *Handler) Messages(c *gin.Context) {
 					AccountID: account.ID(), Endpoint: "/v1/messages", Model: model,
 					EffectiveModel: attemptEffectiveModel, StatusCode: outcome.logStatusCode,
 					DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-					UpstreamResponseModel: responseModelObserver.Model(),
-					InboundEndpoint:       "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
+					InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
 					Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 					IsRetryAttempt: true, PromptPolicyIncidentID: promptPolicyIncidentID,
 					UpstreamErrorKind: outcome.failureKind,
 					ErrorMessage:      usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
-					CapacityShed:      outcome.capacityShed,
 				}
 				if usage != nil {
 					retryLog.PromptTokens, retryLog.CompletionTokens, retryLog.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
@@ -1478,11 +1452,9 @@ func (h *Handler) Messages(c *gin.Context) {
 				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model,
 				EffectiveModel: attemptEffectiveModel, StatusCode: outcome.logStatusCode,
 				DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-				UpstreamResponseModel: responseModelObserver.Model(),
-				InboundEndpoint:       "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
+				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint,
 				Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 				PromptPolicyIncidentID: promptPolicyIncidentID,
-				CapacityShed:           outcome.capacityShed,
 			}
 			if usage != nil {
 				logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
@@ -1522,8 +1494,6 @@ func (h *Handler) Messages(c *gin.Context) {
 		var firstTokenMs int
 		var usage *UsageInfo
 		var actualServiceTier string
-		// 上游自报模型：/v1/messages 翻译路径的上游是 Responses 信封，记录它自己声明的模型。
-		responseModelObserver := &upstreamResponseModelObserver{}
 		ttftRecorded := false
 		gotTerminal := false
 		deltaCharCount := 0
@@ -1589,7 +1559,6 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 				parsed := gjson.ParseBytes(data)
 				ApplyCodexUsageEventFrame(h.store, account, eventType, parsed, time.Now())
-				observeUpstreamResponseModelPayload(responseModelObserver, data, eventType)
 
 				// TTFT 跟踪
 				ttftGuard.MarkProgress(eventType)
@@ -1760,7 +1729,6 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 				parsed := gjson.ParseBytes(data)
 				ApplyCodexUsageEventFrame(h.store, account, eventType, parsed, time.Now())
-				observeUpstreamResponseModelPayload(responseModelObserver, data, eventType)
 				if eventType == "error" {
 					terminalFailurePayload = terminalUpstreamErrorPayload(data)
 					gotTerminal = true
@@ -1860,11 +1828,10 @@ func (h *Handler) Messages(c *gin.Context) {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model, EffectiveModel: attemptEffectiveModel,
-				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort, UpstreamResponseModel: responseModelObserver.Model(),
+				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
 				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
-				CapacityShed: outcome.capacityShed,
 			}, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重试 (attempt %s, account %d, /v1/messages): %s",
 				retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
@@ -1968,7 +1935,6 @@ func (h *Handler) Messages(c *gin.Context) {
 			DurationMs:             totalDuration,
 			FirstTokenMs:           firstTokenMs,
 			ReasoningEffort:        reasoningEffort,
-			UpstreamResponseModel:  responseModelObserver.Model(),
 			InboundEndpoint:        "/v1/messages",
 			UpstreamEndpoint:       upstreamEndpoint,
 			Stream:                 isStream,
@@ -1979,7 +1945,6 @@ func (h *Handler) Messages(c *gin.Context) {
 			BillingServiceTier:     usageTiers.BillingServiceTier,
 			PromptPolicyIncidentID: promptPolicyIncidentID,
 			AttemptIndex:           attempt + 1,
-			CapacityShed:           outcome.capacityShed,
 		}
 		if logStatusCode != http.StatusOK {
 			logInput.ErrorMessage = usageLogFailureMessage(logStatusCode, outcome.failureMessage)

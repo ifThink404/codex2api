@@ -1,29 +1,16 @@
-import type { ChangeEvent, ComponentProps, FocusEvent, ReactNode } from 'react'
+import type { ChangeEvent, FocusEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, resetAdminAuthState, setAdminKey } from '../api'
 import { formatBeijingTime } from '../utils/time'
 import DisplayTimezoneSelect from '../components/DisplayTimezoneSelect'
 import PageHeader from '../components/PageHeader'
-import SettingsTransfer from '../components/SettingsTransfer'
-import {
-  SETTINGS_CARD_GRID_2,
-  SETTINGS_FIELD_GRID,
-  SETTINGS_FIELD_GRID_3,
-  SETTINGS_ROW_LIST,
-  SETTINGS_SWITCH_GRID,
-  SETTINGS_SWITCH_ROW,
-  SettingField as SharedSettingField,
-  SettingHelp as SharedSettingHelp,
-  SettingsCard as SharedSettingsCard,
-} from '../components/SettingsLayout'
 import CodexClientVersionsPanel from '../components/CodexClientVersionsPanel'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexClientVersionSyncResult, CodexClientVersionTarget, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, LogAgentConfig, LogAgentConfigResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
+import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexClientVersionSyncResult, CodexClientVersionTarget, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
 import { ANTIGRAVITY_DEFAULT_MODELS, isAntigravityDisabledModel } from '../lib/antigravityModels'
-import ChipInput from '../components/ChipInput'
 import { countPayloadRules, PAYLOAD_RULE_GROUPS } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
 import { DEFAULT_CLAUDE_MODEL_MAP } from '../lib/modelMapping'
@@ -116,7 +103,6 @@ import {
   CircleHelp,
   Cloud,
   Database,
-  Download,
   ExternalLink,
   Eye,
   Fingerprint,
@@ -830,7 +816,16 @@ function ReasoningEffortModelsEditor({
   )
 }
 
-/** Shared form grids — explicit columns so col-span / alignment stay predictable (defined in components/SettingsLayout). */
+/** Shared form grids — explicit columns so col-span / alignment stay predictable. */
+const SETTINGS_FIELD_GRID = 'grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2'
+const SETTINGS_FIELD_GRID_3 = 'grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-3'
+const SETTINGS_SWITCH_GRID = 'grid grid-cols-1 gap-3 sm:grid-cols-2'
+// 卡片里只有一个开关时用整行，放进双列栅格会挤成半宽、标签折行。
+const SETTINGS_SWITCH_ROW = 'grid grid-cols-1 gap-3'
+// 一组只含开关的相关设置合并成一张卡，用 SettingField layout="row" 逐行排列，说明文字直接外显。
+const SETTINGS_ROW_LIST = 'divide-y divide-border/60'
+// 卡片级双列栅格：卡片高度不一，必须顶对齐，否则矮卡被拉高留下大片空白。
+const SETTINGS_CARD_GRID_2 = 'grid gap-4 lg:grid-cols-2 lg:items-stretch'
 
 // ClaudeCodeSettingsCard 是 ClaudeCode 全局配置卡片(独立读写 /settings/claude-config)。
 // 全体 Claude 账号默认遵守;个体账号可在「账号管理 → 编辑账号」里覆盖。
@@ -1515,8 +1510,70 @@ function ClaudeCodeSettingsCard() {
   )
 }
 
-function SettingsCard(props: ComponentProps<typeof SharedSettingsCard>) {
-  return <SharedSettingsCard {...props} />
+function SettingsCard({
+  title,
+  description,
+  children,
+  className,
+  contentClassName,
+  footer,
+  icon,
+  badge,
+  channels,
+  tone = 'default',
+}: {
+  title: string
+  description?: string
+  children: ReactNode
+  className?: string
+  contentClassName?: string
+  footer?: ReactNode
+  icon?: ReactNode
+  badge?: ReactNode
+  channels?: readonly UpstreamChannel[]
+  tone?: 'default' | 'danger'
+}) {
+  return (
+    <Card
+      className={cn(
+        'gap-0 py-0 border-border/60 bg-card shadow-2xs',
+        tone === 'danger' && 'border-destructive/30 bg-destructive/[0.02]',
+        className,
+      )}
+    >
+      <CardContent className={cn('p-4.5 sm:p-5.5', contentClassName)}>
+        <div className="mb-4.5 flex shrink-0 items-start gap-3">
+          {icon ? (
+            <div
+              className={cn(
+                'flex size-8 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset',
+                tone === 'danger'
+                  ? 'bg-destructive/10 text-destructive ring-destructive/20'
+                  : 'bg-muted/70 text-muted-foreground ring-border/60',
+              )}
+              aria-hidden="true"
+            >
+              <span className="[&_svg]:size-4">{icon}</span>
+            </div>
+          ) : null}
+          <div className="min-w-0 flex-1 pt-0.5">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <h3 className="text-sm font-semibold leading-snug tracking-tight text-foreground sm:text-[15px]">
+                {title}
+              </h3>
+              {badge}
+              {channels && channels.length > 0 ? <ChannelScopeBadges channels={channels} /> : null}
+            </div>
+            {description ? (
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground/90">{description}</p>
+            ) : null}
+          </div>
+        </div>
+        {children}
+        {footer ? <div className="mt-4.5 border-t border-border/60 pt-4 sm:mt-5">{footer}</div> : null}
+      </CardContent>
+    </Card>
+  )
 }
 
 function SettingsCollapsibleNote({
@@ -1550,12 +1607,137 @@ function SettingsCollapsibleNote({
   )
 }
 
-function SettingHelp(props: ComponentProps<typeof SharedSettingHelp>) {
-  return <SharedSettingHelp {...props} />
+function SettingHelp({ text }: { text: string }) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+            aria-label={text}
+          >
+            <CircleHelp className="size-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          sideOffset={6}
+          className="max-w-[280px] bg-popover px-3 py-2 text-left text-xs leading-relaxed text-popover-foreground shadow-md"
+        >
+          {text}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
 }
 
-function SettingField(props: ComponentProps<typeof SharedSettingField>) {
-  return <SharedSettingField {...props} />
+function SettingField({
+  label,
+  description,
+  help,
+  warning,
+  children,
+  className,
+  layout = 'stack',
+  suffix,
+  channels,
+  stretch = false,
+}: {
+  label: string
+  description?: string
+  // row 布局下 description 直接外显，help 才进问号 tooltip；其他布局 help 与 description 合并进 tooltip。
+  help?: string
+  warning?: string
+  // stretch:stack 布局下让控件撑满剩余高度(等高卡片里的 textarea)。
+  stretch?: boolean
+  children: ReactNode
+  className?: string
+  layout?: 'stack' | 'switch' | 'row'
+  suffix?: string
+  channels?: readonly UpstreamChannel[]
+}) {
+  const scope = channels && channels.length > 0 ? <ChannelScopeBadges channels={channels} size="xs" /> : null
+  const control = suffix ? (
+    <div className="relative min-w-0">
+      <div className="[&_[data-slot=input]]:pr-11 [&_[data-slot=select-trigger]]:pr-11 [&_input]:pr-11">
+        {children}
+      </div>
+      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-medium tabular-nums text-muted-foreground">
+        {suffix}
+      </span>
+    </div>
+  ) : (
+    children
+  )
+
+  if (layout === 'row') {
+    return (
+      <div className={cn('flex min-w-0 items-start justify-between gap-4 py-4 first:pt-0 last:pb-0', className)}>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <label className="text-[13px] font-semibold leading-snug text-foreground sm:text-sm">{label}</label>
+            {help ? <SettingHelp text={help} /> : null}
+            {scope}
+          </div>
+          {description ? (
+            <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">{description}</p>
+          ) : null}
+          {warning ? (
+            <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">{warning}</p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center pt-0.5">{control}</div>
+      </div>
+    )
+  }
+
+  const tooltip = [description, help].filter(Boolean).join(' ')
+
+  if (layout === 'switch') {
+    return (
+      <div
+        className={cn(
+          'flex min-h-[52px] min-w-0 items-center justify-between gap-3 rounded-xl border border-border/70 bg-card p-3.5 shadow-2xs transition-colors hover:border-border/90',
+          className,
+        )}
+      >
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="flex items-center gap-1.5">
+            <label className="block text-[13px] font-semibold leading-snug text-foreground sm:text-sm">
+              {label}
+            </label>
+            {tooltip ? <SettingHelp text={tooltip} /> : null}
+            {scope}
+          </div>
+          {warning ? (
+            <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">
+              {warning}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center self-center">{control}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn('flex min-w-0 flex-col gap-1.5', stretch && 'flex-1', className)}>
+      <div className="flex min-h-5 items-center gap-1.5">
+        <label className="block text-[13px] font-semibold leading-none text-foreground sm:text-sm">
+          {label}
+        </label>
+        {tooltip ? <SettingHelp text={tooltip} /> : null}
+        {scope}
+      </div>
+      <div className={cn('min-w-0', stretch && 'flex flex-1 flex-col [&>*]:flex-1')}>{control}</div>
+      {warning ? (
+        <p className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">
+          {warning}
+        </p>
+      ) : null}
+    </div>
+  )
 }
 
 function SettingsFieldGroup({
@@ -2219,145 +2401,6 @@ function VisibleChannelsPicker() {
   )
 }
 
-// LogAgentSettingsCard 是日志分析 Agent 的配置卡片(独立读写 /log-agent/config)：
-// 选择计费归属的网关 Key 与分析模型，以及上下文上限、超时与记录保留天数。
-function LogAgentSettingsCard({ models }: { models: string[] }) {
-  const { t } = useTranslation()
-  const { showToast } = useToast()
-  const [config, setConfig] = useState<LogAgentConfig | null>(null)
-  const [gatewayKeys, setGatewayKeys] = useState<LogAgentConfigResponse['gateway_keys']>([])
-  const [limits, setLimits] = useState<LogAgentConfigResponse['limits'] | null>(null)
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    void api
-      .getLogAgentConfig()
-      .then((result) => {
-        if (cancelled) return
-        setConfig(result.config)
-        setGatewayKeys(result.gateway_keys ?? [])
-        setLimits(result.limits)
-      })
-      .catch((error) => {
-        if (!cancelled) showToast(`${t('logAgent.settings.loadFailed')}: ${getErrorMessage(error)}`, 'error')
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [showToast, t])
-
-  const update = (patch: Partial<LogAgentConfig>) => setConfig((current) => (current ? { ...current, ...patch } : current))
-
-  const save = async () => {
-    if (!config) return
-    setSaving(true)
-    try {
-      const result = await api.updateLogAgentConfig(config)
-      setConfig(result.config)
-      showToast(t('logAgent.settings.saved'), 'success')
-    } catch (error) {
-      showToast(`${t('logAgent.settings.saveFailed')}: ${getErrorMessage(error)}`, 'error')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const keyOptions = useMemo(() => [
-    { value: '0', label: t('logAgent.settings.noKey') },
-    ...gatewayKeys.map((key) => ({
-      value: String(key.id),
-      label: key.status === 'active'
-        ? `${key.name || key.masked} · ${key.masked}`
-        : `${key.name || key.masked} · ${t(`logAgent.settings.keyStatus.${key.status === 'expired' ? 'expired' : 'quotaExhausted'}`)}`,
-    })),
-  ], [gatewayKeys, t])
-  const modelOptions = useMemo(() => {
-    const ids = config?.model && !models.includes(config.model) ? [config.model, ...models] : models
-    return [{ value: '', label: t('logAgent.settings.modelPlaceholder') }, ...ids.map((id) => ({ value: id, label: id }))]
-  }, [config?.model, models, t])
-
-  return (
-    <SettingsCard
-      title={t('logAgent.settings.title')}
-      description={t('logAgent.settings.description')}
-      icon={<Brain className="size-4" />}
-      channels={ALL_UPSTREAM_CHANNELS}
-      footer={
-        <div className="flex justify-end">
-          <Button onClick={() => void save()} disabled={!config || saving}>
-            {saving ? <RefreshCw className="size-3.5 animate-spin" /> : null}
-            {t('common.save')}
-          </Button>
-        </div>
-      }
-    >
-      {config ? (
-        <div className="space-y-4">
-          <div className={SETTINGS_SWITCH_ROW}>
-            <SettingField label={t('logAgent.settings.enabled')} description={t('logAgent.settings.enabledDesc')} layout="switch">
-              <Switch checked={config.enabled} onCheckedChange={(checked) => update({ enabled: checked })} />
-            </SettingField>
-          </div>
-          <div className={SETTINGS_FIELD_GRID}>
-            <SettingField label={t('logAgent.settings.apiKey')} description={t('logAgent.settings.apiKeyDesc')}>
-              <Select
-                value={String(config.api_key_id || 0)}
-                onValueChange={(value) => update({ api_key_id: Number(value) || 0 })}
-                options={keyOptions}
-              />
-            </SettingField>
-            <SettingField label={t('logAgent.settings.model')} description={t('logAgent.settings.modelDesc')}>
-              <Select
-                value={config.model}
-                onValueChange={(value) => update({ model: value })}
-                options={modelOptions}
-                placeholder={t('logAgent.settings.modelPlaceholder')}
-              />
-            </SettingField>
-          </div>
-          <div className={SETTINGS_FIELD_GRID}>
-            <SettingField label={t('logAgent.settings.maxInput')} description={t('logAgent.settings.maxInputDesc')} suffix="KB">
-              <DraftNumberInput
-                min={Math.round((limits?.min_max_input_bytes ?? 4096) / 1024)}
-                max={Math.round((limits?.max_max_input_bytes ?? 524288) / 1024)}
-                value={Math.round(config.max_input_bytes / 1024)}
-                onValueChange={(value) => update({ max_input_bytes: value * 1024 })}
-              />
-            </SettingField>
-            <SettingField label={t('logAgent.settings.maxRecords')} description={t('logAgent.settings.maxRecordsDesc')}>
-              <DraftNumberInput
-                min={1}
-                max={limits?.max_max_records ?? 1000}
-                value={config.max_records}
-                onValueChange={(value) => update({ max_records: value })}
-              />
-            </SettingField>
-            <SettingField label={t('logAgent.settings.timeout')} description={t('logAgent.settings.timeoutDesc')} suffix="s">
-              <DraftNumberInput
-                min={limits?.min_timeout_seconds ?? 10}
-                max={limits?.max_timeout_seconds ?? 300}
-                value={config.timeout_seconds}
-                onValueChange={(value) => update({ timeout_seconds: value })}
-              />
-            </SettingField>
-            <SettingField label={t('logAgent.settings.retention')} description={t('logAgent.settings.retentionDesc')}>
-              <DraftNumberInput
-                min={1}
-                max={limits?.max_retention_days ?? 365}
-                value={config.retention_days}
-                onValueChange={(value) => update({ retention_days: value })}
-              />
-            </SettingField>
-          </div>
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">{t('common.loading')}</p>
-      )}
-    </SettingsCard>
-  )
-}
-
 // 页头保存状态：自动保存进行中 > 手动字段未保存 > 自动保存失败 > 已保存。
 function SaveStatusPill({
   autoSaveStatus,
@@ -2661,16 +2704,7 @@ export default function Settings() {
       ...cacheNormalized,
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
-      codex_web_search_proxy_location: cacheNormalized.codex_web_search_proxy_location ?? false,
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
-      codex_turn_state_strict: cacheNormalized.codex_turn_state_strict ?? false,
-      codex_session_no_borrow_enabled: cacheNormalized.codex_session_no_borrow_enabled ?? false,
-      codex_session_no_borrow_hold_seconds: cacheNormalized.codex_session_no_borrow_hold_seconds ?? 20,
-      codex_initial_session_admission_enabled: cacheNormalized.codex_initial_session_admission_enabled ?? false,
-      codex_initial_session_max_age_seconds: cacheNormalized.codex_initial_session_max_age_seconds ?? 180,
-      codex_session_auto_lock_enabled: cacheNormalized.codex_session_auto_lock_enabled ?? false,
-      codex_session_auto_lock_threshold: cacheNormalized.codex_session_auto_lock_threshold ?? 3,
-      codex_turn_state_vault_enabled: cacheNormalized.codex_turn_state_vault_enabled ?? true,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
       models_list_read_max_bytes:
@@ -2724,7 +2758,6 @@ export default function Settings() {
     auto_activate_5h_window_enabled: false,
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
-    codex_web_search_proxy_location: false,
     codex_telemetry_timing_debug: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
@@ -2756,14 +2789,6 @@ export default function Settings() {
     session_affinity_spread: false,
     session_slot_buffer_enabled: false,
     session_slot_buffer_seconds: 10,
-    codex_turn_state_strict: false,
-    codex_session_no_borrow_enabled: false,
-    codex_session_no_borrow_hold_seconds: 20,
-    codex_initial_session_admission_enabled: false,
-    codex_initial_session_max_age_seconds: 180,
-    codex_session_auto_lock_enabled: false,
-    codex_session_auto_lock_threshold: 3,
-    codex_turn_state_vault_enabled: true,
     grok_affinity_mode: 'strict',
     grok_probe_enabled: false,
     grok_probe_interval_minutes: 30,
@@ -2842,7 +2867,6 @@ export default function Settings() {
     codex_cli_version_sync_interval_hours: 12,
     codex_user_agent_config: '{}',
     usage_log_mode: 'full',
-    usage_metering_enabled: true,
     usage_log_batch_size: 200,
     usage_log_flush_interval_seconds: 5,
     stream_flush_policy: 'immediate',
@@ -4919,15 +4943,6 @@ export default function Settings() {
                       />
                     </SettingField>
                     <SettingField
-                      label={t('settings.codexWebSearchProxyLocation')}
-                      description={t('settings.codexWebSearchProxyLocationDesc')}
-                    >
-                      <Switch
-                        checked={settingsForm.codex_web_search_proxy_location}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_web_search_proxy_location', checked)}
-                      />
-                    </SettingField>
-                    <SettingField
                       label={t('settings.codexTelemetryTiming')}
                       description={t('settings.codexTelemetryTimingDesc')}
                       layout="row"
@@ -5913,12 +5928,6 @@ export default function Settings() {
               <SettingsCard title={t('settings.visibleChannelsTitle')} description={t('settings.visibleChannelsDesc')} icon={<Eye className="size-4" />}>
                 <VisibleChannelsPicker />
               </SettingsCard>
-              <SettingsCard title={t('settings.transfer.title')} description={t('settings.transfer.description')} icon={<Download className="size-4" />} channels={ALL_UPSTREAM_CHANNELS}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <SettingsTransfer disabled={savingSettings || autoSaveStatus === 'saving' || dirtyCount > 0} />
-                </div>
-                <p className="mt-3 text-xs text-muted-foreground">{t('settings.transfer.scope')}</p>
-              </SettingsCard>
               </SettingsSection>
 
               <SettingsSection id="settings-traffic" title={t('settings.nav.traffic')} description={t('settings.nav.trafficDesc')} icon={<Gauge className="size-4" />}>
@@ -6330,81 +6339,6 @@ export default function Settings() {
                         onValueCommit={(value) => void autoSaveSettingsPatch({ session_slot_buffer_seconds: value })}
                       />
                     </SettingField>
-                    <SettingField label={t('settings.codexTurnStateStrict')} description={t('settings.codexTurnStateStrictDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
-                      <Switch
-                        checked={settingsForm.codex_turn_state_strict}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_turn_state_strict', checked)}
-                      />
-                    </SettingField>
-                    <SettingField label={t('settings.codexSessionNoBorrow')} description={t('settings.codexSessionNoBorrowDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
-                      <Switch
-                        checked={settingsForm.codex_session_no_borrow_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_session_no_borrow_enabled', checked)}
-                      />
-                    </SettingField>
-                    <SettingField
-                      label={t('settings.codexSessionNoBorrowHoldSeconds')}
-                      description={t('settings.codexSessionNoBorrowHoldSecondsDesc')}
-                      className={cn(!settingsForm.codex_session_no_borrow_enabled && 'opacity-60')}
-                      channels={CHANNELS_CODEX_ONLY}
-                    >
-                      <DraftNumberInput
-                        min={1}
-                        max={30}
-                        disabled={!settingsForm.codex_session_no_borrow_enabled}
-                        value={settingsForm.codex_session_no_borrow_hold_seconds ?? 20}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_session_no_borrow_hold_seconds: value }))}
-                        onValueCommit={(value) => void autoSaveSettingsPatch({ codex_session_no_borrow_hold_seconds: value })}
-                      />
-                    </SettingField>
-                    <SettingField label={t('settings.codexInitialSessionAdmission')} description={t('settings.codexInitialSessionAdmissionDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
-                      <Switch
-                        checked={settingsForm.codex_initial_session_admission_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_initial_session_admission_enabled', checked)}
-                      />
-                    </SettingField>
-                    <SettingField
-                      label={t('settings.codexInitialSessionMaxAge')}
-                      description={t('settings.codexInitialSessionMaxAgeDesc')}
-                      className={cn(!settingsForm.codex_initial_session_admission_enabled && 'opacity-60')}
-                      channels={CHANNELS_CODEX_ONLY}
-                    >
-                      <DraftNumberInput
-                        min={1}
-                        max={86400}
-                        disabled={!settingsForm.codex_initial_session_admission_enabled}
-                        value={settingsForm.codex_initial_session_max_age_seconds ?? 180}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_initial_session_max_age_seconds: value }))}
-                        onValueCommit={(value) => void autoSaveSettingsPatch({ codex_initial_session_max_age_seconds: value })}
-                      />
-                    </SettingField>
-                    <SettingField label={t('settings.codexSessionAutoLock')} description={t('settings.codexSessionAutoLockDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
-                      <Switch
-                        checked={settingsForm.codex_session_auto_lock_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_session_auto_lock_enabled', checked)}
-                      />
-                    </SettingField>
-                    <SettingField
-                      label={t('settings.codexSessionAutoLockThreshold')}
-                      description={t('settings.codexSessionAutoLockThresholdDesc')}
-                      className={cn(!settingsForm.codex_session_auto_lock_enabled && 'opacity-60')}
-                      channels={CHANNELS_CODEX_ONLY}
-                    >
-                      <DraftNumberInput
-                        min={1}
-                        max={10000}
-                        disabled={!settingsForm.codex_session_auto_lock_enabled}
-                        value={settingsForm.codex_session_auto_lock_threshold ?? 3}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_session_auto_lock_threshold: value }))}
-                        onValueCommit={(value) => void autoSaveSettingsPatch({ codex_session_auto_lock_threshold: value })}
-                      />
-                    </SettingField>
-                    <SettingField label={t('settings.codexTurnStateVault')} description={t('settings.codexTurnStateVaultDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>
-                      <Switch
-                        checked={settingsForm.codex_turn_state_vault_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_turn_state_vault_enabled', checked)}
-                      />
-                    </SettingField>
                   </div>
                 </div>
               </SettingsCard>
@@ -6413,14 +6347,6 @@ export default function Settings() {
               <SettingsSection id="settings-runtime" title={t('settings.nav.runtime')} description={t('settings.nav.runtimeDesc')} icon={<Wrench className="size-4" />}>
               <SettingsCard title={t('settings.runtimeOptimization')} description={t('settings.runtimeOptimizationDesc')} icon={<Wrench className="size-4" />} channels={ALL_UPSTREAM_CHANNELS}>
                 <div className="space-y-4">
-                  <div className={SETTINGS_SWITCH_ROW}>
-                    <SettingField label={t('settings.usageMeteringEnabled')} description={t('settings.usageMeteringEnabledDesc')} layout="switch">
-                      <Switch
-                        checked={settingsForm.usage_metering_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('usage_metering_enabled', checked)}
-                      />
-                    </SettingField>
-                  </div>
                   <div className={SETTINGS_FIELD_GRID_3}>
                     <SettingField label={t('settings.usageLogMode')} description={t('settings.usageLogModeDesc')}>
                       <Select
@@ -6634,7 +6560,6 @@ export default function Settings() {
                   </div>
                 </div>
               </SettingsCard>
-              <LogAgentSettingsCard models={visibleModelItems.filter((model) => model.enabled).map((model) => model.id)} />
               </SettingsSection>
 
               <SettingsSection id="settings-storage" title={t('settings.nav.storage')} description={t('settings.nav.storageDesc')} icon={<ImageIcon className="size-4" />}>

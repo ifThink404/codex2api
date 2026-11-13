@@ -72,18 +72,6 @@ type RuntimeSettings struct {
 	CodexTelemetryEnabled bool
 	// CodexTelemetryTimingDebug 打开模拟遥测的临时计时探针（仅打日志，默认关闭）。
 	CodexTelemetryTimingDebug bool
-	// CodexTurnStateStrict 来源未知的 X-Codex-Turn-State 回带也剥离，并让上游 WS 按帧携带 token。
-	CodexTurnStateStrict bool
-	// CodexInitialSessionAdmissionEnabled 无绑定的 Codex 会话按 UUIDv7 年龄准入。
-	CodexInitialSessionAdmissionEnabled bool
-	// CodexInitialSessionMaxAgeSeconds 首次会话 ID 允许的最大年龄（秒），1..86400，默认 180。
-	CodexInitialSessionMaxAgeSeconds int
-	// CodexSessionAutoLockEnabled 同一会话连续最终 500 达阈值后自动锁定（默认关）。
-	CodexSessionAutoLockEnabled bool
-	// CodexSessionAutoLockThreshold 连续 500 次数阈值，1..10000，默认 3。
-	CodexSessionAutoLockThreshold int
-	// CodexTurnStateVaultEnabled 真实 X-Codex-Turn-State 留在网关，客户端只拿替身（默认开）。
-	CodexTurnStateVaultEnabled bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -131,11 +119,11 @@ type RuntimeSettings struct {
 	// 改写为 /responses + compaction_trigger 的 body-signal 形态并聚合为一次性 JSON
 	// （上游已下线专用 compact 端点，默认 false）。中转账号不受影响。
 	CompactViaResponses bool
-	// CodexPreflightSSEPassthrough retains the legacy persisted/API name
-	// (codex_preflight_sse_passthrough_enabled, issue #425). It now reports loose
-	// upstream timing in response headers at normal commit only; it never enables
-	// early metadata passthrough, so pre-first-token upstream failures keep their
-	// real status code, silent account rotation and overflow compaction retry.
+	// CodexPreflightSSEPassthrough 将前置元数据事件（codex.rate_limits /
+	// codex.response.metadata / response.metadata）立即透传下游而不缓冲到首个内容
+	// 事件（旧版兼容，默认 false，issue #425）。开启后首内容前会提前提交 200，
+	// 该窗口内的 response.failed 只能以 SSE failed 帧下发，真实错误码/静默换号/
+	// 超窗压缩重试均不可用。
 	CodexPreflightSSEPassthrough bool
 	// FirstTokenExcludesWsAcquire 落库的 first_token_ms 是否扣除本次 attempt 的
 	// WS 取连耗时（默认 false，保持含取连的原口径；原始值 = first_token_ms + ws_acquire_ms）。
@@ -190,42 +178,36 @@ func init() {
 
 func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
-		ClientCompatMode:                    defaultClientCompatMode,
-		CodexMinCLIVersion:                  defaultCodexMinCLIVersion,
-		CodexUserAgentConfig:                DefaultCodexUserAgentConfigJSON(),
-		CodexTelemetryEnabled:               false,
-		CodexTelemetryTimingDebug:           false,
-		CodexTurnStateStrict:                false,
-		CodexInitialSessionAdmissionEnabled: false,
-		CodexInitialSessionMaxAgeSeconds:    180,
-		CodexSessionAutoLockEnabled:         false,
-		CodexSessionAutoLockThreshold:       3,
-		CodexTurnStateVaultEnabled:          true,
-		StreamFlushPolicy:                   defaultStreamFlushPolicy,
-		StreamFlushIntervalMS:               defaultStreamFlushIntervalMS,
-		FirstTokenMode:                      defaultFirstTokenMode,
-		FirstTokenTimeoutSec:                defaultFirstTokenTimeoutSec,
-		BillingTierPolicy:                   defaultBillingTierPolicy,
-		ModelsListReadMaxBytes:              database.DefaultModelsListReadMaxBytes,
-		CodexRequestCompression:             defaultCodexRequestCompression,
-		CodexWSHideErrors:                   defaultCodexWSHideErrors,
-		CodexWSSilentRetry:                  defaultCodexWSSilentRetry,
-		CodexWSSilentRetries:                defaultCodexWSSilentRetries,
-		ContinuousRetryPolicy:               database.DefaultContinuousRetryPolicy(),
-		CodexWSSizeRouter:                   defaultCodexWSSizeRouter,
-		CodexWSBusyMaxWaitSec:               defaultCodexWSBusyMaxWaitSec,
-		CodexWSBusyPatienceSec:              defaultCodexWSBusyPatienceSec,
-		CodexWSStatelessSlots:               defaultCodexWSStatelessSlots,
-		CodexWSDownstreamKeepaliveSlots:     database.DefaultCodexWSDownstreamKeepaliveSlots,
-		CodexOverloadThresholdPercent:       database.NormalizeCodexOverloadThresholdPercent(0),
-		CodexOverloadPauseMinutes:           database.NormalizeCodexOverloadPauseMinutes(0),
-		CodexOverloadWindowMinutes:          database.NormalizeCodexOverloadWindowMinutes(0),
-		CodexContinueMaxRounds:              defaultCodexContinueMaxRounds,
-		RequestIsolationMode:                defaultRequestIsolationMode(),
-		CodexCLIVersionSyncEnabled:          true,
-		CodexCLIVersionSyncIntervalHours:    12,
-		AutoResetCreditsBeforeExpiryMin:     60,
-		UTLSShutdownTimeoutMin:              database.NormalizeUTLSShutdownTimeoutMinutes(0),
+		ClientCompatMode:                 defaultClientCompatMode,
+		CodexMinCLIVersion:               defaultCodexMinCLIVersion,
+		CodexUserAgentConfig:             DefaultCodexUserAgentConfigJSON(),
+		CodexTelemetryEnabled:            false,
+		CodexTelemetryTimingDebug:        false,
+		StreamFlushPolicy:                defaultStreamFlushPolicy,
+		StreamFlushIntervalMS:            defaultStreamFlushIntervalMS,
+		FirstTokenMode:                   defaultFirstTokenMode,
+		FirstTokenTimeoutSec:             defaultFirstTokenTimeoutSec,
+		BillingTierPolicy:                defaultBillingTierPolicy,
+		ModelsListReadMaxBytes:           database.DefaultModelsListReadMaxBytes,
+		CodexRequestCompression:          defaultCodexRequestCompression,
+		CodexWSHideErrors:                defaultCodexWSHideErrors,
+		CodexWSSilentRetry:               defaultCodexWSSilentRetry,
+		CodexWSSilentRetries:             defaultCodexWSSilentRetries,
+		ContinuousRetryPolicy:            database.DefaultContinuousRetryPolicy(),
+		CodexWSSizeRouter:                defaultCodexWSSizeRouter,
+		CodexWSBusyMaxWaitSec:            defaultCodexWSBusyMaxWaitSec,
+		CodexWSBusyPatienceSec:           defaultCodexWSBusyPatienceSec,
+		CodexWSStatelessSlots:            defaultCodexWSStatelessSlots,
+		CodexWSDownstreamKeepaliveSlots:  database.DefaultCodexWSDownstreamKeepaliveSlots,
+		CodexOverloadThresholdPercent:    database.NormalizeCodexOverloadThresholdPercent(0),
+		CodexOverloadPauseMinutes:        database.NormalizeCodexOverloadPauseMinutes(0),
+		CodexOverloadWindowMinutes:       database.NormalizeCodexOverloadWindowMinutes(0),
+		CodexContinueMaxRounds:           defaultCodexContinueMaxRounds,
+		RequestIsolationMode:             defaultRequestIsolationMode(),
+		CodexCLIVersionSyncEnabled:       true,
+		CodexCLIVersionSyncIntervalHours: 12,
+		AutoResetCreditsBeforeExpiryMin:  60,
+		UTLSShutdownTimeoutMin:           database.NormalizeUTLSShutdownTimeoutMinutes(0),
 	}
 }
 
@@ -288,8 +270,6 @@ func NormalizeBillingTierPolicy(policy string) string {
 }
 
 func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
-	settings.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)
-	settings.CodexSessionAutoLockThreshold = database.NormalizeSessionAutoLockThreshold(settings.CodexSessionAutoLockThreshold)
 	defaults := DefaultRuntimeSettings()
 	settings.ClientCompatMode = NormalizeClientCompatMode(settings.ClientCompatMode)
 	settings.StreamFlushPolicy = NormalizeStreamFlushPolicy(settings.StreamFlushPolicy)
@@ -371,12 +351,6 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexUserAgentConfig = settings.CodexUserAgentConfig
 		next.CodexTelemetryEnabled = settings.CodexTelemetryEnabled
 		next.CodexTelemetryTimingDebug = settings.CodexTelemetryTimingDebug
-		next.CodexTurnStateStrict = settings.CodexTurnStateStrict
-		next.CodexInitialSessionAdmissionEnabled = settings.CodexInitialSessionAdmissionEnabled
-		next.CodexInitialSessionMaxAgeSeconds = database.NormalizeCodexInitialSessionMaxAgeSeconds(settings.CodexInitialSessionMaxAgeSeconds)
-		next.CodexSessionAutoLockEnabled = settings.CodexSessionAutoLockEnabled
-		next.CodexSessionAutoLockThreshold = database.NormalizeSessionAutoLockThreshold(settings.CodexSessionAutoLockThreshold)
-		next.CodexTurnStateVaultEnabled = settings.CodexTurnStateVaultEnabled
 		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS

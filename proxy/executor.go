@@ -572,8 +572,6 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
-	// Web search 位置跟随实际出站代理（默认关闭）；WS/HTTP 共用同一出站代理口径。
-	requestBody = ApplyCodexWebSearchLocation(requestBody, account, codexOutboundProxyURL(account, proxyOverride))
 	// Codex multi-agent v2 兼容层：仅在调用方显式安装状态、部署方开启开关、
 	// 且下游确实是 Codex 客户端时改写 collaboration 工具 schema。冲突、无效
 	// JSON 或结构超限的请求保持原生路径，绝不猜测任务正文。
@@ -640,8 +638,6 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	}
 	if wantWebsocket && WebsocketExecuteFunc != nil {
 		requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, true, responsesLite)
-		// strict 模式：turn-state 只放当前帧，不固化到逐连接冻结的握手头里。
-		requestBody, headers = projectCodexTurnStateForWebsocket(requestBody, headers)
 		if responsesLite {
 			requestBody = normalizeCodexResponsesLiteBody(requestBody, false)
 		}
@@ -1175,7 +1171,6 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
-	requestBody = ApplyCodexWebSearchLocation(requestBody, account, proxyURL)
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
 	if sessionID != "" {
@@ -1247,45 +1242,15 @@ func shouldGenerateCodexClientHeaders(settings RuntimeSettings, userAgent, origi
 	}
 }
 
-// applyCodexAllowedForwardHeaders 是 HTTP 出站头白名单透传的收口（官方与中转两条路
-// 都走它，Live 亦然），也是 turn-state 替身在 HTTP 上的最后一道闸：网关自造的
-// `c2a-ts-v1.…` 是一枚唯一、稳定、可直接归因到本网关的标记，送到任何上游都等于自曝身份。
-// 官方路径出站前已经在 applyCodexTurnStateEchoPolicy 里把替身换回了真实 token，所以这里
-// 只会命中换不回来的：HTTP 中转分支在策略之前就返回了，混合账号池里失败切换/重绑到中转
-// 账号的那一轮，客户端手上的替身会原样走到这里。真实 token 不受影响，中转仍保持第一轮
-// 的透传语义。
-//
-// 注意这不是唯一的出站装配点：上游 WS 握手头由
-// wsrelay.Executor.prepareWebsocketHeaders 自己拼（它有自己的白名单循环），那里用同一对
-// proxy.IsCodexTurnStateSubstitute / proxy.NoteCodexTurnStateSubstituteDropped 做了同样
-// 的拦截。新增任何出站头装配点都要一并加这道闸。
 func applyCodexAllowedForwardHeaders(req *http.Request, downstreamHeaders http.Header) {
 	if req == nil || downstreamHeaders == nil {
 		return
 	}
 	for _, name := range codexAllowedForwardHeaders {
-		value := strings.TrimSpace(downstreamHeaders.Get(name))
-		if value == "" {
-			continue
+		if value := strings.TrimSpace(downstreamHeaders.Get(name)); value != "" {
+			req.Header.Set(name, value)
 		}
-		if strings.EqualFold(name, codexTurnStateHeader) && IsCodexTurnStateSubstitute(value) {
-			req.Header.Del(name)
-			NoteCodexTurnStateSubstituteDropped()
-			log.Printf("[TURN-STATE] substitute dropped before upstream host=%s", upstreamHostForLog(req))
-			continue
-		}
-		req.Header.Set(name, value)
 	}
-}
-
-func upstreamHostForLog(req *http.Request) string {
-	if req == nil {
-		return ""
-	}
-	if req.URL != nil && req.URL.Host != "" {
-		return req.URL.Host
-	}
-	return req.Host
 }
 
 func applyAccountCustomHeaders(req *http.Request, account *auth.Account) {

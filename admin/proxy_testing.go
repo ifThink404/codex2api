@@ -14,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -27,8 +26,7 @@ const (
 	proxyBatchTestMaxIDs      = 100
 	proxyBatchTestMaxBody     = 64 << 10
 	proxyProbeMaxBody         = 1 << 20
-	proxyProbeIPAPIFields     = "status,message,country,countryCode,regionName,city,isp,query,timezone"
-	proxyProbeTimezoneMaxLen  = 64
+	proxyProbeIPAPIFields     = "status,message,country,regionName,city,isp,query"
 )
 
 var (
@@ -42,16 +40,13 @@ type proxyProbeResult struct {
 	Success    bool   `json:"success"`
 	Conclusive bool   `json:"conclusive"`
 	IP         string `json:"ip,omitempty"`
-	// CountryCode is the ISO alpha-2 code; unlike Country it is never localized.
-	CountryCode string `json:"country_code,omitempty"`
-	Country     string `json:"country,omitempty"`
-	Region      string `json:"region,omitempty"`
-	City        string `json:"city,omitempty"`
-	ISP         string `json:"isp,omitempty"`
-	LatencyMs   int    `json:"latency_ms,omitempty"`
-	Location    string `json:"location,omitempty"`
-	Timezone    string `json:"timezone,omitempty"`
-	Error       string `json:"error,omitempty"`
+	Country    string `json:"country,omitempty"`
+	Region     string `json:"region,omitempty"`
+	City       string `json:"city,omitempty"`
+	ISP        string `json:"isp,omitempty"`
+	LatencyMs  int    `json:"latency_ms,omitempty"`
+	Location   string `json:"location,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 type proxyProbeConnectionState struct {
@@ -128,7 +123,6 @@ func probeProxyWithTimeout(
 	if lang == "" {
 		lang = "en"
 	}
-	preferIPv6Target := proxyProbeUsesIPv6Endpoint(proxyURL)
 
 	client := &http.Client{Transport: transport, Timeout: clientTimeout}
 	var gotTransportConnection atomic.Bool
@@ -139,19 +133,16 @@ func probeProxyWithTimeout(
 			GotTransportConnection:    gotTransportConnection.Load(),
 		}
 	}
-	primary := proxyProbeResult{}
-	if !preferIPv6Target {
-		primary = doProxyProbeRequest(
-			ctx,
-			client,
-			&gotTransportConnection,
-			proxyScheme,
-			connectionState,
-			proxyProbeIPv4URLFn(lang),
-			parseIPAPIProbeBody,
-		)
-	}
-	if primary.Success || ctx.Err() != nil || (!preferIPv6Target && !shouldFallbackToIPv6Probe(primary)) {
+	primary := doProxyProbeRequest(
+		ctx,
+		client,
+		&gotTransportConnection,
+		proxyScheme,
+		connectionState,
+		proxyProbeIPv4URLFn(lang),
+		parseIPAPIProbeBody,
+	)
+	if primary.Success || ctx.Err() != nil || !shouldFallbackToIPv6Probe(primary) {
 		return primary
 	}
 
@@ -174,44 +165,19 @@ func probeProxyWithTimeout(
 		}
 	}
 	if !ipv6Result.Success {
-		if preferIPv6Target {
-			// Keep the concrete transport/authentication error for an IPv6
-			// endpoint. Replacing it with a generic fallback message hides the
-			// difference between an unreachable host, a blocked target, and a
-			// missing SOCKS credential.
-			primary = ipv6Result
-			if primary.Error == "" {
-				primary.Error = "IPv6 检测目标都不可达"
-			} else {
-				primary.Error = "IPv6 检测失败: " + primary.Error
-			}
-		} else if primary.Error != "" {
+		if primary.Error != "" {
 			primary.Error += "；IPv4/IPv6 检测目标都不可达"
 		}
 		return primary
 	}
 
-	country, region, city, isp, code := proxyProbeLookupGeoFn(ctx, ipv6Result.IP, lang)
-	ipv6Result.CountryCode = code
+	country, region, city, isp := proxyProbeLookupGeoFn(ctx, ipv6Result.IP, lang)
 	ipv6Result.Country = country
 	ipv6Result.Region = region
 	ipv6Result.City = city
 	ipv6Result.ISP = isp
 	ipv6Result.Location = joinProxyProbeLocation(country, region, city)
 	return ipv6Result
-}
-
-// proxyProbeUsesIPv6Endpoint detects an IPv6 proxy endpoint. Dante instances
-// bound to an IPv6-only external address cannot connect to ip-api.com's IPv4
-// service, so probing them must start with an IPv6 echo service instead of
-// manufacturing a failed IPv4 attempt and then hiding the useful result.
-func proxyProbeUsesIPv6Endpoint(proxyURL string) bool {
-	u, err := url.Parse(strings.TrimSpace(proxyURL))
-	if err != nil {
-		return false
-	}
-	host := net.ParseIP(u.Hostname())
-	return host != nil && host.To4() == nil
 }
 
 func defaultProxyProbeIPv4URL(lang string) string {
@@ -319,33 +285,18 @@ func parseIPAPIProbeBody(body []byte, latencyMs int) proxyProbeResult {
 			Error:     "代理检测服务响应缺少有效的出口 IP",
 		}
 	}
-	country, region, city, isp, code := parseIPAPIGeoFields(result)
+	country, region, city, isp := parseIPAPIGeoFields(result)
 	return proxyProbeResult{
-		Success:     true,
-		Conclusive:  true,
-		IP:          ip,
-		CountryCode: code,
-		Country:     country,
-		Region:      region,
-		City:        city,
-		ISP:         isp,
-		LatencyMs:   latencyMs,
-		Location:    joinProxyProbeLocation(country, region, city),
-		Timezone:    validProxyProbeTimezone(result.Get("timezone").String()),
+		Success:    true,
+		Conclusive: true,
+		IP:         ip,
+		Country:    country,
+		Region:     region,
+		City:       city,
+		ISP:        isp,
+		LatencyMs:  latencyMs,
+		Location:   joinProxyProbeLocation(country, region, city),
 	}
-}
-
-// validProxyProbeTimezone 仅接受 time.LoadLocation 能加载、且不超过
-// proxyProbeTimezoneMaxLen 个字符的 IANA 时区名，否则返回空字符串。
-func validProxyProbeTimezone(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || utf8.RuneCountInString(raw) > proxyProbeTimezoneMaxLen {
-		return ""
-	}
-	if _, err := time.LoadLocation(raw); err != nil {
-		return ""
-	}
-	return raw
 }
 
 func parseProxyProbeEchoBody(body []byte, latencyMs int) proxyProbeResult {
@@ -390,33 +341,18 @@ func parseProxyProbeExitIP(body []byte) (string, error) {
 	return "", errors.New("missing exit ip")
 }
 
-func parseIPAPIGeoFields(result gjson.Result) (country, region, city, isp, code string) {
+func parseIPAPIGeoFields(result gjson.Result) (country, region, city, isp string) {
 	return boundedProxyProbeField(result.Get("country").String(), 80),
 		boundedProxyProbeField(result.Get("regionName").String(), 80),
 		boundedProxyProbeField(result.Get("city").String(), 80),
-		boundedProxyProbeField(result.Get("isp").String(), 160),
-		database.NormalizeProxyCountryCode(result.Get("countryCode").String())
+		boundedProxyProbeField(result.Get("isp").String(), 160)
 }
 
-func parseIPWhoisGeoFields(result gjson.Result) (country, region, city, isp, code string) {
+func parseIPWhoisGeoFields(result gjson.Result) (country, region, city, isp string) {
 	return boundedProxyProbeField(result.Get("country").String(), 80),
 		boundedProxyProbeField(result.Get("region").String(), 80),
 		boundedProxyProbeField(result.Get("city").String(), 80),
-		boundedProxyProbeField(result.Get("connection.isp").String(), 160),
-		database.NormalizeProxyCountryCode(result.Get("country_code").String())
-}
-
-// proxyProbeGeoForStorage returns the structured location persisted for web
-// search. The display location follows the admin UI language; region and city
-// names are stored only from an English probe so user_location never carries
-// localized names. The country code is language-independent.
-func proxyProbeGeoForStorage(result proxyProbeResult, lang string) database.ProxyTestGeo {
-	geo := database.ProxyTestGeo{CountryCode: result.CountryCode}
-	lang = strings.ToLower(boundedProxyProbeField(lang, 16))
-	if lang == "" || lang == "en" {
-		geo.Region, geo.City = result.Region, result.City
-	}
-	return geo
+		boundedProxyProbeField(result.Get("connection.isp").String(), 160)
 }
 
 func joinProxyProbeLocation(country, region, city string) string {
@@ -461,17 +397,17 @@ func proxyProbeErrorLooksLikeTargetUnreachable(message string) bool {
 	return false
 }
 
-func lookupProxyExitGeo(ctx context.Context, ip, lang string) (country, region, city, isp, code string) {
+func lookupProxyExitGeo(ctx context.Context, ip, lang string) (country, region, city, isp string) {
 	if net.ParseIP(ip) == nil {
-		return "", "", "", "", ""
+		return "", "", "", ""
 	}
-	if country, region, city, isp, code, ok := fetchIPAPIGeo(ctx, ip, lang); ok {
-		return country, region, city, isp, code
+	if country, region, city, isp, ok := fetchIPAPIGeo(ctx, ip, lang); ok {
+		return country, region, city, isp
 	}
 	return fetchIPWhoisGeo(ctx, ip)
 }
 
-func fetchIPAPIGeo(ctx context.Context, ip, lang string) (country, region, city, isp, code string, ok bool) {
+func fetchIPAPIGeo(ctx context.Context, ip, lang string) (country, region, city, isp string, ok bool) {
 	probeURL := fmt.Sprintf(
 		"http://ip-api.com/json/%s?lang=%s&fields=%s",
 		url.PathEscape(ip),
@@ -480,25 +416,25 @@ func fetchIPAPIGeo(ctx context.Context, ip, lang string) (country, region, city,
 	)
 	body, err := fetchProxyProbeGeoBody(ctx, probeURL)
 	if err != nil || !gjson.ValidBytes(body) {
-		return "", "", "", "", "", false
+		return "", "", "", "", false
 	}
 	result := gjson.ParseBytes(body)
 	if result.Get("status").String() != "success" {
-		return "", "", "", "", "", false
+		return "", "", "", "", false
 	}
-	country, region, city, isp, code = parseIPAPIGeoFields(result)
-	return country, region, city, isp, code, true
+	country, region, city, isp = parseIPAPIGeoFields(result)
+	return country, region, city, isp, true
 }
 
-func fetchIPWhoisGeo(ctx context.Context, ip string) (country, region, city, isp, code string) {
+func fetchIPWhoisGeo(ctx context.Context, ip string) (country, region, city, isp string) {
 	probeURL := "https://ipwho.is/" + url.PathEscape(ip)
 	body, err := fetchProxyProbeGeoBody(ctx, probeURL)
 	if err != nil || !gjson.ValidBytes(body) {
-		return "", "", "", "", ""
+		return "", "", "", ""
 	}
 	result := gjson.ParseBytes(body)
 	if !result.Get("success").Bool() {
-		return "", "", "", "", ""
+		return "", "", "", ""
 	}
 	return parseIPWhoisGeoFields(result)
 }
@@ -577,7 +513,7 @@ func proxyProbeErrorIsConclusive(
 	return true
 }
 
-func (h *Handler) saveProxyTestResult(ctx context.Context, id int64, expectedURL string, result proxyProbeResult, lang string) error {
+func (h *Handler) saveProxyTestResult(ctx context.Context, id int64, expectedURL string, result proxyProbeResult) error {
 	if id <= 0 || !result.Conclusive {
 		return nil
 	}
@@ -587,16 +523,14 @@ func (h *Handler) saveProxyTestResult(ctx context.Context, id int64, expectedURL
 	}
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	if err := h.db.UpdateProxyTestResultWithGeo(
+	if err := h.db.UpdateProxyTestResult(
 		saveCtx,
 		id,
 		expectedURL,
 		status,
 		result.IP,
 		result.Location,
-		result.Timezone,
 		result.LatencyMs,
-		proxyProbeGeoForStorage(result, lang),
 	); err != nil {
 		return err
 	}
@@ -734,7 +668,7 @@ func (h *Handler) TestAllProxies(c *gin.Context) {
 			for row := range jobs {
 				result := h.runProxyProbe(workCtx, row.URL, req.Lang)
 				if result.Conclusive {
-					if err := h.saveProxyTestResult(workCtx, row.ID, row.URL, result, req.Lang); err != nil {
+					if err := h.saveProxyTestResult(workCtx, row.ID, row.URL, result); err != nil {
 						if errors.Is(err, database.ErrProxyTestTargetChanged) {
 							result = proxyProbeResult{Error: "代理在测试期间已被修改，请重新测试"}
 						} else {

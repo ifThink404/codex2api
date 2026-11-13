@@ -65,7 +65,6 @@ func (b *wsPromptOutputBuffer) blocked() bool {
 		}
 	}
 	v := promptfilter.InspectText(content.String(), b.cfg)
-	v = promptfilter.ApplyLocalMode(v, b.cfg)
 	if b.cfg.Advanced.Output.StrictOnly {
 		return v.TerminalStrictHit
 	}

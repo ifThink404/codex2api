@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// 三列一次性加到四处 SELECT/Scan（ListActiveByChannel、getAccountByID、
+// egress_policy 加到四处 SELECT/Scan（ListActiveByChannel、getAccountByID、
 // ListDeleted、ListActiveByIDs）。列表与扫描目标只要错位一格，每次账号加载都会
 // 在运行期炸，所以这里把四条读路径全走一遍，而不是只验 GetAccountByID。
 func TestAccountPolicyColumnsRoundTrip(t *testing.T) {
@@ -29,7 +29,7 @@ func TestAccountPolicyColumnsRoundTrip(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("ListActive returned %d rows, want 1", len(rows))
 	}
-	if rows[0].PromptFilterPolicy != "inherit" || rows[0].EgressPolicy != "inherit" || rows[0].SessionGuardsPolicy != "inherit" {
+	if rows[0].EgressPolicy != "inherit" {
 		t.Fatalf("defaults must be inherit, got %+v", rows[0])
 	}
 
@@ -40,7 +40,7 @@ func TestAccountPolicyColumnsRoundTrip(t *testing.T) {
 	if len(projected) != 1 {
 		t.Fatalf("ListActiveByIDs returned %d rows, want 1", len(projected))
 	}
-	if projected[0].PromptFilterPolicy != "inherit" || projected[0].EgressPolicy != "inherit" || projected[0].SessionGuardsPolicy != "inherit" {
+	if projected[0].EgressPolicy != "inherit" {
 		t.Fatalf("projection defaults must be inherit, got %+v", projected[0])
 	}
 
@@ -48,11 +48,7 @@ func TestAccountPolicyColumnsRoundTrip(t *testing.T) {
 		OptionalNullInt64{}, OptionalNullInt64{}, OptionalBool{},
 		OptionalInt64Slice{}, OptionalStringSlice{}, OptionalInt64Slice{},
 		OptionalString{}, nil,
-		AccountPolicyUpdate{
-			PromptFilterPolicy:  OptionalString{Set: true, Value: "exempt"},
-			EgressPolicy:        OptionalString{Set: true, Value: "direct"},
-			SessionGuardsPolicy: OptionalString{Set: true, Value: "off"},
-		}); err != nil {
+		AccountPolicyUpdate{EgressPolicy: OptionalString{Set: true, Value: "direct"}}); err != nil {
 		t.Fatalf("UpdateAccountSchedulerMetadata: %v", err)
 	}
 
@@ -60,32 +56,13 @@ func TestAccountPolicyColumnsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccountByID: %v", err)
 	}
-	if row.PromptFilterPolicy != "exempt" || row.EgressPolicy != "direct" || row.SessionGuardsPolicy != "off" {
+	if row.EgressPolicy != "direct" {
 		t.Fatalf("policies not persisted: %+v", row)
-	}
-
-	// 未 Set 的字段不能被覆写回 inherit。
-	if err := db.UpdateAccountSchedulerMetadata(ctx, id,
-		OptionalNullInt64{}, OptionalNullInt64{}, OptionalBool{},
-		OptionalInt64Slice{}, OptionalStringSlice{}, OptionalInt64Slice{},
-		OptionalString{}, nil,
-		AccountPolicyUpdate{EgressPolicy: OptionalString{Set: true, Value: "inherit"}}); err != nil {
-		t.Fatalf("UpdateAccountSchedulerMetadata(partial): %v", err)
-	}
-	row, err = db.GetAccountByID(ctx, id)
-	if err != nil {
-		t.Fatalf("GetAccountByID after partial update: %v", err)
-	}
-	if row.PromptFilterPolicy != "exempt" || row.EgressPolicy != "inherit" || row.SessionGuardsPolicy != "off" {
-		t.Fatalf("partial update must only touch egress_policy: %+v", row)
 	}
 
 	// 批量写入走的是另一套 UPDATE 构造器，同样要落库。
 	if _, err := db.BatchUpdateAccountMetadata(ctx, []int64{id}, BatchAccountMetadataUpdate{
-		Policies: AccountPolicyUpdate{
-			PromptFilterPolicy:  OptionalString{Set: true, Value: "inherit"},
-			SessionGuardsPolicy: OptionalString{Set: true, Value: "off"},
-		},
+		Policies: AccountPolicyUpdate{EgressPolicy: OptionalString{Set: true, Value: "inherit"}},
 	}); err != nil {
 		t.Fatalf("BatchUpdateAccountMetadata: %v", err)
 	}
@@ -93,7 +70,7 @@ func TestAccountPolicyColumnsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccountByID after batch update: %v", err)
 	}
-	if row.PromptFilterPolicy != "inherit" || row.SessionGuardsPolicy != "off" {
+	if row.EgressPolicy != "inherit" {
 		t.Fatalf("batch update did not persist policies: %+v", row)
 	}
 
@@ -108,7 +85,7 @@ func TestAccountPolicyColumnsRoundTrip(t *testing.T) {
 	if len(deleted) != 1 {
 		t.Fatalf("ListDeleted returned %d rows, want 1", len(deleted))
 	}
-	if deleted[0].SessionGuardsPolicy != "off" || deleted[0].EgressPolicy != "inherit" {
+	if deleted[0].EgressPolicy != "inherit" {
 		t.Fatalf("recycle-bin row lost its policies: %+v", deleted[0])
 	}
 }

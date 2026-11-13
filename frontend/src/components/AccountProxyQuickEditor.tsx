@@ -10,7 +10,6 @@ import type { ProxyBindingContext } from "../lib/accountProxyBinding";
 import AccountProxyBadge from "./AccountProxyBadge";
 import Modal from "./Modal";
 import { ProxyPoolSelect } from "./ProxyPoolSelect";
-import { ProxyTimezoneHint } from "./ProxyTimezoneHint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -33,8 +32,6 @@ export interface ProxyQuickEditorAccount {
   id: number;
   proxy_url?: string | null;
   group_ids?: number[] | null;
-  /** 账号指纹时区;与所选池条目的出口时区不一致时给一键同步。 */
-  timezone?: string;
 }
 
 interface AccountProxyQuickEditorProps {
@@ -64,43 +61,17 @@ export default function AccountProxyQuickEditor({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [syncedId, setSyncedId] = useState<number | null>(null);
-  // 同步成功后 onSaved() 只刷新列表，account 这个快照不会跟着变，
-  // 不自己记一笔就会出现"已经同步过了，提示还挂着"。
-  const [syncedTimezone, setSyncedTimezone] = useState<string | null>(null);
 
   const accountID = account?.id ?? null;
   if (accountID !== syncedId) {
     setSyncedId(accountID);
     setValue((account?.proxy_url ?? "").trim());
-    setSyncedTimezone(null);
   }
 
   const busy = saving || testing;
   const trimmed = value.trim();
   const boundURL = (account?.proxy_url ?? "").trim();
   const dirty = trimmed !== boundURL;
-  // 比对的是账号"已绑定"的那条池条目，不是输入框里的草稿：同步按钮当场就 PATCH，
-  // 按草稿比会让"选了 B、同步、不保存直接关"把账号时区钉到一条没绑上的条目上。
-  // 与 ProxyField 同一套口径:trim 后精确匹配池条目,不做任何归一化。
-  const boundPoolEntry = boundURL
-    ? proxies.find((p) => p.url.trim() === boundURL)
-    : undefined;
-  const effectiveTimezone = syncedTimezone ?? account?.timezone;
-
-  const syncTimezone = async (timezone: string) => {
-    if (!account) return;
-    try {
-      await api.updateAccountScheduler(account.id, { timezone });
-      setSyncedTimezone(timezone);
-      showToast(t("accounts.proxyTimezoneSynced"));
-      await onSaved();
-    } catch (error) {
-      showToast(
-        t("accounts.proxyTimezoneSyncFailed", { error: getErrorMessage(error) }),
-        "error",
-      );
-    }
-  };
 
   const handleTest = async () => {
     if (!trimmed || testing) return;
@@ -244,12 +215,6 @@ export default function AccountProxyQuickEditor({
             value={value}
             disabled={busy}
             onSelect={setValue}
-          />
-          <ProxyTimezoneHint
-            proxyTimezone={boundPoolEntry?.test_timezone}
-            accountTimezone={effectiveTimezone}
-            onSync={syncTimezone}
-            disabled={busy}
           />
         </div>
       </div>

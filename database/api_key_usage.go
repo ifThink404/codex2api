@@ -61,7 +61,7 @@ func (db *DB) getAPIKeyUsageSince(ctx context.Context, apiKeyID int64, since tim
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(user_billed), 0),
 			MIN(created_at)
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE api_key_id = $1
 		  AND created_at >= $2
 		  AND status_code <> 499
@@ -73,7 +73,7 @@ func (db *DB) getAPIKeyUsageSince(ctx context.Context, apiKeyID int64, since tim
 				COALESCE(SUM(u.total_tokens), 0),
 				COALESCE(SUM(u.user_billed), 0),
 				MIN(u.created_at)
-			FROM usage_metered_events u
+			FROM usage_logs u
 			JOIN api_keys k ON k.id = u.api_key_id
 			WHERE u.api_key_id = $1
 			  AND u.created_at >= $2
@@ -113,7 +113,7 @@ func (db *DB) GetAPIKeyAccountWindowUsage(ctx context.Context, apiKeyID int64, w
 			COUNT(*),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(user_billed), 0)
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE api_key_id = $1
 		  AND created_at >= $2
 		  AND status_code <> 499
@@ -171,7 +171,7 @@ func (db *DB) GetAPIKeyAccountWindowsUsage(ctx context.Context, apiKeyID int64) 
 			COALESCE(SUM(CASE WHEN created_at >= $4 THEN total_tokens ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN created_at >= $4 THEN user_billed ELSE 0 END), 0),
 			COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(user_billed), 0)
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE api_key_id = $1 AND created_at >= $5 AND status_code <> 499
 		GROUP BY account_id
 	`, apiKeyID, since5h, since1d, since7d, since30d)
@@ -232,7 +232,7 @@ func (db *DB) GetAPIKeysAccountWindowUsage(ctx context.Context, apiKeyIDs []int6
 			COUNT(*),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(user_billed), 0)
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE api_key_id IN (%s)
 		  AND created_at >= %s
 		  AND status_code <> 499
@@ -298,7 +298,7 @@ func (db *DB) ListAPIKeyTokenStats(ctx context.Context, rangeStart, rangeEnd tim
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(SUM(user_billed), 0) AS user_billed
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE status_code <> 499
 		  AND created_at >= $1
 	`
@@ -395,7 +395,7 @@ func (db *DB) ListAPIKeyAccountStats(ctx context.Context, apiKeyID int64, rangeS
 				COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 				COALESCE(SUM(account_billed), 0) AS account_billed,
 				COALESCE(SUM(user_billed), 0) AS user_billed
-			FROM usage_metered_events AS usage_logs
+			FROM usage_logs
 			WHERE api_key_id = $1 AND status_code <> 499 AND created_at >= $2
 	`
 	args := []interface{}{apiKeyID, db.timeArg(rangeStart)}
@@ -561,13 +561,6 @@ func (db *DB) ListAPIKeyLastUsedAt(ctx context.Context) (map[int64]time.Time, er
 			  AND u.status_code <> 499
 			ORDER BY u.created_at DESC
 			LIMIT 1
-		), (
-			SELECT m.created_at
-			FROM usage_metering m
-			WHERE m.api_key_id = k.id
-			  AND m.status_code <> 499
-			ORDER BY m.created_at DESC
-			LIMIT 1
 		)
 		FROM api_keys k
 	`
@@ -580,21 +573,13 @@ func (db *DB) ListAPIKeyLastUsedAt(ctx context.Context) (map[int64]time.Time, er
 	result := make(map[int64]time.Time)
 	for rows.Next() {
 		var id int64
-		var lastUsedRaw, lastMeteredRaw interface{}
-		if err := rows.Scan(&id, &lastUsedRaw, &lastMeteredRaw); err != nil {
+		var lastUsedRaw interface{}
+		if err := rows.Scan(&id, &lastUsedRaw); err != nil {
 			return nil, err
 		}
 		t, err := parseDBTimeValue(lastUsedRaw)
 		if err != nil {
 			return nil, err
-		}
-		// Requests whose detail row usage_log_mode dropped are only in usage_metering.
-		metered, err := parseDBTimeValue(lastMeteredRaw)
-		if err != nil {
-			return nil, err
-		}
-		if metered.After(t) {
-			t = metered
 		}
 		if !t.IsZero() {
 			result[id] = t
@@ -627,7 +612,7 @@ func (db *DB) getAllAPIKeysCostSince(ctx context.Context, since time.Time, honor
 	}
 	query := `
 		SELECT api_key_id, COALESCE(SUM(user_billed), 0)
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE api_key_id > 0
 		  AND created_at >= $1
 		  AND status_code <> 499
@@ -636,7 +621,7 @@ func (db *DB) getAllAPIKeysCostSince(ctx context.Context, since time.Time, honor
 	if honorReset {
 		query = `
 			SELECT u.api_key_id, COALESCE(SUM(u.user_billed), 0)
-			FROM usage_metered_events u
+			FROM usage_logs u
 			JOIN api_keys k ON k.id = u.api_key_id
 			WHERE u.api_key_id > 0
 			  AND u.created_at >= $1

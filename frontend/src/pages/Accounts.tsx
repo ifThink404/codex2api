@@ -10,7 +10,6 @@ import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
-import { AccountModelAvailabilityProvider, AccountModelAvailabilityToolbar, AccountModelAvailabilityBadge, AccountModelAvailabilityPanel } from '../components/AccountModelAvailability';
 import AccountHrefQuickEditor, {
   openAccountHref,
 } from "../components/AccountHrefQuickEditor";
@@ -106,7 +105,6 @@ import {
   type AccountOperationResultsState,
 } from "../lib/accountOperationResults";
 import { operationProgressMessage } from "../lib/operationProgressMessage";
-import { officialAccountLatestTurnState } from "../lib/accountTurnState";
 import {
   formatChannelMonitorMultiplier,
   resolveChannelMonitorRate,
@@ -521,9 +519,7 @@ function persistAccountVisibleColumns(
 
 const ACCOUNT_VIEW_MODE_KEY = "codex2api:accounts:view-mode";
 // 账号级策略的取值直接跟着 AccountRow 走，后端加值时这里自动跟上。
-type PromptFilterPolicy = NonNullable<AccountRow["prompt_filter_policy"]>;
 type EgressPolicy = NonNullable<AccountRow["egress_policy"]>;
-type SessionGuardsPolicy = NonNullable<AccountRow["session_guards_policy"]>;
 type AccountViewMode = "table" | "grid";
 type AccountCardVariant = "mobile" | "grid" | "personal";
 type EmailDomainStat = {
@@ -1373,7 +1369,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                       )}
                                     <DaybreakBadge models={account.daybreak_models} />
                                   </div>
-                                  {(isCodexOfficialAccount(account) || account.at_only ||
+                                  {(account.at_only ||
                                     account.openai_responses_api ||
                                     account.grok_api ||
                                     account.agent_identity ||
@@ -1430,7 +1426,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                           {account.rate_limit_reset_credits ?? 0}
                                         </button>
                                       )}
-                                      <AccountModelAvailabilityBadge account={account} onClick={() => actions.openModelsEditor(account)} />
                                       {getCreditBalanceDisplay(account) !==
                                         null && (
                                         <button
@@ -1508,7 +1503,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                 />
                                 <AccountPolicyBadges
                                   account={account}
-                                  ctx={proxyCtx}
                                   className="mt-1"
                                 />
                               </TableCell>
@@ -1585,7 +1579,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                     </div>
                                     <AccountHealthBar
                                       buckets={healthBuckets}
-                                      latestTurnState={officialAccountLatestTurnState(account)}
                                     />
                                     <AccountIntelligenceBar bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} error={intelligenceError} />
                                   </div>
@@ -2026,11 +2019,7 @@ export default function Accounts() {
   const [concurrencyInput, setConcurrencyInput] = useState("");
   const [skipWarmTier, setSkipWarmTier] = useState(false);
   // 账号级策略：三列都以 inherit 为默认，只有显式覆盖才会脱离全局设置。
-  const [promptFilterPolicy, setPromptFilterPolicy] =
-    useState<PromptFilterPolicy>("inherit");
   const [egressPolicy, setEgressPolicy] = useState<EgressPolicy>("inherit");
-  const [sessionGuardsPolicy, setSessionGuardsPolicy] =
-    useState<SessionGuardsPolicy>("inherit");
   const [keepConcurrencyOnDegrade, setKeepConcurrencyOnDegrade] =
     useState(false);
   const [editAutoPause5hThresholdInput, setEditAutoPause5hThresholdInput] =
@@ -2369,17 +2358,12 @@ export default function Accounts() {
     label = t("accounts.proxyUrl"),
     placeholder = t("accounts.proxyUrlPlaceholder"),
     disabled = false,
-    accountTimezone,
-    onSyncTimezone,
   }: {
     value: string;
     onChange: (value: string) => void;
     label?: string;
     placeholder?: string;
     disabled?: boolean;
-    /** 传了才比对出口时区;添加账号时还没有账号时区可比。 */
-    accountTimezone?: string;
-    onSyncTimezone?: (timezone: string) => Promise<void>;
   }) => (
     <ProxyField
       value={value}
@@ -2389,8 +2373,6 @@ export default function Accounts() {
       labelClassName="text-sm"
       placeholder={placeholder}
       disabled={disabled}
-      accountTimezone={accountTimezone}
-      onSyncTimezone={onSyncTimezone}
     />
   );
 
@@ -5883,9 +5865,7 @@ export default function Accounts() {
         : String(account.base_concurrency_override),
     );
     setSkipWarmTier(account.skip_warm_tier ?? false);
-    setPromptFilterPolicy(account.prompt_filter_policy ?? "inherit");
     setEgressPolicy(account.egress_policy ?? "inherit");
-    setSessionGuardsPolicy(account.session_guards_policy ?? "inherit");
     setKeepConcurrencyOnDegrade(account.keep_concurrency_on_degrade ?? false);
     setEditAutoPause5hThresholdInput(
       formatQuotaAutoPausePercentInput(account.auto_pause_5h_threshold),
@@ -5966,9 +5946,7 @@ export default function Accounts() {
     setConcurrencyMode("default");
     setConcurrencyInput("");
     setSkipWarmTier(false);
-    setPromptFilterPolicy("inherit");
     setEgressPolicy("inherit");
-    setSessionGuardsPolicy("inherit");
     setKeepConcurrencyOnDegrade(false);
     setEditAutoPause5hThresholdInput("");
     setEditAutoPause7dThresholdInput("");
@@ -6120,9 +6098,7 @@ export default function Accounts() {
         base_concurrency_override:
           concurrencyMode === "custom" ? parsedBaseConcurrency : null,
         skip_warm_tier: skipWarmTier,
-        prompt_filter_policy: promptFilterPolicy,
         egress_policy: egressPolicy,
-        session_guards_policy: sessionGuardsPolicy,
         keep_concurrency_on_degrade: keepConcurrencyOnDegrade,
         allowed_api_key_ids: allowedAPIKeySelection,
         proxy_url: editProxyUrl.trim() || null,
@@ -6492,7 +6468,6 @@ export default function Accounts() {
   }
 
   return (
-    <AccountModelAvailabilityProvider>
     <div
       key="provider-codex"
       className="relative @container/accounts animate-channel-switch-in"
@@ -7718,7 +7693,6 @@ export default function Accounts() {
             />
           ) : null}
 
-          <AccountModelAvailabilityToolbar accounts={accounts} onUpdated={() => void reloadSilently()} />
           <Card className={shouldRenderMobileCards ? "codex-account-list" : undefined}>
             <CardContent className={shouldRenderMobileCards ? "p-0" : "p-3 sm:p-4"}>
               <StateShell
@@ -10285,7 +10259,7 @@ export default function Accounts() {
                           </div>
                         </div>
 
-                        {/* 账号级策略：prompt 检测 / 出口 / 会话防护 */}
+                        {/* 账号级策略：出口 */}
                         <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
                           <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
                             <ShieldCheck className="size-4 text-sky-500" />
@@ -10294,33 +10268,7 @@ export default function Accounts() {
                           <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
                             {t("accounts.policySectionHint")}
                           </p>
-                          <div className="mt-3.5 grid gap-4 md:grid-cols-3">
-                            <div className="space-y-1.5">
-                              <span className="block text-xs font-semibold text-muted-foreground">
-                                {t("accounts.policyPromptFilterLabel")}
-                              </span>
-                              <Select
-                                value={promptFilterPolicy}
-                                onValueChange={(next) =>
-                                  setPromptFilterPolicy(
-                                    next === "exempt" ? "exempt" : "inherit",
-                                  )
-                                }
-                                options={[
-                                  {
-                                    value: "inherit",
-                                    label: t("accounts.policyPromptFilterInherit"),
-                                  },
-                                  {
-                                    value: "exempt",
-                                    label: t("accounts.policyPromptFilterExempt"),
-                                  },
-                                ]}
-                              />
-                              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                                {t("accounts.policyPromptFilterHint")}
-                              </p>
-                            </div>
+                          <div className="mt-3.5 grid gap-4 md:grid-cols-2">
                             <div className="space-y-1.5">
                               <span className="block text-xs font-semibold text-muted-foreground">
                                 {t("accounts.policyEgressLabel")}
@@ -10345,32 +10293,6 @@ export default function Accounts() {
                               />
                               <p className="text-[11px] leading-relaxed text-muted-foreground">
                                 {t("accounts.policyEgressHint")}
-                              </p>
-                            </div>
-                            <div className="space-y-1.5">
-                              <span className="block text-xs font-semibold text-muted-foreground">
-                                {t("accounts.policySessionGuardsLabel")}
-                              </span>
-                              <Select
-                                value={sessionGuardsPolicy}
-                                onValueChange={(next) =>
-                                  setSessionGuardsPolicy(
-                                    next === "off" ? "off" : "inherit",
-                                  )
-                                }
-                                options={[
-                                  {
-                                    value: "inherit",
-                                    label: t("accounts.policySessionGuardsInherit"),
-                                  },
-                                  {
-                                    value: "off",
-                                    label: t("accounts.policySessionGuardsOff"),
-                                  },
-                                ]}
-                              />
-                              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                                {t("accounts.policySessionGuardsHint")}
                               </p>
                             </div>
                           </div>
@@ -10495,21 +10417,6 @@ export default function Accounts() {
                           {renderProxyInput({
                             value: editProxyUrl,
                             onChange: setEditProxyUrl,
-                            // 弹窗里的时区字段还没提交,同步只改草稿,随「保存」一起落库。
-                            accountTimezone: isCodexOfficialAccount(editingAccount)
-                              ? editTimezone
-                              : undefined,
-                            onSyncTimezone: isCodexOfficialAccount(editingAccount)
-                              ? async (timezone: string) => {
-                                  setEditTimezone(timezone);
-                                  setEditTimezoneCustom(
-                                    !findClaudeTimezoneOption(timezone),
-                                  );
-                                  // 这里只写进草稿，真正落库要等这张表单的「保存」，
-                                  // 文案必须和快捷弹窗那条当场 PATCH 的区分开。
-                                  showToast(t("accounts.proxyTimezoneDrafted"));
-                                }
-                              : undefined,
                           })}
                         </div>
 
@@ -10814,7 +10721,6 @@ export default function Accounts() {
               </div>
 
               {/* 自动获取：探测/同步按钮 + 说明，成一体 */}
-              {modelsAccount && <AccountModelAvailabilityPanel account={modelsAccount} draft={modelsDraft} onAdd={addModelsDraftValues} onRefreshed={account => { setModelsAccount(account); void reloadSilently(); }} />}
               <div className="rounded-lg border border-border bg-muted/10 p-3">
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -11876,7 +11782,6 @@ export default function Accounts() {
         </>
       </StateShell>
     </div>
-    </AccountModelAvailabilityProvider>
   );
 }
 
@@ -13314,76 +13219,26 @@ function UsingCreditsBadge({ account }: { account: AccountRow }) {
   );
 }
 
-// AccountPolicyBadges 把"这个号脱离了全局设置"的几件事摆在代理徽章旁边:
-// 三条账号级策略只在非 inherit 时出徽章(否则每行都挂三个"继承"噪声),
-// 外加一条时区不一致——账号指纹时区与绑定代理的出口 IP 时区对不上,
-// 上游看到的是"人在 A 区、IP 在 B 区"。时区只对 OAuth 号判定:
-// 指纹收敛只作用于官方出站路径,中转/API key 账号没有这个字段。
+// AccountPolicyBadges 把"这个号脱离了全局设置"的出网策略摆在代理徽章旁边:
+// 只在非 inherit 时出徽章,否则每行都挂一个"继承"噪声。
 function AccountPolicyBadges({
   account,
-  ctx,
   className,
 }: {
   account: AccountRow;
-  ctx: ProxyBindingContext;
   className?: string;
 }) {
   const { t } = useTranslation();
-
-  const promptExempt = account.prompt_filter_policy === "exempt";
-  const egressDirect = account.egress_policy === "direct";
-  const guardsOff = account.session_guards_policy === "off";
-
-  // 时区只在"绑定的那条代理确实是出口"时才值得比:账号选了直连、或 Resin 整层
-  // 覆盖了代理链时,出口根本不是这条池条目,比出来的不一致是噪声。
-  const binding = resolveAccountProxyBinding(account, ctx);
-  const egressOverridden =
-    account.egress_policy === "direct" || binding.kind === "resin";
-  const accountTimezone = (account.timezone ?? "").trim();
-  const proxyTimezone =
-    isOAuthAccount(account) && !egressOverridden
-      ? (binding.proxy?.test_timezone ?? "").trim()
-      : "";
-  const timezoneMismatch = Boolean(
-    accountTimezone && proxyTimezone && proxyTimezone !== accountTimezone,
-  );
-
-  if (!promptExempt && !egressDirect && !guardsOff && !timezoneMismatch) {
+  if (account.egress_policy !== "direct") {
     return null;
   }
-
   const tone =
     "shrink-0 border-amber-500/25 bg-amber-500/10 px-1.5 py-0 text-[10px] font-semibold text-amber-700 dark:text-amber-300";
-
   return (
     <div className={cn("flex flex-wrap items-center gap-1", className)}>
-      {promptExempt ? (
-        <Badge variant="outline" className={tone} title={t("accounts.policyPromptFilterHint")}>
-          {t("accounts.badgePromptExempt")}
-        </Badge>
-      ) : null}
-      {egressDirect ? (
-        <Badge variant="outline" className={tone} title={t("accounts.policyEgressHint")}>
-          {t("accounts.badgeEgressDirect")}
-        </Badge>
-      ) : null}
-      {guardsOff ? (
-        <Badge variant="outline" className={tone} title={t("accounts.policySessionGuardsHint")}>
-          {t("accounts.badgeGuardsOff")}
-        </Badge>
-      ) : null}
-      {timezoneMismatch ? (
-        <Badge
-          variant="outline"
-          className={tone}
-          title={t("accounts.proxyTimezoneMismatch", {
-            proxy: proxyTimezone,
-            account: accountTimezone,
-          })}
-        >
-          {t("accounts.badgeTimezoneMismatch")}
-        </Badge>
-      ) : null}
+      <Badge variant="outline" className={tone} title={t("accounts.policyEgressHint")}>
+        {t("accounts.badgeEgressDirect")}
+      </Badge>
     </div>
   );
 }
@@ -14538,7 +14393,6 @@ function AccountMobileCard({
               </span>
             )}
             <div className="codex-account-card__flags">
-              {onEditModels && <AccountModelAvailabilityBadge account={account} onClick={onEditModels} />}
               <SubscriptionBadge
                 accountId={account.id}
                 subscription={account.subscription}
@@ -14678,7 +14532,7 @@ function AccountMobileCard({
                     {formatHealthTier(account.health_tier, t)}
                   </span>
                 </div>
-                <AccountHealthBar buckets={healthBuckets} latestTurnState={officialAccountLatestTurnState(account)} />
+                <AccountHealthBar buckets={healthBuckets} />
                 <AccountIntelligenceBar bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} error={intelligenceError} />
               </div>
             </section>
@@ -14734,7 +14588,7 @@ function AccountMobileCard({
                 <AccountProxyBadge account={account} ctx={proxyCtx} onClick={onEditProxy} />
               )}
               {showColumn("proxy") && (
-                <AccountPolicyBadges account={account} ctx={proxyCtx} />
+                <AccountPolicyBadges account={account} />
               )}
             </div>
           )}

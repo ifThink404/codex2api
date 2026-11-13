@@ -44,13 +44,13 @@ func TestUpdateAccountSchedulerPersistsAccountPolicies(t *testing.T) {
 		return recorder
 	}
 
-	// 默认值：还没 PATCH 过的账号必须是 inherit，且 GET 负载里带上三列。
+	// 默认值：还没 PATCH 过的账号必须是 inherit，且 GET 负载里带上该列。
 	row, err := db.GetAccountByID(context.Background(), accountID)
 	if err != nil {
 		t.Fatalf("GetAccountByID: %v", err)
 	}
 	payload := marshalAccountPolicyFields(t, handler, row)
-	for _, field := range []string{"prompt_filter_policy", "egress_policy", "session_guards_policy"} {
+	for _, field := range []string{"egress_policy"} {
 		if payload[field] != "inherit" {
 			t.Fatalf("GET payload %s = %q, want inherit", field, payload[field])
 		}
@@ -68,10 +68,6 @@ func TestUpdateAccountSchedulerPersistsAccountPolicies(t *testing.T) {
 	if row.EgressPolicy != "direct" {
 		t.Fatalf("egress_policy = %q, want direct", row.EgressPolicy)
 	}
-	// 没带的两列不能被这次 PATCH 顺手写成别的值。
-	if row.PromptFilterPolicy != "inherit" || row.SessionGuardsPolicy != "inherit" {
-		t.Fatalf("untouched policies changed: %+v", row)
-	}
 	payload = marshalAccountPolicyFields(t, handler, row)
 	if payload["egress_policy"] != "direct" {
 		t.Fatalf("GET payload egress_policy = %q, want direct", payload["egress_policy"])
@@ -80,9 +76,6 @@ func TestUpdateAccountSchedulerPersistsAccountPolicies(t *testing.T) {
 	// 热更新：写库之后内存账号必须立刻反映出来。
 	if acc := handler.store.FindByID(accountID); acc == nil || !acc.EgressDirect() {
 		t.Fatal("runtime account did not pick up egress_policy=direct")
-	}
-	if runtimeAccount.PromptFilterExempt() || runtimeAccount.SessionGuardsOff() {
-		t.Fatal("runtime account picked up policies that were never patched")
 	}
 
 	// 非法枚举必须 400，并且不能改动已存的值。
@@ -98,7 +91,7 @@ func TestUpdateAccountSchedulerPersistsAccountPolicies(t *testing.T) {
 		t.Fatalf("rejected patch changed egress_policy to %q", row.EgressPolicy)
 	}
 
-	// 不带策略字段的 PATCH 不能把三列重置回 inherit。
+	// 不带策略字段的 PATCH 不能把策略重置回 inherit。
 	if recorder := patch(t, `{"score_bias_override":12}`); recorder.Code != http.StatusOK {
 		t.Fatalf("PATCH score_bias_override status = %d, want %d (body %s)",
 			recorder.Code, http.StatusOK, recorder.Body.String())
@@ -111,33 +104,17 @@ func TestUpdateAccountSchedulerPersistsAccountPolicies(t *testing.T) {
 		t.Fatalf("unrelated patch reset egress_policy to %q", row.EgressPolicy)
 	}
 
-	// 其余两列同样可写，且大小写/空白要被收敛。
-	if recorder := patch(t, `{"prompt_filter_policy":" EXEMPT ","session_guards_policy":"Off"}`); recorder.Code != http.StatusOK {
-		t.Fatalf("PATCH remaining policies status = %d, want %d (body %s)",
-			recorder.Code, http.StatusOK, recorder.Body.String())
-	}
-	row, err = db.GetAccountByID(context.Background(), accountID)
-	if err != nil {
-		t.Fatalf("GetAccountByID after remaining patch: %v", err)
-	}
-	if row.PromptFilterPolicy != "exempt" || row.SessionGuardsPolicy != "off" {
-		t.Fatalf("remaining policies = %+v, want exempt/off", row)
-	}
-	if !runtimeAccount.PromptFilterExempt() || !runtimeAccount.SessionGuardsOff() {
-		t.Fatal("runtime account did not pick up the remaining policies")
-	}
-
 	// null 语义与其他字段一致：显式清空，收敛成 inherit 而不是空串。
-	if recorder := patch(t, `{"prompt_filter_policy":null}`); recorder.Code != http.StatusOK {
-		t.Fatalf("PATCH prompt_filter_policy=null status = %d, want %d (body %s)",
+	if recorder := patch(t, `{"egress_policy":null}`); recorder.Code != http.StatusOK {
+		t.Fatalf("PATCH egress_policy=null status = %d, want %d (body %s)",
 			recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	row, err = db.GetAccountByID(context.Background(), accountID)
 	if err != nil {
 		t.Fatalf("GetAccountByID after null patch: %v", err)
 	}
-	if row.PromptFilterPolicy != "inherit" {
-		t.Fatalf("prompt_filter_policy after null = %q, want inherit", row.PromptFilterPolicy)
+	if row.EgressPolicy != "inherit" {
+		t.Fatalf("egress_policy after null = %q, want inherit", row.EgressPolicy)
 	}
 }
 
@@ -151,8 +128,8 @@ func marshalAccountPolicyFields(t *testing.T, handler *Handler, row *database.Ac
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatalf("unmarshal account response: %v", err)
 	}
-	out := make(map[string]string, 3)
-	for _, field := range []string{"prompt_filter_policy", "egress_policy", "session_guards_policy"} {
+	out := make(map[string]string, 1)
+	for _, field := range []string{"egress_policy"} {
 		raw, ok := decoded[field]
 		if !ok {
 			t.Fatalf("account response is missing %s", field)

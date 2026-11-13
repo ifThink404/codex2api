@@ -109,10 +109,9 @@ func (s *OutputScanner) semanticBlocked() bool {
 		verdict = InspectText(string(s.semantic), s.cfg)
 	}
 	if !s.cfg.Advanced.Output.StrictOnly {
-		verdict = ApplyLocalMode(verdict, s.cfg)
 		return verdict.Action == ActionBlock
 	}
-	return ApplyLocalMode(verdict, s.cfg).TerminalStrictHit
+	return verdict.TerminalStrictHit
 }
 
 func (s *OutputScanner) appendSemantic(data []byte) {

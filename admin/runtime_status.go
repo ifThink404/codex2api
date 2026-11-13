@@ -10,7 +10,6 @@ import (
 
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/imagestore"
-	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
@@ -87,25 +86,18 @@ func (h *Handler) buildRuntimeStatus(ctx context.Context, r *http.Request) runti
 		addCheck("admin_auth", runtimeStatusError, "admin_auth_disabled", "管理密钥未配置")
 	}
 
-	// 只有一条路径：自动锁定的开关、阈值与计数都来自同一个快照函数，接没接上
-	// proxy Handler 只决定要不要顺手触发锁表预热，不决定字段来源。之前这里分两条
-	// 分支，没有 Handler 的那条把 AutoLock 留成零值，运行状态报 enabled=false，而
-	// observeSessionAutoLock 读的是同一份设置、照样在落锁。
-	sessionGuards := proxy.SessionGuardStatusSnapshotForHandler(h.store, h.authCacheProxy)
-
 	return runtimeStatusResponse{
-		UpdatedAt:     time.Now().Format(time.RFC3339),
-		Status:        overallRuntimeStatus(checks),
-		Service:       service,
-		Database:      dbStatus,
-		Cache:         cacheStatus,
-		UsageLog:      usageLog,
-		Probes:        probes,
-		Accounts:      accounts,
-		ImageStorage:  imageStorage,
-		AdminAuth:     adminAuth,
-		SessionGuards: sessionGuards,
-		Checks:        checks,
+		UpdatedAt:    time.Now().Format(time.RFC3339),
+		Status:       overallRuntimeStatus(checks),
+		Service:      service,
+		Database:     dbStatus,
+		Cache:        cacheStatus,
+		UsageLog:     usageLog,
+		Probes:       probes,
+		Accounts:     accounts,
+		ImageStorage: imageStorage,
+		AdminAuth:    adminAuth,
+		Checks:       checks,
 	}
 }
 

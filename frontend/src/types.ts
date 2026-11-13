@@ -464,7 +464,6 @@ export interface AccountRow {
   /** 账号页跳转地址;空值回退打开 base_url(api-base)。 */
   account_href?: string
   custom_headers?: Record<string, string> | null
-  model_observations?: AccountModelObservation[]
   health_tier?: string
   scheduler_score?: number
   dispatch_score?: number
@@ -473,11 +472,9 @@ export interface AccountRow {
   base_concurrency_override?: number | null
   base_concurrency_effective?: number
   skip_warm_tier?: boolean
-  /** 账号级策略（后端 auth/account_policies.go）；三列都以 inherit 为默认，
+  /** 账号级出网策略（后端 auth/account_policies.go）；以 inherit 为默认，
    *  缺省与 'inherit' 同义，下拉据此区分"继承全局"与"本号覆盖"。 */
-  prompt_filter_policy?: 'inherit' | 'exempt'
   egress_policy?: 'inherit' | 'direct'
-  session_guards_policy?: 'inherit' | 'off'
   keep_concurrency_on_degrade?: boolean
   dynamic_concurrency_limit?: number
   allowed_api_key_ids?: number[]
@@ -590,17 +587,6 @@ export interface AccountRow {
   image_quota_total?: number
   today_used_count?: number
   image_quota_reset_at?: ISODateString
-  /** 该号最近一条记录到 turn-state 的请求;只在账号列表页视图里返回,lite 列表没有。 */
-  latest_turn_state?: AccountLatestTurnStateInfo | null
-}
-
-// AccountLatestTurnStateInfo 是账号健康条下那一行小字的数据源。长度是账号级
-// 「降级」标记,所以这里带的是字符数而不是一个布尔的「有/无」。
-export interface AccountLatestTurnStateInfo {
-  created_at: ISODateString
-  turn_state_length: number | null
-  turn_state_echo: string
-  turn_state_stripped: boolean
 }
 
 export type AccountsResponse = ApiListResponse<'accounts', AccountRow>
@@ -1622,13 +1608,6 @@ export interface GrokBatchImportResponse {
   proxy_warning?: string
 }
 
-export interface AccountModelObservation {
-  model: string
-  source: 'manifest' | 'probe'
-  outcome: 'listed' | 'available' | 'unsupported' | 'throttled' | 'error'
-  observed_at: number
-}
-
 
 export interface UpdateAccountSchedulerRequest {
   api_auto_recovery_enabled?: boolean
@@ -1639,9 +1618,7 @@ export interface UpdateAccountSchedulerRequest {
   base_concurrency_override?: number | null
   skip_warm_tier?: boolean
   /** 账号级策略；只在字段出现时更新，非法值后端返回 400。 */
-  prompt_filter_policy?: 'inherit' | 'exempt'
   egress_policy?: 'inherit' | 'direct'
-  session_guards_policy?: 'inherit' | 'off'
   keep_concurrency_on_degrade?: boolean
   allowed_api_key_ids?: number[] | null
   proxy_url?: string | null
@@ -2101,28 +2078,6 @@ export interface RuntimeCheck {
   message: string
 }
 
-export interface InitialSessionSummary {
-  samples: number
-  allowed: number
-  expired: number
-  future: number
-  invalid: number
-  max_age_ms: number
-  average_age_ms: number
-}
-
-export interface SessionLockItem {
-  id: number
-  session_id_prefix: string
-  api_key_id: number
-  account_id: number
-  account_name: string
-  error_message: string
-  threshold: number
-  source: string
-  locked_at: ISODateString
-}
-
 export interface RuntimeStatusResponse {
   updated_at: ISODateString
   status: RuntimeHealthStatus
@@ -2209,29 +2164,6 @@ export interface RuntimeStatusResponse {
     source: string
     configured: boolean
   }
-  session_guards?: {
-    started_at: ISODateString
-    settings: {
-      turn_state_strict: boolean
-      no_borrow_enabled: boolean
-      no_borrow_hold_seconds: number
-      initial_session_admission_enabled: boolean
-      initial_session_max_age_seconds: number
-    }
-    turn_state: {
-      totals: { same: number; cross: number; unknown: number; stripped: number }
-      accounts: Array<{ account_id: number; counters: { same: number; cross: number; unknown: number; stripped: number } }>
-      vault: { issued: number; restored: number; foreign_stripped: number }
-    }
-    borrow: { borrowed: number; held: number }
-    auto_lock: { enabled: boolean; threshold: number; active_locks: number; locked_total: number; unlocked_total: number; streak_entries: number }
-    /** 延迟 prompt 拦截：exempted=落到豁免账号后放行，blocked_after_selection=选号后仍拦下。 */
-    prompt_policy?: { exempted: number; blocked_after_selection: number }
-    initial_session: {
-      recent_hour: InitialSessionSummary
-      since_start: InitialSessionSummary
-    }
-  }
   checks: RuntimeCheck[]
 }
 
@@ -2299,8 +2231,6 @@ export interface SystemSettings {
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
-  // Rewrites existing web_search tools' user_location from the outbound proxy's stored egress location.
-  codex_web_search_proxy_location: boolean
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean
@@ -2335,14 +2265,6 @@ export interface SystemSettings {
   session_affinity_spread?: boolean
   session_slot_buffer_enabled: boolean
   session_slot_buffer_seconds: number
-  codex_turn_state_strict?: boolean
-  codex_session_no_borrow_enabled?: boolean
-  codex_session_no_borrow_hold_seconds?: number
-  codex_initial_session_admission_enabled?: boolean
-  codex_initial_session_max_age_seconds?: number
-  codex_session_auto_lock_enabled?: boolean
-  codex_session_auto_lock_threshold?: number
-  codex_turn_state_vault_enabled?: boolean
   grok_affinity_mode?: string
   grok_probe_enabled?: boolean
   grok_probe_interval_minutes?: number
@@ -2454,7 +2376,6 @@ export interface SystemSettings {
   codex_effective_cli_version?: string
   codex_user_agent_config: string
   usage_log_mode: 'full' | 'errors' | 'off' | string
-  usage_metering_enabled: boolean
   usage_log_batch_size: number
   usage_log_flush_interval_seconds: number
   stream_flush_policy: 'immediate' | 'coalesce' | string
@@ -2539,10 +2460,6 @@ export interface PromptFilterVerdict {
 }
 
 export interface PromptFilterLog {
-  group_id?: number
-  occurrence_count?: number
-  first_seen?: string
-  last_seen?: string
   id: number
   created_at: ISODateString
   source: string
@@ -3184,34 +3101,12 @@ export function patchAdvancedConfigDocument(
   }
 }
 
-export interface BuiltinPromptRuleFields {
-  name: string
-  pattern: string
-  weight: number
-  category: string
-  strict: boolean
-  signal_only: boolean
-  all_patterns: string[]
-  any_patterns: string[]
-  exclude_patterns: string[]
-  authorization_exclude_patterns: string[]
-  min_matches: number
-}
-
 export interface PromptFilterRule {
-  overridden?: boolean
-  default?: BuiltinPromptRuleFields
   name: string
   pattern: string
   weight: number
   category?: string
   strict?: boolean
-  signal_only?: boolean
-  all_patterns?: string[] | null
-  any_patterns?: string[] | null
-  exclude_patterns?: string[] | null
-  authorization_exclude_patterns?: string[] | null
-  min_matches?: number
   enabled?: boolean
   builtin?: boolean
 }
@@ -3748,6 +3643,8 @@ export interface UsageLog {
   model: string
   effective_model: string
   daybreak_program?: string
+  /** 上游响应自报的模型名（未自报/历史行为空）。 */
+  upstream_response_model?: string
   /** 三态：undefined/null=上游未自报无法比对；true/false=自报与实发是否一致。 */
   upstream_model_mismatch?: boolean | null
   prompt_tokens: number
@@ -3761,18 +3658,6 @@ export interface UsageLog {
   first_token_ms: number
   ws_acquire_ms?: number
   reasoning_effort: string
-  // 上游响应信封里自报的模型;上游没声明时为空,历史行也为空
-  upstream_response_model?: string
-  // Codex 客户端窗口号(x-codex-window-id 的 <n> 段),非 Codex 请求为空
-  window_number?: string
-  // 本次请求真正带上去的上游 turn-state token 长度:null = 没记录(历史行或不涉及
-  // turn-state 的渠道),0 = 查了但没有,>0 = 字符数。长度本身是账号级「降级」标记——
-  // 实测健康的官号是 292 字符,降级的九个号一律 312,所以要把数字原样显示出来。
-  turn_state_length?: number | null
-  // 客户端回带的 turn-state 归类:'' = 没记录,none/same/cross/unknown/substitute。
-  turn_state_echo?: '' | 'none' | 'same' | 'cross' | 'unknown' | 'substitute'
-  // 代理是否把客户端回带的 turn-state 剥掉后再发给上游。
-  turn_state_stripped?: boolean
   inbound_endpoint: string
   upstream_endpoint: string
   stream: boolean
@@ -3827,9 +3712,6 @@ export interface UsageLog {
   upstream_error_kind: string
 	error_message: string
 	prompt_policy_incident_id?: string
-	/** 'native' or the transport plugin ID that served this attempt. */
-	transport?: string
-	/** Plugin-owned JSON metadata; empty for native rows. */
 }
 
 export type UsageLogsResponse = ApiListResponse<'logs', UsageLog>
@@ -3849,16 +3731,6 @@ export interface OpsErrorSummary {
   timeouts: number
   retry_attempts: number
   avg_duration_ms: number
-}
-
-// GET /ops/errors/by-account: one account's errors under the ops filters.
-export interface OpsErrorAccountGroup {
-  account_id: number
-  account_name: string
-  account_email: string
-  total: number
-  kinds: Record<string, number>
-  last_error_at: string
 }
 
 export interface ChartTimelinePoint {
@@ -4584,103 +4456,6 @@ export interface ClaudeGlobalConfig {
   max_tool_schema_bytes: number
 }
 
-// 日志分析 Agent（/log-agent/*）：独立于具体功能，source 由后端注册（usage_logs、ops_errors 及各插件）。
-export interface LogAgentConfig {
-  enabled: boolean
-  api_key_id: number
-  model: string
-  max_input_bytes: number
-  max_records: number
-  timeout_seconds: number
-  retention_days: number
-}
-
-export interface LogAgentLimits {
-  min_max_input_bytes: number
-  max_max_input_bytes: number
-  max_max_records: number
-  min_timeout_seconds: number
-  max_timeout_seconds: number
-  max_retention_days: number
-}
-
-export interface LogAgentConfigResponse {
-  config: LogAgentConfig
-  gateway_keys: PromptIntelligenceGatewayKey[]
-  sources: string[]
-  limits: LogAgentLimits
-}
-
-export type LogAgentRootCauseCategory = 'upstream' | 'account' | 'gateway' | 'network' | 'client' | 'config' | 'unknown'
-
-export interface LogAgentRootCause {
-  title: string
-  detail: string
-  category: LogAgentRootCauseCategory
-  evidence_ids: string[]
-  confidence: number
-}
-
-export interface LogAgentAction {
-  title: string
-  detail: string
-  priority: 'high' | 'medium' | 'low'
-}
-
-export interface LogAgentFindings {
-  summary: string
-  root_causes: LogAgentRootCause[]
-  suggested_actions: LogAgentAction[]
-  confidence: number
-  fallback?: boolean
-}
-
-export interface LogAgentContextStats {
-  records: number
-  dropped_records: number
-  groups: number
-  included_groups: number
-  input_bytes: number
-  truncated: boolean
-  evidence_ids: string[] | null
-}
-
-export interface LogAgentSubject {
-  refs?: string[]
-  filters?: Record<string, string>
-  start?: string
-  end?: string
-  focus?: string
-  language?: string
-}
-
-export interface LogAgentRun {
-  id: number
-  source: string
-  subject: LogAgentSubject
-  model: string
-  api_key_id: number
-  status: 'succeeded' | 'fallback' | 'failed'
-  findings: LogAgentFindings | Record<string, never>
-  context_stats: LogAgentContextStats | Record<string, never>
-  error_message: string
-  record_count: number
-  input_tokens: number
-  output_tokens: number
-  total_tokens: number
-  duration_ms: number
-  created_at: string
-}
-
-export interface LogAgentAnalyzeRequest {
-  source: string
-  refs?: string[]
-  filters?: Record<string, string>
-  start?: string
-  end?: string
-  focus?: string
-  language?: string
-}
 
 export interface ScheduledConnectionTestConfig {
   enabled: boolean

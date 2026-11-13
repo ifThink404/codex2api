@@ -75,7 +75,7 @@ func (db *DB) loadTrafficSecondsPostgres(ctx context.Context, since time.Time, b
 			FLOOR(EXTRACT(EPOCH FROM created_at))::bigint AS sec,
 			COUNT(*)::float8,
 			COALESCE(SUM(total_tokens), 0)::float8
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE created_at >= $1
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 		GROUP BY 1`, since)
@@ -95,7 +95,7 @@ func (db *DB) loadTrafficSecondsPostgres(ctx context.Context, since time.Time, b
 }
 
 // addBufferedTrafficSeconds 把还没落库的日志按完成时刻计入快照,口径与库里的查询一致:
-// 只算会落库的行(明细或轻量计量,两者都没有的不算),排除内部请求。
+// 只算会落库的行(usage_log_mode 过滤掉的不算),排除内部请求。
 func (db *DB) addBufferedTrafficSeconds(since time.Time, buckets *trafficSecondBuckets) {
 	if db == nil {
 		return
@@ -104,7 +104,7 @@ func (db *DB) addBufferedTrafficSeconds(since time.Time, buckets *trafficSecondB
 	defer db.logMu.Unlock()
 	for i := range db.logBuf {
 		entry := &db.logBuf[i]
-		if (!entry.StoreUsageLog && !entry.StoreMetering) || strings.TrimSpace(entry.InternalReason) != "" || entry.CreatedAt.Before(since) {
+		if !entry.StoreUsageLog || strings.TrimSpace(entry.InternalReason) != "" || entry.CreatedAt.Before(since) {
 			continue
 		}
 		buckets.add(entry.CreatedAt.Unix(), 1, float64(entry.TotalTokens))

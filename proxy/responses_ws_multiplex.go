@@ -223,7 +223,7 @@ func (h *Handler) runResponsesWSMultiplex(c *gin.Context, conn *websocket.Conn, 
 			}
 			if message.messageType != websocket.TextMessage && message.messageType != websocket.BinaryMessage {
 				message.releaseQueueBudget()
-				_ = writeAuditedResponsesWSError(c, conn, api.NewAPIError(api.ErrCodeInvalidRequest, "unsupported websocket message type", api.ErrorTypeInvalidRequest))
+				_ = writeResponsesWSError(conn, api.NewAPIError(api.ErrCodeInvalidRequest, "unsupported websocket message type", api.ErrorTypeInvalidRequest))
 				return
 			}
 			eventType, eventErr := responsesWSClientEventType(message.payload)
@@ -235,7 +235,7 @@ func (h *Handler) runResponsesWSMultiplex(c *gin.Context, conn *websocket.Conn, 
 			streamID, streamErr := responsesWSStreamID(message.payload)
 			if streamErr != nil {
 				message.releaseQueueBudget()
-				_ = writeAuditedResponsesWSError(c, conn, streamErr)
+				_ = writeResponsesWSError(conn, streamErr)
 				continue
 			}
 			if eventType == "response.interrupt" {

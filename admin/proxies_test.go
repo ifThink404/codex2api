@@ -165,14 +165,14 @@ func TestPersistProxyTestResultRefreshesRuntimePool(t *testing.T) {
 	store := newAdminProxyTestStore(t, db)
 	handler := &Handler{db: db, store: store}
 
-	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusError, "", "", "", 0); err != nil {
+	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusError, "", "", 0); err != nil {
 		t.Fatalf("persistProxyTestResult(error) returned error: %v", err)
 	}
 	if got := store.NextProxy(); got != "" {
 		t.Fatalf("NextProxy after error = %q, want empty", got)
 	}
 
-	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
+	if err := handler.persistProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
 		t.Fatalf("persistProxyTestResult(success) returned error: %v", err)
 	}
 	if got := store.NextProxy(); got != "http://proxy.example:8080" {
@@ -204,7 +204,6 @@ func TestPersistProxyTestResultFailsClosedBeforeReloadFailure(t *testing.T) {
 		database.ProxyTestStatusError,
 		"",
 		"",
-		"",
 		0,
 	)
 	if err == nil || !strings.Contains(err.Error(), "reload unavailable") {
@@ -223,7 +222,7 @@ func TestTestProxyRejectsMismatchedURLWithoutChangingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, id, "http://proxy.example:8080", database.ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
 		t.Fatalf("seed successful test result: %v", err)
 	}
 	store := newAdminProxyTestStore(t, db)
@@ -410,7 +409,7 @@ func TestTestProxyProbeServiceFailuresAreInconclusive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("InsertProxy returned error: %v", err)
 			}
-			if err := db.UpdateProxyTestResult(ctx, id, proxyServer.URL, database.ProxyTestStatusSuccess, "1.2.3.4", "US", "", 100); err != nil {
+			if err := db.UpdateProxyTestResult(ctx, id, proxyServer.URL, database.ProxyTestStatusSuccess, "1.2.3.4", "US", 100); err != nil {
 				t.Fatalf("seed successful test result: %v", err)
 			}
 			store := newAdminProxyTestStore(t, db)
@@ -512,11 +511,11 @@ func TestProbeProxyFallsBackToIPv6Echo(t *testing.T) {
 	oldEcho := proxyProbeIPv6EchoURLsFn
 	oldGeo := proxyProbeLookupGeoFn
 	proxyProbeIPv6EchoURLsFn = func() []string { return []string{echoURL} }
-	proxyProbeLookupGeoFn = func(_ context.Context, ip, lang string) (string, string, string, string, string) {
+	proxyProbeLookupGeoFn = func(_ context.Context, ip, lang string) (string, string, string, string) {
 		if ip != "2605:1234:5678::1" || lang != "zh-CN" {
 			t.Fatalf("geo lookup ip=%q lang=%q", ip, lang)
 		}
-		return "美国", "新泽西", "纽瓦克", "Example ISP", "US"
+		return "美国", "新泽西", "纽瓦克", "Example ISP"
 	}
 	t.Cleanup(func() {
 		proxyProbeIPv6EchoURLsFn = oldEcho
@@ -560,11 +559,11 @@ func TestProbeProxyHTTPBadGatewayFallsBackToIPv6Echo(t *testing.T) {
 	oldEcho := proxyProbeIPv6EchoURLsFn
 	oldGeo := proxyProbeLookupGeoFn
 	proxyProbeIPv6EchoURLsFn = func() []string { return []string{echoURL} }
-	proxyProbeLookupGeoFn = func(_ context.Context, ip, lang string) (string, string, string, string, string) {
+	proxyProbeLookupGeoFn = func(_ context.Context, ip, lang string) (string, string, string, string) {
 		if ip != "2605:1234:5678::1" || lang != "zh-CN" {
 			t.Fatalf("geo lookup ip=%q lang=%q", ip, lang)
 		}
-		return "美国", "加利福尼亚", "圣何塞", "Oracle Corporation", "US"
+		return "美国", "加利福尼亚", "圣何塞", "Oracle Corporation"
 	}
 	t.Cleanup(func() {
 		proxyProbeIPv6EchoURLsFn = oldEcho
@@ -668,24 +667,6 @@ func TestShouldFallbackToIPv6Probe(t *testing.T) {
 	}
 }
 
-func TestProxyProbeUsesIPv6Endpoint(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		url  string
-		want bool
-	}{
-		{name: "ipv6 literal", url: "socks5://user:pass@[2620:b9:e000:101::19e]:26213", want: true},
-		{name: "ipv4 literal", url: "socks5://user:pass@69.5.53.31:26213", want: false},
-		{name: "hostname", url: "socks5://proxy.example.test:26213", want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := proxyProbeUsesIPv6Endpoint(tc.url); got != tc.want {
-				t.Fatalf("proxyProbeUsesIPv6Endpoint(%q) = %v, want %v", tc.url, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestParseProxyProbeExitIP(t *testing.T) {
 	tests := []struct {
 		name string
@@ -707,13 +688,13 @@ func TestParseProxyProbeExitIP(t *testing.T) {
 }
 
 func TestParseProxyProbeGeoFields(t *testing.T) {
-	country, region, city, isp, code := parseIPAPIGeoFields(gjson.Parse(`{"country":"美国","countryCode":"us","regionName":"加州","city":"洛杉矶","isp":"Example"}`))
-	if country != "美国" || region != "加州" || city != "洛杉矶" || isp != "Example" || code != "US" {
-		t.Fatalf("ip-api geo = %q %q %q %q %q", country, region, city, isp, code)
+	country, region, city, isp := parseIPAPIGeoFields(gjson.Parse(`{"country":"美国","regionName":"加州","city":"洛杉矶","isp":"Example"}`))
+	if country != "美国" || region != "加州" || city != "洛杉矶" || isp != "Example" {
+		t.Fatalf("ip-api geo = %q %q %q %q", country, region, city, isp)
 	}
-	country, region, city, isp, code = parseIPWhoisGeoFields(gjson.Parse(`{"country":"United States","country_code":"US","region":"New Jersey","city":"Newark","connection":{"isp":"Example ISP"}}`))
-	if country != "United States" || region != "New Jersey" || city != "Newark" || isp != "Example ISP" || code != "US" {
-		t.Fatalf("ipwhois geo = %q %q %q %q %q", country, region, city, isp, code)
+	country, region, city, isp = parseIPWhoisGeoFields(gjson.Parse(`{"country":"United States","region":"New Jersey","city":"Newark","connection":{"isp":"Example ISP"}}`))
+	if country != "United States" || region != "New Jersey" || city != "Newark" || isp != "Example ISP" {
+		t.Fatalf("ipwhois geo = %q %q %q %q", country, region, city, isp)
 	}
 }
 
@@ -973,7 +954,7 @@ func TestTestAllProxiesPersistsResultsAndReloadsPoolOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy(inconclusive) returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, inconclusiveID, inconclusiveURL, database.ProxyTestStatusSuccess, "9.8.7.6", "old", "", 321); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, inconclusiveID, inconclusiveURL, database.ProxyTestStatusSuccess, "9.8.7.6", "old", 321); err != nil {
 		t.Fatalf("seed inconclusive proxy state: %v", err)
 	}
 
@@ -1436,7 +1417,7 @@ func TestCleanErrorProxiesHandlerSynchronizesRuntimeAccounts(t *testing.T) {
 	if _, err := db.InsertProxy(ctx, healthyURL, ""); err != nil {
 		t.Fatalf("InsertProxy(healthy) returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", 0); err != nil {
 		t.Fatalf("mark proxy error: %v", err)
 	}
 	accountID, err := db.InsertAccount(ctx, "bound", "rt-bound", errorURL)
@@ -1632,7 +1613,7 @@ func TestCleanErrorProxiesPreservesConcurrentRuntimeRebind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", 0); err != nil {
 		t.Fatalf("mark proxy error: %v", err)
 	}
 	accountID, err := db.InsertAccount(ctx, "bound", "rt-bound", errorURL)
@@ -1672,7 +1653,7 @@ func TestCleanErrorProxiesReportsReloadFailureAfterFailClosedRemoval(t *testing.
 		t.Fatalf("InsertProxy returned error: %v", err)
 	}
 	store := newAdminProxyTestStore(t, db)
-	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", "", 0); err != nil {
+	if err := db.UpdateProxyTestResult(ctx, errorID, errorURL, database.ProxyTestStatusError, "", "", 0); err != nil {
 		t.Fatalf("mark proxy error: %v", err)
 	}
 

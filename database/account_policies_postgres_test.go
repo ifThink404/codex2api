@@ -37,7 +37,7 @@ func TestPostgresAccountPolicyColumns(t *testing.T) {
 
 func postgresAccountPolicyColumnDefinition(ctx context.Context, t *testing.T, db *DB) {
 	t.Helper()
-	for _, column := range []string{"prompt_filter_policy", "egress_policy", "session_guards_policy"} {
+	for _, column := range []string{"egress_policy"} {
 		var dataType, columnDefault, isNullable string
 		var maxLength int
 		err := db.conn.QueryRowContext(ctx, `
@@ -61,19 +61,19 @@ func postgresAccountPolicyColumnDefinition(ctx context.Context, t *testing.T, db
 
 func postgresAccountPolicyColumnBackfill(ctx context.Context, t *testing.T, db *DB) {
 	t.Helper()
-	// 老库没有这三列：删掉后重跑 migrate，存量行必须回填成 inherit 而不是 NULL。
+	// 老库没有这一列：删掉后重跑 migrate，存量行必须回填成 inherit 而不是 NULL。
 	id, err := db.InsertAccount(ctx, "pg-policy-backfill", "rt_pg_backfill", "")
 	if err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
 	defer func() { _, _ = db.conn.ExecContext(ctx, `DELETE FROM accounts WHERE id = $1`, id) }()
 
-	// 触发器的 AFTER UPDATE OF 清单引用了这三列，不先删触发器 PostgreSQL 会拒绝
+	// 触发器的 AFTER UPDATE OF 清单引用了这一列，不先删触发器 PostgreSQL 会拒绝
 	// DROP COLUMN（2BP01）。真实升级路径同样靠 migrate 重建触发器。
 	if _, err := db.conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS scheduler_outbox_accounts_update ON accounts`); err != nil {
 		t.Fatalf("drop outbox update trigger: %v", err)
 	}
-	for _, column := range []string{"prompt_filter_policy", "egress_policy", "session_guards_policy"} {
+	for _, column := range []string{"egress_policy"} {
 		if _, err := db.conn.ExecContext(ctx, `ALTER TABLE accounts DROP COLUMN IF EXISTS `+column); err != nil {
 			t.Fatalf("drop %s: %v", column, err)
 		}
@@ -86,7 +86,7 @@ func postgresAccountPolicyColumnBackfill(ctx context.Context, t *testing.T, db *
 	if err != nil {
 		t.Fatalf("GetAccountByID: %v", err)
 	}
-	if row.PromptFilterPolicy != "inherit" || row.EgressPolicy != "inherit" || row.SessionGuardsPolicy != "inherit" {
+	if row.EgressPolicy != "inherit" {
 		t.Fatalf("backfilled row = %+v, want all inherit", row)
 	}
 
@@ -125,11 +125,7 @@ func postgresAccountPolicyRoundTrip(ctx context.Context, t *testing.T, db *DB) {
 		OptionalNullInt64{}, OptionalNullInt64{}, OptionalBool{},
 		OptionalInt64Slice{}, OptionalStringSlice{}, OptionalInt64Slice{},
 		OptionalString{}, nil,
-		AccountPolicyUpdate{
-			PromptFilterPolicy:  OptionalString{Set: true, Value: "exempt"},
-			EgressPolicy:        OptionalString{Set: true, Value: "direct"},
-			SessionGuardsPolicy: OptionalString{Set: true, Value: "off"},
-		}); err != nil {
+		AccountPolicyUpdate{EgressPolicy: OptionalString{Set: true, Value: "direct"}}); err != nil {
 		t.Fatalf("UpdateAccountSchedulerMetadata: %v", err)
 	}
 
@@ -137,16 +133,16 @@ func postgresAccountPolicyRoundTrip(ctx context.Context, t *testing.T, db *DB) {
 	if err != nil {
 		t.Fatalf("GetAccountByID: %v", err)
 	}
-	if row.PromptFilterPolicy != "exempt" || row.EgressPolicy != "direct" || row.SessionGuardsPolicy != "off" {
-		t.Fatalf("GetAccountByID = %+v, want exempt/direct/off", row)
+	if row.EgressPolicy != "direct" {
+		t.Fatalf("GetAccountByID = %+v, want direct", row)
 	}
 
 	projected, err := db.ListActiveByIDs(ctx, []int64{id})
 	if err != nil || len(projected) != 1 {
 		t.Fatalf("ListActiveByIDs = %d rows, err = %v", len(projected), err)
 	}
-	if projected[0].PromptFilterPolicy != "exempt" || projected[0].EgressPolicy != "direct" || projected[0].SessionGuardsPolicy != "off" {
-		t.Fatalf("ListActiveByIDs = %+v, want exempt/direct/off", projected[0])
+	if projected[0].EgressPolicy != "direct" {
+		t.Fatalf("ListActiveByIDs = %+v, want direct", projected[0])
 	}
 
 	listed, err := db.ListActive(ctx)
@@ -157,8 +153,8 @@ func postgresAccountPolicyRoundTrip(ctx context.Context, t *testing.T, db *DB) {
 	for _, r := range listed {
 		if r.ID == id {
 			found = true
-			if r.PromptFilterPolicy != "exempt" || r.EgressPolicy != "direct" || r.SessionGuardsPolicy != "off" {
-				t.Fatalf("ListActive = %+v, want exempt/direct/off", r)
+			if r.EgressPolicy != "direct" {
+				t.Fatalf("ListActive = %+v, want direct", r)
 			}
 		}
 	}
@@ -174,8 +170,8 @@ func postgresAccountPolicyRoundTrip(ctx context.Context, t *testing.T, db *DB) {
 		t.Fatalf("ListDeleted: %v", err)
 	}
 	for _, r := range deleted {
-		if r.ID == id && (r.PromptFilterPolicy != "exempt" || r.EgressPolicy != "direct" || r.SessionGuardsPolicy != "off") {
-			t.Fatalf("ListDeleted = %+v, want exempt/direct/off", r)
+		if r.ID == id && (r.EgressPolicy != "direct") {
+			t.Fatalf("ListDeleted = %+v, want direct", r)
 		}
 	}
 }
@@ -192,9 +188,7 @@ func postgresAccountPolicyOutboxTrigger(ctx context.Context, t *testing.T, db *D
 		column string
 		value  string
 	}{
-		{"prompt_filter_policy", "exempt"},
 		{"egress_policy", "direct"},
-		{"session_guards_policy", "off"},
 	} {
 		watermark, err := db.SchedulerOutboxHighWatermark(ctx)
 		if err != nil {

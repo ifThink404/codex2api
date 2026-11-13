@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -413,26 +412,10 @@ func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessTok
 		headers.Set("Originator", proxy.Originator)
 	}
 	// attestation 由本项目统一生成，不透传下游值。
-	// X-Codex-Turn-State 多一道闸：网关自造的替身（`c2a-ts-v1.…`）绝不能进上游握手。
-	// 走这条 WS 上游的 /v1/chat/completions 与 /v1/messages 都不经
-	// applyCodexTurnStateEchoPolicy，客户端手上换不回真实值的替身会原样走到这里；
-	// 判据与计数都用 proxy 包导出的那一对，前缀只有一个定义处。真实 token 不受影响。
 	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Client-Request-Id", "X-Responsesapi-Include-Timing-Metrics"} {
-		value := strings.TrimSpace(ginHeaders.Get(name))
-		if value == "" {
-			continue
+		if value := strings.TrimSpace(ginHeaders.Get(name)); value != "" {
+			headers.Set(name, value)
 		}
-		if strings.EqualFold(name, "X-Codex-Turn-State") && proxy.IsCodexTurnStateSubstitute(value) {
-			headers.Del(name)
-			proxy.NoteCodexTurnStateSubstituteDropped()
-			accountID := int64(0)
-			if account != nil {
-				accountID = account.ID()
-			}
-			log.Printf("[TURN-STATE] substitute dropped before upstream ws handshake account=%d", accountID)
-			continue
-		}
-		headers.Set(name, value)
 	}
 	if headers.Get("X-Codex-Turn-State") == "" {
 		if state := strings.TrimSpace(gjson.GetBytes(wsBody, "client_metadata.x-codex-turn-state").String()); state != "" {

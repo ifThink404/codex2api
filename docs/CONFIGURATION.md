@@ -126,15 +126,10 @@ Codex2API 采用三层配置架构：
 | `DOWNSTREAM_HTTP_KEEPALIVE_INTERVAL` | 否 | `30s` | 下游 HTTP/SSE 保活周期，使用 Go duration；`0` 关闭。流式端点从首个心跳起建立 SSE 200，发送注释或 Messages ping；非流式端点发送 HTTP 102，但 Codex/GPT Images 除外：其非流式请求不发送中间响应，直接等待最终 JSON |
 | `DOWNSTREAM_WS_KEEPALIVE_INTERVAL` | 否 | `45s` | 下游 WebSocket Ping 周期，使用 Go duration；`0` 关闭。覆盖 Responses、Realtime 与 Live Sideband |
 
-会话防护（turn-state 严格模式、不借用、首次会话准入、连续 500 自动锁定会话、turn-state 托管）是管理后台设置项而非环境变量，说明见 [session-guards.md](session-guards.md)。
-
-账号管理里每个账号可单独设置 prompt 过滤、出网与会话防护策略（默认继承全局），说明见 [session-guards.md](session-guards.md#账号级策略)。
+账号管理里每个账号可单独设置出网策略（默认继承全局；「直连」不走代理池、全局代理与 Resin）。
 
 账号级后台探测开关、探测间隔以及独立的 API 错误自动恢复开关见 [account-probes.md](account-probes.md)。默认 API Key 账号不自动探测，自动恢复须单独开启；OAuth 默认沿用既有探测策略，也可关闭或设置间隔。
 
-用量日志的 turn-state 三列（`turn_state_length` / `turn_state_echo` / `turn_state_stripped`）与配套的 `turn_state`、`turn_state_length`、`turn_state_echo`、`turn_state_stripped` 四个查询参数说明见 [session-guards.md](session-guards.md#用量日志-turn-state-列)。
-
-「向 NewAPI 上报宽松首响应（不再提前提交 200）」同样是管理后台设置项（存储键仍是 `codex_preflight_sse_passthrough_enabled`）。语义已改：不再提前透传前置元数据或提前提交 200，改为在正常提交响应头时附带 `X-Codex2API-First-Response-Ms` 等计时头，说明见 [newapi-first-response-timing.md](newapi-first-response-timing.md)。
 配额帧读路径只更新内存和调度器；用量、credits、套餐及冷却的写库共用后台合并路径。并发观测锁争用时，每账号最多保留 64 个待应用 partial 帧，按原始时间顺序处理；溢出保留最新的有界尾部，并通过已有探针补齐权威快照。停机丢弃未完成的缓存写，重启后由探针重建。冷却写失败会在后续观测重试，不重复计入失败次数。
 
 > `CODEX_UPSTREAM_TRANSPORT` 只控制 HTTP 入站请求转发到 Codex 上游时使用 `http` 还是 `ws`。客户端侧 WebSocket 入口独立可用：使用 `GET ws://<host>/v1/responses` 建连，首帧发送 `response.create` JSON，服务端会通过 Codex 上游 WS 返回 Responses 事件帧。

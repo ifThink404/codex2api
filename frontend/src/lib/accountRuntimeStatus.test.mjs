@@ -86,29 +86,3 @@ test('real unknown, hard errors and active API status remain distinct', async ()
   }
   assert.match(await renderBadge('zh', 'active'), /可用/)
 })
-
-test('turn-state samples apply only to official Codex accounts, including legitimate unrecorded samples', async () => {
-  assert.ok(existsSync(resolve(src, 'lib/accountTurnState.ts')), 'official turn-state applicability helper is missing')
-  const { officialAccountLatestTurnState } = await import('./accountTurnState.ts')
-  const unrecorded = { created_at: '2026-09-20T10:00:00Z', turn_state_length: null }
-  const received = { ...unrecorded, turn_state_length: 292 }
-  for (const latest_turn_state of [unrecorded, received]) {
-    assert.equal(officialAccountLatestTurnState({ latest_turn_state }), latest_turn_state)
-    for (const provider of ['openai_responses_api', 'grok_api', 'claude_api', 'antigravity_api']) {
-      assert.equal(officialAccountLatestTurnState({ [provider]: true, latest_turn_state }), undefined)
-    }
-  }
-  assert.equal(officialAccountLatestTurnState({}), undefined)
-  assert.equal(officialAccountLatestTurnState({ latest_turn_state: null }), null)
-})
-
-test('account table, cards and details filter turn-state applicability before rendering health', () => {
-  for (const [path, count] of [['pages/Accounts.tsx', 2], ['components/AccountDetailSheet.tsx', 1]]) {
-    const source = readFileSync(resolve(src, path), 'utf8')
-    const healthBars = source.match(/<AccountHealthBar\b[\s\S]*?\/>/g) ?? []
-    assert.equal(healthBars.length, count)
-    for (const bar of healthBars) {
-      assert.match(bar, /latestTurnState=\{officialAccountLatestTurnState\(account\)\}/)
-    }
-  }
-})

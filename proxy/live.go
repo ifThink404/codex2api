@@ -73,7 +73,6 @@ type liveCallRecord struct {
 	UsageLogged           bool                  `json:"usage_logged,omitempty"`
 }
 
-// liveAccountFilter: Live is native-only; relay accounts are not eligible.
 func liveAccountFilter(account *auth.Account) bool {
 	return account != nil && !account.IsRelayStyle()
 }

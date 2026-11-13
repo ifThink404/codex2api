@@ -341,15 +341,11 @@ func ShouldReviewVerdict(verdict Verdict, cfg ReviewConfig) bool {
 	if !cfg.Ready() {
 		return false
 	}
-	action := verdict.Action
-	if verdict.LocalOriginalAction != "" {
-		action = verdict.LocalOriginalAction
-	}
 	switch cfg.Adapter.Scope {
 	case ReviewScopeLocalBlocks:
-		return action == ActionBlock
+		return verdict.Action == ActionBlock
 	case ReviewScopeLocalCandidates:
-		return action == ActionWarn || action == ActionBlock
+		return verdict.Action == ActionWarn || verdict.Action == ActionBlock
 	default:
 		return true
 	}
@@ -932,11 +928,6 @@ func ApplyReviewOutcome(verdict Verdict, outcome ReviewOutcome, reviewErr error,
 		return verdict
 	}
 	if !outcome.Flagged {
-		if verdict.LocalAction == ActionWarn {
-			verdict.Action = ActionWarn
-			verdict.Reason = "prompt review passed; local warning retained"
-			return verdict
-		}
 		// A terminal deterministic rule is an independent safety boundary. The
 		// model remains useful for clean and ambiguous requests, but a false clear
 		// cannot downgrade evidence already classified as terminal locally.

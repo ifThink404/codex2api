@@ -504,7 +504,5 @@ func defaultBootstrapSettings() *database.SystemSettings {
 		SmartPacingWindows:                "5h,7d",
 		AutoResetCreditsBeforeExpiryMin:   60,
 		UTLSShutdownTimeoutMinutes:        30,
-		CodexSessionAutoLockThreshold:     3,
-		CodexTurnStateVaultEnabled:        true,
 	}
 }

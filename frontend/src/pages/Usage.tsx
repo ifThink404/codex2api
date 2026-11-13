@@ -18,17 +18,12 @@ import { TimingCell, TokensPerSecCell, UsageCacheBadges, UsageInputTokenCount } 
 import Modal from '../components/Modal'
 import ColumnSettingsMenu from '../components/ColumnSettingsMenu'
 import StateShell from '../components/StateShell'
-import UsageResponseModel from '../components/UsageResponseModel'
-import { UsageTurnState, usageTurnStateKind } from '../components/UsageTurnState'
-import { UsageWindowNumberBadge } from '../components/UsageWindowNumberBadge'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
-import { confirmedUsageLogDownload, saveUsageLogExport } from '../lib/usageLogExport'
 import { useToast } from '../hooks/useToast'
 import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import type { APIKeyRow, OpsErrorSummary, SystemSettings, UsageAPIKeyStat, UsageEndpointStat, UsageFeatureStats, UsageLog, UsageModelStat, UsageStats, PromptFilterLog, PromptPolicyIncidentDetailResponse } from '../types'
 import { cn, formatCompactEmail } from '../lib/utils'
-import { classifyStatus, ERROR_KIND_TONE_TEXT_CLASSES, errorKindTone } from '../lib/errorBadges'
 import { formatUsageNumber as formatTokens } from '../lib/usageFormat'
 import { buildModelShareData, formatSharePercent, type ModelShareMetric } from '../lib/usageInsights'
 import './usage-insights.css'
@@ -45,7 +40,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { createLucideIcon, Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical, Download } from 'lucide-react'
+import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
+
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 
@@ -191,9 +187,6 @@ type UsageTypeFilter = '' | 'stream' | 'sync' | 'compact' | 'history'
 type UsageStatusFilter = '' | '2xx' | 'error' | '4xx' | '5xx' | `${number}`
 type UsageRetryFilter = '' | 'false' | 'true'
 type UsageTransportFilter = '' | 'http' | 'ws'
-type UsageTurnStateFilter = '' | 'received' | 'missing' | 'not_recorded'
-type UsageTurnStateEchoFilter = '' | 'none' | 'same' | 'cross' | 'unknown' | 'substitute'
-type UsageTurnStateStrippedFilter = '' | 'true' | 'false'
 
 // 本页面局部的"自定义"区间标记。不污染全局 TimeRangeKey 类型 (Dashboard 等仍只识别预设档)。
 type UsageTimeRangeKey = UsagePresetRangeKey | 'custom'
@@ -988,8 +981,8 @@ function UsageErrorSummaryCell({ log, mobile = false }: { log: UsageLog; mobile?
       )}
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <AlertTriangle className={cn('size-3.5 shrink-0', ERROR_KIND_TONE_TEXT_CLASSES[errorKindTone(errorKind || classifyStatus(log.status_code))])} />
-        <span className={cn('truncate text-[11px] font-semibold', errorKind ? ERROR_KIND_TONE_TEXT_CLASSES[errorKindTone(errorKind)] : 'text-foreground')} title={errorKind || t('usage.unknownErrorKind')}>
+        <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />
+        <span className="truncate text-[11px] font-semibold text-foreground" title={errorKind || t('usage.unknownErrorKind')}>
           {errorKind || t('usage.unknownErrorKind')}
         </span>
         {log.is_retry_attempt ? (
@@ -1428,9 +1421,6 @@ export default function Usage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = usePersistedPageSize('usage_logs', 20, DEFAULT_PAGE_SIZE_OPTIONS)
   const [clearing, setClearing] = useState(false)
-  const [exporting, setExporting] = useState<'filtered' | 'all' | null>(null)
-  const exportController = useRef<AbortController | null>(null)
-  useEffect(() => () => exportController.current?.abort(), [])
   const [timeRange, setTimeRange] = useState<UsageTimeRangeKey>(getInitialUsageRange)
   const [customRange, setCustomRange] = useState<CustomRange | null>(getInitialUsageCustomRange)
   const [showCustomPopover, setShowCustomPopover] = useState(false)
@@ -1457,9 +1447,6 @@ export default function Usage() {
   const [filterErrorKind, setFilterErrorKind] = useState('')
   const [filterRetry, setFilterRetry] = useState<UsageRetryFilter>('')
   const [filterTransport, setFilterTransport] = useState<UsageTransportFilter>('')
-  const [filterTurnState, setFilterTurnState] = useState<UsageTurnStateFilter>('')
-  const [filterTurnStateEcho, setFilterTurnStateEcho] = useState<UsageTurnStateEchoFilter>('')
-  const [filterTurnStateStripped, setFilterTurnStateStripped] = useState<UsageTurnStateStrippedFilter>('')
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
   const [apiKeys, setAPIKeys] = useState<APIKeyRow[]>([])
   const [modelOptions, setModelOptions] = useState<string[]>([])
@@ -1524,11 +1511,8 @@ export default function Usage() {
       channel: channel || undefined,
       retry: filterRetry || undefined,
       viaWebsocket: filterTransport === 'ws' ? 'true' : filterTransport === 'http' ? 'false' : undefined,
-      turnState: filterTurnState || undefined,
-      turnStateEcho: filterTurnStateEcho || undefined,
-      turnStateStripped: filterTurnStateStripped || undefined,
     }
-  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterModelMismatch, filterType, channel, filterRetry, filterTransport, filterTurnState, filterTurnStateEcho, filterTurnStateStripped])
+  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterModelMismatch, filterType, channel, filterRetry, filterTransport])
 
   const buildLogFilterParams = useCallback(() => {
     return {
@@ -1587,42 +1571,6 @@ export default function Usage() {
     setStatsLoadError(null)
     void reloadSilently()
   }, [buildDimensionFilterParams, reloadSilently])
-
-  const downloadLogs = async (scope: 'filtered' | 'all') => {
-    if (exportController.current) return
-    const controller = new AbortController()
-    exportController.current = controller
-    setExporting(scope)
-    const params = scope === 'filtered' ? buildLogFilterParams() : undefined
-    try {
-      const saved = await confirmedUsageLogDownload(
-        () => confirm({
-          title: t(scope === 'filtered' ? 'usage.exportFilteredTitle' : 'usage.exportAllTitle'),
-          description: (
-            <div className="space-y-3">
-              <p>{t(scope === 'filtered' ? 'usage.exportFilteredDesc' : 'usage.exportAllDesc')}</p>
-              {params && (
-                <p className="break-all font-mono text-xs text-muted-foreground">{params.start} — {params.end}</p>
-              )}
-              <p className="text-sm text-amber-700 dark:text-amber-300">{t('usage.exportPrivacy')}</p>
-            </div>
-          ),
-          confirmText: t('usage.exportConfirm'),
-          tone: 'warning',
-        }),
-        () => api.downloadUsageLogs(scope, params, controller.signal),
-        (blob) => saveUsageLogExport(blob, scope),
-      )
-      if (saved) showToast(t('usage.exportSuccess'))
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        showToast(t('usage.exportFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
-      }
-    } finally {
-      exportController.current = null
-      setExporting(null)
-    }
-  }
 
   // 服务端分页加载日志
   const loadLogs = useCallback(async () => {
@@ -1799,9 +1747,6 @@ export default function Usage() {
     filterErrorKind,
     filterRetry,
     filterTransport,
-    filterTurnState,
-    filterTurnStateEcho,
-    filterTurnStateStripped,
   ].filter(Boolean).length
   const hasActiveFilters = Boolean(
     searchInput
@@ -1816,10 +1761,7 @@ export default function Usage() {
     || (showUpstreamModelMismatch && filterModelMismatch)
     || filterErrorKind
     || filterRetry
-    || filterTransport
-    || filterTurnState
-    || filterTurnStateEcho
-    || filterTurnStateStripped,
+    || filterTransport,
   )
   const statusFilterOptions: Array<{ value: UsageStatusFilter; label: string; tone?: string }> = [
     { value: '', label: t('usage.statusAll') },
@@ -1861,18 +1803,8 @@ export default function Usage() {
     setFilterErrorKind('')
     setFilterRetry('')
     setFilterTransport('')
-    setFilterTurnState('')
-    setFilterTurnStateEcho('')
-    setFilterTurnStateStripped('')
     setPage(1)
   }
-
-  // turn-state 那一格点一下按这行的状态筛,再点同一个取消——和模型/账号格一个手感。
-  const toggleTurnStateFilter = useCallback((log: UsageLog) => {
-    const next = usageTurnStateKind(log)
-    setFilterTurnState((current) => (current === next ? '' : next))
-    setPage(1)
-  }, [])
 
   // 表格行的账号/模型可点击:点一下按它筛选,再点同一个取消。
   const toggleAccountFilter = useCallback((log: UsageLog) => {
@@ -2114,21 +2046,8 @@ export default function Usage() {
                   />
                 )}
               </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <span className="whitespace-nowrap text-xs text-muted-foreground">{logsLoading ? t('common.loading') : t('usage.recordsCount', { count: logsTotal })}</span>
-                <Button type="button" variant="outline" size="sm" disabled={exporting !== null || clearing} onClick={() => void downloadLogs('filtered')}>
-                  {exporting === 'filtered' ? <RefreshCw className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
-                  {t('usage.exportFiltered')}
-                </Button>
-                <Button type="button" variant="outline" size="sm" disabled={exporting !== null || clearing} onClick={() => void downloadLogs('all')}>
-                  {exporting === 'all' ? <RefreshCw className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
-                  {t('usage.exportAll')}
-                </Button>
-                {exporting !== null && (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => exportController.current?.abort()}>
-                    {t('usage.exportCancel')}
-                  </Button>
-                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -2146,7 +2065,7 @@ export default function Usage() {
                 <Button
                   variant="destructive"
                   size="sm"
-                  disabled={clearing || exporting !== null || logs.length === 0}
+                  disabled={clearing || logs.length === 0}
                   onClick={async () => {
                     const confirmed = await confirm({
                       title: t('usage.clearLogsTitle'),
@@ -2405,43 +2324,6 @@ export default function Usage() {
                       { label: 'WebSocket', value: 'ws' },
                     ]}
                   />
-                  <Select
-                    compact
-                    value={filterTurnState}
-                    onValueChange={(value) => { setFilterTurnState(value as UsageTurnStateFilter); setPage(1) }}
-                    placeholder={t('usage.turnState.allStates')}
-                    options={[
-                      { label: t('usage.turnState.allStates'), value: '' },
-                      { label: t('usage.turnState.received'), value: 'received' },
-                      { label: t('usage.turnState.missing'), value: 'missing' },
-                      { label: t('usage.turnState.notRecorded'), value: 'not_recorded' },
-                    ]}
-                  />
-                  <Select
-                    compact
-                    value={filterTurnStateEcho}
-                    onValueChange={(value) => { setFilterTurnStateEcho(value as UsageTurnStateEchoFilter); setPage(1) }}
-                    placeholder={t('usage.turnState.allEchoes')}
-                    options={[
-                      { label: t('usage.turnState.allEchoes'), value: '' },
-                      { label: t('usage.turnState.echo.none'), value: 'none' },
-                      { label: t('usage.turnState.echo.same'), value: 'same' },
-                      { label: t('usage.turnState.echo.cross'), value: 'cross' },
-                      { label: t('usage.turnState.echo.unknown'), value: 'unknown' },
-                      { label: t('usage.turnState.echo.substitute'), value: 'substitute' },
-                    ]}
-                  />
-                  <Select
-                    compact
-                    value={filterTurnStateStripped}
-                    onValueChange={(value) => { setFilterTurnStateStripped(value as UsageTurnStateStrippedFilter); setPage(1) }}
-                    placeholder={t('usage.turnState.allStripped')}
-                    options={[
-                      { label: t('usage.turnState.allStripped'), value: '' },
-                      { label: t('usage.turnState.stripped'), value: 'true' },
-                      { label: t('usage.turnState.notStripped'), value: 'false' },
-                    ]}
-                  />
                   <div className="flex min-w-0 gap-2">
                   {showFastFilter ? (
                     <button
@@ -2560,8 +2442,6 @@ export default function Usage() {
                           {log.reasoning_effort ? (
                             <ReasoningEffortBadge effort={log.reasoning_effort} />
                           ) : null}
-                          <UsageWindowNumberBadge log={log} />
-                          <UsageTurnState log={log} onClick={() => toggleTurnStateFilter(log)} />
                           {visibleColumns.type && isFastTier(log.billing_service_tier || log.service_tier) ? (
                             <Badge
                               variant="outline"
@@ -2578,7 +2458,9 @@ export default function Usage() {
                             hasCompactionHistory={log.has_compaction_history}
                           />
                           <InternalRequestBadge log={log} />
-                          <UsageResponseModel log={log} showMismatch={showUpstreamModelMismatch} />
+                          {showUpstreamModelMismatch && log.upstream_model_mismatch === true && log.upstream_response_model && (
+                            <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
+                          )}
                         </div>
                         {visibleColumns.time && (
                           <div className="shrink-0 whitespace-nowrap text-right text-[11px] tabular-nums text-muted-foreground">
@@ -2796,8 +2678,6 @@ export default function Usage() {
                             {log.reasoning_effort ? (
                               <ReasoningEffortBadge effort={log.reasoning_effort} />
                             ) : null}
-                            <UsageWindowNumberBadge log={log} />
-                            <UsageTurnState log={log} onClick={() => toggleTurnStateFilter(log)} />
                             {isImageUsageLog(log) && (
                               <ImageUsageBadge log={log} />
                             )}
@@ -2811,7 +2691,9 @@ export default function Usage() {
                                 {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
                               </Badge>
                             )}
-                            <UsageResponseModel log={log} showMismatch={showUpstreamModelMismatch} />
+                            {showUpstreamModelMismatch && log.upstream_model_mismatch === true && log.upstream_response_model && (
+                              <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
+                            )}
                           </div>
                         </TableCell>}
                         {visibleColumns.account && <TableCell className={`${usageTableTextClass} text-muted-foreground`}>

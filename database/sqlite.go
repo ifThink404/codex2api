@@ -124,9 +124,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			score_bias_override INTEGER NULL,
 			base_concurrency_override INTEGER NULL,
 			skip_warm_tier INTEGER DEFAULT 0,
-			prompt_filter_policy TEXT DEFAULT 'inherit',
 			egress_policy TEXT DEFAULT 'inherit',
-			session_guards_policy TEXT DEFAULT 'inherit',
 			note TEXT DEFAULT '',
 			error_message TEXT DEFAULT '',
 			deleted_at TIMESTAMP NULL,
@@ -179,13 +177,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			first_token_ms INTEGER DEFAULT 0,
 			ws_acquire_ms INTEGER DEFAULT 0,
 			reasoning_effort TEXT DEFAULT '',
-			upstream_response_model TEXT DEFAULT '',
-			window_number TEXT DEFAULT '',
-			turn_state_length INTEGER,
-			turn_state_echo TEXT DEFAULT '',
-			turn_state_stripped INTEGER DEFAULT 0,
 			effective_model TEXT DEFAULT '',
 			daybreak_program TEXT NOT NULL DEFAULT '',
+			upstream_response_model TEXT,
 			upstream_model_mismatch INTEGER,
 			inbound_endpoint TEXT DEFAULT '',
 			upstream_endpoint TEXT DEFAULT '',
@@ -349,14 +343,6 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					codex_turn_state_template_cache_enabled INTEGER DEFAULT 0,
 					codex_turn_state_account_mode TEXT DEFAULT 'auto',
 					codex_telemetry_timing_debug INTEGER DEFAULT 0,
-					codex_turn_state_strict INTEGER DEFAULT 0,
-					codex_session_no_borrow_enabled INTEGER DEFAULT 0,
-					codex_session_no_borrow_hold_seconds INTEGER DEFAULT 20,
-					codex_initial_session_admission_enabled INTEGER DEFAULT 0,
-					codex_initial_session_max_age_seconds INTEGER DEFAULT 180,
-					codex_session_auto_lock_enabled INTEGER DEFAULT 0,
-					codex_session_auto_lock_threshold INTEGER DEFAULT 3,
-					codex_turn_state_vault_enabled INTEGER DEFAULT 1,
 					codex_request_compression INTEGER DEFAULT 1,
 					codex_ws_weak_network_mode INTEGER DEFAULT 0,
 					codex_ws_keepalive_enabled INTEGER DEFAULT 0,
@@ -421,7 +407,6 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					output_guard_config_generation INTEGER NOT NULL DEFAULT 1
 				);`,
 		modelCapabilitiesSchema,
-		accountModelObservationsSchema,
 		daybreakSchema,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
@@ -447,8 +432,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			test_ip TEXT DEFAULT '',
 			test_location TEXT DEFAULT '',
 			test_latency_ms INTEGER DEFAULT 0,
-			test_status TEXT NOT NULL DEFAULT 'untested',
-			test_timezone TEXT DEFAULT ''
+			test_status TEXT NOT NULL DEFAULT 'untested'
 		);`,
 		`CREATE TABLE IF NOT EXISTS account_events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -541,8 +525,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			review_endpoint TEXT DEFAULT '',
 			review_request_mode TEXT DEFAULT '',
 			review_latency_ms INTEGER NULL,
-			full_text TEXT DEFAULT '',
-			account_id INTEGER NULL
+			full_text TEXT DEFAULT ''
 		);`,
 		`CREATE TABLE IF NOT EXISTS prompt_review_profiles (
 			id TEXT PRIMARY KEY,
@@ -585,18 +568,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "first_token_ms", "INTEGER DEFAULT 0"},
 		{"usage_logs", "ws_acquire_ms", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_effort", "TEXT DEFAULT ''"},
-		// 上游自报模型 / Codex 客户端窗口号：老库升级走这里回填，新库在上面的建表里。
-		{"usage_logs", "upstream_response_model", "TEXT DEFAULT ''"},
-		{"usage_logs", "window_number", "TEXT DEFAULT ''"},
-		{"usage_logs", "transport", "TEXT NOT NULL DEFAULT 'native'"},
-		{"usage_logs", "plugin_meta", "TEXT NOT NULL DEFAULT ''"},
-		// turn_state_length 没有 DEFAULT：NULL（未记录）与 0（检查过但上游没给）
-		// 含义不同，给 0 会把整张旧表显示成「上游从没给过 turn-state」。
-		{"usage_logs", "turn_state_length", "INTEGER"},
-		{"usage_logs", "turn_state_echo", "TEXT DEFAULT ''"},
-		{"usage_logs", "turn_state_stripped", "INTEGER DEFAULT 0"},
 		{"usage_logs", "effective_model", "TEXT DEFAULT ''"},
 		{"usage_logs", "daybreak_program", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_logs", "upstream_response_model", "TEXT"},
 		{"usage_logs", "upstream_model_mismatch", "INTEGER"},
 		{"usage_logs", "inbound_endpoint", "TEXT DEFAULT ''"},
 		{"usage_logs", "upstream_endpoint", "TEXT DEFAULT ''"},
@@ -702,14 +676,6 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "codex_turn_state_template_cache_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_turn_state_account_mode", "TEXT DEFAULT 'auto'"},
 		{"system_settings", "codex_telemetry_timing_debug", "INTEGER DEFAULT 0"},
-		{"system_settings", "codex_turn_state_strict", "INTEGER DEFAULT 0"},
-		{"system_settings", "codex_session_no_borrow_enabled", "INTEGER DEFAULT 0"},
-		{"system_settings", "codex_session_no_borrow_hold_seconds", "INTEGER DEFAULT 20"},
-		{"system_settings", "codex_initial_session_admission_enabled", "INTEGER DEFAULT 0"},
-		{"system_settings", "codex_initial_session_max_age_seconds", "INTEGER DEFAULT 180"},
-		{"system_settings", "codex_session_auto_lock_enabled", "INTEGER DEFAULT 0"},
-		{"system_settings", "codex_session_auto_lock_threshold", "INTEGER DEFAULT 3"},
-		{"system_settings", "codex_turn_state_vault_enabled", "INTEGER DEFAULT 1"},
 		{"system_settings", "codex_request_compression", "INTEGER DEFAULT 1"},
 		{"system_settings", "codex_ws_weak_network_mode", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_ws_keepalive_enabled", "INTEGER DEFAULT 0"},
@@ -791,7 +757,6 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "prompt_filter_sensitive_words", "TEXT DEFAULT ''"},
 		{"system_settings", "prompt_filter_custom_patterns", "TEXT DEFAULT '[]'"},
 		{"system_settings", "prompt_filter_disabled_patterns", "TEXT DEFAULT '[]'"},
-		{"system_settings", "prompt_filter_builtin_overrides", "TEXT DEFAULT '[]'"},
 		{"system_settings", "prompt_filter_review_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "prompt_filter_review_api_key", "TEXT DEFAULT ''"},
 		{"system_settings", "prompt_filter_review_base_url", "TEXT DEFAULT 'https://api.deepseek.com'"},
@@ -817,7 +782,6 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"prompt_filter_logs", "strike_eligible", "INTEGER DEFAULT 0"},
 		{"prompt_filter_logs", "request_protocol", "TEXT DEFAULT ''"},
 		{"prompt_filter_logs", "request_provider", "TEXT DEFAULT ''"},
-		{"prompt_filter_logs", "account_id", "INTEGER NULL"},
 		{"system_settings", "client_compat_mode", "TEXT DEFAULT 'preserve'"},
 		{"system_settings", "codex_min_cli_version", "TEXT DEFAULT '0.160.0'"},
 		{"system_settings", "codex_user_agent_config", "TEXT DEFAULT '{}'"},
@@ -856,9 +820,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"accounts", "credit_enabled", "INTEGER DEFAULT 0"},
 		{"accounts", "credit_skip_usage_window", "INTEGER DEFAULT 0"},
 		{"accounts", "skip_warm_tier", "INTEGER DEFAULT 0"},
-		{"accounts", "prompt_filter_policy", "TEXT DEFAULT 'inherit'"},
 		{"accounts", "egress_policy", "TEXT DEFAULT 'inherit'"},
-		{"accounts", "session_guards_policy", "TEXT DEFAULT 'inherit'"},
 		{"accounts", "image_quota_remaining", "INTEGER NULL"},
 		{"accounts", "image_quota_total", "INTEGER NULL"},
 		{"accounts", "today_used_count", "INTEGER DEFAULT 0"},
@@ -867,7 +829,6 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"proxies", "test_location", "TEXT DEFAULT ''"},
 		{"proxies", "test_latency_ms", "INTEGER DEFAULT 0"},
 		{"proxies", "test_status", "TEXT NOT NULL DEFAULT 'untested'"},
-		{"proxies", "test_timezone", "TEXT DEFAULT ''"},
 	}
 	for _, column := range columns {
 		if err := db.ensureSQLiteColumn(ctx, column.table, column.name, column.def); err != nil {
@@ -1006,7 +967,7 @@ func (db *DB) sqliteTableColumns(ctx context.Context, table string) (map[string]
 func (db *DB) loadTrafficSecondsSQLite(ctx context.Context, since time.Time, buckets *trafficSecondBuckets) error {
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT created_at, total_tokens
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE created_at >= $1
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
 	`, db.timeArg(since))
@@ -1043,7 +1004,7 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 			COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cached_tokens), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END), 0)
-		FROM usage_metered_events AS usage_logs
+		FROM usage_logs
 		WHERE created_at >= $1 AND created_at < $2
 		  AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
@@ -1079,7 +1040,7 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 	}
 
 	modelQuery := `SELECT COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown'), COUNT(*)
-		FROM usage_metered_events AS usage_logs WHERE created_at >= $1 AND created_at < $2 AND status_code <> 499
+		FROM usage_logs WHERE created_at >= $1 AND created_at < $2 AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''`
 	modelArgs := []interface{}{startArg, endArg}
 	if channel != "" {

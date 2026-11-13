@@ -4,13 +4,10 @@ import "testing"
 
 func TestNormalizeAccountPolicy(t *testing.T) {
 	cases := []struct{ field, in, want string }{
-		{"prompt_filter_policy", "", PolicyInherit},
-		{"prompt_filter_policy", "EXEMPT ", PromptFilterPolicyExempt},
-		{"prompt_filter_policy", "off", PolicyInherit}, // wrong enum for this field → inherit
+		{"egress_policy", "", PolicyInherit},
 		{"egress_policy", "direct", EgressPolicyDirect},
+		{"egress_policy", " DIRECT ", EgressPolicyDirect},
 		{"egress_policy", "exempt", PolicyInherit},
-		{"session_guards_policy", "Off", SessionGuardsPolicyOff},
-		{"session_guards_policy", "direct", PolicyInherit},
 		{"unknown_field", "direct", PolicyInherit},
 	}
 	for _, tc := range cases {
@@ -24,11 +21,10 @@ func TestNormalizeAccountPolicy(t *testing.T) {
 	if err := ValidateAccountPolicy("egress_policy")("direct"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	acc := &Account{EgressPolicy: EgressPolicyDirect, PromptFilterPolicy: PromptFilterPolicyExempt, SessionGuardsPolicy: SessionGuardsPolicyOff}
-	if !acc.EgressDirect() || !acc.PromptFilterExempt() || !acc.SessionGuardsOff() {
-		t.Fatal("predicates must reflect the policy fields")
+	if !(&Account{EgressPolicy: EgressPolicyDirect}).EgressDirect() {
+		t.Fatal("EgressDirect must reflect the policy field")
 	}
-	if (&Account{}).EgressDirect() || (&Account{}).PromptFilterExempt() || (&Account{}).SessionGuardsOff() {
+	if (&Account{}).EgressDirect() {
 		t.Fatal("zero value must be inherit")
 	}
 }

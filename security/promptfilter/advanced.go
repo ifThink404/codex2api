@@ -133,10 +133,8 @@ type NewAPIConfig struct {
 }
 
 type EnforcementConfig struct {
-	LocalMode                      string   `json:"local_mode"`
-	AuxiliaryHighConfidenceEnabled bool     `json:"auxiliary_high_confidence_enabled"`
-	TerminalCategories             []string `json:"terminal_categories"`
-	TerminalBypassModels           []string `json:"terminal_bypass_models"`
+	TerminalCategories   []string `json:"terminal_categories"`
+	TerminalBypassModels []string `json:"terminal_bypass_models"`
 	// ApprovalReviewModels 是可信的 Codex 自动审批(Guardian)请求模型。只有请求模型
 	// 在此列表、且请求通过封闭模板结构校验时,审批请求里的父会话记录才按不可信
 	// 证据处理而不再当作用户输入拦截;待审批动作仍同步审计。
@@ -778,7 +776,6 @@ func normalizeEnforcementModels(models []string, defaults []string) []string {
 
 func NormalizeAdvancedConfig(cfg AdvancedConfig) AdvancedConfig {
 	d := DefaultAdvancedConfig()
-	cfg.Enforcement.LocalMode = NormalizeLocalMode(cfg.Enforcement.LocalMode)
 	cfg.Guard = NormalizeGuardConfig(cfg.Guard)
 	seenCategories := map[string]bool{}
 	categories := make([]string, 0, len(cfg.Enforcement.TerminalCategories))

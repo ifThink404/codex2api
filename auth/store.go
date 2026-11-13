@@ -478,9 +478,7 @@ type Account struct {
 	IgnoreUsageLimitStatusOverride *bool
 	ignoreUsageLimitStatus         bool
 	SkipWarmTier                   bool   // 跳过 warm 层级降级
-	PromptFilterPolicy             string // 账号级策略（auth/account_policies.go）；空/未知视为 inherit
-	EgressPolicy                   string // 同上
-	SessionGuardsPolicy            string // 同上
+	EgressPolicy                   string // 账号级策略（auth/account_policies.go）；空/未知视为 inherit
 	KeepConcurrencyOnDegrade       bool   // warm/risky 不降并发,层级照算 (issue #772)
 	AllowedAPIKeyIDs               []int64
 	allowedAPIKeySet               map[int64]struct{}
@@ -4014,10 +4012,7 @@ func (a *Account) GetLastUsedAt() time.Time {
 
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
-	proxyAuditLabels map[string]ProxyAuditLabel
-	// proxyLocations is the stored egress location per proxy URL, refreshed with
-	// the proxy pool; web search reads it without any DB or network access.
-	proxyLocations                     map[string]database.ProxyLocation
+	proxyAuditLabels                   map[string]ProxyAuditLabel
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
 	accounts                           []*Account
@@ -4194,10 +4189,6 @@ type Store struct {
 	sessionMu                     sync.RWMutex
 	sessionBindings               map[string]sessionAffinity
 	sessionSlotBufferEnabled      atomic.Bool
-	sessionNoBorrowEnabled        atomic.Bool
-	sessionNoBorrowHoldNS         atomic.Int64
-	sessionBorrowed               atomic.Uint64
-	sessionBorrowHeld             atomic.Uint64
 	sessionSlotBufferNS           atomic.Int64
 	sessionSlotSequence           uint64
 	sessionSlotReservations       map[int64]map[string][]uint64
@@ -4910,7 +4901,6 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.publishAccountSnapshot(nil)
 	s.sessionSlotBufferEnabled.Store(settings.SessionSlotBufferEnabled)
 	s.SetSessionSlotBuffer(time.Duration(database.NormalizeSessionSlotBufferSeconds(settings.SessionSlotBufferSeconds)) * time.Second)
-	s.SetSessionNoBorrow(settings.CodexSessionNoBorrowEnabled, time.Duration(settings.CodexSessionNoBorrowHoldSeconds)*time.Second)
 	if db != nil {
 		s.proxyPoolLoader = db.ListEnabledProxies
 		s.proxyInventoryLoader = db.ListProxies
@@ -5843,12 +5833,8 @@ func (s *Store) ReloadProxyPool() error {
 	s.proxyPoolSet = buildProxyPoolSet(enabledURLs)
 	s.managedProxySet = buildProxyPoolSet(managedURLs)
 	s.proxyAuditLabels = make(map[string]ProxyAuditLabel, len(auditRows))
-	s.proxyLocations = make(map[string]database.ProxyLocation, len(auditRows))
 	for _, row := range auditRows {
 		if row != nil {
-			if location := row.Location(); location != (database.ProxyLocation{}) {
-				s.proxyLocations[strings.TrimSpace(row.URL)] = location
-			}
 			name := strings.TrimSpace(row.Label)
 			if name == "" {
 				name = "proxy"
@@ -5859,17 +5845,6 @@ func (s *Store) ReloadProxyPool() error {
 	s.mu.Unlock()
 	log.Printf("代理池已重新加载: %d 个活跃代理", len(enabledURLs))
 	return nil
-}
-
-// ProxyLocation returns the stored egress location of a managed proxy URL, or
-// the zero value for direct connections and proxies outside the proxy table.
-func (s *Store) ProxyLocation(proxyURL string) database.ProxyLocation {
-	if s == nil {
-		return database.ProxyLocation{}
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.proxyLocations[strings.TrimSpace(proxyURL)]
 }
 
 // UnusableManagedProxies returns the subset of proxyURLs that are known to the
@@ -6466,9 +6441,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	account.ModelCooldownBackoffOverride = row.GetCredentialOptionalBool("model_cooldown_backoff_override")
 	account.recomputeEffectiveIgnoreUsageLimitStatus(s.IgnoreUsageLimitStatus())
 	account.SkipWarmTier = row.SkipWarmTier
-	account.PromptFilterPolicy = NormalizeAccountPolicy(AccountPolicyPromptFilter, row.PromptFilterPolicy)
 	account.EgressPolicy = NormalizeAccountPolicy(AccountPolicyEgress, row.EgressPolicy)
-	account.SessionGuardsPolicy = NormalizeAccountPolicy(AccountPolicySessionGuards, row.SessionGuardsPolicy)
 	if row.Status == "error" {
 		account.Status = StatusError
 		account.ErrorMsg = row.ErrorMessage
@@ -7880,17 +7853,6 @@ func (s *Store) NextForContinuationWithDispatch(key string, apiKeyID int64, excl
 // 绑定本身不存在时仍走完整挑号，与普通请求一致；TTL 过期只影响普通请求，
 // preserveBinding=true 的续链请求仍保留原账号。
 func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, opts SelectionOptions) (*Account, string, SessionAffinityGuard) {
-	allowBorrow := true
-	if s != nil && s.SessionNoBorrowEnabled() {
-		allowBorrow = false
-	}
-	return s.nextForSessionWithFilterBorrow(key, apiKeyID, exclude, filter, preserveBinding, opts, allowBorrow)
-}
-
-// nextForSessionWithFilterBorrow 是带借用开关的实现。allowBorrow=false 时，绑定
-// 账号并发满不再借用其他账号而是返回 nil，由等待循环决定何时放开。开关只约束
-// Codex 官方绑定账号（sessionNoBorrowAppliesTo）；relay-style 绑定按旧逻辑借用。
-func (s *Store) nextForSessionWithFilterBorrow(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, opts SelectionOptions, allowBorrow bool) (*Account, string, SessionAffinityGuard) {
 	if s == nil {
 		return nil, "", SessionAffinityGuard{}
 	}
@@ -7960,15 +7922,10 @@ func (s *Store) nextForSessionWithFilterBorrow(key string, apiKeyID int64, exclu
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				if !allowBorrow && s.sessionNoBorrowAppliesTo(binding.accountID) {
-					s.sessionBorrowHeld.Add(1)
-					return nil, "", SessionAffinityGuard{}
-				}
 				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, opts)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
-				s.sessionBorrowed.Add(1)
 				log.Printf("会话粘性容量溢出: 绑定账号=%d 并发满,本请求借用账号=%d(该请求预期上游缓存未命中)", binding.accountID, fallback.DBID)
 				return fallback, "", SessionAffinityGuard{preserveAccountID: binding.accountID}
 			}
@@ -8004,15 +7961,10 @@ func (s *Store) nextForSessionWithFilterBorrow(key string, apiKeyID int64, exclu
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				if !allowBorrow && s.sessionNoBorrowAppliesTo(binding.accountID) {
-					s.sessionBorrowHeld.Add(1)
-					return nil, "", SessionAffinityGuard{}
-				}
 				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, opts)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
-				s.sessionBorrowed.Add(1)
 				log.Printf("会话粘性容量溢出: 绑定账号=%d 并发满,本请求借用账号=%d(该请求预期上游缓存未命中)", binding.accountID, fallback.DBID)
 				return fallback, "", SessionAffinityGuard{preserveAccountID: binding.accountID}
 			}
@@ -8733,22 +8685,6 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	expires := time.Now().Add(timeout)
-	waitStarted := time.Now()
-	noBorrow := !preserveBinding && s.SessionNoBorrowEnabled()
-	if noBorrow {
-		// 本地已知绑定的是 relay-style 账号时不受不借用约束，不必挂 hold 计时器；
-		// 绑定未知（仅在缓存里）时保持扣住，由选号处的同一判定决定是否借用。
-		if id := boundAccountID(); id != 0 && !s.sessionNoBorrowAppliesTo(id) {
-			noBorrow = false
-		}
-	}
-	noBorrowHold := s.SessionNoBorrowHold()
-	var holdC <-chan time.Time
-	if noBorrow {
-		holdTimer := time.NewTimer(noBorrowHold)
-		defer holdTimer.Stop()
-		holdC = holdTimer.C
-	}
 	var heartbeatTimer *time.Timer
 	var heartbeatC <-chan time.Time
 	defer func() {
@@ -8793,12 +8729,7 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		var acc *Account
 		var proxyURL string
 		var guard SessionAffinityGuard
-		if noBorrow && !preserveBinding {
-			// hold 期内只认绑定账号；到期后放开借用，避免把等待超时变成硬失败。
-			acc, proxyURL, guard = s.nextForSessionWithFilterBorrow(key, apiKeyID, exclude, filter, false, opts, time.Since(waitStarted) >= noBorrowHold)
-		} else {
-			acc, proxyURL, guard = s.nextForSessionWithFilter(key, apiKeyID, exclude, filter, preserveBinding, opts)
-		}
+		acc, proxyURL, guard = s.nextForSessionWithFilter(key, apiKeyID, exclude, filter, preserveBinding, opts)
 		if acc != nil {
 			if ctx.Err() != nil || !time.Now().Before(expires) {
 				s.Release(acc)
@@ -8837,13 +8768,6 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 				if metrics != nil {
 					metrics.waitWakeups.Add(1)
 				}
-				break waitLoop
-			case <-holdC:
-				// hold 到期只触发一次；先把仍在排队的等待者摘出 lane，再跳出内层 select
-				// 让外层循环立刻用 allowBorrow=true 重选一次。不摘的话重选失败后的
-				// finish 会把同一等待者二次入队，残留元素会让后续 Release 永久卡死。
-				holdC = nil
-				hub.detach(waiter)
 				break waitLoop
 			case <-ctx.Done():
 				if metrics != nil {
@@ -8886,64 +8810,6 @@ func (s *Store) GetSessionSlotBuffer() time.Duration {
 
 func (s *Store) SessionSlotBufferEnabled() bool {
 	return s != nil && s.sessionSlotBufferEnabled.Load()
-}
-
-// SetSessionNoBorrow hot-updates the no-borrow policy: while enabled, a bound
-// session whose account is at concurrency waits up to hold before the capacity
-// spillover fallback is allowed. hold is normalized to 1..30s (default 20s).
-func (s *Store) SetSessionNoBorrow(enabled bool, hold time.Duration) {
-	if s == nil {
-		return
-	}
-	seconds := database.NormalizeSessionNoBorrowHoldSeconds(int(hold / time.Second))
-	s.sessionNoBorrowEnabled.Store(enabled)
-	s.sessionNoBorrowHoldNS.Store(int64(time.Duration(seconds) * time.Second))
-}
-
-func (s *Store) SessionNoBorrowEnabled() bool {
-	if s == nil {
-		return false
-	}
-	return s.sessionNoBorrowEnabled.Load()
-}
-
-func (s *Store) SessionNoBorrowHold() time.Duration {
-	if s == nil {
-		return 20 * time.Second
-	}
-	if ns := s.sessionNoBorrowHoldNS.Load(); ns > 0 {
-		return time.Duration(ns)
-	}
-	return 20 * time.Second
-}
-
-// sessionNoBorrowAppliesTo 判断不借用策略是否约束该绑定账号：开关是 Codex 专属的，
-// 只有 Codex 官方账号才被扣住等待；中转/Grok/Antigravity/Claude OAuth 等
-// relay-style 账号沿用旧的容量溢出借用逻辑。
-//
-// 账号把 session_guards_policy 设成 off 时同样回到旧语义：不借用是会话防护的一环，
-// 运营者关掉该账号的防护就该整套关掉。proxy 侧那几道闸走 sessionGuardsActiveFor，
-// auth 不能 import proxy，这里直接读账号策略，判据保持一致。
-func (s *Store) sessionNoBorrowAppliesTo(accountID int64) bool {
-	if s == nil || accountID == 0 {
-		return false
-	}
-	acc := s.FindByID(accountID)
-	return acc != nil && !acc.IsRelayStyle() && !acc.SessionGuardsOff()
-}
-
-// SessionBorrowStats 进程内计数：Borrowed = 实际发生的容量溢出借用；Held = 因
-// 不借用策略被扣住（返回 nil 进入等待）的次数。
-type SessionBorrowStats struct {
-	Borrowed uint64 `json:"borrowed"`
-	Held     uint64 `json:"held"`
-}
-
-func (s *Store) SessionBorrowStats() SessionBorrowStats {
-	if s == nil {
-		return SessionBorrowStats{}
-	}
-	return SessionBorrowStats{Borrowed: s.sessionBorrowed.Load(), Held: s.sessionBorrowHeld.Load()}
 }
 
 // SetSessionSlotBufferEnabled hot-updates buffering. Disabling releases all
@@ -9661,9 +9527,6 @@ func promptFilterConfigFromSettings(settings *database.SystemSettings) (promptfi
 	}
 	if disabled, err := promptfilter.ParseDisabledPatterns(settings.PromptFilterDisabledPatterns); err == nil {
 		cfg.DisabledPatterns = disabled
-	}
-	if overrides, err := promptfilter.ParseBuiltinPatternOverrides(settings.PromptFilterBuiltinOverrides); err == nil {
-		cfg.BuiltinOverrides = overrides
 	}
 	cfg.Review = promptfilter.ReviewConfig{
 		Enabled:        settings.PromptFilterReviewEnabled,

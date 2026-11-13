@@ -4,16 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/codex2api/auth"
-	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -50,7 +47,7 @@ type modelProbeEvent struct {
 }
 
 // ProbeAccountModels 用账号自身凭据并发探测系统模型列表（已排除 image 模型），
-// 判定每个模型是否可用，持久化独立的检测证据，不修改白名单或调度健康状态。
+// 判定每个模型是否可用。全程只读，不回写账号调度状态（冷却/错误/成功）。
 // stream=true 时以 SSE 逐模型推送进度，否则一次性返回 JSON。
 // POST /api/admin/accounts/:id/models/probe
 func (h *Handler) ProbeAccountModels(c *gin.Context) {
@@ -77,20 +74,6 @@ func (h *Handler) ProbeAccountModels(c *gin.Context) {
 	models := proxy.TextTestModelIDs(c.Request.Context(), h.db)
 	if account.IsClaudeOAuth() {
 		models = claudeProbeModelIDs(account)
-	}
-	if requested := strings.TrimSpace(c.Query("model")); requested != "" {
-		found := false
-		for _, model := range models {
-			if strings.EqualFold(model, requested) {
-				models = []string{model}
-				found = true
-				break
-			}
-		}
-		if !found {
-			writeError(c, http.StatusBadRequest, "模型未在当前渠道注册")
-			return
-		}
 	}
 	streaming := strings.EqualFold(c.Query("stream"), "true")
 
@@ -154,8 +137,6 @@ func (h *Handler) streamProbeModels(c *gin.Context, account *auth.Account, model
 
 // runProbeModels 并发探测所有模型；onEvent 非空时逐模型回调 testing/result 事件（用于 SSE）。
 func (h *Handler) runProbeModels(ctx context.Context, account *auth.Account, models []string, concurrency int, onEvent func(modelProbeEvent)) []modelProbeResult {
-	generation := account.GetCredentialGeneration()
-	observedAt := time.Now().Unix()
 	var (
 		wg        sync.WaitGroup
 		mu        sync.Mutex
@@ -198,15 +179,6 @@ func (h *Handler) runProbeModels(ctx context.Context, account *auth.Account, mod
 		}(i, model)
 	}
 	wg.Wait()
-	if h.db != nil && !account.IsRelayStyle() {
-		observations := make([]database.AccountModelObservation, 0, len(results))
-		for _, result := range results {
-			observations = append(observations, database.AccountModelObservation{Model: result.Model, Source: "probe", Outcome: result.Outcome, ObservedAt: observedAt})
-		}
-		if err := h.db.SaveAccountModelObservations(ctx, account.ID(), generation, observations); err != nil {
-			log.Printf("save account model probe: %v", err)
-		}
-	}
 	return results
 }
 

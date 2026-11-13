@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import type { ReactNode } from 'react'
 import {
   Activity,
@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Server,
   ShieldAlert,
-  ShieldCheck,
   Signal,
   Users,
 } from 'lucide-react'
@@ -20,12 +19,10 @@ import PageHeader from '../components/PageHeader'
 import { StatTile } from '../components/StatTile'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
-import type { RuntimeCheck, RuntimeHealthStatus, RuntimeStatusResponse, SessionLockItem } from '../types'
-import { getErrorMessage } from '../utils/error'
+import type { RuntimeCheck, RuntimeHealthStatus, RuntimeStatusResponse } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 type StatusTone = 'ok' | 'degraded' | 'error'
 
@@ -37,34 +34,6 @@ export default function RuntimeStatus() {
     initialData: null,
     load: loadRuntimeStatus,
   })
-
-  const loadSessionLocks = useCallback(async () => (await api.getSessionLocks()).locks, [])
-
-  const { data: locks, error: locksError, reload: reloadLocks } = useDataLoader<SessionLockItem[]>({
-    initialData: [],
-    load: loadSessionLocks,
-  })
-
-  const [unlockError, setUnlockError] = useState<string | null>(null)
-
-  // 锁表读写失败必须显形：上面的面板报「当前锁定 7」而这张卡片写着「没有锁定会话」
-  // 是最坏的组合，解锁失败同样不能只留在控制台里。
-  const unlock = useCallback(async (id: number) => {
-    setUnlockError(null)
-    try {
-      await api.deleteSessionLock(id)
-    } catch (err) {
-      setUnlockError(getErrorMessage(err))
-    } finally {
-      await reloadLocks()
-      void reloadSilently()
-    }
-  }, [reloadLocks, reloadSilently])
-
-  const refreshLocks = useCallback(() => {
-    setUnlockError(null)
-    void reloadLocks()
-  }, [reloadLocks])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -197,70 +166,6 @@ export default function RuntimeStatus() {
                   [t('runtime.statusCounts'), formatStatusCounts(status.accounts.status_counts, t)],
                 ]}
               />
-
-              {status.session_guards && (
-                <StatusPanel
-                  title={t('runtime.sessionGuards')}
-                  status="ok"
-                  icon={<ShieldCheck className="size-5" />}
-                  rows={[
-                    [t('runtime.sessionGuardsSwitches'), formatSessionGuardSwitches(status.session_guards.settings, t)],
-                    [t('runtime.turnStateTotals'), formatTurnStateCounters(status.session_guards.turn_state.totals)],
-                    [t('runtime.turnStateTopAccounts'), status.session_guards.turn_state.accounts.slice(0, 5).map((row) => `#${row.account_id} ${formatTurnStateCounters(row.counters)}`).join(' · ') || '-'],
-                    [t('runtime.sessionBorrow'), `${t('runtime.borrowed')} ${formatNumber(status.session_guards.borrow.borrowed)} / ${t('runtime.held')} ${formatNumber(status.session_guards.borrow.held)}`],
-                    [t('runtime.vault'), `${t('runtime.vaultIssued')} ${formatNumber(status.session_guards.turn_state.vault.issued)} · ${t('runtime.vaultRestored')} ${formatNumber(status.session_guards.turn_state.vault.restored)} · ${t('runtime.vaultForeign')} ${formatNumber(status.session_guards.turn_state.vault.foreign_stripped)}`],
-                    [t('runtime.autoLock'), `${status.session_guards.auto_lock.enabled ? t('common.enabled') : t('common.disabled')} (${status.session_guards.auto_lock.threshold}) · ${t('runtime.activeLocks')} ${formatNumber(status.session_guards.auto_lock.active_locks)} · ${t('runtime.lockedTotal')} ${formatNumber(status.session_guards.auto_lock.locked_total)} · ${t('runtime.unlockedTotal')} ${formatNumber(status.session_guards.auto_lock.unlocked_total)}`],
-                    [t('runtime.promptPolicy'), `${t('runtime.promptExempted')} ${formatNumber(status.session_guards.prompt_policy?.exempted ?? 0)} · ${t('runtime.promptBlockedAfterSelection')} ${formatNumber(status.session_guards.prompt_policy?.blocked_after_selection ?? 0)}`],
-                    [t('runtime.initialSessionRecentHour'), formatInitialSessionSummary(status.session_guards.initial_session.recent_hour, t)],
-                    [t('runtime.initialSessionSinceStart'), formatInitialSessionSummary(status.session_guards.initial_session.since_start, t)],
-                  ]}
-                />
-              )}
-
-              {status.session_guards && (
-                <Card className="lg:col-span-2">
-                  <CardContent className="space-y-3 p-4 sm:p-6">
-                    <div className="flex items-center justify-between">
-                      <h2 className="font-semibold">{t('runtime.lockedSessions')}</h2>
-                      <Button variant="outline" size="sm" onClick={refreshLocks}>{t('runtime.refreshLocks')}</Button>
-                    </div>
-                    {locksError ? <p className="text-sm text-destructive">{t('runtime.locksLoadFailed')}</p> : null}
-                    {unlockError ? <p className="text-sm text-destructive">{`${t('runtime.unlockFailed')}: ${unlockError}`}</p> : null}
-                    {locks.length === 0 ? (
-                      locksError ? null : <p className="text-sm text-muted-foreground">{t('runtime.lockedSessionsEmpty')}</p>
-                    ) : (
-                      <div className="data-table-shell">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>{t('runtime.sessionPrefix')}</TableHead>
-                              <TableHead>API Key</TableHead>
-                              <TableHead>{t('runtime.account')}</TableHead>
-                              <TableHead>{t('runtime.error')}</TableHead>
-                              <TableHead>{t('runtime.lockedAt')}</TableHead>
-                              <TableHead />
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {locks.map((lock) => (
-                              <TableRow key={lock.id}>
-                                <TableCell className="font-mono text-xs">{lock.session_id_prefix}</TableCell>
-                                <TableCell>#{lock.api_key_id}</TableCell>
-                                <TableCell>{lock.account_name || `#${lock.account_id}`}</TableCell>
-                                <TableCell className="max-w-[320px] truncate text-xs" title={lock.error_message}>{lock.error_message || '-'}</TableCell>
-                                <TableCell className="text-xs">{new Date(lock.locked_at).toLocaleString()}</TableCell>
-                                <TableCell className="text-right">
-                                  <Button variant="outline" size="sm" onClick={() => void unlock(lock.id)}>{t('runtime.unlock')}</Button>
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
 
               <StatusPanel
                 title={t('runtime.imageStorage')}
@@ -465,31 +370,4 @@ function formatStatusCounts(counts: Record<string, number>, t: (key: string, opt
   return entries
     .map(([status, count]) => `${t(`status.${status}`, { defaultValue: status })}: ${count}`)
     .join(' · ')
-}
-
-function formatTurnStateCounters(c: { same: number; cross: number; unknown: number; stripped: number }): string {
-  return `same ${formatNumber(c.same)} · cross ${formatNumber(c.cross)} · unknown ${formatNumber(c.unknown)} · stripped ${formatNumber(c.stripped)}`
-}
-
-function formatSessionGuardSwitches(
-  s: { turn_state_strict: boolean; no_borrow_enabled: boolean; no_borrow_hold_seconds: number; initial_session_admission_enabled: boolean; initial_session_max_age_seconds: number },
-  t: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  const on = t('common.enabled')
-  const off = t('common.disabled')
-  return [
-    `${t('runtime.turnStateStrict')}: ${s.turn_state_strict ? on : off}`,
-    `${t('runtime.noBorrow')}: ${s.no_borrow_enabled ? `${on} (${s.no_borrow_hold_seconds}s)` : off}`,
-    `${t('runtime.initialSessionAdmission')}: ${s.initial_session_admission_enabled ? `${on} (${s.initial_session_max_age_seconds}s)` : off}`,
-  ].join(' · ')
-}
-
-function formatInitialSessionSummary(
-  s: { samples: number; allowed: number; expired: number; future: number; invalid: number; max_age_ms: number; average_age_ms: number },
-  t: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  if (!s.samples) return t('runtime.noSamples')
-  const avg = s.average_age_ms ? `${(s.average_age_ms / 1000).toFixed(1)}s` : '-'
-  const max = s.max_age_ms ? `${(s.max_age_ms / 1000).toFixed(1)}s` : '-'
-  return `${formatNumber(s.samples)} · ${t('runtime.allowed')} ${formatNumber(s.allowed)} · ${t('runtime.expired')} ${formatNumber(s.expired)} · ${t('runtime.future')} ${formatNumber(s.future)} · ${t('runtime.invalidId')} ${formatNumber(s.invalid)} · avg ${avg} · max ${max}`
 }

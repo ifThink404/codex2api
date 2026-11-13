@@ -66,12 +66,6 @@ func (h *Handler) CodexModelsManifestHandler(c *gin.Context) {
 			http.StatusBadGateway)
 		return
 	}
-	// A non-empty account whitelist is an explicit routing constraint. When
-	// the account's own manifest publishes a newly added model, append that
-	// confirmed slug atomically so the next request can use it without a
-	// manual admin edit. Empty lists remain the unlimited sentinel.
-	h.autoCompleteCodexAccountWhitelist(c.Request.Context(), account, manifest.Body)
-	restrictManifest = codexManifestNeedsFiltering(row, account)
 
 	if restrictManifest {
 		if manifest.NotModified {
@@ -104,45 +98,6 @@ func (h *Handler) CodexModelsManifestHandler(c *gin.Context) {
 	// 让选单里出现的新模型立即通过请求侧模型校验，无需等手动同步。
 	h.learnFetchedManifestAsync(manifest)
 	h.writeMergedCodexManifest(c, manifest.Body, manifest.ETag, extraModels)
-}
-
-func (h *Handler) autoCompleteCodexAccountWhitelist(ctx context.Context, account *auth.Account, manifestBody []byte) {
-	if h == nil || h.store == nil || account == nil || account.DBID <= 0 || len(manifestBody) == 0 {
-		return
-	}
-	// Do not turn an unlimited account into a restrictive list. Also avoid a
-	// database transaction when the runtime snapshot already contains every
-	// slug from this manifest.
-	declared := account.CodexModels()
-	if len(declared) == 0 {
-		return
-	}
-	slugs := ExtractManifestModelSlugs(manifestBody)
-	if len(slugs) == 0 {
-		return
-	}
-	known := make(map[string]struct{}, len(declared))
-	for _, model := range declared {
-		known[strings.ToLower(strings.TrimSpace(model))] = struct{}{}
-	}
-	missing := false
-	for _, slug := range slugs {
-		if _, ok := known[strings.ToLower(strings.TrimSpace(slug))]; !ok {
-			missing = true
-			break
-		}
-	}
-	if !missing {
-		return
-	}
-	_, added, err := h.store.MergeAccountModelsFromUpstream(ctx, account.DBID, slugs)
-	if err != nil {
-		log.Printf("账号 %d 自动补全模型白名单失败（不影响清单响应）: %v", account.DBID, err)
-		return
-	}
-	if len(added) > 0 {
-		log.Printf("账号 %d 已从上游清单自动补全 %d 个模型白名单项: %s", account.DBID, len(added), strings.Join(added, ", "))
-	}
 }
 
 func (h *Handler) preferScopedCodexManifest(c *gin.Context) bool {
@@ -190,14 +145,13 @@ func (h *Handler) extraRelayManifestModels(ctx context.Context, row *database.AP
 		return nil
 	}
 	records := h.scopedModelRecords(ctx, row)
-	observed := h.observedCodexManifestModels(ctx, row)
 	extras := make([]api.Model, 0, len(records))
 	for _, record := range records {
 		if record == nil {
 			continue
 		}
 		_, daybreak := auth.ParseDaybreakAlias(record.id)
-		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 && !observed[strings.ToLower(record.id)] && daybreak == "" {
+		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 && daybreak == "" {
 			continue
 		}
 		extras = append(extras, api.Model{ID: record.id, Object: "model", OwnedBy: scopedModelOwner(record)})

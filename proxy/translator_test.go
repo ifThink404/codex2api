@@ -2100,49 +2100,6 @@ func TestPrepareResponsesBody_PromptCompatAndTopLevelImageOptions(t *testing.T) 
 	}
 }
 
-func TestResponsesBackgroundModeDoesNotBecomeImageBackground(t *testing.T) {
-	// codexBackground is what the Codex preparation sends: it drops a
-	// foreground background:false, which Codex does not accept.
-	for _, tc := range []struct {
-		name, fields, requestBackground, codexBackground, imageBackground string
-		codexImage, apiImage                                              bool
-	}{
-		{"foreground_probe", `"background":false`, "false", "", "", true, false},
-		{"background_request", `"background":true`, "true", "true", "", true, false},
-		{"structured_foreground", `"background":false,"text":{"format":{"type":"json_object"}}`, "false", "", "", false, false},
-		{"structured_background", `"background":true,"text":{"format":{"type":"json_object"}}`, "true", "true", "", false, false},
-		{"image_tool_with_foreground", `"background":false,"tools":[{"type":"image_generation"}]`, "false", "", "", true, true},
-		{"image_tool_with_background", `"background":true,"tools":[{"type":"image_generation"}]`, "true", "true", "", true, true},
-		{"independent_image_background", `"background":false,"tools":[{"type":"image_generation","background":"transparent"}]`, "false", "", `"transparent"`, true, true},
-		{"legacy_transparent", `"background":"transparent"`, "", "", `"transparent"`, true, true},
-		{"legacy_opaque", `"background":"opaque"`, "", "", `"opaque"`, true, true},
-		{"legacy_auto", `"background":"auto"`, "", "", `"auto"`, true, true},
-	} {
-		for _, route := range []string{"codex", "openai_relay"} {
-			t.Run(route+"/"+tc.name, func(t *testing.T) {
-				raw := []byte(`{"model":"gpt-5.6-sol","input":"Reply with JSON: {\"ok\":true}","stream":false,` + tc.fields + `}`)
-				var prepared []byte
-				wantImage, wantBackground := tc.apiImage, tc.requestBackground
-				if route == "codex" {
-					prepared, _ = PrepareResponsesBody(raw)
-					wantImage, wantBackground = tc.codexImage, tc.codexBackground
-				} else {
-					prepared = PrepareOpenAIResponsesBody(raw)
-				}
-				if got := gjson.GetBytes(prepared, "background").Raw; got != wantBackground {
-					t.Errorf("request background = %q, want %q", got, wantBackground)
-				}
-				if got := gjson.GetBytes(prepared, "tools.0.background").Raw; got != tc.imageBackground {
-					t.Errorf("image background = %q, want %q", got, tc.imageBackground)
-				}
-				if got := gjson.GetBytes(prepared, "tools.0.type").String() == "image_generation"; got != wantImage {
-					t.Errorf("image tool present = %t, want %t", got, wantImage)
-				}
-			})
-		}
-	}
-}
-
 func TestPrepareResponsesBody_DefaultImageToolDoesNotDisplaceToolsAtCapacity(t *testing.T) {
 	tools := make([]any, maxTools)
 	for i := range tools {

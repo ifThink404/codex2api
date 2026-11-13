@@ -1,7 +1,6 @@
 import AccountStatusBar from './AccountStatusBar'
 import { useTranslation } from 'react-i18next'
-import AccountLatestTurnState from './AccountLatestTurnState'
-import type { AccountHealthBucket, AccountLatestTurnStateInfo } from '../types'
+import type { AccountHealthBucket } from '../types'
 
 // 「健康状态」条：把账号最近的请求成败分桶渲染成一排色块 + 成功率。
 // 移植自 CLIProxyAPI 的 ProviderStatusBar，改为 Tailwind 实现。
@@ -99,15 +98,12 @@ interface Props {
   buckets: AccountHealthBucket[] | undefined
   blockCount?: number
   blockMinutes?: number
-  /** 最近一条带 turn-state 的请求;给了就在条下面补一行小字,没给则整行不渲染。 */
-  latestTurnState?: AccountLatestTurnStateInfo | null
 }
 
 export default function AccountHealthBar({
   buckets,
   blockCount = 20,
   blockMinutes = 10,
-  latestTurnState,
 }: Props) {
   const { t } = useTranslation()
   const data = statusBarDataFromBuckets(buckets ?? [], blockCount, blockMinutes)
@@ -146,25 +142,12 @@ export default function AccountHealthBar({
     )
   }
 
-  const bar = (
-    <AccountStatusBar
-      blocks={data.blockDetails.map(detail => ({
-        color: detail.rate === -1 ? undefined : rateToColor(detail.rate),
-        tooltip: renderTooltip(detail),
-      }))}
-      rate={hasData ? data.successRate : null}
-      rateClass={rateClass}
-    />
-  )
-
-  // 没有 turn-state 样本时保持原来的单层结构：三处调用点的父容器都按「健康条就是
-  // 这一个 flex 行」排版，平白多套一层 div 会把间距顶开。
-  if (!latestTurnState) return bar
-
-  return (
-    <div className="min-w-0 max-w-full">
-      {bar}
-      <AccountLatestTurnState state={latestTurnState} />
-    </div>
-  )
+  return <AccountStatusBar
+    blocks={data.blockDetails.map(detail => ({
+      color: detail.rate === -1 ? undefined : rateToColor(detail.rate),
+      tooltip: renderTooltip(detail),
+    }))}
+    rate={hasData ? data.successRate : null}
+    rateClass={rateClass}
+  />
 }

@@ -1,7 +1,7 @@
 package proxy
 
 import (
-	"log"
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -42,48 +42,17 @@ var (
 // 并记录铸造账号。上游没有该头时主动清除 writer 上可能残留的上一 failover
 // attempt 的值——否则换号重试后旧账号的 blob 会粘到新账号的响应上,正是本
 // 文件要防止的跨账号矛盾。(流式响应一旦提交,对 writer 头的改动是无害空操作。)
-func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, account *auth.Account, modelOrHeaders interface{}, optionalHeaders ...http.Header) {
-	var headers http.Header
-	switch value := modelOrHeaders.(type) {
-	case string:
-		if len(optionalHeaders) > 0 {
-			headers = optionalHeaders[0]
-		}
-	case http.Header:
-		headers = value
-	}
-	// The transport captures the raw template once, before header relaying or
-	// vault substitution. This helper only records usage and delivers the header.
+func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, account *auth.Account, model string, headers http.Header) {
 	if c == nil {
 		return
 	}
 	token := ""
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
-		// 用量日志记的是上游**真实** token 的字节数（托管改写成替身之前；token 是
-		// ASCII base64，字节数等于字符数）。
-		// 这里已经把上游响应头完整看过一遍：没有就记 0（检查过但上游没给），
-		// 与「未记录」（这次尝试根本没拿到上游响应）区分开。
-		markUsageTurnStateChecked(c, len(token))
 	}
 	if token == "" {
 		c.Writer.Header().Del(codexTurnStateHeader)
 		return
-	}
-	if turnStateVaultAppliesTo(account) {
-		// 失败关闭：该托管却铸不出替身时不下发真实 token，也不记溯源——少一次续链，
-		// 好过把真实 blob 交到客户端手里。relay 账号不适用托管，原样透传。
-		// 无会话标识（affinityKey 为空）时同样丢弃：没有键就存不下真实值，而这种请求
-		// 本来就没有粘性路由可言，不是故障，不记日志。
-		substitute := issueCodexTurnStateSubstitute(affinityKey, account, token)
-		if substitute == "" {
-			c.Writer.Header().Del(codexTurnStateHeader)
-			if strings.TrimSpace(affinityKey) != "" {
-				log.Printf("[TURN-STATE] vault issue failed, header dropped account=%d affinity=%s", account.ID(), hashRiskIdentity(affinityKey))
-			}
-			return
-		}
-		token = substitute
 	}
 	c.Header(codexTurnStateHeader, token)
 	noteCodexTurnStateProvenance(affinityKey, account)
@@ -95,17 +64,7 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 // a later failover may use another account. If a heartbeat already committed
 // the response, no documented Responses event is equivalent to this header, so
 // the token is intentionally omitted instead of leaking stale account state.
-func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuousRetryStreamAttempt, affinityKey string, account *auth.Account, modelOrHeaders interface{}, optionalHeaders ...http.Header) error {
-	var headers http.Header
-	switch value := modelOrHeaders.(type) {
-	case string:
-		if len(optionalHeaders) > 0 {
-			headers = optionalHeaders[0]
-		}
-	case http.Header:
-		headers = value
-	}
-	// The transport already captured the raw template, even if commit fails.
+func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuousRetryStreamAttempt, affinityKey string, account *auth.Account, model string, headers http.Header) error {
 	if attempt == nil {
 		return h.commitStreamAttempt(c, attempt)
 	}
@@ -114,15 +73,6 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 	stagedHeader := false
 	if headers != nil {
 		token = strings.TrimSpace(headers.Get(codexTurnStateHeader))
-		// 同上：记真实长度，替身改写之前。
-		markUsageTurnStateChecked(c, len(token))
-		if token != "" && turnStateVaultAppliesTo(account) {
-			// 失败关闭：铸不出替身就当作没有 token（删头 + 不记溯源）。
-			// 无会话标识不算故障，同上不记日志。
-			if token = issueCodexTurnStateSubstitute(affinityKey, account, token); token == "" && strings.TrimSpace(affinityKey) != "" {
-				log.Printf("[TURN-STATE] vault issue failed, header dropped account=%d affinity=%s", account.ID(), hashRiskIdentity(affinityKey))
-			}
-		}
 	}
 	if c != nil && c.Writer != nil && !c.Writer.Written() {
 		stagedHeader = true
@@ -138,11 +88,8 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 		// failure so local replay errors cannot expose turn state or provenance.
 		// Header 会先于回放/过滤提交暂存；失败时移除 token，避免本地回放错误
 		// 暴露账号绑定的续链状态或出处数据。
-		// 首响应计时头由官方路径在调用本函数之前暂存，同属「已暂存但未提交」，
-		// 一并撤掉。
 		if stagedHeader && c != nil && c.Writer != nil && !c.Writer.Written() {
 			c.Writer.Header().Del(codexTurnStateHeader)
-			clearUpstreamFirstResponseHeaders(c.Writer.Header())
 		}
 		return err
 	}
@@ -150,6 +97,63 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 		noteCodexTurnStateProvenance(affinityKey, account)
 	}
 	return nil
+}
+
+// guardCodexTurnStateEcho 出站守卫:客户端回带的 turn-state 若已知由其他账号
+// 铸造则从下游头剥离(HTTP 直传与 WS 握手都从这份头取值),同账号或无溯源
+// 记录时保持原样。按 attempt 调用:failover 换号后同一请求的下一次尝试必须
+// 重新裁决。
+func guardCodexTurnStateEcho(affinityKey string, account *auth.Account, headers http.Header) {
+	if headers == nil || account == nil || strings.TrimSpace(affinityKey) == "" {
+		return
+	}
+	if strings.TrimSpace(headers.Get(codexTurnStateHeader)) == "" {
+		return
+	}
+	raw, ok := codexTurnStateOrigins.Load(affinityKey)
+	if !ok {
+		return
+	}
+	origin, ok := raw.(codexTurnStateOrigin)
+	if !ok {
+		codexTurnStateOrigins.Delete(affinityKey)
+		return
+	}
+	if !origin.expiresAt.IsZero() && time.Now().After(origin.expiresAt) {
+		codexTurnStateOrigins.Delete(affinityKey)
+		return
+	}
+	if origin.accountID != account.ID() {
+		headers.Del(codexTurnStateHeader)
+	}
+}
+
+type codexTurnStateAffinityContextKey struct{}
+
+// WithCodexTurnStateAffinityKey attaches the session affinity key used by
+// turn-state echo guarding so WebSocket executors can read it from ctx.
+func WithCodexTurnStateAffinityKey(ctx context.Context, affinityKey string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexTurnStateAffinityContextKey{}, strings.TrimSpace(affinityKey))
+}
+
+// CodexTurnStateAffinityKeyFromContext returns the affinity key set by
+// WithCodexTurnStateAffinityKey, or "" when absent.
+func CodexTurnStateAffinityKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(codexTurnStateAffinityContextKey{}).(string)
+	return v
+}
+
+// GuardCodexTurnStateEcho strips client-echoed turn-state known to have been
+// minted by a different account for this session. Safe no-op when affinityKey
+// is empty or provenance is missing.
+func GuardCodexTurnStateEcho(affinityKey string, account *auth.Account, headers http.Header) {
+	guardCodexTurnStateEcho(affinityKey, account, headers)
 }
 
 // NoteCodexTurnStateProvenance records which account minted turn-state for

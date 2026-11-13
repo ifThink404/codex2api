@@ -47,7 +47,6 @@ import {
 } from "@/components/ui/sheet";
 import { formatBeijingTime, formatRelativeTime } from "../utils/time";
 import { formatLongUsageWindowLabel, getAccountStatusBadgeStatus } from "../lib/usageFormat";
-import { officialAccountLatestTurnState } from "../lib/accountTurnState";
 import { shouldHandleAccountDetailKeyNavigation } from "../lib/accountDetailSheetKeyboard";
 
 function isFutureTime(value?: string): boolean {
@@ -524,10 +523,7 @@ export default function AccountDetailSheet({
                   <div className="text-[10px] text-muted-foreground/80">
                     {t("accounts.healthBarLabel")}
                   </div>
-                  <AccountHealthBar
-                    buckets={healthBuckets}
-                    latestTurnState={officialAccountLatestTurnState(account)}
-                  />
+                  <AccountHealthBar buckets={healthBuckets} />
                   <AccountIntelligenceBar bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} error={intelligenceError} />
                 </div>
 
