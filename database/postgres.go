@@ -1329,12 +1329,20 @@ func (db *DB) migrate(ctx context.Context) error {
 	-- ensureUsageLogsGenerationIndex 在启动后用 CREATE INDEX CONCURRENTLY 在线构建。
 	-- 上游渠道（codex/grok），写入时按调度账号固化，供仪表盘/用量分渠道聚合
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS channel VARCHAR(16) DEFAULT '';
-	ALTER TABLE usage_logs ALTER COLUMN reasoning_effort TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN requested_service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN actual_service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN billing_service_tier TYPE VARCHAR(100);
-	ALTER TABLE usage_logs ALTER COLUMN image_format TYPE VARCHAR(100);
+	-- Skip widths that are already applied: PostgreSQL rejects ALTER TYPE on a
+	-- column referenced by a view (older fork deployments still carry the
+	-- usage_metered_events view) even when the type does not change.
+	DO $$
+	DECLARE col_name TEXT;
+	BEGIN
+		FOR col_name IN SELECT column_name FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'usage_logs'
+			AND column_name IN ('reasoning_effort', 'service_tier', 'requested_service_tier', 'actual_service_tier', 'billing_service_tier', 'image_format')
+			AND character_maximum_length IS DISTINCT FROM 100
+		LOOP
+			EXECUTE format('ALTER TABLE usage_logs ALTER COLUMN %I TYPE VARCHAR(100)', col_name);
+		END LOOP;
+	END $$;
 
 	CREATE INDEX IF NOT EXISTS idx_usage_logs_api_key_created_at ON usage_logs(api_key_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_usage_logs_channel_created_at ON usage_logs(channel, created_at);
